@@ -87,7 +87,7 @@ anyhow = "1"
 
 # 오디오 캡처 + STT
 cpal = "0.17"
-rubato = "0.15"
+rubato = "2.0"
 whisper-rs = "0.16"
 
 # 비동기 trait (dyn Trait + async fn 지원)
