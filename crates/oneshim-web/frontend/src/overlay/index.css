@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens required by overlay components (TrackingBorder, CaptureFlash) */
+:root {
+  --brand: 13 148 136;
+  --brand-signal: 20 184 166;
+  --border: 226 232 240;
+}
+
+/* TrackingBorder blink animation — inline styles reference this keyframe */
+@keyframes tracking-blink {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Overlay-specific: transparent background, no scrollbars */
+.overlay-body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  /*
+   * Click-through is NOT managed via CSS pointer-events.
+   * Tauri v2 does not support per-element click-through forwarding.
+   * Instead, the Rust backend calls set_ignore_cursor_events(true/false)
+   * on the entire window. The global shortcut Cmd+Shift+O toggles
+   * the window between click-through and interactive modes.
+   */
+}

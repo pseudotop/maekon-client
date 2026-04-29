@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-v2/crates/tauri-cli/config.schema.json",
+  "productName": "Maekon Dev",
+  "identifier": "com.oneshim.client.dev",
+  "build": {
+    "frontendDist": "../crates/oneshim-web/frontend/dist",
+    "devUrl": "http://127.0.0.1:5273",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "scripts/build-frontend.sh"
+  }
+}

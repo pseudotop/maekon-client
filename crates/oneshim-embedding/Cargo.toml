@@ -1,0 +1,31 @@
+[package]
+name = "oneshim-embedding"
+description = "Local embedding provider — fastembed-rs (ONNX Runtime) wrapper"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+oneshim-core = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+fastembed = { version = "5", optional = true }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+
+[features]
+default = ["fastembed-local"]
+fastembed-local = ["dep:fastembed"]
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+criterion = { workspace = true }
+oneshim-core = { workspace = true }
+
+[[bench]]
+name = "embedding_bench"
+harness = false

@@ -1,0 +1,54 @@
+name: gRPC Stress Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0'  # Every Sunday 03:00 UTC
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: grpc-stress
+      # No Linux system-deps install (libwebkit2gtk, libgtk-3-dev, etc.):
+      # cargo test -p oneshim-web does not transitively pull in any
+      # Tauri/webkit-linking crate. If a future workspace dep change makes
+      # this assumption false, link errors will surface loudly here — at
+      # which point add the standard install step (see ci.yml:148-171).
+      - name: Print fd limits and assert hard cap
+        run: |
+          echo "soft: $(ulimit -Sn)"
+          echo "hard: $(ulimit -Hn)"
+          test "$(ulimit -Hn)" -ge 65536 || {
+            echo "ERROR: hard fd limit $(ulimit -Hn) < 65536"
+            exit 1
+          }
+      - name: Install frontend dist stub (rust-embed compile-time requirement)
+        run: |
+          mkdir -p crates/oneshim-web/frontend/dist
+          echo '<!doctype html>' > crates/oneshim-web/frontend/dist/index.html
+      # No sandbox-worker stub required: cargo test -p oneshim-web does not
+      # compile src-tauri (dep graph is src-tauri → oneshim-web, not reverse).
+      - name: Run stress tests
+        run: |
+          ulimit -n 65536
+          cargo test -p oneshim-web \
+            --features stress-test \
+            --test external_grpc_stress \
+            -- --test-threads=1 --nocapture
+        env:
+          RUST_BACKTRACE: 1
+          RUST_LOG: info

@@ -1,0 +1,109 @@
+name: Promote Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: 'Validated RC tag to promote (for example v0.3.7-rc.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: Promote RC To Stable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure stable release deploy key
+        shell: bash
+        env:
+          STABLE_RELEASE_DEPLOY_KEY: ${{ secrets.STABLE_RELEASE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${STABLE_RELEASE_DEPLOY_KEY:-}" ]]; then
+            echo "::error::Missing secret STABLE_RELEASE_DEPLOY_KEY"
+            exit 1
+          fi
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${STABLE_RELEASE_DEPLOY_KEY}" > ~/.ssh/stable_release_key
+          chmod 600 ~/.ssh/stable_release_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/stable_release_key
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
+
+      - name: Fetch latest main and tags
+        run: git fetch origin main --tags --force
+
+      - name: Validate RC input
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+
+          RC_TAG="${{ inputs.rc_tag }}"
+          if [[ "${RC_TAG}" != v* ]]; then
+            echo "::error::rc_tag must start with v (for example v0.3.7-rc.1)"
+            exit 1
+          fi
+
+          RC_VERSION="${RC_TAG#v}"
+          if ! is_rc_version "${RC_VERSION}"; then
+            echo "::error::rc_tag must be in vX.Y.Z-rc.N format"
+            exit 1
+          fi
+
+          if ! git rev-parse "${RC_TAG}" >/dev/null 2>&1; then
+            echo "::error::RC tag ${RC_TAG} does not exist"
+            exit 1
+          fi
+
+          STABLE_VERSION="$(base_version "${RC_VERSION}")"
+          STABLE_TAG="v${STABLE_VERSION}"
+          if git rev-parse "${STABLE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Stable tag ${STABLE_TAG} already exists"
+            exit 1
+          fi
+
+          echo "rc_tag=${RC_TAG}" >> "$GITHUB_OUTPUT"
+          echo "rc_version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "stable_tag=${STABLE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "stable_version=${STABLE_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create stable promotion commit and tag locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B main "${{ steps.versions.outputs.rc_tag }}"
+          PROMOTE_STABLE_NO_PUSH=1 ./scripts/promote-stable.sh "${{ steps.versions.outputs.rc_version }}"
+
+      - name: Push stable promotion commit and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+          git push origin "${{ steps.versions.outputs.stable_tag }}"
+
+      - name: Print summary
+        run: |
+          echo "Stable promotion pushed:"
+          echo "  RC tag:     ${{ steps.versions.outputs.rc_tag }}"
+          echo "  Stable tag: ${{ steps.versions.outputs.stable_tag }}"
+          echo "The stable tag push will trigger release.yml to build and publish assets."

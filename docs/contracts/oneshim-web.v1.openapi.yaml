@@ -1,0 +1,2954 @@
+openapi: 3.0.3
+info:
+  title: Maekon Local Web API
+  version: "v1"
+  description: |
+    Auto-generated from docs/contracts/http-interface-manifest.v1.json.
+    This snapshot is transport-level and contract-focused.
+  x-oneshim-document-version: 5
+  x-oneshim-updated-at: "2026-04-07"
+  x-oneshim-routes-file: "crates/oneshim-web/src/routes.rs"
+  x-oneshim-contracts-crate: "crates/oneshim-api-contracts"
+servers:
+  - url: /
+paths:
+  "/api/ai/provider-surfaces":
+    get:
+      tags:
+        - ai_providers
+      operationId: ai_providers_get_api_ai_provider_surfaces
+      summary: "GET /api/ai/provider-surfaces"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/ai/providers/models":
+    post:
+      tags:
+        - ai_providers
+      operationId: ai_providers_post_api_ai_providers_models
+      summary: "POST /api/ai/providers/models"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/ai/sessions":
+    post:
+      tags:
+        - ai_sessions
+      operationId: ai_sessions_post_api_ai_sessions
+      summary: "POST /api/ai/sessions"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/ai/sessions/{id}":
+    get:
+      tags:
+        - ai_sessions
+      operationId: ai_sessions_get_api_ai_sessions_id
+      summary: "GET /api/ai/sessions/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - ai_sessions
+      operationId: ai_sessions_delete_api_ai_sessions_id
+      summary: "DELETE /api/ai/sessions/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/ai/sessions/{id}/messages":
+    post:
+      tags:
+        - ai_sessions
+      operationId: ai_sessions_post_api_ai_sessions_id_messages
+      summary: "POST /api/ai/sessions/{id}/messages"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/audit/export":
+    get:
+      tags:
+        - audit_export
+      operationId: audit_export_get_api_audit_export
+      summary: "GET /api/audit/export"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/audit":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_audit
+      summary: "GET /api/automation/audit"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/contracts":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_contracts
+      summary: "GET /api/automation/contracts"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/execute-hint":
+    post:
+      tags:
+        - automation
+      operationId: automation_post_api_automation_execute_hint
+      summary: "POST /api/automation/execute-hint"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/execute-scene-action":
+    post:
+      tags:
+        - automation
+      operationId: automation_post_api_automation_execute_scene_action
+      summary: "POST /api/automation/execute-scene-action"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/execution-policies":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_execution_policies
+      summary: "GET /api/automation/execution-policies"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - automation
+      operationId: automation_post_api_automation_execution_policies
+      summary: "POST /api/automation/execution-policies"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/execution-policies/{id}":
+    put:
+      tags:
+        - automation
+      operationId: automation_put_api_automation_execution_policies_id
+      summary: "PUT /api/automation/execution-policies/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - automation
+      operationId: automation_delete_api_automation_execution_policies_id
+      summary: "DELETE /api/automation/execution-policies/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions":
+    post:
+      tags:
+        - automation_gui
+      operationId: automation_gui_post_api_automation_gui_sessions
+      summary: "POST /api/automation/gui/sessions"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions/{id}":
+    get:
+      tags:
+        - automation_gui
+      operationId: automation_gui_get_api_automation_gui_sessions_id
+      summary: "GET /api/automation/gui/sessions/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - automation_gui
+      operationId: automation_gui_delete_api_automation_gui_sessions_id
+      summary: "DELETE /api/automation/gui/sessions/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions/{id}/confirm":
+    post:
+      tags:
+        - automation_gui
+      operationId: automation_gui_post_api_automation_gui_sessions_id_confirm
+      summary: "POST /api/automation/gui/sessions/{id}/confirm"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions/{id}/events":
+    get:
+      tags:
+        - automation_gui
+      operationId: automation_gui_get_api_automation_gui_sessions_id_events
+      summary: "GET /api/automation/gui/sessions/{id}/events"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions/{id}/execute":
+    post:
+      tags:
+        - automation_gui
+      operationId: automation_gui_post_api_automation_gui_sessions_id_execute
+      summary: "POST /api/automation/gui/sessions/{id}/execute"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/gui/sessions/{id}/highlight":
+    post:
+      tags:
+        - automation_gui
+      operationId: automation_gui_post_api_automation_gui_sessions_id_highlight
+      summary: "POST /api/automation/gui/sessions/{id}/highlight"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/policies":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_policies
+      summary: "GET /api/automation/policies"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/policy-events":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_policy_events
+      summary: "GET /api/automation/policy-events"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/presets":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_presets
+      summary: "GET /api/automation/presets"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - automation
+      operationId: automation_post_api_automation_presets
+      summary: "POST /api/automation/presets"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/presets/{id}":
+    put:
+      tags:
+        - automation
+      operationId: automation_put_api_automation_presets_id
+      summary: "PUT /api/automation/presets/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - automation
+      operationId: automation_delete_api_automation_presets_id
+      summary: "DELETE /api/automation/presets/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/presets/{id}/run":
+    post:
+      tags:
+        - automation
+      operationId: automation_post_api_automation_presets_id_run
+      summary: "POST /api/automation/presets/{id}/run"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/scene":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_scene
+      summary: "GET /api/automation/scene"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/scene/calibration":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_scene_calibration
+      summary: "GET /api/automation/scene/calibration"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/stats":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_stats
+      summary: "GET /api/automation/stats"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/automation/status":
+    get:
+      tags:
+        - automation
+      operationId: automation_get_api_automation_status
+      summary: "GET /api/automation/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/backup":
+    get:
+      tags:
+        - backup
+      operationId: backup_get_api_backup
+      summary: "GET /api/backup"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/backup/restore":
+    post:
+      tags:
+        - backup
+      operationId: backup_post_api_backup_restore
+      summary: "POST /api/backup/restore"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/coaching/goals":
+    get:
+      tags:
+        - coaching
+      operationId: coaching_get_api_coaching_goals
+      summary: "GET /api/coaching/goals"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - coaching
+      operationId: coaching_put_api_coaching_goals
+      summary: "PUT /api/coaching/goals"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/coaching/habits":
+    get:
+      tags:
+        - coaching
+      operationId: coaching_get_api_coaching_habits
+      summary: "GET /api/coaching/habits"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/coaching/history":
+    get:
+      tags:
+        - coaching
+      operationId: coaching_get_api_coaching_history
+      summary: "GET /api/coaching/history"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/coaching/stats/today":
+    get:
+      tags:
+        - coaching
+      operationId: coaching_get_api_coaching_stats_today
+      summary: "GET /api/coaching/stats/today"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/dashboard/day":
+    get:
+      tags:
+        - dashboard
+      operationId: dashboard_get_api_dashboard_day
+      summary: "GET /api/dashboard/day"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/data/all":
+    delete:
+      tags:
+        - data
+      operationId: data_delete_api_data_all
+      summary: "DELETE /api/data/all"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/data/range":
+    delete:
+      tags:
+        - data
+      operationId: data_delete_api_data_range
+      summary: "DELETE /api/data/range"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/digests":
+    get:
+      tags:
+        - digests
+      operationId: digests_get_api_digests
+      summary: "GET /api/digests"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/digests/current":
+    get:
+      tags:
+        - digests
+      operationId: digests_get_api_digests_current
+      summary: "GET /api/digests/current"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/digests/daily":
+    get:
+      tags:
+        - daily_digest
+      operationId: daily_digest_get_api_digests_daily
+      summary: "GET /api/digests/daily"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/digests/daily/export":
+    get:
+      tags:
+        - daily_digest
+      operationId: daily_digest_get_api_digests_daily_export
+      summary: "GET /api/digests/daily/export"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/digests/daily/today":
+    get:
+      tags:
+        - daily_digest
+      operationId: daily_digest_get_api_digests_daily_today
+      summary: "GET /api/digests/daily/today"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/events":
+    get:
+      tags:
+        - events
+      operationId: events_get_api_events
+      summary: "GET /api/events"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/export/events":
+    get:
+      tags:
+        - export
+      operationId: export_get_api_export_events
+      summary: "GET /api/export/events"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/export/frames":
+    get:
+      tags:
+        - export
+      operationId: export_get_api_export_frames
+      summary: "GET /api/export/frames"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/export/ical":
+    get:
+      tags:
+        - export
+      operationId: export_get_api_export_ical
+      summary: "GET /api/export/ical"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/export/metrics":
+    get:
+      tags:
+        - export
+      operationId: export_get_api_export_metrics
+      summary: "GET /api/export/metrics"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/export/toggl":
+    get:
+      tags:
+        - export
+      operationId: export_get_api_export_toggl
+      summary: "GET /api/export/toggl"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/external-grpc/live-config":
+    get:
+      tags:
+        - external_grpc_live_config
+      operationId: external_grpc_live_config_get_api_external_grpc_live_config
+      summary: "GET /api/external-grpc/live-config"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/focus/interruptions":
+    get:
+      tags:
+        - focus
+      operationId: focus_get_api_focus_interruptions
+      summary: "GET /api/focus/interruptions"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/focus/metrics":
+    get:
+      tags:
+        - focus
+      operationId: focus_get_api_focus_metrics
+      summary: "GET /api/focus/metrics"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/focus/sessions":
+    get:
+      tags:
+        - focus
+      operationId: focus_get_api_focus_sessions
+      summary: "GET /api/focus/sessions"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/focus/suggestions":
+    get:
+      tags:
+        - focus
+      operationId: focus_get_api_focus_suggestions
+      summary: "GET /api/focus/suggestions"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/focus/suggestions/{id}/feedback":
+    post:
+      tags:
+        - focus
+      operationId: focus_post_api_focus_suggestions_id_feedback
+      summary: "POST /api/focus/suggestions/{id}/feedback"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames":
+    get:
+      tags:
+        - frames
+      operationId: frames_get_api_frames
+      summary: "GET /api/frames"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/batch-tags":
+    post:
+      tags:
+        - frames
+      operationId: frames_post_api_frames_batch_tags
+      summary: "POST /api/frames/batch-tags"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/{frame_id}/annotations":
+    get:
+      tags:
+        - frames
+      operationId: frames_get_api_frames_frame_id_annotations
+      summary: "GET /api/frames/{frame_id}/annotations"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - frames
+      operationId: frames_post_api_frames_frame_id_annotations
+      summary: "POST /api/frames/{frame_id}/annotations"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/{frame_id}/annotations/{annotation_id}":
+    delete:
+      tags:
+        - frames
+      operationId: frames_delete_api_frames_frame_id_annotations_annotation_id
+      summary: "DELETE /api/frames/{frame_id}/annotations/{annotation_id}"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: annotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/{frame_id}/tags":
+    get:
+      tags:
+        - tags
+      operationId: tags_get_api_frames_frame_id_tags
+      summary: "GET /api/frames/{frame_id}/tags"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/{frame_id}/tags/{tag_id}":
+    post:
+      tags:
+        - tags
+      operationId: tags_post_api_frames_frame_id_tags_tag_id
+      summary: "POST /api/frames/{frame_id}/tags/{tag_id}"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - tags
+      operationId: tags_delete_api_frames_frame_id_tags_tag_id
+      summary: "DELETE /api/frames/{frame_id}/tags/{tag_id}"
+      parameters:
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/frames/{id}/image":
+    get:
+      tags:
+        - frames
+      operationId: frames_get_api_frames_id_image
+      summary: "GET /api/frames/{id}/image"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/idle":
+    get:
+      tags:
+        - idle
+      operationId: idle_get_api_idle
+      summary: "GET /api/idle"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/audit":
+    get:
+      tags:
+        - integration_api
+      operationId: integration_api_get_api_integration_audit
+      summary: "GET /api/integration/audit"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/auth/device/cancel":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_auth_device_cancel
+      summary: "POST /api/integration/auth/device/cancel"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/auth/device/poll":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_auth_device_poll
+      summary: "POST /api/integration/auth/device/poll"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/auth/device/start":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_auth_device_start
+      summary: "POST /api/integration/auth/device/start"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/auth/reset":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_auth_reset
+      summary: "POST /api/integration/auth/reset"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/auth/status":
+    get:
+      tags:
+        - integration_api
+      operationId: integration_api_get_api_integration_auth_status
+      summary: "GET /api/integration/auth/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/inbox":
+    get:
+      tags:
+        - integration_api
+      operationId: integration_api_get_api_integration_inbox
+      summary: "GET /api/integration/inbox"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/inbox/refresh":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_inbox_refresh
+      summary: "POST /api/integration/inbox/refresh"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/inbox/{prompt_id}/ack":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_inbox_prompt_id_ack
+      summary: "POST /api/integration/inbox/{prompt_id}/ack"
+      parameters:
+        - name: prompt_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/inbox/{prompt_id}/dismiss":
+    post:
+      tags:
+        - integration_api
+      operationId: integration_api_post_api_integration_inbox_prompt_id_dismiss
+      summary: "POST /api/integration/inbox/{prompt_id}/dismiss"
+      parameters:
+        - name: prompt_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/integration/status":
+    get:
+      tags:
+        - integration_api
+      operationId: integration_api_get_api_integration_status
+      summary: "GET /api/integration/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/metrics":
+    get:
+      tags:
+        - metrics
+      operationId: metrics_get_api_metrics
+      summary: "GET /api/metrics"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/metrics/hourly":
+    get:
+      tags:
+        - metrics
+      operationId: metrics_get_api_metrics_hourly
+      summary: "GET /api/metrics/hourly"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/onboarding/quickstart":
+    get:
+      tags:
+        - onboarding
+      operationId: onboarding_get_api_onboarding_quickstart
+      summary: "GET /api/onboarding/quickstart"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/playbooks/coaching":
+    get:
+      tags:
+        - playbooks
+      operationId: playbooks_get_api_playbooks_coaching
+      summary: "GET /api/playbooks/coaching"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/playbooks/presets":
+    get:
+      tags:
+        - playbooks
+      operationId: playbooks_get_api_playbooks_presets
+      summary: "GET /api/playbooks/presets"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/pomodoro/cancel":
+    post:
+      tags:
+        - pomodoro
+      operationId: pomodoro_post_api_pomodoro_cancel
+      summary: "POST /api/pomodoro/cancel"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/pomodoro/complete":
+    post:
+      tags:
+        - pomodoro
+      operationId: pomodoro_post_api_pomodoro_complete
+      summary: "POST /api/pomodoro/complete"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/pomodoro/current":
+    get:
+      tags:
+        - pomodoro
+      operationId: pomodoro_get_api_pomodoro_current
+      summary: "GET /api/pomodoro/current"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/pomodoro/start":
+    post:
+      tags:
+        - pomodoro
+      operationId: pomodoro_post_api_pomodoro_start
+      summary: "POST /api/pomodoro/start"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/processes":
+    get:
+      tags:
+        - processes
+      operationId: processes_get_api_processes
+      summary: "GET /api/processes"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/recalibration/override":
+    post:
+      tags:
+        - recalibration
+      operationId: recalibration_post_api_recalibration_override
+      summary: "POST /api/recalibration/override"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/recalibration/override/{id}":
+    delete:
+      tags:
+        - recalibration
+      operationId: recalibration_delete_api_recalibration_override_id
+      summary: "DELETE /api/recalibration/override/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/recalibration/overrides":
+    get:
+      tags:
+        - recalibration
+      operationId: recalibration_get_api_recalibration_overrides
+      summary: "GET /api/recalibration/overrides"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/recalibration/recluster":
+    post:
+      tags:
+        - recalibration
+      operationId: recalibration_post_api_recalibration_recluster
+      summary: "POST /api/recalibration/recluster"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/reports":
+    get:
+      tags:
+        - reports
+      operationId: reports_get_api_reports
+      summary: "GET /api/reports"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/search":
+    get:
+      tags:
+        - search
+      operationId: search_get_api_search
+      summary: "GET /api/search"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/semantic-search":
+    get:
+      tags:
+        - semantic_search
+      operationId: semantic_search_get_api_semantic_search
+      summary: "GET /api/semantic-search"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/sessions":
+    get:
+      tags:
+        - sessions
+      operationId: sessions_get_api_sessions
+      summary: "GET /api/sessions"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/sessions/{id}":
+    get:
+      tags:
+        - sessions
+      operationId: sessions_get_api_sessions_id
+      summary: "GET /api/sessions/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/settings":
+    get:
+      tags:
+        - settings
+      operationId: settings_get_api_settings
+      summary: "GET /api/settings"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - settings
+      operationId: settings_post_api_settings
+      summary: "POST /api/settings"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/stats/apps":
+    get:
+      tags:
+        - stats
+      operationId: stats_get_api_stats_apps
+      summary: "GET /api/stats/apps"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/stats/gui-heatmap":
+    get:
+      tags:
+        - stats
+      operationId: stats_get_api_stats_gui_heatmap
+      summary: "GET /api/stats/gui-heatmap"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/stats/heatmap":
+    get:
+      tags:
+        - stats
+      operationId: stats_get_api_stats_heatmap
+      summary: "GET /api/stats/heatmap"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/stats/summary":
+    get:
+      tags:
+        - stats
+      operationId: stats_get_api_stats_summary
+      summary: "GET /api/stats/summary"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/storage/stats":
+    get:
+      tags:
+        - settings
+      operationId: settings_get_api_storage_stats
+      summary: "GET /api/storage/stats"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/stream":
+    get:
+      tags:
+        - stream
+      operationId: stream_get_api_stream
+      summary: "GET /api/stream"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/suggestions":
+    get:
+      tags:
+        - suggestions
+      operationId: suggestions_get_api_suggestions
+      summary: "GET /api/suggestions"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/suggestions/{id}/dismiss":
+    post:
+      tags:
+        - suggestions
+      operationId: suggestions_post_api_suggestions_id_dismiss
+      summary: "POST /api/suggestions/{id}/dismiss"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/support/bug-report":
+    post:
+      tags:
+        - support
+      operationId: support_post_api_support_bug_report
+      summary: "POST /api/support/bug-report"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/support/bug-report/latest":
+    get:
+      tags:
+        - support
+      operationId: support_get_api_support_bug_report_latest
+      summary: "GET /api/support/bug-report/latest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/support/diagnostics":
+    get:
+      tags:
+        - support
+      operationId: support_get_api_support_diagnostics
+      summary: "GET /api/support/diagnostics"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/tags":
+    get:
+      tags:
+        - tags
+      operationId: tags_get_api_tags
+      summary: "GET /api/tags"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - tags
+      operationId: tags_post_api_tags
+      summary: "POST /api/tags"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/tags/{id}":
+    get:
+      tags:
+        - tags
+      operationId: tags_get_api_tags_id
+      summary: "GET /api/tags/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - tags
+      operationId: tags_put_api_tags_id
+      summary: "PUT /api/tags/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - tags
+      operationId: tags_delete_api_tags_id
+      summary: "DELETE /api/tags/{id}"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/timeline":
+    get:
+      tags:
+        - timeline
+      operationId: timeline_get_api_timeline
+      summary: "GET /api/timeline"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/tracking-schedule":
+    get:
+      tags:
+        - tracking_schedule
+      operationId: tracking_schedule_get_api_tracking_schedule
+      summary: "GET /api/tracking-schedule"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - tracking_schedule
+      operationId: tracking_schedule_put_api_tracking_schedule
+      summary: "PUT /api/tracking-schedule"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/tracking-schedule/status":
+    get:
+      tags:
+        - tracking_schedule
+      operationId: tracking_schedule_get_api_tracking_schedule_status
+      summary: "GET /api/tracking-schedule/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/update/action":
+    post:
+      tags:
+        - update
+      operationId: update_post_api_update_action
+      summary: "POST /api/update/action"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/update/status":
+    get:
+      tags:
+        - update
+      operationId: update_get_api_update_status
+      summary: "GET /api/update/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/update/stream":
+    get:
+      tags:
+        - update
+      operationId: update_get_api_update_stream
+      summary: "GET /api/update/stream"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/integration/v1/ai/provider-surfaces":
+    get:
+      tags:
+        - integration
+      operationId: integration_get_integration_v1_ai_provider_surfaces
+      summary: "GET /integration/v1/ai/provider-surfaces"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/integration/v1/ai/providers/models":
+    post:
+      tags:
+        - integration
+      operationId: integration_post_integration_v1_ai_providers_models
+      summary: "POST /integration/v1/ai/providers/models"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenericObject'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/integration/v1/audit":
+    get:
+      tags:
+        - integration
+      operationId: integration_get_integration_v1_audit
+      summary: "GET /integration/v1/audit"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/integration/v1/status":
+    get:
+      tags:
+        - integration
+      operationId: integration_get_integration_v1_status
+      summary: "GET /integration/v1/status"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        "default":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    GenericObject:
+      type: object
+      additionalProperties: true
+    ErrorResponse:
+      type: object
+      additionalProperties: true

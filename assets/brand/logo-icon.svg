@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Maekon app icon">
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="#15043A"/>
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="none" stroke="#2B1678" stroke-width="16"/>
+  <rect x="292" y="572" width="440" height="132" rx="60" fill="#5534D7"/>
+  <rect x="362" y="474" width="300" height="112" rx="50" fill="#7057EA"/>
+  <path d="M376 534c76 28 196 28 272 0" fill="none" stroke="#A28CFF" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="392" cy="408" r="70" fill="#61F4D6"/>
+  <circle cx="632" cy="408" r="70" fill="#0DE0A2"/>
+</svg>

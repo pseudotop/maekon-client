@@ -1,0 +1,32 @@
+name: Linux systemd Integration (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        default: 'main'
+        required: false
+
+jobs:
+  linux-systemd-integration:
+    name: Linux systemd Integration Tests (T8-T10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install systemd + dbus + libsystemd-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y systemd dbus-user-session libsystemd-dev
+          systemctl --user start dbus
+      - name: Touch tauri externalbin + frontend stubs
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
+          touch src-tauri/oneshim-sandbox-worker-${TRIPLE}
+          mkdir -p crates/oneshim-web/frontend/dist
+          echo '<html></html>' > crates/oneshim-web/frontend/dist/index.html
+      - name: Run live tests
+        run: cargo test -p oneshim-app --features systemd-notify --test linux_autostart_systemd_live -- --ignored

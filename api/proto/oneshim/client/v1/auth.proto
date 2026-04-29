@@ -1,0 +1,27 @@
+syntax = "proto3";
+package oneshim.client.v1;
+
+// Client authentication contract.
+// Minimal surface: token acquisition and refresh only.
+
+service ClientAuth {
+  rpc GetToken(GetTokenRequest) returns (TokenResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (TokenResponse);
+}
+
+message GetTokenRequest {
+  string identifier = 1;
+  string credential = 2;
+  string organization_id = 3;
+}
+
+message TokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in_secs = 3;
+  string user_id = 4;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}

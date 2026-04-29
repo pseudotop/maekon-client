@@ -1,0 +1,16 @@
+{
+  "identifier": "tracking-panel",
+  "windows": ["tracking-panel"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-size",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "notification:default"
+  ]
+}

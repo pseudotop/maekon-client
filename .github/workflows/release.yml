@@ -1,0 +1,1317 @@
+name: Release
+
+run-name: Release ${{ inputs.tag_name || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to build (for example v0.3.7)'
+        required: true
+        type: string
+      release_sha:
+        description: 'Commit SHA that the release tag points to'
+        required: true
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+  RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  verify-version:
+    name: Verify Version Consistency
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      release_kind: ${{ steps.release.outputs.release_kind }}
+      base_version: ${{ steps.release.outputs.base_version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+
+      - name: Classify release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          if is_rc_version "${TAG_VERSION}"; then
+            echo "release_kind=rc" >> "$GITHUB_OUTPUT"
+            echo "base_version=$(base_version "${TAG_VERSION}")" >> "$GITHUB_OUTPUT"
+          elif is_stable_version "${TAG_VERSION}"; then
+            echo "release_kind=stable" >> "$GITHUB_OUTPUT"
+            echo "base_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unsupported tag format: ${RELEASE_TAG}. Use vX.Y.Z-rc.N or vX.Y.Z"
+            exit 1
+          fi
+
+      - name: Verify release tag matches the requested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --depth=1
+          if ! TAG_COMMIT="$(git rev-parse "${RELEASE_TAG}^{commit}" 2>/dev/null)"; then
+            echo "::error::Release tag ${RELEASE_TAG} does not exist in the fetched repository state"
+            exit 1
+          fi
+
+          echo "Tag commit:     ${TAG_COMMIT}"
+          echo "Requested SHA:  ${RELEASE_SHA}"
+          if [ "${TAG_COMMIT}" != "${RELEASE_SHA}" ]; then
+            echo "::error::Release SHA must match the commit pointed to by ${RELEASE_TAG}"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            MAIN_SHA="$(git rev-parse origin/main)"
+            echo "main commit:    ${MAIN_SHA}"
+            if [ "${RELEASE_SHA}" != "${MAIN_SHA}" ]; then
+              echo "::error::Release tags must point to origin/main HEAD when first pushed"
+              exit 1
+            fi
+          else
+            echo "workflow_dispatch rerun detected; skipping origin/main HEAD check"
+          fi
+
+      - name: Verify Cargo.toml version matches tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          CARGO_VERSION="$(workspace_version)"
+          echo "Tag version:   $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch! Tag ${RELEASE_TAG} but Cargo.toml has $CARGO_VERSION"
+            echo "Fix: Update [workspace.package] version in Cargo.toml to \"$TAG_VERSION\""
+            exit 1
+          fi
+
+      - name: Verify Cargo.lock workspace versions match tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          if ! MISMATCHES="$(workspace_lock_mismatches "${TAG_VERSION}")"; then
+            echo "::error::Cargo.lock workspace package versions must match ${TAG_VERSION}"
+            while IFS=$'\t' read -r package_name package_version; do
+              [ -z "${package_name}" ] && continue
+              echo "::error file=Cargo.lock::${package_name} is ${package_version}"
+            done <<< "${MISMATCHES}"
+            echo "Fix: sync Cargo.lock workspace package versions after bumping release versions"
+            exit 1
+          fi
+
+      - name: Verify frontend package.json version matches tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          PKG_VERSION="$(frontend_version)"
+          echo "Tag version:      $TAG_VERSION"
+          echo "package version:  $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch! Tag ${RELEASE_TAG} but frontend package.json has $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG.md [Unreleased] header hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          HEADER_COUNT="$(changelog_unreleased_count)"
+          echo "[Unreleased] header count: ${HEADER_COUNT}"
+          if [ "${HEADER_COUNT}" -ne 1 ]; then
+            echo "::error::CHANGELOG.md must contain exactly one [Unreleased] header, found ${HEADER_COUNT}"
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG.md has entry for this version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          if ! changelog_has_entry "${TAG_VERSION}"; then
+            echo "::error::CHANGELOG.md missing entry for [$TAG_VERSION]"
+            echo "Fix: Add ## [$TAG_VERSION] - $(date +%Y-%m-%d) section to CHANGELOG.md"
+            exit 1
+          fi
+
+      - name: Enforce rc-first stable promotion
+        if: steps.release.outputs.release_kind == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          BASE_VERSION="${{ steps.release.outputs.base_version }}"
+          RC_TAG="$(latest_rc_tag_for_base "${BASE_VERSION}")"
+          if [ -z "${RC_TAG}" ]; then
+            echo "::error::Stable release v${BASE_VERSION} requires an existing RC tag v${BASE_VERSION}-rc.N"
+            exit 1
+          fi
+
+          echo "Latest RC tag: ${RC_TAG}"
+          RC_COMMIT="$(git rev-parse "${RC_TAG}^{commit}")"
+          if [ "${RC_COMMIT}" = "${RELEASE_SHA}" ]; then
+            echo "::error::Stable tag must come from a promotion commit, not directly from ${RC_TAG}"
+            exit 1
+          fi
+
+          mapfile -t CHANGED_FILES < <(git diff --name-only "${RC_COMMIT}" "${RELEASE_SHA}")
+          if [ "${#CHANGED_FILES[@]}" -eq 0 ]; then
+            echo "::error::Stable promotion commit must change metadata relative to ${RC_TAG}"
+            exit 1
+          fi
+
+          BAD_FILES=()
+          for file in "${CHANGED_FILES[@]}"; do
+            [ -z "${file}" ] && continue
+            if ! allowed_promotion_file "${file}"; then
+              BAD_FILES+=("${file}")
+            fi
+          done
+
+          if [ "${#BAD_FILES[@]}" -gt 0 ]; then
+            printf '::error::Stable promotion changed non-metadata files: %s\n' "${BAD_FILES[*]}"
+            exit 1
+          fi
+
+          if ! changelog_section_body_matches "${BASE_VERSION}" "${RC_TAG#v}"; then
+            echo "::error::Stable CHANGELOG section [${BASE_VERSION}] must match the latest RC section [${RC_TAG#v}]"
+            exit 1
+          fi
+
+          RELEASE_JSON="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RC_TAG}")"
+          export RELEASE_JSON
+
+          python3 - "${RC_TAG}" <<'PY'
+          import json
+          import os
+          import sys
+
+          tag = sys.argv[1]
+          release = json.loads(os.environ["RELEASE_JSON"])
+          assets = len(release.get("assets", []))
+
+          if release.get("draft"):
+              raise SystemExit(f"Latest RC release {tag} is still a draft")
+          if not release.get("prerelease"):
+              raise SystemExit(f"Latest RC release {tag} is not marked as prerelease")
+          if assets == 0:
+              raise SystemExit(f"Latest RC release {tag} has no assets")
+
+          print(f"Verified RC release {tag}: prerelease={release.get('prerelease')} assets={assets}")
+          PY
+
+      - name: Check for open security advisories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq '[.[] | select(.state == "open" and .security_advisory.severity == "critical")] | length' 2>/dev/null || echo "0")
+          if [ "$ALERTS" -gt 0 ]; then
+            echo "::error::$ALERTS critical dependabot security alerts are open. Resolve before releasing."
+            exit 1
+          fi
+
+      - name: Verify tauri.conf.json consistency
+        run: |
+          PRODUCT_NAME=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['productName'])")
+          IDENTIFIER=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['identifier'])")
+          echo "productName: $PRODUCT_NAME"
+          echo "identifier:  $IDENTIFIER"
+          if [ "$PRODUCT_NAME" != "Maekon" ]; then
+            echo "::error::tauri.conf.json productName must be 'Maekon', got '$PRODUCT_NAME'"
+            exit 1
+          fi
+          if [ "$IDENTIFIER" != "com.oneshim.client" ]; then
+            echo "::error::tauri.conf.json identifier must be 'com.oneshim.client', got '$IDENTIFIER'"
+            exit 1
+          fi
+
+  build-frontend-assets:
+    name: Build Frontend Assets
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+        with:
+          version: '10'
+          lockfile-path: crates/oneshim-web/frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: crates/oneshim-web/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript type check (early fail)
+        working-directory: crates/oneshim-web/frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend bundle
+        working-directory: crates/oneshim-web/frontend
+        run: pnpm build
+
+      - name: Verify frontend build output
+        run: test -f crates/oneshim-web/frontend/dist/index.html
+
+      - name: Package frontend dist artifact
+        run: tar -czf crates/oneshim-web/frontend/frontend-dist.tar.gz -C crates/oneshim-web/frontend dist
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist-bundle
+          path: crates/oneshim-web/frontend/frontend-dist.tar.gz
+          if-no-files-found: error
+
+  build-release:
+    name: Build Release (${{ matrix.target }})
+    needs: [verify-version, build-frontend-assets]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: oneshim-macos-arm64
+            asset_ext: tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            artifact_name: oneshim-macos-x64
+            asset_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: oneshim-windows-x64
+            asset_ext: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: oneshim-linux-x64
+            asset_ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      - name: Download frontend dist artifact
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: frontend-dist-bundle
+          path: crates/oneshim-web/frontend
+
+      - name: Extract frontend dist artifact
+        shell: bash
+        run: |
+          tar -xzf crates/oneshim-web/frontend/frontend-dist.tar.gz -C crates/oneshim-web/frontend
+          test -f crates/oneshim-web/frontend/dist/index.html
+
+      - name: Install OpenSSL for SQLCipher (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # bundled-sqlcipher requires OpenSSL headers + libs at build time.
+          # Use vcpkg to install pre-built OpenSSL — no Perl/NASM needed.
+          vcpkg install openssl:x64-windows-static-md
+          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          echo "OPENSSL_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "OpenSSL installed at: $vcpkgRoot"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Verify DEB metadata assets
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-deb-metadata.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: release-build-${{ matrix.target }}
+
+      # Tauri externalBin (`oneshim-sandbox-worker`) expects a binary named
+      # `<name>-<target-triple>[.exe]` at the src-tauri/ root. Build the
+      # sandbox-worker crate for this target and copy it into place BEFORE
+      # the oneshim-app release build so the Tauri bundler finds it.
+      - name: Build sandbox worker for Tauri externalBin
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          ./scripts/cargo-cache.sh build --release --target "$TARGET_TRIPLE" -p oneshim-sandbox-worker
+          SRC="target/$TARGET_TRIPLE/release/oneshim-sandbox-worker"
+          DST="src-tauri/oneshim-sandbox-worker-$TARGET_TRIPLE"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp "$SRC.exe" "$DST.exe"
+          else
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+          fi
+          ls -la "src-tauri/oneshim-sandbox-worker-$TARGET_TRIPLE"* || true
+
+      - name: Build release
+        shell: bash
+        run: ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }} -p oneshim-app --features grpc
+
+      - name: Validate WiX assets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path "src-tauri/wix/main.wxs")) {
+            Write-Error "Missing WiX manifest: src-tauri/wix/main.wxs"
+            exit 1
+          }
+          if (!(Test-Path "src-tauri/wix/license.rtf")) {
+            Write-Error "Missing WiX license file: src-tauri/wix/license.rtf"
+            exit 1
+          }
+
+      # ── MSI 인스톨러 (Windows only) ──
+      - name: Install cargo-wix
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/cargo-cache.sh install cargo-wix
+
+      - name: Build MSI installer
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: src-tauri
+        run: ../scripts/cargo-cache.sh wix -p oneshim-app --nocapture --target ${{ matrix.target }}
+
+      # ── DEB 패키지 (Linux only) ──
+      - name: Install cargo-deb
+        if: runner.os == 'Linux'
+        run: ./scripts/cargo-cache.sh install cargo-deb
+
+      - name: Build DEB package
+        if: runner.os == 'Linux'
+        run: ./scripts/cargo-cache.sh deb -p oneshim-app --target ${{ matrix.target }} --no-build
+
+      # ── 패키징 ──
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd target/${{ matrix.target }}/release
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            cp ../../../src-tauri/icons/icon.icns .
+            tar -czvf ../../../dist/"$ARTIFACT_NAME"."$ASSET_EXT" oneshim oneshim-sandbox-worker icon.icns
+          else
+            tar -czvf ../../../dist/"$ARTIFACT_NAME"."$ASSET_EXT" oneshim oneshim-sandbox-worker
+          fi
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          ASSET_EXT: ${{ matrix.asset_ext }}
+
+      - name: Package (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/${{ matrix.target }}/release/oneshim.exe,target/${{ matrix.target }}/release/oneshim-sandbox-worker.exe -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+
+      - name: Generate checksums
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          shasum -a 256 ${{ matrix.artifact_name }}.${{ matrix.asset_ext }} > ${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256
+
+      - name: Generate checksums (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash -Algorithm SHA256 -Path "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}"
+          "$($hash.Hash.ToLower())  ${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" | Out-File -Encoding ascii "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256"
+
+      - name: Upload zip/tar artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}-archive
+          path: |
+            dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+            dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256
+          if-no-files-found: error
+
+      - name: Verify MSI version
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
+        run: |
+          $expectedVersion = $env:TAG_REF -replace '^v', ''
+          $msiFile = Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $msiFile) { Write-Error "No MSI file found"; exit 1 }
+          $msiName = $msiFile.Name
+          Write-Host "MSI file: $msiName"
+          if ($msiName -notmatch $expectedVersion.Replace('.', '-')) {
+            if ($msiName -match "0\.0\.1" -and $expectedVersion -ne "0.0.1") {
+              Write-Error "MSI version mismatch: file=$msiName expected=$expectedVersion"
+              exit 1
+            }
+          }
+          Write-Host "MSI version check passed"
+
+      - name: Verify DEB version
+        if: runner.os == 'Linux'
+        env:
+          TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
+        run: |
+          EXPECTED_VERSION="${TAG_REF#v}"
+          if [[ "$EXPECTED_VERSION" == *-* ]]; then
+            EXPECTED_DEB_UPSTREAM="${EXPECTED_VERSION%%-*}~${EXPECTED_VERSION#*-}"
+          else
+            EXPECTED_DEB_UPSTREAM="$EXPECTED_VERSION"
+          fi
+          DEB_FILE=$(find target -name "*.deb" -type f | head -1)
+          if [ -z "$DEB_FILE" ]; then echo "No DEB file found"; exit 1; fi
+          DEB_VERSION=$(dpkg-deb -f "$DEB_FILE" Version)
+          echo "DEB file: $(basename $DEB_FILE)"
+          echo "DEB version: $DEB_VERSION"
+          echo "Expected tag version: $EXPECTED_VERSION"
+          echo "Expected DEB upstream: $EXPECTED_DEB_UPSTREAM"
+          DEB_UPSTREAM="${DEB_VERSION%%-*}"
+          if [ "$DEB_UPSTREAM" != "$EXPECTED_DEB_UPSTREAM" ]; then
+            echo "::error::DEB version mismatch: got $DEB_VERSION (upstream $DEB_UPSTREAM), expected upstream $EXPECTED_DEB_UPSTREAM from tag $EXPECTED_VERSION"
+            exit 1
+          fi
+
+      - name: Upload MSI artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneshim-windows-x64-msi
+          path: |
+            target/wix/*.msi
+            src-tauri/target/wix/*.msi
+          if-no-files-found: error
+
+      - name: Upload DEB artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneshim-linux-x64-deb
+          path: target/${{ matrix.target }}/debian/*.deb
+          if-no-files-found: error
+
+  build-macos-universal:
+    name: Build macOS Universal Binary
+    needs: [verify-version, build-release]
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
+      MACOS_APP_CERT_P12_B64: ${{ secrets.MACOS_APP_CERT_P12_B64 }}
+      MACOS_APP_CERT_PASSWORD: ${{ secrets.MACOS_APP_CERT_PASSWORD }}
+      MACOS_INSTALLER_CERT_P12_B64: ${{ secrets.MACOS_INSTALLER_CERT_P12_B64 }}
+      MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
+      MACOS_APP_SIGNING_IDENTITY: ${{ secrets.MACOS_APP_SIGNING_IDENTITY }}
+      MACOS_INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      - name: Download arm64 artifact
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: oneshim-macos-arm64-archive
+          path: artifacts/arm64
+
+      - name: Download x64 artifact
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: oneshim-macos-x64-archive
+          path: artifacts/x64
+
+      - name: Verify architecture archives
+        shell: bash
+        run: |
+          test -f artifacts/arm64/oneshim-macos-arm64.tar.gz
+          test -f artifacts/x64/oneshim-macos-x64.tar.gz
+
+      - name: Extract binaries
+        run: |
+          mkdir -p binaries
+          tar -xzf artifacts/arm64/oneshim-macos-arm64.tar.gz -C binaries
+          mv binaries/oneshim binaries/oneshim-arm64
+          mv binaries/oneshim-sandbox-worker binaries/oneshim-sandbox-worker-arm64
+          rm -f binaries/icon.icns
+          tar -xzf artifacts/x64/oneshim-macos-x64.tar.gz -C binaries
+          mv binaries/oneshim binaries/oneshim-x64
+          mv binaries/oneshim-sandbox-worker binaries/oneshim-sandbox-worker-x64
+          rm -f binaries/icon.icns
+
+      - name: Create universal binary
+        run: |
+          lipo -create binaries/oneshim-arm64 binaries/oneshim-x64 -output binaries/oneshim
+          lipo -create binaries/oneshim-sandbox-worker-arm64 binaries/oneshim-sandbox-worker-x64 -output binaries/oneshim-sandbox-worker
+          file binaries/oneshim
+          file binaries/oneshim-sandbox-worker
+          mkdir -p dist
+          cp src-tauri/icons/icon.icns binaries/
+          tar -czvf dist/oneshim-macos-universal.tar.gz -C binaries oneshim oneshim-sandbox-worker icon.icns
+          shasum -a 256 dist/oneshim-macos-universal.tar.gz > dist/oneshim-macos-universal.tar.gz.sha256
+
+      - name: Upload universal artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneshim-macos-universal
+          path: |
+            dist/oneshim-macos-universal.tar.gz
+            dist/oneshim-macos-universal.tar.gz.sha256
+
+      - name: Validate macOS signing secret material
+        shell: bash
+        run: |
+          required=(
+            MACOS_APP_CERT_P12_B64
+            MACOS_APP_CERT_PASSWORD
+            MACOS_INSTALLER_CERT_P12_B64
+            MACOS_INSTALLER_CERT_PASSWORD
+          )
+          for key in "${required[@]}"; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "Missing required secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import macOS signing certificates
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/oneshim-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          APP_CERT_PATH="$RUNNER_TEMP/macos-app-cert.p12"
+          INSTALLER_CERT_PATH="$RUNNER_TEMP/macos-installer-cert.p12"
+
+          echo "$MACOS_APP_CERT_P12_B64" | base64 --decode > "$APP_CERT_PATH"
+          echo "$MACOS_INSTALLER_CERT_P12_B64" | base64 --decode > "$INSTALLER_CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          security import "$APP_CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_APP_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security import "$INSTALLER_CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_INSTALLER_CERT_PASSWORD" \
+            -T /usr/bin/productsign \
+            -T /usr/bin/security
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign:,productsign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+          echo "APP_CERT_PATH=$APP_CERT_PATH" >> "$GITHUB_ENV"
+          echo "INSTALLER_CERT_PATH=$INSTALLER_CERT_PATH" >> "$GITHUB_ENV"
+
+      - name: Resolve macOS signing identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALL_IDENTITIES="$(security find-identity -v "$KEYCHAIN_PATH" || true)"
+          echo "$ALL_IDENTITIES"
+
+          resolve_identity() {
+            local kind="$1"
+            local requested="$2"
+            local resolved=""
+
+            if [[ -n "$requested" ]] && printf '%s\n' "$ALL_IDENTITIES" | grep -F "\"$requested\"" >/dev/null; then
+              resolved="$requested"
+            else
+              resolved="$(printf '%s\n' "$ALL_IDENTITIES" | sed -n "s/.*\"\\($kind: [^\"]*\\)\".*/\\1/p" | head -n1)"
+            fi
+
+            printf '%s' "$resolved"
+          }
+
+          APP_IDENTITY="$(resolve_identity "Developer ID Application" "${MACOS_APP_SIGNING_IDENTITY:-}")"
+          INSTALLER_IDENTITY="$(resolve_identity "Developer ID Installer" "${MACOS_INSTALLER_SIGNING_IDENTITY:-}")"
+
+          if [[ -z "$APP_IDENTITY" ]]; then
+            echo "Unable to resolve Developer ID Application identity from imported certificate." >&2
+            exit 1
+          fi
+          if [[ -z "$INSTALLER_IDENTITY" ]]; then
+            echo "Unable to resolve Developer ID Installer identity from imported certificate." >&2
+            exit 1
+          fi
+
+          echo "MACOS_APP_SIGNING_IDENTITY_RESOLVED=$APP_IDENTITY" >> "$GITHUB_ENV"
+          echo "MACOS_INSTALLER_SIGNING_IDENTITY_RESOLVED=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
+          echo "Resolved macOS app/installer signing identities."
+
+      - name: Validate macOS icon asset format
+        shell: bash
+        run: |
+          ICON_FILE_INFO="$(file src-tauri/icons/icon.icns)"
+          echo "$ICON_FILE_INFO"
+          if [[ "$ICON_FILE_INFO" != *"Mac OS X icon"* ]]; then
+            echo "src-tauri/icons/icon.icns must be a valid ICNS file." >&2
+            exit 1
+          fi
+
+      - name: Create macOS app bundle
+        shell: bash
+        run: |
+          VERSION="${TAG_REF#v}"
+          APP_BUNDLE="dist/Maekon.app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+          cp binaries/oneshim "$APP_BUNDLE/Contents/MacOS/oneshim"
+          chmod +x "$APP_BUNDLE/Contents/MacOS/oneshim"
+          cp binaries/oneshim-sandbox-worker "$APP_BUNDLE/Contents/MacOS/oneshim-sandbox-worker"
+          chmod +x "$APP_BUNDLE/Contents/MacOS/oneshim-sandbox-worker"
+          cp src-tauri/icons/icon.icns "$APP_BUNDLE/Contents/Resources/icon.icns"
+          cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Maekon</string>
+            <key>CFBundleDisplayName</key>
+            <string>Maekon</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.oneshim.client</string>
+            <key>CFBundleVersion</key>
+            <string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleExecutable</key>
+            <string>oneshim</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.15</string>
+            <key>CFBundleIconFile</key>
+            <string>icon.icns</string>
+            <key>NSAppTransportSecurity</key>
+            <dict>
+              <key>NSExceptionDomains</key>
+              <dict>
+                <key>127.0.0.1</key>
+                <dict>
+                  <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                  <true/>
+                  <key>NSIncludesSubdomains</key>
+                  <false/>
+                </dict>
+                <key>localhost</key>
+                <dict>
+                  <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                  <true/>
+                  <key>NSIncludesSubdomains</key>
+                  <false/>
+                </dict>
+              </dict>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Verify macOS app bundle version
+        shell: bash
+        run: |
+          EXPECTED_VERSION="${TAG_REF#v}"
+          BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" dist/Maekon.app/Contents/Info.plist)
+          echo "Expected: $EXPECTED_VERSION"
+          echo "Bundle:   $BUNDLE_VERSION"
+          if [ "$BUNDLE_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::macOS bundle version mismatch: got $BUNDLE_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          fi
+
+      - name: Sign and verify macOS app bundle
+        shell: bash
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements src-tauri/assets/oneshim.entitlements \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$MACOS_APP_SIGNING_IDENTITY_RESOLVED" \
+            dist/Maekon.app
+          codesign --verify --deep --strict --verbose=2 dist/Maekon.app
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG installer
+        shell: bash
+        run: |
+          # Free transient build artifacts before DMG creation.
+          rm -rf artifacts binaries
+
+          create-dmg \
+            --volname "Maekon" \
+            --volicon "src-tauri/icons/icon.icns" \
+            --background "src-tauri/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 80 \
+            --icon "Maekon.app" 180 170 \
+            --app-drop-link 480 170 \
+            --no-internet-enable \
+            dist/oneshim-macos-universal.dmg \
+            dist/Maekon.app
+
+      - name: Create and sign PKG installer
+        run: |
+          VERSION="${TAG_REF#v}"
+          UNSIGNED_PKG_TMP="dist/oneshim-macos-universal-pkgbuild-unsigned.pkg"
+          pkgbuild \
+            --component dist/Maekon.app \
+            --identifier com.oneshim.client \
+            --version "$VERSION" \
+            --install-location /Applications \
+            "$UNSIGNED_PKG_TMP"
+          productsign \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$MACOS_INSTALLER_SIGNING_IDENTITY_RESOLVED" \
+            "$UNSIGNED_PKG_TMP" \
+            dist/oneshim-macos-universal.pkg
+          pkgutil --check-signature dist/oneshim-macos-universal.pkg
+          rm -f "$UNSIGNED_PKG_TMP"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneshim-macos-universal-dmg
+          path: dist/oneshim-macos-universal.dmg
+          if-no-files-found: error
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneshim-macos-universal-pkg
+          path: dist/oneshim-macos-universal.pkg
+          if-no-files-found: error
+
+      - name: Cleanup macOS signing keychain
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f "$APP_CERT_PATH" "$INSTALLER_CERT_PATH"
+
+  release-reliability-smoke:
+    name: Release Reliability Smoke (${{ matrix.name }})
+    needs: [verify-version, build-release, build-macos-universal]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            artifact_name: oneshim-linux-x64-archive
+            run_updater_tests: true
+          - name: macos
+            os: macos-latest
+            artifact_name: oneshim-macos-universal
+            run_updater_tests: false
+          - name: windows
+            os: windows-latest
+            artifact_name: oneshim-windows-x64-archive
+            run_updater_tests: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      - name: Download release archive for smoke
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: ${{ matrix.artifact_name }}
+          path: smoke-assets
+
+      - name: Verify downloaded smoke assets
+        shell: bash
+        run: |
+          ls -la smoke-assets
+          test -n "$(find smoke-assets -maxdepth 1 -type f)"
+
+      - name: Download macOS installer artifacts for smoke
+        if: matrix.name == 'macos'
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: oneshim-macos-universal-dmg
+          path: smoke-installers
+
+      - name: Download macOS PKG artifact for smoke
+        if: matrix.name == 'macos'
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: oneshim-macos-universal-pkg
+          path: smoke-installers
+
+      - name: Verify downloaded macOS installer assets
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          find smoke-installers -maxdepth 3 -type f
+          test -f smoke-installers/oneshim-macos-universal.dmg
+          test -f smoke-installers/oneshim-macos-universal.pkg
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: ./.github/actions/rust-cache
+        with:
+          key: release-reliability-smoke-${{ matrix.name }}
+
+      # Tauri externalBin requires `oneshim-sandbox-worker-<triple>[.exe]` at
+      # the src-tauri/ root at build time. The smoke script runs
+      # `cargo test -p oneshim-app release_reliability_` which triggers the
+      # tauri-build build.rs. This is a TEST build — a stub touch (matching
+      # ci.yml) is sufficient; we do not need the real sandbox-worker binary
+      # because the smoke suite does not exercise sandbox command execution.
+      - name: Create sandbox worker stub for Tauri externalBin
+        shell: bash
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/oneshim-sandbox-worker-${TRIPLE}.exe"
+          else
+            touch "src-tauri/oneshim-sandbox-worker-${TRIPLE}"
+            chmod +x "src-tauri/oneshim-sandbox-worker-${TRIPLE}"
+          fi
+
+      - name: Run smoke script (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x ./.workflow-tools/scripts/release-reliability-smoke.sh
+          export ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-release-smoke"
+          export ONESHIM_SMOKE_REPO_ROOT="$GITHUB_WORKSPACE"
+          if [[ "${{ matrix.run_updater_tests }}" == "true" ]]; then
+            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets
+          else
+            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets --skip-updater-tests
+          fi
+
+      - name: Run smoke script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:ONESHIM_SMOKE_REPO_ROOT = $env:GITHUB_WORKSPACE
+          if ("${{ matrix.run_updater_tests }}" -eq "true") {
+            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets
+          } else {
+            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets -SkipUpdaterTests
+          }
+
+      - name: Run macOS installer smoke script
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          chmod +x ./.workflow-tools/scripts/release-installer-smoke-macos.sh
+          ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-installer-smoke" \
+            ./.workflow-tools/scripts/release-installer-smoke-macos.sh --assets-dir smoke-installers
+
+      - name: Upload macOS release smoke logs
+        if: failure() && matrix.name == 'macos'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-logs-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/maekon-release-smoke
+            ${{ runner.temp }}/maekon-installer-smoke
+          if-no-files-found: ignore
+
+  create-release:
+    name: Create GitHub Release
+    needs: [verify-version, build-release, build-macos-universal, release-reliability-smoke]
+    if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      - name: Download all artifacts
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          pattern: oneshim-*
+          path: dist
+          merge-multiple: true
+
+      - name: Flatten nested artifacts
+        run: |
+          # Move installer files from nested paths to dist/
+          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
+          # Clean up empty nested directories
+          find dist -mindepth 1 -type d -empty -delete
+
+      - name: Verify installer coverage
+        run: |
+          for pattern in "*.msi" "*.deb" "*.dmg" "*.pkg"; do
+            if ! compgen -G "dist/${pattern}" > /dev/null; then
+              echo "Missing expected installer artifact: ${pattern}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify artifacts
+        run: find dist -type f
+
+      - name: Include signed runtime policy bundle
+        run: |
+          if [ -f "policy/runtime-policy.json" ]; then
+            cp "policy/runtime-policy.json" "dist/runtime-policy.json"
+            echo "Included runtime policy bundle in release artifacts"
+          else
+            echo "No runtime policy bundle found; skipping"
+          fi
+
+      - name: Generate HTTP OpenAPI snapshot
+        run: ./scripts/generate-http-openapi.sh dist/oneshim-web.v1.openapi.yaml
+
+      - name: Ensure checksums exist for all release files
+        run: |
+          shopt -s nullglob
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              *.sha256|*.sig)
+                continue
+                ;;
+            esac
+            shasum -a 256 "$file" > "$file.sha256"
+          done
+
+      - name: Install signing dependencies
+        run: python3 -m pip install --upgrade pynacl
+
+      - name: Sign release artifacts (Ed25519)
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          from nacl.signing import SigningKey
+
+          key_b64 = os.environ.get("UPDATE_SIGNING_PRIVATE_KEY_B64", "").strip()
+          if not key_b64:
+              raise SystemExit("Missing secret: UPDATE_SIGNING_PRIVATE_KEY_B64")
+
+          seed = base64.b64decode(key_b64)
+          if len(seed) != 32:
+              raise SystemExit(f"UPDATE_SIGNING_PRIVATE_KEY_B64 must decode to 32 bytes, got {len(seed)}")
+
+          signing_key = SigningKey(seed)
+          dist = Path("dist")
+          signed = 0
+          for path in dist.glob("*"):
+              if not path.is_file():
+                  continue
+              if path.suffix in {".sha256", ".sig"}:
+                  continue
+              payload = path.read_bytes()
+              signature = signing_key.sign(payload).signature
+              path.with_suffix(path.suffix + ".sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="utf-8")
+              signed += 1
+
+          if signed == 0:
+              raise SystemExit("No release artifacts were signed")
+          print(f"Signed artifacts: {signed}")
+          PY
+
+      - name: Run signed release reliability smoke
+        env:
+          ONESHIM_SMOKE_LOG_DIR: ${{ runner.temp }}/maekon-signed-release-smoke
+        run: |
+          chmod +x ./scripts/release-reliability-smoke.sh
+          ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name oneshim-linux-x64.tar.gz --skip-updater-tests --require-signature
+
+      - name: Attest release artifacts provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+
+      - name: Ensure at least one asset exists
+        run: |
+          ASSET_COUNT=$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [ "$ASSET_COUNT" -eq 0 ]; then
+            echo "No release assets were produced."
+            exit 1
+          fi
+          echo "Asset count: $ASSET_COUNT"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        env:
+          TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          VERSION="${TAG_REF#v}"
+          # Extract changelog section for this version
+          # Handle both "## [VERSION] - DATE" and "## [VERSION]" formats
+          VERSION_ESCAPED=$(echo "$VERSION" | sed 's/[.]/\\./g')
+          CHANGELOG_SECTION=$(awk "/^## \[${VERSION_ESCAPED}\]/{found=1; next} /^## \[/{found=0} found" CHANGELOG.md)
+
+          if [ -z "$CHANGELOG_SECTION" ]; then
+            echo "⚠️ No changelog section found for [$VERSION], using git-cliff"
+            CHANGELOG_SECTION=$(git cliff --latest --strip header 2>/dev/null || echo "See [CHANGELOG.md](https://github.com/${REPO_SLUG}/blob/main/CHANGELOG.md) for details.")
+          fi
+
+          if [ -z "$CHANGELOG_SECTION" ] || [ ${#CHANGELOG_SECTION} -lt 20 ]; then
+            echo "::warning::Release notes are suspiciously short (${#CHANGELOG_SECTION} chars)"
+          fi
+
+          # Write to file for multi-line output
+          echo "$CHANGELOG_SECTION" > changelog_section.md
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="${RELEASE_TAG}"
+          CHANGELOG_CONTENT=$(cat changelog_section.md)
+
+          cat > release_notes.md <<NOTES_EOF
+          ## What's Changed
+
+          ${CHANGELOG_CONTENT}
+
+          ---
+
+          ### Downloads
+
+          Maekon is the app display name. Release filenames intentionally retain
+          \`oneshim-*\` for installer, updater, and checksum compatibility.
+
+          | Platform | Architecture | File | Format |
+          |----------|-------------|------|--------|
+          | macOS | Universal (arm64 + x64) | \`oneshim-macos-universal.dmg\` | DMG Installer (signed) |
+          | macOS | Universal (arm64 + x64) | \`oneshim-macos-universal.pkg\` | PKG Installer (signed) |
+          | macOS | Universal | \`oneshim-macos-universal.tar.gz\` | Binary |
+          | macOS | Apple Silicon | \`oneshim-macos-arm64.tar.gz\` | Binary |
+          | macOS | Intel | \`oneshim-macos-x64.tar.gz\` | Binary |
+          | Windows | x64 | \`oneshim-*.msi\` | MSI Installer |
+          | Windows | x64 | \`oneshim-windows-x64.zip\` | Binary |
+          | Linux | x64 | \`oneshim-*.deb\` | DEB Package |
+          | Linux | x64 | \`oneshim-linux-x64.tar.gz\` | Binary |
+
+          ### Quick Install
+
+          **macOS / Linux:**
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
+          \`\`\`
+
+          **Full changelog:** [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          NOTES_EOF
+
+      - name: Prepend release date header (Phase 4 A-4)
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify-version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +"%B %d, %Y")
+          # Use env-sourced RELEASE_TAG (workflow output, not user input) to
+          # compose the header; DATE is generated here so no external input.
+          HEADER="## Maekon $RELEASE_TAG — Released $DATE"
+          # Idempotency guard (Q5 follow-up): skip prepend if a header for
+          # this tag is already present on the first line — regardless of
+          # its date suffix. Protects against workflow re-runs (same day or
+          # cross-day) that would otherwise double-prepend the header.
+          PREFIX="## Maekon $RELEASE_TAG — Released "
+          FIRST_LINE=$(head -n1 release_notes.md)
+          case "$FIRST_LINE" in
+            "$PREFIX"*)
+              echo "Release date header already present for $RELEASE_TAG — skipping prepend"
+              ;;
+            *)
+              printf "%s\n\n" "$HEADER" | cat - release_notes.md > release_notes.md.new
+              mv release_notes.md.new release_notes.md
+              ;;
+          esac
+
+      - name: Create or update Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+          RELEASE_TARGET_SHA: ${{ needs.verify-version.outputs.release_sha }}
+          RELEASE_NAME: Maekon ${{ steps.version.outputs.version }}
+          RELEASE_IS_PRERELEASE: ${{ contains(steps.version.outputs.version, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG_NAME} already exists; updating notes and assets"
+            gh release edit "$RELEASE_TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_NAME" \
+              --notes-file release_notes.md
+            gh release upload "$RELEASE_TAG_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            exit 0
+          fi
+
+          create_args=(
+            "$RELEASE_TAG_NAME"
+            --repo "$GITHUB_REPOSITORY"
+            --target "$RELEASE_TARGET_SHA"
+            --title "$RELEASE_NAME"
+            --notes-file release_notes.md
+          )
+
+          if [[ "$RELEASE_IS_PRERELEASE" == "true" ]]; then
+            create_args+=(--prerelease)
+          fi
+
+          gh release create "${create_args[@]}" dist/*

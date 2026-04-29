@@ -1,0 +1,120 @@
+name: AI Integration Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ocr:
+        description: "Run OCR live smoke in addition to LLM smoke."
+        required: true
+        default: false
+        type: boolean
+      llm_provider_type:
+        description: "LLM provider type."
+        required: true
+        default: anthropic
+        type: choice
+        options:
+          - anthropic
+          - openai
+          - google
+          - generic
+      ocr_provider_type:
+        description: "OCR provider type (used only when run_ocr=true)."
+        required: true
+        default: anthropic
+        type: choice
+        options:
+          - anthropic
+          - openai
+          - google
+          - generic
+      llm_timeout_secs:
+        description: "LLM request timeout seconds."
+        required: true
+        default: "45"
+        type: string
+      ocr_timeout_secs:
+        description: "OCR request timeout seconds."
+        required: true
+        default: "45"
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: AI Provider Live Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ai-live-smoke
+
+      - name: Validate required secrets
+        env:
+          LLM_ENDPOINT: ${{ secrets.ONESHIM_AI_SMOKE_LLM_ENDPOINT }}
+          LLM_API_KEY: ${{ secrets.ONESHIM_AI_SMOKE_LLM_API_KEY }}
+          OCR_ENDPOINT: ${{ secrets.ONESHIM_AI_SMOKE_OCR_ENDPOINT }}
+          OCR_API_KEY: ${{ secrets.ONESHIM_AI_SMOKE_OCR_API_KEY }}
+          RUN_OCR: ${{ inputs.run_ocr }}
+          OCR_PROVIDER_TYPE: ${{ inputs.ocr_provider_type }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          require_non_empty() {
+            local key="$1"
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required secret: $key" >&2
+              missing=1
+            fi
+          }
+
+          require_non_empty LLM_ENDPOINT
+          require_non_empty LLM_API_KEY
+
+          if [ "${RUN_OCR}" = "true" ]; then
+            if [ "${OCR_PROVIDER_TYPE}" = "google" ] && [ -z "${OCR_ENDPOINT:-}" ]; then
+              echo "Missing required secret: OCR_ENDPOINT (google OCR requires Vision endpoint)." >&2
+              missing=1
+            fi
+
+            if [ -z "${OCR_API_KEY:-}" ] && [ -z "${LLM_API_KEY:-}" ]; then
+              echo "Missing required secret: OCR_API_KEY (or LLM_API_KEY fallback)." >&2
+              missing=1
+            fi
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Run AI provider live smoke tests
+        env:
+          ONESHIM_RUN_AI_LIVE_SMOKE: "1"
+          ONESHIM_AI_SMOKE_RUN_OCR: ${{ inputs.run_ocr }}
+
+          ONESHIM_AI_SMOKE_LLM_PROVIDER_TYPE: ${{ inputs.llm_provider_type }}
+          ONESHIM_AI_SMOKE_LLM_TIMEOUT_SECS: ${{ inputs.llm_timeout_secs }}
+          ONESHIM_AI_SMOKE_LLM_ENDPOINT: ${{ secrets.ONESHIM_AI_SMOKE_LLM_ENDPOINT }}
+          ONESHIM_AI_SMOKE_LLM_API_KEY: ${{ secrets.ONESHIM_AI_SMOKE_LLM_API_KEY }}
+          ONESHIM_AI_SMOKE_LLM_MODEL: ${{ secrets.ONESHIM_AI_SMOKE_LLM_MODEL }}
+
+          ONESHIM_AI_SMOKE_OCR_PROVIDER_TYPE: ${{ inputs.ocr_provider_type }}
+          ONESHIM_AI_SMOKE_OCR_TIMEOUT_SECS: ${{ inputs.ocr_timeout_secs }}
+          ONESHIM_AI_SMOKE_OCR_ENDPOINT: ${{ secrets.ONESHIM_AI_SMOKE_OCR_ENDPOINT }}
+          ONESHIM_AI_SMOKE_OCR_API_KEY: ${{ secrets.ONESHIM_AI_SMOKE_OCR_API_KEY }}
+          ONESHIM_AI_SMOKE_OCR_MODEL: ${{ secrets.ONESHIM_AI_SMOKE_OCR_MODEL }}
+        run: ./scripts/cargo-cache.sh test -p oneshim-network --test ai_provider_live_smoke -- --nocapture --test-threads=1

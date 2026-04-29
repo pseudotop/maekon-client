@@ -1,0 +1,30 @@
+syntax = "proto3";
+package oneshim.client.v1;
+
+import "google/protobuf/empty.proto";
+
+service ClientSession {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc EndSession(EndSessionRequest) returns (google.protobuf.Empty);
+  rpc Heartbeat(HeartbeatRequest) returns (google.protobuf.Empty);
+}
+
+message CreateSessionRequest {
+  string client_id = 1;
+  map<string, string> metadata = 2;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  string user_id = 2;
+  string client_id = 3;
+  repeated string capabilities = 4;
+}
+
+message EndSessionRequest {
+  string session_id = 1;
+}
+
+message HeartbeatRequest {
+  string session_id = 1;
+}

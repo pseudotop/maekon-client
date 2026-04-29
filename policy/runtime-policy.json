@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "channel": "stable",
+  "integrity": {
+    "require_signature_verification": true,
+    "minimum_release_version": "0.0.1"
+  },
+  "constraints": {
+    "allow_prerelease": false,
+    "allow_downgrade": false
+  }
+}

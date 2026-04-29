@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Maekon Third-Party Notices</title>
+  </head>
+  <body>
+    <h1>Third-Party Notices</h1>
+    {{#each licenses}}
+    <section>
+      <h2>{{name}}</h2>
+      <h3>Used by</h3>
+      <ul>
+        {{#each used_by}}
+        <li>{{this}}</li>
+        {{/each}}
+      </ul>
+      <h3>Text</h3>
+      <pre>{{text}}</pre>
+    </section>
+    {{/each}}
+  </body>
+</html>
