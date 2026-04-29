@@ -31,6 +31,7 @@ A desktop client for AI-assisted office productivity — local context capture, 
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [Development](#development)
+- [Support](#support)
 - [License](#license)
 - [Contributing](#contributing)
 
@@ -91,6 +92,7 @@ Standalone mode remains the production-ready default path for release use.
 - Standalone integrity baseline: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Integrity operation runbook: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - Documentation index: [docs/README.md](./docs/README.md)
+- Support and usage questions: [SUPPORT.md](./SUPPORT.md)
 - Automation playbook templates: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Standalone adoption runbook: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - First 5 minutes guide: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -416,6 +418,12 @@ Windows .msi:
 ./scripts/cargo-cache.sh install cargo-wix
 ./scripts/cargo-cache.sh wix -p oneshim-app
 ```
+
+## Support
+
+For installation help, usage questions, or general feedback, see [SUPPORT.md](./SUPPORT.md) or contact `support@maekon.dev`.
+
+Report security vulnerabilities privately through [SECURITY.md](./SECURITY.md). Do not open public issues for vulnerabilities.
 
 ## License
 

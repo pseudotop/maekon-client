@@ -26,6 +26,11 @@
 - [ ] Breaking changes documented (if any)
 - [ ] Release notes and install docs explain that Maekon is the app display name while `oneshim-*` artifacts and the `oneshim` CLI command remain compatibility identifiers
 
+## Signing and Integrity
+- [ ] `scripts/verify-update-signing-key.sh` confirms the active update signing key derives `TRUSTED_PUBLIC_KEYS[0]`
+- [ ] GitHub Actions secret `UPDATE_SIGNING_PRIVATE_KEY_B64` is configured for the public repository
+- [ ] macOS signing/notarization secrets are configured if publishing macOS DMG/PKG assets
+
 ## Sign-off
 - [ ] Maintainer approval
 - [ ] Release created via `./scripts/release.sh <VERSION>` (RC) or `./scripts/promote-stable.sh <RC-VERSION>` (stable promotion). **Do NOT use `git tag` directly** — `release.sh` synchronizes `CHANGELOG.md`, `Cargo.toml`, and `tauri.conf.json`, then creates the tag via verified signing.

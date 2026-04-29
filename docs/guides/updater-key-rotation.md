@@ -13,6 +13,10 @@
 
 Because multiple keys are trusted simultaneously, rotation happens in a **transition window** during which both old and new keys are accepted — clients updated before the window closes never experience a trust gap.
 
+Before tagging any release, run `scripts/verify-update-signing-key.sh` and
+confirm the active update signing key derives the first trusted public key in
+`src-tauri/src/updater/trusted_keys.rs`.
+
 ---
 
 ## Scheduled rotation (planned, low urgency)
@@ -45,6 +49,9 @@ Land this PR + cut a release (e.g., `v0.4.N+1-rc.1`). Clients installed from thi
 ### Step 3 — Switch the CI signing secret
 
 Once the "two-key release" has been in distribution for at least **one full release cycle** (≥ 1 week with real install telemetry showing adoption), update the `UPDATE_SIGNING_PRIVATE_KEY_B64` GitHub Secret to the new seed.
+
+Run `scripts/verify-update-signing-key.sh` with the new seed before saving the
+secret to confirm it derives the new public key at `TRUSTED_PUBLIC_KEYS[0]`.
 
 Every release from this point forward signs with the **new** key. Clients on the two-key release validate these signatures via the new key (position [0]). Clients still on the **pre-rotation release** have only the old key and cannot install new-key-signed updates — they must first upgrade to the two-key release via the old-signature path, which is still valid because both keys are trusted.
 

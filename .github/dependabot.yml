@@ -18,3 +18,13 @@ updates:
     groups:
       gha-all:
         patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/crates/oneshim-web/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

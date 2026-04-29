@@ -8,8 +8,8 @@ We take the security of Maekon seriously. If you discover a vulnerability, pleas
 
 ### How to Report
 
-1. **Email**: Send an email to `security@maekon.dev`. Please use PGP encryption if possible.
-2. **GitHub Security Advisory**: You can report privately by selecting "Report a vulnerability" under the "Security" tab in the repository.
+1. **GitHub Private Vulnerability Reporting**: Preferred for sensitive reports. Select "Report a vulnerability" under the repository's "Security" tab.
+2. **Email**: Send an email to `security@maekon.dev`. Do not include exploit payloads, secrets, or sensitive screenshots in unencrypted email; ask for an encryption key first if encrypted handling is required.
 
 Compatibility note: some crate names, package names, config paths, and release
 artifacts still use `oneshim` as a stable technical identifier. Please include
@@ -45,10 +45,10 @@ Security updates are provided for the following versions.
 | Version | Support Status |
 |---------|---------------|
 | Latest `main` branch | Supported |
-| Latest release tag | Supported |
+| Latest release tag | Supported after the first public release |
 | Previous releases | Not supported |
 
-As no official release has been made yet, please report security vulnerabilities against the **latest `main` branch**.
+Before the first public release is published, report security vulnerabilities against the **latest `main` branch**. After a release is available, reports may target either the latest release tag or `main`.
 
 ## Response Time SLA
 
