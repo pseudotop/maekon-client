@@ -154,7 +154,7 @@ atspi = { version = "0.29", default-features = false, features = ["tokio", "conn
 atspi-common = { version = "0.13", default-features = false }
 
 # 성능 최적화 (Phase 31-33)
-lru = "0.17"
+lru = "0.18"
 crossbeam = "0.8"
 parking_lot = "0.12"
 once_cell = "1.21"
