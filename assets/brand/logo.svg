@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 220" width="820" height="220" role="img" aria-label="Maekon minimal wordmark">
+  <style>
+    .word { font: 780 92px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+  </style>
+  <rect x="24" y="26" width="156" height="156" rx="38" fill="#15043A"/>
+  <rect x="64" y="114" width="76" height="22" rx="10" fill="#5534D7"/>
+  <rect x="76" y="96" width="52" height="18" rx="8" fill="#7057EA"/>
+  <path d="M74 113c19 8 37 8 56 0" fill="none" stroke="#A28CFF" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="80" cy="85" r="15" fill="#61F4D6"/>
+  <circle cx="124" cy="85" r="15" fill="#0DE0A2"/>
+  <text x="220" y="128" class="word" fill="#0F172A">Maekon</text>
+</svg>

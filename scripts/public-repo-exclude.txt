@@ -1,0 +1,37 @@
+# Paths excluded from the public-minimal export snapshot.
+#
+# One pattern per line, relative to repository root. Shell globs are supported.
+# Lines starting with # are ignored.
+
+# Internal assistant workflow notes
+CLAUDE.md
+.github/PR-*-description-draft.md
+
+# Internal/session-scoped planning artifacts. Keep public docs focused on
+# shipped architecture, contracts, install/run guidance, security, and testing.
+docs/superpowers
+docs/reviews
+docs/research
+docs/roadmap
+docs/plan
+docs/specs
+docs/migration
+docs/guides/public-repo-launch-playbook*.md
+docs/PHASE-HISTORY.md
+docs/STATUS*.md
+crates/oneshim-web/frontend/docs
+
+# Root specs may contain planning docs, but specs/providers is runtime data used
+# by oneshim-core via include_str!, so exclude only markdown specs here.
+specs/*.md
+
+# Private validation bundles stay in the internal monorepo.
+tests/private
+
+# Local/generated build artifacts that may exist in working-tree exports.
+src-tauri/oneshim-sandbox-worker-*
+.env
+.env.*
+.claude
+.worktrees
+.superpowers

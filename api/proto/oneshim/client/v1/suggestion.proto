@@ -1,0 +1,42 @@
+syntax = "proto3";
+package oneshim.client.v1;
+
+import "google/protobuf/empty.proto";
+
+service ClientSuggestion {
+  rpc Subscribe(SubscribeRequest) returns (stream SuggestionEvent);
+  rpc SendFeedback(SendFeedbackRequest) returns (google.protobuf.Empty);
+}
+
+message SubscribeRequest {
+  string session_id = 1;
+}
+
+message SuggestionEvent {
+  string suggestion_id = 1;
+  string content = 2;
+  Priority priority = 3;
+  double confidence_score = 4;
+  string category = 5;
+}
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  CRITICAL = 4;
+}
+
+message SendFeedbackRequest {
+  string suggestion_id = 1;
+  FeedbackAction action = 2;
+  string comment = 3;
+}
+
+enum FeedbackAction {
+  FEEDBACK_ACTION_UNSPECIFIED = 0;
+  ACCEPTED = 1;
+  REJECTED = 2;
+  DEFERRED = 3;
+}

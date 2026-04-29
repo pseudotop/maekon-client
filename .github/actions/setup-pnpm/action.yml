@@ -1,0 +1,35 @@
+name: Setup pnpm
+description: Enable a pinned pnpm version via Corepack without pnpm/action-setup.
+
+inputs:
+  version:
+    description: pnpm version to activate
+    required: false
+    default: "10"
+  lockfile-path:
+    description: Lockfile path used to derive the cache key
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Enable pnpm with Corepack
+      id: pnpm
+      shell: bash
+      run: |
+        set -euo pipefail
+        corepack enable
+        corepack prepare "pnpm@${{ inputs.version }}" --activate
+        pnpm --version
+        echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache pnpm store
+      if: ${{ inputs.lockfile-path != '' }}
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.pnpm.outputs.store_path }}
+        key: ${{ runner.os }}-pnpm-${{ inputs.version }}-${{ hashFiles(inputs.lockfile-path) }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-${{ inputs.version }}-
+          ${{ runner.os }}-pnpm-

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "updated_at": "2026-03-15T18:30:00Z",
+  "rules": [
+    {
+      "provider_type": "OpenAi",
+      "model": "gpt-3.5-turbo",
+      "warn_at": "2025-07-01T00:00:00Z",
+      "block_at": "2026-01-01T00:00:00Z",
+      "replacement": "gpt-5.4",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Google",
+      "model": "gemini-1.5-pro",
+      "warn_at": "2026-03-01T00:00:00Z",
+      "block_at": "2026-06-01T00:00:00Z",
+      "replacement": "gemini-2.5-pro",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-sonnet-20240229",
+      "warn_at": "2025-12-01T00:00:00Z",
+      "block_at": "2026-04-01T00:00:00Z",
+      "replacement": "claude-sonnet-4-20250514",
+      "action": "warn_then_block"
+    }
+  ]
+}

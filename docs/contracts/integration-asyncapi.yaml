@@ -1,0 +1,385 @@
+asyncapi: 3.1.0
+info:
+  title: ONESHIM Integration Session API
+  version: "v1alpha1"
+  description: |
+    Standards-profiled draft for the outbound integration plane.
+
+    This contract documents the bidirectional session channel between the ONESHIM
+    desktop client and a remote integration service. It is transport-neutral at
+    the domain level, but the first intended binding is WebSocket over HTTPS.
+  x-oneshim-document-status: draft
+  x-oneshim-domain: integration
+defaultContentType: application/json
+servers:
+  primary-wss:
+    host: integration.example.invalid
+    protocol: wss
+    pathname: /v1/session
+    description: Preferred bidirectional session transport.
+  fallback-https:
+    host: integration.example.invalid
+    protocol: https
+    pathname: /v1
+    description: Request/response plus SSE or long-poll fallback transport.
+channels:
+  session.control:
+    address: /v1/session/control
+    messages:
+      connectRequest:
+        $ref: '#/components/messages/SessionConnectRequest'
+      connectAccepted:
+        $ref: '#/components/messages/SessionConnectAccepted'
+      heartbeat:
+        $ref: '#/components/messages/SessionHeartbeat'
+      disconnect:
+        $ref: '#/components/messages/SessionDisconnect'
+  integration.egress:
+    address: /v1/session/events
+    messages:
+      outboundEventEnvelope:
+        $ref: '#/components/messages/OutboundEventEnvelope'
+      outboundEventAck:
+        $ref: '#/components/messages/OutboundEventAck'
+  integration.prompts:
+    address: /v1/session/prompts
+    messages:
+      promptEnvelope:
+        $ref: '#/components/messages/PromptEnvelope'
+      promptAck:
+        $ref: '#/components/messages/PromptAck'
+operations:
+  clientConnect:
+    action: send
+    channel:
+      $ref: '#/channels/session.control'
+    messages:
+      - $ref: '#/channels/session.control/messages/connectRequest'
+  serverAcceptSession:
+    action: receive
+    channel:
+      $ref: '#/channels/session.control'
+    messages:
+      - $ref: '#/channels/session.control/messages/connectAccepted'
+  clientHeartbeat:
+    action: send
+    channel:
+      $ref: '#/channels/session.control'
+    messages:
+      - $ref: '#/channels/session.control/messages/heartbeat'
+  clientDisconnect:
+    action: send
+    channel:
+      $ref: '#/channels/session.control'
+    messages:
+      - $ref: '#/channels/session.control/messages/disconnect'
+  clientSendOutboundEvent:
+    action: send
+    channel:
+      $ref: '#/channels/integration.egress'
+    messages:
+      - $ref: '#/channels/integration.egress/messages/outboundEventEnvelope'
+  serverAckOutboundEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/integration.egress'
+    messages:
+      - $ref: '#/channels/integration.egress/messages/outboundEventAck'
+  serverDeliverPrompt:
+    action: receive
+    channel:
+      $ref: '#/channels/integration.prompts'
+    messages:
+      - $ref: '#/channels/integration.prompts/messages/promptEnvelope'
+  clientAckPrompt:
+    action: send
+    channel:
+      $ref: '#/channels/integration.prompts'
+    messages:
+      - $ref: '#/channels/integration.prompts/messages/promptAck'
+components:
+  messages:
+    SessionConnectRequest:
+      name: SessionConnectRequest
+      title: Client session bootstrap request
+      payload:
+        $ref: '#/components/schemas/SessionConnectRequestPayload'
+    SessionConnectAccepted:
+      name: SessionConnectAccepted
+      title: Server session bootstrap acceptance
+      payload:
+        $ref: '#/components/schemas/SessionConnectAcceptedPayload'
+    SessionHeartbeat:
+      name: SessionHeartbeat
+      title: Session heartbeat
+      payload:
+        $ref: '#/components/schemas/SessionHeartbeatPayload'
+    SessionDisconnect:
+      name: SessionDisconnect
+      title: Session disconnect request
+      payload:
+        $ref: '#/components/schemas/SessionDisconnectPayload'
+    OutboundEventEnvelope:
+      name: OutboundEventEnvelope
+      title: Outbound integration event
+      payload:
+        $ref: '#/components/schemas/CloudEventEnvelope'
+    OutboundEventAck:
+      name: OutboundEventAck
+      title: Outbound event acknowledgement
+      payload:
+        $ref: '#/components/schemas/IntegrationAckPayload'
+    PromptEnvelope:
+      name: PromptEnvelope
+      title: Inbound proactive prompt event
+      payload:
+        $ref: '#/components/schemas/CloudEventEnvelope'
+    PromptAck:
+      name: PromptAck
+      title: Prompt acknowledgement or dismissal
+      payload:
+        $ref: '#/components/schemas/PromptAckPayload'
+  schemas:
+    SessionConnectRequestPayload:
+      type: object
+      required:
+        - schema_version
+        - device_id
+        - client_version
+        - nonce
+        - requested_scopes
+        - preferred_transports
+        - supported_auth_schemes
+      properties:
+        schema_version:
+          type: string
+          const: integration.bootstrap.v1
+        device_id:
+          type: string
+        device_label:
+          type:
+            - string
+            - "null"
+        client_version:
+          type: string
+        nonce:
+          type: string
+        requested_scopes:
+          type: array
+          items:
+            type: string
+        preferred_transports:
+          type: array
+          items:
+            type: string
+            enum:
+              - web_socket
+              - https_sse
+              - https_long_poll
+              - grpc_bidirectional
+        supported_auth_schemes:
+          type: array
+          items:
+            type: string
+            enum:
+              - bearer_token
+              - dpop_bearer
+        resource_indicator:
+          type:
+            - string
+            - "null"
+    SessionConnectAcceptedPayload:
+      type: object
+      required:
+        - schema_version
+        - granted_scopes
+        - selected_transport
+        - selected_auth_scheme
+        - session
+      properties:
+        schema_version:
+          type: string
+          const: integration.bootstrap.v1
+        granted_scopes:
+          type: array
+          items:
+            type: string
+        selected_transport:
+          type: string
+          enum:
+            - web_socket
+            - https_sse
+            - https_long_poll
+            - grpc_bidirectional
+        selected_auth_scheme:
+          type: string
+          enum:
+            - bearer_token
+            - dpop_bearer
+        resource_indicator:
+          type:
+            - string
+            - "null"
+        session:
+          type: object
+          required:
+            - session_id
+          properties:
+            session_id:
+              type: string
+            channel_url:
+              type:
+                - string
+                - "null"
+            heartbeat_url:
+              type:
+                - string
+                - "null"
+            disconnect_url:
+              type:
+                - string
+                - "null"
+            send_events_url:
+              type:
+                - string
+                - "null"
+            receive_prompts_url:
+              type:
+                - string
+                - "null"
+    SessionHeartbeatPayload:
+      type: object
+      required:
+        - session_id
+        - occurred_at
+      properties:
+        session_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        cursor_snapshot:
+          type: array
+          items:
+            $ref: '#/components/schemas/AckCursor'
+    SessionDisconnectPayload:
+      type: object
+      required:
+        - session_id
+        - occurred_at
+      properties:
+        session_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        reason:
+          type:
+            - string
+            - "null"
+    CloudEventEnvelope:
+      type: object
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          const: "1.0"
+        id:
+          type: string
+        source:
+          type: string
+        type:
+          type: string
+        subject:
+          type:
+            - string
+            - "null"
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+        dataschema:
+          type:
+            - string
+            - "null"
+        oneshimscope:
+          type: string
+        oneshimnonce:
+          type: string
+        oneshimsessionid:
+          type:
+            - string
+            - "null"
+        oneshimworkspaceid:
+          type:
+            - string
+            - "null"
+        oneshimqueueid:
+          type:
+            - string
+            - "null"
+        data:
+          type: object
+    AckCursor:
+      type: object
+      required:
+        - stream_id
+        - cursor
+        - acknowledged_at
+      properties:
+        stream_id:
+          type: string
+        cursor:
+          type: string
+        acknowledged_at:
+          type: string
+          format: date-time
+    IntegrationAckPayload:
+      type: object
+      required:
+        - session_id
+        - acknowledged_ids
+      properties:
+        session_id:
+          type: string
+        acknowledged_ids:
+          type: array
+          items:
+            type: string
+        ack_cursor:
+          oneOf:
+            - $ref: '#/components/schemas/AckCursor'
+            - type: "null"
+    PromptAckPayload:
+      type: object
+      required:
+        - session_id
+        - prompt_id
+        - action
+      properties:
+        session_id:
+          type: string
+        prompt_id:
+          type: string
+        action:
+          type: string
+          enum:
+            - acknowledge
+            - dismiss
+            - expire
+        reason:
+          type:
+            - string
+            - "null"
+        ack_cursor:
+          oneOf:
+            - $ref: '#/components/schemas/AckCursor'
+            - type: "null"

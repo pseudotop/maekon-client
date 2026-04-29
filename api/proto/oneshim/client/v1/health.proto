@@ -1,0 +1,13 @@
+syntax = "proto3";
+package oneshim.client.v1;
+
+service ClientHealth {
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string server_version = 1;
+  bool healthy = 2;
+}

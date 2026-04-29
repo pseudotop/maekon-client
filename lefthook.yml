@@ -1,0 +1,164 @@
+# lefthook.yml — Git hooks for maekon-client
+# Install: lefthook install
+
+pre-push:
+  commands:
+    clippy-195-scan:
+      # Fast (sub-second) grep scan for Rust 1.95 clippy patterns whose
+      # signatures are precise enough to flag without false positives.
+      # Currently covers `unnecessary_sort_by` (REVERSE-sort with `.cmp()`).
+      # Skipped under subagent mode for parity with cargo-clippy pre-commit.
+      run: |
+        if [ "$ONESHIM_AGENT" = "subagent" ]; then
+          echo "clippy-195-scan: skipped (subagent mode)"
+          exit 0
+        fi
+        ./scripts/scan-clippy-195-patterns.sh
+    pre-release-check:
+      # Runs on: (1) version tag push (v*), (2) release branch push (release/v*)
+      run: ./scripts/pre-push-release-check.sh
+    tauri-e2e-smoke:
+      # Runs Tauri webview smoke test on version tag push (macOS only)
+      run: ./scripts/pre-push-tauri-e2e-smoke.sh
+    web-e2e:
+      # Runs the web dashboard Playwright suite when the diff being pushed
+      # touches frontend source/e2e/build files. Catches routing regressions
+      # locally so we don't burn ~27min CI cycles on a /audit-style bug.
+      #
+      # Skipping:
+      #   ONESHIM_AGENT=subagent → skip (used by non-interactive agents)
+      #   No frontend changes in pushed diff → skip (sub-second early-out)
+      #
+      # Cost when it does run: ~3s build + ~75s playwright = ~80s.
+      run: |
+        if [ "$ONESHIM_AGENT" = "subagent" ]; then
+          echo "⏭️  web-e2e: skipped (subagent mode)"
+          exit 0
+        fi
+
+        FRONTEND_DIR="crates/oneshim-web/frontend"
+        if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+          echo "⏭️  web-e2e: skipped (node_modules not installed)"
+          exit 0
+        fi
+
+        # Determine the diff to inspect. Earlier revisions read git's pre-push
+        # ref tuples from stdin, but lefthook does not pipe stdin to commands
+        # reliably (see lefthook#1014), so we ask git directly:
+        #   1. Use the upstream-tracked branch (@{u}) when present — this is
+        #      the precise "what's about to land on the remote" base.
+        #   2. Otherwise the branch has no upstream yet (`git push -u`) — fall
+        #      back to merge-base with origin/main.
+        #   3. Last resort: the root commit, so a brand-new orphan branch
+        #      still triggers a full check instead of silently skipping.
+        BASE="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+        if [ -z "$BASE" ]; then
+          BASE="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+        fi
+        if [ -z "$BASE" ]; then
+          BASE="$(git rev-list --max-parents=0 HEAD | tail -1)"
+        fi
+
+        CHANGED=$(git diff --name-only "$BASE" HEAD -- \
+          "$FRONTEND_DIR/src/" \
+          "$FRONTEND_DIR/e2e/" \
+          "$FRONTEND_DIR/playwright.config.ts" \
+          "$FRONTEND_DIR/package.json" \
+          "$FRONTEND_DIR/vite.config.ts" \
+          "$FRONTEND_DIR/tsconfig.json" 2>/dev/null || true)
+
+        if [ -z "$CHANGED" ]; then
+          echo "⏭️  web-e2e: skipped (no frontend changes in push)"
+          exit 0
+        fi
+
+        if [ ! -d "$HOME/Library/Caches/ms-playwright" ] && [ ! -d "$HOME/.cache/ms-playwright" ]; then
+          echo "⚠️  web-e2e: playwright browser cache missing"
+          echo "    Run: cd $FRONTEND_DIR && pnpm exec playwright install chromium"
+          exit 1
+        fi
+
+        echo "🧪 Running web dashboard Playwright suite (frontend changes detected):"
+        printf '   %s\n' $CHANGED | head -10
+        cd "$FRONTEND_DIR" && pnpm verify:web-e2e
+
+post-checkout:
+  commands:
+    cargo-sweep:
+      run: |
+        if command -v cargo-sweep >/dev/null 2>&1 && [ -d target ]; then
+          cargo sweep --time 7 2>/dev/null
+        fi
+
+post-merge:
+  commands:
+    cargo-sweep:
+      run: |
+        if command -v cargo-sweep >/dev/null 2>&1 && [ -d target ]; then
+          cargo sweep --time 7 2>/dev/null
+        fi
+
+pre-commit:
+  parallel: true
+  commands:
+    conflict-markers:
+      # Prevent committing unresolved merge conflicts (checks staged source files only)
+      run: |
+        MARKERS=$(git diff --cached --name-only -- '*.rs' '*.ts' '*.tsx' '*.js' '*.json' '*.toml' '*.md' | xargs grep -ln '^<<<<<<< \|^=======$\|^>>>>>>> ' 2>/dev/null || true)
+        if [ -n "$MARKERS" ]; then
+          echo "❌ Unresolved merge conflict markers found:"
+          echo "$MARKERS"
+          exit 1
+        fi
+    monitor-loop-size:
+      # Prevent monitor loop from exceeding the budget — extract helpers
+      # instead of inflating spawn_monitor_loop. Cap raised from 500 to 510
+      # after PRs #459 + #460 (D5 SanitizedDisplay migration) added two
+      # `let` bindings the original budget couldn't accommodate. The 2-line
+      # `gui_feedback_pii_sanitizer()` extraction in this PR keeps the file
+      # near the new cap; future feature work should extract a
+      # `MonitorContext` to bring the count back below the original 500
+      # rather than ratcheting the cap further. Track that follow-up
+      # before adding more setup `let` lines to the loop.
+      glob: "src-tauri/src/scheduler/loops/monitor.rs"
+      run: |
+        LINES=$(wc -l < src-tauri/src/scheduler/loops/monitor.rs)
+        if [ "$LINES" -gt 510 ]; then
+          echo "❌ monitor.rs is $LINES lines (max 510). Extract into a helper."
+          exit 1
+        fi
+    web-contracts:
+      glob: "crates/oneshim-web/src/{routes,handlers/**}.rs"
+      run: ./scripts/verify-web-contract-boundary.sh && ./scripts/verify-http-interface-manifest.sh && ./scripts/verify-http-openapi-sync.sh
+    cargo-fmt:
+      glob: "*.rs"
+      run: cargo fmt --check
+    cargo-clippy:
+      glob: "*.rs"
+      run: |
+        if [ "$ONESHIM_AGENT" = "subagent" ]; then
+          echo "clippy: skipped (subagent mode)"
+          exit 0
+        fi
+        cargo clippy --workspace --all-targets --quiet -- -D warnings
+      stage_fixed: true
+    route-integrity:
+      glob: "crates/oneshim-web/frontend/src/{routes,pages,components/shell}/**/*.{ts,tsx}"
+      run: ./scripts/verify-route-integrity.sh
+    frontend-typecheck:
+      glob: "*.{ts,tsx}"
+      run: |
+        FRONTEND_DIR="crates/oneshim-web/frontend"
+        if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+          echo "frontend-typecheck: skipped (node_modules not installed)"
+          exit 0
+        fi
+        cd "$FRONTEND_DIR" && npx tsc --noEmit
+    wire-error-i18n-coverage:
+      # ADR-019 Follow-up #3 guard: fail fast if a wire code is added to
+      # the Rust snapshot without accompanying en+ko translation entries.
+      # The Vitest test `src/i18n/__tests__/translateError.test.ts` covers
+      # the same parity but requires pnpm installed; this shell script
+      # needs only grep and runs in ~3ms — fast local dev feedback.
+      glob: "{crates/oneshim-core/tests/wire_contract_snapshot.expected.txt,crates/oneshim-web/frontend/src/i18n/wire-errors.*.json}"
+      run: ./scripts/check-wire-error-i18n-coverage.sh

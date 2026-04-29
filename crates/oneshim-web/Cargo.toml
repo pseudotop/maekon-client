@@ -1,0 +1,157 @@
+[package]
+name = "oneshim-web"
+description = "Maekon local web dashboard server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 내부 크레이트
+oneshim-core = { workspace = true }
+oneshim-api-contracts = { workspace = true }
+
+# 비동기 런타임
+tokio = { workspace = true }
+
+# 직렬화
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+
+# 로깅
+tracing = { workspace = true }
+
+# 시간
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+
+# 에러 처리
+thiserror = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Bug report
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+parking_lot = { workspace = true }
+
+# 웹 프레임워크
+axum = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+pin-project-lite = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# SSE 스트리밍
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+
+# 정적 파일 임베드
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+
+# D13: gRPC dashboard server (feature-gated — see [features] section).
+tonic = { workspace = true, optional = true }
+tonic-health = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+# prost-types needed for google.protobuf.Timestamp in v2b generated code.
+prost-types = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+# D13-v2b: server-streaming generators (SubscribeMetrics realtime path).
+async-stream = { workspace = true, optional = true }
+# D13-v2b: constant-time token compare in auth_gate (RFC 7235 + timing side-channel).
+subtle = { workspace = true, optional = true }
+
+# D13-v2c: External gRPC binding optional deps (enabled via grpc-dashboard-external feature).
+arc-swap = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+lru = { workspace = true, optional = true }
+notify = { workspace = true, optional = true }
+notify-debouncer-mini = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+ulid = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
+# D13-v2c: test helpers (test_support.rs in src/grpc/external/) — enabled via test-support feature.
+tempfile = { workspace = true, optional = true }
+# Task 3.1: test_support::InnerEcho returns Response<EchoBody> which is an
+# http_body::Body impl over bytes::Bytes. Promoted from dev-dependency because
+# test-support is opt-in but callable from non-test code paths.
+bytes = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+
+[features]
+default = []
+# D13: Enable gRPC dashboard server on a separate port (10080 by default).
+# When disabled, the crate has zero gRPC-related code + zero tonic dep cost.
+grpc-dashboard = [
+  "dep:tonic",
+  "dep:tonic-health",
+  "dep:tonic-prost",
+  "dep:prost",
+  "dep:prost-types",
+  "dep:async-trait",
+  "dep:async-stream",
+  "dep:subtle",
+]
+
+# D13-v2c: External gRPC binding with TLS + JWT/mTLS auth + hot-reload.
+# Requires grpc-dashboard (inherits existing loopback server deps).
+grpc-dashboard-external = [
+  "grpc-dashboard",
+  "dep:rustls",
+  "dep:rustls-pemfile",
+  "dep:tokio-rustls",
+  "dep:jsonwebtoken",
+  "dep:notify",
+  "dep:notify-debouncer-mini",
+  "dep:x509-parser",
+  "dep:arc-swap",
+  "dep:ulid",
+  "dep:lru",
+]
+
+# D13-v2c: Tools feature adds rcgen for the generate-external-cert subcommand.
+external-grpc-tools = ["grpc-dashboard-external", "dep:rcgen"]
+
+# D13-v2b PR-B2: test-only helpers (MockSystemMonitor, DashboardServiceImpl
+# introspection accessors). INVARIANT: MUST NEVER be enabled by default or
+# transitively via `grpc-dashboard`. Strictly opt-in for in-tree tests + any
+# future downstream test harness that reuses the mock.
+#
+# D13-v2c: also enables external/test_support.rs (cert helpers, JWT helpers).
+# Requires grpc-dashboard-external + external-grpc-tools for full external test support.
+test-support = ["dep:tempfile", "dep:bytes", "dep:http-body-util"]
+
+# D13-v2c stress test suite: gated test file at tests/external_grpc_stress.rs.
+# Pulls in external-grpc-tools (rcgen for cert/JWT key gen) + test-support
+# (test_support.rs helpers like install_rustls_crypto_provider, test_jwt_keypair).
+# When invoked manually with --all-features (e.g., a local clippy pass), the
+# stress file must remain clippy-clean (acceptance criteria §8).
+stress-test = ["external-grpc-tools", "test-support"]
+
+
+[dev-dependencies]
+oneshim-automation = { workspace = true }
+oneshim-storage = { workspace = true }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+mockito = { workspace = true }
+# D13-v2c: test fixtures (cert generation, JWT minting, lifetime-cap tests).
+rcgen = { workspace = true }
+time = { workspace = true }
+base64 = { workspace = true }
+# Task 1.3: trailer_body tests
+bytes = { workspace = true }
+http-body-util = { workspace = true }

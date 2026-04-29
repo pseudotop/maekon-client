@@ -1,0 +1,83 @@
+name: Integrity Gates
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 2'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  integrity:
+    name: Standalone Integrity Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: integrity-gates
+
+      - name: Install tooling
+        run: |
+          ./scripts/cargo-cache.sh install cargo-audit --locked
+          ./scripts/cargo-cache.sh install cargo-deny --locked
+          ./scripts/cargo-cache.sh install cargo-vet --locked
+          ./scripts/cargo-cache.sh install cargo-cyclonedx --locked
+          python3 -m pip install --upgrade pynacl
+
+      - name: Create frontend dist stub for Tauri generate_context!()
+        run: mkdir -p crates/oneshim-web/frontend/dist && echo '<html></html>' > crates/oneshim-web/frontend/dist/index.html
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        # verify-integrity.sh invokes a workspace cargo build that walks
+        # the Tauri externalBin manifest. Tauri's build script aborts when
+        # the per-target sandbox-worker binary is missing — the same stub
+        # other CI jobs (Test, Release Smoke matrix builds) already create.
+        # Job is pinned to ubuntu-latest so the target triple is constant.
+        run: touch src-tauri/oneshim-sandbox-worker-x86_64-unknown-linux-gnu
+
+      - name: Run integrity verification script
+        run: ./scripts/verify-integrity.sh
+
+      - name: Run key rotation rehearsal script
+        run: ./scripts/rehearse-key-rotation.sh
+
+      - name: Upload integrity artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: integrity-artifacts
+          path: artifacts/integrity/

@@ -1,0 +1,86 @@
+[package]
+name = "oneshim-network"
+description = "HTTP/SSE/WebSocket/gRPC 네트워크 어댑터"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+grpc = ["tonic", "tonic-prost", "prost", "prost-types", "tonic-health", "tonic/tls-native-roots"]
+lan-sync = ["rcgen", "mdns-sd", "axum-server", "rustls-pemfile"]
+
+[dependencies]
+oneshim-core = { workspace = true }
+oneshim-api-contracts = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio = { workspace = true }
+flate2 = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+crossbeam = { workspace = true }
+parking_lot = { workspace = true }
+base64 = { workspace = true }
+
+# OAuth (Phase: ChatGPT/Codex OAuth Integration)
+sha2 = { workspace = true }
+rand = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+axum = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+# Sync transports (Phase 3b)
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+
+# LAN Sync (Phase 3b-2 - optional)
+rcgen = { workspace = true, optional = true }
+mdns-sd = { workspace = true, optional = true }
+axum-server = { workspace = true, optional = true, features = ["tls-rustls"] }
+rustls-pemfile = { workspace = true, optional = true }
+gethostname = { workspace = true }
+
+# gRPC (Phase 34 - 선택적 의존성)
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+tonic-health = { workspace = true, optional = true }
+
+[dev-dependencies]
+mockito = { workspace = true }
+tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+oneshim-storage = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "compression_bench"
+harness = false
+
+[[example]]
+name = "grpc_test"
+required-features = ["grpc"]
+
+# Proto code generation: run `scripts/regenerate-protos.sh` when .proto files change.
+# Generated code (src/proto/generated/) is committed to git.
+# tonic-prost-build is NOT a build dependency — it's used only by the script.
