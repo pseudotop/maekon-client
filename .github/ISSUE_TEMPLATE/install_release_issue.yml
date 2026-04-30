@@ -1,0 +1,73 @@
+name: Install, update, or release issue
+description: Report installer, updater, checksum, signature, or release asset problems.
+title: "[Release]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for problems with install scripts, GitHub Releases assets, checksums, signatures, notarization, or in-app updates.
+
+        Do not paste credentials, private tokens, or full local file listings.
+        For private non-security support, email support@maekon.dev.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I have removed secrets, tokens, and private local paths where possible.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - macOS installer
+        - Windows installer
+        - Linux install script
+        - In-app update
+        - Checksum verification
+        - Signature verification
+        - Notarization or gatekeeper
+        - GitHub Release asset
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: release
+    attributes:
+      label: Release tag or asset URL
+      placeholder: v0.4.41-rc.1 or https://github.com/pseudotop/maekon-client/releases/...
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or action
+      description: Paste the command you ran or describe the update/install action.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: result
+    attributes:
+      label: Actual result
+      description: Include the exact error message if available.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
