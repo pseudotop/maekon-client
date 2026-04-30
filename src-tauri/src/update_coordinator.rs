@@ -645,16 +645,16 @@ mod tests {
                 assets: vec![ReleaseAsset {
                     name: "oneshim-macos-arm64.tar.gz".to_string(),
                     browser_download_url:
-                        "https://github.com/pseudotop/oneshim-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
+                        "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
                             .to_string(),
                     size: 123,
                     content_type: "application/gzip".to_string(),
                 }],
-                html_url: "https://github.com/pseudotop/oneshim-client/releases/v1.2.0".to_string(),
+                html_url: "https://github.com/pseudotop/maekon-client/releases/v1.2.0".to_string(),
                 published_at: Some("2026-02-21T10:00:00Z".to_string()),
             }),
             download_url:
-                "https://github.com/pseudotop/oneshim-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
+                "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
                     .to_string(),
             download_size: None,
             asset_type: UpdateAssetType::FullBinary,

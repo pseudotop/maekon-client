@@ -994,7 +994,7 @@ mod tests {
         let mut config = UpdateConfig {
             enabled: true,
             repo_owner: "pseudotop".to_string(),
-            repo_name: "oneshim-client".to_string(),
+            repo_name: "maekon-client".to_string(),
             check_interval_hours: 24,
             channel: UpdateChannel::default(),
             include_prerelease: false,
@@ -1346,7 +1346,7 @@ mod tests {
         // GitHub HTTPS URLs are accepted
         assert!(updater
             .validate_download_url(
-                "https://github.com/pseudotop/oneshim-client/releases/download/v1.0.0/asset.tar.gz"
+                "https://github.com/pseudotop/maekon-client/releases/download/v1.0.0/asset.tar.gz"
             )
             .is_ok());
         assert!(updater
@@ -1381,7 +1381,7 @@ mod tests {
         let config = UpdateConfig {
             enabled: true,
             repo_owner: "pseudotop".to_string(),
-            repo_name: "oneshim-client".to_string(),
+            repo_name: "maekon-client".to_string(),
             channel: UpdateChannel::default(),
             include_prerelease: false,
             ..UpdateConfig::default()
@@ -1420,7 +1420,7 @@ mod tests {
         let config = UpdateConfig {
             enabled: true,
             repo_owner: "pseudotop".to_string(),
-            repo_name: "oneshim-client".to_string(),
+            repo_name: "maekon-client".to_string(),
             channel: UpdateChannel::default(),
             include_prerelease: false,
             ..UpdateConfig::default()

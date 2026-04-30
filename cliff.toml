@@ -36,7 +36,7 @@ conventional_commits = true
 filter_unconventional = true
 split_commits = false
 commit_preprocessors = [
-  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/pseudotop/oneshim-client/pull/${1}))" },
+  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/pseudotop/maekon-client/pull/${1}))" },
 ]
 commit_parsers = [
   # Skip meta commits (changelog updates, version bumps, CI, style, tests)

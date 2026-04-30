@@ -8,7 +8,7 @@ We take the security of Maekon seriously. If you discover a vulnerability, pleas
 
 ### How to Report
 
-1. **Email**: Send an email to `security@oneshim.dev`. Please use PGP encryption if possible.
+1. **Email**: Send an email to `security@maekon.dev`. Please use PGP encryption if possible.
 2. **GitHub Security Advisory**: You can report privately by selecting "Report a vulnerability" under the "Security" tab in the repository.
 
 Compatibility note: some crate names, package names, config paths, and release
@@ -84,7 +84,7 @@ Maekon follows a **Responsible Disclosure** policy.
 
 | Channel | Contact |
 |---------|---------|
-| Security Email | `security@oneshim.dev` |
+| Security Email | `security@maekon.dev` |
 | GitHub Security Advisory | Repository Security tab |
 
 ## Security Update Notifications

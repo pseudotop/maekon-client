@@ -39,7 +39,7 @@ A desktop client for AI-assisted office productivity — local context capture, 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -47,7 +47,7 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -232,7 +232,7 @@ Full install guide:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -240,14 +240,14 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
 ### Release Assets
 
-Download from [Releases](https://github.com/pseudotop/oneshim-client/releases):
+Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
 Maekon is the app display name. Current release filenames intentionally retain
 `oneshim-*` for installer, updater, and checksum compatibility.
@@ -309,7 +309,7 @@ identifiers for this release line.
   "update": {
     "enabled": true,
     "repo_owner": "pseudotop",
-    "repo_name": "oneshim-client",
+    "repo_name": "maekon-client",
     "check_interval_hours": 24,
     "include_prerelease": false
   },

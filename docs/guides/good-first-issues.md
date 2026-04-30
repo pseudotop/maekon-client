@@ -1,6 +1,6 @@
 # Good First Issues — OSS Contributor On-Ramp
 
-Welcome to ONESHIM. This guide gets you from zero to your first merged pull request.
+Welcome to Maekon. This guide gets you from zero to your first merged pull request.
 
 See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../CODE_OF_CONDUCT.md)
 
@@ -21,8 +21,8 @@ See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/pseudotop/oneshim-client.git
-cd oneshim-client
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
 
 # 2. Verify the workspace compiles
 cargo check --workspace

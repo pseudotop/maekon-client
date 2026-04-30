@@ -34,7 +34,7 @@ const pendingStatus: UpdateStatus = {
   pending: {
     current_version: '0.4.4',
     latest_version: '0.4.5',
-    release_url: 'https://github.com/pseudotop/oneshim-client/releases/tag/v0.4.5',
+    release_url: 'https://github.com/pseudotop/maekon-client/releases/tag/v0.4.5',
   },
   revision: 2,
   updated_at: new Date().toISOString(),

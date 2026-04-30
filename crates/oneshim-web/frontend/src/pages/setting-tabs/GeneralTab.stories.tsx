@@ -34,7 +34,7 @@ export const WithPendingUpdate: Story = {
       pending: {
         current_version: '0.4.4',
         latest_version: '0.4.5',
-        release_url: 'https://github.com/pseudotop/oneshim-client/releases/tag/v0.4.5',
+        release_url: 'https://github.com/pseudotop/maekon-client/releases/tag/v0.4.5',
         release_name: 'v0.4.5',
         published_at: '2026-03-27T00:00:00Z',
         download_url: 'https://example.com/download',

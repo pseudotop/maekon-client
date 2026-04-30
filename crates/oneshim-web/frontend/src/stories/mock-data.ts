@@ -261,10 +261,10 @@ export function createMockUpdateStatus(overrides?: Partial<UpdateStatus>): Updat
     pending: {
       current_version: '0.4.9',
       latest_version: '0.4.10',
-      release_url: 'https://github.com/pseudotop/oneshim-client/releases/tag/v0.4.10',
+      release_url: 'https://github.com/pseudotop/maekon-client/releases/tag/v0.4.10',
       release_name: 'v0.4.10',
       published_at: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-      download_url: 'https://github.com/pseudotop/oneshim-client/releases/download/v0.4.10/oneshim.dmg',
+      download_url: 'https://github.com/pseudotop/maekon-client/releases/download/v0.4.10/oneshim.dmg',
     },
     revision: 4,
     updated_at: isoTimestamp(),

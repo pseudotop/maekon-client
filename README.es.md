@@ -22,7 +22,7 @@ Un cliente de escritorio para productividad de oficina asistida por IA: captura 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -30,7 +30,7 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -216,7 +216,7 @@ Guía de instalación completa:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -224,14 +224,14 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
 ### Recursos de Lanzamiento
 
-Descargue desde [Releases](https://github.com/pseudotop/oneshim-client/releases):
+Descargue desde [Releases](https://github.com/pseudotop/maekon-client/releases):
 
 Maekon es el nombre visible de la aplicación. Los nombres de archivos de
 lanzamiento conservan intencionalmente el formato `oneshim-*` para mantener la
@@ -294,7 +294,7 @@ identificadores técnicos estables en esta línea de lanzamiento.
   "update": {
     "enabled": true,
     "repo_owner": "pseudotop",
-    "repo_name": "oneshim-client",
+    "repo_name": "maekon-client",
     "check_interval_hours": 24,
     "include_prerelease": false
   },

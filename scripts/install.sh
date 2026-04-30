@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO="${ONESHIM_REPOSITORY:-pseudotop/oneshim-client}"
+REPO="${ONESHIM_REPOSITORY:-pseudotop/maekon-client}"
 VERSION="${ONESHIM_VERSION:-latest}"
 INSTALL_DIR="${ONESHIM_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="${ONESHIM_RELEASE_BASE_URL:-}"
@@ -21,7 +21,7 @@ Usage:
 Options:
   --version <tag>          Release tag (e.g. v0.0.4). Default: latest
   --install-dir <path>     Installation directory. Default: ~/.local/bin
-  --repo <owner/name>      GitHub repository. Default: pseudotop/oneshim-client
+  --repo <owner/name>      GitHub repository. Default: pseudotop/maekon-client
   --base-url <url>         Release asset base URL override (for local/rehearsal mirrors)
   --require-signature      Fail if Ed25519 signature verification cannot be completed
   -h, --help               Show help

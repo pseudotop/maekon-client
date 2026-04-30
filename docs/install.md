@@ -14,7 +14,7 @@ current names for installer, updater, and existing-user compatibility.
 
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -23,7 +23,7 @@ bash /tmp/oneshim-install.sh
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -66,7 +66,7 @@ Common options:
 
 - `--version <tag>` (default: `latest`)
 - `--install-dir <path>` (default: `~/.local/bin`)
-- `--repo <owner/name>` (default: `pseudotop/oneshim-client`)
+- `--repo <owner/name>` (default: `pseudotop/maekon-client`)
 - `--base-url <url>` (override release asset source; useful for local smoke/rehearsal)
 - `--require-signature`
 
@@ -80,7 +80,7 @@ Common parameters:
 
 - `-Version <tag>` (default: `latest`)
 - `-InstallDir <path>` (default: `%LOCALAPPDATA%\ONESHIM\bin`)
-- `-Repository <owner/name>` (default: `pseudotop/oneshim-client`)
+- `-Repository <owner/name>` (default: `pseudotop/maekon-client`)
 - `-BaseUrl <url>` (override release asset source; useful for local smoke/rehearsal)
 - `-RequireSignature`
 
@@ -90,7 +90,7 @@ Common parameters:
 
 ```bash
 curl -fsSL -o /tmp/oneshim-uninstall.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.sh
 bash /tmp/oneshim-uninstall.sh
 ```
 
@@ -99,7 +99,7 @@ bash /tmp/oneshim-uninstall.sh
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-uninstall.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
