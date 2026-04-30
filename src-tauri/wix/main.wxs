@@ -92,7 +92,7 @@
 
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
-        <Property Id='ARPHELPLINK' Value='https://github.com/pseudotop/oneshim-client'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/pseudotop/maekon-client'/>
 
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>

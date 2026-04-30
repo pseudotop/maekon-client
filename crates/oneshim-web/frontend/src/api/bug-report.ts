@@ -54,7 +54,7 @@ export function formatBundleForClipboard(bundle: BugReportBundle, format: Clipbo
     .join('\n')
 }
 
-const ISSUE_REPO = 'https://github.com/pseudotop/oneshim-client/issues/new'
+const ISSUE_REPO = 'https://github.com/pseudotop/maekon-client/issues/new'
 
 export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
   const params = new URLSearchParams({

@@ -103,6 +103,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+const OFFLINE_MODE_ENV: &str = "ONESHIM_OFFLINE_MODE";
+
 fn configure_runtime_flavor() {
     #[cfg(debug_assertions)]
     {
@@ -111,6 +113,27 @@ fn configure_runtime_flavor() {
             std::env::set_var("ONESHIM_APP_FLAVOR", "dev");
         }
     }
+}
+
+pub(crate) fn offline_mode_enabled() -> bool {
+    let env_value = std::env::var(OFFLINE_MODE_ENV).ok();
+    offline_mode_enabled_from(std::env::args().skip(1), env_value.as_deref())
+}
+
+fn offline_mode_enabled_from<I, S>(args: I, env_value: Option<&str>) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    env_value.map(str::trim).is_some_and(|value| {
+        matches!(value, "1")
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("on")
+    }) || args.into_iter().any(|arg| {
+        let arg = arg.as_ref();
+        arg == "--offline" || arg == "--offline=true"
+    })
 }
 
 /// Wrapper for `tracing_appender::non_blocking::WorkerGuard`.
@@ -535,4 +558,26 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod cli_runtime_flag_tests {
+    use super::offline_mode_enabled_from;
+
+    #[test]
+    fn offline_mode_defaults_to_false() {
+        assert!(!offline_mode_enabled_from(Vec::<&str>::new(), None));
+    }
+
+    #[test]
+    fn offline_mode_accepts_cli_flag() {
+        assert!(offline_mode_enabled_from(["--offline"], None));
+        assert!(offline_mode_enabled_from(["--offline=true"], None));
+    }
+
+    #[test]
+    fn offline_mode_accepts_env_override() {
+        assert!(offline_mode_enabled_from(Vec::<&str>::new(), Some("true")));
+        assert!(offline_mode_enabled_from(["--other"], Some("1")));
+    }
 }

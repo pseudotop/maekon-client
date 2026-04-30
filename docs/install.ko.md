@@ -14,7 +14,7 @@
 
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -23,7 +23,7 @@ bash /tmp/oneshim-install.sh
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -66,7 +66,7 @@ bash /tmp/oneshim-install.sh --help
 
 - `--version <tag>` (기본값: `latest`)
 - `--install-dir <path>` (기본값: `~/.local/bin`)
-- `--repo <owner/name>` (기본값: `pseudotop/oneshim-client`)
+- `--repo <owner/name>` (기본값: `pseudotop/maekon-client`)
 - `--base-url <url>` (릴리즈 에셋 소스 오버라이드; 로컬 smoke/rehearsal에 유용)
 - `--require-signature`
 
@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -?
 
 - `-Version <tag>` (기본값: `latest`)
 - `-InstallDir <path>` (기본값: `%LOCALAPPDATA%\ONESHIM\bin`)
-- `-Repository <owner/name>` (기본값: `pseudotop/oneshim-client`)
+- `-Repository <owner/name>` (기본값: `pseudotop/maekon-client`)
 - `-BaseUrl <url>` (릴리즈 에셋 소스 오버라이드; 로컬 smoke/rehearsal에 유용)
 - `-RequireSignature`
 
@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -?
 
 ```bash
 curl -fsSL -o /tmp/oneshim-uninstall.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.sh
 bash /tmp/oneshim-uninstall.sh
 ```
 
@@ -99,7 +99,7 @@ bash /tmp/oneshim-uninstall.sh
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-uninstall.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```

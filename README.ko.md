@@ -22,7 +22,7 @@ AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니�
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -30,7 +30,7 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -200,7 +200,7 @@ cd crates/oneshim-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
 ```
 
@@ -208,14 +208,14 @@ Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
 ### 릴리즈 아티팩트
 
-[Releases](https://github.com/pseudotop/oneshim-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
+[Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
 Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프로그램, 업데이터,
 체크섬 호환성을 위해 의도적으로 `oneshim-*` 형식을 유지합니다.
@@ -277,7 +277,7 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
   "update": {
     "enabled": true,
     "repo_owner": "pseudotop",
-    "repo_name": "oneshim-client",
+    "repo_name": "maekon-client",
     "check_interval_hours": 24,
     "include_prerelease": false
   },

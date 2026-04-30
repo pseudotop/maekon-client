@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = $(if ($env:ONESHIM_VERSION) { $env:ONESHIM_VERSION } else { "latest" }),
-    [string]$Repository = $(if ($env:ONESHIM_REPOSITORY) { $env:ONESHIM_REPOSITORY } else { "pseudotop/oneshim-client" }),
+    [string]$Repository = $(if ($env:ONESHIM_REPOSITORY) { $env:ONESHIM_REPOSITORY } else { "pseudotop/maekon-client" }),
     [string]$InstallDir = $(if ($env:ONESHIM_INSTALL_DIR) { $env:ONESHIM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "ONESHIM\bin" }),
     [string]$BaseUrl = $(if ($env:ONESHIM_RELEASE_BASE_URL) { $env:ONESHIM_RELEASE_BASE_URL } else { "" }),
     [switch]$RequireSignature

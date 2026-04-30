@@ -55,6 +55,7 @@ pub(crate) struct AppRuntimeLaunchResult {
 pub(crate) struct AppRuntimeLaunchBuilder {
     bootstrap: BootstrapRuntimeBundle,
     app_handle: AppHandle,
+    offline_mode: bool,
 }
 
 impl AppRuntimeLaunchBuilder {
@@ -62,7 +63,13 @@ impl AppRuntimeLaunchBuilder {
         Self {
             bootstrap,
             app_handle,
+            offline_mode: false,
         }
+    }
+
+    pub(crate) fn with_offline_mode(mut self, offline_mode: bool) -> Self {
+        self.offline_mode = offline_mode;
+        self
     }
 
     pub(crate) fn build_and_spawn(self) -> Result<AppRuntimeLaunchResult> {
@@ -500,7 +507,7 @@ impl AppRuntimeLaunchBuilder {
                 builder = builder.with_shared_capture_services(capture_services.clone());
             }
             let builder = builder
-                .with_offline_mode(false)
+                .with_offline_mode(self.offline_mode)
                 .with_event_tx(
                     core_resources
                         .background_runtime

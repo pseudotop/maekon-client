@@ -19,8 +19,8 @@ URLs, crate/package names, Cargo package names, the `oneshim` CLI command,
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/pseudotop/oneshim-client.git
-cd oneshim-client
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
 
 # 2. Check dependencies and build
 cargo check --workspace

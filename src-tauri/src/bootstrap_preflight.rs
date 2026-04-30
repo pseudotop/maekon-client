@@ -10,10 +10,10 @@ use crate::cli_subscription_bridge::{
 pub(crate) struct BootstrapPreflightCoordinator;
 
 impl BootstrapPreflightCoordinator {
-    pub(crate) fn run(config: &AppConfig, data_dir: &Path) {
+    pub(crate) fn run(config: &AppConfig, data_dir: &Path, offline_mode: bool) {
         maybe_sync_cli_subscription_bridge(config, data_dir);
 
-        if let Err(error) = crate::integrity_guard::run_preflight(config, false) {
+        if let Err(error) = crate::integrity_guard::run_preflight(config, offline_mode) {
             warn!("integrity preflight failed (non-fatal): {error}");
         }
     }
