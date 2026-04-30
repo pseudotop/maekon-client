@@ -30,7 +30,7 @@ tccutil reset Accessibility com.oneshim.app
 UIA (UI Automation) works without elevation by default for most applications.
 
 **For protected apps (elevated/admin processes):**
-- Run Maekon as Administrator, or
+- Run ONESHIM as Administrator, or
 - Use *Accessibility Insights for Windows* to verify UIA tree visibility.
 
 **Diagnostics:**

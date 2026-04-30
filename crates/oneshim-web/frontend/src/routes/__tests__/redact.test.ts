@@ -48,8 +48,7 @@ describe('redact', () => {
   })
 
   it('masks OpenAI/Anthropic-style sk- API keys', () => {
-    const apiKey = `sk-${'abc123def456ghi789jkl012'}`
-    const input = `Auth header: ${apiKey}`
+    const input = 'Auth header: sk-abc123def456ghi789jkl012'
     const output = redact(input)
     expect(output).not.toContain('sk-abc123def456')
     expect(output).toContain('[REDACTED]')
@@ -87,8 +86,7 @@ describe('redact', () => {
   })
 
   it('preserves non-secret content around masked tokens', () => {
-    const apiKey = `sk-${'1234567890abcdefgh'}`
-    const input = `Error in fetch with ${apiKey}: 401 Unauthorized`
+    const input = 'Error in fetch with sk-1234567890abcdefgh: 401 Unauthorized'
     const output = redact(input)
     expect(output).toContain('Error in fetch with')
     expect(output).toContain('401 Unauthorized')
@@ -96,7 +94,7 @@ describe('redact', () => {
   })
 
   it('handles multiple secrets in one string', () => {
-    const input = `sk-${'aaaaaaaaaaaaaaaaaaaa'} and sk-${'bbbbbbbbbbbbbbbbbbbb'}`
+    const input = 'sk-aaaaaaaaaaaaaaaaaaaa and sk-bbbbbbbbbbbbbbbbbbbb'
     const output = redact(input)
     expect(output).not.toContain('sk-aaaaaaaa')
     expect(output).not.toContain('sk-bbbbbbbb')

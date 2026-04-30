@@ -4,7 +4,7 @@
 
 > **Opt-in. Disabled by default. Private by construction.**
 
-Maekon's Rust client can ship distributed-trace spans to an OpenTelemetry collector for production triage. This document covers what is collected, how to enable or disable it, how to point it at your own collector, and how to wipe the identifier the collector sees.
+ONESHIM's Rust client can ship distributed-trace spans to an OpenTelemetry collector for production triage. This document covers what is collected, how to enable or disable it, how to point it at your own collector, and how to wipe the identifier the collector sees.
 
 ## What is collected
 

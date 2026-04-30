@@ -10,7 +10,7 @@
 
 ## 개요
 
-Maekon Rust 클라이언트는 **tonic + prost** 기반 gRPC 클라이언트를 제공합니다. Feature Flag를 통해 gRPC와 REST를 선택적으로 사용할 수 있으며, gRPC 실패 시 자동으로 REST로 폴백됩니다.
+ONESHIM Rust 클라이언트는 **tonic + prost** 기반 gRPC 클라이언트를 제공합니다. Feature Flag를 통해 gRPC와 REST를 선택적으로 사용할 수 있으며, gRPC 실패 시 자동으로 REST로 폴백됩니다.
 
 ## 빠른 시작
 
@@ -297,7 +297,7 @@ if health.is_healthy().await {
 let auth_status = health.check("oneshim.v1.auth.AuthenticationService").await?;
 println!("인증 서비스: {}", auth_status);
 
-// 모든 Maekon 서비스 상태 확인
+// 모든 ONESHIM 서비스 상태 확인
 let statuses = health.check_oneshim_services().await;
 for s in statuses {
     println!("{}: {}", s.service, s.status);

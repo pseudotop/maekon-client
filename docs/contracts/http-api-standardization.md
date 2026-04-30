@@ -2,7 +2,7 @@
 
 # HTTP API Standardization (OpenAPI Track)
 
-This document defines how Maekon standardizes local web interfaces with OpenAPI-compatible governance.
+This document defines how ONESHIM standardizes local web interfaces with OpenAPI-compatible governance.
 
 ## Current SSOT
 

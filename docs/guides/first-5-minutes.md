@@ -2,7 +2,7 @@
 
 # First 5 Minutes Guide
 
-Use this checklist to get the first usable insight from Maekon quickly in standalone mode.
+Use this checklist to get the first usable insight from ONESHIM quickly in standalone mode.
 
 ## 1. Launch standalone mode
 

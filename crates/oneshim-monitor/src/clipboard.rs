@@ -293,10 +293,7 @@ mod tests {
             }
             if out.contains("sk-") {
                 // crude api-key token matcher
-                out = out.replace(
-                    concat!("sk-", "ABCD1234EFGH5678IJKL9012MNOP3456"),
-                    "[API_KEY]",
-                );
+                out = out.replace("sk-ABCD1234EFGH5678IJKL9012MNOP3456", "[API_KEY]");
             }
             out
         }
@@ -322,9 +319,8 @@ mod tests {
     #[test]
     fn d5_preview_sanitizes_api_key_when_level_is_strict_with_sanitizer() {
         let monitor = ClipboardMonitor::new(P::Strict).with_pii_sanitizer(Arc::new(TestSanitizer));
-        let api_key = concat!("sk-", "ABCD1234EFGH5678IJKL9012MNOP3456");
         let event = monitor
-            .check_text_change(&format!("TOKEN: {api_key}"))
+            .check_text_change("TOKEN: sk-ABCD1234EFGH5678IJKL9012MNOP3456")
             .expect("event should fire");
         let preview = event.preview.expect("Strict level should produce preview");
         assert!(

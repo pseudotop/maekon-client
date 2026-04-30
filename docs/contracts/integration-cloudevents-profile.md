@@ -1,12 +1,12 @@
-# Maekon Integration CloudEvents Profile
+# ONESHIM Integration CloudEvents Profile
 
-Status: Draft  
-Domain: `integration`  
+Status: Draft
+Domain: `integration`
 CloudEvents baseline: `1.0`
 
 ## Purpose
 
-Define how Maekon integration domain messages map onto CloudEvents for outbound sync and inbound prompt delivery.
+Define how ONESHIM integration domain messages map onto CloudEvents for outbound sync and inbound prompt delivery.
 
 This profile is designed to stay friendly to:
 
@@ -26,7 +26,7 @@ Batching may happen at the transport layer, but the event envelope stays one-eve
 
 ## Core Mapping
 
-| Maekon field | CloudEvents field | Notes |
+| ONESHIM field | CloudEvents field | Notes |
 | --- | --- | --- |
 | `IntegrationEnvelope.envelope_id` | `id` | Stable event id |
 | `IntegrationEnvelope.timestamp` | `time` | RFC 3339 timestamp |
@@ -64,7 +64,7 @@ Recommended `subject` values:
 - session state: `session/{session_id}`
 - ack event: `cursor/{stream_id}`
 
-## Maekon Extension Attributes
+## ONESHIM Extension Attributes
 
 Use lower-case ASCII extension names so CESQL and cross-platform routing stay simple.
 

@@ -775,8 +775,8 @@ mod tests {
 
     #[test]
     fn level_strict_masks_api_keys() {
-        let api_key = concat!("sk-", "abc123def456ghi789jkl0");
-        let result = sanitize_title_with_level(&format!("key: {api_key}"), PiiFilterLevel::Strict);
+        let result =
+            sanitize_title_with_level("key: sk-abc123def456ghi789jkl0", PiiFilterLevel::Strict);
         assert!(result.contains("[API_KEY]"));
         assert!(!result.contains("sk-abc123"));
     }
@@ -926,12 +926,11 @@ mod tests {
             return;
         }
 
-        let api_key_sample = format!("token {} detected", concat!("sk-", "abc123def456ghi789jkl0"));
         let samples = [
             "contact user@example.com for access",
             "call +82-10-1234-5678 for approval",
             "server 10.0.0.24 has alert",
-            api_key_sample.as_str(),
+            "token sk-abc123def456ghi789jkl0 detected",
             "normal productivity dashboard event",
             "file path /Users/alice/Documents/client-plan.md",
         ];
@@ -966,7 +965,7 @@ mod tests {
     #[test]
     fn mask_bearer_single_token() {
         let input = "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
-        let result = sanitize_title_with_level(&input, PiiFilterLevel::Strict);
+        let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         assert!(
             result.contains("Bearer [API_KEY]"),
             "single bearer not masked: {result}"
@@ -1024,12 +1023,8 @@ mod tests {
 
     #[test]
     fn mask_private_key_block_single() {
-        let input = [
-            "key: -----BEGIN RSA ",
-            "PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA ",
-            "PRIVATE KEY-----",
-        ]
-        .concat();
+        let input =
+            "key: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         assert!(
             result.contains("[PRIVATE_KEY]"),
@@ -1055,9 +1050,8 @@ mod tests {
     #[test]
     fn mask_ghs_token() {
         // ghs_ GitHub Actions token prefix added in this PR.
-        let token = concat!("ghs_", "16C7e42F292c6912E7710c838347Ae178B4a");
         let result = sanitize_title_with_level(
-            &format!("token: {token}"),
+            "token: ghs_16C7e42F292c6912E7710c838347Ae178B4a",
             PiiFilterLevel::Strict,
         );
         assert!(

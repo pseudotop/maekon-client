@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_round_trip() {
         let key = EncryptionKey::from_bytes([0x42; 32]);
-        let plaintext = b"Hello, Maekon frame data!";
+        let plaintext = b"Hello, ONESHIM frame data!";
 
         let encrypted = key.encrypt(plaintext).unwrap();
         // encrypted = 12-byte nonce + ciphertext + 16-byte auth tag

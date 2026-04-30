@@ -96,4 +96,3 @@ fi
 if [[ "$status" != "Accepted" ]]; then
   exit 1
 fi
-

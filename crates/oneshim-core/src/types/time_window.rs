@@ -1,6 +1,6 @@
 //! Canonical time window primitive — closed-closed `[start, end]` absolute window.
 //!
-//! Per spec U4: Maekon is event-driven business API (Stripe-style), not
+//! Per spec U4: ONESHIM is event-driven business API (Stripe-style), not
 //! continuous time-series. Closed-closed semantic matches existing SQL `BETWEEN`
 //! and user-facing date range expectations.
 //!

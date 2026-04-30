@@ -101,7 +101,7 @@ Before any build starts, the pipeline verifies:
 - `Cargo.lock` workspace package versions match the git tag.
 - `crates/oneshim-web/frontend/package.json` matches the git tag.
 - `CHANGELOG.md` contains exactly one `[Unreleased]` header and an entry for the version being released.
-- `tauri.conf.json` `productName` is `Maekon` and `identifier` is `com.oneshim.client`.
+- `tauri.conf.json` `productName` is `ONESHIM` and `identifier` is `com.oneshim.client`.
 
 For stable tags, the pipeline also verifies:
 
@@ -133,7 +133,7 @@ After all builds succeed, a GitHub Release is created automatically with:
 
 ## Self-Update Mechanism
 
-Maekon checks GitHub Releases for updates using the updater module in `src-tauri/src/updater/`. The update flow:
+ONESHIM checks GitHub Releases for updates using the updater module in `src-tauri/src/updater/`. The update flow:
 
 1. On a configurable interval, the updater fetches the GitHub Releases API.
 2. The latest release version is compared against the running version using semver.

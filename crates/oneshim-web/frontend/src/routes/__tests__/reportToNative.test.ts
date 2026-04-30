@@ -160,18 +160,17 @@ describe('reportToNative', () => {
   })
 
   it('redacts API keys in the stack', async () => {
-    const apiKey = `sk-${'1234567890abcdefghij'}`
     reportToNative({
       route: '/test',
       severity: 'error',
       message: 'auth failed',
-      stack: `Error\n  at fetch (${apiKey})`,
+      stack: 'Error\n  at fetch (sk-1234567890abcdefghij)',
     })
 
     await flushMicrotasks()
 
     const [, payload] = invokeMock.mock.calls[0]
-    expect(payload.stack).not.toContain(apiKey)
+    expect(payload.stack).not.toContain('sk-1234567890abcdefghij')
     expect(payload.stack).toContain('[REDACTED]')
   })
 })

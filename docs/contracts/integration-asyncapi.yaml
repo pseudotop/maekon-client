@@ -1,6 +1,6 @@
 asyncapi: 3.1.0
 info:
-  title: Maekon Integration Session API
+  title: ONESHIM Integration Session API
   version: "v1alpha1"
   description: |
     Standards-profiled draft for the outbound integration plane.

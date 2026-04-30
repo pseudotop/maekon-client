@@ -132,9 +132,7 @@ pub(crate) mod tests {
     /// This key is TEST-ONLY and MUST NOT be used in production.
     /// `pub(crate)` so Task 10 auth_layer tests can reuse without duplicating.
     pub(crate) fn rsa_keypair_pem() -> (Vec<u8>, Vec<u8>) {
-        let priv_pem = [
-            "-----BEGIN ",
-            "PRIVATE KEY-----
+        let priv_pem = b"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDBZMG5h9Kz66YM
 IxS1W6e2BXA/CH4tzMEcnasPGXD/dHHIvSIFgWM7Gf+617FE8UA8V9BHzifRGOWW
 V+Ikw2hX2gDa47sjWaHVc7so5MlrNSXkBx6lAo3GOs1qbbNWdXt0I7orCxXShSG3
@@ -161,11 +159,7 @@ BtPVL9e25ss4rkAu3wXc0j8sbLGtn7cnDWdAe10CgYEAmug51NKEhlLy3VbEzxQ2
 hTSqxYlFMnnUW3/nzisK1ftY1ugjhbSnCo1KJVDPQ9FeUP+2GQrTLMoV65N9RvN8
 rc39jJXz8eCZDpHnTFC4/VFAGyRrPRPgK7+9N3wi9r/ElHvdFGXDJqWeci/7HKwi
 2+PrIkT3I7Oqk+2rPeT9/8g=
------END ",
-            "PRIVATE KEY-----",
-        ]
-        .concat()
-        .into_bytes();
+-----END PRIVATE KEY-----";
         let pub_pem = b"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwWTBuYfSs+umDCMUtVun
 tgVwPwh+LczBHJ2rDxlw/3RxyL0iBYFjOxn/utexRPFAPFfQR84n0RjlllfiJMNo
@@ -175,7 +169,7 @@ BDqA2kaaCRNeSdvHex3pGVXZXpLcEstjsf5U+Fff/JAIawEIba+fXRX+NdRDTeIM
 q01aYJRhTSDqhgXRcWiyo48FIgkB1kzLhr5mJSjthySKsJMnzq596Xpx2NH39SvL
 MwIDAQAB
 -----END PUBLIC KEY-----";
-        (priv_pem, pub_pem.to_vec())
+        (priv_pem.to_vec(), pub_pem.to_vec())
     }
 
     fn ec_keypair_pem() -> (Vec<u8>, Vec<u8>) {

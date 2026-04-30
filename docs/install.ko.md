@@ -13,17 +13,17 @@
 ### macOS / Linux
 
 ```bash
-curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File $tmp
 ### macOS / Linux
 
 ```bash
-ONESHIM_VERSION=v0.0.4 bash /tmp/maekon-install.sh
+ONESHIM_VERSION=v0.0.4 bash /tmp/oneshim-install.sh
 ```
 
 ### Windows
@@ -59,14 +59,14 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
 ### macOS / Linux (`scripts/install.sh`)
 
 ```bash
-bash /tmp/maekon-install.sh --help
+bash /tmp/oneshim-install.sh --help
 ```
 
 주요 옵션:
 
 - `--version <tag>` (기본값: `latest`)
 - `--install-dir <path>` (기본값: `~/.local/bin`)
-- `--repo <owner/name>` (기본값: `pseudotop/maekon-client`)
+- `--repo <owner/name>` (기본값: `pseudotop/oneshim-client`)
 - `--base-url <url>` (릴리즈 에셋 소스 오버라이드; 로컬 smoke/rehearsal에 유용)
 - `--require-signature`
 
@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -?
 
 - `-Version <tag>` (기본값: `latest`)
 - `-InstallDir <path>` (기본값: `%LOCALAPPDATA%\ONESHIM\bin`)
-- `-Repository <owner/name>` (기본값: `pseudotop/maekon-client`)
+- `-Repository <owner/name>` (기본값: `pseudotop/oneshim-client`)
 - `-BaseUrl <url>` (릴리즈 에셋 소스 오버라이드; 로컬 smoke/rehearsal에 유용)
 - `-RequireSignature`
 
@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -?
 
 ```bash
 curl -fsSL -o /tmp/oneshim-uninstall.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.sh
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.sh
 bash /tmp/oneshim-uninstall.sh
 ```
 
@@ -99,7 +99,7 @@ bash /tmp/oneshim-uninstall.sh
 ```powershell
 $tmp = Join-Path $env:TEMP "oneshim-uninstall.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/uninstall.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/uninstall.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```

@@ -78,7 +78,13 @@ if [[ "$DEST_CREATED" == "0" && -e "$DEST_DIR" ]]; then
   exit 1
 fi
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+GIT_TOPLEVEL="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
+SOURCE_PREFIX=""
+if [[ "$GIT_TOPLEVEL" != "$REPO_ROOT" ]]; then
+  SOURCE_PREFIX="${REPO_ROOT#"$GIT_TOPLEVEL"/}"
+fi
 EXCLUDE_FILE="$REPO_ROOT/scripts/public-repo-exclude.txt"
 
 apply_exclude_rules() {
@@ -98,25 +104,11 @@ apply_exclude_rules() {
   shopt -u nullglob dotglob
 }
 
-write_public_changelog() {
-  cat > "$DEST_DIR/CHANGELOG.md" <<'EOF'
-# Changelog
-
-All notable public changes to Maekon will be documented in this file.
-
-## [Unreleased]
-
-- Public release history starts from the first Maekon public repository snapshot.
-- Historical internal PR links are intentionally omitted from public exports.
-EOF
-}
-
 validate_public_export() {
   local missing=0
   local required_paths=(
     "Cargo.toml"
     "README.md"
-    "CHANGELOG.md"
     "LICENSE"
     "assets/brand/cli-banner.txt"
     "specs/providers/provider-surface-catalog.json"
@@ -130,6 +122,8 @@ validate_public_export() {
     "docs/plan"
     "docs/specs"
     "docs/migration"
+    "docs/guides/public-repo-launch-playbook.md"
+    "docs/guides/public-repo-launch-playbook.ko.md"
     "docs/PHASE-HISTORY.md"
     "docs/STATUS.md"
     "docs/STATUS.ko.md"
@@ -184,41 +178,6 @@ validate_public_export() {
     rm -f "$scan_file"
   fi
 
-  scan_file="$(mktemp "${TMPDIR:-/tmp}/maekon-public-legacy-repo-scan.XXXXXX")"
-  local legacy_repo_slug="pseudotop/oneshim""-client"
-  local legacy_github_url="github\\.com/${legacy_repo_slug}"
-  local legacy_raw_url="raw\\.githubusercontent\\.com/${legacy_repo_slug}"
-  local legacy_repo_pattern="(${legacy_repo_slug}|${legacy_github_url}|${legacy_raw_url})"
-  if grep -RInE --binary-files=without-match \
-    --exclude-dir=.git \
-    --exclude='*.lock' \
-    "$legacy_repo_pattern" \
-    "$DEST_DIR" > "$scan_file"; then
-    echo "error: public export contains legacy public repository references:" >&2
-    cat "$scan_file" >&2
-    rm -f "$scan_file"
-    missing=1
-  else
-    rm -f "$scan_file"
-  fi
-
-  scan_file="$(mktemp "${TMPDIR:-/tmp}/maekon-public-legacy-brand-scan.XXXXXX")"
-  local legacy_brand_domain="oneshim\\.(com|dev)"
-  local legacy_brand_contact="oss@oneshim\\.dev"
-  local legacy_brand_pattern="(${legacy_brand_domain}|${legacy_brand_contact})"
-  if grep -RInE --binary-files=without-match \
-    --exclude-dir=.git \
-    --exclude='*.lock' \
-    "$legacy_brand_pattern" \
-    "$DEST_DIR" > "$scan_file"; then
-    echo "error: public export contains legacy public brand contact/domain references:" >&2
-    cat "$scan_file" >&2
-    rm -f "$scan_file"
-    missing=1
-  else
-    rm -f "$scan_file"
-  fi
-
   if (( missing != 0 )); then
     exit 1
   fi
@@ -241,16 +200,24 @@ if [[ "$EXPORT_WORKTREE" == "1" ]]; then
     --exclude '.DS_Store' \
     "$REPO_ROOT/" "$DEST_DIR/"
 else
-  git -C "$REPO_ROOT" archive "$SOURCE_REF" | tar -xf - -C "$DEST_DIR"
+  if [[ -n "$SOURCE_PREFIX" ]]; then
+    strip_components=1
+    prefix_tail="$SOURCE_PREFIX"
+    while [[ "$prefix_tail" == */* ]]; do
+      strip_components=$((strip_components + 1))
+      prefix_tail="${prefix_tail#*/}"
+    done
+    git -C "$GIT_TOPLEVEL" archive "$SOURCE_REF" -- "$SOURCE_PREFIX" \
+      | tar -xf - -C "$DEST_DIR" --strip-components "$strip_components"
+  else
+    git -C "$GIT_TOPLEVEL" archive "$SOURCE_REF" | tar -xf - -C "$DEST_DIR"
+  fi
 fi
 
 if [[ -f "$EXCLUDE_FILE" ]]; then
   echo "==> Applying exclude rules from: scripts/public-repo-exclude.txt"
   apply_exclude_rules
 fi
-
-echo "==> Writing public changelog"
-write_public_changelog
 
 echo "==> Validating public-minimal export"
 validate_public_export

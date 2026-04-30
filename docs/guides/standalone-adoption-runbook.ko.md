@@ -2,7 +2,7 @@
 
 # Standalone 도입 런북
 
-Maekon을 standalone 우선 모드로 운영하기 위한 실전 체크리스트입니다.
+Maekon 을 standalone 우선 모드로 운영하기 위한 실전 체크리스트입니다.
 
 ## Day 0 (설정)
 
