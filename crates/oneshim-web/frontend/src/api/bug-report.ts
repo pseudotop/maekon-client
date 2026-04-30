@@ -54,7 +54,7 @@ export function formatBundleForClipboard(bundle: BugReportBundle, format: Clipbo
     .join('\n')
 }
 
-const ISSUE_REPO = 'https://github.com/pseudotop/maekon-client/issues/new'
+const ISSUE_REPO = 'https://github.com/pseudotop/oneshim-client/issues/new'
 
 export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
   const params = new URLSearchParams({
@@ -81,7 +81,7 @@ export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
       '## Actual',
       '',
       '## Notes',
-      '- If you exported a diagnostic report, please email it to support@maekon.dev with this Bug ID in the subject line.',
+      '- If you exported a diagnostic report, please email it to support@oneshim.dev with this Bug ID in the subject line.',
     ].join('\n'),
   })
   return `${ISSUE_REPO}?${params.toString()}`
@@ -92,5 +92,5 @@ export function buildMailtoUrl(bugId: string): string {
   const body = encodeURIComponent(
     `Bug ID: ${bugId}\n\nPlease attach the exported diagnostic report (oneshim-report-${bugId}.json) to this email.\n\nDescribe the issue:\n`,
   )
-  return `mailto:support@maekon.dev?subject=${subject}&body=${body}`
+  return `mailto:support@oneshim.dev?subject=${subject}&body=${body}`
 }

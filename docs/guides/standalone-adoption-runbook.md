@@ -2,7 +2,7 @@
 
 # Standalone Adoption Runbook
 
-A practical rollout checklist for operating Maekon in standalone-first mode.
+A practical rollout checklist for operating ONESHIM in standalone-first mode.
 
 ## Day 0 (setup)
 

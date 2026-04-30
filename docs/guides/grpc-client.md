@@ -10,7 +10,7 @@
 
 ## Overview
 
-The Maekon Rust client provides a **tonic + prost** based gRPC client. Through Feature Flags, gRPC and REST can be selectively used, and on gRPC failure it automatically falls back to REST.
+The ONESHIM Rust client provides a **tonic + prost** based gRPC client. Through Feature Flags, gRPC and REST can be selectively used, and on gRPC failure it automatically falls back to REST.
 
 ## Quick Start
 
@@ -297,7 +297,7 @@ if health.is_healthy().await {
 let auth_status = health.check("oneshim.v1.auth.AuthenticationService").await?;
 println!("Auth service: {}", auth_status);
 
-// Check all Maekon service statuses
+// Check all ONESHIM service statuses
 let statuses = health.check_oneshim_services().await;
 for s in statuses {
     println!("{}: {}", s.service, s.status);

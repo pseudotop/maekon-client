@@ -65,7 +65,7 @@ const DOMAIN_PATTERNS: &[(&str, &str)] = &[
 /// Extract a project name from a terminal CWD path.
 ///
 /// Takes the last path component (directory name) as the project name.
-/// e.g., "~/projects/maekon-client" → "maekon-client"
+/// e.g., "~/projects/oneshim-client" → "oneshim-client"
 ///       "/home/user/code/my-app"    → "my-app"
 pub(super) fn extract_project_from_path(path: &str) -> Option<String> {
     let trimmed = path.trim().trim_end_matches('/');

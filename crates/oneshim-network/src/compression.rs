@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn zstd_roundtrip() {
         let compressor = AdaptiveCompressor::new();
-        let data = b"Zstandard compression test data for Maekon client.";
+        let data = b"Zstandard compression test data for ONESHIM client.";
         let compressed = compressor
             .compress(data, CompressionAlgorithm::Zstd)
             .unwrap();

@@ -182,9 +182,9 @@ find_installed_app_path() {
 DMG_PATH="$(resolve_asset "$DMG_NAME")"
 PKG_PATH="$(resolve_asset "$PKG_NAME")"
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-installer-smoke.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oneshim-installer-smoke.XXXXXX")"
 MOUNT_DIR="$TMP_DIR/mount"
-LOG_DIR="${ONESHIM_SMOKE_LOG_DIR:-${RUNNER_TEMP:-$TMP_DIR}/maekon-installer-smoke}"
+LOG_DIR="${ONESHIM_SMOKE_LOG_DIR:-${RUNNER_TEMP:-$TMP_DIR}/oneshim-installer-smoke}"
 SYSTEM_APP_INSTALL_PATH="/Applications/$APP_NAME"
 USER_APP_INSTALL_PATH="${HOME}/Applications/$APP_NAME"
 APP_INSTALL_PATH="$SYSTEM_APP_INSTALL_PATH"

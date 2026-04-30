@@ -12,7 +12,7 @@
 
 # Maekon
 
-> **흩어진 업무 흔적을, 매일 성과로 이어지는 집중 인사이트로.**  
+> **흩어진 업무 흔적을, 매일 성과로 이어지는 집중 인사이트로.**
 > Maekon은 로컬 업무 신호를 실시간 집중 타임라인과 실행 가능한 제안으로 전환합니다.
 
 AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니다. 로컬 컨텍스트 수집, 실시간 제안, 내장 대시보드를 제공합니다. Rust로 구축되어 macOS, Windows, Linux에서 네이티브 성능을 발휘합니다.
@@ -21,16 +21,16 @@ AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니�
 
 macOS / Linux:
 ```bash
-curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
 Windows (PowerShell):
 ```powershell
-$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -199,23 +199,23 @@ cd crates/oneshim-web/frontend && pnpm test:e2e
 
 macOS / Linux:
 ```bash
-curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
 Windows (PowerShell):
 ```powershell
-$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
 ### 릴리즈 아티팩트
 
-[Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
+[Releases](https://github.com/pseudotop/oneshim-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
 Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프로그램, 업데이터,
 체크섬 호환성을 위해 의도적으로 `oneshim-*` 형식을 유지합니다.
@@ -255,7 +255,7 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 ```json
 {
   "server": {
-    "base_url": "https://api.maekon.dev",
+    "base_url": "https://api.oneshim.com",
     "request_timeout_ms": 30000,
     "sse_max_retry_secs": 30
   },
@@ -277,7 +277,7 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
   "update": {
     "enabled": true,
     "repo_owner": "pseudotop",
-    "repo_name": "maekon-client",
+    "repo_name": "oneshim-client",
     "check_interval_hours": 24,
     "include_prerelease": false
   },
@@ -300,7 +300,7 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 Hexagonal Architecture (Ports & Adapters) 패턴을 따르는 15개 패키지 Cargo 워크스페이스입니다. 14개 크레이트는 `crates/` 아래에 있고, 메인 바이너리/composition root는 `src-tauri/` (Tauri v2, 패키지명 `oneshim-app`)에 있습니다.
 
 ```
-maekon-client/
+oneshim-client/
 ├── src-tauri/              # Tauri v2 바이너리 진입점 + composition root
 │   ├── src/
 │   │   ├── main.rs         # Tauri 앱 빌더 + DI 연결

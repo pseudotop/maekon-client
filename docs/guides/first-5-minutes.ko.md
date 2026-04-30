@@ -2,7 +2,7 @@
 
 # 첫 5분 가이드
 
-Standalone 모드에서 Maekon의 첫 유의미한 인사이트를 빠르게 얻기 위한 체크리스트입니다.
+Standalone 모드에서 ONESHIM의 첫 유의미한 인사이트를 빠르게 얻기 위한 체크리스트입니다.
 
 ## 1. Standalone 모드 실행
 

@@ -1,6 +1,6 @@
 [package]
 name = "oneshim-api-contracts"
-description = "Maekon web API transport contracts"
+description = "ONESHIM web API transport contracts"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Maekon uses a pull-merge-push cycle for cross-device synchronization.
+ONESHIM uses a pull-merge-push cycle for cross-device synchronization.
 The `SyncTransport` trait (`oneshim-core`) defines the transport boundary,
 while `ChangeMerger` in `oneshim-network` implements record-level merging.
 

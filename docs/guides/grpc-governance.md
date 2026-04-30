@@ -2,7 +2,7 @@
 
 # gRPC Governance Guide
 
-This guide defines the minimum governance baseline for Maekon gRPC client operations.
+This guide defines the minimum governance baseline for ONESHIM gRPC client operations.
 
 ## Scope
 

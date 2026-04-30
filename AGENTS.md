@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Repository guardrails for humans and AI agents.
-This project is a 15-package Cargo workspace (14 crates under `crates/` + `src-tauri`) following Hexagonal Architecture (Ports & Adapters). Keep boundaries explicit. (The legacy parent workspace additionally used DDD on the server side; this client workspace is Hexagonal-only.)
+This project is a 15-package Cargo workspace (14 crates under `crates/` + `src-tauri`) following Hexagonal Architecture (Ports & Adapters). Keep boundaries explicit. (The parent ONESHIM project additionally uses DDD on the server side; this `client-rust` workspace is Hexagonal-only.)
 
 ## Scope
 

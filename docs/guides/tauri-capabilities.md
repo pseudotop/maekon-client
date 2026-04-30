@@ -1,6 +1,6 @@
 # Tauri Capability Permissions
 
-How Maekon uses Tauri v2 capabilities to scope IPC permissions per window.
+How ONESHIM uses Tauri v2 capabilities to scope IPC permissions per window.
 
 ## Security Model
 

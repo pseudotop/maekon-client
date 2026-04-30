@@ -1,4 +1,4 @@
-# lefthook.yml — Git hooks for maekon-client
+# lefthook.yml — Git hooks for oneshim-client
 # Install: lefthook install
 
 pre-push:

@@ -2,7 +2,7 @@
 
 # 크레이트 구현 문서
 
-Maekon Rust 클라이언트의 현재 15-패키지 워크스페이스(`crates/` 하위 14개 + `src-tauri` 바이너리 패키지; `cargo metadata --no-deps` 기준) 상세 구현 레퍼런스입니다.
+ONESHIM Rust 클라이언트의 현재 15-패키지 워크스페이스(`crates/` 하위 14개 + `src-tauri` 바이너리 패키지; `cargo metadata --no-deps` 기준) 상세 구현 레퍼런스입니다.
 
 ## 크레이트 의존성 그래프
 

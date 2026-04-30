@@ -223,9 +223,9 @@ jobs:
         shell: pwsh
         run: |
           $bin = "target/${{ matrix.target }}/release/oneshim.exe"
-          $outLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.out.log"
-          $errLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.err.log"
-          $mergedLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.log"
+          $outLog = Join-Path $env:RUNNER_TEMP "oneshim-release-smoke-win.out.log"
+          $errLog = Join-Path $env:RUNNER_TEMP "oneshim-release-smoke-win.err.log"
+          $mergedLog = Join-Path $env:RUNNER_TEMP "oneshim-release-smoke-win.log"
 
           $proc = Start-Process -FilePath $bin -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
           Start-Sleep -Seconds 3
@@ -254,7 +254,7 @@ jobs:
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/oneshim"
-          LOG="$RUNNER_TEMP/maekon-release-smoke.log"
+          LOG="$RUNNER_TEMP/oneshim-release-smoke.log"
 
           set +e
           ONESHIM_DISABLE_TRAY=1 "$BIN" >"$LOG" 2>&1 &
@@ -298,7 +298,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-smoke-log-${{ matrix.name }}
-          path: ${{ runner.temp }}/maekon-release-smoke.log
+          path: ${{ runner.temp }}/oneshim-release-smoke.log
           if-no-files-found: ignore
 
       - name: Upload Windows GUI smoke log
@@ -307,7 +307,7 @@ jobs:
         with:
           name: release-smoke-log-${{ matrix.name }}
           path: |
-            ${{ runner.temp }}/maekon-release-smoke-win.log
-            ${{ runner.temp }}/maekon-release-smoke-win.out.log
-            ${{ runner.temp }}/maekon-release-smoke-win.err.log
+            ${{ runner.temp }}/oneshim-release-smoke-win.log
+            ${{ runner.temp }}/oneshim-release-smoke-win.out.log
+            ${{ runner.temp }}/oneshim-release-smoke-win.err.log
           if-no-files-found: ignore

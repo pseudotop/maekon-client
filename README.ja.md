@@ -21,16 +21,16 @@ AI支援によるオフィス生産性向上のためのデスクトップクラ
 
 macOS / Linux:
 ```bash
-curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
 Windows (PowerShell):
 ```powershell
-$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
@@ -74,6 +74,7 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - Standalone整合性ベースライン: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 整合性運用ランブック: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - ドキュメントインデックス: [docs/README.md](./docs/README.md)
+- パブリックローンチプレイブック: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
 - 自動化プレイブックテンプレート: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Standalone導入ランブック: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - 最初の5分ガイド: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -214,23 +215,23 @@ cd crates/oneshim-web/frontend && pnpm test:e2e
 
 macOS / Linux:
 ```bash
-curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
 Windows (PowerShell):
 ```powershell
-$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/oneshim-client/main/scripts/install.ps1" `
   -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
 ### リリースアセット
 
-[Releases](https://github.com/pseudotop/maekon-client/releases)からダウンロードできます:
+[Releases](https://github.com/pseudotop/oneshim-client/releases)からダウンロードできます:
 
 Maekon はアプリの表示名です。現在のリリースファイル名は、インストーラー、
 アップデーター、チェックサム互換性のために意図的に `oneshim-*` 形式を維持します。
@@ -270,7 +271,7 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 ```json
 {
   "server": {
-    "base_url": "https://api.maekon.dev",
+    "base_url": "https://api.oneshim.com",
     "request_timeout_ms": 30000,
     "sse_max_retry_secs": 30
   },
@@ -292,7 +293,7 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
   "update": {
     "enabled": true,
     "repo_owner": "pseudotop",
-    "repo_name": "maekon-client",
+    "repo_name": "oneshim-client",
     "check_interval_hours": 24,
     "include_prerelease": false
   },
@@ -315,7 +316,7 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 Hexagonal Architecture（Ports & Adapters）に従う15パッケージのCargo workspaceです。14個のクレイトは`crates/`配下にあり、メインバイナリ/composition rootは`src-tauri/`（Tauri v2、パッケージ名`oneshim-app`）です。
 
 ```
-maekon-client/
+oneshim-client/
 ├── src-tauri/              # Tauri v2バイナリエントリーポイント + composition root
 │   ├── src/
 │   │   ├── main.rs         # Tauriアプリビルダー + DI配線
