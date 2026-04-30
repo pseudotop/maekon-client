@@ -68,7 +68,7 @@ src-tauri/src/  (package: oneshim-app)
 
 ## CLI Subscription Bridge
 
-When `ai_provider.access_mode` is `ProviderSubscriptionCli`, Maekon can sync bridge command files for external AI CLIs.
+When `ai_provider.access_mode` is `ProviderSubscriptionCli`, ONESHIM can sync bridge command files for external AI CLIs.
 
 - Enable auto-install: `ONESHIM_CLI_BRIDGE_AUTOINSTALL=1`
 - Include user-scope directories (`~/.codex`, `~/.claude`, `~/.gemini`): `ONESHIM_CLI_BRIDGE_INCLUDE_USER_SCOPE=1`

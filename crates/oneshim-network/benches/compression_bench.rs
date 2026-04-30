@@ -6,7 +6,7 @@ use oneshim_network::compression::AdaptiveCompressor;
 
 fn create_compressible_data(size: usize) -> Vec<u8> {
     let pattern =
-        b"Maekon event payload with repeated structure and timestamps 2026-01-31T12:00:00Z ";
+        b"ONESHIM event payload with repeated structure and timestamps 2026-01-31T12:00:00Z ";
     pattern.iter().cycle().take(size).copied().collect()
 }
 

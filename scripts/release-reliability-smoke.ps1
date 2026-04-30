@@ -55,7 +55,7 @@ if (-not $pythonCommand) {
     throw "Python is required to host local release assets"
 }
 
-$tempDir = Join-Path $env:TEMP ("maekon-release-smoke-" + [Guid]::NewGuid().ToString("N"))
+$tempDir = Join-Path $env:TEMP ("oneshim-release-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $tempDir "bin"

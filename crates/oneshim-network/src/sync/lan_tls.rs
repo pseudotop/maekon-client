@@ -25,7 +25,7 @@ pub fn generate_self_signed_cert(device_id: &str) -> Result<(Vec<u8>, Vec<u8>), 
     params.distinguished_name = rcgen::DistinguishedName::new();
     params.distinguished_name.push(
         rcgen::DnType::CommonName,
-        format!("Maekon Sync {device_id}"),
+        format!("ONESHIM Sync {device_id}"),
     );
     // Valid for 10 years from now
     let now = chrono::Utc::now();
@@ -165,7 +165,7 @@ mod tests {
         let cert_str = String::from_utf8(cert_pem.clone()).unwrap();
         let key_str = String::from_utf8(key_pem).unwrap();
         assert!(cert_str.contains("BEGIN CERTIFICATE"));
-        assert!(key_str.contains(&["BEGIN ", "PRIVATE KEY"].concat()));
+        assert!(key_str.contains("BEGIN PRIVATE KEY"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Good First Issues — OSS Contributor On-Ramp
 
-Welcome to Maekon. This guide gets you from zero to your first merged pull request.
+Welcome to ONESHIM. This guide gets you from zero to your first merged pull request.
 
 See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../CODE_OF_CONDUCT.md)
 
@@ -21,8 +21,8 @@ See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/pseudotop/maekon-client.git
-cd maekon-client
+git clone https://github.com/pseudotop/oneshim-client.git
+cd oneshim-client
 
 # 2. Verify the workspace compiles
 cargo check --workspace
@@ -109,7 +109,7 @@ Doc comments on public functions are always welcome. The project uses English-fi
 **Example task**: Add a doc comment to a public function in `crates/oneshim-core/src/` that currently has none. Include what the function does, what its parameters mean, and what errors it can return.
 
 ```rust
-/// Returns the platform-specific directory where the client stores its config file.
+/// Returns the platform-specific directory where ONESHIM stores its config file.
 ///
 /// - macOS: `~/Library/Application Support/oneshim/`
 /// - Windows: `%APPDATA%\oneshim\`

@@ -186,7 +186,7 @@ pub(crate) fn sessions_to_ical(sessions: &[FocusWorkSessionRecord]) -> String {
     let mut buf = String::with_capacity(sessions.len() * 256);
     buf.push_str("BEGIN:VCALENDAR\r\n");
     buf.push_str("VERSION:2.0\r\n");
-    buf.push_str("PRODID:-//Maekon//Work Sessions//EN\r\n");
+    buf.push_str("PRODID:-//ONESHIM//Work Sessions//EN\r\n");
     buf.push_str("CALSCALE:GREGORIAN\r\n");
 
     for session in sessions {

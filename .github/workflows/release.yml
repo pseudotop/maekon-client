@@ -1015,7 +1015,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           chmod +x ./.workflow-tools/scripts/release-reliability-smoke.sh
-          export ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-release-smoke"
+          export ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/oneshim-release-smoke"
           export ONESHIM_SMOKE_REPO_ROOT="$GITHUB_WORKSPACE"
           if [[ "${{ matrix.run_updater_tests }}" == "true" ]]; then
             ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets
@@ -1039,7 +1039,7 @@ jobs:
         shell: bash
         run: |
           chmod +x ./.workflow-tools/scripts/release-installer-smoke-macos.sh
-          ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-installer-smoke" \
+          ONESHIM_SMOKE_LOG_DIR="$RUNNER_TEMP/oneshim-installer-smoke" \
             ./.workflow-tools/scripts/release-installer-smoke-macos.sh --assets-dir smoke-installers
 
       - name: Upload macOS release smoke logs
@@ -1048,8 +1048,8 @@ jobs:
         with:
           name: release-smoke-logs-${{ matrix.name }}
           path: |
-            ${{ runner.temp }}/maekon-release-smoke
-            ${{ runner.temp }}/maekon-installer-smoke
+            ${{ runner.temp }}/oneshim-release-smoke
+            ${{ runner.temp }}/oneshim-installer-smoke
           if-no-files-found: ignore
 
   create-release:
@@ -1161,7 +1161,7 @@ jobs:
 
       - name: Run signed release reliability smoke
         env:
-          ONESHIM_SMOKE_LOG_DIR: ${{ runner.temp }}/maekon-signed-release-smoke
+          ONESHIM_SMOKE_LOG_DIR: ${{ runner.temp }}/oneshim-signed-release-smoke
         run: |
           chmod +x ./scripts/release-reliability-smoke.sh
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name oneshim-linux-x64.tar.gz --skip-updater-tests --require-signature

@@ -2,7 +2,7 @@
 
 # gRPC Compatibility Matrix (v1)
 
-This document defines the compatibility policy for Maekon gRPC contracts in v1.
+This document defines the compatibility policy for ONESHIM gRPC contracts in v1.
 
 ## Scope
 

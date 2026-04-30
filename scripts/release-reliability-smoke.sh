@@ -210,7 +210,7 @@ if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
   [[ -f "$SIGNATURE_PATH" ]] || fatal "Signature missing while --require-signature is enabled: $SIGNATURE_PATH"
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-release-smoke.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oneshim-release-smoke.XXXXXX")"
 SERVER_LOG="$TMP_DIR/http.log"
 LOG_DIR="${ONESHIM_SMOKE_LOG_DIR:-$TMP_DIR}"
 if [[ -z "$INSTALL_DIR" ]]; then

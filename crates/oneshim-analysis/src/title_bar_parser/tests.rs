@@ -241,11 +241,11 @@ fn vscode_project_extraction() {
     let result = parser
         .parse(
             "Visual Studio Code",
-            "main.rs - maekon-client - Visual Studio Code",
+            "main.rs - oneshim-client - Visual Studio Code",
         )
         .unwrap();
     assert_eq!(result.content_label, "main.rs");
-    assert_eq!(result.project, Some("maekon-client".to_string()));
+    assert_eq!(result.project, Some("oneshim-client".to_string()));
 }
 
 #[test]
@@ -273,10 +273,10 @@ fn vscode_two_parts_no_project() {
 fn jetbrains_em_dash_project_extraction() {
     let parser = TitleBarParser::new();
     let result = parser
-        .parse("IntelliJ IDEA", "maekon-client \u{2013} Main.java")
+        .parse("IntelliJ IDEA", "oneshim-client \u{2013} Main.java")
         .unwrap();
     assert_eq!(result.content_label, "Main.java");
-    assert_eq!(result.project, Some("maekon-client".to_string()));
+    assert_eq!(result.project, Some("oneshim-client".to_string()));
 }
 
 #[test]
@@ -303,21 +303,21 @@ fn pycharm_project_extraction() {
 fn rustrover_project_extraction() {
     let parser = TitleBarParser::new();
     let result = parser
-        .parse("RustRover", "maekon-client \u{2013} lib.rs")
+        .parse("RustRover", "oneshim-client \u{2013} lib.rs")
         .unwrap();
     assert_eq!(result.content_label, "lib.rs");
-    assert_eq!(result.project, Some("maekon-client".to_string()));
+    assert_eq!(result.project, Some("oneshim-client".to_string()));
 }
 
 #[test]
 fn xcode_em_dash_project_extraction() {
     let parser = TitleBarParser::new();
     let result = parser
-        .parse("Xcode", "maekon-client \u{2014} main.swift")
+        .parse("Xcode", "oneshim-client \u{2014} main.swift")
         .unwrap();
     assert_eq!(result.content_label, "main.swift");
     assert_eq!(result.content_type, ContentType::File);
-    assert_eq!(result.project, Some("maekon-client".to_string()));
+    assert_eq!(result.project, Some("oneshim-client".to_string()));
     assert!((result.confidence - 0.90).abs() < f32::EPSILON);
 }
 
@@ -345,10 +345,10 @@ fn xcode_dash_fallback() {
 fn terminal_project_from_cwd_path() {
     let parser = TitleBarParser::new();
     let result = parser
-        .parse("iTerm2", "user@host: ~/projects/maekon-client")
+        .parse("iTerm2", "user@host: ~/projects/oneshim-client")
         .unwrap();
-    assert_eq!(result.content_label, "~/projects/maekon-client");
-    assert_eq!(result.project, Some("maekon-client".to_string()));
+    assert_eq!(result.content_label, "~/projects/oneshim-client");
+    assert_eq!(result.project, Some("oneshim-client".to_string()));
 }
 
 #[test]
@@ -429,10 +429,10 @@ fn browser_domain_hint_github() {
     let result = parser
         .parse(
             "Google Chrome",
-            "GitHub - pseudotop/maekon-client - Google Chrome",
+            "GitHub - pseudotop/oneshim-client - Google Chrome",
         )
         .unwrap();
-    assert_eq!(result.content_label, "GitHub - pseudotop/maekon-client");
+    assert_eq!(result.content_label, "GitHub - pseudotop/oneshim-client");
     assert_eq!(result.domain_hint, Some("github".to_string()));
 }
 
@@ -567,7 +567,7 @@ fn ide_no_domain_hint() {
     let result = parser
         .parse(
             "Visual Studio Code",
-            "main.rs - maekon-client - Visual Studio Code",
+            "main.rs - oneshim-client - Visual Studio Code",
         )
         .unwrap();
     assert_eq!(result.domain_hint, None);

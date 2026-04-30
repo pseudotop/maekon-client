@@ -1,6 +1,6 @@
 # Crate Implementation Docs
 
-Detailed implementation reference for the Maekon Rust client's current 15-package workspace
+Detailed implementation reference for the ONESHIM Rust client's current 15-package workspace
 (14 packages under `crates/` plus the `src-tauri` binary package; `cargo metadata --no-deps`
 is the source of truth).
 

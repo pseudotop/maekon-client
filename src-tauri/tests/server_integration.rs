@@ -90,7 +90,7 @@ async fn test_api_client_upload_context() {
             timestamp: chrono::Utc::now(),
             trigger_type: "AppSwitch".to_string(),
             app_name: "Visual Studio Code".to_string(),
-            window_title: "server_integration_test.rs - maekon-client".to_string(),
+            window_title: "server_integration_test.rs - oneshim-client".to_string(),
             resolution: (1920, 1080),
             importance: 0.8,
         },

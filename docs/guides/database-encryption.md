@@ -1,6 +1,6 @@
 # Database Encryption Guide
 
-Maekon stores all activity data in a local SQLite database. This guide documents
+ONESHIM stores all activity data in a local SQLite database. This guide documents
 the encryption key management strategy.
 
 ## Key Storage

@@ -12,7 +12,7 @@ pub struct ParsedContent {
     pub content_type: ContentType,
     pub confidence: f32,
     /// Project or repository name extracted from IDE/terminal title bars.
-    /// e.g., VS Code "main.rs - maekon-client - Visual Studio Code" → "maekon-client"
+    /// e.g., VS Code "main.rs - oneshim-client - Visual Studio Code" → "oneshim-client"
     pub project: Option<String>,
     /// Domain hint extracted from browser page titles via heuristic prefix matching.
     /// e.g., "Gmail - Inbox (3) - Google Chrome" → "gmail"

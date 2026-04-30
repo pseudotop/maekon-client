@@ -1,6 +1,6 @@
 # UI/UX QA Sheet (Platform Scope)
 
-This sheet is a general UI/UX quality gate for the Maekon web platform surfaces we currently operate.
+This sheet is a general UI/UX quality gate for the ONESHIM web platform surfaces we currently operate.
 
 ## 1) Scope
 
