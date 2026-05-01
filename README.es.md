@@ -309,7 +309,7 @@ identificadores técnicos estables en esta línea de lanzamiento.
 Un workspace de Cargo con 15 paquetes siguiendo Hexagonal Architecture (Ports & Adapters). Los 14 crates viven bajo `crates/`, y el binario principal/composition root vive en `src-tauri/` (Tauri v2, paquete `oneshim-app`).
 
 ```
-oneshim-client/
+maekon-client/
 ├── src-tauri/              # Punto de entrada binario Tauri v2 + composition root
 │   ├── src/
 │   │   ├── main.rs         # Constructor de la app Tauri + cableado DI

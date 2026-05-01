@@ -302,7 +302,7 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 Hexagonal Architecture (Ports & Adapters) 패턴을 따르는 15개 패키지 Cargo 워크스페이스입니다. 14개 크레이트는 `crates/` 아래에 있고, 메인 바이너리/composition root는 `src-tauri/` (Tauri v2, 패키지명 `oneshim-app`)에 있습니다.
 
 ```
-oneshim-client/
+maekon-client/
 ├── src-tauri/              # Tauri v2 바이너리 진입점 + composition root
 │   ├── src/
 │   │   ├── main.rs         # Tauri 앱 빌더 + DI 연결
