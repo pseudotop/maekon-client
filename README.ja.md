@@ -308,7 +308,7 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 Hexagonal Architecture（Ports & Adapters）に従う15パッケージのCargo workspaceです。14個のクレイトは`crates/`配下にあり、メインバイナリ/composition rootは`src-tauri/`（Tauri v2、パッケージ名`oneshim-app`）です。
 
 ```
-oneshim-client/
+maekon-client/
 ├── src-tauri/              # Tauri v2バイナリエントリーポイント + composition root
 │   ├── src/
 │   │   ├── main.rs         # Tauriアプリビルダー + DI配線
