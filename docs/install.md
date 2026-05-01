@@ -4,6 +4,11 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
+> Public GitHub Release assets for `pseudotop/maekon-client` are not published
+> yet. The installer commands below require release assets and will work after
+> the first public release is published. Until then, use the source build quick
+> start in the repository README.
+
 Compatibility note: release filenames, install script names, `ONESHIM_*`
 environment variables, and the `oneshim` CLI command intentionally keep their
 current names for installer, updater, and existing-user compatibility.

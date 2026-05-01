@@ -17,25 +17,17 @@
 
 Un cliente de escritorio para productividad de oficina asistida por IA: captura de contexto local, sugerencias en tiempo real y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
 
-## Instalación en 30 Segundos
+## Inicio Rápido desde Source Build
 
-macOS / Linux:
+El repositorio público ya está disponible, pero los artefactos públicos de GitHub Releases aún no se han publicado. Hasta que exista la primera release pública, ejecute Maekon desde un source checkout local.
+
 ```bash
-curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/oneshim-install.sh
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
+./scripts/cargo-cache.sh run -p oneshim-app -- --offline
 ```
 
-Windows (PowerShell):
-```powershell
-$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
-  -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
-```
-
-Para fijar versiones, verificación de firmas y desinstalación:
+Los comandos del instalador de release están documentados abajo y serán la ruta recomendada después de publicar los artefactos públicos. Para fijar versiones, verificación de firmas y desinstalación:
 - Inglés: [`docs/install.md`](./docs/install.md)
 - Coreano: [`docs/install.ko.md`](./docs/install.ko.md)
 

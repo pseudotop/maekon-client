@@ -19,7 +19,7 @@ A desktop client for AI-assisted office productivity — local context capture, 
 
 ## Table of Contents
 
-- [Install in 30 Seconds](#install-in-30-seconds)
+- [Source Build Quick Start](#source-build-quick-start)
 - [Why Maekon](#why-maekon)
 - [Who It's For](#who-its-for)
 - [2-Minute Quickstart](#2-minute-quickstart)
@@ -34,25 +34,21 @@ A desktop client for AI-assisted office productivity — local context capture, 
 - [License](#license)
 - [Contributing](#contributing)
 
-## Install in 30 Seconds
+## Source Build Quick Start
 
-macOS / Linux:
+The public repository is live, but public GitHub Release assets are not
+published yet. Until the first public release is available, run Maekon from a
+local source checkout:
+
 ```bash
-curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/oneshim-install.sh
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
+./scripts/cargo-cache.sh run -p oneshim-app -- --offline
 ```
 
-Windows (PowerShell):
-```powershell
-$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
-  -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
-```
-
-For version pinning, signature enforcement, and uninstall:
+Release installer commands are documented below and will become the recommended
+path after public release assets are published. For version pinning, signature
+enforcement, and uninstall:
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -229,6 +225,11 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
+> Release installers require published assets under
+> `pseudotop/maekon-client` GitHub Releases. The public repository currently
+> has no release assets; use the source build quick start until the first public
+> release is published.
+
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
@@ -248,6 +249,9 @@ powershell -ExecutionPolicy Bypass -File $tmp
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
+
+Public release assets have not been published yet. This table documents the
+expected filenames once the first public release is available.
 
 Maekon is the app display name. Current release filenames intentionally retain
 `oneshim-*` for installer, updater, and checksum compatibility.

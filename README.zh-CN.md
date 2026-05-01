@@ -17,25 +17,17 @@
 
 一款用于 AI 辅助办公生产力的桌面客户端 -- 本地上下文采集、实时建议和内置仪表盘。基于 Rust 和 Tauri v2（WebView 外壳 + React 前端）构建，在 macOS、Windows 和 Linux 上提供原生性能。
 
-## 30 秒安装
+## Source Build 快速开始
 
-macOS / Linux:
+公开仓库已经可用，但公开 GitHub Release 资产尚未发布。在第一个公开版本发布之前，请从本地 source checkout 运行 Maekon。
+
 ```bash
-curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/oneshim-install.sh
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
+./scripts/cargo-cache.sh run -p oneshim-app -- --offline
 ```
 
-Windows (PowerShell):
-```powershell
-$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
-  -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
-```
-
-如需版本锁定、签名验证和卸载说明：
+Release 安装命令记录在下面的安装文档中，并将在公开 Release 资产发布后成为推荐路径。如需版本锁定、签名验证和卸载说明：
 - 英文: [`docs/install.md`](./docs/install.md)
 - 韩文: [`docs/install.ko.md`](./docs/install.ko.md)
 

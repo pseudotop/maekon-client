@@ -17,25 +17,17 @@
 
 AI支援によるオフィス生産性向上のためのデスクトップクライアントです。ローカルコンテキストの収集、リアルタイム提案、内蔵ダッシュボードを提供します。RustとTauri v2（Reactフロントエンドを包むWebViewシェル）で構築されており、macOS、Windows、Linuxでネイティブパフォーマンスを発揮します。
 
-## 30秒でインストール
+## Source Buildクイックスタート
 
-macOS / Linux:
+公開リポジトリは利用可能ですが、公開GitHub Releaseアセットはまだ公開されていません。最初の公開リリースが利用可能になるまでは、ローカルのsource checkoutからMaekonを実行してください。
+
 ```bash
-curl -fsSL -o /tmp/oneshim-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/oneshim-install.sh
+git clone https://github.com/pseudotop/maekon-client.git
+cd maekon-client
+./scripts/cargo-cache.sh run -p oneshim-app -- --offline
 ```
 
-Windows (PowerShell):
-```powershell
-$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
-  -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
-```
-
-バージョン固定、署名検証の強制、アンインストール方法：
+リリースインストーラーのコマンドは下記のインストール文書に記載されており、公開リリースアセットが公開された後に推奨パスになります。バージョン固定、署名検証の強制、アンインストール方法：
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
