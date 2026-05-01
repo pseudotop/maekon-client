@@ -308,7 +308,7 @@ Maekon 是应用显示名称。当前发布文件名会有意保留 `oneshim-*`
 基于 Hexagonal Architecture（Ports & Adapters）的 15 包 Cargo workspace。14 个 crate 位于 `crates/` 下，主二进制/composition root 位于 `src-tauri/`（Tauri v2，包名 `oneshim-app`）。
 
 ```
-oneshim-client/
+maekon-client/
 ├── src-tauri/              # Tauri v2 二进制入口 + composition root
 │   ├── src/
 │   │   ├── main.rs         # Tauri 应用构建 + 依赖注入布线

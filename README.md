@@ -336,7 +336,7 @@ identifiers for this release line.
 A Cargo workspace with adapter crates following Hexagonal Architecture (Ports & Adapters). Since v0.1.5 the main binary entry point is `src-tauri/` (Tauri v2), which hosts the existing React dashboard in a WebView shell.
 
 ```
-oneshim-client/
+maekon-client/
 ├── src-tauri/              # Tauri v2 binary entry point (main binary, v0.1.5+)
 │   ├── src/
 │   │   ├── main.rs         # Tauri app builder + DI wiring

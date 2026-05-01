@@ -4,15 +4,43 @@ use oneshim_core::error::CoreError;
 use oneshim_core::models::context::{MousePosition, UserContext};
 use oneshim_core::ports::monitor::{ActivityMonitor, ProcessMonitor};
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 use tracing::debug;
 
 pub struct ActivityTracker {
     process_monitor: Arc<dyn ProcessMonitor>,
+    #[cfg(test)]
+    mouse_position_for_test: Option<Option<MousePosition>>,
 }
 
 impl ActivityTracker {
     pub fn new(process_monitor: Arc<dyn ProcessMonitor>) -> Self {
-        Self { process_monitor }
+        Self {
+            process_monitor,
+            #[cfg(test)]
+            mouse_position_for_test: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_mouse_position_for_test(
+        process_monitor: Arc<dyn ProcessMonitor>,
+        mouse_position: Option<MousePosition>,
+    ) -> Self {
+        Self {
+            process_monitor,
+            mouse_position_for_test: Some(mouse_position),
+        }
+    }
+
+    async fn collect_mouse_position(&self) -> Option<MousePosition> {
+        #[cfg(test)]
+        if let Some(mouse_position) = self.mouse_position_for_test {
+            return mouse_position;
+        }
+
+        get_mouse_position().await
     }
 }
 
@@ -26,7 +54,7 @@ impl ActivityMonitor for ActivityTracker {
             timestamp: Utc::now(),
             active_window,
             processes,
-            mouse_position: get_mouse_position().await,
+            mouse_position: self.collect_mouse_position().await,
         };
 
         debug!(
@@ -49,7 +77,24 @@ impl ActivityMonitor for ActivityTracker {
 async fn get_mouse_position() -> Option<MousePosition> {
     #[cfg(target_os = "macos")]
     {
-        crate::macos::get_mouse_position_macos()
+        const MOUSE_POSITION_TIMEOUT: Duration = Duration::from_millis(500);
+
+        match tokio::time::timeout(
+            MOUSE_POSITION_TIMEOUT,
+            tokio::task::spawn_blocking(crate::macos::get_mouse_position_macos),
+        )
+        .await
+        {
+            Ok(Ok(mouse_position)) => mouse_position,
+            Ok(Err(error)) => {
+                debug!(?error, "mouse position worker failed");
+                None
+            }
+            Err(_) => {
+                debug!("mouse position lookup timed out");
+                None
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -116,10 +161,16 @@ mod tests {
 
     #[tokio::test]
     async fn collect_context() {
-        let tracker = ActivityTracker::new(Arc::new(MockProcessMonitor));
+        let tracker = ActivityTracker::new_with_mouse_position_for_test(
+            Arc::new(MockProcessMonitor),
+            Some(MousePosition { x: 120, y: 80 }),
+        );
         let ctx = tracker.collect_context().await.unwrap();
         assert!(ctx.active_window.is_some());
         assert_eq!(ctx.active_window.unwrap().app_name, "Code");
         assert_eq!(ctx.processes.len(), 1);
+        let mouse_position = ctx.mouse_position.unwrap();
+        assert_eq!(mouse_position.x, 120);
+        assert_eq!(mouse_position.y, 80);
     }
 }
