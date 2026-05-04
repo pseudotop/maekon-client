@@ -45,7 +45,15 @@ The goal is to keep the standalone trust model strict today, while making future
 Documented exception:
 
 - `RUSTSEC-2024-0429` (`glib 0.18.5`) is currently accepted only because it is a Linux-only GTK3 / `webkit2gtk` / `wry` / Tauri transitive dependency outside direct project control.
+- This exception is accepted for internal Linux validation and source builds only. Official public Linux release artifacts (`.deb`, Linux tarball) MUST stay deferred while this runtime exception is active, unless maintainers explicitly record a public-release risk acceptance before tagging.
 - This exception must remain explicit in repository policy (`deny.toml`, integrity workflow/script) and must be removed once the upstream stack ships patched `glib` / `gtk-rs-core`.
+- `RUSTSEC-2026-0097` (`rand 0.7.x`) is accepted only as a build-time transitive advisory currently reached through Tauri HTML/build tooling. Re-check `cargo tree --locked --edges normal -i rand@0.7.3` before every public release candidate; if it appears in the normal runtime graph, it becomes a release blocker.
+
+Public artifact gate:
+
+- Any new medium-or-higher advisory that affects a shipped runtime artifact is a release blocker for that platform.
+- Low/build-time-only advisories may be accepted only when the dependency path is documented and the runtime graph check remains clean.
+- Public release notes and install docs must not advertise a platform whose official artifact is deferred by this gate.
 
 ### 3) Runtime Boundary Rules
 

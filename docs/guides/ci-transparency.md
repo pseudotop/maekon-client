@@ -117,16 +117,19 @@ For stable tags, the pipeline also verifies:
 | macOS (Apple Silicon) | `aarch64-apple-darwin` | `.dmg` (notarized) |
 | macOS (Intel) | `x86_64-apple-darwin` | `.dmg` (notarized) |
 | Windows | `x86_64-pc-windows-msvc` | `.msi` (signed) |
-| Linux (Debian) | `x86_64-unknown-linux-gnu` | `.deb` |
-| Linux (RPM) | `x86_64-unknown-linux-gnu` | `.rpm` |
+
+Linux source builds remain covered by CI and release smoke validation, but
+official public Linux release artifacts are temporarily deferred while the
+Tauri/Wry GTK runtime stack still carries the documented `glib 0.18.x`
+advisory exception.
 
 macOS `.dmg` files are notarized via Apple's notarization service using the workflow defined in [`.github/workflows/notarize-macos-release-assets.yml`](../../.github/workflows/notarize-macos-release-assets.yml). Gatekeeper will allow installation without warnings.
 
 ### GitHub Release
 
-After all builds succeed, a GitHub Release is created automatically with:
+After all public artifact builds succeed, a GitHub Release is created automatically with:
 - Changelog entry for the version.
-- All platform artifacts attached.
+- macOS and Windows artifacts attached.
 - SHA-256 checksums for each artifact.
 
 ---

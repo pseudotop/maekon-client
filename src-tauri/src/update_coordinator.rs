@@ -643,9 +643,9 @@ mod tests {
                 body: None,
                 prerelease: false,
                 assets: vec![ReleaseAsset {
-                    name: "oneshim-macos-arm64.tar.gz".to_string(),
+                    name: "maekon-macos-arm64.tar.gz".to_string(),
                     browser_download_url:
-                        "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
+                        "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/maekon-macos-arm64.tar.gz"
                             .to_string(),
                     size: 123,
                     content_type: "application/gzip".to_string(),
@@ -654,7 +654,7 @@ mod tests {
                 published_at: Some("2026-02-21T10:00:00Z".to_string()),
             }),
             download_url:
-                "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/oneshim-macos-arm64.tar.gz"
+                "https://github.com/pseudotop/maekon-client/releases/download/v1.2.0/maekon-macos-arm64.tar.gz"
                     .to_string(),
             download_size: None,
             asset_type: UpdateAssetType::FullBinary,

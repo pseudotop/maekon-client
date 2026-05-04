@@ -7,6 +7,11 @@
 CLAUDE.md
 .github/PR-*-description-draft.md
 
+# Internal auto-merge automation belongs to the SSOT repository. Keep the public
+# Dependabot config/export surface available for OSS visibility, but do not
+# export automation that can merge dependency PRs before upstream replay.
+.github/workflows/dependabot-auto-merge.yml
+
 # Internal/session-scoped planning artifacts. Keep public docs focused on
 # shipped architecture, contracts, install/run guidance, security, and testing.
 docs/superpowers
@@ -16,10 +21,15 @@ docs/roadmap
 docs/plan
 docs/specs
 docs/migration
+docs/qa/runs
 docs/guides/public-repo-launch-playbook*.md
 docs/PHASE-HISTORY.md
 docs/STATUS*.md
 crates/oneshim-web/frontend/docs
+crates/oneshim-web/frontend/storybook-review-static
+crates/oneshim-web/frontend/storybook-static
+crates/oneshim-web/frontend/playwright-report
+crates/oneshim-web/frontend/coverage
 
 # Root specs may contain planning docs, but specs/providers is runtime data used
 # by oneshim-core via include_str!, so exclude only markdown specs here.
@@ -30,6 +40,9 @@ tests/private
 
 # Local/generated build artifacts that may exist in working-tree exports.
 src-tauri/oneshim-sandbox-worker-*
+artifacts
+crates/*/sbom.cdx.json
+src-tauri/sbom.cdx.json
 .env
 .env.*
 .claude

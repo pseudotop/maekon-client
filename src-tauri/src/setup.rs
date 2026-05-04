@@ -28,10 +28,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Tauri setup: initializing Maekon agent");
-    let offline_mode = crate::offline_mode_enabled();
-    let bundle = BootstrapRuntimeBuilder::new()
-        .with_offline_mode(offline_mode)
-        .build()?;
+    let bundle = BootstrapRuntimeBuilder::new().build()?;
 
     // Bus-driven telemetry reconcile task. ConfigManager now exists (built
     // inside bundle); the tracing subscriber was installed in main.rs with a
@@ -48,9 +45,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let AppRuntimeLaunchResult {
         frontend_web_port,
         state_builder,
-    } = AppRuntimeLaunchBuilder::new(bundle, app.handle().clone())
-        .with_offline_mode(offline_mode)
-        .build_and_spawn()?;
+    } = AppRuntimeLaunchBuilder::new(bundle, app.handle().clone()).build_and_spawn()?;
 
     state_builder.build().register_on(app);
     crate::setup_shortcuts::register_all(app);

@@ -10,6 +10,13 @@
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
 
+> [!IMPORTANT]
+> This legacy repository is in transition. Active public development, install
+> scripts, releases, and security reporting for Maekon Client now live in
+> [`pseudotop/maekon-client`](https://github.com/pseudotop/maekon-client).
+> This repository remains available for transition history and redirect/security
+> maintenance until the final archive step.
+
 # Maekon
 
 > **De la actividad bruta del escritorio a logros diarios de enfoque.**
@@ -17,17 +24,25 @@
 
 Un cliente de escritorio para productividad de oficina asistida por IA: captura de contexto local, sugerencias en tiempo real y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
 
-## Inicio Rápido desde Source Build
+## Instalación en 30 Segundos
 
-El repositorio público ya está disponible, pero los artefactos públicos de GitHub Releases aún no se han publicado. Hasta que exista la primera release pública, ejecute Maekon desde un source checkout local.
-
+macOS / Linux:
 ```bash
-git clone https://github.com/pseudotop/maekon-client.git
-cd maekon-client
-./scripts/cargo-cache.sh run -p oneshim-app -- --offline
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
-Los comandos del instalador de release están documentados abajo y serán la ruta recomendada después de publicar los artefactos públicos. Para fijar versiones, verificación de firmas y desinstalación:
+Windows (PowerShell):
+```powershell
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp
+```
+
+Para fijar versiones, verificación de firmas y desinstalación:
 - Inglés: [`docs/install.md`](./docs/install.md)
 - Coreano: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -66,7 +81,6 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 - Línea base de integridad autónoma: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Runbook de operaciones de integridad: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - Índice de documentación: [docs/README.md](./docs/README.md)
-- Guía de lanzamiento público: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
 - Plantillas de guía de automatización: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Runbook de adopción autónoma: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - Guía de los primeros 5 minutos: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -238,8 +252,11 @@ compatibilidad con instaladores, actualizadores y checksums.
 | macOS Intel | `oneshim-macos-x64.tar.gz` |
 | Windows x64 (zip) | `oneshim-windows-x64.zip` |
 | Windows x64 (MSI) | `oneshim-app-*.msi` |
-| Linux x64 (paquete DEB) | `oneshim-*.deb` |
-| Linux x64 | `oneshim-linux-x64.tar.gz` |
+
+Los artefactos públicos de Linux están temporalmente aplazados mientras la pila
+Tauri/Wry GTK upstream conserve la excepción documentada de `glib 0.18.x`.
+Las compilaciones desde código fuente para Linux siguen disponibles; consulta
+[`docs/install.md`](./docs/install.md).
 
 ## Configuración
 

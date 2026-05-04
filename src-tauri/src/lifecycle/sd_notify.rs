@@ -7,7 +7,7 @@
 #[cfg(all(target_os = "linux", feature = "systemd-notify"))]
 pub fn notify_ready() {
     use oneshim_core::error_codes::AutostartCode;
-    if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
+    if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
         tracing::debug!(
             err.code = AutostartCode::SdNotifySkipped.as_str(),
             "sd_notify READY skipped (not run under systemd): {e}"
@@ -23,7 +23,7 @@ pub fn notify_ready() {
 #[cfg(all(target_os = "linux", feature = "systemd-notify"))]
 #[allow(dead_code)] // no caller yet; will be wired in shutdown path
 pub fn notify_stopping() {
-    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+    let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
 }
 
 #[cfg(not(all(target_os = "linux", feature = "systemd-notify")))]

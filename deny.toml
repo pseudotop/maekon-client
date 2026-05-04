@@ -28,12 +28,17 @@ private = { ignore = true }
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 # GTK3 bindings (Tauri transitive deps) trigger unmaintained + unsound advisories
-# (RUSTSEC-2024-0411..0418, 2025-0057, 2024-0429) we cannot control upstream
-# "none"/"workspace" — skip transitive dep checks, only guard our own crates
+# (RUSTSEC-2024-0411..0418, 2025-0057, 2024-0429) we cannot control upstream.
+# RUSTSEC-2026-0097 is a rand 0.7.x build-time transitive advisory currently
+# reached through Tauri HTML/build tooling, not the runtime graph.
+# "none"/"workspace" — skip transitive dep checks, only guard our own crates.
 unmaintained = "none"
 unsound = "workspace"
 yanked = "deny"
-ignore = []
+ignore = [
+  "RUSTSEC-2024-0429",
+  "RUSTSEC-2026-0097",
+]
 
 [bans]
 multiple-versions = "allow"

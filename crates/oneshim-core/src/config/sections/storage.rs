@@ -351,7 +351,7 @@ fn default_repo_owner() -> String {
 }
 
 fn default_repo_name() -> String {
-    "maekon-client".to_string()
+    "oneshim-client".to_string()
 }
 
 fn default_check_interval_hours() -> u32 {

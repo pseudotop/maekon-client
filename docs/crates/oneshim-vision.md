@@ -295,7 +295,7 @@ PII detection is level-based (`Off`, `Basic`, `Standard`, `Strict`) and exposes 
 
 ## External OCR Privacy Path
 
-For remote OCR providers, ONESHIM uses:
+For remote OCR providers, Maekon uses:
 
 1. `PrivacyGateway::sanitize_image_for_external_policy()`
 2. send sanitized image to remote OCR

@@ -10,6 +10,13 @@
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
 
+> [!IMPORTANT]
+> This legacy repository is in transition. Active public development, install
+> scripts, releases, and security reporting for Maekon Client now live in
+> [`pseudotop/maekon-client`](https://github.com/pseudotop/maekon-client).
+> This repository remains available for transition history and redirect/security
+> maintenance until the final archive step.
+
 # Maekon
 
 > **デスクトップの作業活動を、日々のフォーカス成果へ。**
@@ -17,17 +24,25 @@
 
 AI支援によるオフィス生産性向上のためのデスクトップクライアントです。ローカルコンテキストの収集、リアルタイム提案、内蔵ダッシュボードを提供します。RustとTauri v2（Reactフロントエンドを包むWebViewシェル）で構築されており、macOS、Windows、Linuxでネイティブパフォーマンスを発揮します。
 
-## Source Buildクイックスタート
+## 30秒でインストール
 
-公開リポジトリは利用可能ですが、公開GitHub Releaseアセットはまだ公開されていません。最初の公開リリースが利用可能になるまでは、ローカルのsource checkoutからMaekonを実行してください。
-
+macOS / Linux:
 ```bash
-git clone https://github.com/pseudotop/maekon-client.git
-cd maekon-client
-./scripts/cargo-cache.sh run -p oneshim-app -- --offline
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
-リリースインストーラーのコマンドは下記のインストール文書に記載されており、公開リリースアセットが公開された後に推奨パスになります。バージョン固定、署名検証の強制、アンインストール方法：
+Windows (PowerShell):
+```powershell
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp
+```
+
+バージョン固定、署名検証の強制、アンインストール方法：
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -66,7 +81,6 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - Standalone整合性ベースライン: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 整合性運用ランブック: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - ドキュメントインデックス: [docs/README.md](./docs/README.md)
-- パブリックローンチプレイブック: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
 - 自動化プレイブックテンプレート: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Standalone導入ランブック: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - 最初の5分ガイド: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -237,8 +251,11 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 | macOS Intel | `oneshim-macos-x64.tar.gz` |
 | Windows x64 (zip) | `oneshim-windows-x64.zip` |
 | Windows x64 (MSI) | `oneshim-app-*.msi` |
-| Linux x64（DEBパッケージ） | `oneshim-*.deb` |
-| Linux x64 | `oneshim-linux-x64.tar.gz` |
+
+Linux の公開リリースアーティファクトは、upstream の Tauri/Wry GTK
+ランタイムスタックに文書化済みの `glib 0.18.x` advisory 例外が残っている
+間、一時的に保留しています。Linux のソースビルドは引き続き利用できます。
+詳しくは [`docs/install.md`](./docs/install.md) を参照してください。
 
 ## 設定
 

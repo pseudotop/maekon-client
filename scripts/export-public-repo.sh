@@ -78,13 +78,7 @@ if [[ "$DEST_CREATED" == "0" && -e "$DEST_DIR" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-GIT_TOPLEVEL="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
-SOURCE_PREFIX=""
-if [[ "$GIT_TOPLEVEL" != "$REPO_ROOT" ]]; then
-  SOURCE_PREFIX="${REPO_ROOT#"$GIT_TOPLEVEL"/}"
-fi
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 EXCLUDE_FILE="$REPO_ROOT/scripts/public-repo-exclude.txt"
 
 apply_exclude_rules() {
@@ -110,11 +104,14 @@ validate_public_export() {
     "Cargo.toml"
     "README.md"
     "LICENSE"
+    ".github/dependabot.yml"
     "assets/brand/cli-banner.txt"
     "specs/providers/provider-surface-catalog.json"
   )
   local forbidden_paths=(
     "CLAUDE.md"
+    ".github/workflows/dependabot-auto-merge.yml"
+    "artifacts"
     "docs/superpowers"
     "docs/reviews"
     "docs/research"
@@ -122,12 +119,17 @@ validate_public_export() {
     "docs/plan"
     "docs/specs"
     "docs/migration"
+    "docs/qa/runs"
     "docs/guides/public-repo-launch-playbook.md"
     "docs/guides/public-repo-launch-playbook.ko.md"
     "docs/PHASE-HISTORY.md"
     "docs/STATUS.md"
     "docs/STATUS.ko.md"
     "crates/oneshim-web/frontend/docs"
+    "crates/oneshim-web/frontend/storybook-review-static"
+    "crates/oneshim-web/frontend/storybook-static"
+    "crates/oneshim-web/frontend/playwright-report"
+    "crates/oneshim-web/frontend/coverage"
     "tests/private"
     "server"
     "backoffice"
@@ -157,13 +159,19 @@ validate_public_export() {
     missing=1
   fi
 
+  if find "$DEST_DIR" -name 'sbom.cdx.json' -print -quit 2>/dev/null | grep -q .; then
+    echo "error: public export contains generated SBOM artifacts" >&2
+    missing=1
+  fi
+
   local scan_file
   scan_file="$(mktemp "${TMPDIR:-/tmp}/maekon-public-scan.XXXXXX")"
   local internal_volume_pattern="/Volumes""/ext"
   local generated_pattern="Generated with \[Claude Code\]"
   local ralph_pattern="ralph""-loop"
   local private_tests_pattern="tests/private""/client-rust"
-  local high_confidence_pattern="(${internal_volume_pattern}|${generated_pattern}|${ralph_pattern}|${private_tests_pattern})"
+  local legacy_email_pattern="[[:alnum:]._%+-]+@oneshim\\.dev"
+  local high_confidence_pattern="(${internal_volume_pattern}|${generated_pattern}|${ralph_pattern}|${private_tests_pattern}|${legacy_email_pattern})"
 
   if grep -RInE --binary-files=without-match \
     --exclude-dir=.git \
@@ -171,6 +179,22 @@ validate_public_export() {
     "$high_confidence_pattern" \
     "$DEST_DIR" > "$scan_file"; then
     echo "error: public export contains high-confidence internal references:" >&2
+    cat "$scan_file" >&2
+    rm -f "$scan_file"
+    missing=1
+  else
+    rm -f "$scan_file"
+  fi
+
+  scan_file="$(mktemp "${TMPDIR:-/tmp}/maekon-public-scan.XXXXXX")"
+  local legacy_public_repo_pattern="pseudotop/oneshim""-client|raw.githubusercontent.com/pseudotop/oneshim""-client"
+  if grep -RInE --binary-files=without-match \
+    --exclude-dir=.git \
+    --exclude='*.lock' \
+    --exclude='CHANGELOG.md' \
+    "$legacy_public_repo_pattern" \
+    "$DEST_DIR" > "$scan_file"; then
+    echo "error: public export contains stale public repository references:" >&2
     cat "$scan_file" >&2
     rm -f "$scan_file"
     missing=1
@@ -197,21 +221,18 @@ if [[ "$EXPORT_WORKTREE" == "1" ]]; then
     --exclude '**/node_modules/' \
     --exclude 'dist/' \
     --exclude '**/dist/' \
+    --exclude 'storybook-review-static/' \
+    --exclude '**/storybook-review-static/' \
+    --exclude 'storybook-static/' \
+    --exclude '**/storybook-static/' \
+    --exclude 'playwright-report/' \
+    --exclude '**/playwright-report/' \
+    --exclude 'coverage/' \
+    --exclude '**/coverage/' \
     --exclude '.DS_Store' \
     "$REPO_ROOT/" "$DEST_DIR/"
 else
-  if [[ -n "$SOURCE_PREFIX" ]]; then
-    strip_components=1
-    prefix_tail="$SOURCE_PREFIX"
-    while [[ "$prefix_tail" == */* ]]; do
-      strip_components=$((strip_components + 1))
-      prefix_tail="${prefix_tail#*/}"
-    done
-    git -C "$GIT_TOPLEVEL" archive "$SOURCE_REF" -- "$SOURCE_PREFIX" \
-      | tar -xf - -C "$DEST_DIR" --strip-components "$strip_components"
-  else
-    git -C "$GIT_TOPLEVEL" archive "$SOURCE_REF" | tar -xf - -C "$DEST_DIR"
-  fi
+  git -C "$REPO_ROOT" archive "$SOURCE_REF" | tar -xf - -C "$DEST_DIR"
 fi
 
 if [[ -f "$EXCLUDE_FILE" ]]; then

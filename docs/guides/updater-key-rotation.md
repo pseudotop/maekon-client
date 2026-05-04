@@ -100,7 +100,7 @@ Cut `v0.4.N-hotfix` from the hotfix branch. Release workflow signs with the alre
 
 - **macOS**: Apple codesign signature on the DMG/PKG + (when notarization pipeline is fixed) Apple notarization. Gatekeeper validates these at install time.
 - **Windows**: GitHub Release page SHA-256 hash + manual verification via PowerShell `Get-FileHash`. No Authenticode codesign currently in this project.
-- **Linux**: GitHub Release SHA-256 + provenance attestation from `actions/attest-build-provenance` (`release.yml:1152-1155`). Users manually verify both the SHA-256 and the attestation.
+- **Linux**: official public release artifacts are currently deferred while the documented `glib 0.18.x` runtime advisory exception remains active. For internal Linux rehearsal artifacts, use GitHub Release SHA-256 + provenance attestation and manually verify both.
 
 Notify via:
 - Release notes on the hotfix (explain the rotation in plain language).

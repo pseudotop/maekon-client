@@ -7,24 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.41-rc.3] - 2026-05-01
-
-### Security
-
-- Refresh public release dependency baselines by updating vulnerable transitive
-  `rand` locks, moving frontend tests to Vitest 4, and pinning
-  `serialize-javascript` to the patched 7.0.5 line.
-
-## [0.4.41-rc.2] - 2026-05-01
-
-### Fixed
-
-- Guard macOS mouse-position collection so a blocked CoreGraphics lookup cannot
-  stall activity context collection, and keep the live CoreGraphics smoke test
-  opt-in for interactive sessions.
-- Align public README architecture tree roots with the `maekon-client` repository
-  name across localized README files.
-
 ## [0.4.41-rc.1] - 2026-04-27
 
 ### Added

@@ -29,7 +29,7 @@ fn regression_harness_is_wired() {
 // Future regression tests go below. Example:
 //
 // /// GH-142: deep_merge crashed on null array values
-// /// https://github.com/pseudotop/oneshim-client/issues/142
+// /// Legacy issue #142
 // #[test]
 // fn test_gh142_deep_merge_null_array() {
 //     let mut base = serde_json::json!({"items": [1,2,3]});

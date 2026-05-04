@@ -117,7 +117,7 @@ stream {
     upstream oneshim_backend {
         server 127.0.0.1:10092;
     }
-
+    
     server {
         listen 443;
         listen [::]:443;

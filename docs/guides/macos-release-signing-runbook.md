@@ -23,16 +23,16 @@ If any secret is missing, `build-macos-universal` fails fast.
 
 ## Asset Expectations
 
-- `crates/oneshim-app/assets/icon.icns` must be a valid ICNS file.
+- `src-tauri/icons/icon.icns` must be a valid ICNS file.
 - Source-of-truth logo asset is `assets/brand/logo-icon.svg`.
 - Regenerate app icons via `./scripts/generate-app-icons.sh`.
 
 ## Local Preflight (optional)
 
 ```bash
-file crates/oneshim-app/assets/icon.icns
-codesign --verify --deep --strict --verbose=2 dist/ONESHIM.app
-spctl --assess --type exec --verbose=4 dist/ONESHIM.app
+file src-tauri/icons/icon.icns
+codesign --verify --deep --strict --verbose=2 dist/Maekon.app
+spctl --assess --type exec --verbose=4 dist/Maekon.app
 spctl --assess --type open --verbose=4 dist/oneshim-macos-universal.dmg
 spctl --assess --type install --verbose=4 dist/oneshim-macos-universal.pkg
 ```

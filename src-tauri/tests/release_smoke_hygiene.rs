@@ -47,7 +47,7 @@ fn release_reliability_smoke_can_require_signature_verification() {
 }
 
 #[test]
-fn release_workflow_runs_signed_installer_smoke_before_publishing() {
+fn release_workflow_verifies_artifact_signatures_before_publishing() {
     let root = repo_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
         .expect("release workflow is readable");
@@ -55,19 +55,19 @@ fn release_workflow_runs_signed_installer_smoke_before_publishing() {
     let sign_step = workflow
         .find("Sign release artifacts (Ed25519)")
         .expect("release workflow should sign artifacts");
-    let smoke_step = workflow
-        .find("Run signed release reliability smoke")
-        .expect("release workflow should smoke signed installer verification");
+    let verify_step = workflow
+        .find("Verify release artifact signatures (Ed25519)")
+        .expect("release workflow should verify signed artifacts");
 
     assert!(
-        sign_step < smoke_step,
-        "signed release smoke should run after Ed25519 signatures are generated"
+        sign_step < verify_step,
+        "release artifact signature verification should run after Ed25519 signatures are generated"
     );
     assert!(
-        workflow.contains(
-            "./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name oneshim-linux-x64.tar.gz --skip-updater-tests --require-signature"
-        ),
-        "release workflow should run installer smoke in fail-closed signature mode before publishing"
+        workflow.contains("Missing signature sidecar")
+            && workflow.contains("Invalid signature for")
+            && workflow.contains("No release artifact signatures were verified"),
+        "release workflow should fail closed when release artifact signatures are missing or invalid"
     );
 }
 

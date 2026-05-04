@@ -47,7 +47,15 @@
 문서화된 예외:
 
 - `RUSTSEC-2024-0429` (`glib 0.18.5`)는 Linux 전용 GTK3 / `webkit2gtk` / `wry` / Tauri 전이 의존성이라 현재 프로젝트가 직접 해소할 수 없어 한시적으로 허용합니다.
+- 이 예외는 내부 Linux 검증 및 소스 빌드에 한해 허용합니다. 공식 공개 Linux 릴리즈 아티팩트(`.deb`, Linux tarball)는 이 런타임 예외가 활성화되어 있는 동안 보류해야 하며, 예외적으로 공개 릴리즈에 포함하려면 태그 생성 전에 maintainer가 public-release risk acceptance를 명시적으로 기록해야 합니다.
 - 이 예외는 저장소 정책(`deny.toml`, integrity workflow/script)에 명시적으로 남아 있어야 하며, upstream desktop stack이 패치된 `glib` / `gtk-rs-core`로 이동하면 즉시 제거해야 합니다.
+- `RUSTSEC-2026-0097` (`rand 0.7.x`)는 현재 Tauri HTML/build tooling을 통해서만 도달하는 build-time 전이 advisory로 한정해 허용합니다. 모든 public release candidate 전에 `cargo tree --locked --edges normal -i rand@0.7.3`를 재확인하고, normal runtime graph에 나타나면 release blocker로 전환합니다.
+
+Public artifact gate:
+
+- shipped runtime artifact에 영향을 주는 새로운 medium 이상 advisory는 해당 플랫폼의 release blocker입니다.
+- Low/build-time-only advisory는 dependency path가 문서화되어 있고 runtime graph 검사가 clean일 때만 허용할 수 있습니다.
+- 공식 아티팩트가 이 gate로 보류된 플랫폼은 public release notes와 install docs에서 다운로드 대상으로 노출하지 않습니다.
 
 ### 3) 런타임 경계 규칙
 

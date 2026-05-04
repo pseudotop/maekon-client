@@ -324,10 +324,12 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: oneshim-windows-x64
             asset_ext: zip
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: oneshim-linux-x64
-            asset_ext: tar.gz
+          # Linux release artifacts are intentionally deferred for public releases
+          # while the Tauri/Wry GTK stack still pulls glib 0.18.x
+          # (RUSTSEC-2024-0429). Keep Linux source builds and smoke coverage in
+          # non-release workflows, but do not publish Linux downloads from this
+          # workflow until the upstream runtime stack is patched or explicitly
+          # accepted as a public release risk.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -365,36 +367,6 @@ jobs:
           echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "OpenSSL installed at: $vcpkgRoot"
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libglib2.0-dev \
-            libpango1.0-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf-2.0-dev \
-            libnotify-dev \
-            libasound2-dev \
-            libpipewire-0.3-dev \
-            libspa-0.2-dev \
-            libclang-dev \
-            libgbm-dev \
-            libegl1-mesa-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
-
-      - name: Verify DEB metadata assets
-        if: runner.os == 'Linux'
-        run: ./scripts/verify-deb-metadata.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -454,15 +426,6 @@ jobs:
         shell: bash
         working-directory: src-tauri
         run: ../scripts/cargo-cache.sh wix -p oneshim-app --nocapture --target ${{ matrix.target }}
-
-      # ── DEB 패키지 (Linux only) ──
-      - name: Install cargo-deb
-        if: runner.os == 'Linux'
-        run: ./scripts/cargo-cache.sh install cargo-deb
-
-      - name: Build DEB package
-        if: runner.os == 'Linux'
-        run: ./scripts/cargo-cache.sh deb -p oneshim-app --target ${{ matrix.target }} --no-build
 
       # ── 패키징 ──
       - name: Package (Unix)
@@ -529,30 +492,6 @@ jobs:
           }
           Write-Host "MSI version check passed"
 
-      - name: Verify DEB version
-        if: runner.os == 'Linux'
-        env:
-          TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
-        run: |
-          EXPECTED_VERSION="${TAG_REF#v}"
-          if [[ "$EXPECTED_VERSION" == *-* ]]; then
-            EXPECTED_DEB_UPSTREAM="${EXPECTED_VERSION%%-*}~${EXPECTED_VERSION#*-}"
-          else
-            EXPECTED_DEB_UPSTREAM="$EXPECTED_VERSION"
-          fi
-          DEB_FILE=$(find target -name "*.deb" -type f | head -1)
-          if [ -z "$DEB_FILE" ]; then echo "No DEB file found"; exit 1; fi
-          DEB_VERSION=$(dpkg-deb -f "$DEB_FILE" Version)
-          echo "DEB file: $(basename $DEB_FILE)"
-          echo "DEB version: $DEB_VERSION"
-          echo "Expected tag version: $EXPECTED_VERSION"
-          echo "Expected DEB upstream: $EXPECTED_DEB_UPSTREAM"
-          DEB_UPSTREAM="${DEB_VERSION%%-*}"
-          if [ "$DEB_UPSTREAM" != "$EXPECTED_DEB_UPSTREAM" ]; then
-            echo "::error::DEB version mismatch: got $DEB_VERSION (upstream $DEB_UPSTREAM), expected upstream $EXPECTED_DEB_UPSTREAM from tag $EXPECTED_VERSION"
-            exit 1
-          fi
-
       - name: Upload MSI artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
@@ -561,14 +500,6 @@ jobs:
           path: |
             target/wix/*.msi
             src-tauri/target/wix/*.msi
-          if-no-files-found: error
-
-      - name: Upload DEB artifact
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: oneshim-linux-x64-deb
-          path: target/${{ matrix.target }}/debian/*.deb
           if-no-files-found: error
 
   build-macos-universal:
@@ -899,10 +830,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux
-            os: ubuntu-latest
-            artifact_name: oneshim-linux-x64-archive
-            run_updater_tests: true
           - name: macos
             os: macos-latest
             artifact_name: oneshim-macos-universal
@@ -960,32 +887,6 @@ jobs:
           test -f smoke-installers/oneshim-macos-universal.dmg
           test -f smoke-installers/oneshim-macos-universal.pkg
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libglib2.0-dev \
-            libpango1.0-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf-2.0-dev \
-            libnotify-dev \
-            libasound2-dev \
-            libpipewire-0.3-dev \
-            libspa-0.2-dev \
-            libclang-dev \
-            libgbm-dev \
-            libegl1-mesa-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -1011,7 +912,7 @@ jobs:
             chmod +x "src-tauri/oneshim-sandbox-worker-${TRIPLE}"
           fi
 
-      - name: Run smoke script (macOS/Linux)
+      - name: Run smoke script (macOS)
         if: runner.os != 'Windows'
         run: |
           chmod +x ./.workflow-tools/scripts/release-reliability-smoke.sh
@@ -1079,13 +980,13 @@ jobs:
       - name: Flatten nested artifacts
         run: |
           # Move installer files from nested paths to dist/
-          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
+          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
           # Clean up empty nested directories
           find dist -mindepth 1 -type d -empty -delete
 
       - name: Verify installer coverage
         run: |
-          for pattern in "*.msi" "*.deb" "*.dmg" "*.pkg"; do
+          for pattern in "*.msi" "*.dmg" "*.pkg"; do
             if ! compgen -G "dist/${pattern}" > /dev/null; then
               echo "Missing expected installer artifact: ${pattern}" >&2
               exit 1
@@ -1159,12 +1060,43 @@ jobs:
           print(f"Signed artifacts: {signed}")
           PY
 
-      - name: Run signed release reliability smoke
+      - name: Verify release artifact signatures (Ed25519)
         env:
-          ONESHIM_SMOKE_LOG_DIR: ${{ runner.temp }}/oneshim-signed-release-smoke
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
         run: |
-          chmod +x ./scripts/release-reliability-smoke.sh
-          ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name oneshim-linux-x64.tar.gz --skip-updater-tests --require-signature
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          from nacl.exceptions import BadSignatureError
+          from nacl.signing import SigningKey
+
+          key_b64 = os.environ.get("UPDATE_SIGNING_PRIVATE_KEY_B64", "").strip()
+          if not key_b64:
+              raise SystemExit("Missing secret: UPDATE_SIGNING_PRIVATE_KEY_B64")
+
+          seed = base64.b64decode(key_b64)
+          verify_key = SigningKey(seed).verify_key
+          verified = 0
+          for path in sorted(Path("dist").glob("*")):
+              if not path.is_file() or path.suffix in {".sha256", ".sig"}:
+                  continue
+              sig_path = Path(str(path) + ".sig")
+              if not sig_path.exists():
+                  raise SystemExit(f"Missing signature sidecar: {sig_path}")
+              tokens = sig_path.read_text(encoding="utf-8").split()
+              if not tokens:
+                  raise SystemExit(f"Empty signature sidecar: {sig_path}")
+              try:
+                  verify_key.verify(path.read_bytes(), base64.b64decode(tokens[0]))
+              except BadSignatureError as exc:
+                  raise SystemExit(f"Invalid signature for {path}") from exc
+              verified += 1
+
+          if verified == 0:
+              raise SystemExit("No release artifact signatures were verified")
+          print(f"Verified signatures: {verified}")
+          PY
 
       - name: Attest release artifacts provenance
         uses: actions/attest-build-provenance@v4
@@ -1235,12 +1167,15 @@ jobs:
           | macOS | Intel | \`oneshim-macos-x64.tar.gz\` | Binary |
           | Windows | x64 | \`oneshim-*.msi\` | MSI Installer |
           | Windows | x64 | \`oneshim-windows-x64.zip\` | Binary |
-          | Linux | x64 | \`oneshim-*.deb\` | DEB Package |
-          | Linux | x64 | \`oneshim-linux-x64.tar.gz\` | Binary |
+
+          Linux public release artifacts are temporarily deferred while the
+          upstream Tauri/Wry GTK runtime stack still carries a documented
+          \`glib 0.18.x\` advisory exception. Linux source builds remain
+          available for development and internal validation.
 
           ### Quick Install
 
-          **macOS / Linux:**
+          **macOS:**
           \`\`\`bash
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
           \`\`\`

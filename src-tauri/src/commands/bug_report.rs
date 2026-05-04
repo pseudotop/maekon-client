@@ -14,7 +14,7 @@ pub async fn export_bug_report(
 
     // blocking_save_file must run off the async executor
     let dialog = app.dialog().clone();
-    let file_name = format!("oneshim-report-{bug_id}.json");
+    let file_name = format!("maekon-report-{bug_id}.json");
 
     let path = tokio::task::spawn_blocking(move || {
         dialog

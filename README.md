@@ -10,16 +10,23 @@
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
 
+> [!IMPORTANT]
+> This legacy repository is in transition. Active public development, install
+> scripts, releases, and security reporting for Maekon Client now live in
+> [`pseudotop/maekon-client`](https://github.com/pseudotop/maekon-client).
+> This repository remains available for transition history and redirect/security
+> maintenance until the final archive step.
+
 # Maekon
 
-> **From raw desktop activity to daily focus wins.**
+> **From raw desktop activity to daily focus wins.**  
 > Maekon turns local work signals into a real-time focus timeline and actionable suggestions.
 
 A desktop client for AI-assisted office productivity — local context capture, real-time suggestions, and a built-in dashboard. Built with Rust and Tauri v2 (WebView shell around a React frontend) for native performance across macOS, Windows, and Linux.
 
 ## Table of Contents
 
-- [Source Build Quick Start](#source-build-quick-start)
+- [Install in 30 Seconds](#install-in-30-seconds)
 - [Why Maekon](#why-maekon)
 - [Who It's For](#who-its-for)
 - [2-Minute Quickstart](#2-minute-quickstart)
@@ -34,21 +41,25 @@ A desktop client for AI-assisted office productivity — local context capture, 
 - [License](#license)
 - [Contributing](#contributing)
 
-## Source Build Quick Start
+## Install in 30 Seconds
 
-The public repository is live, but public GitHub Release assets are not
-published yet. Until the first public release is available, run Maekon from a
-local source checkout:
-
+macOS / Linux:
 ```bash
-git clone https://github.com/pseudotop/maekon-client.git
-cd maekon-client
-./scripts/cargo-cache.sh run -p oneshim-app -- --offline
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
-Release installer commands are documented below and will become the recommended
-path after public release assets are published. For version pinning, signature
-enforcement, and uninstall:
+Windows (PowerShell):
+```powershell
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp
+```
+
+For version pinning, signature enforcement, and uninstall:
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -225,11 +236,6 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> Release installers require published assets under
-> `pseudotop/maekon-client` GitHub Releases. The public repository currently
-> has no release assets; use the source build quick start until the first public
-> release is published.
-
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
@@ -250,9 +256,6 @@ powershell -ExecutionPolicy Bypass -File $tmp
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-Public release assets have not been published yet. This table documents the
-expected filenames once the first public release is available.
-
 Maekon is the app display name. Current release filenames intentionally retain
 `oneshim-*` for installer, updater, and checksum compatibility.
 
@@ -265,8 +268,11 @@ Maekon is the app display name. Current release filenames intentionally retain
 | macOS Intel | `oneshim-macos-x64.tar.gz` |
 | Windows x64 (zip) | `oneshim-windows-x64.zip` |
 | Windows x64 (MSI) | `oneshim-app-*.msi` |
-| Linux x64 (DEB package) | `oneshim-*.deb` |
-| Linux x64 | `oneshim-linux-x64.tar.gz` |
+
+Linux public release artifacts are temporarily deferred while the upstream
+Tauri/Wry GTK runtime stack still carries the documented `glib 0.18.x`
+advisory exception. Linux source builds remain available; see
+[`docs/install.md`](./docs/install.md).
 
 ## Configuration
 

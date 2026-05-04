@@ -279,7 +279,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an interactive macOS CoreGraphics session"]
     fn get_mouse_position_returns_result() {
         let pos = get_mouse_position_macos();
         if let Some(p) = pos {
