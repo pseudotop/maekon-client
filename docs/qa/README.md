@@ -16,6 +16,13 @@ This directory is the canonical location for manual/reviewed QA execution result
 - Project-level mutable quality summary:
   - Latest QA run and workflow pages.
 
+## Public export boundary
+
+The public-minimal export keeps stable QA checklists and smoke procedures, but
+excludes mutable run evidence under `docs/qa/runs/`. Those run files can contain
+local ports, screenshots, console logs, and CI-only context that are useful for
+maintainers but noisy for first-time public users.
+
 ## Execution Policy
 
 - Interactive UI/UX QA must be executed with Playwright CLI, not Playwright MCP.

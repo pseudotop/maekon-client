@@ -4,23 +4,38 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
-> Public GitHub Release assets for `pseudotop/maekon-client` are not published
-> yet. The installer commands below require release assets and will work after
-> the first public release is published. Until then, use the source build quick
-> start in the repository README.
-
 Compatibility note: release filenames, install script names, `ONESHIM_*`
 environment variables, and the `oneshim` CLI command intentionally keep their
 current names for installer, updater, and existing-user compatibility.
 
 ## Quick Install
 
-### macOS / Linux
+### macOS
 
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 bash /tmp/oneshim-install.sh
+```
+
+### Linux
+
+Official Linux release artifacts are temporarily deferred while the upstream
+Tauri/Wry GTK runtime stack still carries a documented `glib 0.18.x` advisory
+exception. Linux source builds remain available for development and internal
+validation:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev libclang-dev
+cargo build --release -p oneshim-app --features grpc
+```
+
+Internal release rehearsals that provide a private Linux archive can opt in:
+
+```bash
+ONESHIM_ALLOW_EXPERIMENTAL_LINUX_INSTALL=1 \
+  bash /tmp/oneshim-install.sh --base-url <internal-release-asset-base-url>
 ```
 
 ### Windows (PowerShell)
@@ -35,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File $tmp
 
 ## Install a Specific Version
 
-### macOS / Linux
+### macOS
 
 ```bash
 ONESHIM_VERSION=v0.0.4 bash /tmp/oneshim-install.sh
@@ -51,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
 
 - `scripts/install.sh` and `scripts/install.ps1` always verify `SHA-256` using release sidecars (`.sha256`).
 - Ed25519 signature verification (`.sig`) is supported and can be enforced:
-  - macOS/Linux: `--require-signature` or `ONESHIM_REQUIRE_SIGNATURE=1`
+  - macOS and experimental Linux installs: `--require-signature` or `ONESHIM_REQUIRE_SIGNATURE=1`
   - Windows: `-RequireSignature`
 - Signature verification requires Python + PyNaCl on the installation machine.
 - Default update signing public key:
@@ -61,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
 
 ## Script Options
 
-### macOS / Linux (`scripts/install.sh`)
+### macOS / experimental Linux (`scripts/install.sh`)
 
 ```bash
 bash /tmp/oneshim-install.sh --help
@@ -74,6 +89,7 @@ Common options:
 - `--repo <owner/name>` (default: `pseudotop/maekon-client`)
 - `--base-url <url>` (override release asset source; useful for local smoke/rehearsal)
 - `--require-signature`
+- `ONESHIM_ALLOW_EXPERIMENTAL_LINUX_INSTALL=1` (required for Linux archive installs while public Linux artifacts are deferred)
 
 ### Windows (`scripts/install.ps1`)
 
@@ -91,7 +107,7 @@ Common parameters:
 
 ## Uninstall
 
-### macOS / Linux
+### macOS / experimental Linux
 
 ```bash
 curl -fsSL -o /tmp/oneshim-uninstall.sh \

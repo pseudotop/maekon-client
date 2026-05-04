@@ -9,7 +9,7 @@
 
 ## Context
 
-ONESHIM requires a cross-platform desktop shell for the productivity agent. The shell must:
+Maekon requires a cross-platform desktop shell for the productivity agent. The shell must:
 
 1. Render the existing React web dashboard without a second UI codebase.
 2. Provide native system integration: system tray, desktop notifications, auto-start.

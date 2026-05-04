@@ -81,7 +81,7 @@ export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
       '## Actual',
       '',
       '## Notes',
-      '- If you exported a diagnostic report, please email it to support@oneshim.dev with this Bug ID in the subject line.',
+      '- If you exported a diagnostic report, please email it to support@maekon.dev with this Bug ID in the subject line.',
     ].join('\n'),
   })
   return `${ISSUE_REPO}?${params.toString()}`
@@ -90,7 +90,7 @@ export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
 export function buildMailtoUrl(bugId: string): string {
   const subject = encodeURIComponent(`Bug Report ${bugId}`)
   const body = encodeURIComponent(
-    `Bug ID: ${bugId}\n\nPlease attach the exported diagnostic report (oneshim-report-${bugId}.json) to this email.\n\nDescribe the issue:\n`,
+    `Bug ID: ${bugId}\n\nPlease attach the exported diagnostic report (maekon-report-${bugId}.json) to this email.\n\nDescribe the issue:\n`,
   )
-  return `mailto:support@oneshim.dev?subject=${subject}&body=${body}`
+  return `mailto:support@maekon.dev?subject=${subject}&body=${body}`
 }

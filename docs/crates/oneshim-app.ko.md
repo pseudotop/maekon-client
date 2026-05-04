@@ -290,6 +290,11 @@ impl Autostart {
 
 인스톨러와 업데이터는 동일한 릴리스 에셋/체크섬/서명 사이드카를 사용하므로 설치와 업데이트 경로의 무결성 정책이 일치한다.
 
+현재 public artifact 범위: macOS와 Windows가 공식 공개 릴리즈 산출물입니다.
+Linux 소스 빌드는 개발/내부 검증 용도로 유지하지만, 문서화된 `glib 0.18.x`
+런타임 advisory 예외가 활성화되어 있는 동안 공개 Linux archive/package는
+보류합니다.
+
 ## 실행 흐름
 
 1. `main.rs` / `gui_runner.rs`에서 설정 로드 후 DI 구성(저장소, 모니터, 네트워크, 비전, 자동화, 웹).

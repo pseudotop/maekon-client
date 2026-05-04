@@ -1163,7 +1163,7 @@
             "image_input": true
           },
           "notes": [
-            "Google OCR in ONESHIM uses the Vision API, not a model-selectable Gemini OCR surface."
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
           ]
         },
         {
@@ -1177,7 +1177,7 @@
             "image_input": true
           },
           "notes": [
-            "Google OCR in ONESHIM uses the Vision API, not a model-selectable Gemini OCR surface."
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
           ]
         },
         {
@@ -1191,7 +1191,7 @@
             "image_input": true
           },
           "notes": [
-            "Google OCR in ONESHIM uses the Vision API, not a model-selectable Gemini OCR surface."
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
           ]
         },
         {
@@ -1205,7 +1205,7 @@
             "image_input": true
           },
           "notes": [
-            "Google OCR in ONESHIM uses the Vision API, not a model-selectable Gemini OCR surface."
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
           ]
         },
         {
@@ -1219,7 +1219,7 @@
             "image_input": true
           },
           "notes": [
-            "Google OCR in ONESHIM uses the Vision API, not a model-selectable Gemini OCR surface."
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
           ]
         }
       ],
@@ -1258,7 +1258,7 @@
             "model"
           ],
           "notes": [
-            "Google OCR in ONESHIM remains Vision API-backed."
+            "Google OCR in Maekon remains Vision API-backed."
           ]
         }
       },
@@ -1580,7 +1580,7 @@
             "store"
           ],
           "notes": [
-            "ONESHIM uses Ollama's local OpenAI-compatible /v1/responses surface for LLM calls."
+            "Maekon uses Ollama's local OpenAI-compatible /v1/responses surface for LLM calls."
           ]
         },
         "ocr": {

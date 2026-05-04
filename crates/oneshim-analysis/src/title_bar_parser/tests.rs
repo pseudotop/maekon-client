@@ -429,10 +429,10 @@ fn browser_domain_hint_github() {
     let result = parser
         .parse(
             "Google Chrome",
-            "GitHub - pseudotop/oneshim-client - Google Chrome",
+            "GitHub - pseudotop/maekon-client - Google Chrome",
         )
         .unwrap();
-    assert_eq!(result.content_label, "GitHub - pseudotop/oneshim-client");
+    assert_eq!(result.content_label, "GitHub - pseudotop/maekon-client");
     assert_eq!(result.domain_hint, Some("github".to_string()));
 }
 

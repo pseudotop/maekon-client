@@ -7,13 +7,14 @@ VERSION="${ONESHIM_VERSION:-latest}"
 INSTALL_DIR="${ONESHIM_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="${ONESHIM_RELEASE_BASE_URL:-}"
 REQUIRE_SIGNATURE="${ONESHIM_REQUIRE_SIGNATURE:-0}"
+ALLOW_EXPERIMENTAL_LINUX_INSTALL="${ONESHIM_ALLOW_EXPERIMENTAL_LINUX_INSTALL:-0}"
 UPDATE_SIGNATURE_PUBLIC_KEY="${ONESHIM_UPDATE_PUBLIC_KEY:-GIdf7Wg4kvvvoT7jR0xwKLKna8hUR1kvowONbHbPz1E=}"
 BINARY_NAME="oneshim"
 SIDECAR_NAME="oneshim-sandbox-worker"
 
 usage() {
   cat <<'EOF'
-Maekon release installer (macOS/Linux)
+Maekon release installer (macOS; Linux experimental/internal only)
 
 Usage:
   ./scripts/install.sh [options]
@@ -33,6 +34,7 @@ Environment:
   ONESHIM_RELEASE_BASE_URL
   ONESHIM_REQUIRE_SIGNATURE=1
   ONESHIM_UPDATE_PUBLIC_KEY=<base64 ed25519 public key>
+  ONESHIM_ALLOW_EXPERIMENTAL_LINUX_INSTALL=1  # Linux artifacts are not official public downloads yet.
 EOF
 }
 
@@ -257,6 +259,14 @@ done
 
 OS_NAME="$(uname -s)"
 ARCH_NAME="$(uname -m)"
+
+# Linux public release artifacts are currently deferred while the upstream
+# Tauri/Wry GTK runtime stack still carries a documented glib advisory exception.
+# Keep the install path available for internal rehearsal assets, but require an
+# explicit opt-in so public users do not chase a missing or unsupported download.
+if [[ "$OS_NAME" == "Linux" && "$ALLOW_EXPERIMENTAL_LINUX_INSTALL" != "1" ]]; then
+  fatal "Official Linux release artifacts are temporarily deferred. Build from source, or set ONESHIM_ALLOW_EXPERIMENTAL_LINUX_INSTALL=1 with --base-url for internal/rehearsal assets."
+fi
 
 # Linux runtime dependency check
 if [[ "$OS_NAME" == "Linux" ]]; then

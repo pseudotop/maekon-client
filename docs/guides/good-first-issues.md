@@ -1,6 +1,6 @@
 # Good First Issues — OSS Contributor On-Ramp
 
-Welcome to Maekon. This guide gets you from zero to your first merged pull request.
+Welcome to ONESHIM. This guide gets you from zero to your first merged pull request.
 
 See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../CODE_OF_CONDUCT.md)
 

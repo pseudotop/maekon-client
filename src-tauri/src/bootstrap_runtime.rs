@@ -82,25 +82,18 @@ impl BootstrapRuntimeBundle {
 
 pub(crate) struct BootstrapRuntimeBuilder {
     data_dir_override: Option<PathBuf>,
-    offline_mode: bool,
 }
 
 impl BootstrapRuntimeBuilder {
     pub(crate) fn new() -> Self {
         Self {
             data_dir_override: None,
-            offline_mode: false,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn with_data_dir_override(mut self, data_dir_override: PathBuf) -> Self {
         self.data_dir_override = Some(data_dir_override);
-        self
-    }
-
-    pub(crate) fn with_offline_mode(mut self, offline_mode: bool) -> Self {
-        self.offline_mode = offline_mode;
         self
     }
 
@@ -127,7 +120,7 @@ impl BootstrapRuntimeBuilder {
         let runtime_handle = background_runtime.handle();
         let config = config_manager.get();
         let web_port = Arc::new(AtomicU16::new(config.web.port));
-        BootstrapPreflightCoordinator::run(&config, &data_dir_path, self.offline_mode);
+        BootstrapPreflightCoordinator::run(&config, &data_dir_path);
 
         #[cfg(feature = "server")]
         {

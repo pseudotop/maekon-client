@@ -290,6 +290,11 @@ Release artifacts are packaged by `.github/workflows/release.yml`, then consumed
 
 The installers and updater share the same release assets/checksum/signature sidecars, so integrity behavior is consistent across install and in-app upgrade paths.
 
+Current public artifact scope: macOS and Windows are official public release
+outputs. Linux source builds remain supported for development/internal
+validation, but public Linux archives/packages are deferred while the documented
+`glib 0.18.x` runtime advisory exception is active.
+
 ## Execution Flow
 
 1. `main.rs` / `gui_runner.rs` loads config and wires DI (storage, monitor, network, vision, automation, web).

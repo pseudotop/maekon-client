@@ -10,27 +10,39 @@
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
 
+> [!IMPORTANT]
+> 이 legacy 저장소는 archive 전환 단계입니다. Maekon Client의 공개 개발,
+> 설치 스크립트, 릴리스, 보안 제보는 이제
+> [`pseudotop/maekon-client`](https://github.com/pseudotop/maekon-client)를
+> 기준으로 합니다. 이 저장소는 최종 archive 전까지 전환 기록과
+> redirect/security-only 유지보수 용도로만 남겨둡니다.
+
 # Maekon
 
-> **흩어진 업무 흔적을, 매일 성과로 이어지는 집중 인사이트로.**
+> **흩어진 업무 흔적을, 매일 성과로 이어지는 집중 인사이트로.**  
 > Maekon은 로컬 업무 신호를 실시간 집중 타임라인과 실행 가능한 제안으로 전환합니다.
 
 AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니다. 로컬 컨텍스트 수집, 실시간 제안, 내장 대시보드를 제공합니다. Rust로 구축되어 macOS, Windows, Linux에서 네이티브 성능을 발휘합니다.
 
-## Source Build 빠른 시작
+## 30초 설치
 
-공개 저장소는 준비되었지만 공개 GitHub Release 아티팩트는 아직 게시되지
-않았습니다. 첫 공개 릴리즈가 게시되기 전까지는 로컬 source checkout에서
-Maekon을 실행하세요.
-
+macOS / Linux:
 ```bash
-git clone https://github.com/pseudotop/maekon-client.git
-cd maekon-client
-./scripts/cargo-cache.sh run -p oneshim-app -- --offline
+curl -fsSL -o /tmp/oneshim-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
+bash /tmp/oneshim-install.sh
 ```
 
-릴리즈 설치 명령은 아래 설치 문서에 정리되어 있으며, 공개 릴리즈 아티팩트가
-게시된 뒤 권장 경로가 됩니다. 버전 고정, 서명 검증 강제, 제거 방법:
+Windows (PowerShell):
+```powershell
+$tmp = Join-Path $env:TEMP "oneshim-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp
+```
+
+버전 고정, 서명 검증 강제, 제거 방법:
 - 한국어: [`docs/install.ko.md`](./docs/install.ko.md)
 - English: [`docs/install.md`](./docs/install.md)
 
@@ -192,10 +204,6 @@ cd crates/oneshim-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 릴리즈 설치 프로그램은 `pseudotop/maekon-client` GitHub Releases에 게시된
-> 아티팩트가 필요합니다. 공개 저장소에는 아직 release 아티팩트가 없으므로,
-> 첫 공개 릴리즈가 게시될 때까지는 source build 빠른 시작 경로를 사용하세요.
-
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/oneshim-install.sh \
@@ -216,9 +224,6 @@ powershell -ExecutionPolicy Bypass -File $tmp
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-공개 릴리즈 아티팩트는 아직 게시되지 않았습니다. 아래 표는 첫 공개 릴리즈가
-준비된 뒤 사용할 예상 파일명을 문서화한 것입니다.
-
 Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프로그램, 업데이터,
 체크섬 호환성을 위해 의도적으로 `oneshim-*` 형식을 유지합니다.
 
@@ -231,8 +236,11 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 | macOS Intel | `oneshim-macos-x64.tar.gz` |
 | Windows x64 (zip) | `oneshim-windows-x64.zip` |
 | Windows x64 (MSI) | `oneshim-app-*.msi` |
-| Linux x64 (DEB 패키지) | `oneshim-*.deb` |
-| Linux x64 | `oneshim-linux-x64.tar.gz` |
+
+공식 Linux 릴리즈 아티팩트는 upstream Tauri/Wry GTK 런타임 스택의
+문서화된 `glib 0.18.x` advisory 예외가 해소될 때까지 임시 보류합니다.
+Linux source build는 계속 사용할 수 있습니다. 자세한 내용은
+[`docs/install.ko.md`](./docs/install.ko.md)를 참고하세요.
 
 ## 설정
 

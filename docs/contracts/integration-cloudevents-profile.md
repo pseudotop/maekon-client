@@ -1,7 +1,7 @@
 # ONESHIM Integration CloudEvents Profile
 
-Status: Draft
-Domain: `integration`
+Status: Draft  
+Domain: `integration`  
 CloudEvents baseline: `1.0`
 
 ## Purpose

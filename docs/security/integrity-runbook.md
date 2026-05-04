@@ -17,7 +17,7 @@ Expected output:
 - Integrity policy tests pass (`oneshim-core`)
 - Signature verification tests pass (`oneshim-app`)
 - Supply-chain gates pass (`audit`, `deny`, `vet`)
-- SBOM generated at `artifacts/integrity/sbom.cdx.json`
+- SBOM files generated under `artifacts/integrity/*.sbom.cdx.json`, including `oneshim-app.sbom.cdx.json` for the Tauri composition root.
 
 ## 2. CI Gates
 
@@ -34,8 +34,15 @@ Current documented exception:
 
 - `RUSTSEC-2024-0429` (`glib 0.18.5`) is ignored in `cargo audit` and `cargo deny`.
 - Scope is limited to the Linux GTK3 / `webkit2gtk` / `wry` / Tauri transitive chain.
-- Exit criterion: remove the exception once the upstream desktop stack moves to patched `gtk-rs-core` / `glib` releases.
-- Treat any new advisory outside this documented exception as a release blocker.
+- Official public Linux artifacts (`.deb`, Linux tarball) remain deferred while this runtime exception is active. Linux source builds and internal release rehearsals may continue, but public release notes and install docs must not advertise Linux downloads.
+- Exit criterion: remove the exception once the upstream desktop stack moves to patched `gtk-rs-core` / `glib` releases, then restore the Linux release artifact lane.
+- `RUSTSEC-2026-0097` (`rand 0.7.x`) is ignored only as a low-risk build-time transitive advisory. Before every public release candidate, confirm it remains absent from the normal runtime dependency graph:
+
+  ```bash
+  cargo tree --locked --edges normal -i rand@0.7.3
+  ```
+
+- Treat any new advisory outside these documented exceptions as a release blocker. If a documented build-time exception becomes a runtime path, treat it as a release blocker too.
 
 ## 3. Release Procedure
 
@@ -48,6 +55,11 @@ Release workflow (`.github/workflows/release.yml`) performs:
 5. GitHub release publishing
 
 Release artifacts are considered valid only when checksum + signature + provenance are all present.
+
+Current public artifact scope:
+
+- macOS and Windows artifacts are official public release outputs.
+- Linux artifacts are not official public release outputs while the `glib 0.18.x` runtime advisory exception remains active.
 
 ## 4. Key Management Basics
 
