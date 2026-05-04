@@ -133,7 +133,7 @@ hex = "0.4"
 rcgen = "0.14"
 mdns-sd = "0.19"
 axum-server = "0.8"
-rustls-pemfile = "2"
+rustls-pki-types = "1"
 
 # External gRPC binding (D13-v2c)
 arc-swap = "1"

@@ -1,3 +1,5 @@
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::{debug, warn};
 
 pub(super) async fn try_build_tls_config(
@@ -10,8 +12,7 @@ pub(super) async fn try_build_tls_config(
     }
 
     // Parse certificate chain from PEM
-    let cert_reader = &mut std::io::BufReader::new(cert_pem);
-    let certs: Vec<_> = rustls_pemfile::certs(cert_reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
         .filter_map(|r| r.ok())
         .collect();
 
@@ -21,12 +22,9 @@ pub(super) async fn try_build_tls_config(
     }
 
     // Parse private key from PEM
-    let key_reader = &mut std::io::BufReader::new(key_pem);
-    let key = rustls_pemfile::private_key(key_reader).ok().flatten();
-
-    let key = match key {
-        Some(k) => k,
-        None => {
+    let key = match PrivateKeyDer::from_pem_slice(key_pem) {
+        Ok(k) => k,
+        Err(_) => {
             warn!("no valid private key in PEM data -- TLS disabled");
             return None;
         }

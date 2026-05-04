@@ -54,11 +54,13 @@ pub fn build_server_config(
     mtls_ca_bytes: Option<Vec<u8>>,
 ) -> Result<rustls::ServerConfig, TlsLoadError> {
     let mut cfg = if let Some(ca_bytes) = mtls_ca_bytes {
+        use rustls::pki_types::pem::PemObject;
+        use rustls::pki_types::CertificateDer;
         use rustls::server::WebPkiClientVerifier;
         use rustls::RootCertStore;
 
         let mut roots = RootCertStore::empty();
-        for cert in rustls_pemfile::certs(&mut ca_bytes.as_slice()) {
+        for cert in CertificateDer::pem_slice_iter(&ca_bytes) {
             let c = cert.map_err(|e| TlsLoadError::ParseCert(e.to_string()))?;
             roots
                 .add(c)

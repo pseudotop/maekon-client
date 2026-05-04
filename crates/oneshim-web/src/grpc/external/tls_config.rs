@@ -11,6 +11,7 @@ use std::time::Duration as StdDuration;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
 use rustls::crypto::aws_lc_rs;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
 use thiserror::Error;
@@ -50,16 +51,20 @@ pub fn load_certified_key(
         source: e,
     })?;
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_slice())
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| TlsLoadError::ParseCert(e.to_string()))?;
     if certs.is_empty() {
         return Err(TlsLoadError::EmptyChain(cert_path.to_owned()));
     }
 
-    let private_key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_pem.as_slice())
-        .map_err(|e| TlsLoadError::ParseKey(e.to_string()))?
-        .ok_or_else(|| TlsLoadError::NoKey(key_path.to_owned()))?;
+    let private_key: PrivateKeyDer<'static> = match PrivateKeyDer::from_pem_slice(&key_pem) {
+        Ok(k) => k,
+        Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+            return Err(TlsLoadError::NoKey(key_path.to_owned()));
+        }
+        Err(e) => return Err(TlsLoadError::ParseKey(e.to_string())),
+    };
 
     let signing_key = aws_lc_rs::sign::any_supported_type(&private_key)
         .map_err(|e| TlsLoadError::ParseKey(format!("no supported signer: {e:?}")))?;
