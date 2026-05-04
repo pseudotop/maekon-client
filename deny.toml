@@ -35,9 +35,16 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 unmaintained = "none"
 unsound = "workspace"
 yanked = "deny"
+# Review-by: 2026-08-01 — re-evaluate each entry below for upstream
+# resolution status. Replace the inline ignore with a fix when possible.
 ignore = [
-  "RUSTSEC-2024-0429",
-  "RUSTSEC-2026-0097",
+  # glib 0.18.x advisory in the Tauri/Wry GTK runtime stack. Linux release
+  # artifacts are deferred (.github/workflows/release.yml) until upstream
+  # patches the runtime path. Source builds remain available.
+  { id = "RUSTSEC-2024-0429", reason = "Tauri/Wry GTK glib 0.18.x — Linux release artifacts deferred upstream" },
+  # rand 0.7.x build-time transitive (Tauri HTML/build tooling). Not in
+  # the runtime graph; safe to defer until Tauri bumps the build chain.
+  { id = "RUSTSEC-2026-0097", reason = "rand 0.7 build tooling, transitive only (Tauri HTML/build chain)" },
 ]
 
 [bans]
