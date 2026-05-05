@@ -1,0 +1,621 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  changes:
+    name: Change Detection
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      ci: ${{ steps.filter.outputs.ci }}
+      release_metadata_only: ${{ steps.filter.outputs.release_metadata_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || '' }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/gha-detect-changes.sh
+
+  frontend:
+    name: Frontend (build + e2e)
+    needs: [changes]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+        with:
+          version: '10'
+          lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: crates/maekon-web/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint frontend
+        working-directory: crates/maekon-web/frontend
+        run: pnpm lint
+
+      - name: TypeScript type check
+        working-directory: crates/maekon-web/frontend
+        run: npx tsc --noEmit
+
+      - name: Run frontend unit tests (vitest)
+        working-directory: crates/maekon-web/frontend
+        run: pnpm test
+
+      - name: Verify route integrity
+        run: ./scripts/verify-route-integrity.sh
+
+      - name: Build frontend bundle
+        working-directory: crates/maekon-web/frontend
+        run: pnpm build
+
+      - name: Verify frontend build output
+        run: test -f crates/maekon-web/frontend/dist/index.html
+
+      - name: Build Storybook review catalog
+        working-directory: crates/maekon-web/frontend
+        run: pnpm build-storybook:review
+
+      - name: Verify Storybook build output
+        run: test -f crates/maekon-web/frontend/storybook-review-static/index.html
+
+      - name: Install Playwright browser
+        working-directory: crates/maekon-web/frontend
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run web dashboard E2E tests
+        working-directory: crates/maekon-web/frontend
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-playwright-artifacts
+          path: |
+            crates/maekon-web/frontend/playwright-report
+            crates/maekon-web/frontend/test-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Package frontend dist artifact
+        run: tar -czf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend dist
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist-bundle
+          path: crates/maekon-web/frontend/frontend-dist.tar.gz
+          if-no-files-found: error
+
+      - name: Package Storybook artifact
+        run: tar -czf crates/maekon-web/frontend/storybook-review-static.tar.gz -C crates/maekon-web/frontend storybook-review-static
+
+      - name: Upload Storybook artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-storybook-bundle
+          path: crates/maekon-web/frontend/storybook-review-static.tar.gz
+          if-no-files-found: error
+
+  check:
+    name: Check (fmt + clippy)
+    needs: [changes]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-check
+
+      - name: Check formatting
+        run: ./scripts/cargo-cache.sh fmt --all -- --check
+
+      - name: Verify architecture dependency direction
+        run: ./scripts/check-architecture-deps.sh
+
+      - name: Verify web contract boundary
+        run: ./scripts/verify-web-contract-boundary.sh
+
+      - name: Verify HTTP interface manifest
+        run: ./scripts/verify-http-interface-manifest.sh
+
+      - name: Verify HTTP OpenAPI snapshot sync
+        run: ./scripts/verify-http-openapi-sync.sh
+
+      - name: Generate HTTP OpenAPI snapshot
+        run: ./scripts/generate-http-openapi.sh dist/maekon-web.v1.openapi.yaml
+
+      - name: Upload HTTP OpenAPI snapshot artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: maekon-web-v1-openapi
+          path: dist/maekon-web.v1.openapi.yaml
+          if-no-files-found: error
+
+      - name: Verify commit message hygiene
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: ./scripts/verify-commit-message-hygiene.sh "$PR_BASE_SHA" "$HEAD_SHA"
+
+      - name: CI grep heuristic for #[instrument] on sensitive fns
+        run: bash scripts/ci/grep-no-instrument-on-sensitive-fns.sh
+
+      - name: Create frontend dist stub for Tauri generate_context!()
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+
+      - name: Run clippy (standalone)
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (server features)
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features server -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (grpc features)
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features grpc -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (grpc-dashboard + test-support)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      # D13-v2c follow-up (PR #491): the external gRPC code path
+      # (`#[cfg(feature = "grpc-dashboard-external")]` modules under
+      # `crates/maekon-web/src/grpc/external/*`) was not clippy-checked by
+      # any prior step. Latent `significant_drop_tightening` violations
+      # only surfaced when `grpc-dashboard-external` was locally enabled.
+      # This step closes the coverage gap.
+      - name: Run clippy (grpc-dashboard-external + external-grpc-tools + test-support)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (lan-sync features)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-network --all-targets --features lan-sync -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (linux-sandbox features)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features linux-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      - name: Run clippy (telemetry feature)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-app --all-targets --features telemetry -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      # D13-v2b PR-B2 follow-up: enforce CRIT-12 invariant that `test-support`
+      # is never transitively enabled via `grpc-dashboard`. If this smoke build
+      # ever fails because a production code path references a test-support
+      # gated symbol, the feature leak must be fixed before release.
+      - name: Smoke build (grpc-dashboard, no test-support)
+        run: ./scripts/cargo-cache.sh build -p maekon-web --no-default-features --features grpc-dashboard
+
+  perf-gates:
+    name: Performance Gates
+    needs: [changes, check]
+    if: >
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      (needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+    env:
+      MAEKON_ENABLE_PERF_GATES: '1'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-perf-gates
+
+      - name: Run automation perf gate tests
+        run: ./scripts/cargo-cache.sh test --release -p maekon-automation perf_budget_ -- --nocapture
+
+      - name: Run vision perf gate tests
+        run: ./scripts/cargo-cache.sh test --release -p maekon-vision perf_budget_ -- --nocapture
+
+  test:
+    name: Test
+    needs: [changes, check]
+    if: >
+      always() &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+    env:
+      RUN_HEAVY_TESTS: ${{ github.event_name == 'workflow_dispatch' || ((needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true') && needs.changes.outputs.release_metadata_only != 'true') }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Skip heavy Rust tests for metadata-only or non-Rust changes
+        if: env.RUN_HEAVY_TESTS != 'true'
+        run: echo "Only metadata-only or non-Rust changes detected; marking Test check green without running the heavy suite."
+
+      - name: Install Linux dependencies
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        if: env.RUN_HEAVY_TESTS == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        if: env.RUN_HEAVY_TESTS == 'true'
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-test
+
+      - name: Create frontend dist stub for Tauri generate_context!()
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+
+      - name: Run tests (standalone)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test --workspace
+
+      - name: Run tests (server features)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test --workspace --features server
+
+      - name: Run tests (grpc features)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test --workspace --features grpc
+
+      # D13-v2b PR-B2: execute the SubscribeMetrics handler tests.
+      # test-support enables MockSystemMonitor + active_stream_count accessor.
+      - name: Run tests (grpc-dashboard + test-support)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test -p maekon-web --no-default-features --features grpc-dashboard,test-support
+
+      # D13-v2c follow-up (PR #491): execute the 36 external_grpc_integration
+      # tests + 2 sibling integration files (audit_query_surface,
+      # live_config_endpoint). The default `cargo test --workspace` runs
+      # without the `grpc-dashboard-external` + `external-grpc-tools` feature
+      # set, so without this step the ~40 integration tests guarding D14
+      # request-id correlation, D22 fallback, D25 audit query, D27 warmup
+      # preservation, D28 status mapping, D29 live-config, D33 1s reload
+      # convergence are not actually executed by CI.
+      - name: Run tests (grpc-dashboard-external + external-grpc-tools + test-support)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support
+
+      - name: Run tests (lan-sync features)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test -p maekon-network --features lan-sync
+
+      - name: Run tests (linux-sandbox features)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test -p maekon-automation --features linux-sandbox
+
+      - name: Run tests (telemetry feature)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh test -p maekon-app --features telemetry -- --test-threads=1
+
+  linux-autostart-unit:
+    name: Linux Autostart Unit Tests
+    needs: [changes, check]
+    if: >
+      always() &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux dependencies (Tauri GTK/WebKit + libsystemd-dev for sd-notify)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libsystemd-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-linux-autostart-unit
+
+      - name: Create frontend dist stub for Tauri generate_context!()
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+
+      - name: Run linux_autostart_unit smoke test
+        run: cargo test -p maekon-app --features systemd-notify --test linux_autostart_unit
+
+      - name: Run autostart inline linux_tests
+        run: cargo test -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_tests
+
+      - name: Run autostart inline linux_capability_tests
+        run: cargo test -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_capability_tests
+
+      - name: Run migration_hashes tests
+        run: cargo test -p maekon-app --features systemd-notify --bin maekon lifecycle::migration_hashes::tests
+
+      - name: Run sd_notify tests
+        run: cargo test -p maekon-app --features systemd-notify --bin maekon lifecycle::sd_notify::tests
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: [changes, test]
+    if: >
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ci == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: maekon-macos-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            artifact_name: maekon-macos-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: maekon-windows-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: maekon-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Try to download frontend dist artifact
+        uses: ./.github/actions/download-artifact
+        continue-on-error: true
+        with:
+          github-token: ${{ github.token }}
+          name: frontend-dist-bundle
+          path: crates/maekon-web/frontend
+
+      - name: Extract frontend dist artifact or create stub
+        shell: bash
+        run: |
+          if [ -f crates/maekon-web/frontend/frontend-dist.tar.gz ]; then
+            tar -xzf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend
+          fi
+          if [ ! -f crates/maekon-web/frontend/dist/index.html ]; then
+            mkdir -p crates/maekon-web/frontend/dist
+            echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+          fi
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Verify DEB metadata assets
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-deb-metadata.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-build-${{ matrix.target }}
+
+      # Tauri externalBin (`maekon-sandbox-worker`) expects a file named
+      # `src-tauri/maekon-sandbox-worker-<triple>[.exe]` at build time. CI
+      # builds don't need the real sandbox-worker (Release workflow builds it
+      # properly for shipped binaries); a zero-byte stub is sufficient so
+      # `cargo build -p maekon-app` doesn't trip on the externalBin
+      # resource-not-found error (see project_main_ci_frontend_artifact_gap
+      # memory — root-cause for main-branch CI reds through iter-224).
+      - name: Create sandbox worker stub for Tauri externalBin
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}.exe"
+          else
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}"
+            chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
+          fi
+
+      - name: Build release
+        shell: bash
+        run: ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../${{ matrix.artifact_name }}.tar.gz maekon
+
+      - name: Package (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.zip
+          if-no-files-found: ignore

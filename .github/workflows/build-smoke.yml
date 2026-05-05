@@ -1,0 +1,139 @@
+name: Build Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target platform to build'
+        required: true
+        type: choice
+        options:
+          - windows
+          - macos-arm64
+          - macos-x64
+          - linux
+          - all
+      ref:
+        description: 'Branch or commit SHA to build (default: main)'
+        required: false
+        type: string
+        default: 'main'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-matrix:
+    name: Resolve Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          case "${BUILD_TARGET}" in
+            windows)
+              echo 'matrix={"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","artifact_name":"maekon-windows-x64","asset_ext":"zip"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            macos-arm64)
+              echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","artifact_name":"maekon-macos-arm64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            macos-x64)
+              echo 'matrix={"include":[{"os":"macos-13","target":"x86_64-apple-darwin","artifact_name":"maekon-macos-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            linux)
+              echo 'matrix={"include":[{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            all)
+              echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","artifact_name":"maekon-macos-arm64","asset_ext":"tar.gz"},{"os":"macos-13","target":"x86_64-apple-darwin","artifact_name":"maekon-macos-x64","asset_ext":"tar.gz"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","artifact_name":"maekon-windows-x64","asset_ext":"zip"},{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: resolve-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve-matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      BUILD_REF: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-build-${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Build frontend
+        working-directory: crates/maekon-web/frontend
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}.exe"
+          else
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}"
+            chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p maekon-app --features grpc
+
+      - name: Build release binary (linux-sandbox)
+        if: runner.os == 'Linux'
+        run: cargo build --release --target ${{ matrix.target }} -p maekon-app --features grpc,linux-sandbox
+
+      - name: Run clippy (warnings only, non-blocking)
+        continue-on-error: true
+        run: cargo clippy --target ${{ matrix.target }} -p maekon-app --features grpc -- -W warnings
+
+      - name: Run tests
+        run: cargo test --target ${{ matrix.target }} -p maekon-app
+
+      - name: Print summary
+        env:
+          TARGET: ${{ matrix.target }}
+          OS: ${{ matrix.os }}
+        shell: bash
+        run: |
+          echo "## Build Smoke Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | ${TARGET} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OS | ${OS} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Ref | ${BUILD_REF} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | Pass |" >> "$GITHUB_STEP_SUMMARY"

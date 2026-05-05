@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- TCC usage descriptions: macOS shows these strings in permission dialogs -->
+
+    <!-- Screen recording: xcap-based screenshot + OCR pipeline -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Maekon needs screen capture access to analyze your work context and provide productivity insights.</string>
+
+    <!-- Accessibility: active window detection via AX API -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Maekon needs accessibility access to detect active windows and GUI elements for intelligent activity tracking.</string>
+
+    <!-- Microphone: Push-to-Talk voice input for AI chat -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Maekon uses the microphone for voice-to-text input in the AI chat.</string>
+</dict>
+</plist>

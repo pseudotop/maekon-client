@@ -1,0 +1,27 @@
+[package]
+name = "maekon-suggestion"
+description = "제안 파이프라인 — SSE 수신, 피드백 전송, 로컬 큐"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "suggestion_bench"
+harness = false
+
+[dependencies]
+maekon-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }

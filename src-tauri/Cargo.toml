@@ -1,0 +1,180 @@
+[package]
+name = "maekon-app"
+description = "Maekon desktop agent - Tauri v2 GUI, DI, orchestration, lifecycle"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "maekon"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-global-shortcut = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-notification = { workspace = true }
+tauri-plugin-single-instance = "2"
+tauri-plugin-webdriver = { workspace = true, optional = true }
+
+# 내부 크레이트
+maekon-core = { workspace = true }
+maekon-automation = { workspace = true }
+maekon-monitor = { workspace = true }
+maekon-vision = { workspace = true }
+maekon-network = { workspace = true, optional = true }
+maekon-storage = { workspace = true }
+maekon-suggestion = { workspace = true }
+maekon-web = { workspace = true }
+maekon-api-contracts = { workspace = true }
+maekon-analysis = { workspace = true }
+maekon-audio = { workspace = true, optional = true }
+maekon-embedding = { workspace = true, optional = true }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+semver = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+ed25519-dalek = { workspace = true }
+directories = { workspace = true }
+parking_lot = { workspace = true }
+sysinfo = { workspace = true }
+tempfile = { workspace = true }
+
+# 자동 업데이트
+bsdiff = { workspace = true }
+self-replace = { workspace = true }
+reqwest = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+keyring = { workspace = true }
+image = { workspace = true }
+lru = { workspace = true }
+raw-window-handle = "0.6"
+
+# D13-v2c: generate-external-cert subcommand (feature-gated, external-grpc-tools)
+rcgen = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
+# Linux systemd integration (feature-gated)
+sd-notify = { version = "0.5", optional = true }
+
+# 텔레메트리 (feature-gated, default OFF)
+opentelemetry = { version = "0.31", optional = true, default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", optional = true, default-features = false, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.31", optional = true, default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing-opentelemetry = { version = "0.32", optional = true }
+
+[features]
+default = ["custom-protocol", "analysis", "native-vision", "linux-atspi"]
+custom-protocol = ["tauri/custom-protocol"]
+analysis = ["dep:maekon-network"]
+server = ["analysis"]
+grpc = ["server", "maekon-network/grpc"]
+# D13: Enable the local dashboard gRPC server (tonic-based, uses the
+# 10080-10089 port band alongside Axum REST). Opt-in so default builds pay zero
+# tonic dep cost.
+grpc-dashboard = ["maekon-web/grpc-dashboard"]
+# D13-v2c: External gRPC binding — opt-in TLS+JWT/mTLS server on a separate port.
+# Depends on grpc-dashboard (loopback) being compiled in as well.
+grpc-dashboard-external = ["maekon-web/grpc-dashboard-external"]
+# D13-v2c: generate-external-cert subcommand — rcgen + JWT keypair generation.
+external-grpc-tools = ["maekon-web/external-grpc-tools", "dep:rcgen", "dep:time"]
+# sd_notify(3) READY=/STOPPING= integration for systemd service units.
+# NOT in default features — pass --features systemd-notify for Linux release builds.
+systemd-notify = ["dep:sd-notify"]
+audio = ["dep:maekon-audio"]
+stt = ["audio", "maekon-audio/whisper"]
+cloud-stt = ["audio", "maekon-audio/cloud-stt"]
+download = ["audio", "maekon-audio/download"]
+embedding = ["dep:maekon-embedding"]
+native-vision = ["maekon-vision/native-vision"]
+hnsw = ["maekon-analysis/hnsw"]
+linux-atspi = ["maekon-vision/linux-atspi"]
+lan-sync = ["maekon-network/lan-sync"]
+webdriver = ["dep:tauri-plugin-webdriver"]
+ml-detect = ["maekon-vision/ml-detect"]
+linux-sandbox = ["maekon-automation/linux-sandbox"]
+windows-sandbox = ["maekon-automation/windows-sandbox"]
+telemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-graphics = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-quartz-core = { workspace = true }
+dispatch2 = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[package.metadata.bundle]
+name = "Maekon"
+identifier = "com.maekon.app"
+icon = ["icons/icon.icns"]
+copyright = "Copyright 2026 Maekon Contributors"
+category = "Productivity"
+short_description = "Local context agent for AI-assisted work"
+long_description = """
+Maekon is a local context agent for AI-assisted work.
+It monitors desktop context and provides useful, private-by-default suggestions.
+"""
+osx_minimum_system_version = "10.15"
+
+[package.metadata.deb]
+maintainer = "Maekon Team"
+copyright = "2026, Maekon Contributors"
+license-file = ["../LICENSE", "4"]
+extended-description = """
+Maekon is a local context agent for AI-assisted work.
+"""
+depends = "$auto, libgtk-3-0, libglib2.0-0, libwebkit2gtk-4.1-0, libappindicator3-1"
+section = "utility"
+priority = "optional"
+assets = [
+    ["target/release/maekon", "usr/bin/", "755"],
+]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+mockito = { workspace = true }
+tokio-test = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+zeroize = { workspace = true }
+serial_test = "3"
+# D13-v2c: generate-external-cert test helpers.
+x509-parser = { workspace = true }
+jsonwebtoken = { workspace = true }

@@ -1,0 +1,34 @@
+[package]
+name = "maekon-core"
+description = "Maekon domain models, ports, and error types"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+semver = { workspace = true }
+gethostname = { workspace = true }
+parking_lot = { workspace = true }
+futures-core = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { workspace = true }
+
+[[bench]]
+name = "core_bench"
+harness = false

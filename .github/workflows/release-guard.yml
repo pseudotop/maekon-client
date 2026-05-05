@@ -1,0 +1,74 @@
+name: Release Guard
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG_NAME: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - name: Fetch release state
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+
+          python3 - <<'PY' > release_guard.out
+          import json
+          import os
+
+          release = json.loads(os.environ["RELEASE_JSON"])
+          tag = os.environ["TAG_NAME"]
+          author = (release.get("author") or {}).get("login")
+          expected_prerelease = "-" in tag
+
+          is_valid = True
+          reasons = []
+
+          if author != "github-actions[bot]":
+              is_valid = False
+              reasons.append(f"release author must be github-actions[bot], got {author}")
+
+          if release.get("prerelease") != expected_prerelease:
+              is_valid = False
+              reasons.append(
+                  f"prerelease flag mismatch for {tag}: expected {expected_prerelease}, got {release.get('prerelease')}"
+              )
+
+          asset_count = len(release.get("assets", []))
+          if asset_count == 0:
+              is_valid = False
+              reasons.append(f"release {tag} has no assets")
+
+          print(f"valid={str(is_valid).lower()}")
+          print(f"asset_count={asset_count}")
+          for reason in reasons:
+              print(reason)
+          PY
+
+          cat release_guard.out
+          awk -F= '/^valid=/{print "valid="$2}' release_guard.out >> "$GITHUB_OUTPUT"
+          awk -F= '/^asset_count=/{print "asset_count="$2}' release_guard.out >> "$GITHUB_OUTPUT"
+
+      - name: Delete invalid manual release
+        if: steps.release.outputs.valid != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          echo "::error::Deleted invalid release for ${TAG_NAME}. Only workflow-created releases with assets are allowed."
+          exit 1
+
+      - name: Confirm valid release
+        if: steps.release.outputs.valid == 'true'
+        run: echo "Release ${TAG_NAME} is valid with ${{ steps.release.outputs.asset_count }} assets."

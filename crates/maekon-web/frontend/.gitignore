@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output (keep the directory itself for cargo check without a prior build)
+dist/*
+!dist/.gitkeep
+
+# Storybook output
+storybook-static/
+storybook-review-static/
+
+# Test output
+.playwright-cli/
+playwright-report/
+playwright-live-report/
+test-results/
+test-results-live/
+coverage/
+wdio-logs/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*

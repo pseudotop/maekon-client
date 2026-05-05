@@ -1,0 +1,262 @@
+// D13: Dashboard gRPC service — exposed by maekon-web for external CLI/integration tools.
+//
+// Unlike `oneshim.client.v1.*` which is the CONSUMER contract (client-rust talks to server),
+// this service is what maekon-web SERVES to external clients on the local dashboard port.
+//
+// Per the D13 design spec (docs/superpowers/specs/2026-04-21-d13-grpc-web-exposure-design.md),
+// v1 ships with a minimal RPC set (GetAgentInfo + HealthCheck). Future PRs expand per-domain
+// (frames, events, sessions) to reach REST-parity.
+
+syntax = "proto3";
+
+package oneshim.dashboard.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service DashboardService {
+  // Basic agent identity + uptime. Mirrors the REST /api/agent/info endpoint.
+  rpc GetAgentInfo(GetAgentInfoRequest) returns (AgentInfoResponse);
+
+  // Dashboard-specific health check. Use this instead of the standard
+  // grpc.health.v1.Health/Check when you want readiness semantics beyond
+  // "process is alive" — e.g., "storage accessible, scheduler running".
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // D13-v2a: per-domain read RPCs.
+  // Aggregated session statistics. Mirrors REST `GET /api/sessions/stats`.
+  rpc GetSessionStats(GetSessionStatsRequest) returns (SessionStatsResponse);
+  // Recent frame metadata. Mirrors REST `GET /api/frames?limit=N`.
+  rpc GetRecentFrames(GetRecentFramesRequest) returns (RecentFramesResponse);
+  // Hourly productivity metric rollups. Mirrors REST
+  // `GET /api/metrics/hourly?from=...`.
+  rpc GetProductivityMetrics(GetProductivityMetricsRequest) returns (ProductivityMetricsResponse);
+  // Focus aggregates over the last N days. Mirrors REST `GET /api/focus/stats`.
+  rpc GetFocusStats(GetFocusStatsRequest) returns (FocusStatsResponse);
+
+  // V2b: server-streaming. Realtime (interval_secs=0) or interval-aggregated
+  // MetricBuckets. See docs/reviews/2026-04-21-d13-v2b-streaming-design.md §1.
+  rpc SubscribeMetrics(SubscribeMetricsRequest) returns (stream SubscribeMetricsResponse);
+
+  // V2b: server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
+  // server-enforced per-type rate limits. See §1 + §2.
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
+}
+
+message GetAgentInfoRequest {}
+
+message AgentInfoResponse {
+  // Cargo package version, e.g. "0.4.39-rc.1".
+  string version = 1;
+  // "release" or "debug" based on the build profile.
+  string build_profile = 2;
+  // Seconds since the agent process started.
+  int64 uptime_secs = 3;
+  // OS family: "macos", "windows", "linux".
+  string platform = 4;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+
+  Status status = 1;
+  // Optional human-readable reason when status != SERVING.
+  string message = 2;
+}
+
+// D13-v2a: GetSessionStats. Aggregated over the most recent `limit` sessions
+// returned by `WebStorage::list_session_stats`. When `limit == 0`, the server
+// uses 1000 as the default sample size.
+message GetSessionStatsRequest {
+  uint32 limit = 1;
+}
+
+message SessionStatsResponse {
+  // Number of sessions aggregated.
+  uint32 total_sessions = 1;
+  // Count of sessions whose `ended_at` is set.
+  uint32 ended_sessions = 2;
+  // Average completed-session duration in seconds. 0 when no sessions are
+  // yet ended.
+  double avg_duration_secs = 3;
+  // Total events across the aggregated sessions.
+  uint64 total_events = 4;
+  // Total frames across the aggregated sessions.
+  uint64 total_frames = 5;
+  // Total idle seconds across the aggregated sessions.
+  uint64 total_idle_secs = 6;
+}
+
+// D13-v2a: GetRecentFrames. Returns frame metadata (no image bytes) for
+// recent captures. Image bytes are served separately via the existing REST
+// file handler to keep gRPC responses bounded.
+message GetRecentFramesRequest {
+  // Max frames to return. 0 → default 50. Hard-capped at 500.
+  uint32 limit = 1;
+  // Hours to look back. 0 → default 1. Hard-capped at 168 (7 days).
+  uint32 since_hours = 2;
+}
+
+message RecentFramesResponse {
+  repeated FrameMetadata frames = 1;
+
+  message FrameMetadata {
+    int64 frame_id = 1;
+    string captured_at = 2;  // RFC 3339
+    string trigger_type = 3;
+    string app_name = 4;
+    string window_title = 5;
+    float importance = 6;
+    uint32 resolution_w = 7;
+    uint32 resolution_h = 8;
+    // File path is intentionally omitted — dashboard clients fetch image
+    // bytes over REST; exposing the path here would leak FS layout.
+  }
+}
+
+// D13-v2a: GetProductivityMetrics. Hourly CPU/memory rollups within an
+// inclusive [from, now] window.
+message GetProductivityMetricsRequest {
+  // Hours to look back from now. 0 → default 24. Hard-capped at 168.
+  uint32 since_hours = 1;
+}
+
+// v2b: shared by v2a unary response and v2b streaming. Wire format number
+// preserved for the repeated field; start field type flips from string to
+// Timestamp (wire-breaking for that specific field — acceptable pre-v2c
+// since the dashboard gRPC is localhost-only; see v3 cleanup tracker).
+message MetricBucket {
+  google.protobuf.Timestamp start = 1;
+  double cpu_avg_pct = 2;
+  double memory_avg_mb = 3;
+  uint32 active_keystrokes = 4;
+  uint32 active_mouse_clicks = 5;
+}
+
+message ProductivityMetricsResponse {
+  repeated MetricBucket buckets = 1;
+}
+
+// ── V2b: SubscribeMetrics ──────────────────────────────────────────
+message SubscribeMetricsRequest {
+  // 0 = realtime (DB query on every event_tx::Metrics tick).
+  // N>0 = emit an aggregated bucket every N seconds.
+  // Server clamps to [250ms floor, 60s ceiling] and applies load-based
+  // enforcement per design §3.
+  uint32 interval_secs = 1;
+
+  // When false, client asks server to skip enforcement. Only honored when
+  // trusted (loopback or matching integration_auth_token). See §4 auth gate.
+  bool respect_server_hints = 2;
+}
+
+message SubscribeMetricsResponse {
+  oneof payload {
+    MetricBucket data = 1;
+    ServerLoadHint hint = 2;
+  }
+}
+
+// ── V2b: SubscribeEvents ───────────────────────────────────────────
+message SubscribeEventsRequest {
+  // "frame" | "idle" | "ai_runtime_status". Empty = all three.
+  // Unknown types are silently ignored (forward-compat).
+  repeated string event_types = 1;
+  bool respect_server_hints = 2;
+}
+
+message SubscribeEventsResponse {
+  oneof payload {
+    DashboardEvent event = 1;
+    ServerLoadHint hint = 2;
+    DroppedEventsSignal dropped = 3;
+  }
+}
+
+message DashboardEvent {
+  google.protobuf.Timestamp occurred_at = 1;
+  oneof payload {
+    FrameEvent frame = 2;
+    IdleEvent idle = 3;
+    AiRuntimeStatusEvent ai_runtime_status = 4;
+  }
+}
+
+message FrameEvent {
+  int64 frame_id = 1;
+  string app_name = 2;
+  string window_title = 3;
+  float importance = 4;
+  string trigger_type = 5;
+}
+
+message IdleEvent {
+  bool is_idle = 1;
+  uint64 idle_secs = 2;
+}
+
+message AiRuntimeStatusEvent {
+  string ocr_source = 1;
+  string llm_source = 2;
+  string ocr_fallback_reason = 3;  // empty when no fallback
+  string llm_fallback_reason = 4;
+}
+
+// ── V2b: shared hint/signal ────────────────────────────────────────
+message ServerLoadHint {
+  enum Level {
+    LOAD_LEVEL_UNSPECIFIED = 0;
+    LOAD_LEVEL_LOW = 1;
+    LOAD_LEVEL_MEDIUM = 2;
+    LOAD_LEVEL_HIGH = 3;
+    LOAD_LEVEL_CRITICAL = 4;
+  }
+  Level load_level = 1;
+  float cpu_pct = 2;
+  float memory_pct = 3;
+  uint32 suggested_interval_secs = 4;        // 0 = no suggestion
+  uint32 suggested_event_rate_limit = 5;     // 0 = no suggestion
+  string reason = 6;
+  google.protobuf.Timestamp emitted_at = 7;
+}
+
+message DroppedEventsSignal {
+  uint64 dropped_count = 1;
+  google.protobuf.Timestamp since = 2;
+  google.protobuf.Timestamp until = 3;
+  string reason = 4;  // "rate_limit" | "channel_lag"
+  repeated TypeCount by_type = 5;
+
+  message TypeCount {
+    string event_type = 1;
+    uint64 count = 2;
+  }
+}
+
+// D13-v2a: GetFocusStats. Focus aggregates over the last N days.
+message GetFocusStatsRequest {
+  // Days to look back. 0 → default 7. Hard-capped at 90.
+  uint32 days = 1;
+}
+
+message FocusStatsResponse {
+  // Number of daily buckets returned.
+  uint32 bucket_count = 1;
+  // Sum of `total_active_secs` across returned buckets.
+  uint64 total_active_secs = 2;
+  // Sum of `deep_work_secs` across returned buckets.
+  uint64 total_deep_work_secs = 3;
+  // Sum of `communication_secs` across returned buckets.
+  uint64 total_communication_secs = 4;
+  // Sum of `interruption_count` across returned buckets.
+  uint32 total_interruptions = 5;
+  // Average `focus_score` across returned buckets. 0 when no data.
+  float avg_focus_score = 6;
+  // Max `max_focus_duration_secs` across returned buckets.
+  uint64 longest_focus_secs = 7;
+}

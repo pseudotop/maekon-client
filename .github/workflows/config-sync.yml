@@ -1,0 +1,46 @@
+name: Config Sync
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'Cargo.toml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.conf.json'
+      - 'crates/maekon-core/src/config/**'
+      - 'crates/maekon-web/frontend/package.json'
+      - 'crates/maekon-web/frontend/src/constants.ts'
+      - 'crates/maekon-web/frontend/src/utils/api-base.ts'
+      - 'crates/maekon-web/frontend/vite.config.ts'
+      - 'scripts/check-config-sync.sh'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'Cargo.toml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.conf.json'
+      - 'crates/maekon-core/src/config/**'
+      - 'crates/maekon-web/frontend/package.json'
+      - 'crates/maekon-web/frontend/src/constants.ts'
+      - 'crates/maekon-web/frontend/src/utils/api-base.ts'
+      - 'crates/maekon-web/frontend/vite.config.ts'
+      - 'scripts/check-config-sync.sh'
+
+# No untrusted inputs used in run: blocks — all paths are static
+jobs:
+  config-sync:
+    name: Port & Version Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Create frontend dist stub
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+
+      - name: Run config sync check
+        run: ./scripts/check-config-sync.sh --fix

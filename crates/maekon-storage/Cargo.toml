@@ -1,0 +1,44 @@
+[package]
+name = "maekon-storage"
+description = "로컬 저장소 어댑터 — SQLite 이벤트 로그, 프레임 파일 저장, 보존 정책"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+maekon-core = { workspace = true }
+thiserror = { workspace = true }
+getrandom = "0.4"
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+keyring = { workspace = true }
+tempfile = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+hex = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "storage_bench"
+harness = false

@@ -1,0 +1,313 @@
+name: Release Smoke
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: release-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    name: Release Smoke Change Detection
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || '' }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/gha-detect-changes.sh
+
+  frontend-assets:
+    name: Build Release Smoke Frontend Assets
+    needs: [changes]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+        with:
+          version: '10'
+          lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: crates/maekon-web/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend bundle
+        working-directory: crates/maekon-web/frontend
+        run: pnpm build
+
+      - name: Verify frontend build output
+        run: test -f crates/maekon-web/frontend/dist/index.html
+
+      - name: Package frontend dist artifact
+        run: tar -czf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend dist
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-frontend-dist
+          path: crates/maekon-web/frontend/frontend-dist.tar.gz
+          if-no-files-found: error
+
+  smoke:
+    name: Build Release Smoke (${{ matrix.name }})
+    needs: [changes, frontend-assets]
+    if: >
+      always() &&
+      (needs.frontend-assets.result == 'success' || needs.frontend-assets.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.ci == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - name: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Try to download frontend dist artifact
+        uses: ./.github/actions/download-artifact
+        continue-on-error: true
+        with:
+          github-token: ${{ github.token }}
+          name: release-smoke-frontend-dist
+          path: crates/maekon-web/frontend
+
+      - name: Extract frontend dist artifact or create stub
+        shell: bash
+        run: |
+          if [ -f crates/maekon-web/frontend/frontend-dist.tar.gz ]; then
+            tar -xzf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend
+          fi
+          if [ ! -f crates/maekon-web/frontend/dist/index.html ]; then
+            mkdir -p crates/maekon-web/frontend/dist
+            echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+          fi
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Verify DEB metadata assets
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-deb-metadata.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: release-smoke-${{ matrix.target }}
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}.exe"
+          else
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}"
+            chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
+          fi
+
+      - name: Build release smoke
+        shell: bash
+        # Mirror release.yml: scope to `-p maekon-app` and enable
+        # `--features grpc`. Without `-p` cargo defaults to a workspace
+        # build that drags in maekon-embedding -> fastembed -> ort-sys,
+        # whose 2.0.0-rc.11 release ships no prebuilt ONNX Runtime for
+        # x86_64-apple-darwin under the default (no-features) feature
+        # set, breaking macOS x64 + Windows smoke. maekon-embedding is
+        # optional = true on maekon-app and NOT enabled by default, so
+        # scoping the build excludes the offending dependency entirely
+        # while still smoking the path the release pipeline produces.
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ./scripts/cargo-cache.sh build --release --target "$TARGET" -p maekon-app --features grpc
+
+      - name: Binary smoke (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/maekon"
+          test -x "$BIN"
+          FILE_INFO="$(file "$BIN")"
+          echo "Binary: $FILE_INFO"
+          case "$(uname -s)" in
+            Darwin) echo "$FILE_INFO" | grep -qE "Mach-O|universal" ;;
+            Linux)  echo "$FILE_INFO" | grep -qE "ELF" ;;
+          esac
+
+      - name: Binary smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/maekon.exe"
+          if (!(Test-Path $bin)) {
+            throw "binary missing: $bin"
+          }
+          $sz = (Get-Item $bin).Length
+          if ($sz -lt 1MB) { throw "binary too small: $sz bytes" }
+          Write-Host "Binary OK: $bin ($([math]::Round($sz / 1MB, 1)) MB)"
+
+      - name: GUI bootstrap smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/maekon.exe"
+          $outLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.out.log"
+          $errLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.err.log"
+          $mergedLog = Join-Path $env:RUNNER_TEMP "maekon-release-smoke-win.log"
+
+          $proc = Start-Process -FilePath $bin -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          Start-Sleep -Seconds 3
+
+          if (-not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Wait-Process -Id $proc.Id -ErrorAction SilentlyContinue
+          }
+
+          $stdout = if (Test-Path $outLog) { Get-Content $outLog -Raw } else { "" }
+          $stderr = if (Test-Path $errLog) { Get-Content $errLog -Raw } else { "" }
+          $combined = "$stdout`n$stderr"
+          Set-Content -Path $mergedLog -Value $combined
+
+          $panicPattern = "Cannot start a runtime from within a runtime|Cannot drop a runtime|panicked at|SIGABRT|stack backtrace"
+          if ($combined -match $panicPattern) {
+            Write-Host "GUI bootstrap smoke detected runtime/panic failure"
+            if (Test-Path $outLog) { Get-Content $outLog }
+            if (Test-Path $errLog) { Get-Content $errLog }
+            exit 1
+          }
+          Write-Host "GUI bootstrap smoke OK (rc=$($proc.ExitCode))"
+
+      - name: GUI bootstrap smoke (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/maekon"
+          LOG="$RUNNER_TEMP/maekon-release-smoke.log"
+
+          set +e
+          MAEKON_DISABLE_TRAY=1 "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 3
+          if kill -0 "$PID" >/dev/null 2>&1; then
+            kill "$PID" >/dev/null 2>&1 || true
+            GRACE=0
+            while kill -0 "$PID" >/dev/null 2>&1 && [[ "$GRACE" -lt 5 ]]; do
+              sleep 1
+              GRACE=$((GRACE + 1))
+            done
+            if kill -0 "$PID" >/dev/null 2>&1; then
+              echo "SIGTERM did not terminate process $PID after 5s; sending SIGKILL"
+              kill -9 "$PID" >/dev/null 2>&1 || true
+            fi
+          fi
+          wait "$PID" 2>/dev/null
+          RC=$?
+          set -e
+
+          if grep -qE "Cannot start a runtime from within a runtime|Cannot drop a runtime|panicked at|SIGABRT|stack backtrace" "$LOG"; then
+            if ! grep -qE "WKWebView|no display|NSApplication" "$LOG" || \
+               grep -qE "Cannot start a runtime|Cannot drop a runtime|SIGABRT|stack backtrace" "$LOG"; then
+              echo "GUI bootstrap smoke detected runtime/panic failure"
+              cat "$LOG"
+              exit 1
+            fi
+          fi
+
+          if [[ "$RC" -eq 139 || "$RC" -eq 134 ]]; then
+            echo "GUI bootstrap smoke crashed: rc=$RC"
+            cat "$LOG"
+            exit 1
+          fi
+
+          echo "GUI bootstrap smoke OK (rc=$RC)"
+
+      - name: Upload macOS GUI smoke log
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-log-${{ matrix.name }}
+          path: ${{ runner.temp }}/maekon-release-smoke.log
+          if-no-files-found: ignore
+
+      - name: Upload Windows GUI smoke log
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-log-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/maekon-release-smoke-win.log
+            ${{ runner.temp }}/maekon-release-smoke-win.out.log
+            ${{ runner.temp }}/maekon-release-smoke-win.err.log
+          if-no-files-found: ignore

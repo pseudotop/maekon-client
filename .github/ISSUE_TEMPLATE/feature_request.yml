@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a public Maekon Client improvement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maekon Client is exported from an internal source of truth. Accepted public suggestions are applied through the parent source tree before the public repository is regenerated.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What user workflow should improve?
+      placeholder: When I...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful behavior change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Mention existing workarounds or related tools.
+    validations:
+      required: false

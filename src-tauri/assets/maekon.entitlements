@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Network: outbound connections to the Maekon server -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Network: localhost TCP server (Axum web dashboard) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Screen recording & Accessibility: NOT entitlement keys.
+         These are TCC-protected (Transparency, Consent, and Control).
+         macOS prompts the user at runtime via system dialogs.
+         Usage descriptions are declared in Info.plist (via tauri.conf.json bundle.macOS.infoPlist). -->
+
+    <!-- Dyld: allows loading of dylibs injected via DYLD_ env vars (recommended for production) -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- JIT: WKWebView JavaScript execution under hardened runtime -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Unsigned memory: WKWebView requires this for JS engine -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- File read/write: SQLite database, config, frame storage -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- App data: ~/Library/Application Support/com.maekon.app -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+</dict>
+</plist>

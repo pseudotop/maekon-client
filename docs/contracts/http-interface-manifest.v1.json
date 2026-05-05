@@ -1,0 +1,717 @@
+{
+  "schema_version": "http.interface.manifest.v1",
+  "document_version": 5,
+  "updated_at": "2026-04-07",
+  "source": {
+    "routes_file": "crates/maekon-web/src/routes.rs",
+    "contracts_crate": "crates/maekon-api-contracts"
+  },
+  "groups": [
+    {
+      "module": "metrics",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/metrics"
+        },
+        {
+          "method": "GET",
+          "path": "/api/metrics/hourly"
+        }
+      ]
+    },
+    {
+      "module": "processes",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/processes"
+        }
+      ]
+    },
+    {
+      "module": "idle",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/idle"
+        }
+      ]
+    },
+    {
+      "module": "sessions",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/sessions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/{id}"
+        }
+      ]
+    },
+    {
+      "module": "frames",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/frames"
+        },
+        {
+          "method": "GET",
+          "path": "/api/frames/{id}/image"
+        },
+        {
+          "method": "GET",
+          "path": "/api/frames/{frame_id}/annotations"
+        },
+        {
+          "method": "POST",
+          "path": "/api/frames/{frame_id}/annotations"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/frames/{frame_id}/annotations/{annotation_id}"
+        },
+        {
+          "method": "POST",
+          "path": "/api/frames/batch-tags"
+        }
+      ]
+    },
+    {
+      "module": "events",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/events"
+        }
+      ]
+    },
+    {
+      "module": "stats",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/stats/summary"
+        },
+        {
+          "method": "GET",
+          "path": "/api/stats/apps"
+        },
+        {
+          "method": "GET",
+          "path": "/api/stats/heatmap"
+        },
+        {
+          "method": "GET",
+          "path": "/api/stats/gui-heatmap"
+        }
+      ]
+    },
+    {
+      "module": "reports",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/reports"
+        }
+      ]
+    },
+    {
+      "module": "settings",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/settings"
+        },
+        {
+          "method": "POST",
+          "path": "/api/settings"
+        },
+        {
+          "method": "GET",
+          "path": "/api/storage/stats"
+        }
+      ]
+    },
+    {
+      "module": "ai_providers",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/ai/provider-surfaces"
+        },
+        {
+          "method": "POST",
+          "path": "/api/ai/providers/models"
+        }
+      ]
+    },
+    {
+      "module": "ai_sessions",
+      "operations": [
+        {
+          "method": "POST",
+          "path": "/api/ai/sessions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/ai/sessions/{id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/ai/sessions/{id}"
+        },
+        {
+          "method": "POST",
+          "path": "/api/ai/sessions/{id}/messages"
+        }
+      ]
+    },
+    {
+      "module": "integration_api",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/integration/status"
+        },
+        {
+          "method": "GET",
+          "path": "/api/integration/audit"
+        },
+        {
+          "method": "GET",
+          "path": "/api/integration/auth/status"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/auth/device/start"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/auth/device/poll"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/auth/device/cancel"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/auth/reset"
+        },
+        {
+          "method": "GET",
+          "path": "/api/integration/inbox"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/inbox/refresh"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/inbox/{prompt_id}/ack"
+        },
+        {
+          "method": "POST",
+          "path": "/api/integration/inbox/{prompt_id}/dismiss"
+        }
+      ]
+    },
+    {
+      "module": "integration",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/integration/v1/status"
+        },
+        {
+          "method": "GET",
+          "path": "/integration/v1/audit"
+        },
+        {
+          "method": "GET",
+          "path": "/integration/v1/ai/provider-surfaces"
+        },
+        {
+          "method": "POST",
+          "path": "/integration/v1/ai/providers/models"
+        }
+      ]
+    },
+    {
+      "module": "data",
+      "operations": [
+        {
+          "method": "DELETE",
+          "path": "/api/data/range"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/data/all"
+        }
+      ]
+    },
+    {
+      "module": "search",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/search"
+        }
+      ]
+    },
+    {
+      "module": "stream",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/stream"
+        }
+      ]
+    },
+    {
+      "module": "export",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/export/metrics"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/frames"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/ical"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/toggl"
+        }
+      ]
+    },
+    {
+      "module": "backup",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/backup"
+        },
+        {
+          "method": "POST",
+          "path": "/api/backup/restore"
+        }
+      ]
+    },
+    {
+      "module": "tags",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/tags"
+        },
+        {
+          "method": "POST",
+          "path": "/api/tags"
+        },
+        {
+          "method": "GET",
+          "path": "/api/tags/{id}"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/tags/{id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/tags/{id}"
+        },
+        {
+          "method": "GET",
+          "path": "/api/frames/{frame_id}/tags"
+        },
+        {
+          "method": "POST",
+          "path": "/api/frames/{frame_id}/tags/{tag_id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/frames/{frame_id}/tags/{tag_id}"
+        }
+      ]
+    },
+    {
+      "module": "timeline",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/timeline"
+        }
+      ]
+    },
+    {
+      "module": "focus",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/focus/metrics"
+        },
+        {
+          "method": "GET",
+          "path": "/api/focus/sessions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/focus/interruptions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/focus/suggestions"
+        },
+        {
+          "method": "POST",
+          "path": "/api/focus/suggestions/{id}/feedback"
+        }
+      ]
+    },
+    {
+      "module": "automation",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/automation/status"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/contracts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/audit"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/policy-events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/policies"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/stats"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/presets"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/presets"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/automation/presets/{id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/automation/presets/{id}"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/presets/{id}/run"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/execute-hint"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/execute-scene-action"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/scene"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/scene/calibration"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/execution-policies"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/execution-policies"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/automation/execution-policies/{id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/automation/execution-policies/{id}"
+        }
+      ]
+    },
+    {
+      "module": "automation_gui",
+      "operations": [
+        {
+          "method": "POST",
+          "path": "/api/automation/gui/sessions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/gui/sessions/{id}"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/automation/gui/sessions/{id}"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/gui/sessions/{id}/highlight"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/gui/sessions/{id}/confirm"
+        },
+        {
+          "method": "POST",
+          "path": "/api/automation/gui/sessions/{id}/execute"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automation/gui/sessions/{id}/events"
+        }
+      ]
+    },
+    {
+      "module": "onboarding",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/onboarding/quickstart"
+        }
+      ]
+    },
+    {
+      "module": "support",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/support/diagnostics"
+        },
+        {
+          "method": "POST",
+          "path": "/api/support/bug-report"
+        },
+        {
+          "method": "GET",
+          "path": "/api/support/bug-report/latest"
+        }
+      ]
+    },
+    {
+      "module": "update",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/update/status"
+        },
+        {
+          "method": "POST",
+          "path": "/api/update/action"
+        },
+        {
+          "method": "GET",
+          "path": "/api/update/stream"
+        }
+      ]
+    },
+    {
+      "module": "suggestions",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/suggestions"
+        },
+        {
+          "method": "POST",
+          "path": "/api/suggestions/{id}/dismiss"
+        }
+      ]
+    },
+    {
+      "module": "semantic_search",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/semantic-search"
+        }
+      ]
+    },
+    {
+      "module": "digests",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/digests"
+        },
+        {
+          "method": "GET",
+          "path": "/api/digests/current"
+        }
+      ]
+    },
+    {
+      "module": "daily_digest",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/digests/daily"
+        },
+        {
+          "method": "GET",
+          "path": "/api/digests/daily/today"
+        },
+        {
+          "method": "GET",
+          "path": "/api/digests/daily/export"
+        }
+      ]
+    },
+    {
+      "module": "dashboard",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/dashboard/day"
+        }
+      ]
+    },
+    {
+      "module": "recalibration",
+      "operations": [
+        {
+          "method": "POST",
+          "path": "/api/recalibration/override"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/recalibration/override/{id}"
+        },
+        {
+          "method": "GET",
+          "path": "/api/recalibration/overrides"
+        },
+        {
+          "method": "POST",
+          "path": "/api/recalibration/recluster"
+        }
+      ]
+    },
+    {
+      "module": "coaching",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/coaching/history"
+        },
+        {
+          "method": "GET",
+          "path": "/api/coaching/goals"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/coaching/goals"
+        },
+        {
+          "method": "GET",
+          "path": "/api/coaching/stats/today"
+        },
+        {
+          "method": "GET",
+          "path": "/api/coaching/habits"
+        }
+      ]
+    },
+    {
+      "module": "playbooks",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/playbooks/coaching"
+        },
+        {
+          "method": "GET",
+          "path": "/api/playbooks/presets"
+        }
+      ]
+    },
+    {
+      "module": "pomodoro",
+      "operations": [
+        {
+          "method": "POST",
+          "path": "/api/pomodoro/start"
+        },
+        {
+          "method": "GET",
+          "path": "/api/pomodoro/current"
+        },
+        {
+          "method": "POST",
+          "path": "/api/pomodoro/cancel"
+        },
+        {
+          "method": "POST",
+          "path": "/api/pomodoro/complete"
+        }
+      ]
+    },
+    {
+      "module": "tracking_schedule",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/tracking-schedule"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/tracking-schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/tracking-schedule/status"
+        }
+      ]
+    },
+    {
+      "module": "external_grpc_live_config",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/external-grpc/live-config"
+        }
+      ]
+    },
+    {
+      "module": "audit_export",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/audit/export"
+        }
+      ]
+    }
+  ]
+}

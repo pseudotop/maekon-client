@@ -1,0 +1,96 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-v2/crates/tauri-cli/config.schema.json",
+  "productName": "Maekon",
+  "identifier": "com.maekon.app",
+  "build": {
+    "frontendDist": "../crates/maekon-web/frontend/dist",
+    "devUrl": "http://127.0.0.1:5273",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "scripts/build-frontend.sh"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Maekon",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "closable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; connect-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; object-src 'none'; base-uri 'self'",
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "plugins": {
+    "_note": "tauri-plugin-updater is intentionally NOT configured here. This project uses a custom updater (src-tauri/src/updater/) with GitHub Releases API, checksum verification, and signature validation. See ADR-004 for details."
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["maekon-sandbox-worker"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "copyright": "Copyright 2024-2026 Maekon Contributors",
+    "shortDescription": "Local context agent for AI-assisted work",
+    "longDescription": "Maekon watches local work context through a desktop agent and turns it into useful, private-by-default assistance.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "hardenedRuntime": true,
+      "entitlements": "assets/maekon.entitlements",
+      "infoPlist": "assets/Info.plist",
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        },
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "headerImage": "nsis/header.bmp",
+        "sidebarImage": "nsis/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["English", "Korean"]
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0"]
+      }
+    }
+  }
+}

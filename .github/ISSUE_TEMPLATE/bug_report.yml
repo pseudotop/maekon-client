@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a reproducible Maekon Client bug.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Maekon Client.
+
+        Do not include secrets, tokens, private screenshots, or sensitive captured content. Security vulnerabilities should be reported privately through the Security tab.
+        For private non-security support, email support@maekon.dev.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This is not a security vulnerability or sensitive data exposure.
+          required: true
+        - label: I have removed secrets, tokens, private screenshots, and sensitive captured content.
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the visible problem and the user impact.
+      placeholder: The app...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest steps that reproduce the issue.
+      placeholder: |
+        1. Open...
+        2. Click...
+        3. See...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: I expected...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use the app version, release tag, or commit SHA if known.
+      placeholder: v0.4.41-rc.1 or commit SHA
+    validations:
+      required: false
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Redact private paths, usernames, tokens, and captured content.
+      render: shell
+    validations:
+      required: false

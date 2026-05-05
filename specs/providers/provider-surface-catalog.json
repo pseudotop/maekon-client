@@ -1,0 +1,3519 @@
+{
+  "version": 2,
+  "updated_at": "2026-03-29T12:00:00Z",
+  "vendors": [
+    {
+      "vendor_id": "anthropic",
+      "provider_type": "Anthropic",
+      "aliases": [
+        "anthropic"
+      ],
+      "display_name": "Anthropic",
+      "projection": {
+        "api_key_env_vars": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "anthropic"
+      }
+    },
+    {
+      "vendor_id": "openai",
+      "provider_type": "OpenAi",
+      "aliases": [
+        "openai",
+        "open_ai",
+        "open-ai"
+      ],
+      "display_name": "OpenAI",
+      "projection": {
+        "api_key_env_vars": [
+          "OPENAI_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "openai"
+      }
+    },
+    {
+      "vendor_id": "google",
+      "provider_type": "Google",
+      "aliases": [
+        "google",
+        "gemini"
+      ],
+      "display_name": "Google",
+      "projection": {
+        "api_key_env_vars": [
+          "GOOGLE_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "google"
+      }
+    },
+    {
+      "vendor_id": "ollama",
+      "provider_type": "Ollama",
+      "aliases": [
+        "ollama"
+      ],
+      "display_name": "Ollama",
+      "projection": {
+        "api_key_env_vars": [
+          "OLLAMA_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "ollama"
+      }
+    },
+    {
+      "vendor_id": "generic",
+      "provider_type": "Generic",
+      "aliases": [
+        "generic",
+        "openai-compatible",
+        "openai_like",
+        "openai-like",
+        "openailike",
+        "llamaindex",
+        "llama-index",
+        "lmstudio",
+        "lm-studio",
+        "vllm",
+        "openai-compatible-local",
+        "local-openai-compatible"
+      ],
+      "display_name": "Generic",
+      "projection": {
+        "api_key_env_vars": [
+          "MAEKON_GENERIC_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "generic"
+      }
+    },
+    {
+      "vendor_id": "copilot",
+      "provider_type": "Copilot",
+      "aliases": [
+        "copilot",
+        "github-copilot",
+        "gh-copilot"
+      ],
+      "display_name": "GitHub Copilot",
+      "projection": {
+        "api_key_env_vars": [
+          "GITHUB_TOKEN"
+        ],
+        "api_key_temp_file_prefix": "copilot"
+      }
+    },
+    {
+      "vendor_id": "groq",
+      "provider_type": "Generic",
+      "aliases": [
+        "groq"
+      ],
+      "display_name": "Groq",
+      "projection": {
+        "api_key_env_vars": [
+          "GROQ_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "groq"
+      }
+    },
+    {
+      "vendor_id": "deepseek",
+      "provider_type": "Generic",
+      "aliases": [
+        "deepseek",
+        "deep-seek"
+      ],
+      "display_name": "DeepSeek",
+      "projection": {
+        "api_key_env_vars": [
+          "DEEPSEEK_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "deepseek"
+      }
+    },
+    {
+      "vendor_id": "together",
+      "provider_type": "Generic",
+      "aliases": [
+        "together",
+        "together-ai",
+        "togetherai"
+      ],
+      "display_name": "Together AI",
+      "projection": {
+        "api_key_env_vars": [
+          "TOGETHER_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "together"
+      }
+    },
+    {
+      "vendor_id": "mistral",
+      "provider_type": "Generic",
+      "aliases": [
+        "mistral",
+        "mistral-ai",
+        "mistralai"
+      ],
+      "display_name": "Mistral AI",
+      "projection": {
+        "api_key_env_vars": [
+          "MISTRAL_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "mistral"
+      }
+    },
+    {
+      "vendor_id": "xai",
+      "provider_type": "Generic",
+      "aliases": [
+        "xai",
+        "x-ai",
+        "grok"
+      ],
+      "display_name": "xAI",
+      "projection": {
+        "api_key_env_vars": [
+          "XAI_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "xai"
+      }
+    },
+    {
+      "vendor_id": "perplexity",
+      "provider_type": "Generic",
+      "aliases": [
+        "perplexity",
+        "pplx"
+      ],
+      "display_name": "Perplexity",
+      "projection": {
+        "api_key_env_vars": [
+          "PERPLEXITY_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "perplexity"
+      }
+    },
+    {
+      "vendor_id": "openrouter",
+      "provider_type": "Generic",
+      "aliases": [
+        "openrouter",
+        "open-router"
+      ],
+      "display_name": "OpenRouter",
+      "projection": {
+        "api_key_env_vars": [
+          "OPENROUTER_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "openrouter"
+      }
+    },
+    {
+      "vendor_id": "nvidia",
+      "provider_type": "Generic",
+      "aliases": [
+        "nvidia",
+        "nvidia-nim",
+        "nim"
+      ],
+      "display_name": "NVIDIA NIM",
+      "projection": {
+        "api_key_env_vars": [
+          "NVIDIA_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "nvidia"
+      }
+    },
+    {
+      "vendor_id": "cerebras",
+      "provider_type": "Generic",
+      "aliases": [
+        "cerebras"
+      ],
+      "display_name": "Cerebras",
+      "projection": {
+        "api_key_env_vars": [
+          "CEREBRAS_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "cerebras"
+      }
+    },
+    {
+      "vendor_id": "fireworks",
+      "provider_type": "Generic",
+      "aliases": [
+        "fireworks",
+        "fireworks-ai",
+        "fireworksai"
+      ],
+      "display_name": "Fireworks AI",
+      "projection": {
+        "api_key_env_vars": [
+          "FIREWORKS_API_KEY"
+        ],
+        "api_key_temp_file_prefix": "fireworks"
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "surface_id": "provider_surface.anthropic.direct_api",
+      "vendor_id": "anthropic",
+      "provider_type": "Anthropic",
+      "display_name": "Anthropic API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "claude-sonnet-4-20250514",
+          "claude-opus-4-1-20250805",
+          "claude-opus-4-20250514"
+        ],
+        "ocr_models": [
+          "claude-sonnet-4-20250514",
+          "claude-opus-4-1-20250805",
+          "claude-opus-4-20250514"
+        ]
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "reject"
+      },
+      "known_models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "display_name": "Claude Sonnet 4",
+          "aliases": [
+            "claude-sonnet-4"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-opus-4-1-20250805",
+          "display_name": "Claude Opus 4.1",
+          "aliases": [
+            "claude-opus-4-1"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-opus-4-20250514",
+          "display_name": "Claude Opus 4",
+          "aliases": [
+            "claude-opus-4",
+            "opus"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "system",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "tools",
+            "tool_choice",
+            "stop_sequences",
+            "thinking",
+            "metadata"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Anthropic Messages remains the primary API surface."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "thinking",
+            "metadata"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Vision OCR is implemented through image content blocks on the Messages API."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "auth_scheme": "x_api_key",
+        "request_shape": "anthropic_messages"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "auth_scheme": "x_api_key",
+        "request_shape": "anthropic_vision_messages"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/v1/models",
+        "auth_scheme": "x_api_key",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": true
+      },
+      "references": [
+        "https://docs.anthropic.com/en/api/messages",
+        "https://docs.anthropic.com/en/api/models"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.openai.direct_api",
+      "vendor_id": "openai",
+      "provider_type": "OpenAi",
+      "display_name": "OpenAI API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5.4",
+          "gpt-5.2",
+          "gpt-5-mini"
+        ],
+        "ocr_models": [
+          "gpt-5.4",
+          "gpt-5-mini"
+        ]
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "o*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*",
+            "gpt-4o-transcribe*",
+            "gpt-4o-mini-transcribe*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "o*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*",
+            "gpt-4o-transcribe*",
+            "gpt-4o-mini-transcribe*"
+          ]
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "o*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*",
+            "gpt-4o-transcribe*",
+            "gpt-4o-mini-transcribe*"
+          ]
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "o*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*",
+            "gpt-4o-transcribe*",
+            "gpt-4o-mini-transcribe*"
+          ]
+        }
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "reject"
+      },
+      "known_models": [
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Preferred multimodal OpenAI surface in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2",
+          "display_name": "GPT-5.2",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "General-purpose OpenAI direct API model."
+          ]
+        },
+        {
+          "id": "gpt-5-mini",
+          "display_name": "GPT-5 Mini",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Cost-sensitive OpenAI multimodal model."
+          ]
+        },
+        {
+          "id": "text-embedding",
+          "display_name": "Embedding models",
+          "aliases": [],
+          "id_prefixes": [
+            "text-embedding-",
+            "text-similarity-",
+            "text-search-"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Embedding models must not be used as Maekon LLM or OCR engines."
+          ]
+        },
+        {
+          "id": "moderation-and-audio",
+          "display_name": "Moderation and audio models",
+          "aliases": [],
+          "id_prefixes": [
+            "omni-moderation-",
+            "text-moderation-",
+            "whisper-",
+            "tts-",
+            "gpt-image-",
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Moderation, transcription, speech, and image-generation endpoints are not valid Maekon LLM/OCR backends."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "temperature",
+            "top_p",
+            "tools",
+            "tool_choice",
+            "text",
+            "reasoning",
+            "metadata",
+            "parallel_tool_calls",
+            "store"
+          ],
+          "unsupported": [],
+          "notes": [
+            "OpenAI's current primary surface is the Responses API for text and tool workflows."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ],
+          "unsupported": [
+            "thinking"
+          ],
+          "notes": [
+            "Maekon currently keeps OCR on OpenAI-compatible chat completions for API-key flows."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_responses"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.openai.com/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": true
+      },
+      "references": [
+        "https://platform.openai.com/docs/api-reference/responses",
+        "https://platform.openai.com/docs/api-reference/models/list",
+        "https://openai.com/api/pricing/"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.openai.managed_oauth",
+      "vendor_id": "openai",
+      "provider_type": "OpenAi",
+      "display_name": "OpenAI Managed OAuth",
+      "execution_kind": "managed_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "managed_oauth",
+      "stability": "experimental",
+      "preferred_for_product_auth": false,
+      "related_surface_ids": [
+        "provider_surface.openai.subprocess_cli"
+      ],
+      "catalog_strategy": "none",
+      "provisioning": {
+        "docs_url": "https://developers.openai.com/codex/auth/",
+        "configuration_env_vars": []
+      },
+      "supports": {
+        "llm": true,
+        "ocr": false,
+        "model_catalog": false,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "none",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5.4",
+          "gpt-5.2",
+          "gpt-5-mini"
+        ],
+        "ocr_models": []
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "reject"
+      },
+      "known_models": [
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Managed OAuth surface is currently LLM-only in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2",
+          "display_name": "GPT-5.2",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Managed OAuth surface is currently LLM-only in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5-mini",
+          "display_name": "GPT-5 Mini",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Managed OAuth surface is currently LLM-only in Maekon."
+          ]
+        },
+        {
+          "id": "text-embedding",
+          "display_name": "Embedding models",
+          "aliases": [],
+          "id_prefixes": [
+            "text-embedding-",
+            "text-similarity-",
+            "text-search-",
+            "omni-moderation-",
+            "text-moderation-",
+            "whisper-",
+            "tts-",
+            "gpt-image-"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Embedding, moderation, audio, and image generation models are not valid managed OAuth LLM targets in Maekon."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "temperature",
+            "top_p",
+            "tools",
+            "tool_choice",
+            "text",
+            "reasoning",
+            "metadata"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Managed OAuth remains an experimental compatibility path inside Maekon."
+          ]
+        },
+        "ocr": {
+          "supported": [],
+          "unsupported": [
+            "model"
+          ],
+          "notes": [
+            "Managed OAuth does not currently expose OCR in Maekon."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://chatgpt.com/backend-api/codex",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_responses"
+      },
+      "references": [
+        "https://developers.openai.com/codex/auth/"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.openai.subprocess_cli",
+      "vendor_id": "openai",
+      "provider_type": "OpenAi",
+      "display_name": "Codex CLI",
+      "execution_kind": "subprocess_cli",
+      "placement_kind": "installed_cli",
+      "credential_kind": "cli_subscription",
+      "stability": "preview",
+      "preferred_for_product_auth": true,
+      "catalog_strategy": "subprocess_probe",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": false,
+        "context_bridge": true
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5.4",
+          "gpt-5.2-codex",
+          "gpt-5.2"
+        ],
+        "ocr_models": [
+          "gpt-5.4",
+          "gpt-5.2-codex",
+          "gpt-5.2"
+        ]
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2-codex",
+          "display_name": "GPT-5.2 Codex",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2",
+          "display_name": "GPT-5.2",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "prompt",
+            "json_schema",
+            "cwd",
+            "sandbox",
+            "approval_policy"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "CLI surface support is constrained by Codex CLI flags and stdout contract."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "image",
+            "json_schema"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Codex CLI OCR uses image attachments plus structured JSON output."
+          ]
+        }
+      },
+      "subprocess_transport": {
+        "tool_id": "codex",
+        "executable_candidates": [
+          "codex"
+        ],
+        "auth_probe_command": [
+          "login",
+          "status"
+        ],
+        "auth_probe_mode": "codex_login_status_text",
+        "invocation_mode": "codex_exec_json",
+        "model_flag": "--model",
+        "json_output_supported": true,
+        "oneshot_flags": [
+          "--sandbox",
+          "read-only",
+          "--skip-git-repo-check",
+          "--color",
+          "never"
+        ],
+        "session_flags": []
+      },
+      "references": [
+        "https://developers.openai.com/codex/auth/"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.anthropic.subprocess_cli",
+      "vendor_id": "anthropic",
+      "provider_type": "Anthropic",
+      "display_name": "Claude Code",
+      "execution_kind": "subprocess_cli",
+      "placement_kind": "installed_cli",
+      "credential_kind": "cli_subscription",
+      "stability": "preview",
+      "preferred_for_product_auth": true,
+      "catalog_strategy": "subprocess_probe",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": false,
+        "context_bridge": true
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "claude-opus-4-6",
+          "claude-sonnet-4",
+          "sonnet",
+          "opus"
+        ],
+        "ocr_models": [
+          "claude-opus-4-6",
+          "claude-sonnet-4",
+          "sonnet",
+          "opus"
+        ]
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "claude-opus-4-6",
+          "display_name": "Claude Opus 4.6",
+          "aliases": [
+            "opus"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Claude Code subprocess surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "claude-sonnet-4",
+          "display_name": "Claude Sonnet 4",
+          "aliases": [
+            "sonnet"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Claude Code subprocess surface supports multimodal OCR in Maekon."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "prompt",
+            "cwd",
+            "output_format"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Claude Code surface support is constrained by Claude CLI flags and stdout contract."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "image",
+            "json_schema"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Claude Code OCR uses a local image path plus JSON schema-constrained stdout."
+          ]
+        }
+      },
+      "subprocess_transport": {
+        "tool_id": "claude-code",
+        "executable_candidates": [
+          "claude",
+          "claude-code"
+        ],
+        "auth_probe_command": [
+          "auth",
+          "status",
+          "--json"
+        ],
+        "auth_probe_mode": "claude_auth_status_json",
+        "invocation_mode": "claude_print_json",
+        "model_flag": "--model",
+        "json_output_supported": true,
+        "oneshot_flags": [
+          "--no-session-persistence",
+          "--permission-mode",
+          "dontAsk",
+          "--tools="
+        ],
+        "session_flags": [
+          "--output-format",
+          "stream-json"
+        ]
+      },
+      "references": [
+        "https://docs.anthropic.com/en/docs/claude-code/settings"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.google.direct_api",
+      "vendor_id": "google",
+      "provider_type": "Google",
+      "display_name": "Google Gemini API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "vision_api",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "gemini-2.5-flash",
+          "gemini-2.5-pro",
+          "gemini-2.5-flash-lite",
+          "gemini-3-flash-preview",
+          "gemini-3-pro-preview"
+        ],
+        "ocr_models": []
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "reject"
+      },
+      "known_models": [
+        {
+          "id": "gemini-2.5-flash",
+          "display_name": "Gemini 2.5 Flash",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
+          ]
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "display_name": "Gemini 2.5 Pro",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
+          ]
+        },
+        {
+          "id": "gemini-2.5-flash-lite",
+          "display_name": "Gemini 2.5 Flash Lite",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
+          ]
+        },
+        {
+          "id": "gemini-3-flash-preview",
+          "display_name": "Gemini 3 Flash Preview",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
+          ]
+        },
+        {
+          "id": "gemini-3-pro-preview",
+          "display_name": "Gemini 3 Pro Preview",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Google OCR in Maekon uses the Vision API, not a model-selectable Gemini OCR surface."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "contents",
+            "system_instruction",
+            "tools",
+            "toolConfig",
+            "safetySettings",
+            "generationConfig.maxOutputTokens",
+            "generationConfig.temperature",
+            "generationConfig.topP",
+            "generationConfig.topK",
+            "generationConfig.stopSequences",
+            "generationConfig.responseMimeType",
+            "generationConfig.responseSchema",
+            "generationConfig.thinkingConfig",
+            "generationConfig.seed"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Gemini direct API exposes machine-readable model metadata."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "requests",
+            "TEXT_DETECTION",
+            "maxResults"
+          ],
+          "unsupported": [
+            "model"
+          ],
+          "notes": [
+            "Google OCR in Maekon remains Vision API-backed."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "auth_scheme": "x_goog_api_key",
+        "request_shape": "google_generate_content"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://vision.googleapis.com/v1/images:annotate",
+        "auth_scheme": "x_goog_api_key",
+        "request_shape": "google_vision_annotate"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models",
+        "auth_scheme": "x_goog_api_key",
+        "response_shape": "google_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "Google Vision OCR endpoint does not expose a selectable model catalog."
+      },
+      "references": [
+        "https://ai.google.dev/models",
+        "https://ai.google.dev/api/models#v1beta.models.list"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.google.managed_oauth",
+      "vendor_id": "google",
+      "provider_type": "Google",
+      "display_name": "Google Vision Managed OAuth",
+      "execution_kind": "managed_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "managed_oauth",
+      "stability": "experimental",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "none",
+      "provisioning": {
+        "setup_copy_key": "featureCapability.surface.provider_surface.google.managed_oauth.setup",
+        "docs_url": "https://developers.google.com/identity/protocols/oauth2/native-app",
+        "configuration_env_vars": [
+          "MAEKON_GOOGLE_OAUTH_CLIENT_ID"
+        ]
+      },
+      "supports": {
+        "llm": false,
+        "ocr": true,
+        "model_catalog": false,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "vision_api",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": false
+      },
+      "default_models": {
+        "llm_models": [],
+        "ocr_models": []
+      },
+      "unknown_model_policy": {
+        "llm": "reject",
+        "ocr": "reject"
+      },
+      "known_models": [],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [],
+          "unsupported": [
+            "model"
+          ],
+          "notes": [
+            "Google managed OAuth is currently OCR-only in Maekon."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "requests",
+            "TEXT_DETECTION",
+            "maxResults"
+          ],
+          "unsupported": [
+            "model"
+          ],
+          "notes": [
+            "Google Vision OCR accepts bearer tokens when a user-authorized Google OAuth client is configured."
+          ]
+        }
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://vision.googleapis.com/v1/images:annotate",
+        "auth_scheme": "bearer",
+        "request_shape": "google_vision_annotate"
+      },
+      "references": [
+        "https://cloud.google.com/vision/docs/authentication",
+        "https://developers.google.com/identity/protocols/oauth2/native-app"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.ollama.local_http",
+      "vendor_id": "ollama",
+      "provider_type": "Ollama",
+      "display_name": "Ollama Local API",
+      "execution_kind": "direct_http",
+      "placement_kind": "self_hosted",
+      "credential_kind": "none",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "qwen3:8b",
+          "gpt-oss:20b",
+          "gemma3:4b"
+        ],
+        "ocr_models": [
+          "qwen3-vl:8b",
+          "gemma3:4b",
+          "gemma3:12b"
+        ]
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [],
+          "deny_patterns": [
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unsupported",
+          "allow_patterns": [
+            "qwen3-vl*",
+            "qwen2.5-vl*",
+            "gemma3*",
+            "llava*",
+            "bakllava*",
+            "moondream*"
+          ],
+          "deny_patterns": [
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*"
+          ]
+        },
+        "image_input": {
+          "default_support": "unsupported",
+          "allow_patterns": [
+            "qwen3-vl*",
+            "qwen2.5-vl*",
+            "gemma3*",
+            "llava*",
+            "bakllava*",
+            "moondream*"
+          ],
+          "deny_patterns": [
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*"
+          ]
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "qwen*",
+            "gpt-oss*",
+            "gemma3*",
+            "llava*",
+            "bakllava*",
+            "moondream*"
+          ],
+          "deny_patterns": [
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*"
+          ]
+        }
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "qwen3:8b",
+          "display_name": "Qwen3 8B",
+          "aliases": [],
+          "id_prefixes": [
+            "qwen3:8b"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Text-only Ollama model."
+          ]
+        },
+        {
+          "id": "gpt-oss:20b",
+          "display_name": "GPT-OSS 20B",
+          "aliases": [],
+          "id_prefixes": [
+            "gpt-oss:20b"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Text-only Ollama model."
+          ]
+        },
+        {
+          "id": "qwen3-vl:8b",
+          "display_name": "Qwen3-VL 8B",
+          "aliases": [],
+          "id_prefixes": [
+            "qwen3-vl",
+            "qwen3-vl:8b"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Vision-capable Ollama model suitable for OCR."
+          ]
+        },
+        {
+          "id": "gemma3:4b",
+          "display_name": "Gemma 3 4B",
+          "aliases": [
+            "gemma3"
+          ],
+          "id_prefixes": [
+            "gemma3:4b",
+            "gemma3:12b",
+            "gemma3:27b"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Gemma 3 multimodal models can process images in Ollama."
+          ]
+        },
+        {
+          "id": "embedding-models",
+          "display_name": "Embedding models",
+          "aliases": [],
+          "id_prefixes": [
+            "nomic-embed",
+            "mxbai-embed",
+            "bge-",
+            "snowflake-arctic-embed"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Embedding-focused Ollama models are not valid Maekon LLM/OCR backends."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "temperature",
+            "top_p",
+            "text",
+            "reasoning"
+          ],
+          "unsupported": [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "store"
+          ],
+          "notes": [
+            "Maekon uses Ollama's local OpenAI-compatible /v1/responses surface for LLM calls."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ],
+          "unsupported": [
+            "thinking"
+          ],
+          "notes": [
+            "Vision OCR runs through Ollama's OpenAI-compatible /v1/chat/completions surface."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "http://localhost:11434/v1/responses",
+        "auth_scheme": "none",
+        "request_shape": "openai_responses"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "http://localhost:11434/v1/chat/completions",
+        "auth_scheme": "none",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "http://localhost:11434/api/tags",
+        "auth_scheme": "none",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": true
+      },
+      "availability_probe": {
+        "method": "GET",
+        "url": "http://localhost:11434/api/version",
+        "auth_scheme": "none"
+      },
+      "references": [
+        "https://docs.ollama.com/api/authentication",
+        "https://docs.ollama.com/api/openai-compatibility",
+        "https://docs.ollama.com/api/tags",
+        "https://docs.ollama.com/capabilities/structured-outputs"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.google.subprocess_cli",
+      "vendor_id": "google",
+      "provider_type": "Google",
+      "display_name": "Gemini CLI",
+      "execution_kind": "subprocess_cli",
+      "placement_kind": "installed_cli",
+      "credential_kind": "cli_subscription",
+      "stability": "experimental",
+      "preferred_for_product_auth": true,
+      "catalog_strategy": "subprocess_probe",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": false,
+        "context_bridge": true
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "gemini-2.5-pro",
+          "gemini-2.5-flash",
+          "gemini-3-flash-preview"
+        ],
+        "ocr_models": [
+          "gemini-2.5-pro",
+          "gemini-2.5-flash",
+          "gemini-3-flash-preview"
+        ]
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "gemini-2.5-pro",
+          "display_name": "Gemini 2.5 Pro",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Gemini CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "display_name": "Gemini 2.5 Flash",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Gemini CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gemini-3-flash-preview",
+          "display_name": "Gemini 3 Flash Preview",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Gemini CLI surface supports multimodal OCR in Maekon."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "prompt"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "Gemini CLI runtime prefers JSON output when available and falls back to prompt/stdout mode on older installs. Auth state is not verified automatically yet."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "image"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Gemini CLI OCR prefers JSON output when available and falls back to prompt/stdout mode on older installs."
+          ]
+        }
+      },
+      "subprocess_transport": {
+        "tool_id": "gemini-cli",
+        "executable_candidates": [
+          "gemini"
+        ],
+        "auth_probe_command": [],
+        "auth_probe_mode": "none",
+        "invocation_mode": "gemini_cli_prompt",
+        "model_flag": "--model",
+        "json_output_supported": true,
+        "oneshot_flags": [],
+        "session_flags": []
+      },
+      "references": [
+        "https://developers.google.com/gemini-code-assist/docs/gemini-cli"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.generic.local_openai_compatible",
+      "vendor_id": "generic",
+      "provider_type": "Generic",
+      "display_name": "Local OpenAI-Compatible Server",
+      "execution_kind": "direct_http",
+      "placement_kind": "self_hosted",
+      "credential_kind": "none",
+      "stability": "preview",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": true
+      },
+      "default_models": {
+        "llm_models": [],
+        "ocr_models": []
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "openai/gpt-*",
+            "qwen*",
+            "llama*",
+            "mistral*",
+            "gemma*",
+            "claude*",
+            "deepseek*",
+            "phi*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "openai/gpt-*",
+            "qwen*vl*",
+            "llava*",
+            "bakllava*",
+            "moondream*",
+            "gemma3*",
+            "internvl*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "openai/gpt-*",
+            "qwen*vl*",
+            "llava*",
+            "bakllava*",
+            "moondream*",
+            "gemma3*",
+            "internvl*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "openai/gpt-*",
+            "qwen*",
+            "llama*",
+            "mistral*",
+            "gemma*",
+            "deepseek*",
+            "phi*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "nomic-embed*",
+            "mxbai-embed*",
+            "bge-*",
+            "snowflake-arctic-embed*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        }
+      },
+      "unknown_model_policy": {
+        "llm": "warn",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "non-generative-models",
+          "display_name": "Embedding and utility models",
+          "aliases": [],
+          "id_prefixes": [
+            "text-embedding-",
+            "nomic-embed",
+            "mxbai-embed",
+            "bge-",
+            "snowflake-arctic-embed",
+            "omni-moderation-",
+            "text-moderation-",
+            "whisper-",
+            "tts-",
+            "gpt-image-"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Embedding, moderation, transcription, and image-generation models are not valid Maekon LLM/OCR backends."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Use this preset for local OpenAI-compatible servers such as LM Studio or vLLM."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ],
+          "unsupported": [],
+          "notes": [
+            "OCR assumes a multimodal OpenAI-compatible model and JSON response support."
+          ]
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "http://127.0.0.1:1234/v1/chat/completions",
+        "auth_scheme": "none",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "http://127.0.0.1:1234/v1/chat/completions",
+        "auth_scheme": "none",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "http://127.0.0.1:1234/v1/models",
+        "auth_scheme": "none",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": true
+      },
+      "availability_probe": {
+        "method": "GET",
+        "url": "http://127.0.0.1:1234/v1/models",
+        "auth_scheme": "none"
+      },
+      "references": [
+        "https://lmstudio.ai/docs/local-server",
+        "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.generic.direct_api",
+      "vendor_id": "generic",
+      "provider_type": "Generic",
+      "display_name": "Generic OpenAI-Compatible API",
+      "execution_kind": "direct_http",
+      "placement_kind": "custom_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": true,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": true
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5-mini",
+          "gpt-5.4"
+        ],
+        "ocr_models": [
+          "gpt-5-mini"
+        ]
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "claude-*",
+            "qwen*",
+            "llama*",
+            "mistral*",
+            "gemma*",
+            "deepseek*",
+            "phi*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "claude-*",
+            "qwen*vl*",
+            "llava*",
+            "bakllava*",
+            "moondream*",
+            "gemma3*",
+            "internvl*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "claude-*",
+            "qwen*vl*",
+            "llava*",
+            "bakllava*",
+            "moondream*",
+            "gemma3*",
+            "internvl*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [
+            "gpt-*",
+            "qwen*",
+            "llama*",
+            "mistral*",
+            "gemma*",
+            "deepseek*",
+            "phi*"
+          ],
+          "deny_patterns": [
+            "text-embedding-*",
+            "text-similarity-*",
+            "text-search-*",
+            "omni-moderation-*",
+            "text-moderation-*",
+            "whisper-*",
+            "tts-*",
+            "gpt-image-*"
+          ]
+        }
+      },
+      "unknown_model_policy": {
+        "llm": "warn",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "gpt-5-mini",
+          "display_name": "GPT-5 Mini",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Reasonable OpenAI-compatible default for both LLM and multimodal OCR."
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "OpenAI-compatible advanced model when the upstream supports it."
+          ]
+        },
+        {
+          "id": "vision-compatible-gateways",
+          "display_name": "Known multimodal OpenAI-compatible models",
+          "aliases": [],
+          "id_prefixes": [
+            "gpt-4o",
+            "claude-",
+            "qwen2.5-vl",
+            "qwen3-vl",
+            "llava",
+            "bakllava",
+            "moondream",
+            "gemma3"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Common multimodal models exposed through OpenAI-compatible gateways."
+          ]
+        },
+        {
+          "id": "non-generative-models",
+          "display_name": "Embedding and utility models",
+          "aliases": [],
+          "id_prefixes": [
+            "text-embedding-",
+            "text-similarity-",
+            "text-search-",
+            "omni-moderation-",
+            "text-moderation-",
+            "whisper-",
+            "tts-",
+            "gpt-image-"
+          ],
+          "capabilities": {
+            "llm": false,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": [
+            "Embedding, moderation, transcription, and image-generation models must not be used as Maekon LLM/OCR backends."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Generic remains conservative and OpenAI-compatible by default.",
+            "This starter surface is suitable for OpenAI-like gateways including LlamaIndex OpenAILike."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ],
+          "unsupported": [],
+          "notes": []
+        }
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.openai.com/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": true
+      },
+      "references": [
+        "https://platform.openai.com/docs/api-reference/chat",
+        "https://developers.llamaindex.ai/python/framework-api-reference/llms/openai_like/"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.copilot.managed_oauth",
+      "vendor_id": "copilot",
+      "provider_type": "Copilot",
+      "display_name": "GitHub Copilot API",
+      "execution_kind": "managed_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "managed_oauth",
+      "stability": "preview",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": false,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "none",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": false,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5.4"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4 (Copilot)",
+          "aliases": [],
+          "id_prefixes": [
+            "gpt-*"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": []
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "display_name": "Claude Sonnet 4.6 (Copilot)",
+          "aliases": [],
+          "id_prefixes": [
+            "claude-*"
+          ],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": false
+          },
+          "notes": []
+        }
+      ],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "reject"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.githubcopilot.com/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.githubcopilot.com/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": []
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": []
+        },
+        "ocr": {
+          "default_support": "unsupported",
+          "allow_patterns": [],
+          "deny_patterns": [
+            "*"
+          ]
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.github.com/en/copilot"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.groq.direct_api",
+      "vendor_id": "groq",
+      "provider_type": "Generic",
+      "display_name": "Groq API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "llama-3.3-70b-versatile"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.groq.com/openai/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://console.groq.com/docs/api-reference"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.deepseek.direct_api",
+      "vendor_id": "deepseek",
+      "provider_type": "Generic",
+      "display_name": "DeepSeek API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "deepseek-chat"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.deepseek.com/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://platform.deepseek.com/api-docs"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.together.direct_api",
+      "vendor_id": "together",
+      "provider_type": "Generic",
+      "display_name": "Together AI API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.together.xyz/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.together.xyz/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.together.xyz/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.together.ai/reference/chat-completions"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.mistral.direct_api",
+      "vendor_id": "mistral",
+      "provider_type": "Generic",
+      "display_name": "Mistral AI API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "mistral-large-latest"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.mistral.ai/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.mistral.ai/api/"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.xai.direct_api",
+      "vendor_id": "xai",
+      "provider_type": "Generic",
+      "display_name": "xAI API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "grok-3"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.x.ai/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.x.ai/docs/overview"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.perplexity.direct_api",
+      "vendor_id": "perplexity",
+      "provider_type": "Generic",
+      "display_name": "Perplexity API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "sonar"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.perplexity.ai/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.perplexity.ai/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.perplexity.ai/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.perplexity.ai/api-reference/chat-completions"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.openrouter.direct_api",
+      "vendor_id": "openrouter",
+      "provider_type": "Generic",
+      "display_name": "OpenRouter API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "anthropic/claude-sonnet-4"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://openrouter.ai/api/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://openrouter.ai/docs/api-reference"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.nvidia.direct_api",
+      "vendor_id": "nvidia",
+      "provider_type": "Generic",
+      "display_name": "NVIDIA NIM API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "nvidia/nemotron-3-super-120b"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://integrate.api.nvidia.com/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.nvidia.com/nim/large-language-models/latest/api-reference.html"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.cerebras.direct_api",
+      "vendor_id": "cerebras",
+      "provider_type": "Generic",
+      "display_name": "Cerebras API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "llama-3.3-70b"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.cerebras.ai/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.cerebras.ai/api-reference"
+      ],
+      "catalog_version": 2
+    },
+    {
+      "surface_id": "provider_surface.fireworks.direct_api",
+      "vendor_id": "fireworks",
+      "provider_type": "Generic",
+      "display_name": "Fireworks AI API",
+      "execution_kind": "direct_http",
+      "placement_kind": "provider_hosted",
+      "credential_kind": "api_key",
+      "stability": "ga",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "http_models_endpoint",
+      "supports": {
+        "llm": true,
+        "ocr": true,
+        "model_catalog": true,
+        "context_bridge": false
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "multimodal_llm",
+        "supports_geometry": true,
+        "supports_confidence": true,
+        "requires_image_input_model": true,
+        "requires_structured_output_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        ],
+        "ocr_models": []
+      },
+      "known_models": [],
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "llm_transport": {
+        "method": "POST",
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_chat_completions"
+      },
+      "ocr_transport": {
+        "method": "POST",
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "auth_scheme": "bearer",
+        "request_shape": "openai_vision_chat_completions"
+      },
+      "model_catalog_transport": {
+        "method": "GET",
+        "url": "https://api.fireworks.ai/inference/v1/models",
+        "auth_scheme": "bearer",
+        "response_shape": "standard_data_or_models",
+        "llm_supported": true,
+        "ocr_supported": false,
+        "ocr_notice": "OCR models are not discoverable via this provider's model catalog."
+      },
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tools",
+            "tool_choice",
+            "response_format"
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "messages",
+            "max_tokens",
+            "response_format"
+          ]
+        }
+      },
+      "capability_rules": {
+        "llm": {
+          "default_support": "supported",
+          "allow_patterns": [
+            "*"
+          ],
+          "deny_patterns": [
+            "embedding*",
+            "whisper*",
+            "tts*"
+          ]
+        },
+        "ocr": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "image_input": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        },
+        "structured_output": {
+          "default_support": "unknown",
+          "allow_patterns": [],
+          "deny_patterns": []
+        }
+      },
+      "references": [
+        "https://docs.fireworks.ai/api-reference/"
+      ],
+      "catalog_version": 2
+    }
+  ]
+}

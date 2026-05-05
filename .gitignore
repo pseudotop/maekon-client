@@ -1,0 +1,70 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+# Cargo.lock is committed for binary applications
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+*.profraw
+*.profdata
+coverage/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Whisper model files (downloaded, not committed)
+src-tauri/resources/*.bin
+
+# Tauri sidecar binaries (built locally, not committed)
+src-tauri/oneshim-sandbox-worker*
+src-tauri/binaries/
+src-tauri/binaries/oneshim-sandbox-worker*
+
+# Node.js (웹 대시보드 프론트엔드)
+node_modules/
+
+# Test results / WDIO logs
+.playwright-cli/
+.playwright-mcp/
+test-results/
+wdio-logs/
+
+# Local agent/tooling state
+.serena/
+.claude/
+docs/superpowers/
+.public-worktrees/
+
+# Local brand exploration drafts; production assets live in assets/brand/*.svg.
+assets/brand/concepts/
+
+# Claude plugins/agents runtime files
+.agents/
+.claude/skills/
+skills-lock.json
+impl
+plan
+specs/*
+!specs/providers/
+specs/providers/*
+!specs/providers/provider-surface-catalog.json
+
+# Documentation plan records are tracked; the bare "plan" ignore above is for
+# local agent/tooling scratch paths.
+!docs/plan/
+!docs/plan/**

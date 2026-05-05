@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" width="900" height="240" role="img" aria-label="Maekon wordmark">
+  <style>
+    .word { font: 780 92px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+    .sub { font: 560 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0.06em; }
+  </style>
+  <rect x="24" y="24" width="168" height="168" rx="40" fill="#15043A"/>
+  <rect x="68" y="118" width="80" height="24" rx="11" fill="#5534D7"/>
+  <rect x="80" y="98" width="56" height="20" rx="9" fill="#7057EA"/>
+  <path d="M78 116c20 8 40 8 60 0" fill="none" stroke="#A28CFF" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="82" cy="86" r="16" fill="#61F4D6"/>
+  <circle cx="134" cy="86" r="16" fill="#0DE0A2"/>
+  <text x="230" y="124" class="word" fill="#0F172A">Maekon</text>
+  <text x="236" y="164" class="sub" fill="#5534D7">LOCAL CONTEXT AGENT</text>
+</svg>

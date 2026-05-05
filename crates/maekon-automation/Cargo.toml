@@ -1,0 +1,46 @@
+[package]
+name = "maekon-automation"
+description = "자동화 제어 — Policy 기반 명령 실행, 감사 로깅"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+enigo = ["dep:enigo"]
+linux-sandbox = ["dep:landlock", "dep:seccompiler"]
+windows-sandbox = []
+
+[dependencies]
+maekon-core = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+enigo = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+landlock = { version = "0.4", optional = true }
+seccompiler = { version = "0.5", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "automation_bench"
+harness = false

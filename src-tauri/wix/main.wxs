@@ -1,0 +1,103 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Maekon Windows Installer (WiX v3)
+  사용: cargo wix (cargo-wix 설치 필요)
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+    <Product
+        Id='*'
+        Name='Maekon'
+        UpgradeCode='E8F3D2A1-5B4C-4D6E-9F8A-1C2B3D4E5F6A'
+        Manufacturer='Maekon Team'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Maekon Local Context Agent'
+            Manufacturer='Maekon Team'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perUser'
+            SummaryCodepage='1252'/>
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='Maekon Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='LocalAppDataFolder' Name='AppData'>
+                <Directory Id='APPLICATIONFOLDER' Name='Maekon'>
+                    <Component Id='binary0' Guid='3602020D-F6CA-4B75-9E7B-0B767E2753E2'>
+                        <File
+                            Id='exe0'
+                            Name='maekon.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\maekon.exe'/>
+                        <RemoveFolder Id='CleanUpApplicationFolder' On='uninstall'/>
+                        <RegistryValue Root='HKCU'
+                            Key='Software\Maekon'
+                            Name='binary_installed'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Maekon'>
+                    <Component Id='ApplicationShortcut' Guid='*'>
+                        <Shortcut Id='ApplicationStartMenuShortcut'
+                            Name='Maekon'
+                            Description='Local Context Agent'
+                            Target='[APPLICATIONFOLDER]maekon.exe'
+                            WorkingDirectory='APPLICATIONFOLDER'/>
+                        <RemoveFolder Id='CleanUpShortCut' On='uninstall'/>
+                        <RegistryValue Root='HKCU'
+                            Key='Software\Maekon'
+                            Name='installed'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='MainProgram'
+            Title='Maekon'
+            Description='Maekon Local Context Agent.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='binary0'/>
+
+            <Feature
+                Id='ShortcutsFeature'
+                Title='Shortcuts'
+                Level='1'>
+                <ComponentRef Id='ApplicationShortcut'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/pseudotop/maekon-client'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='wix\license.rtf'/>
+    </Product>
+</Wix>

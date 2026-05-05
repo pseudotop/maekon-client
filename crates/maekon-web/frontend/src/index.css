@@ -1,0 +1,227 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design Token CSS Custom Properties
+ * RGB triplets for Tailwind alpha support: rgb(var(--token) / <alpha-value>)
+ */
+:root {
+  /* Brand (teal) */
+  --brand: 13 148 136; /* teal-600 */
+  --brand-hover: 15 118 110; /* teal-700 */
+  --brand-text: 13 148 136; /* teal-600 */
+  --brand-signal: 20 184 166; /* teal-500 */
+  --brand-bar: 13 148 136; /* teal-600 — status bar */
+
+  /* Surface */
+  --surface-base: 255 255 255; /* white */
+  --surface-elevated: 241 245 249; /* slate-100 */
+  --surface-muted: 226 232 240; /* slate-200 */
+  --surface-inset: 248 250 252; /* slate-50 */
+  --surface-sunken: 248 250 252; /* slate-50 — subtle recessed bg in light mode */
+  --surface-overlay: 255 255 255; /* white — modal/popover bg */
+
+  /* Content (text / icon fill) */
+  --content: 15 23 42; /* slate-900 */
+  --content-secondary: 71 85 105; /* slate-600 */
+  --content-tertiary: 100 116 139; /* slate-500 */
+  --content-inverse: 255 255 255; /* white */
+  --content-muted: 148 163 184; /* slate-400 */
+  --content-strong: 51 65 85; /* slate-700 */
+
+  /* Border */
+  --border: 203 213 225; /* slate-300 */
+  --border-muted: 226 232 240; /* slate-200 */
+  --border-strong: 148 163 184; /* slate-400 */
+
+  /* Semantic */
+  --semantic-success: 22 163 74; /* green-600 */
+  --semantic-warning: 180 83 9; /* amber-700 — WCAG AA 5.0:1 on white */
+  --semantic-error: 220 38 38; /* red-600 */
+  --semantic-info: 37 99 235; /* blue-600 */
+  --semantic-error-hover: 185 28 28;
+  --semantic-warning-hover: 217 119 6;
+
+  /* Status dots */
+  --status-connected: 34 197 94; /* green-500 */
+  --status-connecting: 234 179 8; /* yellow-500 */
+  --status-disconnected: 100 116 139; /* slate-500 */
+  --status-error: 239 68 68; /* red-500 */
+
+  /* Interactive */
+  --hover: 241 245 249; /* slate-100 */
+  --active: 226 232 240; /* slate-200 */
+
+  /* Shell layout */
+  --titlebar-height: 32px;
+  --statusbar-height: 24px;
+  --activitybar-width: 48px;
+  --sidebar-width: 260px;
+}
+
+.dark {
+  /* Brand (teal) */
+  --brand: 20 184 166; /* teal-500 */
+  --brand-hover: 45 212 191; /* teal-400 */
+  --brand-text: 45 212 191; /* teal-400 */
+  --brand-signal: 45 212 191; /* teal-400 */
+  --brand-bar: 15 118 110; /* teal-700 — status bar */
+
+  /* Surface */
+  --surface-base: 15 23 42; /* slate-900 */
+  --surface-elevated: 30 41 59; /* slate-800 */
+  --surface-muted: 15 23 42; /* slate-900 */
+  --surface-inset: 2 6 23; /* slate-950 */
+  --surface-sunken: 2 6 23; /* slate-950 */
+  --surface-overlay: 30 41 59; /* slate-800 — modal/popover bg */
+
+  /* Content */
+  --content: 255 255 255; /* white */
+  --content-secondary: 186 198 213; /* ~slate-300, WCAG AA ~5.5:1 on slate-900 */
+  --content-tertiary: 100 116 139; /* slate-500 */
+  --content-inverse: 255 255 255; /* white */
+  --content-muted: 120 137 158; /* bumped from slate-500 for ~3.8:1 on slate-900 */
+  --content-strong: 203 213 225; /* slate-300 */
+
+  /* Border */
+  --border: 51 65 85; /* slate-700 */
+  --border-muted: 51 65 85; /* slate-700 */
+  --border-strong: 71 85 105; /* slate-600 */
+
+  /* Semantic */
+  --semantic-success: 74 222 128; /* green-400 */
+  --semantic-warning: 250 204 21; /* yellow-400 */
+  --semantic-error: 248 113 113; /* red-400 */
+  --semantic-info: 96 165 250; /* blue-400 */
+  --semantic-error-hover: 248 113 113;
+  --semantic-warning-hover: 251 191 36;
+
+  /* Status dots — same in both modes */
+
+  /* Interactive */
+  --hover: 51 65 85; /* slate-700 */
+  --active: 30 41 59; /* slate-800 */
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: rgb(var(--surface-base));
+  color: rgb(var(--content));
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgb(var(--surface-elevated));
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--border-strong));
+}
+
+/* Desktop shell layout */
+.app-shell {
+  display: grid;
+  grid-template-rows: var(--titlebar-height) 1fr var(--statusbar-height);
+  grid-template-columns: var(--activitybar-width) var(--sidebar-width) 1fr;
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* When SidePanel is hidden (route has no sub-nav OR user-collapsed), drop
+ * column 2 entirely so <main> auto-places into the 1fr cell instead of
+ * getting stuck in a 0-width ghost column 2. */
+.app-shell.sidebar-hidden {
+  grid-template-columns: var(--activitybar-width) 1fr;
+}
+
+.app-shell-titlebar {
+  grid-column: 1 / -1;
+}
+
+.app-shell-statusbar {
+  grid-column: 1 / -1;
+}
+
+/* Section highlight animation for sidebar navigation */
+.section-highlight {
+  animation: section-flash 1.5s ease-out;
+}
+
+@keyframes section-flash {
+  0% {
+    outline: 2px solid rgb(var(--brand-signal));
+    outline-offset: 4px;
+  }
+
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: 4px;
+  }
+}
+
+@keyframes toast-in {
+  0% {
+    transform: translate3d(0, 12px, 0) scale(0.98);
+    opacity: 0;
+  }
+
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-toast-in {
+  animation: toast-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Tauri drag region */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] a {
+  -webkit-app-region: no-drag;
+}
+
+/* Tracking panel glow animation — reduced blur for GPU/battery efficiency, 3 repeats then settles */
+@keyframes panel-glow {
+  0%,
+  100% {
+    box-shadow: inset 0 0 8px 2px rgb(var(--brand-signal) / 0.35);
+    border-color: rgb(var(--brand-signal) / 0.5);
+  }
+  50% {
+    box-shadow: inset 0 0 4px 1px rgb(var(--brand-signal) / 0.1);
+    border-color: rgb(var(--brand-signal) / 0.2);
+  }
+}
+
+.animate-panel-glow {
+  animation: panel-glow 2s ease-in-out 3;
+  border: 1.5px solid rgb(var(--brand-signal) / 0.5);
+  will-change: box-shadow;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-panel-glow {
+    animation: none;
+  }
+}

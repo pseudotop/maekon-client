@@ -1,0 +1,67 @@
+[package]
+name = "maekon-vision"
+description = "Edge 이미지 처리 — 스크린 캡처, 델타 인코딩, OCR"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = ["native-vision", "linux-atspi"]
+ocr = ["leptess"]
+ml-detect = ["dep:ort"]
+# linux-atspi enables the AT-SPI2 accessibility extractor on Linux. It is
+# target-scoped via [target.'cfg(target_os = "linux")'.dependencies], so the
+# feature is a no-op on macOS/Windows builds (no extra deps compiled in).
+linux-atspi = ["atspi", "atspi-common", "futures"]
+native-vision = []
+
+[dependencies]
+maekon-core = { workspace = true }
+image = { workspace = true }
+fast_image_resize = { workspace = true }
+webp = { workspace = true }
+xcap = { workspace = true }
+leptess = { workspace = true, optional = true }
+ort = { workspace = true, optional = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+rstar = { workspace = true }
+thiserror = { workspace = true }
+lru = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { workspace = true }
+core-foundation-sys = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSData", "NSDictionary", "NSString"] }
+objc2-core-foundation = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true }
+windows = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = { workspace = true, optional = true }
+atspi-common = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "vision_bench"
+harness = false

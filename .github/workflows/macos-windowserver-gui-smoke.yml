@@ -1,0 +1,94 @@
+name: macOS WindowServer GUI Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to run (branch, tag, or SHA). Empty uses current commit."
+        required: false
+        default: ""
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-windowserver-gui-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gui-windowserver-smoke:
+    name: GUI Bootstrap Smoke (WindowServer)
+    runs-on: [self-hosted, macOS, windowserver]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: ./.github/actions/rust-cache
+        with:
+          key: macos-windowserver-gui-smoke
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        shell: bash
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+          chmod +x "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+
+      - name: Build release binary
+        run: ./scripts/cargo-cache.sh build --release -p maekon-app
+
+      - name: GUI bootstrap smoke (WindowServer)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BIN="target/release/maekon"
+          LOG="$RUNNER_TEMP/maekon-windowserver-smoke.log"
+          test -x "$BIN"
+
+          # Tauri GUI app — self-hosted runner has a real display.
+          # Launch and verify no panics within startup window.
+          set +e
+          MAEKON_DISABLE_TRAY=1 "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 8
+          if kill -0 "$PID" >/dev/null 2>&1; then
+            kill "$PID" >/dev/null 2>&1 || true
+          fi
+          wait "$PID"
+          RC=$?
+          set -e
+
+          if grep -qE "Cannot start a runtime from within a runtime|Cannot drop a runtime|panicked at|SIGABRT|stack backtrace|CGSConnectionByID|CGAtomicGet" "$LOG"; then
+            echo "GUI bootstrap smoke detected runtime/panic/windowserver failure"
+            cat "$LOG"
+            exit 1
+          fi
+
+          # On self-hosted with WindowServer: expect clean exit or SIGTERM
+          if [[ "$RC" -ne 0 && "$RC" -ne 143 ]]; then
+            echo "GUI bootstrap smoke exited unexpectedly: rc=$RC"
+            cat "$LOG"
+            exit 1
+          fi
+
+          echo "GUI bootstrap smoke OK (rc=$RC)"
+
+      - name: Upload WindowServer GUI smoke log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windowserver-gui-smoke-log
+          path: ${{ runner.temp }}/maekon-windowserver-smoke.log
+          if-no-files-found: ignore

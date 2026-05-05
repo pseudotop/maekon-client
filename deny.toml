@@ -1,0 +1,46 @@
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "MIT",
+  "MPL-2.0",
+  "NCSA",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "bzip2-1.0.6",    # libbz2-rs-sys (zip crate transitive dep)
+  "Unlicense",      # whisper-rs / whisper-rs-sys (오디오 STT, OSI approved + FSF Free)
+  # --- Tauri v2 (iced → Tauri 마이그레이션) ---
+  "LGPL-2.1-only",  # webkit2gtk (Linux only, 동적 링크)
+  "OpenSSL",        # openssl-sys (일부 플랫폼)
+]
+private = { ignore = true }
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+# "workspace" scope — guard our own (workspace) crates only; skip transitive
+# upstream Tauri/Wry advisories (e.g. GTK3 RUSTSEC-2024-0411..0418 / 2025-0057
+# / 2024-0429 / 2026-0097) we cannot resolve directly.
+unmaintained = "workspace"
+unsound = "workspace"
+yanked = "deny"
+# Review-by: 2026-08-01 — re-evaluate any future entries for upstream
+# resolution status. Replace inline ignores with fixes when possible.
+ignore = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

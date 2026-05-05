@@ -1,0 +1,59 @@
+name: Download artifact
+description: Download workflow artifacts with GitHub CLI instead of actions/download-artifact.
+
+inputs:
+  github-token:
+    description: GitHub token used by gh CLI
+    required: true
+  path:
+    description: Destination directory for the downloaded artifact contents
+    required: true
+  name:
+    description: Exact artifact name to download
+    required: false
+    default: ""
+  pattern:
+    description: Glob pattern for artifacts to download
+    required: false
+    default: ""
+  merge-multiple:
+    description: Merge multiple matching artifacts into the destination directory
+    required: false
+    default: "false"
+  repository:
+    description: Repository in owner/name format
+    required: false
+    default: ""
+  run-id:
+    description: Workflow run ID to download from
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Download artifact(s) with gh
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        args=(--path "${{ inputs.path }}")
+        if [[ -n "${{ inputs.name }}" ]]; then
+          args+=(--name "${{ inputs.name }}")
+        fi
+        if [[ -n "${{ inputs.pattern }}" ]]; then
+          args+=(--pattern "${{ inputs.pattern }}")
+        fi
+        if [[ "${{ inputs.merge-multiple }}" == "true" ]]; then
+          args+=(--merge-multiple)
+        fi
+        if [[ -n "${{ inputs.repository }}" ]]; then
+          args+=(--repo "${{ inputs.repository }}")
+        fi
+        if [[ -n "${{ inputs.run-id }}" ]]; then
+          args+=(--run-id "${{ inputs.run-id }}")
+        fi
+
+        bash "$GITHUB_ACTION_PATH/download.sh" "${args[@]}"
