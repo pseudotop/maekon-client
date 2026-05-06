@@ -275,8 +275,8 @@ jobs:
             exit 1
           fi
 
-          gh api "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100" > dependabot-alerts.json
-          gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" > codeql-alerts.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100" > dependabot-alerts.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" > codeql-alerts.json
 
           python3 - "${ACCEPTANCE_FILE}" dependabot-alerts.json codeql-alerts.json <<'PY'
           import datetime as dt
@@ -286,12 +286,19 @@ jobs:
           acceptance_path, dependabot_path, codeql_path = sys.argv[1:]
           today = dt.date.today()
 
+          def load_paginated_alerts(path):
+              with open(path, encoding="utf-8") as fh:
+                  data = json.load(fh)
+              if isinstance(data, list) and all(isinstance(page, list) for page in data):
+                  return [alert for page in data for alert in page]
+              if isinstance(data, list):
+                  return data
+              raise TypeError(f"{path} must contain a JSON array or paginated array")
+
           with open(acceptance_path, encoding="utf-8") as fh:
               accepted = json.load(fh)
-          with open(dependabot_path, encoding="utf-8") as fh:
-              dependabot_alerts = json.load(fh)
-          with open(codeql_path, encoding="utf-8") as fh:
-              codeql_alerts = json.load(fh)
+          dependabot_alerts = load_paginated_alerts(dependabot_path)
+          codeql_alerts = load_paginated_alerts(codeql_path)
 
           def not_expired(entry):
               value = entry.get("accepted_until")

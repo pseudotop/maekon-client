@@ -58,11 +58,16 @@ Required for public RC release:
 - `MACOS_NOTARY_APP_PASSWORD`
 - `MACOS_NOTARY_TEAM_ID`
 - `UPDATE_SIGNING_PRIVATE_KEY_B64`
+- `MAEKON_UPDATE_PUBLIC_KEY`
 
 Required before stable promotion:
 
-- `STABLE_RELEASE_DEPLOY_KEY`
-- writable deploy key corresponding to `STABLE_RELEASE_DEPLOY_KEY`
+- `MAEKON_RELEASE_APP_ID`
+- `MAEKON_RELEASE_APP_PRIVATE_KEY`
+
+Optional but recommended for release freshness:
+
+- `MAEKON_LANDING_DEPLOY_HOOK`
 
 ## Documentation
 - [ ] CHANGELOG.md updated
@@ -72,4 +77,6 @@ Required before stable promotion:
 
 ## Sign-off
 - [ ] Maintainer approval
-- [ ] Release created via `./scripts/release.sh <VERSION>` followed by `./scripts/publish-rc-tag.sh <VERSION>` (RC) or `./scripts/promote-stable.sh <RC-VERSION>` (stable promotion). **Do NOT use `git tag` directly** — the scripts synchronize release metadata and create signed annotated tags that the release workflow verifies through GitHub.
+- [ ] RC release created via `./scripts/release.sh <VERSION>` followed by `./scripts/publish-rc-tag.sh <VERSION>`.
+- [ ] Stable release created by running `promote-stable.yml` to open a stable promotion PR, merging that PR into `main`, then running `./scripts/publish-stable-tag.sh <VERSION>` from latest `main`.
+- [ ] **Do NOT use `git tag` directly** — the publish scripts synchronize release checks and create signed annotated tags that the release workflow verifies through GitHub.

@@ -13,7 +13,7 @@ fn main() {
     println!("cargo:rustc-env=GIT_SHA={git_sha}");
 
     println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs");
+    println!("cargo:rerun-if-changed=.git/index");
 
     tauri_build::build();
 }

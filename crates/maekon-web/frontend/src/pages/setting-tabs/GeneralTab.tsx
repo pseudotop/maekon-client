@@ -331,7 +331,7 @@ export default function GeneralTab() {
 
 // Exported for unit testing (Vitest).
 export function AccountSection() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [loading, setLoading] = useState(false)
 
@@ -342,14 +342,14 @@ export function AccountSection() {
       addToast('success', t('settings.account.success'))
       setConfirmOpen(false)
     } catch (e) {
-      const lang = navigator.language?.split('-')[0]
+      const lang = i18n.language?.split('-')[0]
       const locale: WireErrorLocale = lang === 'ko' ? 'ko' : 'en'
       const message = translateError(e, locale)
       addToast('error', t('settings.account.error', { error: message }))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [i18n.language, t])
 
   return (
     <>

@@ -45,7 +45,7 @@ pub struct TokenManagerState(pub Option<Arc<TokenManager>>);
 /// # Errors
 ///
 /// - `cfg(feature = "server")` disabled: `IpcError`
-/// - server call failure: ignored after local state is cleared
+/// - local state unavailable: `IpcError`
 /// - other `CoreError` values: converted to `IpcError`
 #[command]
 pub async fn logout_all_sessions(state: State<'_, TokenManagerState>) -> Result<(), IpcError> {

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# promote-stable.sh — Promote a validated RC to a stable release.
+# promote-stable.sh — Prepare or publish a validated RC as a stable release.
 #
 # Usage:
 #   ./scripts/promote-stable.sh 0.3.7-rc.1
+#
+# Environment:
+#   PROMOTE_STABLE_SKIP_TAG=1  Create only the stable metadata commit.
+#   PROMOTE_STABLE_NO_PUSH=1   Do not push the commit or tag.
 
 set -euo pipefail
 
@@ -107,8 +111,12 @@ git add Cargo.toml Cargo.lock CHANGELOG.md crates/maekon-web/frontend/package.js
 git commit -m "chore(release): ${STABLE_TAG}"
 success "승격 커밋 완료"
 
-git tag -s "${STABLE_TAG}" -m "Release ${STABLE_TAG}"
-success "Stable 태그 생성 완료: ${STABLE_TAG}"
+if [[ "${PROMOTE_STABLE_SKIP_TAG:-0}" == "1" ]]; then
+  success "PROMOTE_STABLE_SKIP_TAG=1 이므로 Stable 태그 생성은 건너뜁니다"
+else
+  git tag -s "${STABLE_TAG}" -m "Release ${STABLE_TAG}"
+  success "Stable 태그 생성 완료: ${STABLE_TAG}"
+fi
 
 if [[ "${PROMOTE_STABLE_NO_PUSH:-0}" == "1" ]]; then
   success "PROMOTE_STABLE_NO_PUSH=1 이므로 원격 푸시는 건너뜁니다"
@@ -117,15 +125,29 @@ else
   git push origin main
   success "main 브랜치 푸시 완료"
 
-  info "태그 ${STABLE_TAG}를 origin에 푸시합니다..."
-  git push origin "${STABLE_TAG}"
-  success "태그 푸시 완료"
+  if [[ "${PROMOTE_STABLE_SKIP_TAG:-0}" == "1" ]]; then
+    success "PROMOTE_STABLE_SKIP_TAG=1 이므로 태그 푸시는 건너뜁니다"
+  else
+    info "태그 ${STABLE_TAG}를 origin에 푸시합니다..."
+    git push origin "${STABLE_TAG}"
+    success "태그 푸시 완료"
+  fi
 fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  Stable 승격 완료: ${STABLE_TAG}${NC}"
+if [[ "${PROMOTE_STABLE_SKIP_TAG:-0}" == "1" ]]; then
+  echo -e "${GREEN}  Stable 승격 커밋 준비 완료: ${STABLE_TAG}${NC}"
+else
+  echo -e "${GREEN}  Stable 승격 완료: ${STABLE_TAG}${NC}"
+fi
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "  GitHub Releases:"
-echo "  https://github.com/pseudotop/maekon-client/releases/tag/${STABLE_TAG}"
+if [[ "${PROMOTE_STABLE_SKIP_TAG:-0}" == "1" ]]; then
+  echo "  다음 순서:"
+  echo "  1. Stable 승격 커밋을 PR로 main에 머지합니다"
+  echo "  2. 최신 main에서 ./scripts/publish-stable-tag.sh ${STABLE_VERSION} 를 실행합니다"
+else
+  echo "  GitHub Releases:"
+  echo "  https://github.com/pseudotop/maekon-client/releases/tag/${STABLE_TAG}"
+fi
 echo ""

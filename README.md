@@ -125,10 +125,9 @@ Standalone mode remains the production-ready default path for release use.
 
 ## Developer Quick Start (Build from Source)
 
-This is the normal debug and development path for Maekon Client as a package
-inside the internal monorepo. It does not require the public GitHub repository.
-Use the public repository only when validating the exported public source tree,
-public release tags, or release assets.
+This is the normal local debug and development path for Maekon Client from a
+source checkout. Internal maintainers use the same commands before exporting
+public snapshots; public contributors can use them directly in this repository.
 
 ### Build
 

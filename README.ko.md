@@ -21,8 +21,8 @@ AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니�
 
 공개 저장소는 준비되었고, `v0.0.1-rc.3`가 첫 공개 prerelease로 게시되어
 있습니다. GitHub의 `latest` release endpoint는 prerelease를 포함하지 않으므로
-릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을 사용하세요. 모노리포
-개발 및 debug 빌드는 로컬 source checkout에서 실행합니다.
+릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을 사용하세요. 개발 및
+debug 빌드는 로컬 source checkout에서 실행합니다.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git

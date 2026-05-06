@@ -253,26 +253,30 @@ if command -v gh >/dev/null 2>&1; then
   else
     DEPENDABOT_ALERTS_FILE="$(mktemp)"
     CODEQL_ALERTS_FILE="$(mktemp)"
+    DEPENDABOT_ERROR_FILE="$(mktemp)"
+    CODEQL_ERROR_FILE="$(mktemp)"
+    cleanup_alert_files() {
+      rm -f "$DEPENDABOT_ALERTS_FILE" "$CODEQL_ALERTS_FILE" "$DEPENDABOT_ERROR_FILE" "$CODEQL_ERROR_FILE" 2>/dev/null || true
+    }
+    trap cleanup_alert_files EXIT
 
     ALERT_EXIT=0
-    ALERT_RESPONSE=$(gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100" 2>&1) || ALERT_EXIT=$?
+    gh api --paginate --slurp "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100" > "$DEPENDABOT_ALERTS_FILE" 2>"$DEPENDABOT_ERROR_FILE" || ALERT_EXIT=$?
     if [ "$ALERT_EXIT" -ne 0 ]; then
+      ALERT_RESPONSE="$(cat "$DEPENDABOT_ERROR_FILE")"
       if echo "$ALERT_RESPONSE" | grep -qiE "dependabot.*(disabled|not enabled)|feature.*disabled|is not enabled"; then
         warn "Dependabot alerts not enabled for this repo — release workflow will fail until the gate can run"
       else
         warn "Dependabot alerts query failed (exit $ALERT_EXIT): $(echo "$ALERT_RESPONSE" | head -c 200)"
       fi
-    else
-      printf "%s\n" "$ALERT_RESPONSE" > "$DEPENDABOT_ALERTS_FILE"
     fi
 
     CODEQL_EXIT=0
-    CODEQL_RESPONSE=$(gh api "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100" 2>&1) || CODEQL_EXIT=$?
+    gh api --paginate --slurp "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100" > "$CODEQL_ALERTS_FILE" 2>"$CODEQL_ERROR_FILE" || CODEQL_EXIT=$?
     if [ "$CODEQL_EXIT" -ne 0 ]; then
+      CODEQL_RESPONSE="$(cat "$CODEQL_ERROR_FILE")"
       warn "CodeQL alerts query failed (exit $CODEQL_EXIT): $(echo "$CODEQL_RESPONSE" | head -c 200)"
       printf "[]\n" > "$CODEQL_ALERTS_FILE"
-    else
-      printf "%s\n" "$CODEQL_RESPONSE" > "$CODEQL_ALERTS_FILE"
     fi
 
     if [ "$ALERT_EXIT" -eq 0 ]; then
@@ -286,10 +290,18 @@ today = dt.date.today()
 
 with open(acceptance_path, encoding="utf-8") as fh:
     accepted = json.load(fh)
-with open(dependabot_path, encoding="utf-8") as fh:
-    dependabot_alerts = json.load(fh)
-with open(codeql_path, encoding="utf-8") as fh:
-    codeql_alerts = json.load(fh)
+
+def load_paginated_alerts(path):
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, list) and all(isinstance(page, list) for page in data):
+        return [alert for page in data for alert in page]
+    if isinstance(data, list):
+        return data
+    raise TypeError(f"{path} must contain a JSON array or paginated array")
+
+dependabot_alerts = load_paginated_alerts(dependabot_path)
+codeql_alerts = load_paginated_alerts(codeql_path)
 
 def not_expired(entry):
     value = entry.get("accepted_until")

@@ -10,10 +10,11 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   promote:
-    name: Promote RC To Stable
+    name: Prepare Stable Promotion PR
     runs-on: ubuntu-latest
     steps:
       - name: Generate App installation token
@@ -78,23 +79,67 @@ jobs:
           git config user.name "${BOT_USER}"
           git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
 
-      - name: Create stable promotion commit and tag locally
+      - name: Create stable promotion commit
+        id: promotion
         shell: bash
         run: |
           set -euo pipefail
           git checkout -B main "${{ steps.versions.outputs.rc_tag }}"
-          PROMOTE_STABLE_NO_PUSH=1 ./scripts/promote-stable.sh "${{ steps.versions.outputs.rc_version }}"
+          PROMOTE_STABLE_NO_PUSH=1 PROMOTE_STABLE_SKIP_TAG=1 ./scripts/promote-stable.sh "${{ steps.versions.outputs.rc_version }}"
+          PROMOTION_BRANCH="release/promote-${{ steps.versions.outputs.stable_tag }}"
+          git branch -M "${PROMOTION_BRANCH}"
+          echo "promotion_branch=${PROMOTION_BRANCH}" >> "$GITHUB_OUTPUT"
 
-      - name: Push stable promotion commit and tag
+      - name: Push stable promotion branch
         shell: bash
         run: |
           set -euo pipefail
-          git push origin HEAD:main
-          git push origin "${{ steps.versions.outputs.stable_tag }}"
+          git push --force-with-lease origin "${{ steps.promotion.outputs.promotion_branch }}"
+
+      - name: Open stable promotion PR
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR_BODY="$(cat <<'EOF'
+          Promotes the validated RC metadata to stable.
+
+          After this PR is merged into `main`, publish the stable release tag from
+          a maintainer workstation with a verified signing key:
+
+          ```bash
+          ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }}
+          ```
+
+          The stable tag push triggers `release.yml`.
+          EOF
+          )"
+
+          EXISTING_PR="$(gh pr list \
+            --head "${{ steps.promotion.outputs.promotion_branch }}" \
+            --base main \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${EXISTING_PR}" ]; then
+            gh pr edit "${EXISTING_PR}" \
+              --title "chore(release): ${{ steps.versions.outputs.stable_tag }}" \
+              --body "${PR_BODY}"
+            echo "Updated existing PR #${EXISTING_PR}"
+          else
+            gh pr create \
+              --base main \
+              --head "${{ steps.promotion.outputs.promotion_branch }}" \
+              --title "chore(release): ${{ steps.versions.outputs.stable_tag }}" \
+              --body "${PR_BODY}"
+          fi
 
       - name: Print summary
         run: |
-          echo "Stable promotion pushed:"
+          echo "Stable promotion PR prepared:"
           echo "  RC tag:     ${{ steps.versions.outputs.rc_tag }}"
           echo "  Stable tag: ${{ steps.versions.outputs.stable_tag }}"
-          echo "The stable tag push will trigger release.yml to build and publish assets."
+          echo "  Branch:     ${{ steps.promotion.outputs.promotion_branch }}"
+          echo "After merge, run ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }} from protected main."

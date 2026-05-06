@@ -56,7 +56,7 @@ Release artifacts are considered valid only when checksum + signature + provenan
 
 - Store update signing private key only in GitHub Actions secrets.
 - Never commit private key material.
-- Keep public key in client config default and update policy checks.
+- Keep public release keys in the built-in updater trusted-key array and align install-script defaults.
 - For key rotation:
   - Publish new public key in a release that still validates with the old key path.
   - Rotate private key in CI secret.

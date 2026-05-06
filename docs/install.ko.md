@@ -40,13 +40,13 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ### macOS / Linux
 
 ```bash
-bash /tmp/maekon-install.sh
+curl -fsSL https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh | bash
 ```
 
 ### Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File $tmp
+irm https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1 | iex
 ```
 
 ## 특정 버전 설치
@@ -54,12 +54,18 @@ powershell -ExecutionPolicy Bypass -File $tmp
 ### macOS / Linux
 
 ```bash
+curl -fsSL -o /tmp/maekon-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
 MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 ### Windows
 
 ```powershell
+$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
 powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ```
 
@@ -71,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
   - Windows: `-RequireSignature`
 - 서명 검증에는 설치 환경에 Python + PyNaCl이 필요합니다.
 - 기본 업데이트 서명 공개키:
-  - `GIdf7Wg4kvvvoT7jR0xwKLKna8hUR1kvowONbHbPz1E=`
+  - `fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=`
 - 키 로테이션 시 공개키 덮어쓰기:
   - `MAEKON_UPDATE_PUBLIC_KEY=<base64-ed25519-public-key>`
 

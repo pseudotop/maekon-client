@@ -7,8 +7,8 @@
 ```
 Tag / Cargo.toml: v0.1.0-rc.3       (SemVer 2.0.0)
 Release title:    Maekon v0.1.0-rc.3 — Released May 06, 2026
-Release header:   **Built**: 2026-05-06 UTC · **Commit**: 628908505
-maekon --version: maekon 0.1.0-rc.3 (build: 2026-05-06 | commit: 628908505)
+Release header:   **Built**: 2026-05-06 UTC · **Commit**: 6289085a9
+maekon --version: maekon 0.1.0-rc.3 (build: 2026-05-06 | commit: 6289085a9)
 About dialog:     same fields exposed via Tauri `get_app_build_info` IPC
 ```
 
@@ -31,8 +31,8 @@ Empirically: every comparable project (AI-agent OSS + Tauri desktop) uses SemVer
 | Git tag / `Cargo.toml` | SemVer only (`v0.1.0-rc.3`) | `scripts/release.sh` |
 | GitHub Release title | `Maekon v0.1.0-rc.3` | `release.yml` `RELEASE_NAME` |
 | GitHub Release notes header (line 1) | `## Maekon v0.1.0-rc.3 — Released May 06, 2026` | `release.yml` "Prepend release date header" step |
-| GitHub Release notes header (line 2) | `**Built**: 2026-05-06 UTC · **Commit**: 628908505` | same step |
-| `maekon --version` (CLI) | `maekon 0.1.0-rc.3 (build: 2026-05-06 \| commit: 628908505)` | `src-tauri/src/main.rs` early dispatch |
+| GitHub Release notes header (line 2) | `**Built**: 2026-05-06 UTC · **Commit**: 6289085a9` | same step |
+| `maekon --version` (CLI) | `maekon 0.1.0-rc.3 (build: 2026-05-06 \| commit: 6289085a9)` | `src-tauri/src/main.rs` early dispatch |
 | Tauri About dialog (frontend) | `version` / `build_date` / `git_sha` fields | `commands::build_info::get_app_build_info` IPC |
 | Binary metadata | `BUILD_DATE` / `GIT_SHA` env vars baked at compile time | `src-tauri/build.rs` |
 
@@ -52,7 +52,7 @@ CHANGELOG entries use [Conventional Commits](https://www.conventionalcommits.org
 
 - **RC iteration**: as needed within a release cycle (typically 1-3 RCs per stable cut)
 - **RC soak window**: ~4 weeks between final RC and stable promotion (operational + external feedback)
-- **Stable promotion**: via `promote-stable.yml` (workflow_dispatch, App-token authenticated)
+- **Stable promotion**: via `promote-stable.yml` to create a promotion PR, followed by a maintainer-local signed stable tag after merge
 - No fixed weekly/monthly cadence — driven by feature/fix readiness, not the calendar
 
 ## Source trust
