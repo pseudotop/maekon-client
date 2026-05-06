@@ -295,9 +295,10 @@ impl AppRuntimeLaunchBuilder {
             // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState 를 main.rs 의 default
             // None 에서 server bootstrap 시점의 실 token_manager 로 override.
             // logout_all_sessions Tauri command 가 이 state 사용.
-            self.app_handle.manage(
-                crate::commands::auth::TokenManagerState(Some(token_manager.clone())),
-            );
+            self.app_handle
+                .manage(crate::commands::auth::TokenManagerState(Some(
+                    token_manager.clone(),
+                )));
 
             #[cfg(feature = "grpc")]
             let api_result: Result<

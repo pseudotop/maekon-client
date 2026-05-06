@@ -9,39 +9,24 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   promote:
     name: Promote RC To Stable
     runs-on: ubuntu-latest
     steps:
+      - name: Generate App installation token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.MAEKON_RELEASE_APP_ID }}
+          private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v6
         with:
+          token: ${{ steps.app_token.outputs.token }}
           fetch-depth: 0
-
-      - name: Configure stable release deploy key
-        shell: bash
-        env:
-          STABLE_RELEASE_DEPLOY_KEY: ${{ secrets.STABLE_RELEASE_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${STABLE_RELEASE_DEPLOY_KEY:-}" ]]; then
-            echo "::error::Missing secret STABLE_RELEASE_DEPLOY_KEY"
-            exit 1
-          fi
-
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "${STABLE_RELEASE_DEPLOY_KEY}" > ~/.ssh/stable_release_key
-          chmod 600 ~/.ssh/stable_release_key
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
-          cat > ~/.ssh/config <<'EOF'
-          Host github.com
-            IdentityFile ~/.ssh/stable_release_key
-            IdentitiesOnly yes
-          EOF
-          chmod 600 ~/.ssh/config
-          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
 
       - name: Fetch latest main and tags
         run: git fetch origin main --tags --force
@@ -82,10 +67,16 @@ jobs:
           echo "stable_tag=${STABLE_TAG}" >> "$GITHUB_OUTPUT"
           echo "stable_version=${STABLE_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Configure git identity
+      - name: Configure git identity for App bot
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          BOT_SLUG: ${{ steps.app_token.outputs.app-slug }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
+          BOT_USER="${BOT_SLUG}[bot]"
+          BOT_ID="$(gh api "/users/${BOT_USER}" -q .id)"
+          git config user.name "${BOT_USER}"
+          git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
 
       - name: Create stable promotion commit and tag locally
         shell: bash

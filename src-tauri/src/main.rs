@@ -148,6 +148,20 @@ pub(crate) struct LogWorkerGuard(tracing_appender::non_blocking::WorkerGuard);
 fn main() {
     configure_runtime_flavor();
 
+    // `--version` / `-V` CLI handler. Build date and git SHA are embedded by
+    // build.rs at compile time, so this exits before starting the webview.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().skip(1).any(|a| a == "--version" || a == "-V") {
+            let info = crate::commands::build_info::AppBuildInfo::current();
+            println!(
+                "maekon {} (build: {} | commit: {})",
+                info.version, info.build_date, info.git_sha
+            );
+            std::process::exit(0);
+        }
+    }
+
     // D13 Task 13: `generate-external-cert` CLI subcommand — dispatched BEFORE
     // any Tauri initialization so we never spawn the webview runtime for
     // pure-utility invocations. Tauri itself does not parse CLI args for
@@ -299,6 +313,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::build_info::get_app_build_info,
             commands::auth::logout_all_sessions,
             commands::settings::update_setting,
             commands::system::get_automation_status,

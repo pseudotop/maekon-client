@@ -36,6 +36,9 @@ Current documented exception:
 - Scope is limited to the Linux GTK3 / `webkit2gtk` / `wry` / Tauri transitive chain.
 - Exit criterion: remove the exception once the upstream desktop stack moves to patched `gtk-rs-core` / `glib` releases.
 - Treat any new advisory outside this documented exception as a release blocker.
+- GitHub release gating is stricter than the local `cargo audit` exception list:
+  any open Dependabot or CodeQL alert must be fixed or explicitly recorded in
+  `supply-chain/release-alert-acceptance.json` with an expiry and review issue.
 
 ## 3. Release Procedure
 

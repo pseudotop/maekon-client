@@ -5,6 +5,7 @@ pub(crate) mod auth;
 pub(crate) mod automation;
 pub(crate) mod autostart;
 pub(crate) mod bug_report;
+pub(crate) mod build_info;
 pub(crate) mod capture;
 pub(crate) mod capture_status;
 pub(crate) mod coaching;

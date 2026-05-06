@@ -50,6 +50,11 @@ wdio-logs/
 docs/superpowers/
 .public-worktrees/
 
+# Parent-monorepo-only navigation symlinks (never exported to public repo).
+# Example: .workspace/maekon-landing -> ../../../web/apps/maekon-landing
+# Each maintainer creates symlinks locally as needed; nothing inside is tracked.
+.workspace/
+
 # Local brand exploration drafts; production assets live in assets/brand/*.svg.
 assets/brand/concepts/
 

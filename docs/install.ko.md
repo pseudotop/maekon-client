@@ -4,23 +4,22 @@
 
 이 문서는 Maekon 릴리즈 바이너리를 터미널에서 설치하는 방법을 제공합니다.
 
-> `pseudotop/maekon-client`의 공개 GitHub Release 아티팩트는 아직 게시되지
-> 않았습니다. 아래 설치 명령은 릴리즈 아티팩트가 있어야 동작하며, 첫 공개
-> 릴리즈가 게시된 뒤 사용할 수 있습니다. 그 전까지는 저장소 README의 source
-> build 빠른 시작 경로를 사용하세요.
+> 현재 공개 바이너리 릴리즈는 prerelease로 게시된 `v0.0.1-rc.3`입니다.
+> GitHub의 `latest` stable 다운로드 URL은 첫 stable 릴리즈 전까지 사용할 수
+> 없으므로, 현재 prerelease 설치는 버전을 명시적으로 고정해야 합니다.
 
 호환성 메모: 릴리즈 파일명, 설치 스크립트명, `MAEKON_*` 환경 변수,
 `maekon` CLI 명령은 설치 프로그램, 업데이터, 기존 사용자 호환성을 위해
 현재 이름을 의도적으로 유지합니다.
 
-## 빠른 설치
+## 현재 prerelease 설치
 
 ### macOS / Linux
 
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 ### Windows (PowerShell)
@@ -30,6 +29,23 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
+```
+
+## 최신 stable 설치
+
+첫 stable 릴리즈가 게시된 뒤에는 버전을 고정하지 않은 설치 명령이 GitHub의
+`latest` stable 릴리즈를 기본값으로 사용합니다.
+
+### macOS / Linux
+
+```bash
+bash /tmp/maekon-install.sh
+```
+
+### Windows
+
+```powershell
 powershell -ExecutionPolicy Bypass -File $tmp
 ```
 
@@ -38,13 +54,13 @@ powershell -ExecutionPolicy Bypass -File $tmp
 ### macOS / Linux
 
 ```bash
-MAEKON_VERSION=v0.0.4 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 ### Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ```
 
 ## 무결성 검증
@@ -114,11 +130,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 이미 저장소를 clone한 경우:
 
 ```bash
-./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.3 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.3
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```

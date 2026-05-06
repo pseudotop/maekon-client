@@ -62,8 +62,8 @@ if git rev-parse "${TAG}" >/dev/null 2>&1; then
   die "태그 '${TAG}'가 이미 존재합니다"
 fi
 
-info "태그를 생성합니다: ${TAG}"
-git tag -a "${TAG}" -m "Release ${TAG}"
+info "서명된 태그를 생성합니다: ${TAG}"
+git tag -s "${TAG}" -m "Release ${TAG}"
 success "태그 생성 완료: ${TAG}"
 
 info "태그 ${TAG}를 origin에 푸시합니다..."

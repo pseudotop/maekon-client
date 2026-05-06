@@ -63,12 +63,6 @@ Out-of-process 격리 실행기 (maekon-app이 spawn)
 | **maekon-sandbox-worker** | `crates/maekon-sandbox-worker` | Out-of-process 샌드박스 자동화 action 실행기 (stdin JSON → stdout JSON) | 전용 문서 작성 예정 |
 | **maekon-app** | `src-tauri` | 바이너리 패키지 / composition root / desktop 런타임 오케스트레이션 | [상세](./maekon-app.ko.md) |
 
-## 역사적 패키지 문서
-
-| 패키지 | 상태 | 문서 |
-|--------|------|------|
-| **maekon-ui** | iced → Tauri 마이그레이션 시 워크스페이스에서 제거; 역사적 레퍼런스로만 유지 | [역사적](./maekon-ui.ko.md) |
-
 ## 아키텍처 원칙
 
 ### Hexagonal Architecture (Ports & Adapters)

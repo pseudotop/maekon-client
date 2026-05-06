@@ -247,22 +247,109 @@ if command -v gh >/dev/null 2>&1; then
   # in an `|| ALERT_EXIT=$?` clause: bash's errexit is suppressed for the
   # left side of an `||` list, and the OR captures the substitution's exit
   # status into `ALERT_EXIT` so the branches below can classify the failure.
-  ALERT_EXIT=0
-  ALERT_RESPONSE=$(gh api repos/{owner}/{repo}/dependabot/alerts 2>&1) || ALERT_EXIT=$?
-  if [ "$ALERT_EXIT" -ne 0 ]; then
-    if echo "$ALERT_RESPONSE" | grep -qiE "dependabot.*(disabled|not enabled)|feature.*disabled|is not enabled"; then
-      warn "Dependabot alerts not enabled for this repo — security gate cannot run (enable in repo Settings > Code security)"
-    else
-      warn "Dependabot alerts query failed (exit $ALERT_EXIT): $(echo "$ALERT_RESPONSE" | head -c 200)"
-    fi
+  ACCEPTANCE_FILE="supply-chain/release-alert-acceptance.json"
+  if [ ! -f "$ACCEPTANCE_FILE" ]; then
+    fail "$ACCEPTANCE_FILE missing — accepted release alerts must be explicit"
   else
-    ALERT_COUNT=$(echo "$ALERT_RESPONSE" | jq '[.[] | select(.state == "open")] | length' 2>/dev/null || echo "parse-error")
-    if [ "$ALERT_COUNT" = "parse-error" ]; then
-      warn "Dependabot alerts response parse failed — unexpected schema"
-    elif [ "$ALERT_COUNT" -gt 0 ]; then
-      fail "Open dependabot security alerts: $ALERT_COUNT — resolve before releasing"
+    DEPENDABOT_ALERTS_FILE="$(mktemp)"
+    CODEQL_ALERTS_FILE="$(mktemp)"
+
+    ALERT_EXIT=0
+    ALERT_RESPONSE=$(gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100" 2>&1) || ALERT_EXIT=$?
+    if [ "$ALERT_EXIT" -ne 0 ]; then
+      if echo "$ALERT_RESPONSE" | grep -qiE "dependabot.*(disabled|not enabled)|feature.*disabled|is not enabled"; then
+        warn "Dependabot alerts not enabled for this repo — release workflow will fail until the gate can run"
+      else
+        warn "Dependabot alerts query failed (exit $ALERT_EXIT): $(echo "$ALERT_RESPONSE" | head -c 200)"
+      fi
     else
-      pass "No open dependabot security alerts"
+      printf "%s\n" "$ALERT_RESPONSE" > "$DEPENDABOT_ALERTS_FILE"
+    fi
+
+    CODEQL_EXIT=0
+    CODEQL_RESPONSE=$(gh api "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100" 2>&1) || CODEQL_EXIT=$?
+    if [ "$CODEQL_EXIT" -ne 0 ]; then
+      warn "CodeQL alerts query failed (exit $CODEQL_EXIT): $(echo "$CODEQL_RESPONSE" | head -c 200)"
+      printf "[]\n" > "$CODEQL_ALERTS_FILE"
+    else
+      printf "%s\n" "$CODEQL_RESPONSE" > "$CODEQL_ALERTS_FILE"
+    fi
+
+    if [ "$ALERT_EXIT" -eq 0 ]; then
+      if python3 - "$ACCEPTANCE_FILE" "$DEPENDABOT_ALERTS_FILE" "$CODEQL_ALERTS_FILE" <<'PY'
+import datetime as dt
+import json
+import sys
+
+acceptance_path, dependabot_path, codeql_path = sys.argv[1:]
+today = dt.date.today()
+
+with open(acceptance_path, encoding="utf-8") as fh:
+    accepted = json.load(fh)
+with open(dependabot_path, encoding="utf-8") as fh:
+    dependabot_alerts = json.load(fh)
+with open(codeql_path, encoding="utf-8") as fh:
+    codeql_alerts = json.load(fh)
+
+def not_expired(entry):
+    value = entry.get("accepted_until")
+    return bool(value) and dt.date.fromisoformat(value) >= today
+
+def accepted_dependabot(alert):
+    advisory = alert.get("security_advisory") or {}
+    dependency = alert.get("dependency") or {}
+    package = (dependency.get("package") or {}).get("name")
+    manifest = dependency.get("manifest_path")
+    for entry in accepted.get("dependabot", []):
+        if not not_expired(entry):
+            continue
+        if entry.get("number") == alert.get("number"):
+            return True
+        if entry.get("advisory") == advisory.get("ghsa_id"):
+            return True
+        if entry.get("package") == package and entry.get("manifest") == manifest:
+            return True
+    return False
+
+def accepted_codeql(alert):
+    rule = alert.get("rule") or {}
+    for entry in accepted.get("codeql", []):
+        if not not_expired(entry):
+            continue
+        if entry.get("number") == alert.get("number"):
+            return True
+        if entry.get("rule") == rule.get("id"):
+            return True
+    return False
+
+open_dependabot = [a for a in dependabot_alerts if not accepted_dependabot(a)]
+open_codeql = [
+    a
+    for a in codeql_alerts
+    if (a.get("tool") or {}).get("name") == "CodeQL" and not accepted_codeql(a)
+]
+
+for alert in open_dependabot:
+    advisory = alert.get("security_advisory") or {}
+    dependency = alert.get("dependency") or {}
+    package = (dependency.get("package") or {}).get("name", "unknown")
+    print(
+        f"unaccepted Dependabot alert #{alert.get('number')}: "
+        f"{package} {advisory.get('severity', 'unknown')} "
+        f"{advisory.get('ghsa_id', 'unknown')}"
+    )
+
+for alert in open_codeql:
+    rule = alert.get("rule") or {}
+    print(f"unaccepted CodeQL alert #{alert.get('number')}: {rule.get('id', 'unknown rule')}")
+
+raise SystemExit(1 if open_dependabot or open_codeql else 0)
+PY
+      then
+        pass "No unaccepted Dependabot or CodeQL alerts"
+      else
+        fail "Unaccepted release security alerts are open — resolve or record acceptance"
+      fi
     fi
   fi
 

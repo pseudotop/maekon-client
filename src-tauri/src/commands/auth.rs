@@ -45,16 +45,11 @@ pub struct TokenManagerState(pub Option<Arc<TokenManager>>);
 /// - server 호출 실패: 무시 (local state cleared, `TokenManager.logout_all_sessions` 정책)
 /// - 그 외 `CoreError` → `IpcError`
 #[command]
-pub async fn logout_all_sessions(
-    state: State<'_, TokenManagerState>,
-) -> Result<(), IpcError> {
+pub async fn logout_all_sessions(state: State<'_, TokenManagerState>) -> Result<(), IpcError> {
     #[cfg(feature = "server")]
     {
         match state.0.as_ref() {
-            Some(tm) => tm
-                .logout_all_sessions()
-                .await
-                .map_err(IpcError::from),
+            Some(tm) => tm.logout_all_sessions().await.map_err(IpcError::from),
             None => Err(IpcError::new(
                 "auth.token_manager_unavailable",
                 "TokenManager not initialized — server bootstrap likely failed",

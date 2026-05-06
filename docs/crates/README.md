@@ -63,12 +63,6 @@ Tooling package
 | **maekon-sandbox-worker** | `crates/maekon-sandbox-worker` | Out-of-process sandboxed automation action executor (stdin JSON → stdout JSON under platform sandbox) | Pending dedicated crate doc |
 | **maekon-app** | `src-tauri` | Binary package / composition root / desktop runtime orchestration | [Details](./maekon-app.md) |
 
-## Historical Package Docs
-
-| Package | Status | Docs |
-|--------|--------|------|
-| **maekon-ui** | Removed from the workspace during the iced -> Tauri migration; kept only as historical reference | [Historical](./maekon-ui.md) |
-
 ## Architecture Principles
 
 ### Hexagonal Architecture (Ports & Adapters)

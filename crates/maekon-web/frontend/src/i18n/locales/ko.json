@@ -616,6 +616,18 @@
       "unsupported_unsupported_platform": "이 플랫폼에서는 자동 시작을 지원하지 않습니다",
       "unsupported_unknown": "이 환경에서는 자동 시작을 사용할 수 없습니다"
     },
+    "account": {
+      "title": "계정",
+      "description": "이 디바이스의 인증 상태를 관리합니다.",
+      "signOutAllDevicesButton": "모든 디바이스에서 로그아웃",
+      "signOutAllDevicesDescription": "이 계정으로 로그인한 모든 디바이스의 활성 세션을 폐기합니다. 이 디바이스에서도 로그아웃되며 되돌릴 수 없습니다.",
+      "confirmTitle": "모든 디바이스에서 로그아웃하시겠습니까?",
+      "confirmMessage": "이 작업은 이 디바이스를 포함한 모든 활성 세션을 폐기합니다. 다시 로그인해야 합니다. 되돌릴 수 없습니다.",
+      "confirmAction": "모든 디바이스 로그아웃",
+      "cancel": "취소",
+      "success": "모든 디바이스에서 로그아웃되었습니다.",
+      "error": "로그아웃 실패: {{error}}"
+    },
     "bugReportWizardTitle": "버그 리포트",
     "bugReportStepGenerate": "생성",
     "bugReportStepReview": "검토",

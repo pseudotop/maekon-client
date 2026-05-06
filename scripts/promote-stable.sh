@@ -107,7 +107,7 @@ git add Cargo.toml Cargo.lock CHANGELOG.md crates/maekon-web/frontend/package.js
 git commit -m "chore(release): ${STABLE_TAG}"
 success "승격 커밋 완료"
 
-git tag -a "${STABLE_TAG}" -m "Release ${STABLE_TAG}"
+git tag -s "${STABLE_TAG}" -m "Release ${STABLE_TAG}"
 success "Stable 태그 생성 완료: ${STABLE_TAG}"
 
 if [[ "${PROMOTE_STABLE_NO_PUSH:-0}" == "1" ]]; then

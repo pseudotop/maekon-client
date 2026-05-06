@@ -401,9 +401,7 @@ impl TokenManager {
         if let Some(token) = token {
             let url = format!("{}/api/v1/auth/tokens/all", self.base_url);
             if let Err(e) = self.client.delete(&url).bearer_auth(&token).send().await {
-                tracing::warn!(
-                    "server-side full logout failed (local state cleared): {e}"
-                );
+                tracing::warn!("server-side full logout failed (local state cleared): {e}");
             }
         }
 
