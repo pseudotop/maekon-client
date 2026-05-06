@@ -286,10 +286,11 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(LogWorkerGuard(worker_guard))
         .manage(telemetry_handle)
-        // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState — logout_all_sessions
-        // Tauri command 가 사용. app_runtime_launch.rs 의 server bootstrap 에서 token_manager
-        // 가 만들어진 후 `.manage(TokenManagerState(Some(...)))` 로 override 됨.
-        // 초기 default = None 으로 manage — feature flag / bootstrap 실패 시 command 가 즉시 error.
+        // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState used by the
+        // logout_all_sessions Tauri command. app_runtime_launch.rs replaces
+        // this default with TokenManagerState(Some(...)) after server bootstrap
+        // creates the token manager. Until then, None makes the command fail
+        // immediately for disabled features or bootstrap failures.
         .manage(commands::auth::TokenManagerState(None));
 
     // WebDriver 서버 플러그인 — E2E 테스트용 (production 빌드에 절대 포함 금지)
