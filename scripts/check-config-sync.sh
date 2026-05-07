@@ -193,8 +193,13 @@ echo "── Build Artifacts ──"
 DIST_DIR="$REPO_ROOT/crates/maekon-web/frontend/dist"
 if [ -d "$DIST_DIR" ] && [ -f "$DIST_DIR/index.html" ]; then
   JS_COUNT=$(find "$DIST_DIR" -name '*.js' | wc -l | tr -d ' ')
-  info "Frontend dist/ exists ($JS_COUNT JS files)"
-  pass
+  if [ "$REQUIRE_ARTIFACTS" -eq 1 ] && [ "$JS_COUNT" -eq 0 ]; then
+    info "Frontend dist/ has no JavaScript artifacts"
+    fail "" "Run: cd crates/maekon-web/frontend && pnpm build"
+  else
+    info "Frontend dist/ exists ($JS_COUNT JS files)"
+    pass
+  fi
 else
   info "Frontend dist/ exists"
   if [ "$REQUIRE_ARTIFACTS" -eq 1 ]; then
