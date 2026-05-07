@@ -80,6 +80,19 @@ jobs:
         with:
           key: smoke-build-${{ matrix.target }}
 
+      - name: Install OpenSSL for SQLCipher (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # bundled-sqlcipher requires OpenSSL headers + libs at build time.
+          # Use vcpkg to install pre-built OpenSSL -- no Perl/NASM needed.
+          vcpkg install openssl:x64-windows-static-md
+          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          echo "OPENSSL_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "OpenSSL installed at: $vcpkgRoot"
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |

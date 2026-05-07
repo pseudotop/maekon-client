@@ -540,6 +540,19 @@ jobs:
             echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
           fi
 
+      - name: Install OpenSSL for SQLCipher (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # bundled-sqlcipher requires OpenSSL headers + libs at build time.
+          # Use vcpkg to install pre-built OpenSSL -- no Perl/NASM needed.
+          vcpkg install openssl:x64-windows-static-md
+          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          echo "OPENSSL_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "OpenSSL installed at: $vcpkgRoot"
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -601,7 +614,11 @@ jobs:
 
       - name: Build release
         shell: bash
-        run: ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }}
+        # Match release.yml/release-smoke.yml. A workspace-wide release build
+        # pulls optional maekon-embedding dependencies, including ort-sys,
+        # which has no x86_64-apple-darwin prebuilt ONNX Runtime artifact for
+        # this feature set. The shipped app build is maekon-app + grpc.
+        run: ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }} -p maekon-app --features grpc
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
