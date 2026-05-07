@@ -312,11 +312,9 @@ mod inner {
                         if variant.vt() == VT_BSTR {
                             // SAFETY: vt() confirmed VT_BSTR, so bstrVal is valid.
                             // bstrVal is ManuallyDrop<BSTR> in windows 0.62 — clone to avoid double-free.
-                            let bstr = unsafe {
-                                std::mem::ManuallyDrop::into_inner(
-                                    variant.Anonymous.Anonymous.Anonymous.bstrVal.clone(),
-                                )
-                            };
+                            let bstr = std::mem::ManuallyDrop::into_inner(
+                                variant.Anonymous.Anonymous.Anonymous.bstrVal.clone(),
+                            );
                             bstr_to_opt_string(&bstr).map(Zeroizing::new)
                         } else {
                             None
