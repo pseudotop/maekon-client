@@ -319,9 +319,68 @@ export default function GeneralTab() {
         </div>
       </Card>
 
+      <AccountSection />
+
       <ViewSetupGuideButton />
       <SupportToolsCard />
     </div>
+  )
+}
+
+/* ── Account: Sign out of all devices (OOS-TBD-N15-UI-EXPOSURE) ── */
+
+// Exported for unit testing (Vitest).
+export function AccountSection() {
+  const { t, i18n } = useTranslation()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  const handleConfirm = useCallback(async () => {
+    setLoading(true)
+    try {
+      await invokeDesktop<void>('logout_all_sessions')
+      addToast('success', t('settings.account.success'))
+      setConfirmOpen(false)
+    } catch (e) {
+      const lang = i18n.language?.split('-')[0]
+      const locale: WireErrorLocale = lang === 'ko' ? 'ko' : 'en'
+      const message = translateError(e, locale)
+      addToast('error', t('settings.account.error', { error: message }))
+    } finally {
+      setLoading(false)
+    }
+  }, [i18n.language, t])
+
+  return (
+    <>
+      <Card variant="default" padding="lg">
+        <CardTitle sticky>{t('settings.account.title')}</CardTitle>
+        <div className="space-y-3">
+          <p className="text-content-secondary text-sm">{t('settings.account.description')}</p>
+          <p className="text-content-secondary text-xs">{t('settings.account.signOutAllDevicesDescription')}</p>
+          <Button type="button" variant="danger" size="sm" onClick={() => setConfirmOpen(true)}>
+            {t('settings.account.signOutAllDevicesButton')}
+          </Button>
+        </div>
+      </Card>
+
+      <Dialog open={confirmOpen} onClose={() => (loading ? undefined : setConfirmOpen(false))}>
+        <DialogContent size="md">
+          <DialogTitle>{t('settings.account.confirmTitle')}</DialogTitle>
+          <DialogBody>
+            <p className="text-content-secondary text-sm">{t('settings.account.confirmMessage')}</p>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmOpen(false)} disabled={loading}>
+              {t('settings.account.cancel')}
+            </Button>
+            <Button type="button" variant="danger" size="sm" isLoading={loading} onClick={() => void handleConfirm()}>
+              {t('settings.account.confirmAction')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

@@ -19,9 +19,10 @@ AI 기반 업무 생산성 향상을 위한 데스크톱 클라이언트입니�
 
 ## Source Build 빠른 시작
 
-공개 저장소는 준비되었지만 공개 GitHub Release 아티팩트는 아직 게시되지
-않았습니다. 첫 공개 릴리즈가 게시되기 전까지는 로컬 source checkout에서
-Maekon을 실행하세요.
+공개 저장소는 준비되었고, `v0.0.1-rc.3`가 첫 공개 prerelease로 게시되어
+있습니다. GitHub의 `latest` release endpoint는 prerelease를 포함하지 않으므로
+릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을 사용하세요. 개발 및
+debug 빌드는 로컬 source checkout에서 실행합니다.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -29,8 +30,8 @@ cd maekon-client
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-릴리즈 설치 명령은 아래 설치 문서에 정리되어 있으며, 공개 릴리즈 아티팩트가
-게시된 뒤 권장 경로가 됩니다. 버전 고정, 서명 검증 강제, 제거 방법:
+릴리즈 설치 명령은 아래 설치 문서에 정리되어 있습니다. Prerelease 버전 고정,
+서명 검증 강제, 제거 방법:
 - 한국어: [`docs/install.ko.md`](./docs/install.ko.md)
 - English: [`docs/install.md`](./docs/install.md)
 
@@ -192,15 +193,15 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 릴리즈 설치 프로그램은 `pseudotop/maekon-client` GitHub Releases에 게시된
-> 아티팩트가 필요합니다. 공개 저장소에는 아직 release 아티팩트가 없으므로,
-> 첫 공개 릴리즈가 게시될 때까지는 source build 빠른 시작 경로를 사용하세요.
+> 현재 공개 바이너리 릴리즈는 prerelease `v0.0.1-rc.3`입니다. GitHub의
+> `latest` stable URL은 첫 stable 릴리즈 전까지 사용할 수 없으므로, 아래
+> 명령은 prerelease 버전을 명시적으로 고정합니다.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 Windows (PowerShell):
@@ -209,15 +210,16 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ```
 
 ### 릴리즈 아티팩트
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-공개 릴리즈 아티팩트는 아직 게시되지 않았습니다. 아래 표는 첫 공개 릴리즈가
-준비된 뒤 사용할 예상 파일명을 문서화한 것입니다.
+현재 게시된 prerelease는 `v0.0.1-rc.3`입니다. 아래 표는 설치 프로그램,
+업데이터, checksum, signature 흐름에서 사용하는 release asset 이름을
+문서화한 것입니다.
 
 Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프로그램, 업데이터,
 체크섬 호환성을 위해 의도적으로 `maekon-*` 형식을 유지합니다.

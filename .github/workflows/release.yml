@@ -27,6 +27,7 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  security-events: read
 
 jobs:
   verify-version:
@@ -91,6 +92,34 @@ jobs:
             fi
           else
             echo "workflow_dispatch rerun detected; skipping origin/main HEAD check"
+          fi
+
+      - name: Verify release source trust
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH_PROTECTED="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.protected')"
+          BRANCH_RULE_COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main?per_page=100" --jq 'length' 2>/dev/null || echo "0")"
+          if [ "${BRANCH_PROTECTED}" != "true" ] && [ "${BRANCH_RULE_COUNT}" -eq 0 ]; then
+            echo "::error::Public main must have branch protection or an active ruleset before releasing."
+            exit 1
+          fi
+
+          TAG_OBJECT_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          TAG_OBJECT_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          if [ "${TAG_OBJECT_TYPE}" != "tag" ]; then
+            echo "::error::${RELEASE_TAG} is a lightweight tag. Releases require an annotated signed tag."
+            exit 1
+          fi
+
+          TAG_VERIFIED="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" --jq '.verification.verified')"
+          TAG_VERIFY_REASON="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" --jq '.verification.reason // "unknown"')"
+          if [ "${TAG_VERIFIED}" != "true" ]; then
+            echo "::error::${RELEASE_TAG} tag signature is not GitHub-verified (reason: ${TAG_VERIFY_REASON})."
+            exit 1
           fi
 
       - name: Verify Cargo.toml version matches tag
@@ -233,16 +262,115 @@ jobs:
           print(f"Verified RC release {tag}: prerelease={release.get('prerelease')} assets={assets}")
           PY
 
-      - name: Check for open security advisories
+      - name: Check release security alerts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq '[.[] | select(.state == "open" and .security_advisory.severity == "critical")] | length' 2>/dev/null || echo "0")
-          if [ "$ALERTS" -gt 0 ]; then
-            echo "::error::$ALERTS critical dependabot security alerts are open. Resolve before releasing."
+          set -euo pipefail
+
+          ACCEPTANCE_FILE="supply-chain/release-alert-acceptance.json"
+          if [ ! -f "${ACCEPTANCE_FILE}" ]; then
+            echo "::error::${ACCEPTANCE_FILE} is required so accepted alerts are explicit and reviewable."
             exit 1
           fi
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100" > dependabot-alerts.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" > codeql-alerts.json
+
+          python3 - "${ACCEPTANCE_FILE}" dependabot-alerts.json codeql-alerts.json <<'PY'
+          import datetime as dt
+          import json
+          import sys
+
+          acceptance_path, dependabot_path, codeql_path = sys.argv[1:]
+          today = dt.date.today()
+
+          def load_paginated_alerts(path):
+              with open(path, encoding="utf-8") as fh:
+                  data = json.load(fh)
+              if isinstance(data, list) and all(isinstance(page, list) for page in data):
+                  return [alert for page in data for alert in page]
+              if isinstance(data, list):
+                  return data
+              raise TypeError(f"{path} must contain a JSON array or paginated array")
+
+          with open(acceptance_path, encoding="utf-8") as fh:
+              accepted = json.load(fh)
+          dependabot_alerts = load_paginated_alerts(dependabot_path)
+          codeql_alerts = load_paginated_alerts(codeql_path)
+
+          def not_expired(entry):
+              value = entry.get("accepted_until")
+              if not value:
+                  return False
+              return dt.date.fromisoformat(value) >= today
+
+          def accepted_dependabot(alert):
+              advisory = alert.get("security_advisory") or {}
+              dependency = alert.get("dependency") or {}
+              for entry in accepted.get("dependabot", []):
+                  if not not_expired(entry):
+                      continue
+                  number_match = entry.get("number") == alert.get("number")
+                  advisory_match = entry.get("advisory") == advisory.get("ghsa_id")
+                  package_match = entry.get("package") == (dependency.get("package") or {}).get("name")
+                  manifest_match = entry.get("manifest") == dependency.get("manifest_path")
+                  if number_match or advisory_match or (package_match and manifest_match):
+                      return True
+              return False
+
+          def accepted_codeql(alert):
+              rule = alert.get("rule") or {}
+              for entry in accepted.get("codeql", []):
+                  if not not_expired(entry):
+                      continue
+                  number_match = entry.get("number") == alert.get("number")
+                  rule_match = entry.get("rule") == rule.get("id")
+                  if number_match or rule_match:
+                      return True
+              return False
+
+          open_dependabot = [a for a in dependabot_alerts if not accepted_dependabot(a)]
+          open_codeql = [
+              a
+              for a in codeql_alerts
+              if (a.get("tool") or {}).get("name") == "CodeQL" and not accepted_codeql(a)
+          ]
+
+          for alert in open_dependabot:
+              advisory = alert.get("security_advisory") or {}
+              dependency = alert.get("dependency") or {}
+              package = (dependency.get("package") or {}).get("name", "unknown")
+              print(
+                  "::error::Unaccepted Dependabot alert "
+                  f"#{alert.get('number')}: {package} "
+                  f"{advisory.get('severity', 'unknown')} "
+                  f"{advisory.get('ghsa_id', 'unknown')} "
+                  f"({dependency.get('manifest_path', 'unknown manifest')})"
+              )
+
+          for alert in open_codeql:
+              rule = alert.get("rule") or {}
+              print(
+                  "::error::Unaccepted CodeQL alert "
+                  f"#{alert.get('number')}: {rule.get('id', 'unknown rule')} "
+                  f"({alert.get('html_url', 'no url')})"
+              )
+
+          accepted_dependabot_count = len(dependabot_alerts) - len(open_dependabot)
+          accepted_codeql_count = len(
+              [a for a in codeql_alerts if (a.get("tool") or {}).get("name") == "CodeQL"]
+          ) - len(open_codeql)
+          if accepted_dependabot_count:
+              print(f"::notice::{accepted_dependabot_count} Dependabot alert(s) matched release acceptance records")
+          if accepted_codeql_count:
+              print(f"::notice::{accepted_codeql_count} CodeQL alert(s) matched release acceptance records")
+
+          if open_dependabot or open_codeql:
+              raise SystemExit(1)
+          print("Release security alert gate passed")
+          PY
 
       - name: Verify tauri.conf.json consistency
         run: |
@@ -1170,7 +1298,7 @@ jobs:
           # fallback. We pass the secret-pair public key explicitly here so
           # the signed smoke verifies against the same key that signed the
           # artifacts (UPDATE_SIGNING_PRIVATE_KEY_B64 in the prior step).
-          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.ONESHIM_UPDATE_PUBLIC_KEY }}
+          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
         run: |
           chmod +x ./scripts/release-reliability-smoke.sh
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature
@@ -1219,9 +1347,45 @@ jobs:
 
       - name: Generate release notes
         id: notes
+        env:
+          RELEASE_KIND: ${{ needs.verify-version.outputs.release_kind }}
         run: |
           VERSION="${RELEASE_TAG}"
           CHANGELOG_CONTENT=$(cat changelog_section.md)
+
+          if [ "${RELEASE_KIND}" = "rc" ]; then
+            cat > quick_install.md <<QUICK_INSTALL_EOF
+          This is a prerelease. GitHub's \`latest\` release endpoint does not include
+          prereleases, so install commands are pinned to \`${VERSION}\`.
+
+          **macOS / Linux:**
+          \`\`\`bash
+          curl -fsSL -o /tmp/maekon-install.sh \\
+            https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh
+          MAEKON_VERSION=${VERSION} bash /tmp/maekon-install.sh
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`powershell
+          \$tmp = Join-Path \$env:TEMP "maekon-install.ps1"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1" -OutFile \$tmp
+          powershell -ExecutionPolicy Bypass -File \$tmp -Version ${VERSION}
+          \`\`\`
+          QUICK_INSTALL_EOF
+          else
+            cat > quick_install.md <<QUICK_INSTALL_EOF
+          **macOS / Linux:**
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
+          \`\`\`
+          QUICK_INSTALL_EOF
+          fi
+          QUICK_INSTALL_CONTENT=$(cat quick_install.md)
 
           cat > release_notes.md <<NOTES_EOF
           ## What's Changed
@@ -1249,15 +1413,7 @@ jobs:
 
           ### Quick Install
 
-          **macOS / Linux:**
-          \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
-          \`\`\`
-
-          **Windows (PowerShell):**
-          \`\`\`powershell
-          irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
-          \`\`\`
+          ${QUICK_INSTALL_CONTENT}
 
           **Full changelog:** [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           NOTES_EOF
@@ -1266,12 +1422,17 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.verify-version.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.verify-version.outputs.release_sha }}
         run: |
           set -euo pipefail
           DATE=$(date -u +"%B %d, %Y")
-          # Use env-sourced RELEASE_TAG (workflow output, not user input) to
-          # compose the header; DATE is generated here so no external input.
+          ISO_DATE=$(date -u +"%Y-%m-%d")
+          SHORT_SHA="${RELEASE_SHA:0:9}"
+          # Use env-sourced RELEASE_TAG/RELEASE_SHA (workflow outputs, not user
+          # input) to compose the header; DATE/ISO_DATE are generated here so
+          # no external input. SHORT_SHA mirrors build.rs GIT_SHA (--short=9).
           HEADER="## Maekon $RELEASE_TAG — Released $DATE"
+          BUILD_LINE="**Built**: \`$ISO_DATE\` UTC · **Commit**: \`$SHORT_SHA\`"
           # Idempotency guard (Q5 follow-up): skip prepend if a header for
           # this tag is already present on the first line — regardless of
           # its date suffix. Protects against workflow re-runs (same day or
@@ -1283,7 +1444,7 @@ jobs:
               echo "Release date header already present for $RELEASE_TAG — skipping prepend"
               ;;
             *)
-              printf "%s\n\n" "$HEADER" | cat - release_notes.md > release_notes.md.new
+              printf "%s\n\n%s\n\n" "$HEADER" "$BUILD_LINE" | cat - release_notes.md > release_notes.md.new
               mv release_notes.md.new release_notes.md
               ;;
           esac
@@ -1324,3 +1485,22 @@ jobs:
           fi
 
           gh release create "${create_args[@]}" dist/*
+
+      - name: Trigger maekon-landing redeploy
+        if: success()
+        shell: bash
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.MAEKON_LANDING_DEPLOY_HOOK }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEPLOY_HOOK_URL:-}" ]]; then
+            echo "::warning::MAEKON_LANDING_DEPLOY_HOOK secret missing — landing will show stale release info until next git push to main"
+            exit 0
+          fi
+          # POST to Vercel deploy hook URL (no body, no auth required — URL is the secret).
+          # Fail-open: log warning on non-200 so a landing redeploy hiccup doesn't fail the release.
+          if curl -X POST -fsSL "$DEPLOY_HOOK_URL" -o /dev/null; then
+            echo "✓ Vercel deploy hook triggered for maekon-landing"
+          else
+            echo "::warning::Vercel deploy hook returned non-200 — landing may show stale data until next push"
+          fi

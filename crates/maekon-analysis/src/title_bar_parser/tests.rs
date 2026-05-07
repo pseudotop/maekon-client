@@ -380,7 +380,7 @@ fn terminal_root_dir_no_project() {
 fn terminal_trailing_slash_stripped() {
     let parser = TitleBarParser::new();
     let result = parser
-        .parse("Kitty", "user@host: ~/projects/oneshim/")
+        .parse("Kitty", "user@host: ~/projects/maekon/")
         .unwrap();
     assert_eq!(result.project, Some("maekon".to_string()));
 }

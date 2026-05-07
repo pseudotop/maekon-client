@@ -148,6 +148,20 @@ pub(crate) struct LogWorkerGuard(tracing_appender::non_blocking::WorkerGuard);
 fn main() {
     configure_runtime_flavor();
 
+    // `--version` / `-V` CLI handler. Build date and git SHA are embedded by
+    // build.rs at compile time, so this exits before starting the webview.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().skip(1).any(|a| a == "--version" || a == "-V") {
+            let info = crate::commands::build_info::AppBuildInfo::current();
+            println!(
+                "maekon {} (build: {} | commit: {})",
+                info.version, info.build_date, info.git_sha
+            );
+            std::process::exit(0);
+        }
+    }
+
     // D13 Task 13: `generate-external-cert` CLI subcommand — dispatched BEFORE
     // any Tauri initialization so we never spawn the webview runtime for
     // pure-utility invocations. Tauri itself does not parse CLI args for
@@ -272,10 +286,11 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(LogWorkerGuard(worker_guard))
         .manage(telemetry_handle)
-        // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState — logout_all_sessions
-        // Tauri command 가 사용. app_runtime_launch.rs 의 server bootstrap 에서 token_manager
-        // 가 만들어진 후 `.manage(TokenManagerState(Some(...)))` 로 override 됨.
-        // 초기 default = None 으로 manage — feature flag / bootstrap 실패 시 command 가 즉시 error.
+        // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState used by the
+        // logout_all_sessions Tauri command. app_runtime_launch.rs replaces
+        // this default with TokenManagerState(Some(...)) after server bootstrap
+        // creates the token manager. Until then, None makes the command fail
+        // immediately for disabled features or bootstrap failures.
         .manage(commands::auth::TokenManagerState(None));
 
     // WebDriver 서버 플러그인 — E2E 테스트용 (production 빌드에 절대 포함 금지)
@@ -299,6 +314,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::build_info::get_app_build_info,
             commands::auth::logout_all_sessions,
             commands::settings::update_setting,
             commands::system::get_automation_status,

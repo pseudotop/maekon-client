@@ -146,7 +146,7 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 echo "  다음 순서:"
 echo "  1. 현재 브랜치를 원격에 푸시하고 PR을 생성합니다"
-echo "  2. PR이 main에 머지되면 최신 main에서 아래 스크립트로 RC 태그를 발행합니다"
+echo "  2. PR이 main에 머지되면 최신 main에서 아래 스크립트로 서명된 RC 태그를 발행합니다"
 echo "     ./scripts/publish-rc-tag.sh ${VERSION}"
 echo ""
 echo "  RC 검증이 끝나면 stable 승격 workflow를 사용합니다:"

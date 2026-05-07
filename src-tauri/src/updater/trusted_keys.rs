@@ -15,6 +15,8 @@
 
 /// Static array of trusted Ed25519 verification keys (base64, 32 bytes each).
 pub(crate) const TRUSTED_PUBLIC_KEYS: &[&str] = &[
+    // v2 — introduced 2026-05-07 for public `maekon-*` release artifacts.
+    "fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=",
     // v1 — introduced 2026-04-18 (Phase 4 Updater Hardening).
     // Production key since v0.4.x; identical to the default at
     // `crates/maekon-core/src/config/sections/storage.rs:354`.

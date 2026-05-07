@@ -31,8 +31,10 @@ coverage/
 src-tauri/resources/*.bin
 
 # Tauri sidecar binaries (built locally, not committed)
+src-tauri/maekon-sandbox-worker*
 src-tauri/oneshim-sandbox-worker*
 src-tauri/binaries/
+src-tauri/binaries/maekon-sandbox-worker*
 src-tauri/binaries/oneshim-sandbox-worker*
 
 # Node.js (웹 대시보드 프론트엔드)
@@ -49,6 +51,11 @@ wdio-logs/
 .claude/
 docs/superpowers/
 .public-worktrees/
+
+# Parent-monorepo-only navigation symlinks (never exported to public repo).
+# Example: .workspace/maekon-landing -> ../../../web/apps/maekon-landing
+# Each maintainer creates symlinks locally as needed; nothing inside is tracked.
+.workspace/
 
 # Local brand exploration drafts; production assets live in assets/brand/*.svg.
 assets/brand/concepts/

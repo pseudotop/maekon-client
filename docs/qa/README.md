@@ -9,7 +9,8 @@ This directory is the canonical location for manual/reviewed QA execution result
   - `docs/guides/replay-uiux-qa-sheet.md`
   - `docs/qa/ai-integration-readiness-checklist.md`
   - `docs/qa/local-debug-ai-integration-smoke.md`
-- Actual QA run outputs (mutable run evidence):
+- Actual QA run outputs (mutable run evidence, excluded from the public-minimal
+  export unless intentionally published):
   - `docs/qa/runs/*.md`
 - CI machine artifacts (screenshots, Playwright HTML, logs):
   - CI artifact store (GitHub Actions artifacts), linked from run files.
@@ -23,7 +24,9 @@ This directory is the canonical location for manual/reviewed QA execution result
   - `cd crates/maekon-web/frontend && pnpm qa:pwcli:open`
   - `cd crates/maekon-web/frontend && pnpm qa:pwcli:snapshot`
   - `cd crates/maekon-web/frontend && pnpm qa:pwcli:show`
-- Attach run evidence (CLI output summary + artifact/report link) to `docs/qa/runs/*.md`.
+- Attach run evidence (CLI output summary + artifact/report link) to `docs/qa/runs/*.md`
+  in the parent source tree, or to the relevant public PR/release evidence when
+  the run is intentionally published.
 
 ## Naming convention for run files
 

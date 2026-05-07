@@ -616,6 +616,18 @@
       "unsupported_unsupported_platform": "Autostart not supported on this platform",
       "unsupported_unknown": "Autostart unavailable in this environment"
     },
+    "account": {
+      "title": "Account",
+      "description": "Manage authentication state for this device.",
+      "signOutAllDevicesButton": "Sign out of all devices",
+      "signOutAllDevicesDescription": "Revoke all active sessions across every device signed in to this account. You will be signed out of this device too — irreversible.",
+      "confirmTitle": "Sign out of all devices?",
+      "confirmMessage": "This will revoke every active session for your account, including this device. You will need to sign in again. This action cannot be undone.",
+      "confirmAction": "Sign out everywhere",
+      "cancel": "Cancel",
+      "success": "Signed out of all devices.",
+      "error": "Sign-out failed: {{error}}"
+    },
     "bugReportWizardTitle": "Bug Report",
     "bugReportStepGenerate": "Generate",
     "bugReportStepReview": "Review",

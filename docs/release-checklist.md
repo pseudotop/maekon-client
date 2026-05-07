@@ -12,7 +12,7 @@
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
 - [ ] Required public repository Actions secrets for the intended release scope are configured
-- [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in the release record
+- [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
 
 ## Manual Verification
 - [ ] `cargo build --release` succeeds on macOS
@@ -29,8 +29,13 @@
 
 ## Parent/Public Source Boundary
 - [ ] Release-prep commit was created from `clients/maekon-client` in parent
-- [ ] `tools/public-export/maekon-client/export.sh --dry-run --worktree` passed
+- [ ] Parent repository PR for the release/export change is merged before the public export PR is marked ready or merged
+- [ ] Internal export dry-run passed from the parent source tree: `clients/maekon-client/scripts/export-public-repo.sh --dry-run --worktree`
+- [ ] Public export was generated from the merged parent source SHA, not from an unmerged local-only branch
+- [ ] Any early public PR used for CI preview stayed draft until the merged parent source SHA was re-exported or confirmed to produce no public diff
 - [ ] Public export PR merged into `pseudotop/maekon-client`
+- [ ] Public `main` branch protection or an active ruleset is enabled before tagging
+- [ ] Public tag is an annotated signed tag and GitHub reports tag signature verification as passing
 - [ ] Public tag points at the reviewed public repository state
 - [ ] Parent source SHA and public export SHA are recorded in the release notes
 
@@ -56,11 +61,16 @@ Required for public RC release:
 - `MACOS_NOTARY_APP_PASSWORD`
 - `MACOS_NOTARY_TEAM_ID`
 - `UPDATE_SIGNING_PRIVATE_KEY_B64`
+- `MAEKON_UPDATE_PUBLIC_KEY`
 
 Required before stable promotion:
 
-- `STABLE_RELEASE_DEPLOY_KEY`
-- writable deploy key corresponding to `STABLE_RELEASE_DEPLOY_KEY`
+- `MAEKON_RELEASE_APP_ID`
+- `MAEKON_RELEASE_APP_PRIVATE_KEY`
+
+Optional but recommended for release freshness:
+
+- `MAEKON_LANDING_DEPLOY_HOOK`
 
 ## Documentation
 - [ ] CHANGELOG.md updated
@@ -70,4 +80,6 @@ Required before stable promotion:
 
 ## Sign-off
 - [ ] Maintainer approval
-- [ ] Release created via `./scripts/release.sh <VERSION>` (RC) or `./scripts/promote-stable.sh <RC-VERSION>` (stable promotion). **Do NOT use `git tag` directly** — `release.sh` synchronizes `CHANGELOG.md`, `Cargo.toml`, and `tauri.conf.json`, then creates the tag via verified signing.
+- [ ] RC release created via `./scripts/release.sh <VERSION>` followed by `./scripts/publish-rc-tag.sh <VERSION>`.
+- [ ] Stable release created by running `promote-stable.yml` to open a stable promotion PR, merging that PR into `main`, then running `./scripts/publish-stable-tag.sh <VERSION>` from latest `main`.
+- [ ] **Do NOT use `git tag` directly** — the publish scripts synchronize release checks and create signed annotated tags that the release workflow verifies through GitHub.

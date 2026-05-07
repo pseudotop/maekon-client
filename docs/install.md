@@ -4,23 +4,22 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
-> Public GitHub Release assets for `pseudotop/maekon-client` are not published
-> yet. The installer commands below require release assets and will work after
-> the first public release is published. Until then, use the source build quick
-> start in the repository README.
+> The current public binary release is `v0.0.1-rc.3`, published as a
+> prerelease. GitHub's `latest` stable download URL is not available until the
+> first stable release, so current prerelease installs must pin the version.
 
 Compatibility note: release filenames, install script names, `MAEKON_*`
 environment variables, and the `maekon` CLI command intentionally keep their
 current names for installer, updater, and existing-user compatibility.
 
-## Quick Install
+## Current Prerelease Install
 
 ### macOS / Linux
 
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 ### Windows (PowerShell)
@@ -30,7 +29,24 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
+```
+
+## Latest Stable Install
+
+After the first stable release is published, the unpinned installer defaults to
+GitHub's `latest` stable release:
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh | bash
+```
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1 | iex
 ```
 
 ## Install a Specific Version
@@ -38,13 +54,19 @@ powershell -ExecutionPolicy Bypass -File $tmp
 ### macOS / Linux
 
 ```bash
-MAEKON_VERSION=v0.0.4 bash /tmp/maekon-install.sh
+curl -fsSL -o /tmp/maekon-install.sh \
+  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 ### Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
+$tmp = Join-Path $env:TEMP "maekon-install.ps1"
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -OutFile $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ```
 
 ## Integrity Verification
@@ -55,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.4
   - Windows: `-RequireSignature`
 - Signature verification requires Python + PyNaCl on the installation machine.
 - Default update signing public key:
-  - `GIdf7Wg4kvvvoT7jR0xwKLKna8hUR1kvowONbHbPz1E=`
+  - `fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=`
 - Override key when rotated:
   - `MAEKON_UPDATE_PUBLIC_KEY=<base64-ed25519-public-key>`
 
@@ -114,11 +136,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 If you already cloned this repository:
 
 ```bash
-./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.3 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.3
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```

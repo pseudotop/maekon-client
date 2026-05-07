@@ -36,9 +36,11 @@ A desktop client for AI-assisted office productivity — local context capture, 
 
 ## Source Build Quick Start
 
-The public repository is live, but public GitHub Release assets are not
-published yet. Until the first public release is available, run Maekon from a
-local source checkout:
+The public repository is live, and `v0.0.1-rc.3` is available as the first
+public prerelease. Because GitHub's `latest` release endpoint excludes
+prereleases, use the version-pinned installer commands in the install guide for
+release-binary testing. For monorepo development and debug builds, run Maekon
+from a local source checkout:
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -46,9 +48,8 @@ cd maekon-client
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-Release installer commands are documented below and will become the recommended
-path after public release assets are published. For version pinning, signature
-enforcement, and uninstall:
+Release installer commands are documented below. For prerelease version pinning,
+signature enforcement, and uninstall:
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -123,6 +124,10 @@ Standalone mode remains the production-ready default path for release use.
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## Developer Quick Start (Build from Source)
+
+This is the normal local debug and development path for Maekon Client from a
+source checkout. Internal maintainers use the same commands before exporting
+public snapshots; public contributors can use them directly in this repository.
 
 ### Build
 
@@ -225,16 +230,15 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> Release installers require published assets under
-> `pseudotop/maekon-client` GitHub Releases. The public repository currently
-> has no release assets; use the source build quick start until the first public
-> release is published.
+> The current public binary release is the prerelease `v0.0.1-rc.3`. GitHub's
+> `latest` stable URL is not available until the first stable release, so the
+> commands below pin the prerelease explicitly.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
 ```
 
 Windows (PowerShell):
@@ -243,15 +247,16 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-Public release assets have not been published yet. This table documents the
-expected filenames once the first public release is available.
+The current published prerelease is `v0.0.1-rc.3`. This table documents the
+expected release asset names used by the installer, updater, checksum, and
+signature flows.
 
 Maekon is the app display name. Current release filenames intentionally retain
 `maekon-*` for installer, updater, and checksum compatibility.

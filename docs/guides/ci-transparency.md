@@ -84,8 +84,8 @@ The release workflow is defined in [`.github/workflows/release.yml`](../../.gith
 
 - `./scripts/release.sh <x.y.z-rc.N>` to prepare the RC version/changelog commit on a PR branch
 - merge that PR into `main`
-- `./scripts/publish-rc-tag.sh <x.y.z-rc.N>` on the merged `main` commit to publish the RC tag
-- `./scripts/promote-stable.sh <x.y.z-rc.N>` to create the stable promotion commit and tag locally for verification or by CI with `PROMOTE_STABLE_NO_PUSH=1`
+- `./scripts/publish-rc-tag.sh <x.y.z-rc.N>` on the merged `main` commit to publish the signed RC tag
+- `./scripts/promote-stable.sh <x.y.z-rc.N>` to create the stable promotion commit and signed tag locally for verification or by CI with `PROMOTE_STABLE_NO_PUSH=1`
 - [`.github/workflows/promote-stable.yml`](../../.github/workflows/promote-stable.yml) to let GitHub Actions create the stable tag and dispatch the release build without a human pushing the stable tag manually
 - [`.github/workflows/release-guard.yml`](../../.github/workflows/release-guard.yml) automatically deletes manual GitHub releases that bypass the workflow path or publish without assets
 

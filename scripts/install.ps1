@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $BinaryName = "maekon.exe"
 $SidecarName = "maekon-sandbox-worker.exe"
 $AssetName = "maekon-windows-x64.zip"
-$PublicKeyB64 = if ($env:MAEKON_UPDATE_PUBLIC_KEY) { $env:MAEKON_UPDATE_PUBLIC_KEY } else { "GIdf7Wg4kvvvoT7jR0xwKLKna8hUR1kvowONbHbPz1E=" }
+$PublicKeyB64 = if ($env:MAEKON_UPDATE_PUBLIC_KEY) { $env:MAEKON_UPDATE_PUBLIC_KEY } else { "fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=" }
 
 function Write-Info {
     param([string]$Message)
