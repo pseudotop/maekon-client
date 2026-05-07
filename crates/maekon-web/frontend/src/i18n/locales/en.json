@@ -875,15 +875,7 @@
     "low": "Low",
     "high": "High",
     "loadError": "Failed to load data",
-    "days": [
-      "Mon",
-      "Tue",
-      "Wed",
-      "Thu",
-      "Fri",
-      "Sat",
-      "Sun"
-    ],
+    "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     "activity": "Activity"
   },
   "dateRange": {
