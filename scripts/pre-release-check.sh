@@ -201,17 +201,6 @@ fi
 
 echo ""
 
-# --- 7. Run config-sync check if available ---
-if [ -x "scripts/check-config-sync.sh" ]; then
-  echo "[Config Sync]"
-  if scripts/check-config-sync.sh > /dev/null 2>&1; then
-    pass "Config sync check passed"
-  else
-    fail "Config sync check failed — run: ./scripts/check-config-sync.sh --fix"
-  fi
-  echo ""
-fi
-
 # --- Frontend Build Verification ---
 FRONTEND_DIR="crates/maekon-web/frontend"
 if [ -d "$FRONTEND_DIR/node_modules" ]; then
@@ -230,6 +219,17 @@ if [ -d "$FRONTEND_DIR/node_modules" ]; then
 else
   echo "[Frontend Build]"
   warn "Skipped — node_modules not installed (run: cd $FRONTEND_DIR && pnpm install)"
+  echo ""
+fi
+
+# --- 7. Run config-sync check if available ---
+if [ -x "scripts/check-config-sync.sh" ]; then
+  echo "[Config Sync]"
+  if scripts/check-config-sync.sh --require-artifacts > /dev/null 2>&1; then
+    pass "Config sync check passed"
+  else
+    fail "Config sync check failed — run: ./scripts/check-config-sync.sh --fix --require-artifacts"
+  fi
   echo ""
 fi
 

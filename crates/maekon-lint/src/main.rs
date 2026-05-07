@@ -21,7 +21,7 @@ use serde_json::Value;
 const FRONTEND_SRC_DIR: &str = "crates/maekon-web/frontend/src";
 const FRONTEND_LOCALES_DIR: &str = "crates/maekon-web/frontend/src/i18n/locales";
 const DEFAULT_CODE_ROOT: &str = "crates";
-const SUPPORTED_LOCALES: [&str; 4] = ["en", "ko", "ja", "zh"];
+const SUPPORTED_LOCALES: [&str; 5] = ["en", "ko", "ja", "zh-CN", "es"];
 const UI_ATTRS: [&str; 7] = [
     "placeholder",
     "title",
@@ -331,7 +331,7 @@ fn scan_i18n(repo_root: &Path, ignore_paths: &[String]) -> Vec<Finding> {
 
         for (line_idx, line) in content.lines().enumerate() {
             for key in extract_translation_keys(line) {
-                if !en_keys.contains(&key) {
+                if !has_translation_key(&en_keys, &key) {
                     findings.push(Finding::new(
                         Severity::Error,
                         "missing-i18n-key",
@@ -372,6 +372,16 @@ fn load_locale_keys(path: &Path) -> Result<BTreeSet<String>, String> {
     let mut keys = BTreeSet::new();
     flatten_json_keys("", &value, &mut keys);
     Ok(keys)
+}
+
+fn has_translation_key(keys: &BTreeSet<String>, key: &str) -> bool {
+    keys.contains(key)
+        || keys.contains(&format!("{key}_one"))
+        || keys.contains(&format!("{key}_other"))
+        || keys
+            .range(format!("{key}_")..)
+            .next()
+            .is_some_and(|candidate| candidate.starts_with(&format!("{key}_")))
 }
 
 fn flatten_json_keys(prefix: &str, value: &Value, keys: &mut BTreeSet<String>) {
@@ -740,6 +750,31 @@ mod tests {
             "src".to_string(),
         ];
         assert_eq!(parse_mode(&args), Mode::NonEnglish);
+    }
+
+    #[test]
+    fn supported_locales_match_frontend_resources() {
+        assert_eq!(
+            SUPPORTED_LOCALES.as_slice(),
+            ["en", "ko", "ja", "zh-CN", "es"].as_slice()
+        );
+    }
+
+    #[test]
+    fn i18n_key_lookup_accepts_plural_resource_forms() {
+        let mut keys = BTreeSet::new();
+        keys.insert("timeline.selectedCount_one".to_string());
+        keys.insert("timeline.selectedCount_other".to_string());
+
+        assert!(has_translation_key(&keys, "timeline.selectedCount"));
+    }
+
+    #[test]
+    fn i18n_key_lookup_accepts_context_resource_forms() {
+        let mut keys = BTreeSet::new();
+        keys.insert("settings.autostart.unsupported_snap_sandbox".to_string());
+
+        assert!(has_translation_key(&keys, "settings.autostart.unsupported"));
     }
 
     // ── detect_hardcoded_ui_literals ─────────────────────────────────

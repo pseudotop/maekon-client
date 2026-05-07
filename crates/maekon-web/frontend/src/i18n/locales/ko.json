@@ -19,7 +19,13 @@
     "lightMode": "라이트 모드",
     "actions": "작업",
     "edit": "편집",
-    "create": "생성"
+    "create": "생성",
+    "back": "Back",
+    "dismiss": "Dismiss",
+    "less": "Show less",
+    "lightbox": "Image lightbox",
+    "navigate": "Navigate",
+    "previous": "Previous"
   },
   "nav": {
     "dashboard": "대시보드",
@@ -157,7 +163,9 @@
     "releasedAgoHours": "{{count}}시간 전 배포",
     "releasedAgoHours_plural": "{{count}}시간 전 배포",
     "releasedAgoDays": "{{count}}일 전 배포",
-    "releasedAgoDays_plural": "{{count}}일 전 배포"
+    "releasedAgoDays_plural": "{{count}}일 전 배포",
+    "readyToInstallMsg": "Download complete. Ready to install.",
+    "installNow": "Install Now"
   },
   "timeline": {
     "title": "타임라인",
@@ -203,7 +211,11 @@
     "clearSelection": "해제",
     "selectedCount_one": "{{count}}개 선택됨",
     "selectedCount_other": "{{count}}개 선택됨",
-    "batchTagged": "{{count}}개 프레임에 태그 적용됨"
+    "batchTagged": "{{count}}개 프레임에 태그 적용됨",
+    "filters": "Filters",
+    "clearFilters": "Clear All",
+    "filterSummary": "Showing {{shown}} of {{total}} frames",
+    "tagSuggestions": "Tag suggestions"
   },
   "settings": {
     "title": "설정",
@@ -745,6 +757,16 @@
       "endpoint": "엔드포인트 URL",
       "endpoint_hint": "OpenAI 호환 음성 인식 엔드포인트입니다.",
       "cloud_timeout": "타임아웃 (초)"
+    },
+    "advanced": {
+      "aiSession": "AI Session",
+      "suggestion": "Suggestions",
+      "indicator": "Screen Indicator",
+      "analysis": "Analysis Pipeline",
+      "network": "Network & Server",
+      "coaching": "Coaching",
+      "integration": "Integration",
+      "sync": "Cross-Device Sync"
     }
   },
   "privacy": {
@@ -853,14 +875,24 @@
     "low": "낮음",
     "high": "높음",
     "loadError": "데이터를 불러올 수 없습니다",
-    "days": ["월", "화", "수", "목", "금", "토", "일"],
+    "days": [
+      "월",
+      "화",
+      "수",
+      "목",
+      "금",
+      "토",
+      "일"
+    ],
     "activity": "활동"
   },
   "dateRange": {
     "today": "오늘",
     "week": "7일",
     "month": "30일",
-    "custom": "직접 선택"
+    "custom": "직접 선택",
+    "from": "From",
+    "to": "To"
   },
   "reports": {
     "title": "활동 리포트",
@@ -938,7 +970,8 @@
     "totalEvents": "총 이벤트",
     "totalFrames": "총 프레임",
     "totalIdle": "총 유휴",
-    "apps": "앱 수"
+    "apps": "앱 수",
+    "scrubber": "Timeline scrubber"
   },
   "backup": {
     "title": "백업 / 복원",
@@ -1708,7 +1741,9 @@
       "partial": ">50%",
       "missed": "<50%",
       "noData": "데이터 없음"
-    }
+    },
+    "noEventsHint": "Coaching nudges will appear here as you work.",
+    "noGoalsHint": "Goals will appear here once regime tracking is active."
   },
   "onboarding": {
     "step1Title": "Maekon에 오신 것을 환영합니다",
@@ -1797,7 +1832,18 @@
     "searchSessions": "세션 검색...",
     "exportMarkdown": "마크다운으로 내보내기",
     "tokensToday": "오늘: {{count}} 토큰",
-    "renameSession": "이름 변경"
+    "renameSession": "이름 변경",
+    "audio_disabled": "Audio disabled in Settings",
+    "export_json": "Export JSON",
+    "exported": "Conversation exported",
+    "history": "History",
+    "mic_error": "Microphone not available",
+    "mic_tooltip": "Hold to speak",
+    "mic_vad_stop": "Click to stop listening",
+    "mic_vad_tooltip": "Click to toggle listening",
+    "model_needed": "Download model in Settings",
+    "read_only_notice": "This session has ended. History is read-only.",
+    "stt_error": "Transcription failed"
   },
   "policies": {
     "title": "실행 정책",
@@ -1998,5 +2044,8 @@
     "sat": "토",
     "sun": "일",
     "saveError": "저장에 실패했습니다."
+  },
+  "stats": {
+    "guiInteractions": "GUI Interactions"
   }
 }

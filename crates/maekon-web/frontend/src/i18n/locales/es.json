@@ -19,7 +19,13 @@
     "lightMode": "Modo claro",
     "actions": "Acciones",
     "edit": "Editar",
-    "create": "Crear"
+    "create": "Crear",
+    "back": "Back",
+    "dismiss": "Dismiss",
+    "less": "Show less",
+    "lightbox": "Image lightbox",
+    "navigate": "Navigate",
+    "previous": "Previous"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -78,7 +84,14 @@
     "nextDay": "Día siguiente",
     "loadError": "No se pudo cargar el resumen diario. Inténtelo de nuevo más tarde.",
     "exportDigest": "Exportar",
-    "exportMarkdown": "Descargar como Markdown"
+    "exportMarkdown": "Descargar como Markdown",
+    "todaySummary": {
+      "title": "Today at a Glance",
+      "activeTime": "Active Time",
+      "topApp": "Top App",
+      "nudges": "Nudges",
+      "regime": "Regime"
+    }
   },
   "updates": {
     "title": "Actualizaciones",
@@ -133,7 +146,26 @@
     "channelSaved": "Canal de actualización guardado",
     "channelSaveFailed": "No se pudo guardar el canal de actualización",
     "releaseNotes": "Notas de la versión",
-    "downloadSize": "Tamaño de descarga: {{size}}"
+    "downloadSize": "Tamaño de descarga: {{size}}",
+    "versionInfo": "Version Information",
+    "releaseName": "Release",
+    "downloadInProgress": "Downloading update...",
+    "rolledBack": "Rolled back",
+    "rolledBackTitle": "Previous version restored automatically",
+    "rolledBackReasonRepeatedStartupFailure": "The new version failed to start successfully twice in a row. Your previous working version has been restored.",
+    "rolledBackFromTo": "Rolled back: v{{fromVersion}} → v{{toVersion}}",
+    "rolledBackFromToWithDates": "Rolled back: v{{fromVersion}} ({{fromDate}}) → v{{toVersion}} ({{toDate}})",
+    "rolledBackAt": "Restored at {{timestamp}}",
+    "releaseDate": "Released {{date}}",
+    "releaseDateUnknown": "Release date unavailable",
+    "releasedAgoMinutes": "released {{count}} minute ago",
+    "releasedAgoMinutes_plural": "released {{count}} minutes ago",
+    "releasedAgoHours": "released {{count}} hour ago",
+    "releasedAgoHours_plural": "released {{count}} hours ago",
+    "releasedAgoDays": "released {{count}} day ago",
+    "releasedAgoDays_plural": "released {{count}} days ago",
+    "readyToInstallMsg": "Download complete. Ready to install.",
+    "installNow": "Install Now"
   },
   "timeline": {
     "title": "Línea de tiempo",
@@ -172,7 +204,18 @@
     "creating": "Creando...",
     "noSearchResults": "No se encontraron resultados",
     "selectColor": "Seleccionar color",
-    "removeTag": "Eliminar etiqueta {{name}}"
+    "removeTag": "Eliminar etiqueta {{name}}",
+    "select": "Select",
+    "cancelSelect": "Cancel",
+    "selectAll": "Select All",
+    "clearSelection": "Clear",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "batchTagged": "Tagged {{count}} frames",
+    "filters": "Filters",
+    "clearFilters": "Clear All",
+    "filterSummary": "Showing {{shown}} of {{total}} frames",
+    "tagSuggestions": "Tag suggestions"
   },
   "settings": {
     "title": "Configuración",
@@ -183,7 +226,11 @@
       "aiAutomation": "IA y Automatización",
       "dataStorage": "Datos y Almacenamiento",
       "coaching": "Coaching",
-      "focusAuto": "Enfoque auto"
+      "focusAuto": "Enfoque auto",
+      "audio": "Audio",
+      "sync": "Sync",
+      "advanced": "Advanced",
+      "trackingSchedule": "Tracking Schedule"
     },
     "guidance": {
       "aiAutomation": {
@@ -202,6 +249,147 @@
           "description": "Cargue modelos, revise el estado de preparación y guarde perfiles reutilizables antes de habilitar acceso remoto o de ejecución más amplio."
         },
         "footer": "Después de guardar, use Execution History y Execution Policies para confirmar que el runtime se comporta como esperaba."
+      },
+      "monitoring": {
+        "title": "Monitoring guide",
+        "description": "Use this page to decide what Maekon captures and how often it samples activity.",
+        "permissions": {
+          "title": "Resolve desktop access first",
+          "description": "Screen capture and accessibility status affect whether downstream timelines and insights are reliable."
+        },
+        "intervals": {
+          "title": "Tune intervals conservatively",
+          "description": "Shorter intervals create fresher metrics, but also more storage and runtime work."
+        },
+        "privacy": {
+          "title": "Use privacy mode for pauses",
+          "description": "Privacy mode pauses capture without forcing you to rewrite the rest of the monitoring setup."
+        }
+      },
+      "privacy": {
+        "title": "Privacy guide",
+        "description": "Use these controls to keep sensitive apps, titles, and identifiers out of captured context.",
+        "automatic": {
+          "title": "Start with automatic exclusions",
+          "description": "Keep the sensitive-app detector enabled before adding manual app or title rules."
+        },
+        "pii": {
+          "title": "Choose the masking level",
+          "description": "Use Standard for everyday capture and Strict when exported diagnostics may include paths or keys."
+        },
+        "patterns": {
+          "title": "Use title patterns for sensitive workflows",
+          "description": "Window-title patterns catch private documents even when the app itself is normally safe."
+        }
+      },
+      "notifications": {
+        "title": "Notification guide",
+        "description": "Use notifications when they create timely coaching value without becoming background noise.",
+        "permission": {
+          "title": "Confirm OS permission first",
+          "description": "If desktop notification permission is blocked, these thresholds will not produce visible reminders."
+        },
+        "thresholds": {
+          "title": "Tune one threshold at a time",
+          "description": "Start with idle and long-session reminders before enabling resource warnings."
+        },
+        "usage": {
+          "title": "Keep high-usage alerts rare",
+          "description": "Reserve CPU or memory alerts for exceptional load so they remain actionable."
+        }
+      },
+      "dataStorage": {
+        "title": "Data & storage guide",
+        "description": "Use this page to understand local footprint, export recent records, and set retention limits.",
+        "review": {
+          "title": "Review the footprint",
+          "description": "Compare database, frame, event, and metric counts before changing caps."
+        },
+        "export": {
+          "title": "Export before reducing retention",
+          "description": "Export metrics, events, or frame metadata before lowering storage or retention limits."
+        },
+        "telemetry": {
+          "title": "Telemetry is separate",
+          "description": "Telemetry toggles control remote diagnostics, not the local records retained on this device."
+        }
+      },
+      "sync": {
+        "title": "Sync setup guide",
+        "description": "Sync needs matching configuration, a shared secret, and a transport that fits your devices.",
+        "enabledDescription": "Use this page to confirm the local device identity, discover peers, and run an explicit sync cycle.",
+        "transport": {
+          "title": "Choose a transport deliberately",
+          "description": "LAN, file, and remote sync have different privacy and reachability trade-offs."
+        },
+        "passphrase": {
+          "title": "Protect the passphrase",
+          "description": "All devices must use the same secret, and losing it prevents decrypting shared state."
+        },
+        "restart": {
+          "title": "Restart after config changes",
+          "description": "Sync configuration is read at startup, so restart after enabling or changing transport settings."
+        },
+        "device": {
+          "title": "Confirm this device",
+          "description": "Check the displayed name and truncated ID before syncing multiple machines."
+        },
+        "peers": {
+          "title": "Validate peer discovery",
+          "description": "No peers usually means transport, network, or passphrase setup still needs attention."
+        },
+        "conflicts": {
+          "title": "Review applied vs skipped",
+          "description": "Skipped changes are useful signals when two devices have divergent state."
+        }
+      },
+      "audio": {
+        "title": "Audio setup guide",
+        "description": "Use audio capture only when speech context is worth the added permission and storage surface.",
+        "provider": {
+          "title": "Choose local or cloud STT",
+          "description": "Local Whisper keeps audio processing on-device; cloud STT requires a provider key and network egress."
+        },
+        "model": {
+          "title": "Download the right model",
+          "description": "Larger models improve transcription quality but increase disk and memory use."
+        },
+        "input": {
+          "title": "Pick an input mode",
+          "description": "Push-to-talk is predictable; voice activity needs sensitivity tuning for your room."
+        }
+      },
+      "advanced": {
+        "title": "Advanced settings guide",
+        "description": "These controls affect runtime behavior across capture, analysis, networking, and sync.",
+        "runtime": {
+          "title": "Change runtime limits carefully",
+          "description": "Session, retry, and analysis intervals can affect responsiveness and resource use."
+        },
+        "network": {
+          "title": "Keep endpoints explicit",
+          "description": "Server and gRPC endpoints should point at the intended environment before enabling remote flows."
+        },
+        "sync": {
+          "title": "Pair sync settings with the sync page",
+          "description": "Enable sync here, then use the Sync page to verify device identity and peers."
+        }
+      },
+      "trackingSchedule": {
+        "title": "Tracking schedule guide",
+        "description": "Use schedules when capture should follow predictable work windows instead of running all day.",
+        "windows": {
+          "title": "Add clear windows",
+          "description": "Use non-overlapping start and end times with labels that match the intended routine."
+        },
+        "timezone": {
+          "title": "Confirm timezone",
+          "description": "Use Local for this machine or an explicit IANA zone when matching another location."
+        },
+        "status": {
+          "title": "Check active-now status",
+          "description": "The status pill confirms whether the saved schedule is currently allowing capture."
+        }
       }
     },
     "groupCore": "Básico",
@@ -514,7 +702,72 @@
     "bugReportExported": "Informe de error exportado exitosamente.",
     "bugReportExportFailed": "No se pudo exportar el informe de error.",
     "bugReportEmailSupport": "Enviar correo a soporte",
-    "bugReportEmailSupportDesc": "Abrir un correo prellenado para el equipo de soporte."
+    "bugReportEmailSupportDesc": "Abrir un correo prellenado para el equipo de soporte.",
+    "autostart": {
+      "title": "Startup",
+      "description": "Automatically start Maekon when you sign in to your computer.",
+      "toggle": "Start Maekon at login",
+      "error": "Failed to update autostart: {{error}}",
+      "unsupported_snap_sandbox": "Use Snap's built-in autostart settings",
+      "unsupported_flatpak_sandbox": "Use Flatpak's built-in autostart settings",
+      "unsupported_headless_session": "Autostart requires a desktop session",
+      "unsupported_systemctl_unavailable": "systemctl not available — using XDG autostart fallback",
+      "unsupported_unsupported_platform": "Autostart not supported on this platform",
+      "unsupported_unknown": "Autostart unavailable in this environment"
+    },
+    "account": {
+      "title": "Account",
+      "description": "Manage authentication state for this device.",
+      "signOutAllDevicesButton": "Sign out of all devices",
+      "signOutAllDevicesDescription": "Revoke all active sessions across every device signed in to this account. You will be signed out of this device too — irreversible.",
+      "confirmTitle": "Sign out of all devices?",
+      "confirmMessage": "This will revoke every active session for your account, including this device. You will need to sign in again. This action cannot be undone.",
+      "confirmAction": "Sign out everywhere",
+      "cancel": "Cancel",
+      "success": "Signed out of all devices.",
+      "error": "Sign-out failed: {{error}}"
+    },
+    "audio": {
+      "title": "Audio & Speech-to-Text",
+      "enable": "Enable audio capture and STT",
+      "model": "Whisper Model",
+      "status": "Model Status",
+      "not_installed": "Not installed",
+      "downloading": "Downloading...",
+      "ready": "Ready",
+      "cancel": "Cancel",
+      "download": "Download",
+      "redownload": "Re-download",
+      "reload": "Reload Engine",
+      "delete": "Delete",
+      "delete_confirm": "Delete the downloaded model? You can re-download it later.",
+      "language": "STT Language",
+      "input_mode": "Input Mode",
+      "ptt": "Push-to-Talk",
+      "vad": "Voice Activity",
+      "vad_sensitivity": "VAD Sensitivity",
+      "vad_sensitivity_hint": "Lower = more sensitive. Increase if background noise triggers false detections.",
+      "vad_silence": "Silence Duration (ms)",
+      "vad_silence_hint": "How long to wait in silence before ending an utterance.",
+      "stt_provider": "STT Provider",
+      "local": "Local (Whisper)",
+      "cloud": "Cloud (OpenAI)",
+      "api_key": "API Key",
+      "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
+      "endpoint": "Endpoint URL",
+      "endpoint_hint": "OpenAI-compatible transcription endpoint.",
+      "cloud_timeout": "Timeout (sec)"
+    },
+    "advanced": {
+      "aiSession": "AI Session",
+      "suggestion": "Suggestions",
+      "indicator": "Screen Indicator",
+      "analysis": "Analysis Pipeline",
+      "network": "Network & Server",
+      "coaching": "Coaching",
+      "integration": "Integration",
+      "sync": "Cross-Device Sync"
+    }
   },
   "privacy": {
     "title": "Gestión de privacidad",
@@ -593,7 +846,15 @@
     "browseTimeline": "Explorar línea de tiempo",
     "screenshot": "Captura de pantalla",
     "event": "Evento",
-    "importance": "Importancia"
+    "importance": "Importancia",
+    "semanticPlaceholder": "Describe what you're looking for...",
+    "semantic": "Semantic",
+    "textSearch": "Text",
+    "relevance": "Relevance",
+    "similarity": "Similarity",
+    "timeDecay": "Time decay",
+    "type": "Type",
+    "summary": "Summary"
   },
   "shortcuts": {
     "title": "Atajos de teclado",
@@ -614,14 +875,24 @@
     "low": "Bajo",
     "high": "Alto",
     "loadError": "Error al cargar los datos",
-    "days": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
+    "days": [
+      "Lun",
+      "Mar",
+      "Mié",
+      "Jue",
+      "Vie",
+      "Sáb",
+      "Dom"
+    ],
     "activity": "Actividad"
   },
   "dateRange": {
     "today": "Hoy",
     "week": "7 días",
     "month": "30 días",
-    "custom": "Personalizado"
+    "custom": "Personalizado",
+    "from": "From",
+    "to": "To"
   },
   "reports": {
     "title": "Reportes de actividad",
@@ -699,7 +970,8 @@
     "totalEvents": "Total de eventos",
     "totalFrames": "Total de fotogramas",
     "totalIdle": "Total inactivo",
-    "apps": "Aplicaciones"
+    "apps": "Aplicaciones",
+    "scrubber": "Timeline scrubber"
   },
   "backup": {
     "title": "Copia de seguridad / Restaurar",
@@ -1202,7 +1474,16 @@
     "retryConnection": "Reintentar conexión",
     "agentUnreachable": "Error de red: no se puede contactar al agente",
     "agentCheck": "Verifique que el agente Maekon esté en ejecución",
-    "unknownFetchError": "Error desconocido al obtener métricas"
+    "unknownFetchError": "Error desconocido al obtener métricas",
+    "route": {
+      "title": "Something went wrong in this section",
+      "description": "The error has been reported. You can try again or go back to the dashboard.",
+      "tryAgain": "Try Again",
+      "goHome": "Go to Dashboard",
+      "recoveringTitle": "Recovering the app...",
+      "recoveringDescription": "This section has crashed repeatedly. Reloading the app to restore normal operation.",
+      "recovering": "Reloading..."
+    }
   },
   "sidebar": {
     "overview": "Resumen",
@@ -1415,7 +1696,7 @@
     "laterLabel": "Recordar más tarde",
     "helpfulLabel": "Útil",
     "notHelpfulLabel": "No útil",
-    "whyTitle": "\u00bfPor qu\u00e9 esta sugerencia?",
+    "whyTitle": "¿Por qué esta sugerencia?",
     "quietHoursTitle": "Horas de silencio",
     "quietHoursDesc": "Los mensajes de coaching se suprimen durante estos rangos de tiempo.",
     "noQuietHours": "No hay horas de silencio configuradas.",
@@ -1460,7 +1741,9 @@
       "partial": ">50%",
       "missed": "<50%",
       "noData": "Sin datos"
-    }
+    },
+    "noEventsHint": "Coaching nudges will appear here as you work.",
+    "noGoalsHint": "Goals will appear here once regime tracking is active."
   },
   "onboarding": {
     "step1Title": "Bienvenido a Maekon",
@@ -1500,7 +1783,14 @@
     "step2ReadyInline": "Accesibilidad y Grabación de pantalla están habilitados.",
     "step2PermissionCheckFailed": "No se pudo leer el estado actual de los permisos de escritorio.",
     "step2SystemSettingsOpenFailed": "No se pudo abrir la Configuración del sistema de macOS.",
-    "step2NotificationRequestFailed": "No se pudo solicitar el permiso de notificaciones."
+    "step2NotificationRequestFailed": "No se pudo solicitar el permiso de notificaciones.",
+    "autostart": {
+      "title": "Start Maekon automatically?",
+      "body": "Maekon works best when running in the background. Want it to launch when you sign in to your computer?",
+      "enable_button": "Enable",
+      "not_now_button": "Not now",
+      "dismiss_button": "Don't ask again"
+    }
   },
   "chat": {
     "title": "Sesiones de IA",
@@ -1538,7 +1828,22 @@
     "send_failed": "No se pudo enviar el mensaje.",
     "retry_failed": "No se pudo reintentar la sesión.",
     "delete_failed": "No se pudo eliminar la sesión.",
-    "copy_failed": "No se pudo copiar el contenido."
+    "copy_failed": "No se pudo copiar el contenido.",
+    "searchSessions": "Search sessions...",
+    "exportMarkdown": "Export as Markdown",
+    "tokensToday": "Today: {{count}} tokens",
+    "renameSession": "Rename",
+    "audio_disabled": "Audio disabled in Settings",
+    "export_json": "Export JSON",
+    "exported": "Conversation exported",
+    "history": "History",
+    "mic_error": "Microphone not available",
+    "mic_tooltip": "Hold to speak",
+    "mic_vad_stop": "Click to stop listening",
+    "mic_vad_tooltip": "Click to toggle listening",
+    "model_needed": "Download model in Settings",
+    "read_only_notice": "This session has ended. History is read-only.",
+    "stt_error": "Transcription failed"
   },
   "policies": {
     "title": "Políticas de ejecución",
@@ -1714,5 +2019,33 @@
     "builtin": "Integrado",
     "templateCount": "{{count}} elementos",
     "variableLabel": "Variable de plantilla: {{name}}"
+  },
+  "trackingSchedule": {
+    "title": "Tracking Schedule",
+    "noWindows": "No windows configured.",
+    "addWindow": "Add window",
+    "startTime": "Start",
+    "endTime": "End",
+    "timezone": "Timezone",
+    "timezoneLocal": "Local",
+    "timezoneLabel": "Timezone",
+    "label": "Label",
+    "removeWindow": "Remove",
+    "save": "Save",
+    "activeNow": "Active now — ends {{time}}",
+    "validationHhmm": "Time must be HH:MM (00:00–23:59)",
+    "enabled": "Enabled",
+    "daysLabel": "Active days",
+    "mon": "Mon",
+    "tue": "Tue",
+    "wed": "Wed",
+    "thu": "Thu",
+    "fri": "Fri",
+    "sat": "Sat",
+    "sun": "Sun",
+    "saveError": "Failed to save."
+  },
+  "stats": {
+    "guiInteractions": "GUI Interactions"
   }
 }

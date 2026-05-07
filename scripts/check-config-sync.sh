@@ -9,14 +9,28 @@
 #   1 — one or more mismatches found
 #
 # Usage:
-#   ./scripts/check-config-sync.sh          # run all checks
-#   ./scripts/check-config-sync.sh --fix    # show fix suggestions
+#   ./scripts/check-config-sync.sh                      # run source/config checks
+#   ./scripts/check-config-sync.sh --fix                # show fix suggestions
+#   ./scripts/check-config-sync.sh --require-artifacts  # also require frontend dist/
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ERRORS=0
-SHOW_FIX="${1:-}"
+SHOW_FIX=""
+REQUIRE_ARTIFACTS=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --fix) SHOW_FIX="--fix" ;;
+    --require-artifacts) REQUIRE_ARTIFACTS=1 ;;
+    *)
+      printf '\033[0;31m%s\033[0m\n' "Unknown argument: $arg"
+      echo "Usage: ./scripts/check-config-sync.sh [--fix] [--require-artifacts]"
+      exit 2
+      ;;
+  esac
+done
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$1"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
@@ -183,7 +197,11 @@ if [ -d "$DIST_DIR" ] && [ -f "$DIST_DIR/index.html" ]; then
   pass
 else
   info "Frontend dist/ exists"
-  fail "" "Run: cd crates/maekon-web/frontend && pnpm build"
+  if [ "$REQUIRE_ARTIFACTS" -eq 1 ]; then
+    fail "" "Run: cd crates/maekon-web/frontend && pnpm build"
+  else
+    yellow "SKIP (not required; run with --require-artifacts after pnpm build)"
+  fi
 fi
 
 echo ""
