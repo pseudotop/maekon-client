@@ -44,7 +44,7 @@ pub struct HttpApiClient {
 /// TLS 설정을 적용하여 reqwest 클라이언트를 생성하는 헬퍼 함수
 ///
 /// `tls.enabled=true` 이면 HTTPS 전용 모드(`https_only`)를 강제한다.
-/// `tls.allow_self_signed=true` 이면 자체 서명 인증서를 허용한다 (개발 전용).
+/// `tls.allow_self_signed=true` 는 더 이상 인증서 검증 우회로 처리하지 않는다.
 /// `timeout=None` 이면 전역 타임아웃 미적용 — SSE 등 장기 스트림 연결에 사용.
 /// Check if a URL refers to a loopback / localhost address.
 fn is_localhost(url: &str) -> bool {
@@ -76,8 +76,7 @@ pub fn build_reqwest_client(
     build_reqwest_client_for_url(tls, timeout, None)
 }
 
-/// Build a `reqwest::Client` with TLS policy. When `base_url` is provided,
-/// emits a warning if `allow_self_signed` is used against a non-localhost host.
+/// Build a `reqwest::Client` with TLS policy.
 pub fn build_reqwest_client_for_url(
     tls: &TlsConfig,
     timeout: Option<Duration>,
@@ -94,17 +93,16 @@ pub fn build_reqwest_client_for_url(
     }
 
     if tls.allow_self_signed {
-        if base_url.is_some_and(|u| !is_localhost(u)) {
-            warn!(
-                "allow_self_signed is enabled for non-localhost URL — \
-                 this disables all certificate validation"
-            );
-        }
-        tracing::warn!(
-            "TLS: allow_self_signed=true — 자체 서명 인증서 허용됨. 운영 환경에서 사용 금지!"
+        let target = base_url.unwrap_or("unknown URL");
+        let target_is_localhost = base_url.is_some_and(is_localhost);
+        warn!(
+            target,
+            target_is_localhost,
+            "TLS: allow_self_signed=true is configured but certificate validation bypass is disabled"
         );
-        // 개발 전용: 자체 서명 인증서 허용 (운영에서는 사용 금지)
-        builder = builder.danger_accept_invalid_certs(true);
+        return Err(NetworkError::Config(format!(
+            "allow_self_signed is no longer supported for {target}; install a trusted development CA or disable TLS in local-only test configuration"
+        )));
     }
 
     builder
@@ -423,6 +421,20 @@ mod tests {
         let tls = TlsConfig::default();
         let result = build_reqwest_client(&tls, Some(Duration::from_secs(5)));
         assert!(result.is_ok(), "TLS 활성화 클라이언트 생성 성공");
+    }
+
+    #[test]
+    fn build_reqwest_client_rejects_allow_self_signed() {
+        let tls = TlsConfig {
+            enabled: true,
+            allow_self_signed: true,
+        };
+        let result = build_reqwest_client_for_url(
+            &tls,
+            Some(Duration::from_secs(5)),
+            Some("https://localhost"),
+        );
+        assert!(matches!(result, Err(NetworkError::Config(_))));
     }
 
     #[test]

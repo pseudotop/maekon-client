@@ -5,6 +5,10 @@ on:
     branches: [main, develop]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: release-smoke-${{ github.ref }}
   cancel-in-progress: true

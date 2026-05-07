@@ -46,7 +46,7 @@ impl SseStreamClient {
     /// TLS 설정 적용 생성자 — 운영 환경 표준 진입점
     ///
     /// `tls.enabled=true` 이면 HTTPS 전용을 강제한다.
-    /// `tls.allow_self_signed=true` 이면 자체 서명 인증서를 허용한다 (개발 전용).
+    /// `tls.allow_self_signed=true` 는 인증서 검증 우회로 처리하지 않는다.
     pub fn new_with_tls(
         base_url: &str,
         token_manager: Arc<TokenManager>,

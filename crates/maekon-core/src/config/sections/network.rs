@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 /// TLS 연결 설정 — 아웃바운드 HTTP/SSE 연결 보안 정책
 ///
 /// 기본값: enabled=true (TLS 강제), allow_self_signed=false (운영 환경 표준).
-/// 개발 환경에서는 allow_self_signed=true 또는 enabled=false 로 설정 가능.
+/// 개발 환경에서는 enabled=false 로 로컬 HTTP를 명시적으로 허용할 수 있다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
     /// TLS 강제 여부 — false 시 http:// 연결 허용 (개발 전용)
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 자체 서명 인증서 허용 — 운영 환경에서는 반드시 false 유지
+    /// 호환성 필드. 클라이언트는 더 이상 인증서 검증 우회를 수행하지 않는다.
     #[serde(default)]
     pub allow_self_signed: bool,
 }

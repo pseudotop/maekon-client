@@ -73,6 +73,7 @@ pub trait FrameQueryStorage: Send + Sync {
         limit: usize,
     ) -> Result<Vec<FrameRecord>, CoreError>;
     fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, CoreError>;
+    fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError>;
     fn list_frame_file_paths_in_range(&self, window: &TimeWindow)
         -> Result<Vec<String>, CoreError>;
 
