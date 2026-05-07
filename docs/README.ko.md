@@ -8,6 +8,7 @@
 
 - [DOCUMENTATION_POLICY.md](./DOCUMENTATION_POLICY.md): 문서 컨벤션 및 유지보수 규칙
 - [install.ko.md](./install.ko.md): 설치 가이드
+- [testing/source-build-prerequisites.md](./testing/source-build-prerequisites.md): fresh checkout 빌드 및 Tauri sidecar 준비 조건
 
 ## 하위 디렉터리
 

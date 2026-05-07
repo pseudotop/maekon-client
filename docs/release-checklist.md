@@ -11,6 +11,8 @@
 - [ ] cargo-mutants score ≥ 70% on maekon-core
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
+- [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
+- [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build`
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
 

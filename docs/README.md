@@ -8,6 +8,7 @@ This directory is organized by document intent.
 
 - [DOCUMENTATION_POLICY.md](./DOCUMENTATION_POLICY.md): documentation conventions and maintenance rules
 - [install.md](./install.md): installation guide
+- [testing/source-build-prerequisites.md](./testing/source-build-prerequisites.md): fresh-checkout build and Tauri sidecar prerequisites
 
 ## Directories
 

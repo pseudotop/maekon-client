@@ -19,7 +19,13 @@
     "lightMode": "Light mode",
     "actions": "Actions",
     "edit": "Edit",
-    "create": "Create"
+    "create": "Create",
+    "back": "Back",
+    "dismiss": "Dismiss",
+    "less": "Show less",
+    "lightbox": "Image lightbox",
+    "navigate": "Navigate",
+    "previous": "Previous"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -157,7 +163,9 @@
     "releasedAgoHours": "released {{count}} hour ago",
     "releasedAgoHours_plural": "released {{count}} hours ago",
     "releasedAgoDays": "released {{count}} day ago",
-    "releasedAgoDays_plural": "released {{count}} days ago"
+    "releasedAgoDays_plural": "released {{count}} days ago",
+    "readyToInstallMsg": "Download complete. Ready to install.",
+    "installNow": "Install Now"
   },
   "timeline": {
     "title": "Timeline",
@@ -203,7 +211,11 @@
     "clearSelection": "Clear",
     "selectedCount_one": "{{count}} selected",
     "selectedCount_other": "{{count}} selected",
-    "batchTagged": "Tagged {{count}} frames"
+    "batchTagged": "Tagged {{count}} frames",
+    "filters": "Filters",
+    "clearFilters": "Clear All",
+    "filterSummary": "Showing {{shown}} of {{total}} frames",
+    "tagSuggestions": "Tag suggestions"
   },
   "settings": {
     "title": "Settings",
@@ -745,6 +757,16 @@
       "endpoint": "Endpoint URL",
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
       "cloud_timeout": "Timeout (sec)"
+    },
+    "advanced": {
+      "aiSession": "AI Session",
+      "suggestion": "Suggestions",
+      "indicator": "Screen Indicator",
+      "analysis": "Analysis Pipeline",
+      "network": "Network & Server",
+      "coaching": "Coaching",
+      "integration": "Integration",
+      "sync": "Cross-Device Sync"
     }
   },
   "privacy": {
@@ -860,7 +882,9 @@
     "today": "Today",
     "week": "7 Days",
     "month": "30 Days",
-    "custom": "Custom"
+    "custom": "Custom",
+    "from": "From",
+    "to": "To"
   },
   "reports": {
     "title": "Activity Reports",
@@ -938,7 +962,8 @@
     "totalEvents": "Total Events",
     "totalFrames": "Total Frames",
     "totalIdle": "Total Idle",
-    "apps": "Apps"
+    "apps": "Apps",
+    "scrubber": "Timeline scrubber"
   },
   "backup": {
     "title": "Backup / Restore",
@@ -1708,7 +1733,9 @@
       "partial": ">50%",
       "missed": "<50%",
       "noData": "No data"
-    }
+    },
+    "noEventsHint": "Coaching nudges will appear here as you work.",
+    "noGoalsHint": "Goals will appear here once regime tracking is active."
   },
   "onboarding": {
     "step1Title": "Welcome to Maekon",
@@ -1797,7 +1824,18 @@
     "searchSessions": "Search sessions...",
     "exportMarkdown": "Export as Markdown",
     "tokensToday": "Today: {{count}} tokens",
-    "renameSession": "Rename"
+    "renameSession": "Rename",
+    "audio_disabled": "Audio disabled in Settings",
+    "export_json": "Export JSON",
+    "exported": "Conversation exported",
+    "history": "History",
+    "mic_error": "Microphone not available",
+    "mic_tooltip": "Hold to speak",
+    "mic_vad_stop": "Click to stop listening",
+    "mic_vad_tooltip": "Click to toggle listening",
+    "model_needed": "Download model in Settings",
+    "read_only_notice": "This session has ended. History is read-only.",
+    "stt_error": "Transcription failed"
   },
   "policies": {
     "title": "Execution Policies",
@@ -1998,5 +2036,8 @@
     "sat": "Sat",
     "sun": "Sun",
     "saveError": "Failed to save."
+  },
+  "stats": {
+    "guiInteractions": "GUI Interactions"
   }
 }
