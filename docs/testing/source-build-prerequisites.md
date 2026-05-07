@@ -17,7 +17,9 @@ cargo metadata --no-deps --format-version 1
 
 `check-config-sync.sh` validates source configuration by default. It does not
 require `crates/maekon-web/frontend/dist/` unless `--require-artifacts` is
-passed.
+passed. With `--require-artifacts`, the check requires `dist/index.html` plus
+at least one generated JavaScript bundle, so a placeholder HTML file is not a
+release-quality frontend artifact.
 
 ## Frontend Artifact Checks
 

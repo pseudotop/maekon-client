@@ -72,6 +72,48 @@ fn release_workflow_runs_signed_installer_smoke_before_publishing() {
 }
 
 #[test]
+fn ci_transparency_documents_local_signed_stable_tag_flow() {
+    let root = repo_root();
+    let docs = fs::read_to_string(root.join("docs/guides/ci-transparency.md"))
+        .expect("CI transparency guide is readable");
+
+    assert!(
+        docs.contains("./scripts/publish-stable-tag.sh <x.y.z>"),
+        "CI transparency guide should tell maintainers to publish the stable tag with publish-stable-tag.sh"
+    );
+    assert!(
+        !docs.contains("let GitHub Actions create the stable tag"),
+        "promote-stable.yml should be documented as opening the promotion PR, not creating the signed stable tag"
+    );
+    assert!(
+        !docs.contains("maintainers do not push `vX.Y.Z` manually"),
+        "stable tag publication should be described as a maintainer-local signed-tag script flow"
+    );
+}
+
+#[test]
+fn config_sync_require_artifacts_rejects_frontend_dist_without_js_bundle() {
+    let root = repo_root();
+    let script = fs::read_to_string(root.join("scripts/check-config-sync.sh"))
+        .expect("config sync script is readable");
+    let docs = fs::read_to_string(root.join("docs/testing/source-build-prerequisites.md"))
+        .expect("source build prerequisites guide is readable");
+
+    assert!(
+        script.contains("[ \"$REQUIRE_ARTIFACTS\" -eq 1 ] && [ \"$JS_COUNT\" -eq 0 ]"),
+        "--require-artifacts should reject placeholder dist/index.html without a JavaScript bundle"
+    );
+    assert!(
+        script.contains("Frontend dist/ has no JavaScript artifacts"),
+        "config sync failure should explain that a real frontend build is required"
+    );
+    assert!(
+        docs.contains("at least one generated JavaScript bundle"),
+        "source build docs should document what --require-artifacts validates"
+    );
+}
+
+#[test]
 fn release_archives_and_macos_app_bundle_include_sandbox_worker_sidecar() {
     let root = repo_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
