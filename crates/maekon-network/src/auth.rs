@@ -44,7 +44,7 @@ impl TokenManager {
     /// Legacy constructor — uses a default `reqwest::Client` with no TLS policy.
     ///
     /// Prefer [`TokenManager::new_with_tls`] in production code so that the
-    /// same TLS settings (HTTPS-only, self-signed cert policy) are applied to
+    /// same TLS settings (HTTPS-only, no certificate-validation bypass) are applied to
     /// credential requests as to all other network calls.
     ///
     /// This constructor is retained for backward compatibility and unit tests

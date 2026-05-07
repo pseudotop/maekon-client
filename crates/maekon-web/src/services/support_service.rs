@@ -30,7 +30,10 @@ impl SupportDiagnosticsQueryService {
             .frames_dir
             .as_ref()
             .map(|path| path.display().to_string());
-        let frames_dir_exists = self.ctx.frames_dir.as_ref().map(|path| path.exists());
+        let frames_dir_exists = self.ctx.frames_dir.as_ref().map(|path| {
+            path.canonicalize()
+                .is_ok_and(|canonical| canonical.is_dir())
+        });
 
         let health = assemble_diagnostics_health(DiagnosticsHealthInput {
             storage_error,

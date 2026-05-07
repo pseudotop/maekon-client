@@ -26,6 +26,9 @@ on:
       - 'crates/maekon-web/frontend/vite.config.ts'
       - 'scripts/check-config-sync.sh'
 
+permissions:
+  contents: read
+
 # No untrusted inputs used in run: blocks — all paths are static
 jobs:
   config-sync:

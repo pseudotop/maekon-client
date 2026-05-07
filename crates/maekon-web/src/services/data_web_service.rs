@@ -2,6 +2,7 @@ use maekon_api_contracts::data::{DeleteRangeRequest, DeleteResult};
 
 use crate::error::ApiError;
 use crate::services::web_contexts::StorageWebContext;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 #[derive(Clone)]
@@ -41,9 +42,13 @@ impl DataCommandService {
                     .map_err(|error| ApiError::Internal(error.to_string()))?;
 
                 for path in paths {
-                    let full_path = frames_dir.join(&path);
-                    if let Err(e) = std::fs::remove_file(full_path) {
-                        debug!("remove_file failed: {e}");
+                    match resolve_stored_frame_path(frames_dir, &path) {
+                        Ok(full_path) => {
+                            if let Err(e) = std::fs::remove_file(&full_path) {
+                                debug!("remove_file failed: {e}");
+                            }
+                        }
+                        Err(e) => debug!("skip invalid frame path: {e}"),
                     }
                 }
             }
@@ -81,8 +86,8 @@ impl DataCommandService {
 
         // Phase 2: Best-effort frame file deletion (after DB commit)
         if let Some(ref frames_dir) = self.ctx.frames_dir {
-            if frames_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(frames_dir) {
+            if let Some(frames_dir) = canonical_frame_dir(frames_dir) {
+                if let Ok(entries) = std::fs::read_dir(&frames_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_file() {
@@ -100,6 +105,31 @@ impl DataCommandService {
 
         Ok(result)
     }
+}
+
+fn resolve_stored_frame_path(frames_dir: &Path, stored_path: &str) -> Result<PathBuf, ApiError> {
+    let candidate = Path::new(stored_path);
+    if candidate.is_absolute() {
+        return Err(ApiError::BadRequest("Invalid frame path".to_string()));
+    }
+
+    let joined = frames_dir.join(candidate);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("Frame file not found: {stored_path}")))?;
+    let frames_canonical = frames_dir
+        .canonicalize()
+        .map_err(|_| ApiError::Internal("Frame directory is not available".to_string()))?;
+
+    if !canonical.starts_with(&frames_canonical) {
+        return Err(ApiError::BadRequest("Invalid frame path".to_string()));
+    }
+
+    Ok(canonical)
+}
+
+fn canonical_frame_dir(frames_dir: &Path) -> Option<PathBuf> {
+    frames_dir.canonicalize().ok().filter(|path| path.is_dir())
 }
 
 #[cfg(test)]
@@ -127,5 +157,43 @@ mod tests {
 
         let result = service.delete_data_range(&request);
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[test]
+    fn resolve_stored_frame_path_rejects_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let frames_dir = temp.path().join("frames");
+        std::fs::create_dir_all(&frames_dir).expect("frames dir");
+        let outside = temp.path().join("outside.png");
+        std::fs::write(&outside, b"outside").expect("outside file");
+
+        let result = resolve_stored_frame_path(&frames_dir, "../outside.png");
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[test]
+    fn resolve_stored_frame_path_accepts_child_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let frames_dir = temp.path().join("frames");
+        std::fs::create_dir_all(frames_dir.join("2026-05-07")).expect("frames dir");
+        let child = frames_dir.join("2026-05-07/frame.png");
+        std::fs::write(&child, b"frame").expect("frame file");
+
+        let resolved =
+            resolve_stored_frame_path(&frames_dir, "2026-05-07/frame.png").expect("resolved");
+        assert_eq!(resolved, child.canonicalize().expect("canonical child"));
+    }
+
+    #[test]
+    fn canonical_frame_dir_requires_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let frames_dir = temp.path().join("frames");
+        assert!(canonical_frame_dir(&frames_dir).is_none());
+
+        std::fs::create_dir_all(&frames_dir).expect("frames dir");
+        assert_eq!(
+            canonical_frame_dir(&frames_dir),
+            Some(frames_dir.canonicalize().expect("canonical frames dir"))
+        );
     }
 }

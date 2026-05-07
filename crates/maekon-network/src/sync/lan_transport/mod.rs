@@ -91,10 +91,13 @@ impl LanSyncTransport {
             discovery.start()?;
         }
 
-        // Build the HTTP client for outbound peer requests
+        // Build the HTTP client for outbound peer requests.
+        //
+        // LAN sync peer URLs are currently HTTP endpoints protected by
+        // passphrase-based HMAC authentication and encrypted payloads, so the
+        // client does not need to disable certificate validation.
         let http_client = reqwest::Client::builder()
             .timeout(PEER_REQUEST_TIMEOUT)
-            .danger_accept_invalid_certs(true) // Self-signed certs in LAN mode
             .build()
             .map_err(|e| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
@@ -180,8 +183,6 @@ impl LanSyncTransport {
 
     /// Build the base URL for a peer's sync server.
     fn peer_url(peer: &LanPeerInfo, path: &str) -> String {
-        // Use HTTP -- TLS is handled by the server side.
-        // The reqwest client is built with danger_accept_invalid_certs(true).
         format!("http://{}:{}{}", peer.host, peer.port, path)
     }
 }
