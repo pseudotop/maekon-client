@@ -29,7 +29,10 @@
 
 ## Parent/Public Source Boundary
 - [ ] Release-prep commit was created from `clients/maekon-client` in parent
+- [ ] Parent repository PR for the release/export change is merged before the public export PR is marked ready or merged
 - [ ] Internal export dry-run passed from the parent source tree: `clients/maekon-client/scripts/export-public-repo.sh --dry-run --worktree`
+- [ ] Public export was generated from the merged parent source SHA, not from an unmerged local-only branch
+- [ ] Any early public PR used for CI preview stayed draft until the merged parent source SHA was re-exported or confirmed to produce no public diff
 - [ ] Public export PR merged into `pseudotop/maekon-client`
 - [ ] Public `main` branch protection or an active ruleset is enabled before tagging
 - [ ] Public tag is an annotated signed tag and GitHub reports tag signature verification as passing
