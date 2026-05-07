@@ -3,32 +3,13 @@ name: Config Sync
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'Cargo.toml'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/tauri.conf.json'
-      - 'crates/maekon-core/src/config/**'
-      - 'crates/maekon-web/frontend/package.json'
-      - 'crates/maekon-web/frontend/src/constants.ts'
-      - 'crates/maekon-web/frontend/src/utils/api-base.ts'
-      - 'crates/maekon-web/frontend/vite.config.ts'
-      - 'scripts/check-config-sync.sh'
   pull_request:
     branches: [main, develop]
-    paths:
-      - 'Cargo.toml'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/tauri.conf.json'
-      - 'crates/maekon-core/src/config/**'
-      - 'crates/maekon-web/frontend/package.json'
-      - 'crates/maekon-web/frontend/src/constants.ts'
-      - 'crates/maekon-web/frontend/src/utils/api-base.ts'
-      - 'crates/maekon-web/frontend/vite.config.ts'
-      - 'scripts/check-config-sync.sh'
 
 permissions:
   contents: read
 
+# This job is a required branch ruleset check, so it must report on every PR.
 # No untrusted inputs used in run: blocks — all paths are static
 jobs:
   config-sync:
