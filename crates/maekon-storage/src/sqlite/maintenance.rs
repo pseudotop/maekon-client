@@ -283,6 +283,32 @@ impl SqliteStorage {
         Ok(paths)
     }
 
+    pub fn list_all_frame_file_paths(&self) -> Result<Vec<String>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM frames")
+            .map_err(|e| StorageError::Internal(format!("Failed to prepare query: {e}")))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .map_err(|e| StorageError::Internal(format!("Failed to execute query: {e}")))?;
+
+        let mut paths = Vec::new();
+        for row in rows {
+            if let Some(path) = row
+                .map_err(|e| StorageError::Internal(format!("Failed to read row: {e}")))?
+                .filter(|p| !p.is_empty())
+            {
+                paths.push(path);
+            }
+        }
+        Ok(paths)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn delete_data_in_range(
         &self,

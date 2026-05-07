@@ -291,6 +291,10 @@ impl FrameQueryStorage for FailingStorage {
         self.inner.get_frame_file_path(frame_id).map_err(Into::into)
     }
 
+    fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError> {
+        self.inner.list_all_frame_file_paths().map_err(Into::into)
+    }
+
     fn list_frame_file_paths_in_range(
         &self,
         window: &TimeWindow,

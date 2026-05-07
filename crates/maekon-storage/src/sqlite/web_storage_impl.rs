@@ -119,6 +119,10 @@ impl FrameQueryStorage for SqliteStorage {
         SqliteStorage::get_frame_file_path(self, frame_id).map_err(Into::into)
     }
 
+    fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError> {
+        SqliteStorage::list_all_frame_file_paths(self).map_err(Into::into)
+    }
+
     fn list_frame_file_paths_in_range(
         &self,
         window: &TimeWindow,

@@ -78,6 +78,15 @@ impl DataCommandService {
     }
 
     pub fn delete_all_data(&self) -> Result<DeleteResult, ApiError> {
+        let frame_paths = if self.ctx.frames_dir.is_some() {
+            self.ctx
+                .storage
+                .list_all_frame_file_paths()
+                .map_err(|error| ApiError::Internal(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+
         // Phase 1: Atomic DB deletion (transaction — all-or-nothing)
         self.ctx
             .storage
@@ -86,15 +95,15 @@ impl DataCommandService {
 
         // Phase 2: Best-effort frame file deletion (after DB commit)
         if let Some(ref frames_dir) = self.ctx.frames_dir {
-            if let Some(frames_dir) = canonical_frame_dir(frames_dir) {
-                if let Ok(entries) = std::fs::read_dir(&frames_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() {
-                            if let Err(e) = std::fs::remove_file(&path) {
-                                debug!("remove_file failed: {e}");
-                            }
+            for path in frame_paths {
+                match resolve_stored_frame_path(frames_dir, &path) {
+                    Ok(file_path) => {
+                        if let Err(e) = std::fs::remove_file(&file_path) {
+                            debug!("remove_file failed: {e}");
                         }
+                    }
+                    Err(error) => {
+                        debug!("skip frame file deletion: {error}");
                     }
                 }
             }
@@ -126,10 +135,6 @@ fn resolve_stored_frame_path(frames_dir: &Path, stored_path: &str) -> Result<Pat
     }
 
     Ok(canonical)
-}
-
-fn canonical_frame_dir(frames_dir: &Path) -> Option<PathBuf> {
-    frames_dir.canonicalize().ok().filter(|path| path.is_dir())
 }
 
 #[cfg(test)]
@@ -182,18 +187,5 @@ mod tests {
         let resolved =
             resolve_stored_frame_path(&frames_dir, "2026-05-07/frame.png").expect("resolved");
         assert_eq!(resolved, child.canonicalize().expect("canonical child"));
-    }
-
-    #[test]
-    fn canonical_frame_dir_requires_existing_directory() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let frames_dir = temp.path().join("frames");
-        assert!(canonical_frame_dir(&frames_dir).is_none());
-
-        std::fs::create_dir_all(&frames_dir).expect("frames dir");
-        assert_eq!(
-            canonical_frame_dir(&frames_dir),
-            Some(frames_dir.canonicalize().expect("canonical frames dir"))
-        );
     }
 }
