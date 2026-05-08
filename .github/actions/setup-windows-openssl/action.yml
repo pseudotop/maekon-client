@@ -1,0 +1,77 @@
+name: Setup Windows OpenSSL
+description: Locate the preinstalled OpenSSL SDK on GitHub Windows runners for SQLCipher builds.
+
+runs:
+  using: composite
+  steps:
+    - name: Locate OpenSSL SDK
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $candidateRoots = New-Object System.Collections.Generic.List[string]
+
+        if ($env:OPENSSL_ROOT_DIR) {
+          $candidateRoots.Add($env:OPENSSL_ROOT_DIR)
+        }
+        if ($env:OPENSSL_DIR) {
+          $candidateRoots.Add($env:OPENSSL_DIR)
+        }
+
+        $opensslCommand = Get-Command openssl -ErrorAction SilentlyContinue
+        if ($opensslCommand -and $opensslCommand.Source) {
+          $binDir = Split-Path -Parent $opensslCommand.Source
+          $candidateRoots.Add((Split-Path -Parent $binDir))
+        }
+
+        @(
+          "C:\Program Files\OpenSSL",
+          "C:\Program Files\OpenSSL-Win64",
+          "C:\OpenSSL-Win64"
+        ) | ForEach-Object { $candidateRoots.Add($_) }
+
+        $uniqueRoots = @(
+          $candidateRoots |
+            Where-Object { $_ -and (Test-Path $_) } |
+            ForEach-Object { (Resolve-Path $_).Path } |
+            Select-Object -Unique
+        )
+
+        foreach ($root in $uniqueRoots) {
+          $includeDir = Join-Path $root "include"
+          if (!(Test-Path (Join-Path $includeDir "openssl\ssl.h"))) {
+            continue
+          }
+
+          $libCandidates = @(
+            (Join-Path $root "lib"),
+            (Join-Path $root "lib64"),
+            (Join-Path $root "lib\VC\x64\MD"),
+            (Join-Path $root "lib\VC\x64\MT"),
+            (Join-Path $root "lib\x64")
+          )
+
+          foreach ($libDir in $libCandidates) {
+            if ((Test-Path (Join-Path $libDir "libssl.lib")) -and
+                (Test-Path (Join-Path $libDir "libcrypto.lib"))) {
+              "OPENSSL_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_INCLUDE_DIR=$includeDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_LIB_DIR=$libDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+              Write-Host "OpenSSL root: $root"
+              Write-Host "OpenSSL include: $includeDir"
+              Write-Host "OpenSSL lib: $libDir"
+              exit 0
+            }
+          }
+        }
+
+        if ($opensslCommand -and $opensslCommand.Source) {
+          Write-Host "OpenSSL command: $($opensslCommand.Source)"
+        } else {
+          Write-Host "OpenSSL command: not found on PATH"
+        }
+        Write-Host "Candidate roots:"
+        $uniqueRoots | ForEach-Object { Write-Host " - $_" }
+        Write-Error "Unable to locate OpenSSL headers and import libraries on this Windows runner."

@@ -151,44 +151,15 @@ fn calculate_growth_rate(snapshots: &[MemorySnapshot]) -> f64 {
     (n * sum_xy - sum_x * sum_y) / denominator
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn get_current_rss() -> Option<u64> {
-    use std::process::Command;
+    use sysinfo::{Pid, ProcessesToUpdate, System};
 
-    let pid = std::process::id();
-    let output = Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+    let pid = Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
 
-    let rss_kb: u64 = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .ok()?;
-
-    Some(rss_kb * 1024) // KB to bytes
-}
-
-#[cfg(target_os = "linux")]
-pub fn get_current_rss() -> Option<u64> {
-    use std::fs;
-
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if line.starts_with("VmRSS:") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let rss_kb: u64 = parts[1].parse().ok()?;
-                return Some(rss_kb * 1024);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-pub fn get_current_rss() -> Option<u64> {
-    None
+    system.process(pid).map(|process| process.memory())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

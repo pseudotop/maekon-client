@@ -13,9 +13,9 @@
 # Maekon
 
 > **De la actividad bruta del escritorio a logros diarios de enfoque.**
-> Maekon transforma las señales de trabajo locales en una cronología de enfoque en tiempo real y sugerencias accionables.
+> Maekon organiza las señales de trabajo locales en una cronología de enfoque, candidatos para la siguiente acción y rutas de automatización gobernadas por políticas.
 
-Un cliente de escritorio para productividad de oficina asistida por IA: captura de contexto local, sugerencias en tiempo real y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
+Maekon es un agente de escritorio Apache-2.0 local-first que puede usarse de forma independiente sin ONESHIM. Ofrece captura de contexto local, candidatos para la siguiente acción revisados por el usuario, automatización gobernada por políticas y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
 
 ## Inicio Rápido desde Source Build
 
@@ -33,7 +33,7 @@ Los comandos del instalador de release están documentados abajo y serán la rut
 
 ## Por qué Maekon
 
-- **Convierta la actividad en información accionable**: Registre contexto, cronología, tendencias de enfoque e interrupciones en un solo lugar.
+- **Organice la actividad como información de trabajo gobernada**: Registre contexto, cronología, tendencias de enfoque, interrupciones y rutas de automatización aprobadas en un solo lugar.
 - **Manténgase ligero en el dispositivo**: El procesamiento edge (codificación delta, miniaturas, OCR) reduce el volumen de transferencia y mantiene respuestas rápidas.
 - **Use una pila de escritorio lista para producción**: Binario multiplataforma, actualización automática, integración con la bandeja del sistema y panel web local.
 
@@ -62,6 +62,7 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 
 - Los niveles de filtrado de PII (Desactivado/Básico/Estándar/Estricto) se aplican en la canalización de visión
 - Los datos locales se almacenan en SQLite y se gestionan con controles de retención
+- La automatización requiere validación de políticas, perfiles de sandbox y registro local de auditoría
 - Política de informes y respuesta de seguridad: [SECURITY.md](./SECURITY.md)
 - Línea base de integridad autónoma: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Runbook de operaciones de integridad: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
@@ -78,7 +79,8 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 ### Características Principales
 - **Monitoreo de Contexto en Tiempo Real**: Rastrea ventanas activas, recursos del sistema y actividad del usuario
 - **Procesamiento de Imagen Edge**: Captura de pantalla, codificación delta, miniaturas y OCR
-- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Las sugerencias en tiempo real y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta de producción predeterminada
+- **Automatización Gobernada por Políticas**: Encauza acciones aprobadas mediante políticas, aislamiento en sandbox y auditoría
+- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta de producción predeterminada
 - **Bandeja del Sistema**: Se ejecuta en segundo plano con acceso rápido
 - **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases
 - **Multiplataforma**: Compatible con macOS, Windows y Linux

@@ -15,7 +15,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='Maekon Local Context Agent'
+            Description='Maekon Local-First Work Agent'
             Manufacturer='Maekon Team'
             InstallerVersion='450'
             Languages='1033'
@@ -55,7 +55,7 @@
                     <Component Id='ApplicationShortcut' Guid='*'>
                         <Shortcut Id='ApplicationStartMenuShortcut'
                             Name='Maekon'
-                            Description='Local Context Agent'
+                            Description='Local-First Work Agent'
                             Target='[APPLICATIONFOLDER]maekon.exe'
                             WorkingDirectory='APPLICATIONFOLDER'/>
                         <RemoveFolder Id='CleanUpShortCut' On='uninstall'/>
@@ -73,7 +73,7 @@
         <Feature
             Id='MainProgram'
             Title='Maekon'
-            Description='Maekon Local Context Agent.'
+            Description='Maekon Local-First Work Agent.'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'

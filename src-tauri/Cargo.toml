@@ -1,6 +1,6 @@
 [package]
 name = "maekon-app"
-description = "Maekon desktop agent - Tauri v2 GUI, DI, orchestration, lifecycle"
+description = "Maekon local-first work agent - Tauri v2 GUI, automation, DI, orchestration, lifecycle"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -144,10 +144,10 @@ identifier = "com.maekon.app"
 icon = ["icons/icon.icns"]
 copyright = "Copyright 2026 Maekon Contributors"
 category = "Productivity"
-short_description = "Local context agent for AI-assisted work"
+short_description = "Local-first work agent with policy-gated automation"
 long_description = """
-Maekon is a local context agent for AI-assisted work.
-It monitors desktop context and provides useful, private-by-default suggestions.
+Maekon is a local-first work agent for AI-assisted work.
+It organizes desktop context into private-by-default next-action candidates and policy-gated automation paths.
 """
 osx_minimum_system_version = "10.15"
 
@@ -156,7 +156,7 @@ maintainer = "Maekon Team"
 copyright = "2026, Maekon Contributors"
 license-file = ["../LICENSE", "4"]
 extended-description = """
-Maekon is a local context agent for AI-assisted work.
+Maekon is a local-first work agent for AI-assisted work with policy-gated automation.
 """
 depends = "$auto, libgtk-3-0, libglib2.0-0, libwebkit2gtk-4.1-0, libappindicator3-1"
 section = "utility"

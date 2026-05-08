@@ -1498,7 +1498,7 @@
     },
     "automation": {
       "title": "자동화 비활성",
-      "description": "자동화가 꺼져 있습니다. 설정에서 활성화하면 Maekon이 승인된 명령을 대신 실행할 수 있어요.",
+      "description": "자동화가 꺼져 있습니다. 설정에서 활성화하면 승인된 명령만 정책 검사 후 실행할 수 있어요.",
       "action": "설정 열기",
       "guideEnableTitle": "설정에서 자동화 활성화",
       "guideEnableDescription": "프로바이더, 샌드박스, 개인정보 보호 게이트를 설정에서 함께 맞춘 뒤 시작하세요.",
@@ -1509,7 +1509,7 @@
     },
     "auditLog": {
       "title": "감사 항목 없음",
-      "description": "Maekon이 자동화 명령을 대신 실행하면 여기에 감사 항목이 표시됩니다.",
+      "description": "자동화 명령이 정책 검사를 통과해 실행되면 여기에 감사 항목이 표시됩니다.",
       "action": "자동화 열기",
       "guideRunTitle": "승인된 명령 실행",
       "guideRunDescription": "프리셋 또는 명령이 정책 검사를 통과해 실행을 시작하면 항목이 생성됩니다.",

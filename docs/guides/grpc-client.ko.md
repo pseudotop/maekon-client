@@ -243,7 +243,7 @@ let suggestions = context_client.list_suggestions(
 ).await?;
 ```
 
-### Server Streaming — 실시간 제안 구독
+### Server Streaming — 다음 행동 후보 구독
 
 ```rust
 use maekon_network::grpc::GrpcContextClient;
