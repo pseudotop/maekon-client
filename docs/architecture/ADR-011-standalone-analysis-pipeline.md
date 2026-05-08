@@ -8,7 +8,7 @@
 
 ## Context
 
-The client collects rich desktop activity data (app switches, OCR text, window titles, focus metrics) and stores it in SQLite. Currently, suggestions are either rules-based (FocusAnalyzer) or server-dependent (SSE). We need a standalone analysis cycle that feeds collected context to an LLM and produces actionable suggestions without the connected server. The same logic must later be portable to the server's AI Intelligence domain.
+The client collects rich desktop activity data (app switches, OCR text, window titles, focus metrics) and stores it in SQLite. Currently, suggestions are either rules-based (FocusAnalyzer) or server-dependent (SSE). We need a standalone analysis cycle that feeds collected context to an LLM and produces reviewable next-action candidates without the connected server. The same logic must later be portable to the server's AI Intelligence domain.
 
 This ADR covers five architectural decisions that existing ADRs do not address:
 

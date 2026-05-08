@@ -37,7 +37,7 @@ function Write-CompletionBanner {
         Get-Content -Path $bannerPath | ForEach-Object { Write-Host $_ }
     } else {
         Write-Host "Maekon"
-        Write-Host "local context agent"
+        Write-Host "local-first work agent"
     }
     Write-Host ""
 }

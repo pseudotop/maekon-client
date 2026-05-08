@@ -69,7 +69,7 @@ print_completion_banner() {
   else
     cat <<'EOF'
 Maekon
-local context agent
+local-first work agent
 EOF
   fi
   printf '\n\n'

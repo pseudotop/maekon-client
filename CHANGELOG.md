@@ -6247,7 +6247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimistic connection status initialization — the health loop is
   now the single source of truth.
 
-- Add SuggestionConfig for real-time suggestions
+- Add SuggestionConfig for next-action candidates
 
 - V19 app_meta migration + IPC commands
   Add SQLite V19 migration creating `app_meta` key-value table for
@@ -6366,7 +6366,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimistic connection status initialization — the health loop is
   now the single source of truth.
 
-- Add SuggestionConfig for real-time suggestions
+- Add SuggestionConfig for next-action candidates
 
 - V19 app_meta migration + IPC commands
   Add SQLite V19 migration creating `app_meta` key-value table for

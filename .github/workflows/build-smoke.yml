@@ -80,18 +80,9 @@ jobs:
         with:
           key: smoke-build-${{ matrix.target }}
 
-      - name: Install OpenSSL for SQLCipher (Windows)
+      - name: Configure OpenSSL for SQLCipher (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # bundled-sqlcipher requires OpenSSL headers + libs at build time.
-          # Use vcpkg to install pre-built OpenSSL -- no Perl/NASM needed.
-          vcpkg install openssl:x64-windows-static-md
-          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
-          echo "OPENSSL_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "OpenSSL installed at: $vcpkgRoot"
+        uses: ./.github/actions/setup-windows-openssl
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -103,9 +94,13 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          package-manager-cache: false
 
-      - name: Install pnpm
-        run: npm install -g pnpm
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+        with:
+          version: '10'
+          lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
 
       - name: Build frontend
         working-directory: crates/maekon-web/frontend

@@ -379,13 +379,15 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn normalized_path(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn default_context_export_path_uses_exports_dir() {
         let data_dir = PathBuf::from("/tmp/maekon-data");
         let path = default_context_export_path(&data_dir);
-        assert!(path
-            .to_string_lossy()
-            .contains("/tmp/maekon-data/exports/maekon-context.json"));
+        assert!(normalized_path(&path).contains("/tmp/maekon-data/exports/maekon-context.json"));
     }
 
     #[test]
@@ -396,28 +398,19 @@ mod tests {
         assert!(plans.iter().any(|plan| {
             plan.client == CliClient::Codex
                 && plan.scope == BridgeScope::Project
-                && plan
-                    .file_path
-                    .to_string_lossy()
-                    .contains(".codex/commands/maekon-context.md")
+                && normalized_path(&plan.file_path).contains(".codex/commands/maekon-context.md")
         }));
 
         assert!(plans.iter().any(|plan| {
             plan.client == CliClient::ClaudeCode
                 && plan.scope == BridgeScope::Project
-                && plan
-                    .file_path
-                    .to_string_lossy()
-                    .contains(".claude/commands/maekon-context.md")
+                && normalized_path(&plan.file_path).contains(".claude/commands/maekon-context.md")
         }));
 
         assert!(plans.iter().any(|plan| {
             plan.client == CliClient::GeminiCli
                 && plan.scope == BridgeScope::Project
-                && plan
-                    .file_path
-                    .to_string_lossy()
-                    .contains(".gemini/commands/maekon-context.toml")
+                && normalized_path(&plan.file_path).contains(".gemini/commands/maekon-context.toml")
         }));
     }
 

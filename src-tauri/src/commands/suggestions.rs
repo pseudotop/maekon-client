@@ -307,7 +307,7 @@ pub async fn submit_suggestion_feedback(
 
 // ── Chat ↔ Suggestion integration ────────────────────────────
 
-const SUGGESTION_PROMPT: &str = r#"Based on our conversation context, generate 1-3 actionable suggestions for the user.
+const SUGGESTION_PROMPT: &str = r#"Based on our conversation context, generate 1-3 reviewable next-action candidates for the user.
 Each suggestion should be specific, practical, and relevant to the current discussion.
 
 Respond ONLY with a JSON object matching this schema:

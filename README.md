@@ -12,10 +12,10 @@
 
 # Maekon
 
-> **From raw desktop activity to daily focus wins.**
-> Maekon turns local work signals into a real-time focus timeline and actionable suggestions.
+> **Local work signals, policy-gated action paths.**
+> Maekon organizes local work signals into a focus timeline, next-action candidates, and policy-gated automation paths.
 
-A desktop client for AI-assisted office productivity — local context capture, real-time suggestions, and a built-in dashboard. Built with Rust and Tauri v2 (WebView shell around a React frontend) for native performance across macOS, Windows, and Linux.
+Maekon is an Apache-2.0 local-first desktop agent that can be used independently without ONESHIM. It provides local context capture, user-reviewed next-action candidates, policy-gated automation, and a built-in dashboard. Built with Rust and Tauri v2 (WebView shell around a React frontend) for native performance across macOS, Windows, and Linux.
 
 ## Table of Contents
 
@@ -55,7 +55,7 @@ signature enforcement, and uninstall:
 
 ## Why Maekon
 
-- **Turn activity into actionable insight**: Track context, timeline, focus trends, and interruptions in one place.
+- **Turn activity into governed work insight**: Track context, timeline, focus trends, interruptions, and approved automation paths in one place.
 - **Stay lightweight on-device**: Edge processing (delta encoding, thumbnailing, OCR) reduces transfer volume and keeps response fast.
 - **Use a production-ready desktop stack**: Cross-platform binary, auto-update, system tray integration, and local web dashboard.
 
@@ -84,6 +84,7 @@ Standalone mode remains the production-ready default path for release use.
 
 - PII filtering levels (Off/Basic/Standard/Strict) are applied in the vision pipeline
 - Local data is stored in SQLite and managed with retention controls
+- Automation requires policy validation, sandbox profiles, and local audit logging
 - Security reporting and response policy: [SECURITY.md](./SECURITY.md)
 - Standalone integrity baseline: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Integrity operation runbook: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
@@ -99,6 +100,7 @@ Standalone mode remains the production-ready default path for release use.
 ### Core Features
 - **Real-time Context Monitoring**: Tracks active windows, system resources, and user activity
 - **Edge Image Processing**: Screenshot capture, delta encoding, thumbnails, and OCR
+- **Policy-Gated Automation**: Routes approved actions through policy checks, sandbox isolation, and audit logging
 - **Connected Server Features (Preview / Opt-in)**: Real-time suggestions and feedback sync are available for staged validation and are not the default production path
 - **System Tray**: Runs in the background with quick access
 - **Auto-Update**: Automatic updates based on GitHub Releases
