@@ -14,7 +14,11 @@ use super::classify::classify_keycode;
 use crate::input_activity::InputActivityCollector;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
+#[cfg(not(target_os = "windows"))]
+use tracing::warn;
+#[cfg(target_os = "windows")]
+use tracing::{error, info};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM};
@@ -27,22 +31,14 @@ use windows_sys::Win32::UI::Input::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
-    RegisterClassW, HWND_MESSAGE, MSG, WM_INPUT, WM_USER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, RegisterClassW,
+    HWND_MESSAGE, MSG, WM_INPUT, WM_USER, WNDCLASSW,
 };
 
 /// Custom message ID used to signal the message loop to exit.
 #[cfg(target_os = "windows")]
 const WM_STOP_HOOK: u32 = WM_USER + 1;
 
-/// Run the Raw Input keyboard hook. Blocks until `running` becomes false.
-///
-/// Creates a hidden message-only window, registers a Raw Input keyboard
-/// device with `RIDEV_INPUTSINK`, and processes `WM_INPUT` messages for
-/// `RIM_TYPEKEYBOARD` events.
-///
-/// Each key-down event is classified via `classify_keycode()` and forwarded
-/// to `InputActivityCollector::record_categorized_keystroke()`.
 // Module-scope thread-locals shared between `run_raw_input_hook` (populates)
 // and `raw_input_wnd_proc` (reads). Must be at module scope so both functions
 // reference the same storage.
@@ -54,6 +50,14 @@ thread_local! {
         std::cell::RefCell::new(None);
 }
 
+/// Run the Raw Input keyboard hook. Blocks until `running` becomes false.
+///
+/// Creates a hidden message-only window, registers a Raw Input keyboard
+/// device with `RIDEV_INPUTSINK`, and processes `WM_INPUT` messages for
+/// `RIM_TYPEKEYBOARD` events.
+///
+/// Each key-down event is classified via `classify_keycode()` and forwarded
+/// to `InputActivityCollector::record_categorized_keystroke()`.
 #[cfg(target_os = "windows")]
 pub fn run_raw_input_hook(collector: Arc<InputActivityCollector>, running: Arc<AtomicBool>) {
     TL_COLLECTOR.with(|c| *c.borrow_mut() = Some(collector));
