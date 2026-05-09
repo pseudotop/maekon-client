@@ -1,4 +1,37 @@
 {
   "dependabot": [],
-  "codeql": []
+  "codeql": [
+    {
+      "rule": "rust/hard-coded-cryptographic-value",
+      "accepted_until": "2026-06-08",
+      "review_issue": "https://github.com/pseudotop/maekon-client/issues/56",
+      "count": 36,
+      "severity": "critical",
+      "reason": "Temporary release-gate acceptance for the current public main CodeQL baseline while per-alert remediation is tracked before stable release."
+    },
+    {
+      "rule": "rust/cleartext-logging",
+      "accepted_until": "2026-06-08",
+      "review_issue": "https://github.com/pseudotop/maekon-client/issues/56",
+      "count": 42,
+      "severity": "high",
+      "reason": "Temporary release-gate acceptance for the current public main CodeQL baseline while per-alert remediation is tracked before stable release."
+    },
+    {
+      "rule": "rust/cleartext-transmission",
+      "accepted_until": "2026-06-08",
+      "review_issue": "https://github.com/pseudotop/maekon-client/issues/56",
+      "count": 1,
+      "severity": "high",
+      "reason": "Temporary release-gate acceptance for the current public main CodeQL baseline while per-alert remediation is tracked before stable release."
+    },
+    {
+      "rule": "rust/path-injection",
+      "accepted_until": "2026-06-08",
+      "review_issue": "https://github.com/pseudotop/maekon-client/issues/56",
+      "count": 1,
+      "severity": "high",
+      "reason": "Temporary release-gate acceptance for the current public main CodeQL baseline while per-alert remediation is tracked before stable release."
+    }
+  ]
 }
