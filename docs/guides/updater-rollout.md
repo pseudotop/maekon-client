@@ -1,6 +1,6 @@
 # Staged Rollout Convention for Release Authors
 
-**Audience**: the maintainer cutting a new `v*` tag via `release.sh` / `promote-stable.sh`.
+**Audience**: the maintainer cutting a new `v*` tag via `release.sh`, `publish-rc-tag.sh`, or `publish-stable-tag.sh`.
 **Purpose**: explain how to control what percentage of installed Maekon clients receive a new release, so a regression is contained rather than reaching every user at once.
 
 ---

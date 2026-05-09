@@ -35,8 +35,8 @@ Example:
 pub(crate) const TRUSTED_PUBLIC_KEYS: &[&str] = &[
     // v2 — introduced 2027-03-15, scheduled rotation
     "BASE64_NEW_KEY_GOES_HERE==",
-    // v1 — introduced 2026-04-18, original production key
-    "GIdf7Wg4kvvvoT7jR0xwKLKna8hUR1kvowONbHbPz1E=",
+    // v1 — introduced 2026-05-01, current production key
+    "fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=",
 ];
 ```
 

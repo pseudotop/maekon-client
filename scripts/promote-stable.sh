@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# promote-stable.sh — Prepare or publish a validated RC as a stable release.
+# promote-stable.sh — Prepare a validated RC as a stable promotion commit.
 #
 # Usage:
 #   ./scripts/promote-stable.sh 0.3.7-rc.1
@@ -7,6 +7,10 @@
 # Environment:
 #   PROMOTE_STABLE_SKIP_TAG=1  Create only the stable metadata commit.
 #   PROMOTE_STABLE_NO_PUSH=1   Do not push the commit or tag.
+#   PROMOTE_STABLE_ALLOW_DIRECT_PUBLISH=1
+#                              Break-glass legacy path: also create/push a
+#                              stable tag from this script. Normal releases
+#                              must use promote-stable.yml + publish-stable-tag.sh.
 
 set -euo pipefail
 
@@ -38,6 +42,12 @@ fi
 STABLE_VERSION="$(base_version "${RC_VERSION}")"
 RC_TAG="v${RC_VERSION}"
 STABLE_TAG="v${STABLE_VERSION}"
+
+if [[ "${PROMOTE_STABLE_SKIP_TAG:-0}" != "1" || "${PROMOTE_STABLE_NO_PUSH:-0}" != "1" ]]; then
+  if [[ "${PROMOTE_STABLE_ALLOW_DIRECT_PUBLISH:-0}" != "1" ]]; then
+    die "직접 stable publish는 promote-stable.sh에서 비활성화되어 있습니다. promote-stable.yml로 PR을 만들고 merge한 뒤 ./scripts/publish-stable-tag.sh ${STABLE_VERSION} 를 실행하세요. 로컬 승격 커밋 리허설은 PROMOTE_STABLE_SKIP_TAG=1 PROMOTE_STABLE_NO_PUSH=1 로 실행하세요."
+  fi
+fi
 
 cd "${REPO_ROOT}"
 info "Stable 승격 준비: ${RC_TAG} -> ${STABLE_TAG}"
