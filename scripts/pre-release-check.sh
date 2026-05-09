@@ -146,7 +146,10 @@ else
       fail "Stable tag must be created from a promotion commit, not directly from $RC_TAG"
     fi
 
-    mapfile -t CHANGED_FILES < <(git diff --name-only "$RC_COMMIT" "$HEAD_COMMIT")
+    CHANGED_FILES=()
+    while IFS= read -r file; do
+      CHANGED_FILES+=("$file")
+    done < <(git diff --name-only "$RC_COMMIT" "$HEAD_COMMIT")
     if [ "${#CHANGED_FILES[@]}" -eq 0 ]; then
       fail "Stable promotion commit must change metadata files relative to $RC_TAG"
     else
