@@ -50,11 +50,11 @@ jobs:
 
       - name: Install tooling
         run: |
-          ./scripts/cargo-cache.sh install cargo-audit --locked
-          ./scripts/cargo-cache.sh install cargo-deny --locked
-          ./scripts/cargo-cache.sh install cargo-vet --locked
+          ./scripts/cargo-cache.sh install cargo-audit --locked --force
+          ./scripts/cargo-cache.sh install cargo-deny --locked --force
+          ./scripts/cargo-cache.sh install cargo-vet --locked --force
           ./scripts/cargo-cache.sh install cargo-about --locked --features cli
-          ./scripts/cargo-cache.sh install cargo-cyclonedx --locked
+          ./scripts/cargo-cache.sh install cargo-cyclonedx --locked --force
 
       - name: RustSec audit
         run: ./scripts/cargo-cache.sh audit --ignore RUSTSEC-2024-0429
