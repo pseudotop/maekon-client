@@ -273,13 +273,20 @@ if command -v gh >/dev/null 2>&1; then
 
     CODEQL_EXIT=0
     gh api --paginate --slurp "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100" > "$CODEQL_ALERTS_FILE" 2>"$CODEQL_ERROR_FILE" || CODEQL_EXIT=$?
-    if [ "$CODEQL_EXIT" -ne 0 ]; then
-      CODEQL_RESPONSE="$(cat "$CODEQL_ERROR_FILE")"
-      warn "CodeQL alerts query failed (exit $CODEQL_EXIT): $(echo "$CODEQL_RESPONSE" | head -c 200)"
-      printf "[]\n" > "$CODEQL_ALERTS_FILE"
+    ALERT_QUERY_FAILED=0
+    if [ "$ALERT_EXIT" -ne 0 ]; then
+      ALERT_QUERY_FAILED=1
     fi
 
-    if [ "$ALERT_EXIT" -eq 0 ]; then
+    if [ "$CODEQL_EXIT" -ne 0 ]; then
+      ALERT_QUERY_FAILED=1
+      CODEQL_RESPONSE="$(cat "$CODEQL_ERROR_FILE")"
+      warn "CodeQL alerts query failed (exit $CODEQL_EXIT): $(echo "$CODEQL_RESPONSE" | head -c 200)"
+    fi
+
+    if [ "$ALERT_QUERY_FAILED" -ne 0 ]; then
+      fail "Release security alert query failed — cannot prove Dependabot/CodeQL queues are clean"
+    else
       if python3 - "$ACCEPTANCE_FILE" "$DEPENDABOT_ALERTS_FILE" "$CODEQL_ALERTS_FILE" <<'PY'
 import datetime as dt
 import json

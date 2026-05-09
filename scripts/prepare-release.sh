@@ -12,7 +12,7 @@ VERSION="${1:-}"
 echo "prepare-release.sh is deprecated."
 echo "Use one of the enforced paths instead:"
 echo "  RC publish:      ./scripts/release.sh <x.y.z-rc.N>"
-echo "  Stable promote:  ./scripts/promote-stable.sh <x.y.z-rc.N>"
+echo "  Stable promote:  run promote-stable.yml, merge the PR, then ./scripts/publish-stable-tag.sh <x.y.z>"
 
 if [ -n "$VERSION" ] && is_stable_version "$VERSION"; then
   echo ""
