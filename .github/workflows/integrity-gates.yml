@@ -56,10 +56,10 @@ jobs:
 
       - name: Install tooling
         run: |
-          ./scripts/cargo-cache.sh install cargo-audit --locked
-          ./scripts/cargo-cache.sh install cargo-deny --locked
-          ./scripts/cargo-cache.sh install cargo-vet --locked
-          ./scripts/cargo-cache.sh install cargo-cyclonedx --locked
+          ./scripts/cargo-cache.sh install cargo-audit --locked --force
+          ./scripts/cargo-cache.sh install cargo-deny --locked --force
+          ./scripts/cargo-cache.sh install cargo-vet --locked --force
+          ./scripts/cargo-cache.sh install cargo-cyclonedx --locked --force
           python3 -m pip install --upgrade pynacl
 
       - name: Create frontend dist stub for Tauri generate_context!()
