@@ -34,8 +34,10 @@ use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
 ///
 /// In `windows-sys 0.61`, HANDLE is `isize` (not a pointer type).
 /// Null (0) and `INVALID_HANDLE_VALUE` (-1) are both invalid sentinels.
+#[cfg(feature = "windows-sandbox")]
 struct OwnedHandle(isize);
 
+#[cfg(feature = "windows-sandbox")]
 impl OwnedHandle {
     /// Returns `true` when the handle is neither null nor INVALID_HANDLE_VALUE.
     fn is_valid(&self) -> bool {
@@ -43,10 +45,10 @@ impl OwnedHandle {
     }
 }
 
+#[cfg(feature = "windows-sandbox")]
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if self.is_valid() {
-            #[cfg(feature = "windows-sandbox")]
             unsafe {
                 windows_sys::Win32::Foundation::CloseHandle(self.0);
             }
@@ -557,6 +559,7 @@ mod tests {
         assert!(standard.remove_privileges);
     }
 
+    #[cfg(feature = "windows-sandbox")]
     #[test]
     fn owned_handle_validity() {
         let null_h = OwnedHandle(0);

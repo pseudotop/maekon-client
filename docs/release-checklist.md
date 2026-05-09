@@ -11,9 +11,11 @@
 - [ ] cargo-mutants score ≥ 70% on maekon-core
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
+- [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
 - [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build`
 - [ ] Required public repository Actions secrets for the intended release scope are configured
+- [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
 
 ## Manual Verification
@@ -36,6 +38,7 @@
 - [ ] Public export was generated from the merged parent source SHA, not from an unmerged local-only branch
 - [ ] Any early public PR used for CI preview stayed draft until the merged parent source SHA was re-exported or confirmed to produce no public diff
 - [ ] Public export PR merged into `pseudotop/maekon-client`
+- [ ] Public pull-request CI alone was not used as cross-platform build proof; for runtime/build-impacting exports, the public branch has a successful manual `CI` `workflow_dispatch` run
 - [ ] Public `main` branch protection or an active ruleset is enabled before tagging
 - [ ] Public tag is an annotated signed tag and GitHub reports tag signature verification as passing
 - [ ] Public tag points at the reviewed public repository state
