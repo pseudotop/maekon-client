@@ -1,6 +1,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use maekon_core::ports::accessibility::AccessibilityExtractor;
 
 #[cfg(target_os = "macos")]
@@ -127,6 +128,7 @@ fn macos_permission_settings_url(permission_kind: &str) -> Option<&'static str> 
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn needs_attention(status_reason: &str) -> DesktopPermissionEntry {
     DesktopPermissionEntry {
         state: DesktopPermissionState::NeedsAttention,
