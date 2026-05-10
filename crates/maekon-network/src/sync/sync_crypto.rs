@@ -5,7 +5,7 @@
 //! Identical logic to `FileSyncTransport::encrypt/decrypt` in maekon-storage.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use argon2::Argon2;
@@ -29,9 +29,7 @@ pub fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], CoreError> 
 /// Encrypt plaintext with AES-256-GCM.
 /// Returns: salt (16) || nonce (12) || ciphertext.
 pub fn encrypt(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>, CoreError> {
-    use aes_gcm::aead::rand_core::RngCore;
-    let mut salt = [0u8; SALT_SIZE];
-    OsRng.fill_bytes(&mut salt);
+    let salt: [u8; SALT_SIZE] = rand::random();
 
     let key = derive_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| CoreError::Internal {
@@ -39,8 +37,7 @@ pub fn encrypt(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>, CoreError>
         message: format!("AES init: {e}"),
     })?;
 
-    let mut nonce_bytes = [0u8; NONCE_SIZE];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher

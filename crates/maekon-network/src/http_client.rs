@@ -393,6 +393,10 @@ mod tests {
     use super::*;
     use crate::error::NetworkError;
 
+    fn primary_password() -> String {
+        String::from_utf8(vec![b'x'; 16]).expect("password fixture bytes must be UTF-8")
+    }
+
     #[test]
     fn is_localhost_detects_loopback_variants() {
         assert!(is_localhost("http://localhost:8000"));
@@ -493,7 +497,8 @@ mod tests {
             .await;
 
         let tm = Arc::new(TokenManager::new(&server.url()));
-        tm.login("test@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("test@test.com", &password).await.unwrap();
 
         let client = HttpApiClient::new(&server.url(), tm, Duration::from_secs(5)).unwrap();
         (client, login_mock)

@@ -308,11 +308,11 @@ mod tests {
         let preview = event.preview.expect("Basic level should produce preview");
         assert!(
             !preview.contains("user@example.com"),
-            "email leaked in preview: {preview}"
+            "email leaked in preview"
         );
         assert!(
             preview.contains("[EMAIL]"),
-            "expected [EMAIL] marker in preview: {preview}"
+            "expected [EMAIL] marker in preview"
         );
     }
 
@@ -323,14 +323,8 @@ mod tests {
             .check_text_change("TOKEN: sk-ABCD1234EFGH5678IJKL9012MNOP3456")
             .expect("event should fire");
         let preview = event.preview.expect("Strict level should produce preview");
-        assert!(
-            !preview.contains("sk-ABCD1234"),
-            "API key leaked: {preview}"
-        );
-        assert!(
-            preview.contains("[API_KEY]"),
-            "expected [API_KEY] marker: {preview}"
-        );
+        assert!(!preview.contains("sk-ABCD1234"), "API key leaked");
+        assert!(preview.contains("[API_KEY]"), "expected [API_KEY] marker");
     }
 
     #[test]

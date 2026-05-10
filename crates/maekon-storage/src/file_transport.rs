@@ -4,7 +4,7 @@
 //! No file locking needed because each device owns its namespace via device_id prefix.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use argon2::Argon2;
@@ -20,6 +20,13 @@ use maekon_core::sync::Hlc;
 
 const NONCE_SIZE: usize = 12; // AES-256-GCM nonce
 const SALT_SIZE: usize = 16; // Argon2 salt
+
+fn random_bytes<const N: usize>() -> Result<[u8; N], StorageError> {
+    let mut bytes = [0u8; N];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| StorageError::Internal(format!("random bytes generation failed: {e}")))?;
+    Ok(bytes)
+}
 
 /// File-based sync transport with AES-256-GCM encryption.
 pub struct FileSyncTransport {
@@ -62,16 +69,13 @@ impl FileSyncTransport {
     /// Encrypt plaintext with AES-256-GCM.
     /// Returns: salt (16) || nonce (12) || ciphertext
     fn encrypt(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>, StorageError> {
-        use aes_gcm::aead::rand_core::RngCore;
-        let mut salt = [0u8; SALT_SIZE];
-        OsRng.fill_bytes(&mut salt);
+        let salt = random_bytes::<SALT_SIZE>()?;
 
         let key = Self::derive_key(passphrase, &salt)?;
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|e| StorageError::Internal(format!("AES init: {e}")))?;
 
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce_bytes = random_bytes::<NONCE_SIZE>()?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher

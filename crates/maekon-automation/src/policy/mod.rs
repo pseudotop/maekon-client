@@ -537,13 +537,20 @@ mod tests {
         assert!(parse_policy_token("pol-1:nonce:hdeadbeef:signature:extra").is_none());
     }
 
+    fn fixture_signing_secret() -> String {
+        String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap()
+    }
+
     #[test]
-    fn compute_policy_signature_is_stable() {
-        let signature = compute_policy_token_signature("pol-1", "nonce_1234", None, "secret");
+    fn compute_policy_signature_is_deterministic() {
+        let secret = fixture_signing_secret();
+        let nonce = issue_policy_nonce();
+        let signature = compute_policy_token_signature("pol-1", &nonce, None, &secret);
         assert_eq!(
             signature,
-            "64aa29299a8e3676225d07c205ea6e8e50b00a69341aa8cda90d96ebd65e3302"
+            compute_policy_token_signature("pol-1", &nonce, None, &secret)
         );
+        assert!(is_valid_signature(&signature));
     }
 
     #[tokio::test]

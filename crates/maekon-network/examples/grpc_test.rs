@@ -67,6 +67,16 @@ impl Output {
     }
 }
 
+fn fixture_password() -> String {
+    std::env::var("MAEKON_GRPC_TEST_PASSWORD").unwrap_or_else(|_| {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        format!("grpc-test-{nonce:x}")
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -105,20 +115,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = UnifiedClient::new(grpc_config, token_manager)?;
 
     println!("\n=== 1. login test ===");
+    let password = fixture_password();
     match client
-        .login(
-            "admin@example.com",
-            "test-password-placeholder",
-            "test-org-001",
-        )
+        .login("admin@example.com", &password, "test-org-001")
         .await
     {
         Ok(response) => {
             println!("  {} login success", out.ok());
-            println!("  user_id: {:?}", response.user_id);
+            println!("  user_id present: {}", response.user_id.is_some());
             println!(
-                "  access_token: {}...",
-                &response.access_token[..20.min(response.access_token.len())]
+                "  access_token present: {}",
+                !response.access_token.is_empty()
             );
         }
         Err(e) => {
@@ -137,8 +144,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match client.create_session("rust-client-001", device_info).await {
         Ok(response) => {
             println!("  {} session create success", out.ok());
-            println!("  session_id: {}", response.session_id);
-            println!("  user_id: {}", response.user_id);
+            println!("  session_id present: {}", !response.session_id.is_empty());
+            println!("  user_id present: {}", !response.user_id.is_empty());
 
             println!("\n=== 3. heartbeat test ===");
             match client.heartbeat(&response.session_id).await {
