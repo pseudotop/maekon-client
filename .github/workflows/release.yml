@@ -201,7 +201,7 @@ jobs:
       - name: Enforce rc-first stable promotion
         if: steps.release.outputs.release_kind == 'stable'
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ secrets.MAEKON_RELEASE_SECURITY_TOKEN || steps.app_token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -271,7 +271,7 @@ jobs:
 
       - name: Check release security alerts
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ secrets.MAEKON_RELEASE_SECURITY_TOKEN || steps.app_token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail

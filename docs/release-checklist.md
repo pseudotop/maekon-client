@@ -73,6 +73,12 @@ Required before stable promotion:
 - `MAEKON_RELEASE_APP_ID`
 - `MAEKON_RELEASE_APP_PRIVATE_KEY`
 
+The release App installation must be able to read repository security alerts
+used by `release.yml` (`Dependabot alerts` and `Code scanning alerts`). If the
+App permission update is still pending, use a short-lived
+`MAEKON_RELEASE_SECURITY_TOKEN` repository secret with equivalent read access
+for the release rerun, then remove it after the release completes.
+
 Optional but recommended for release freshness:
 
 - `MAEKON_LANDING_DEPLOY_HOOK`
