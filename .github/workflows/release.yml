@@ -40,6 +40,13 @@ jobs:
       release_kind: ${{ steps.release.outputs.release_kind }}
       base_version: ${{ steps.release.outputs.base_version }}
     steps:
+      - name: Generate release App token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.MAEKON_RELEASE_APP_ID }}
+          private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -96,7 +103,7 @@ jobs:
 
       - name: Verify release source trust
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -194,7 +201,7 @@ jobs:
       - name: Enforce rc-first stable promotion
         if: steps.release.outputs.release_kind == 'stable'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -264,7 +271,7 @@ jobs:
 
       - name: Check release security alerts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
