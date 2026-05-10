@@ -4604,7 +4604,7 @@ checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 
 [[package]]
 name = "maekon-analysis"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4625,7 +4625,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-api-contracts"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "chrono",
  "maekon-core",
@@ -4635,7 +4635,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-app"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4717,7 +4717,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-audio"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "cpal",
@@ -4737,7 +4737,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-automation"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4760,7 +4760,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-core"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4782,7 +4782,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-embedding"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "criterion",
@@ -4796,7 +4796,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-lint"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -4804,7 +4804,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-monitor"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4824,7 +4824,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-network"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4876,7 +4876,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-sandbox-worker"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "maekon-core",
  "serde",
@@ -4885,7 +4885,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-storage"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4912,7 +4912,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-suggestion"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-vision"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "async-trait",
  "atspi",
@@ -4966,7 +4966,7 @@ dependencies = [
 
 [[package]]
 name = "maekon-web"
-version = "0.0.1-rc.3"
+version = "0.0.1-rc.4"
 dependencies = [
  "arc-swap",
  "async-stream",
