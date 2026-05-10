@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.4] - 2026-05-10
+
+### Security
+
+- Record temporary CodeQL release-alert acceptance for the current RC line with
+  explicit review tracking and expiry, keeping release security gates auditable
+  while the deeper remediation work remains tracked separately.
+- Triage public release CodeQL findings and bound full-frame deletion paths to
+  reduce risky file-system behavior before the next candidate build.
+
+### Changed
+
+- Harden the public release pipeline after `v0.0.1-rc.3`: release smoke,
+  required config sync, gRPC governance, integrity gates, stable-promotion docs,
+  updater key rotation docs, and public install snippets now match the active
+  `pseudotop/maekon-client` release flow.
+- Refresh public repository hygiene by switching the export boundary to the
+  allowlist model, removing local QA artifacts from the public snapshot, and
+  documenting reproducible source-build prerequisites.
+- Update dependency and tooling baselines, including AT-SPI, Tokio lockfile,
+  fast-xml builder lockfile, Tauri lockfile, and idempotent cargo tooling
+  installs used by CI and release jobs.
+
+### Fixed
+
+- Keep `pre-release-check.sh` compatible with macOS Bash 3.2 by avoiding
+  `mapfile` in the stable-promotion diff path.
+- Stabilize Windows release and smoke paths by using preinstalled OpenSSL,
+  cleaning up Windows build warnings, gating sandbox handle wrappers, and
+  aligning CI release builds with app packaging.
+- Improve local/public verification reliability by making required config sync
+  always run, keeping release-smoke sidecar hygiene aligned with Maekon naming,
+  and refreshing public docs that still described release assets as unavailable.
+
 ## [0.0.1-rc.3] - 2026-05-05
 
 ### Fixed
