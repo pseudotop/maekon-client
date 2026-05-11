@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep public export review tooling complete by retaining Storybook review
   configuration in the allowlisted snapshot.
+- Let signed RC tag publishing run from a fresh public checkout by keeping the
+  pre-release config gate source-only unless artifact verification is requested
+  explicitly.
 - Satisfy gRPC example and password-fixture clippy checks so the protected
   public main branch stays green before the release tag is issued.
 

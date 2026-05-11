@@ -228,10 +228,18 @@ fi
 # --- 7. Run config-sync check if available ---
 if [ -x "scripts/check-config-sync.sh" ]; then
   echo "[Config Sync]"
-  if scripts/check-config-sync.sh --require-artifacts > /dev/null 2>&1; then
-    pass "Config sync check passed"
+  if [ "${MAEKON_RELEASE_REQUIRE_ARTIFACTS:-0}" = "1" ]; then
+    if scripts/check-config-sync.sh --require-artifacts > /dev/null 2>&1; then
+      pass "Config sync check passed (artifacts required)"
+    else
+      fail "Config sync artifact check failed — run: ./scripts/check-config-sync.sh --fix --require-artifacts"
+    fi
   else
-    fail "Config sync check failed — run: ./scripts/check-config-sync.sh --fix --require-artifacts"
+    if scripts/check-config-sync.sh > /dev/null 2>&1; then
+      pass "Config sync source/config check passed"
+    else
+      fail "Config sync source/config check failed — run: ./scripts/check-config-sync.sh --fix"
+    fi
   fi
   echo ""
 fi
