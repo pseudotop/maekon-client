@@ -4,7 +4,7 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
-> The current public binary release is `v0.0.1-rc.3`, published as a
+> The current public binary release is `v0.0.1-rc.5`, published as a
 > prerelease. GitHub's `latest` stable download URL is not available until the
 > first stable release, so current prerelease installs must pin the version.
 
@@ -19,7 +19,7 @@ current names for installer, updater, and existing-user compatibility.
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.5 bash /tmp/maekon-install.sh
 ```
 
 ### Windows (PowerShell)
@@ -29,7 +29,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.5
 ```
 
 ## Latest Stable Install
@@ -56,7 +56,7 @@ irm https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/insta
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.5 bash /tmp/maekon-install.sh
 ```
 
 ### Windows
@@ -66,7 +66,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.5
 ```
 
 ## Integrity Verification
@@ -136,11 +136,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 If you already cloned this repository:
 
 ```bash
-MAEKON_VERSION=v0.0.1-rc.3 ./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.5 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.3
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.5
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```
