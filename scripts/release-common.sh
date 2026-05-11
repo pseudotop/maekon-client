@@ -436,6 +436,31 @@ require_clean_worktree() {
   git diff --quiet && git diff --cached --quiet
 }
 
+fetch_main_and_tags() {
+  local tag_fetch_output
+  local tag_fetch_status
+  local filtered_output
+
+  git fetch origin main
+
+  tag_fetch_status=0
+  tag_fetch_output="$(git fetch origin --tags 2>&1)" || tag_fetch_status=$?
+  filtered_output="$(printf '%s\n' "${tag_fetch_output}" | grep -v "would clobber" || true)"
+
+  if [[ -n "${filtered_output}" ]]; then
+    printf '%s\n' "${filtered_output}"
+  fi
+
+  if [[ "${tag_fetch_status}" -ne 0 ]]; then
+    if [[ -z "${filtered_output}" ]] && printf '%s\n' "${tag_fetch_output}" | grep -q "would clobber"; then
+      return 0
+    fi
+    return "${tag_fetch_status}"
+  fi
+
+  return 0
+}
+
 ensure_head_matches_tag() {
   local tag="$1"
   local tag_commit

@@ -47,7 +47,9 @@ if ! require_clean_worktree; then
 fi
 success "작업 디렉터리 클린 상태 확인"
 
-git fetch origin main --tags 2>&1 | grep -v "would clobber" || true
+if ! fetch_main_and_tags; then
+  die "origin/main 또는 태그 정보를 가져오지 못했습니다"
+fi
 MAIN_SHA="$(git rev-parse origin/main)"
 HEAD_SHA="$(git rev-parse HEAD)"
 if [[ "${HEAD_SHA}" != "${MAIN_SHA}" ]]; then
