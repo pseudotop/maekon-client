@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.5] - 2026-05-11
+
+### Security
+
+- Reduce CodeQL noise before the next release candidate by removing fixed
+  cryptographic/password fixture patterns from tests and examples while keeping
+  deterministic coverage.
+
+### Fixed
+
+- Keep public export review tooling complete by retaining Storybook review
+  configuration in the allowlisted snapshot.
+- Satisfy gRPC example and password-fixture clippy checks so the protected
+  public main branch stays green before the release tag is issued.
+
 ## [0.0.1-rc.4] - 2026-05-10
 
 ### Security

@@ -36,7 +36,7 @@ Maekon is an Apache-2.0 local-first desktop agent that can be used independently
 
 ## Source Build Quick Start
 
-The public repository is live, and `v0.0.1-rc.3` is available as the first
+The public repository is live, and `v0.0.1-rc.5` is available as the current
 public prerelease. Because GitHub's `latest` release endpoint excludes
 prereleases, use the version-pinned installer commands in the install guide for
 release-binary testing. For monorepo development and debug builds, run Maekon
@@ -232,7 +232,7 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> The current public binary release is the prerelease `v0.0.1-rc.3`. GitHub's
+> The current public binary release is the prerelease `v0.0.1-rc.5`. GitHub's
 > `latest` stable URL is not available until the first stable release, so the
 > commands below pin the prerelease explicitly.
 
@@ -240,7 +240,7 @@ macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.3 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.5 bash /tmp/maekon-install.sh
 ```
 
 Windows (PowerShell):
@@ -249,14 +249,14 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.3
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.5
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-The current published prerelease is `v0.0.1-rc.3`. This table documents the
+The current published prerelease is `v0.0.1-rc.5`. This table documents the
 expected release asset names used by the installer, updater, checksum, and
 signature flows.
 
