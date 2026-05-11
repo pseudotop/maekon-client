@@ -267,6 +267,10 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn fixture_key(fill: u8) -> EncryptionKey {
+        EncryptionKey::from_bytes(std::array::from_fn(|_| fill))
+    }
+
     #[test]
     fn generates_32_byte_key() {
         let dir = TempDir::new().unwrap();
@@ -300,7 +304,7 @@ mod tests {
 
     #[test]
     fn debug_does_not_leak_key_bytes() {
-        let key = EncryptionKey::from_bytes([0xAB; 32]);
+        let key = fixture_key(0xAB);
         let debug_str = format!("{key:?}");
         assert!(!debug_str.contains("AB"));
         assert!(debug_str.contains("redacted"));
@@ -308,7 +312,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_round_trip() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let plaintext = b"Hello, MAEKON frame data!";
 
         let encrypted = key.encrypt(plaintext).unwrap();
@@ -322,7 +326,7 @@ mod tests {
 
     #[test]
     fn encrypt_produces_different_ciphertexts() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let plaintext = b"same input";
 
         let enc1 = key.encrypt(plaintext).unwrap();
@@ -337,8 +341,8 @@ mod tests {
 
     #[test]
     fn decrypt_with_wrong_key_fails() {
-        let key1 = EncryptionKey::from_bytes([0x42; 32]);
-        let key2 = EncryptionKey::from_bytes([0x43; 32]);
+        let key1 = fixture_key(0x42);
+        let key2 = fixture_key(0x43);
         let plaintext = b"secret data";
 
         let encrypted = key1.encrypt(plaintext).unwrap();
@@ -348,14 +352,14 @@ mod tests {
 
     #[test]
     fn decrypt_too_short_data_fails() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let result = key.decrypt(&[0u8; 5]);
         assert!(result.is_err());
     }
 
     #[test]
     fn decrypt_corrupted_data_fails() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let mut encrypted = key.encrypt(b"test data").unwrap();
         // Corrupt a byte in the ciphertext region
         if encrypted.len() > 15 {
@@ -367,7 +371,7 @@ mod tests {
 
     #[test]
     fn encrypt_empty_data() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let encrypted = key.encrypt(b"").unwrap();
         // 12 nonce + 16 auth tag = 28 bytes minimum
         assert_eq!(encrypted.len(), 28);
@@ -377,7 +381,7 @@ mod tests {
 
     #[test]
     fn encrypt_large_data() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let key = fixture_key(0x42);
         let plaintext = vec![0xAB_u8; 1024 * 1024]; // 1 MB
 
         let encrypted = key.encrypt(&plaintext).unwrap();

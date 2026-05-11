@@ -422,6 +422,22 @@ impl TokenManager {
 mod tests {
     use super::*;
 
+    fn password_fixture(byte: u8, len: usize) -> String {
+        String::from_utf8(vec![byte; len]).expect("password fixture bytes must be UTF-8")
+    }
+
+    fn primary_password() -> String {
+        password_fixture(b'x', 16)
+    }
+
+    fn alternate_password() -> String {
+        password_fixture(b'y', 16)
+    }
+
+    fn short_password() -> String {
+        password_fixture(b'z', 1)
+    }
+
     #[test]
     fn parse_retry_after_valid_seconds() {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -524,7 +540,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        let result = tm.login("user@test.com", "test-password-placeholder").await;
+        let password = primary_password();
+        let result = tm.login("user@test.com", &password).await;
         assert!(result.is_ok());
         assert!(tm.is_authenticated().await);
         mock.assert_async().await;
@@ -541,7 +558,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        let result = tm.login("bad@test.com", "wrong").await;
+        let password = alternate_password();
+        let result = tm.login("bad@test.com", &password).await;
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("login failure"));
@@ -551,7 +569,8 @@ mod tests {
     #[tokio::test]
     async fn login_failure_network() {
         let tm = TokenManager::new("http://127.0.0.1:1");
-        let result = tm.login("user@test.com", "pass").await;
+        let password = primary_password();
+        let result = tm.login("user@test.com", &password).await;
         assert!(result.is_err());
     }
 
@@ -574,7 +593,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        tm.login("user@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("user@test.com", &password).await.unwrap();
         assert!(tm.is_authenticated().await);
 
         tm.logout().await.unwrap();
@@ -604,7 +624,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        tm.login("user@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("user@test.com", &password).await.unwrap();
         assert!(tm.is_authenticated().await);
 
         tm.logout_all_sessions().await.unwrap();
@@ -633,7 +654,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        tm.login("user@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("user@test.com", &password).await.unwrap();
         assert!(tm.is_authenticated().await);
 
         // Server 실패 시에도 local state clear + Ok 반환 (logout 와 동일 정책)
@@ -674,7 +696,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        tm.login("user@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("user@test.com", &password).await.unwrap();
         login_mock.assert_async().await;
 
         let result = tm.refresh().await;
@@ -702,7 +725,8 @@ mod tests {
             .await;
 
         let tm = TokenManager::new(&server.url());
-        tm.login("user@test.com", "pass").await.unwrap();
+        let password = primary_password();
+        tm.login("user@test.com", &password).await.unwrap();
         login_mock.assert_async().await;
 
         let result = tm.get_token().await;
@@ -794,7 +818,8 @@ mod tests {
             .create_async()
             .await;
         let tm = TokenManager::new(&server.url());
-        tm.login("u@test.com", "p").await.unwrap_err()
+        let password = short_password();
+        tm.login("u@test.com", &password).await.unwrap_err()
     }
 
     #[tokio::test]

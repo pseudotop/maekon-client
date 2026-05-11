@@ -6,6 +6,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::ports::api_client::{SseClient, SseEvent};
 use parking_lot::Mutex;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,8 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::auth::TokenManager;
-use crate::http_client::build_reqwest_client;
+use crate::error::NetworkError;
+use crate::http_client::build_reqwest_client_for_url;
 
 /// SSE 활동 타임아웃 기본값 — 5분 동안 메시지가 없으면 재연결을 트리거한다.
 const ACTIVITY_TIMEOUT_SECS: u64 = 300;
@@ -53,17 +55,46 @@ impl SseStreamClient {
         max_retry_secs: u64,
         tls: &TlsConfig,
     ) -> Result<Self, crate::error::NetworkError> {
+        let base_url = Self::validated_base_url(base_url, tls)?;
         // SSE 스트림에도 HTTP 클라이언트와 동일한 TLS 정책 적용
         // 전역 타임아웃 미적용(None): SSE는 장기 스트림 연결이므로 단일 타임아웃으로 끊기면 안 됨
-        let http_client = build_reqwest_client(tls, None)?;
+        let http_client = build_reqwest_client_for_url(tls, None, Some(&base_url))?;
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             token_manager,
             max_retry_secs,
             http_client,
             last_event_id: Mutex::new(None),
             gap_count: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    fn validated_base_url(base_url: &str, tls: &TlsConfig) -> Result<String, NetworkError> {
+        let trimmed = base_url.trim_end_matches('/');
+        let url = reqwest::Url::parse(trimmed)
+            .map_err(|e| NetworkError::Config(format!("invalid SSE base URL `{trimmed}`: {e}")))?;
+
+        match url.scheme() {
+            "https" => Ok(trimmed.to_string()),
+            "http" if !tls.enabled && Self::is_loopback_or_localhost_url(&url) => {
+                Ok(trimmed.to_string())
+            }
+            "http" => Err(NetworkError::Config(
+                "remote SSE endpoints must use HTTPS; cleartext HTTP is allowed only for loopback development endpoints with TLS disabled".to_string(),
+            )),
+            scheme => Err(NetworkError::Config(format!(
+                "unsupported SSE URL scheme `{scheme}`; expected https"
+            ))),
+        }
+    }
+
+    fn is_loopback_or_localhost_url(url: &reqwest::Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+
+        host.eq_ignore_ascii_case("localhost")
+            || host.parse::<IpAddr>().is_ok_and(|addr| addr.is_loopback())
     }
 
     /// Returns the last received SSE event ID, if any.
@@ -118,18 +149,25 @@ impl SseStreamClient {
             }
         }
     }
+
+    fn stream_url(&self, session_id: &str) -> Result<reqwest::Url, CoreError> {
+        let endpoint = format!("{}/user_context/sessions/stream", self.base_url);
+        let mut url = reqwest::Url::parse(&endpoint).map_err(|e| CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: format!("Invalid SSE stream URL: {e}"),
+        })?;
+        url.query_pairs_mut().append_pair("session_id", session_id);
+        Ok(url)
+    }
 }
 
 #[async_trait]
 impl SseClient for SseStreamClient {
     async fn connect(&self, session_id: &str, tx: mpsc::Sender<SseEvent>) -> Result<(), CoreError> {
-        let url = format!(
-            "{}/user_context/sessions/stream?session_id={}",
-            self.base_url, session_id
-        );
+        let url = self.stream_url(session_id)?;
         let max_retry = self.max_retry_secs;
 
-        info!("SSE connection started: {url}");
+        info!("SSE connection started");
 
         let mut retry_delay = 1u64;
 
@@ -138,7 +176,7 @@ impl SseClient for SseStreamClient {
 
             let mut request = self
                 .http_client
-                .get(&url)
+                .get(url.clone())
                 .header("Authorization", format!("Bearer {token}"));
 
             if let Some(ref id) = *self.last_event_id.lock() {
@@ -164,9 +202,8 @@ impl SseClient for SseStreamClient {
 
             if !response.status().is_success() {
                 warn!(
-                    "SSE connection failure (status={}): {}",
-                    response.status(),
-                    url
+                    status = %response.status(),
+                    "SSE connection failure"
                 );
 
                 if tx.is_closed() {
@@ -325,6 +362,24 @@ mod tests {
     fn parse_message_event_non_json() {
         let event = SseStreamClient::parse_event("message", "plain text");
         assert!(event.is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn new_with_tls_rejects_remote_cleartext_base_url() {
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        let tm = TokenManager::new("https://auth.example.com");
+
+        let result =
+            SseStreamClient::new_with_tls("http://api.example.com", Arc::new(tm), 30, &tls);
+
+        assert!(
+            result.is_err(),
+            "remote SSE endpoints must not send session identifiers over cleartext HTTP"
+        );
     }
 
     #[test]

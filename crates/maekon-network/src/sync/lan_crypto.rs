@@ -24,9 +24,9 @@ pub fn derive_peer_salt(device_id_a: &str, device_id_b: &str) -> [u8; 16] {
     };
     let combined = format!("{first}{second}");
     let hash = sha2::Sha256::digest(combined.as_bytes());
-    let mut salt = [0u8; 16];
-    salt.copy_from_slice(&hash[..16]);
-    salt
+    hash[..16]
+        .try_into()
+        .expect("SHA-256 output is at least 16 bytes")
 }
 
 /// Compute the HMAC-SHA256 response for a challenge nonce.
@@ -77,6 +77,14 @@ pub fn verify_challenge_response(
 mod tests {
     use super::*;
 
+    fn fixture_nonce() -> Vec<u8> {
+        (0..32).map(|idx| b'0' + (idx % 10) as u8).collect()
+    }
+
+    fn fixture_passphrase(seed: char) -> String {
+        std::iter::repeat(seed).take(16).collect()
+    }
+
     #[test]
     fn salt_is_order_independent() {
         let salt_ab = derive_peer_salt("device-a", "device-b");
@@ -86,11 +94,15 @@ mod tests {
 
     #[test]
     fn challenge_response_roundtrip() {
-        let nonce = b"12345678901234567890123456789012";
-        let passphrase = "shared-secret";
-        let response = compute_challenge_response(nonce, passphrase, "dev-a", "dev-b").unwrap();
+        let nonce = fixture_nonce();
+        let passphrase = fixture_passphrase('a');
+        let response = compute_challenge_response(&nonce, &passphrase, "dev-a", "dev-b").unwrap();
         let verified = verify_challenge_response(
-            nonce, &response, passphrase, "dev-b", "dev-a", // note: reversed
+            &nonce,
+            &response,
+            &passphrase,
+            "dev-b",
+            "dev-a", // note: reversed
         )
         .unwrap();
         assert!(verified);
@@ -98,10 +110,13 @@ mod tests {
 
     #[test]
     fn wrong_passphrase_fails_verification() {
-        let nonce = b"12345678901234567890123456789012";
-        let response = compute_challenge_response(nonce, "correct-pass", "dev-a", "dev-b").unwrap();
+        let nonce = fixture_nonce();
+        let passphrase = fixture_passphrase('a');
+        let wrong_passphrase = fixture_passphrase('b');
+        let response = compute_challenge_response(&nonce, &passphrase, "dev-a", "dev-b").unwrap();
         let verified =
-            verify_challenge_response(nonce, &response, "wrong-pass", "dev-a", "dev-b").unwrap();
+            verify_challenge_response(&nonce, &response, &wrong_passphrase, "dev-a", "dev-b")
+                .unwrap();
         assert!(!verified);
     }
 }

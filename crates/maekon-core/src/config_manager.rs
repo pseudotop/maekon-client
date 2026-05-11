@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::error::CoreError;
 use parking_lot::Mutex;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -44,6 +44,8 @@ impl ConfigManager {
     }
 
     pub fn with_path(config_path: PathBuf) -> Result<Self, CoreError> {
+        Self::validate_config_file_path(&config_path)?;
+
         if let Some(parent) = config_path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| CoreError::Config {
@@ -278,6 +280,30 @@ impl ConfigManager {
         }
     }
 
+    fn validate_config_file_path(path: &Path) -> Result<(), CoreError> {
+        if path.as_os_str().is_empty() || path.file_name().is_none() {
+            return Err(CoreError::Config {
+                code: crate::error_codes::ConfigCode::Invalid,
+                message: "Config path must point to a file".to_string(),
+            });
+        }
+
+        if path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(CoreError::Config {
+                code: crate::error_codes::ConfigCode::Invalid,
+                message: format!(
+                    "Config path must not contain parent directory traversal: {}",
+                    path.display()
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
     fn load_and_migrate_from_file(path: &PathBuf) -> Result<AppConfig, CoreError> {
         let mut config = Self::load_from_file(path)?;
         if Self::migrate_loaded_config(&mut config) {
@@ -357,6 +383,24 @@ mod tests {
 
         let config = manager.get();
         assert_eq!(config.web.port, crate::config::DEFAULT_WEB_PORT);
+    }
+
+    #[test]
+    fn with_path_rejects_parent_dir_components() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir
+            .path()
+            .join("profile")
+            .join("..")
+            .join("escaped")
+            .join("config.json");
+
+        let result = ConfigManager::with_path(config_path);
+
+        assert!(
+            result.is_err(),
+            "config paths with parent directory traversal must be rejected"
+        );
     }
 
     #[test]

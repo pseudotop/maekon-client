@@ -968,12 +968,9 @@ mod tests {
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         assert!(
             result.contains("Bearer [API_KEY]"),
-            "single bearer not masked: {result}"
+            "single bearer not masked"
         );
-        assert!(
-            !result.contains("eyJhbGci"),
-            "raw token still present: {result}"
-        );
+        assert!(!result.contains("eyJhbGci"), "raw token still present");
     }
 
     #[test]
@@ -982,14 +979,14 @@ mod tests {
         let input = "first: Bearer eyJhbGciOiJSUzI1NiJ9 second: bearer zyxwvutsrqponmlkjih end";
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         let count = result.matches("[API_KEY]").count();
-        assert_eq!(count, 2, "expected 2 masked tokens, got {count}: {result}");
+        assert_eq!(count, 2, "expected 2 masked tokens, got {count}");
         assert!(
             !result.contains("eyJhbGci"),
-            "first raw token still present: {result}"
+            "first raw token still present"
         );
         assert!(
             !result.contains("zyxwvuts"),
-            "second raw token still present: {result}"
+            "second raw token still present"
         );
     }
 
@@ -1005,7 +1002,7 @@ mod tests {
             let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
             assert!(
                 result.contains("[API_KEY]"),
-                "case variant not masked: {input} => {result}"
+                "case variant not masked: {input}"
             );
         }
     }
@@ -1017,7 +1014,7 @@ mod tests {
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         assert!(
             !result.contains("[API_KEY]"),
-            "short bearer should not be masked: {result}"
+            "short bearer should not be masked"
         );
     }
 
@@ -1026,13 +1023,10 @@ mod tests {
         let input =
             "key: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
-        assert!(
-            result.contains("[PRIVATE_KEY]"),
-            "PEM block not masked: {result}"
-        );
+        assert!(result.contains("[PRIVATE_KEY]"), "PEM block not masked");
         assert!(
             !result.contains("MIIEowIBAAKCAQEA"),
-            "raw key material still present: {result}"
+            "raw key material still present"
         );
     }
 
@@ -1043,7 +1037,7 @@ mod tests {
         let result = sanitize_title_with_level(input, PiiFilterLevel::Strict);
         assert!(
             !result.contains("[PRIVATE_KEY]"),
-            "public key should not be masked: {result}"
+            "public key should not be masked"
         );
     }
 
@@ -1054,25 +1048,16 @@ mod tests {
             "token: ghs_16C7e42F292c6912E7710c838347Ae178B4a",
             PiiFilterLevel::Strict,
         );
-        assert!(
-            result.contains("[API_KEY]"),
-            "ghs_ token not masked: {result}"
-        );
-        assert!(
-            !result.contains("ghs_"),
-            "raw ghs_ token still present: {result}"
-        );
+        assert!(result.contains("[API_KEY]"), "ghs_ token not masked");
+        assert!(!result.contains("ghs_"), "raw ghs_ token still present");
     }
 
     #[test]
     fn mask_ssn_standard_level() {
         let result =
             sanitize_title_with_level("SSN is 123-45-6789 on file", PiiFilterLevel::Standard);
-        assert!(result.contains("[SSN]"), "SSN not masked: {result}");
-        assert!(
-            !result.contains("123-45-6789"),
-            "raw SSN still present: {result}"
-        );
+        assert!(result.contains("[SSN]"), "SSN not masked");
+        assert!(!result.contains("123-45-6789"), "raw SSN still present");
     }
 
     #[test]
@@ -1080,7 +1065,7 @@ mod tests {
         let result = sanitize_title_with_level("SSN is 123-45-6789 on file", PiiFilterLevel::Basic);
         assert!(
             !result.contains("[SSN]"),
-            "SSN should not be masked at Basic level: {result}"
+            "SSN should not be masked at Basic level"
         );
     }
 
@@ -1090,7 +1075,7 @@ mod tests {
         let result = sanitize_title_with_level("code 1123-45-67890 test", PiiFilterLevel::Standard);
         assert!(
             !result.contains("[SSN]"),
-            "should not match embedded number: {result}"
+            "should not match embedded number"
         );
     }
 
@@ -1108,16 +1093,13 @@ mod tests {
             "IBAN: DE89370400440532013000 for payment",
             PiiFilterLevel::Standard,
         );
-        assert!(result.contains("[IBAN]"), "IBAN not masked: {result}");
+        assert!(result.contains("[IBAN]"), "IBAN not masked");
         assert!(
             !result.contains("0532013000"),
-            "raw IBAN body still present: {result}"
+            "raw IBAN body still present"
         );
         // Country code + check digits preserved
-        assert!(
-            result.contains("DE89"),
-            "IBAN prefix should be preserved: {result}"
-        );
+        assert!(result.contains("DE89"), "IBAN prefix should be preserved");
     }
 
     #[test]
@@ -1126,10 +1108,7 @@ mod tests {
             "transfer to GB29 NWBK 6016 1331 9268 19",
             PiiFilterLevel::Standard,
         );
-        assert!(
-            result.contains("[IBAN]"),
-            "spaced IBAN not masked: {result}"
-        );
+        assert!(result.contains("[IBAN]"), "spaced IBAN not masked");
     }
 
     #[test]
@@ -1138,7 +1117,7 @@ mod tests {
             sanitize_title_with_level("IBAN: DE89370400440532013000", PiiFilterLevel::Basic);
         assert!(
             !result.contains("[IBAN]"),
-            "IBAN should not be masked at Basic level: {result}"
+            "IBAN should not be masked at Basic level"
         );
     }
 
@@ -1148,7 +1127,7 @@ mod tests {
         let result = sanitize_title_with_level("code: AB12CDEF123456", PiiFilterLevel::Standard);
         assert!(
             !result.contains("[IBAN]"),
-            "short code should not be matched as IBAN: {result}"
+            "short code should not be matched as IBAN"
         );
     }
 
@@ -1167,23 +1146,14 @@ mod tests {
     fn mask_passport_strict_level() {
         let result =
             sanitize_title_with_level("passport: A12345678 issued 2024", PiiFilterLevel::Strict);
-        assert!(
-            result.contains("[PASSPORT]"),
-            "passport not masked: {result}"
-        );
-        assert!(
-            !result.contains("A12345678"),
-            "raw passport still present: {result}"
-        );
+        assert!(result.contains("[PASSPORT]"), "passport not masked");
+        assert!(!result.contains("A12345678"), "raw passport still present");
     }
 
     #[test]
     fn mask_passport_seven_digits() {
         let result = sanitize_title_with_level("doc M1234567 verified", PiiFilterLevel::Strict);
-        assert!(
-            result.contains("[PASSPORT]"),
-            "7-digit passport not masked: {result}"
-        );
+        assert!(result.contains("[PASSPORT]"), "7-digit passport not masked");
     }
 
     #[test]
@@ -1192,7 +1162,7 @@ mod tests {
             sanitize_title_with_level("passport: A12345678 issued 2024", PiiFilterLevel::Standard);
         assert!(
             !result.contains("[PASSPORT]"),
-            "passport should not be masked at Standard level: {result}"
+            "passport should not be masked at Standard level"
         );
     }
 
@@ -1202,7 +1172,7 @@ mod tests {
         let result = sanitize_title_with_level("codeABC12345678 end", PiiFilterLevel::Strict);
         assert!(
             !result.contains("[PASSPORT]"),
-            "mid-word should not match passport: {result}"
+            "mid-word should not match passport"
         );
     }
 
