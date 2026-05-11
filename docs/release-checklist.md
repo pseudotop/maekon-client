@@ -13,7 +13,9 @@
 - [ ] Public repository checks for the exported snapshot are green
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
 - [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
-- [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build`
+- [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
+  `MAEKON_RELEASE_REQUIRE_ARTIFACTS=1 ./scripts/pre-release-check.sh <VERSION>` is run
+  from a checkout with frontend artifacts already built)
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
