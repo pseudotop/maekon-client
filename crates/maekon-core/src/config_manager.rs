@@ -325,6 +325,7 @@ impl ConfigManager {
     }
 
     fn load_from_file(path: &PathBuf) -> Result<AppConfig, CoreError> {
+        Self::validate_config_file_path(path)?;
         let content = fs::read_to_string(path).map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
             message: format!("Failed to read config file: {}: {}", path.display(), e),
@@ -340,6 +341,7 @@ impl ConfigManager {
     }
 
     fn save_to_file(path: &PathBuf, config: &AppConfig) -> Result<(), CoreError> {
+        Self::validate_config_file_path(path)?;
         let content = serde_json::to_string_pretty(config).map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
             message: format!("Failed to serialize config: {}", e),

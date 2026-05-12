@@ -100,9 +100,13 @@ mod tests {
         let resolver = HotReloadCertResolver::new(key);
         let days = resolver.days_until_expiry().unwrap();
         // year 4096 is ~755_000–756_000 days from 2026.
+        // Static message (no `{days}` interpolation) so the data flow from
+        // certified.cert.first() does not reach a CodeQL log sink
+        // (rust/cleartext-logging false-positive).
+        let in_window = days > 700_000 && days < 760_000;
         assert!(
-            days > 700_000 && days < 760_000,
-            "expected ~2070 years from rcgen default, got {days} days"
+            in_window,
+            "rcgen default not_after should yield ~755_000 days; check the rcgen version"
         );
     }
 }
