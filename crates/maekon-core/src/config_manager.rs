@@ -304,7 +304,7 @@ impl ConfigManager {
         Ok(())
     }
 
-    fn load_and_migrate_from_file(path: &PathBuf) -> Result<AppConfig, CoreError> {
+    fn load_and_migrate_from_file(path: &Path) -> Result<AppConfig, CoreError> {
         let mut config = Self::load_from_file(path)?;
         if Self::migrate_loaded_config(&mut config) {
             if let Err(e) = Self::save_to_file(path, &config) {
@@ -324,11 +324,11 @@ impl ConfigManager {
         false
     }
 
-    fn load_from_file(path: &PathBuf) -> Result<AppConfig, CoreError> {
+    fn load_from_file(path: &Path) -> Result<AppConfig, CoreError> {
         Self::validate_config_file_path(path)?;
-        // Inline traversal guard at the sink — duplicates the cross-function
-        // check above because CodeQL's rust/path-injection query does not
-        // follow `validate_config_file_path` as a sanitizer barrier.
+        // Inline traversal guard kept as defense-in-depth (constructor +
+        // cross-function + this) — the canonicalize() below is the
+        // CodeQL-recognized sanitizer barrier.
         if path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(CoreError::Config {
                 code: crate::error_codes::ConfigCode::Invalid,
@@ -338,25 +338,41 @@ impl ConfigManager {
                 ),
             });
         }
-        let content = fs::read_to_string(path).map_err(|e| CoreError::Config {
+        // Canonicalize the path before the fs:: sink. CodeQL recognizes
+        // Path::canonicalize() as a path-injection barrier (the previous
+        // components()-iter check was a value-preserving condition and was
+        // not recognized as a sanitizer).
+        let safe_path = path.canonicalize().map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
-            message: format!("Failed to read config file: {}: {}", path.display(), e),
+            message: format!(
+                "Failed to canonicalize config path: {}: {}",
+                path.display(),
+                e
+            ),
+        })?;
+        let content = fs::read_to_string(&safe_path).map_err(|e| CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!("Failed to read config file: {}: {}", safe_path.display(), e),
         })?;
 
         let config: AppConfig = serde_json::from_str(&content).map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
-            message: format!("Failed to parse config file: {}: {}", path.display(), e),
+            message: format!(
+                "Failed to parse config file: {}: {}",
+                safe_path.display(),
+                e
+            ),
         })?;
 
-        debug!("settings file load complete: {}", path.display());
+        debug!("settings file load complete: {}", safe_path.display());
         Ok(config)
     }
 
-    fn save_to_file(path: &PathBuf, config: &AppConfig) -> Result<(), CoreError> {
+    fn save_to_file(path: &Path, config: &AppConfig) -> Result<(), CoreError> {
         Self::validate_config_file_path(path)?;
-        // Inline traversal guard at the sink — duplicates the cross-function
-        // check above because CodeQL's rust/path-injection query does not
-        // follow `validate_config_file_path` as a sanitizer barrier.
+        // Inline traversal guard kept as defense-in-depth (constructor +
+        // cross-function + this) — the canonicalize() below is the
+        // CodeQL-recognized sanitizer barrier.
         if path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(CoreError::Config {
                 code: crate::error_codes::ConfigCode::Invalid,
@@ -366,14 +382,41 @@ impl ConfigManager {
                 ),
             });
         }
+        // Canonicalize the parent directory + join the original file_name to
+        // build the actual write target. Path::canonicalize() requires the
+        // target to exist; the file itself may not exist yet on first save,
+        // but the parent does (with_path creates it via fs::create_dir_all).
+        // CodeQL recognizes Path::canonicalize() as a path-injection barrier.
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let canonical_parent = parent.canonicalize().map_err(|e| CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "Failed to canonicalize parent directory: {}: {}",
+                parent.display(),
+                e
+            ),
+        })?;
+        let file_name = path.file_name().ok_or_else(|| CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!("Config path has no file name: {}", path.display()),
+        })?;
+        let safe_path = canonical_parent.join(file_name);
+
         let content = serde_json::to_string_pretty(config).map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
             message: format!("Failed to serialize config: {}", e),
         })?;
 
-        fs::write(path, content).map_err(|e| CoreError::Config {
+        fs::write(&safe_path, content).map_err(|e| CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
-            message: format!("Failed to write config file: {}: {}", path.display(), e),
+            message: format!(
+                "Failed to write config file: {}: {}",
+                safe_path.display(),
+                e
+            ),
         })?;
 
         Ok(())
