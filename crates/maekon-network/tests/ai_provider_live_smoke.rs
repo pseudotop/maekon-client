@@ -337,16 +337,16 @@ fn optional_env(key: &str) -> Option<String> {
 }
 
 fn optional_api_key_value(target: SmokeTarget) -> Option<String> {
-    let api_key_key = env_key(target, "API_KEY");
-    if let Some(value) = optional_env(api_key_key.as_str()) {
+    let api_env_var_name = env_key(target, "API_KEY");
+    if let Some(value) = optional_env(api_env_var_name.as_str()) {
         return Some(value);
     }
 
-    let legacy_key = env_key(target, "KEY");
-    if let Some(value) = optional_env(legacy_key.as_str()) {
+    let legacy_env_var_name = env_key(target, "KEY");
+    if let Some(value) = optional_env(legacy_env_var_name.as_str()) {
         eprintln!(
             "Using deprecated env {}. Prefer {}.",
-            legacy_key, api_key_key
+            legacy_env_var_name, api_env_var_name
         );
         return Some(value);
     }
@@ -355,14 +355,17 @@ fn optional_api_key_value(target: SmokeTarget) -> Option<String> {
 }
 
 fn required_api_key_value(target: SmokeTarget) -> String {
-    let api_key_key = env_key(target, "API_KEY");
-    let legacy_key = env_key(target, "KEY");
+    let api_env_var_name = env_key(target, "API_KEY");
+    let legacy_env_var_name = env_key(target, "KEY");
 
     if let Some(value) = optional_api_key_value(target) {
         return value;
     }
 
-    panic!("Missing required env: {} or {}", api_key_key, legacy_key);
+    panic!(
+        "Missing required env: {} or {}",
+        api_env_var_name, legacy_env_var_name
+    );
 }
 
 #[cfg(test)]

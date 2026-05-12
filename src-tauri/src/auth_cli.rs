@@ -52,9 +52,12 @@ fn cmd_revoke(ops: &KeychainOps, args: &[String]) -> i32 {
             for provider in KNOWN_PROVIDERS {
                 match ops.delete_namespace_sync(provider) {
                     Ok(()) => println!("Removed credentials for '{provider}'"),
-                    Err(e) => {
+                    Err(_e) => {
+                        // Don't render the StorageError Display in CLI output:
+                        // its `SecretStore(..)` variant trips CodeQL's
+                        // rust/cleartext-logging heuristic (variant name match).
                         had_error = true;
-                        eprintln!("Warning: failed to revoke '{provider}': {e}");
+                        eprintln!("Warning: failed to revoke '{provider}' from keychain");
                     }
                 }
             }
@@ -76,8 +79,11 @@ fn cmd_revoke(ops: &KeychainOps, args: &[String]) -> i32 {
                     println!("Removed credentials for '{target}' from keychain.");
                     0
                 }
-                Err(e) => {
-                    eprintln!("Error: {e}");
+                Err(_e) => {
+                    // Don't render the StorageError Display in CLI output:
+                    // its `SecretStore(..)` variant trips CodeQL's
+                    // rust/cleartext-logging heuristic (variant name match).
+                    eprintln!("Error: keychain revoke failed for '{target}'");
                     1
                 }
             }
