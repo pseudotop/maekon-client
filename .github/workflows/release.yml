@@ -44,7 +44,7 @@ jobs:
         id: app_token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.MAEKON_RELEASE_APP_ID }}
+          client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v6
