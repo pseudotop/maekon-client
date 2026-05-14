@@ -59,6 +59,17 @@ signature enforcement, and uninstall:
 - **Stay lightweight on-device**: Edge processing (delta encoding, thumbnailing, OCR) reduces transfer volume and keeps response fast.
 - **Use a production-ready desktop stack**: Cross-platform binary, auto-update, system tray integration, and local web dashboard.
 
+### Market positioning (2026)
+
+Google DeepMind (AI Pointer, 2026-05) and OpenAI (Codex Chronicle, 2026-04) both entered the same problem space — **AI that understands screen context and acts on natural pointing/typing intent**. Maekon differentiates on four axes:
+
+1. **Local-first by default** — pixels, OCR, and signals stay on-device; cloud round-trips are opt-in
+2. **Source-first audit** — every signal has a traceable origin, retention policy, and PII filter step
+3. **Policy-gated automation** — natural intent ("summarize this", "organize that") resolves to **next-action candidates** with explicit review/approval boundaries, not direct execution
+4. **App- and OS-crossing** — works across Chrome, native apps, terminals, and OS-level workflows (3 OS: macOS, Windows, Linux), not bound to a single vendor's ecosystem
+
+See [`docs/market-positioning-references.md`](./docs/market-positioning-references.md) for the full positioning matrix and references.
+
 ## Who It's For
 
 - Individual contributors who want visibility into focus patterns and work context
