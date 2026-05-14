@@ -1,0 +1,86 @@
+[English](./market-positioning-references.md) | [한국어](./market-positioning-references.ko.md)
+
+# 시장 포지셔닝 레퍼런스
+
+> 최종 갱신: 2026-05-14
+
+## 목적
+
+본 문서는 Maekon이 운영하는 **공개 시장 카테고리**, 2026년에 동일 문제 공간에 진입한 가장 가까운 비교 제품, 그리고 Maekon이 차별화하는 4축을 기록한다. README, 랜딩 카피, 투자자 brief, 외부 메시지의 정본 포지셔닝 레퍼런스다.
+
+본 문서는 ADR이 **아니다** — 아키텍처 결정이 아니라 시장 맥락을 담는다. 이 포지셔닝에서 파생되는 아키텍처 축은 ADR 레지스트리(`docs/architecture/`)에 별도로 존재한다.
+
+## 문제 공간
+
+**Ambient AI + 화면 맥락 이해** — 사용자의 화면, focus, 활동 흐름을 관찰하고, 자연 지시("이것 요약해", "저것 정리", "여기서 뭐야")를 구조화된 후보·행동으로 전환하는 AI.
+
+2026년 두 주요 actor가 진입:
+
+| Actor | 제품 | 공개 | 표면 |
+|---|---|---|---|
+| Google DeepMind | **AI Pointer** (Gemini 기반) | 2026-05 | Chrome (Gemini), Googlebook (Magic Pointer), Google Labs (Disco), Google AI Studio |
+| OpenAI | **Codex Chronicle** (Recall-like memory) | 2026-04 | macOS only, ChatGPT Pro 구독 (opt-in research preview) |
+
+Source pointer:
+- DeepMind AI Pointer: https://deepmind.google/blog/ai-pointer/
+- OpenAI Codex Chronicle: https://developers.openai.com/codex/memories/chronicle
+
+## DeepMind AI Pointer — 4 design principle (참조)
+
+DeepMind는 AI Pointer의 4가지 design principle을 명시한다 (broader 카테고리에 동일하게 적용 가능):
+
+1. **Maintain the Flow** — 모든 앱에서 작동, 사용자가 AI 사용을 위해 워크플로우를 "우회"하지 않게 함
+2. **Show and Tell** — 사용자가 가리키는 대상 주변 시각·의미 맥락 자동 capture
+3. **The power of "this/that"** — 자연 shorthand 지시 (맥락 재타이핑 불필요)
+4. **Pixels → Actionable Entities** — 픽셀을 시스템이 행동할 수 있는 구조화 entity로 변환
+
+인용: *"AI capabilities should work across all apps, not force users into 'AI detours' between them."*
+
+Maekon은 이 원칙들을 work-signal layer의 **목표 경험**으로 채택하되, 아래 4 운영 축에서 차별화한다.
+
+## Maekon의 4 차별화 축
+
+| 축 | DeepMind AI Pointer | OpenAI Codex Chronicle | **Maekon** |
+|---|---|---|---|
+| **기본 데이터 경로** | Cloud-bound (Gemini) | Cloud-bound (OpenAI 서버가 screenshot 처리) | **기본 local-first**, on-device. 클라우드 round-trip은 opt-in. |
+| **감사·추적** | 공식 명시 없음 | Memory가 디스크에 **unencrypted** 저장 | **Source-first 감사** — 모든 신호에 origin, retention, PII filter trace |
+| **자동화 경계** | 자연 지시 → **direct action** | Memory만 (Codex가 행동) | 자연 지시 → **next-action candidates** + 명시적 검토/승인 게이트 (policy-gated) |
+| **플랫폼 범위** | Chrome / Gemini / Googlebook (Google 생태계) | macOS only / ChatGPT Pro 구독 / EU/UK/CH 미제공 | **3 OS** (macOS, Windows, Linux), Apache-2.0, 생태계 중립 |
+
+## 어휘 정합
+
+Maekon 사용자 표면 어휘와 broader 시장 frame 매핑:
+
+| Maekon 표면 어휘 | DeepMind frame (참조) | 동등 의미 |
+|---|---|---|
+| "next-action candidates" | "Pixels → Actionable Entities" (principle #4) | 관찰된 맥락을 분리된 actionable suggestion으로 변환 |
+| "policy-gated action paths" | "Maintain the Flow" + 감사 제약 | suggestion이 검토 경계 안에 머무름 |
+| "edge processing" | "Show and Tell" + on-device | 클라우드 round-trip 전 로컬에서 사전 처리 |
+| "delta encoding" | (Maekon 고유) | frame 간 변경분만 전송 (대역폭 절약) |
+
+> 더 넓은 ONESHIM SSOT의 정본 어휘는 **"pointed context → actionable entity"** (제출 자료·투자자 deck에서 사용). 두 어휘는 같은 메커니즘을 매핑 — 로컬 업무 신호 + focus timeline + 화면/OCR edge → 검토 가능한 후보 흐름. 표면 어휘는 청중에 따라 다름 (개발자/사용자 frame vs. 평가관/투자자 frame).
+
+## 직접 경쟁이 아닌 이유
+
+Maekon은 DeepMind AI Pointer 또는 Codex Chronicle의 head-to-head 대체로 포지셔닝하지 않는다. 각자 동일 문제 공간을 다른 생태계 가정에서 다룬다:
+
+- DeepMind는 경험을 Google의 클라우드 + 브라우저 스택에 묶는다.
+- OpenAI Codex Chronicle은 ChatGPT Pro + macOS에 묶고, memory를 unencrypted로 저장한다.
+- Maekon의 베팅: **유의미한 사용자·조직 비중이 local-first 기본값, source-first 감사 추적, policy 게이트가 선결되어야 도입 가능하다** — 특히 규제 산업 (금융·제조·헬스케어·공공) 에서.
+
+이는 **카테고리 인접 차별화**이지 직접 경쟁이 아니다.
+
+## Cross-reference
+
+- ONESHIM SSOT 경쟁 스캔: [K27] DeepMind AI Pointer, [K28] OpenAI Codex Chronicle (전체 entry는 상위 제출 패키지 `plan/_shared/references/competitor.md`)
+- ONESHIM 제품 포지셔닝: `plan/_shared/제품현황.md` v2.22+ "Maekon 어휘 통합 정책" 섹션
+- Maekon README: `## Why Maekon → Market positioning (2026)` 참조
+
+## 갱신 정책
+
+다음 시 본 문서를 refresh:
+- ambient AI + 화면 맥락 공간에 새로운 비교 제품 진입
+- Maekon의 4축 변경 (예: local-first 기본값 폐기, cloud-only mode 추가)
+- DeepMind 또는 OpenAI 공식 stance 변화 (링크 깨짐, 원칙 갱신)
+
+Companion: [market-positioning-references.md](./market-positioning-references.md)

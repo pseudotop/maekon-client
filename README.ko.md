@@ -41,6 +41,17 @@ cd maekon-client
 - **가벼운 온디바이스 처리**: Edge 처리(델타 인코딩, 썸네일, OCR)로 전송량을 줄이고 빠른 응답 속도를 유지합니다.
 - **프로덕션 수준의 데스크톱 스택**: 크로스 플랫폼 바이너리, 자동 업데이트, 시스템 트레이 통합, 로컬 웹 대시보드를 지원합니다.
 
+### 시장 포지셔닝 (2026)
+
+Google DeepMind (AI Pointer, 2026-05) 와 OpenAI (Codex Chronicle, 2026-04) 가 동일 문제 공간에 진입했습니다 — **화면 맥락을 이해하고 자연 지시·포인팅으로 행동하는 AI**. Maekon은 다음 4축으로 차별화합니다:
+
+1. **기본 local-first** — 픽셀, OCR, 신호가 on-device 유지. 클라우드 round-trip은 opt-in
+2. **Source-first 감사** — 모든 신호에 origin, retention, PII filter step trace
+3. **Policy-gated 자동화** — 자연 지시("이것 요약해", "저것 정리")를 명시적 검토·승인 경계가 있는 **next-action candidates** 로 처리 (직접 실행 X)
+4. **앱·OS 횡단** — Chrome, native 앱, terminal, OS 워크플로우 가로지름 (3 OS: macOS, Windows, Linux). 단일 벤더 생태계에 묶이지 않음
+
+전체 포지셔닝 매트릭스와 레퍼런스는 [`docs/market-positioning-references.ko.md`](./docs/market-positioning-references.ko.md) 참조.
+
 ## 대상 사용자
 
 - 집중 패턴과 업무 컨텍스트에 대한 가시성을 원하는 개인 기여자
