@@ -79,3 +79,8 @@ specs/providers/*
 
 # Documentation plan records are tracked; the root-only "/plan" ignore above is
 # for local agent/tooling scratch paths.
+
+# Vendored patch crates are workspace members — cargo uses the workspace
+# root Cargo.lock, never their own. These per-crate locks are dead artifacts
+# and only create Dependabot dependency-graph noise (rc.6 #5435). Keep them out.
+patches/*/Cargo.lock
