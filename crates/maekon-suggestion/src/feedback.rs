@@ -106,7 +106,6 @@ mod tests {
     use super::*;
     use maekon_core::error::CoreError;
     use maekon_core::models::event::EventBatch;
-    use maekon_core::models::frame::ContextUpload;
 
     struct MockApiClient;
 
@@ -127,9 +126,6 @@ mod tests {
             Ok(())
         }
         async fn upload_batch(&self, _: &EventBatch) -> Result<(), CoreError> {
-            Ok(())
-        }
-        async fn upload_context(&self, _: &ContextUpload) -> Result<(), CoreError> {
             Ok(())
         }
         async fn send_feedback(&self, feedback: &SuggestionFeedback) -> Result<(), CoreError> {
@@ -200,9 +196,6 @@ mod tests {
                 Ok(())
             }
             async fn upload_batch(&self, _: &EventBatch) -> Result<(), CoreError> {
-                Ok(())
-            }
-            async fn upload_context(&self, _: &ContextUpload) -> Result<(), CoreError> {
                 Ok(())
             }
             async fn send_feedback(&self, _: &SuggestionFeedback) -> Result<(), CoreError> {

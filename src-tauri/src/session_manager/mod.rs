@@ -1,7 +1,7 @@
 //! Session manager implementation — creates, manages, and reaps AI conversation sessions.
 
 mod error_recovery;
-mod factory;
+pub(crate) mod factory;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::conversation_session::{ConversationSession, SessionManager};
 use maekon_core::ports::secret_store::SecretStore;
 
+use crate::provider_adapters::ConversationContentGuard;
 use crate::session_context::SessionContextAssembler;
 
 struct ManagedSession {
@@ -50,6 +51,30 @@ pub struct SessionManagerImpl {
     secret_store: Option<Arc<dyn SecretStore>>,
     /// Tauri app handle for emitting session state change events.
     app_handle: Option<AppHandle>,
+    /// Privacy guard for external (off-device) chat sessions. When set, external
+    /// sessions are wrapped so user content is sanitized before transmission
+    /// (E21 #4882/#4883 — closes the chat-path PII gap, review B1).
+    privacy_guard: Option<Arc<dyn ConversationContentGuard>>,
+    /// Rollout stage for the Codex `app-server` transport (E21 #4871). `Off`
+    /// (default) keeps the `codex exec` path; opt-in/default attempt app-server
+    /// with graceful fallback to exec on failure.
+    codex_app_server_rollout: maekon_core::config::CodexAppServerRollout,
+    /// FAIL-CLOSED approval decider for Codex app-server `requestApproval`
+    /// REQUESTs (E21 #4870). When set, app-server sessions wire the approval loop
+    /// (policy auto-decision + audit + DefaultDenyUiHook). `None` → inbound
+    /// approval requests are drained-and-dropped (still fail-closed: the server
+    /// proceeds without the gated action).
+    codex_approval_decider: Option<Arc<maekon_core::codex_approval::CodexApprovalDecider>>,
+    /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    /// registry from the composition root, used when creating `HttpApiSession`s.
+    /// Defaults to a fresh registry for standalone use (tests); the composition
+    /// root overrides it with the shared Arc via `with_breaker_registry`.
+    pub(crate) breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// Resolved Ollama base URL + default model from `AppConfig` (C2 #5722).
+    /// Pre-computed at composition time by `session_wiring.rs` via
+    /// `with_local_llm_target`; `None` → `create_local_llm_session` falls back
+    /// to the catalog-derived loopback default.
+    pub(crate) local_llm_target: Option<crate::session_manager::factory::LocalLlmTarget>,
 }
 
 impl SessionManagerImpl {
@@ -65,7 +90,63 @@ impl SessionManagerImpl {
             context_assembler,
             secret_store: None,
             app_handle: None,
+            privacy_guard: None,
+            codex_app_server_rollout: maekon_core::config::CodexAppServerRollout::default(),
+            codex_approval_decider: None,
+            breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            local_llm_target: None,
         }
+    }
+
+    /// Inject the single shared workspace-wide circuit-breaker registry from the
+    /// composition root (D7 #4812 / E20-20). `HttpApiSession`s created by this
+    /// manager clone this one Arc, so they converge on the same breaker as the
+    /// other network adapters targeting the same endpoint.
+    pub fn with_breaker_registry(
+        mut self,
+        registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    ) -> Self {
+        self.breaker_registry = registry;
+        self
+    }
+
+    /// Wire the pre-resolved Ollama base URL + default model (C2 #5722).
+    /// Called from the composition root (`session_wiring.rs`) with the result
+    /// of `resolve_local_llm_target(&config.ai_provider)` so that
+    /// `create_local_llm_session` can honour wizard-written custom Ollama
+    /// endpoints without needing access to the full `AppConfig`.
+    pub fn with_local_llm_target(
+        mut self,
+        target: crate::session_manager::factory::LocalLlmTarget,
+    ) -> Self {
+        self.local_llm_target = Some(target);
+        self
+    }
+
+    /// Attach the FAIL-CLOSED Codex approval decider (E21 #4870). Wired from the
+    /// session bootstrap with the shared `PolicyClient`-backed policy port + the
+    /// shared audit sink + a `DefaultDenyUiHook` (FU-A swaps in the Tauri hook).
+    pub fn with_codex_approval_decider(
+        mut self,
+        decider: Arc<maekon_core::codex_approval::CodexApprovalDecider>,
+    ) -> Self {
+        self.codex_approval_decider = Some(decider);
+        self
+    }
+
+    /// Attach the privacy guard applied to external chat sessions.
+    pub fn with_privacy_guard(mut self, guard: Arc<dyn ConversationContentGuard>) -> Self {
+        self.privacy_guard = Some(guard);
+        self
+    }
+
+    /// Set the Codex `app-server` transport rollout stage (E21 #4871).
+    pub fn with_codex_app_server_rollout(
+        mut self,
+        rollout: maekon_core::config::CodexAppServerRollout,
+    ) -> Self {
+        self.codex_app_server_rollout = rollout;
+        self
     }
 
     /// Attach a secret store for resolving provider credentials.

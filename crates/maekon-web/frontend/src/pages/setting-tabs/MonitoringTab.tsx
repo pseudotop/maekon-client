@@ -1,7 +1,7 @@
-import { Bell, Camera, CircleAlert, CircleCheckBig, Monitor, RotateCcw } from 'lucide-react'
+import { Bell, Camera, CircleAlert, CircleCheckBig, Keyboard, Mic, Monitor, RotateCcw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { AppSettings, DesktopPermissionState } from '../../api/client'
+import type { AppSettings, DesktopPermissionSettingsKind, DesktopPermissionState } from '../../api/client'
 import { Alert, Badge, Button, Card, CardTitle, Checkbox, GuidancePanel, Input } from '../../components/ui'
 import { colors, form, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -110,6 +110,28 @@ export default function MonitoringTab() {
   const isWindows = permissionStatus?.platform === 'windows'
   const isLinux = permissionStatus?.platform === 'linux'
   const macNotificationReason = permissionStatus?.notifications.status_reason
+  const screenCapturePermissionRequesting = settingsForm.requestScreenCapturePermissionMutation.isPending
+  const openPermissionSettingsMutation = settingsForm.openDesktopPermissionSettingsMutation
+  const onRequestScreenCapturePermission =
+    data.canQueryDesktopCapabilities && permissionStatus?.screen_capture.state === 'needs_attention'
+      ? () => settingsForm.requestScreenCapturePermissionMutation.mutate()
+      : undefined
+  const openPermissionSettingsAction = (
+    permissionKind: DesktopPermissionSettingsKind,
+    state: DesktopPermissionState | undefined,
+  ): PermissionRowAction | undefined => {
+    if (!data.canQueryDesktopCapabilities || state !== 'needs_attention') {
+      return undefined
+    }
+
+    return {
+      label: t('settings.permissionOpenSystemSettingsAction', 'Open System Settings'),
+      isLoading:
+        openPermissionSettingsMutation.isPending &&
+        openPermissionSettingsMutation.pendingPermissionKind === permissionKind,
+      onClick: () => openPermissionSettingsMutation.mutate(permissionKind),
+    }
+  }
   const permissionRows: PermissionRow[] = isMac
     ? [
         {
@@ -121,6 +143,7 @@ export default function MonitoringTab() {
             'Needed for focused element tracking and GUI context analysis.',
           ),
           state: permissionStatus?.accessibility.state ?? 'unavailable',
+          action: openPermissionSettingsAction('accessibility', permissionStatus?.accessibility.state),
         },
         {
           id: 'screen-capture',
@@ -131,6 +154,32 @@ export default function MonitoringTab() {
             'Needed to capture screenshots for timeline and insights.',
           ),
           state: permissionStatus?.screen_capture.state ?? 'unavailable',
+          action: onRequestScreenCapturePermission
+            ? {
+                label: t('onboarding.step2ScreenCaptureAction', 'Allow Screen Recording'),
+                isLoading: screenCapturePermissionRequesting,
+                onClick: onRequestScreenCapturePermission,
+              }
+            : undefined,
+        },
+        {
+          id: 'microphone',
+          icon: <Mic className={cn(iconSize.base, 'text-brand-text')} />,
+          label: t('settings.permissionMicrophoneLabel', 'Microphone'),
+          description: t('settings.permissionMicrophoneDesc', 'Needed for voice input and speech-to-text capture.'),
+          state: permissionStatus?.microphone?.state ?? 'unavailable',
+          action: openPermissionSettingsAction('microphone', permissionStatus?.microphone?.state),
+        },
+        {
+          id: 'input-monitoring',
+          icon: <Keyboard className={cn(iconSize.base, 'text-brand-text')} />,
+          label: t('settings.permissionInputMonitoringLabel', 'Input Monitoring'),
+          description: t(
+            'settings.permissionInputMonitoringDesc',
+            'Needed before Maekon can observe keyboard shortcuts or drive input automation.',
+          ),
+          state: permissionStatus?.input_monitoring?.state ?? 'unavailable',
+          action: openPermissionSettingsAction('input_monitoring', permissionStatus?.input_monitoring?.state),
         },
         {
           id: 'notifications',

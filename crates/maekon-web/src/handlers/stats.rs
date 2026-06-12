@@ -56,9 +56,13 @@ pub async fn get_gui_heatmap(
         .unwrap_or_else(|| now.format("%Y-%m-%dT00:00:00Z").to_string());
     let end = params.end.unwrap_or_else(|| now.to_rfc3339());
 
+    // ADR-026 PR-7: `query_gui_interaction_density` is now async and offloads the
+    // SQLite read onto `spawn_blocking` internally, so await it directly instead
+    // of wrapping the (now-async) call in a hand-rolled `spawn_blocking`.
     let density = context
         .storage
         .query_gui_interaction_density(&start, &end)
+        .await
         .map_err(ApiError::from)?;
 
     let cells: Vec<GuiHeatmapCell> = density
@@ -74,11 +78,9 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -90,8 +92,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[test]

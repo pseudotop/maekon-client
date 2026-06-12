@@ -1,10 +1,12 @@
 name: Config Sync
 
 on:
+  # Restored after the rc.6 un-bitrot campaign — required ruleset check.
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,10 +18,10 @@ jobs:
     name: Port & Version Sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: '3.12'
 
@@ -28,3 +30,9 @@ jobs:
 
       - name: Run config sync check
         run: ./scripts/check-config-sync.sh --fix
+
+      # F-RC-C22-02: tauri.conf.json vs tauri.dev.conf.json CSP 포트 동기화 검사
+      # Tauri v2 csp leaf string 완전 교체 특성으로 수동 동기화 필요.
+      # check-tauri-csp-sync.sh PR #3635 (cycle 21 F-RC-C21-03) 생성, CI 연동 OOS-TBD 미뤄짐.
+      - name: CSP sync check (tauri.conf.json vs tauri.dev.conf.json)
+        run: ./scripts/check-tauri-csp-sync.sh

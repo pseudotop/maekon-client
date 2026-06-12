@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackupQuery {
     #[serde(default = "default_true")]
     pub include_settings: bool,
@@ -17,6 +18,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackupMetadata {
     pub version: String,
     pub created_at: String,
@@ -25,6 +27,7 @@ pub struct BackupMetadata {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackupIncludes {
     pub settings: bool,
     pub tags: bool,
@@ -33,6 +36,7 @@ pub struct BackupIncludes {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TagBackup {
     pub id: i64,
     pub name: String,
@@ -41,6 +45,7 @@ pub struct TagBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrameTagBackup {
     pub frame_id: i64,
     pub tag_id: i64,
@@ -48,6 +53,7 @@ pub struct FrameTagBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SettingsBackup {
     pub capture_enabled: bool,
     pub capture_interval_secs: u64,
@@ -61,6 +67,7 @@ pub struct SettingsBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EventBackup {
     pub event_id: String,
     pub event_type: String,
@@ -70,6 +77,7 @@ pub struct EventBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrameBackup {
     pub id: i64,
     pub timestamp: String,
@@ -83,6 +91,7 @@ pub struct FrameBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackupArchive {
     pub metadata: BackupMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]

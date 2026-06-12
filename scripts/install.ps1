@@ -4,10 +4,20 @@ param(
     [string]$Repository = $(if ($env:MAEKON_REPOSITORY) { $env:MAEKON_REPOSITORY } else { "pseudotop/maekon-client" }),
     [string]$InstallDir = $(if ($env:MAEKON_INSTALL_DIR) { $env:MAEKON_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "MAEKON\bin" }),
     [string]$BaseUrl = $(if ($env:MAEKON_RELEASE_BASE_URL) { $env:MAEKON_RELEASE_BASE_URL } else { "" }),
-    [switch]$RequireSignature
+    [switch]$RequireSignature,
+    [switch]$AllowUnsigned
 )
 
 $ErrorActionPreference = "Stop"
+$RequireSignatureEnabled = if ($AllowUnsigned) {
+    $false
+} elseif ($RequireSignature) {
+    $true
+} elseif ($env:MAEKON_REQUIRE_SIGNATURE) {
+    $env:MAEKON_REQUIRE_SIGNATURE -ne "0"
+} else {
+    $true
+}
 
 $BinaryName = "maekon.exe"
 $SidecarName = "maekon-sandbox-worker.exe"
@@ -97,7 +107,7 @@ function Test-Signature {
         if ($Required) {
             throw "Python is required for signature verification."
         }
-        Write-WarnLine "Python is not available. Skipping signature verification."
+        Write-WarnLine "Python is not available. Continuing only because unsigned installs were explicitly allowed."
         return
     }
 
@@ -151,7 +161,7 @@ except BadSignatureError:
         if ($Required) {
             throw "Signature verification failed or PyNaCl is missing."
         }
-        Write-WarnLine "Signature verification skipped (PyNaCl missing or verification failed)."
+        Write-WarnLine "Signature verification skipped only because unsigned installs were explicitly allowed."
         return
     }
 
@@ -239,11 +249,11 @@ try {
     }
 
     if ($signatureDownloaded) {
-        Test-Signature -PayloadPath $archivePath -SignaturePath $signaturePath -PublicKey $PublicKeyB64 -Required:$RequireSignature
-    } elseif ($RequireSignature) {
+        Test-Signature -PayloadPath $archivePath -SignaturePath $signaturePath -PublicKey $PublicKeyB64 -Required:$RequireSignatureEnabled
+    } elseif ($RequireSignatureEnabled) {
         throw "Failed to download signature file while -RequireSignature is enabled."
     } else {
-        Write-WarnLine "Signature file is not available. Continuing because -RequireSignature is not enabled."
+        Write-WarnLine "Signature file is not available. Continuing only because unsigned installs were explicitly allowed."
     }
 
     New-Item -ItemType Directory -Path $extractDir -Force | Out-Null

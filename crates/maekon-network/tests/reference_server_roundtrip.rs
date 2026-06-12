@@ -205,13 +205,19 @@ async fn wrong_auth_token_rejected() {
     )
     .unwrap();
 
-    let result = transport.push(&make_changeset("device-bad", 100)).await;
-    assert!(result.is_err(), "push with wrong token should fail");
-
-    let result = transport.discover_peers().await;
+    let push_err = transport
+        .push(&make_changeset("device-bad", 100))
+        .await
+        .unwrap_err();
     assert!(
-        result.is_err(),
-        "discover_peers with wrong token should fail"
+        matches!(push_err, maekon_core::error::CoreError::Auth { .. }),
+        "push with wrong token must yield CoreError::Auth; got: {push_err:?}"
+    );
+
+    let discover_err = transport.discover_peers().await.unwrap_err();
+    assert!(
+        matches!(discover_err, maekon_core::error::CoreError::Auth { .. }),
+        "discover_peers with wrong token must yield CoreError::Auth; got: {discover_err:?}"
     );
 
     handle.shutdown().await;

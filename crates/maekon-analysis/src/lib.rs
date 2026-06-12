@@ -12,10 +12,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -27,7 +27,7 @@
 // regime classification) where contention cost is negligible, or (b) held
 // across LLM/embedding calls where serialization is the intent. The nursery
 // lint's false-positive rate on this crate is too high to enforce.
-// See docs/reviews/2026-04-21-p2-significant-drop-tightening-spec.md §Category B.
+// Rationale is embedded here so public source remains self-contained.
 #![allow(clippy::significant_drop_tightening)]
 
 pub mod adaptive_search;
@@ -38,7 +38,9 @@ pub mod fallback_analysis_provider;
 
 mod assembler;
 pub mod auto_tuner;
+pub mod belief_revision;
 pub mod calibration_buffer;
+pub mod claim_promoter;
 pub mod clustering_strategy;
 pub mod constraint_builder;
 pub mod content_tracker;
@@ -54,7 +56,6 @@ pub mod gui_work_type_refiner;
 pub mod hdbscan_detector;
 #[cfg(feature = "hnsw")]
 pub mod hnsw_adapter;
-pub mod hybrid_search_service;
 pub mod kmeans_adapter;
 pub mod llm_segment_summarizer;
 pub mod llm_work_type_refiner;
@@ -81,7 +82,9 @@ pub mod feedback_tracker;
 pub mod few_shot_selector;
 pub mod regime_goal_tracker;
 
-pub use adaptive_trigger::{AdaptiveTrigger, TriggerDecision};
+pub use adaptive_trigger::{
+    AdaptiveCaptureCadence, AdaptiveTrigger, CaptureRateRegime, TriggerDecision,
+};
 pub use analyzer::ContextAnalyzer;
 pub use assembler::{
     humanize_time_ago, AnalysisContext, ContentSummaryEntry, ContextAssembler, CurrentActivity,
@@ -115,13 +118,13 @@ pub use embedding_pipeline::EmbeddingPipeline;
 pub use error::AnalysisError;
 pub use gui_aggregator::GuiActivityAggregator;
 pub use gui_work_type_refiner::GuiWorkTypeRefiner;
-pub use hybrid_search_service::{HybridSearchService, SearchMode};
 pub use llm_segment_summarizer::{LlmSegmentSummarizer, SEGMENT_SUMMARY_PROMPT};
 pub use llm_work_type_refiner::LlmWorkTypeRefiner;
 pub use query_expander::{ActivityContext, QueryExpander};
 pub use vector_retriever::VectorRetriever;
 pub use weekly_digest_generator::WeeklyDigestGenerator;
 
+pub use belief_revision::{BeliefRevision, BeliefRevisionStats, PiiFilter as BeliefPiiFilter};
 pub use coaching_engine::CoachingEngine;
 pub use coaching_template::CoachingTemplateRegistry;
 pub use fallback_analysis_provider::{FallbackAnalysisProvider, NoOpAnalysisProvider};

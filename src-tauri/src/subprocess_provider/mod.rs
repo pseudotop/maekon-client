@@ -4,10 +4,11 @@ mod ocr_provider;
 mod parsing;
 pub(crate) mod runtime;
 mod surface_selection;
+pub(crate) mod trust;
 
 use maekon_core::error::CoreError;
 use maekon_core::ports::ocr_provider::OcrResult;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -24,16 +25,25 @@ pub(crate) use runtime::cli_id_for_surface_id;
 pub(crate) use runtime::runtime_ready_for_surface;
 pub(crate) use runtime::runtime_supported_for_surface;
 #[allow(unused_imports)]
-pub use surface_selection::{
-    detect_known_cli_surfaces, preferred_cli_surface_for_capability,
-    preferred_cli_surface_for_config, probe_for_surface_id, probe_known_cli_surfaces,
-    select_cli_surface_for_capability, select_cli_surface_for_config,
+pub(crate) use surface_selection::{
+    cli_discovery_report_for_detected, detect_known_cli_surfaces,
+    preferred_cli_surface_for_capability, preferred_cli_surface_for_config, probe_for_surface_id,
+    probe_known_cli_surfaces, select_cli_surface_for_capability, select_cli_surface_for_config,
 };
 
 // ── Shared constants ──────────────────────────────────────────
 
 const DEFAULT_SUBPROCESS_TIMEOUT_SECS: u64 = 60;
 const CLI_AUTH_PROBE_TIMEOUT_SECS: u64 = 2;
+/// Timeout for the codex app-server structured auth probe (E21 #4868 Part 1).
+///
+/// Unlike the 2s exec text probe (`CLI_AUTH_PROBE_TIMEOUT_SECS`), the
+/// `account/read` probe spawns a real `codex app-server` child, runs the
+/// `initialize` handshake, AND issues one JSON-RPC round-trip — far heavier — so
+/// it gets a more generous budget. The whole connect+request is wrapped in a
+/// timeout; on expiry the probe degrades to `Unknown` and the dropped
+/// `AppServerProcess` reaps the spawned process group.
+const CLI_APP_SERVER_AUTH_PROBE_TIMEOUT_SECS: u64 = 8;
 const ACTION_SCHEMA_JSON: &str = r#"{
   "type": "object",
   "properties": {
@@ -77,10 +87,41 @@ pub struct DetectedSubprocessCli {
     pub executable_path: std::path::PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubprocessCliVersionStatus {
+    NotChecked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+// `Missing`/`StaleProcessEnv` are produced only by the Windows dependency
+// evaluation path — dead on other targets by design.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub enum SubprocessCliDependencyStatus {
+    Ready,
+    Missing,
+    StaleProcessEnv,
+    NotRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SubprocessCliDiscoveryReport {
+    pub candidate_name: String,
+    pub executable_path: String,
+    pub version_status: SubprocessCliVersionStatus,
+    pub dependency_status: SubprocessCliDependencyStatus,
+    pub status_reason: Option<String>,
+    pub env_refresh_required: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubprocessCliAuthStatus {
     Authenticated,
     Unauthenticated,
+    Unsupported,
+    StaleSession,
+    InteractiveRequired,
     Unknown,
 }
 
@@ -112,7 +153,8 @@ struct SubprocessOcrEnvelope {
 // ── Internal helper re-exports for submodules ─────────────────
 
 pub(crate) use parsing::{
-    append_model_flag, append_oneshot_flags, classify_subprocess_error, SubprocessKind,
+    append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
+    sanitize_subprocess_error_output, SubprocessKind,
 };
 #[allow(unused_imports)]
 use parsing::{

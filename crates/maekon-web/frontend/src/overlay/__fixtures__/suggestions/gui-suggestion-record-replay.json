@@ -1,0 +1,43 @@
+{
+  "tc_id": "CRT-PRV-F062",
+  "recorded_at": "2026-05-21T00:00:00Z",
+  "scenario": "recorded-llm-gui-suggestion-policy-gated-feedback",
+  "suggestions": [
+    {
+      "id": "recorded-llm-proposal-policy-gate",
+      "title": "Review the policy-gated automation proposal",
+      "body": "Prepare a policy-gated action proposal for the highlighted GUI target, but wait for explicit user confirmation before any automation runs.",
+      "priority": "high",
+      "category": "automation-proposal",
+      "source": "server",
+      "confidence_score": 0.88,
+      "created_at": "2026-05-21T00:00:00Z",
+      "is_read": false,
+      "reasoning": "The recorded LLM suggestion resolves the visible GUI target to a proposal only. It must not auto-execute because external automation requires consent and audit."
+    },
+    {
+      "id": "recorded-llm-audit-safe-followup",
+      "title": "Summarize why the proposal needs confirmation",
+      "body": "Open the explanation in chat using the suggestion id only so the raw screen context is not copied into feedback IPC.",
+      "priority": "medium",
+      "category": "privacy-audit",
+      "source": "local",
+      "confidence_score": 0.81,
+      "created_at": "2026-05-21T00:01:00Z",
+      "is_read": false,
+      "reasoning": "Feedback and explain actions should reference the suggestion id. The recorded payload body and reasoning stay in the local UI state."
+    }
+  ],
+  "expected": {
+    "visible_proposal_titles": [
+      "Review the policy-gated automation proposal",
+      "Summarize why the proposal needs confirmation"
+    ],
+    "policy_gate_action_labels": ["Accept", "Reject", "Later", "Explain"],
+    "audit_safe_feedback_fields": ["action", "snoozeMinutes", "suggestionId"]
+  },
+  "privacy": {
+    "action_not_auto_executed": true,
+    "disallowed_feedback_fields": ["body", "category", "confidence_score", "created_at", "reasoning", "source", "title"]
+  }
+}

@@ -23,12 +23,13 @@ impl ExportQueryService {
         Self { ctx }
     }
 
-    pub fn export_metrics(&self, params: &ExportQuery) -> Result<Response, ApiError> {
+    pub async fn export_metrics(&self, params: &ExportQuery) -> Result<Response, ApiError> {
         let (from, to) = resolve_export_range(params);
         let records: Vec<MetricExportRecord> = self
             .ctx
             .storage
             .list_metric_exports(&from.to_rfc3339(), &to.to_rfc3339())
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?
             .into_iter()
             .map(assemble_metric_export_record)
@@ -37,41 +38,44 @@ impl ExportQueryService {
         export_response(&records, &params.format, "metrics")
     }
 
-    pub fn export_events(&self, params: &ExportQuery) -> Result<Response, ApiError> {
+    pub async fn export_events(&self, params: &ExportQuery) -> Result<Response, ApiError> {
         let (from, to) = resolve_export_range(params);
         let records: Vec<EventExportRecord> = self
             .ctx
             .storage
             .list_event_exports(&from.to_rfc3339(), &to.to_rfc3339())
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?
             .into_iter()
             .map(|row| assemble_event_export_record(row, &self.ctx.pii_sanitizer))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         export_response(&records, &params.format, "events")
     }
 
-    pub fn export_frames(&self, params: &ExportQuery) -> Result<Response, ApiError> {
+    pub async fn export_frames(&self, params: &ExportQuery) -> Result<Response, ApiError> {
         let (from, to) = resolve_export_range(params);
         let records: Vec<FrameExportRecord> = self
             .ctx
             .storage
             .list_frame_exports(&from.to_rfc3339(), &to.to_rfc3339())
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?
             .into_iter()
             .map(|row| assemble_frame_export_record(row, &self.ctx.pii_sanitizer))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         export_response(&records, &params.format, "frames")
     }
 
     /// Export work sessions as iCalendar (.ics) VEVENT entries.
-    pub fn export_ical(&self, params: &ExportQuery) -> Result<Response, ApiError> {
+    pub async fn export_ical(&self, params: &ExportQuery) -> Result<Response, ApiError> {
         let (from, to) = resolve_export_range(params);
         let sessions = self
             .ctx
             .storage
             .list_work_sessions(&from.to_rfc3339(), &to.to_rfc3339(), 1000)
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         let ical = sessions_to_ical(&sessions);
@@ -92,12 +96,13 @@ impl ExportQueryService {
     }
 
     /// Export work sessions in Toggl-compatible CSV format.
-    pub fn export_toggl(&self, params: &ExportQuery) -> Result<Response, ApiError> {
+    pub async fn export_toggl(&self, params: &ExportQuery) -> Result<Response, ApiError> {
         let (from, to) = resolve_export_range(params);
         let sessions = self
             .ctx
             .storage
             .list_work_sessions(&from.to_rfc3339(), &to.to_rfc3339(), 1000)
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         let csv = sessions_to_toggl_csv(&sessions);

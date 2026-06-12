@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// DTO for a single coaching template entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingTemplateDto {
     pub profile: String,
     pub trigger_type: String,
@@ -14,6 +15,7 @@ pub struct CoachingTemplateDto {
 
 /// Response DTO for GET /api/playbooks/coaching.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingTemplateListDto {
     pub total: usize,
     pub templates: Vec<CoachingTemplateDto>,
@@ -21,6 +23,7 @@ pub struct CoachingTemplateListDto {
 
 /// DTO for a single automation preset summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PresetSummaryDto {
     pub id: String,
     pub name: String,
@@ -32,6 +35,7 @@ pub struct PresetSummaryDto {
 
 /// Response DTO for GET /api/playbooks/presets.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PresetSummaryListDto {
     pub total: usize,
     pub presets: Vec<PresetSummaryDto>,

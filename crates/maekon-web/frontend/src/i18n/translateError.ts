@@ -1,10 +1,10 @@
 /**
  * Wire-code → localized message translator for ADR-019 IpcError envelopes.
  *
- * Keys follow the 41 wire codes from
+ * Keys follow the wire codes from
  * `crates/maekon-core/tests/wire_contract_snapshot.expected.txt`.
- * Coverage is enforced at build time via
- * `scripts/check-error-i18n-coverage.ts`.
+ * Coverage across all 5 runtime locales (en/ko/ja/zh-CN/es) is enforced by
+ * the vitest suite in `__tests__/translateError.test.ts`.
  *
  * This translator is deliberately NOT wired into react-i18next's resources.
  * Wire codes contain dots (`config.invalid`, `provider.bedrock.unsupported`)
@@ -13,23 +13,33 @@
  * translation keys (`errors.boundaryTitle`, etc.).
  *
  * See:
- * - [ADR-019 Follow-up #3 design](../../../../docs/reviews/2026-04-20-adr019-followup-frontend-i18n-wiring-design.md)
+ * - [ADR-019](../../../../docs/architecture/ADR-019-error-code-infrastructure.md)
  * - `src/api/desktop.ts` for the `IpcError` type + `isIpcError` guard.
  */
 
 import { isIpcError } from '../api/desktop'
 
 import enMessages from './wire-errors.en.json'
+import esMessages from './wire-errors.es.json'
+import jaMessages from './wire-errors.ja.json'
 import koMessages from './wire-errors.ko.json'
+import zhCnMessages from './wire-errors.zh-CN.json'
 
 type LocaleMap = Record<string, string>
 
-/** Supported locales for wire-error translation. */
-export type WireErrorLocale = 'en' | 'ko'
+/**
+ * 와이어 에러 번역이 지원하는 로케일.
+ * 앱 런타임 로케일(`src/i18n/index.ts` 의 supportedLngs: ko/en/ja/zh-CN/es)과
+ * 1:1 로 일치해야 한다. 새 런타임 로케일을 추가하면 여기에도 반드시 추가할 것.
+ */
+export type WireErrorLocale = 'en' | 'ko' | 'ja' | 'zh-CN' | 'es'
 
 const resources: Record<WireErrorLocale, LocaleMap> = {
   en: enMessages as LocaleMap,
   ko: koMessages as LocaleMap,
+  ja: jaMessages as LocaleMap,
+  'zh-CN': zhCnMessages as LocaleMap,
+  es: esMessages as LocaleMap,
 }
 
 /**

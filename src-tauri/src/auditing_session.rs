@@ -78,8 +78,68 @@ impl ConversationSession for AuditingSession {
         self.inner.provider_name()
     }
 
+    /// Forward the inner session's external/egress status (E21 #4869). Without
+    /// this, the composed session falls back to the trait default `false`,
+    /// misreporting an external (off-device) session as local to any caller
+    /// that inspects the outermost decorator.
+    fn is_external(&self) -> bool {
+        self.inner.is_external()
+    }
+
+    /// Forward interrupt to the inner session AND audit it (E21 #5017). Records a
+    /// pre-event then an outcome event, then forwards the Result. MUST NOT
+    /// silently drop — the decorator order is `Auditing(Guarded(inner))`, so a
+    /// missing override here hits the default `InvalidArguments` and the
+    /// interrupt never reaches the privacy/transport layers.
+    async fn interrupt(&self) -> Result<(), CoreError> {
+        self.record_event("interrupt", None).await;
+        let result = self.inner.interrupt().await;
+        let outcome = if result.is_ok() {
+            "interrupt_ok"
+        } else {
+            "interrupt_error"
+        };
+        self.record_event(outcome, None).await;
+        result
+    }
+
+    /// Forward steer to the inner session AND audit it (E21 #5017). The steering
+    /// content is NOT logged (only the message role) — same payload discretion
+    /// as `send_message` (the inner Guarded decorator owns content sanitization).
+    async fn steer(&self, message: &SessionMessage) -> Result<(), CoreError> {
+        self.record_event("steer", serde_json::to_value(message.role).ok())
+            .await;
+        let result = self.inner.steer(message).await;
+        let outcome = if result.is_ok() {
+            "steer_ok"
+        } else {
+            "steer_error"
+        };
+        self.record_event(outcome, None).await;
+        result
+    }
+
     async fn terminate(&self) {
         self.inner.terminate().await;
+    }
+}
+
+impl AuditingSession {
+    /// Record a single session audit entry for a turn-control event (E21 #5017),
+    /// reusing the `Message` category. `payload` is an optional render-safe value
+    /// (e.g. the message role) — never raw steering content.
+    async fn record_event(&self, event_type: &str, payload: Option<serde_json::Value>) {
+        self.audit
+            .record_session_event(SessionAuditEntry {
+                timestamp: Utc::now(),
+                session_id: self.session_id().to_string(),
+                category: SessionAuditCategory::Message,
+                event_type: event_type.to_string(),
+                provider: self.provider_name().to_string(),
+                payload,
+                duration_ms: None,
+            })
+            .await;
     }
 }
 
@@ -114,6 +174,12 @@ pub(crate) mod tests {
         }
         fn provider_name(&self) -> &str {
             "mock"
+        }
+        async fn interrupt(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn steer(&self, _message: &SessionMessage) -> Result<(), CoreError> {
+            Ok(())
         }
     }
 
@@ -204,6 +270,45 @@ pub(crate) mod tests {
         let _ = session.send_message(&msg).await;
 
         assert_eq!(audit.call_count.load(Ordering::Relaxed), 2); // inbound + outbound
+    }
+
+    #[tokio::test]
+    async fn audit_decorator_forwards_and_records_interrupt() {
+        // E21 #5017: interrupt forwards to inner (Ok) AND records pre+outcome
+        // audit entries. A mutation dropping the override (default Err) would
+        // both fail the Ok assertion and not record 2 entries.
+        let audit = Arc::new(MockAudit {
+            call_count: AtomicU32::new(0),
+        });
+        let session = AuditingSession::new(Arc::new(MockSession), audit.clone());
+        session.interrupt().await.expect("forwarded to inner Ok");
+        assert_eq!(
+            audit.call_count.load(Ordering::Relaxed),
+            2,
+            "interrupt records a pre-event + an outcome event"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_decorator_forwards_and_records_steer() {
+        let audit = Arc::new(MockAudit {
+            call_count: AtomicU32::new(0),
+        });
+        let session = AuditingSession::new(Arc::new(MockSession), audit.clone());
+        let msg = SessionMessage {
+            role: MessageRole::User,
+            content: "steer it".to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        };
+        session.steer(&msg).await.expect("forwarded to inner Ok");
+        assert_eq!(
+            audit.call_count.load(Ordering::Relaxed),
+            2,
+            "steer records a pre-event + an outcome event"
+        );
     }
 
     #[test]

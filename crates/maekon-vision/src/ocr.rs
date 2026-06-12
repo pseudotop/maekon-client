@@ -35,6 +35,17 @@ impl OcrExtractor {
         self
     }
 
+    /// Extract text from an image using Tesseract OCR.
+    ///
+    /// # Blocking
+    ///
+    /// This method calls Tesseract synchronously and **will block the calling
+    /// thread**. When using async runtimes (Tokio), wrap this call in
+    /// [`tokio::task::spawn_blocking`] to avoid starving the executor:
+    ///
+    /// ```rust,ignore
+    /// let text = tokio::task::spawn_blocking(move || extractor.extract(&image)).await??;
+    /// ```
     pub fn extract(&self, image: &image::DynamicImage) -> Result<String, VisionError> {
         let rgba = image.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
@@ -336,6 +347,16 @@ impl OcrExtractor {
     /// Uses Tesseract word-level component images to obtain spatial coordinates.
     /// Each word that matches a component box is returned as a separate region.
     /// Reuses cached LepTess instance when available.
+    ///
+    /// # Blocking
+    ///
+    /// This method calls Tesseract synchronously and **will block the calling
+    /// thread**. When using async runtimes (Tokio), wrap this call in
+    /// [`tokio::task::spawn_blocking`] to avoid starving the executor:
+    ///
+    /// ```rust,ignore
+    /// let regions = tokio::task::spawn_blocking(move || extractor.extract_regions(&image)).await??;
+    /// ```
     pub fn extract_regions(
         &self,
         image: &image::DynamicImage,
@@ -443,9 +464,11 @@ mod tests {
     fn empty_image_returns_error() {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
-        let result = extractor.extract(&img);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VisionError::Ocr(_)));
+        let err = extractor.extract(&img).unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "empty image extract must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -486,9 +509,11 @@ mod tests {
     async fn empty_image_async_returns_error() {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
-        let result = extractor.extract_async(&img).await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VisionError::Ocr(_)));
+        let err = extractor.extract_async(&img).await.unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "empty image extract_async must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -511,9 +536,11 @@ mod tests {
     async fn extract_words_with_boxes_empty_image() {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
-        let result = extractor.extract_words_with_boxes(&img).await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VisionError::Ocr(_)));
+        let err = extractor.extract_words_with_boxes(&img).await.unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "empty image extract_words_with_boxes must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -521,26 +548,33 @@ mod tests {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
 
-        let result = extractor.extract_roi_async(&img, 0.5).await;
-        assert!(result.is_err());
+        let err = extractor.extract_roi_async(&img, 0.5).await.unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "zero-size image ROI extraction must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[test]
     fn extract_regions_empty_image_returns_error() {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
-        let result = extractor.extract_regions(&img);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VisionError::Ocr(_)));
+        let err = extractor.extract_regions(&img).unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "empty image extract_regions must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn extract_regions_async_empty_image_returns_error() {
         let extractor = OcrExtractor::new(None);
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(0, 0));
-        let result = extractor.extract_regions_async(&img).await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VisionError::Ocr(_)));
+        let err = extractor.extract_regions_async(&img).await.unwrap_err();
+        assert!(
+            matches!(err, VisionError::Ocr(_)),
+            "empty image extract_regions_async must produce Ocr error, got: {err:?}"
+        );
     }
 
     #[test]

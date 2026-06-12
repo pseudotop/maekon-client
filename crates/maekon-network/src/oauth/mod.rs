@@ -33,6 +33,9 @@ struct ActiveFlow {
     #[allow(dead_code)] // Retained for potential token re-exchange
     pkce_verifier: String,
     cancel_tx: Option<oneshot::Sender<()>>,
+    /// Background task handle retained so `OAuthClient::drop` can abort
+    /// immediately rather than waiting for the cancel channel to be noticed.
+    handle: Option<tokio::task::JoinHandle<()>>,
     status: OAuthFlowStatus,
 }
 
@@ -147,6 +150,25 @@ impl OAuthClient {
     }
 }
 
+impl Drop for OAuthClient {
+    /// Abort all in-flight background tasks immediately on drop.
+    ///
+    /// Without this, background tasks would outlive the `OAuthClient` and
+    /// attempt to lock `flows_ref` (a cloned `Arc`) after the client is gone.
+    /// `try_lock` is used because `Drop` is synchronous — if the lock is
+    /// currently held by an async task, that task will complete and notice
+    /// the channel is closed on its own; abort is best-effort here.
+    fn drop(&mut self) {
+        if let Ok(flows) = self.active_flows.try_lock() {
+            for (_, flow) in flows.iter() {
+                if let Some(ref h) = flow.handle {
+                    h.abort();
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl OAuthPort for OAuthClient {
     async fn start_flow(&self, provider_id: &str) -> Result<OAuthFlowHandle, CoreError> {
@@ -167,7 +189,7 @@ impl OAuthPort for OAuthClient {
 
         let pkce = pkce::generate_pkce();
         let state = pkce::generate_state();
-        let flow_id = uuid::Uuid::new_v4().to_string();
+        let flow_id = maekon_core::generate_id("flow");
 
         let auth_url = config
             .authorization_url(&state, &pkce.challenge)
@@ -179,29 +201,15 @@ impl OAuthPort for OAuthClient {
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
 
-        // Store active flow
-        {
-            let mut flows = self.active_flows.lock().await;
-            flows.insert(
-                flow_id.clone(),
-                ActiveFlow {
-                    provider_id: provider_id.to_string(),
-                    pkce_verifier: pkce.verifier.clone(),
-                    cancel_tx: Some(cancel_tx),
-                    status: OAuthFlowStatus::Pending,
-                },
-            );
-        }
-
         // Spawn background task: callback server → token exchange → store
         let flow_id_bg = flow_id.clone();
         let provider_id_bg = provider_id.to_string();
         let flows_ref = self.active_flows.clone();
         let http = self.http.clone();
         let secret_store = self.secret_store.clone();
-        let verifier = pkce.verifier;
+        let verifier = pkce.verifier.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let result =
                 callback_server::wait_for_callback(config.callback_port, state, cancel_rx).await;
 
@@ -254,6 +262,24 @@ impl OAuthPort for OAuthClient {
                 }
             }
         });
+
+        // Store active flow — inserted AFTER spawn so the JoinHandle is
+        // available immediately. The background task holds `flows_ref` and
+        // updates status in-place; inserting post-spawn is safe because the
+        // task acquires the lock only after `wait_for_callback` returns.
+        {
+            let mut flows = self.active_flows.lock().await;
+            flows.insert(
+                flow_id.clone(),
+                ActiveFlow {
+                    provider_id: provider_id.to_string(),
+                    pkce_verifier: pkce.verifier,
+                    cancel_tx: Some(cancel_tx),
+                    handle: Some(handle),
+                    status: OAuthFlowStatus::Pending,
+                },
+            );
+        }
 
         debug!("OAuth flow started: {flow_id} (provider: {provider_id})");
 
@@ -342,6 +368,9 @@ impl OAuthPort for OAuthClient {
                     if let Err(e) = tx.send(()) {
                         debug!("channel send failed: {e:?}");
                     }
+                }
+                if let Some(h) = flow.handle.take() {
+                    h.abort();
                 }
             }
         }
@@ -609,8 +638,17 @@ mod tests {
     async fn start_flow_unknown_provider_fails() {
         let store = Arc::new(TestSecretStore::new());
         let client = make_client(store);
-        let result = client.start_flow("nonexistent").await;
-        assert!(result.is_err());
+        let err = client.start_flow("nonexistent").await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CoreError::OAuthError {
+                    code: maekon_core::error_codes::OAuthCode::Failed,
+                    ..
+                }
+            ),
+            "unknown provider must return CoreError::OAuthError::Failed, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -778,6 +816,44 @@ mod tests {
             }
             other => panic!("expected AlreadyFresh, got {other:?}"),
         }
+    }
+
+    /// Verifies that dropping `OAuthClient` with an in-flight flow aborts the
+    /// background task immediately (best-effort via `try_lock`).  We cannot
+    /// observe abort directly in a unit test without spawning a real callback
+    /// server, so we verify the structural invariant: a flow registered in
+    /// `active_flows` has a `Some(handle)` that is not yet finished before
+    /// drop, and the drop path calls `abort()` without panicking.
+    #[tokio::test]
+    async fn oauth_manager_drop_aborts_active_flow_tasks() {
+        let store = Arc::new(TestSecretStore::new());
+        let client = make_client_with_test_port(store);
+
+        // Start a flow — this spawns the background task and registers the handle.
+        let handle = client.start_flow("openai").await.unwrap();
+        let flow_id = handle.flow_id.clone();
+
+        // The flow should be registered with a handle.
+        {
+            let flows = client.active_flows.lock().await;
+            let flow = flows.get(&flow_id).expect("flow registered");
+            assert!(
+                flow.handle.is_some(),
+                "background task handle must be stored in ActiveFlow"
+            );
+            // Task should still be running (waiting for callback).
+            if let Some(ref h) = flow.handle {
+                assert!(!h.is_finished(), "task should still be running");
+            }
+        }
+
+        // Drop the client — Drop impl calls h.abort() on all active flows.
+        // This must not panic.
+        drop(client);
+
+        // Give the runtime one yield to process the abort signal.
+        tokio::task::yield_now().await;
+        // If we reach here without panic the Drop impl is correct.
     }
 
     #[tokio::test]

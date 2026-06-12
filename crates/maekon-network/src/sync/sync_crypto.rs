@@ -102,12 +102,24 @@ mod tests {
     #[test]
     fn wrong_passphrase_fails() {
         let encrypted = encrypt("correct", b"secret").unwrap();
-        assert!(decrypt("wrong", &encrypted).is_err());
+        let err = decrypt("wrong", &encrypted).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "wrong passphrase must return CoreError::Internal, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("AES decrypt failed"),
+            "error message must mention AES decrypt, got: {err:?}"
+        );
     }
 
     #[test]
     fn empty_data_fails() {
-        assert!(decrypt("pass", &[]).is_err());
+        let err = decrypt("pass", &[]).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "empty data must return CoreError::Internal, got: {err:?}"
+        );
     }
 
     #[test]

@@ -14,7 +14,9 @@ pub async fn get_frames(
     State(context): State<StorageWebContext>,
     Query(params): Query<TimeRangeQuery>,
 ) -> Result<Json<PaginatedResponse<FrameResponse>>, ApiError> {
-    Ok(Json(FramesQueryService::new(context).get_frames(&params)?))
+    Ok(Json(
+        FramesQueryService::new(context).get_frames(&params).await?,
+    ))
 }
 
 /// GET /api/frames/:id/image
@@ -32,7 +34,6 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
     use maekon_core::models::frame::FrameMetadata;
@@ -40,7 +41,6 @@ mod tests {
     use maekon_storage::frame_storage::FrameFileStorage;
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -52,8 +52,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[test]
@@ -123,6 +122,8 @@ mod tests {
                     window_title: String::new(),
                     resolution: (1920, 1080),
                     importance: 1.0,
+                    monitor_id: None,
+                    app_bundle_id: None,
                 },
                 Some(&relative_path.to_string_lossy()),
                 None,

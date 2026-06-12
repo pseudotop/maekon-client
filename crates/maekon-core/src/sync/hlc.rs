@@ -26,6 +26,15 @@ const MAX_CLOCK_DRIFT_MS: u64 = 3_600_000;
 /// (`ConsentPermissions::cross_device_sync`) and GDPR Article 17 erasure
 /// scope. Ensure that any remote persistence of HLC data is included in
 /// the user's data export and deletion workflows.
+///
+/// **Exception — `sync_tombstones` (V38, #5174):** the HLC stored in a tombstone
+/// row is the HLC of the *erasure event itself*, not an activity timestamp — it
+/// records *when a row was deleted*, equivalent to `deleted_at`. That table is a
+/// processing-record retained under GDPR Art. 17(3) (same basis as `egress_ledger`)
+/// and is therefore *intentionally excluded* from Art. 17 erasure scope. Do NOT
+/// "fix" the apparent conflict by adding `sync_tombstones` to the erase set
+/// (`delete_all_data_inner` `ALL_TABLES`) — that would break offline-peer erasure
+/// convergence. Its bounded retention is enforced by the tombstone GC (epic #5174).
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Hlc {
     /// Wall-clock milliseconds since UNIX epoch.

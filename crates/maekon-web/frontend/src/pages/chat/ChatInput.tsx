@@ -211,7 +211,8 @@ export function ChatInput({
               type="button"
               disabled={sendDisabled || requestingSuggestions}
               onClick={onRequestSuggestions}
-              title="Get AI suggestions"
+              aria-label={t('chat.request_suggestions', 'Get AI suggestions')}
+              title={t('chat.request_suggestions', 'Get AI suggestions')}
               className="shrink-0"
             >
               {requestingSuggestions ? (

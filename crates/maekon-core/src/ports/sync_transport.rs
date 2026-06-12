@@ -34,7 +34,15 @@ use crate::sync::Hlc;
 #[async_trait]
 pub trait SyncTransport: Send + Sync {
     /// Push a local changeset to the transport for other devices to pull.
-    async fn push(&self, changes: &ChangeSet) -> Result<(), CoreError>;
+    ///
+    /// Returns the number of destinations that **confirmed receipt** (1 for the
+    /// single-endpoint File/Remote transports on success; the count of peers
+    /// that accepted the push for the LAN fan-out, which may be `0` when no peers
+    /// are discovered or all fail). `Ok(0)` is NOT an error — it means the push
+    /// completed but nothing actually left the device, which lets callers (e.g.
+    /// the #4803 egress audit, #5143) avoid recording a delivery that did not
+    /// happen. An `Err` means the push could not be attempted at all.
+    async fn push(&self, changes: &ChangeSet) -> Result<usize, CoreError>;
 
     /// Pull the next changeset from the transport since the given watermark.
     ///

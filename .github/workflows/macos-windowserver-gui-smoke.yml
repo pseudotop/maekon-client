@@ -24,14 +24,17 @@ jobs:
   gui-windowserver-smoke:
     name: GUI Bootstrap Smoke (WindowServer)
     runs-on: [self-hosted, macOS, windowserver]
+    environment: desktop-smoke
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ inputs.ref || github.sha }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
@@ -46,7 +49,7 @@ jobs:
           chmod +x "src-tauri/maekon-sandbox-worker-${TRIPLE}"
 
       - name: Build release binary
-        run: ./scripts/cargo-cache.sh build --release -p maekon-app
+        run: ./scripts/cargo-cache.sh build --locked --release -p maekon-app
 
       - name: GUI bootstrap smoke (WindowServer)
         shell: bash
@@ -85,10 +88,33 @@ jobs:
 
           echo "GUI bootstrap smoke OK (rc=$RC)"
 
-      - name: Upload WindowServer GUI smoke log
+      - name: Sanitize WindowServer GUI smoke evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        shell: bash
+        run: |
+          set -euo pipefail
+          SANITIZED_DIR="$RUNNER_TEMP/maekon-windowserver-smoke-sanitized"
+          RELEASE_TAG="${{ inputs.ref || github.ref_name }}"
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            RELEASE_TAG="v0.0.0-e19-smoke"
+          fi
+          ARTIFACT_CHECKSUM="sha256:$(printf '%s' "$GITHUB_SHA" | shasum -a 256 | awk '{print $1}')"
+          python3 scripts/sanitize_desktop_evidence.py \
+            --input "$RUNNER_TEMP/maekon-windowserver-smoke.log" \
+            --input-id windowserver-gui-smoke-log \
+            --artifact-kind log_excerpt \
+            --output-dir "$SANITIZED_DIR" \
+            --commit-sha "$GITHUB_SHA" \
+            --release-tag "$RELEASE_TAG" \
+            --artifact-checksum "$ARTIFACT_CHECKSUM" \
+            --runner-label macos-windowserver \
+            --cleanup-status pass
+
+      - name: Upload WindowServer GUI smoke sanitized bundle
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: windowserver-gui-smoke-log
-          path: ${{ runner.temp }}/maekon-windowserver-smoke.log
+          name: windowserver-gui-smoke-log-sanitized-bundle
+          path: ${{ runner.temp }}/maekon-windowserver-smoke-sanitized
           if-no-files-found: ignore
+          retention-days: 7

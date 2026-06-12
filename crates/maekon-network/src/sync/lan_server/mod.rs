@@ -43,6 +43,9 @@ use tracing::{debug, error, info, warn};
 
 use maekon_core::error::CoreError;
 use maekon_core::models::sync::ChangeSet;
+use maekon_core::ports::change_extractor::ChangeExtractor;
+use maekon_core::ports::change_merger::ChangeMerger;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 
 use handlers::build_router;
 use session::SessionStore;
@@ -86,11 +89,19 @@ struct ServerState {
     fingerprint: String,
     passphrase: String,
     session_store: SessionStore,
-    /// Changesets received via push, keyed by origin_device_id.
-    /// In a full implementation this would be backed by the storage layer.
+    /// #5174 LAN: storage-backed sync. When set (production), `/sync/pull` serves the
+    /// extractor's real changes and `/sync/push` applies via the merger — the device's
+    /// SQLite is the source of truth. When `None` (transport-level unit tests), the
+    /// in-memory `received`/`outbound` buffers below are used instead.
+    extractor: Option<Arc<dyn ChangeExtractor>>,
+    merger: Option<Arc<dyn ChangeMerger>>,
+    /// #5174 LAN consent gate: serving `/sync/pull` (egress of this device's data) and
+    /// applying `/sync/push` (ingress) both require `cross_device_sync` consent — the
+    /// server is a real data channel, not merely auth-gated. `None` = unmanaged (tests).
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    /// Fallback buffer for pushes when no merger is wired (test-only).
     received_changesets: Arc<RwLock<Vec<ChangeSet>>>,
-    /// Pending outbound changesets for peers to pull.
-    /// Populated by the SyncEngine when local changes are extracted.
+    /// Fallback buffer for pulls when no extractor is wired (test-only).
     outbound_changesets: Arc<RwLock<Vec<ChangeSet>>>,
 }
 
@@ -102,9 +113,14 @@ pub struct LanPeerServer {
     port: u16,
     fingerprint: String,
     tls_enabled: bool,
-    /// Changesets received from peers via POST /sync/push.
+    /// #5174 LAN storage-backing (see `ServerState`). `None` = transport-test buffer mode.
+    extractor: Option<Arc<dyn ChangeExtractor>>,
+    merger: Option<Arc<dyn ChangeMerger>>,
+    /// #5174 LAN consent gate (see `ServerState`).
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    /// Test-only fallback buffer for pushes when `merger` is `None`.
     received_changesets: Arc<RwLock<Vec<ChangeSet>>>,
-    /// Changesets queued for peers to pull via GET /sync/pull.
+    /// Test-only fallback buffer for pulls when `extractor` is `None`.
     outbound_changesets: Arc<RwLock<Vec<ChangeSet>>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     server_handle: Option<tokio::task::JoinHandle<()>>,
@@ -126,12 +142,29 @@ impl LanPeerServer {
             port: 0,
             fingerprint,
             tls_enabled: false,
+            extractor: None,
+            merger: None,
+            consent_manager: None,
             received_changesets: Arc::new(RwLock::new(Vec::new())),
             outbound_changesets: Arc::new(RwLock::new(Vec::new())),
             shutdown_tx: None,
             server_handle: None,
             running: false,
         }
+    }
+
+    /// #5174 LAN: wire SQLite-backed sync (production). Must be called BEFORE `start()`
+    /// (the per-request `ServerState` is cloned from these fields at router-build time).
+    /// Left unset (`None`) by transport-level unit tests, which use the in-memory buffers.
+    pub fn set_storage(
+        &mut self,
+        extractor: Option<Arc<dyn ChangeExtractor>>,
+        merger: Option<Arc<dyn ChangeMerger>>,
+        consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    ) {
+        self.extractor = extractor;
+        self.merger = merger;
+        self.consent_manager = consent_manager;
     }
 
     /// Start the HTTPS server on the specified port (0 = ephemeral OS-assigned).
@@ -160,6 +193,9 @@ impl LanPeerServer {
             fingerprint: self.fingerprint.clone(),
             passphrase: self.passphrase.clone(),
             session_store: SessionStore::new(),
+            extractor: self.extractor.clone(),
+            merger: self.merger.clone(),
+            consent_manager: self.consent_manager.clone(),
             received_changesets: Arc::clone(&self.received_changesets),
             outbound_changesets: Arc::clone(&self.outbound_changesets),
         };

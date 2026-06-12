@@ -60,7 +60,7 @@ impl Default for IntegrityConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelemetryConfig {
-    #[serde(default)]
+    #[serde(default = "default_telemetry_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub crash_reports: bool,
@@ -82,6 +82,10 @@ pub struct TelemetryConfig {
     pub service_name: String,
 }
 
+fn default_telemetry_enabled() -> bool {
+    true
+}
+
 fn default_telemetry_sample_rate() -> f64 {
     1.0
 }
@@ -93,13 +97,23 @@ fn default_telemetry_service_name() -> String {
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_telemetry_enabled(),
             crash_reports: false,
             usage_analytics: false,
             performance_metrics: false,
             otlp_endpoint: None,
             sample_rate: default_telemetry_sample_rate(),
             service_name: default_telemetry_service_name(),
+        }
+    }
+}
+
+impl TelemetryConfig {
+    /// Force the exporter intent off for pre-consent bootstrap paths.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
         }
     }
 }
@@ -171,6 +185,16 @@ impl UpdateChannel {
     }
 }
 
+impl std::fmt::Display for UpdateChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stable => f.write_str("stable"),
+            Self::PreRelease => f.write_str("pre_release"),
+            Self::Nightly => f.write_str("nightly"),
+        }
+    }
+}
+
 // ── UpdateConfig ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +228,16 @@ pub struct UpdateConfig {
     pub signature_public_key: String,
     #[serde(default)]
     pub min_allowed_version: Option<String>,
+    /// Update **ceiling** — managed-config / MDM update kill-switch (#4836).
+    /// When set, the auto-updater will NOT offer or install any release **above**
+    /// this version; the device is held at its current version (reported as
+    /// up-to-date, not an error). Combined with an MDM lock
+    /// (`ManagedUpdate.max_allowed_version`) this freezes a fleet at a known-good
+    /// version — a soft kill-switch that, unlike `update.enabled = false`, still
+    /// permits updates *up to* the ceiling. Empty/None = no ceiling. Must be
+    /// valid semver and `>= min_allowed_version` when both are set.
+    #[serde(default)]
+    pub max_allowed_version: Option<String>,
 }
 
 impl Default for UpdateConfig {
@@ -220,6 +254,7 @@ impl Default for UpdateConfig {
             require_signature_verification: default_update_require_signature(),
             signature_public_key: default_update_signature_public_key(),
             min_allowed_version: None,
+            max_allowed_version: None,
         }
     }
 }
@@ -288,6 +323,44 @@ impl UpdateConfig {
                 code: crate::error_codes::ConfigCode::Invalid,
                 message: format!("update.min_allowed_version must be valid semver: {}", e),
             })?;
+        }
+
+        // #4836: the optional update ceiling must be valid semver, and when a
+        // floor is also set the window must be non-empty (ceiling >= floor) —
+        // a ceiling below the floor would reject every release, which is a
+        // config mistake rather than an intentional freeze, so fail loudly.
+        if let Some(version_ceiling) = self
+            .max_allowed_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let ceiling =
+                semver::Version::parse(version_ceiling).map_err(|e| CoreError::Config {
+                    code: crate::error_codes::ConfigCode::Invalid,
+                    message: format!("update.max_allowed_version must be valid semver: {}", e),
+                })?;
+
+            if let Some(version_floor) = self
+                .min_allowed_version
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                // The floor was already validated as parseable above.
+                let floor =
+                    semver::Version::parse(version_floor).map_err(|e| CoreError::Config {
+                        code: crate::error_codes::ConfigCode::Invalid,
+                        message: format!("update.min_allowed_version must be valid semver: {}", e),
+                    })?;
+                if ceiling < floor {
+                    return Err(CoreError::Config {
+                        code: crate::error_codes::ConfigCode::Invalid,
+                        message: format!(
+                            "update.max_allowed_version ({}) must be >= update.min_allowed_version ({})",
+                            ceiling, floor
+                        ),
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -390,12 +463,11 @@ mod tests {
     fn validate_integrity_policy_passes_with_default_config() {
         // Guard: prevents regressing to a hardcoded default that might
         // conflict with validation (e.g., a future non-base64 placeholder).
-        let config = UpdateConfig::default();
-        assert!(
-            config.validate_integrity_policy().is_ok(),
-            "default UpdateConfig must validate: {:?}",
-            config.validate_integrity_policy()
-        );
+        // validate_integrity_policy returns Result<(), CoreError>; the unit
+        // value carries no information, so Ok(()) is the complete contract.
+        UpdateConfig::default()
+            .validate_integrity_policy()
+            .expect("default UpdateConfig must validate");
     }
 
     #[test]
@@ -406,5 +478,80 @@ mod tests {
         // that would re-introduce the "user-configured override" false
         // positive during key rotation.
         assert_eq!(UpdateConfig::default().signature_public_key, "");
+    }
+
+    // #4836: update ceiling (`max_allowed_version`) validation.
+
+    fn signed_update_config() -> UpdateConfig {
+        // A minimal valid enabled config (signature verification on, empty
+        // override key) so validation reaches the version-window checks.
+        UpdateConfig {
+            enabled: true,
+            require_signature_verification: true,
+            signature_public_key: String::new(),
+            ..UpdateConfig::default()
+        }
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_version_window() {
+        let mut config = signed_update_config();
+        config.min_allowed_version = Some("1.0.0".to_string());
+        config.max_allowed_version = Some("2.5.0".to_string());
+        // validate_integrity_policy returns Result<(), CoreError>; Ok(()) is the
+        // full contract — the unit value has no further properties to assert.
+        config
+            .validate_integrity_policy()
+            .expect("a valid [min, max] version window must pass validation");
+    }
+
+    #[test]
+    fn validate_rejects_malformed_max_allowed_version() {
+        let mut config = signed_update_config();
+        config.max_allowed_version = Some("not-semver".to_string());
+        let err = config
+            .validate_integrity_policy()
+            .expect_err("malformed ceiling must be rejected");
+        assert!(
+            format!("{err}").contains("max_allowed_version"),
+            "error must name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_ceiling_below_floor() {
+        let mut config = signed_update_config();
+        config.min_allowed_version = Some("3.0.0".to_string());
+        config.max_allowed_version = Some("2.0.0".to_string());
+        let err = config
+            .validate_integrity_policy()
+            .expect_err("an empty window (ceiling < floor) must be rejected");
+        assert!(
+            format!("{err}").contains("must be >="),
+            "error must explain the window inversion, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_allows_ceiling_equal_to_floor() {
+        // A single-version pin (min == max) is a valid (degenerate) window.
+        let mut config = signed_update_config();
+        config.min_allowed_version = Some("2.0.0".to_string());
+        config.max_allowed_version = Some("2.0.0".to_string());
+        // Contract: ceiling == floor is allowed (degenerate window: pins the fleet to
+        // exactly one version). The ">= floor" check must treat equality as valid.
+        config
+            .validate_integrity_policy()
+            .expect("min_allowed_version == max_allowed_version must be accepted as a valid single-version pin");
+        // Confirm the pinned values survived the validation call.
+        assert_eq!(config.min_allowed_version.as_deref(), Some("2.0.0"));
+        assert_eq!(config.max_allowed_version.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn default_update_config_has_no_version_window() {
+        let config = UpdateConfig::default();
+        assert!(config.min_allowed_version.is_none());
+        assert!(config.max_allowed_version.is_none());
     }
 }

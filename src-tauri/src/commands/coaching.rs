@@ -2,6 +2,7 @@ use serde::Serialize;
 use tauri::command;
 
 use crate::ipc_error::IpcError;
+use crate::magic_overlay::OverlayFullscreenPolicyPayload;
 use crate::runtime_state::{AppState, ConfigRuntimeState};
 /// Dismiss a coaching overlay message with the given action.
 /// If "later", snoozes the profile for 15 minutes.
@@ -145,6 +146,13 @@ pub struct OverlayStateResponse {
     pub visible: bool,
 }
 
+/// Fullscreen policy response for overlay IPC diagnostics.
+#[derive(Serialize)]
+pub struct OverlayFullscreenPolicyResponse {
+    pub ok: bool,
+    pub state: Option<OverlayFullscreenPolicyPayload>,
+}
+
 /// Toggle overlay between click-through and interactive modes.
 #[command]
 pub async fn toggle_overlay_interactive(
@@ -155,6 +163,20 @@ pub async fn toggle_overlay_interactive(
         overlay.set_interactive(interactive);
     }
     Ok(())
+}
+
+/// Return the latest fullscreen policy decision for overlay triggering.
+#[command]
+pub async fn get_overlay_fullscreen_policy_state(
+    state: tauri::State<'_, AppState>,
+) -> Result<OverlayFullscreenPolicyResponse, IpcError> {
+    Ok(OverlayFullscreenPolicyResponse {
+        ok: true,
+        state: state
+            .magic_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.fullscreen_policy_state()),
+    })
 }
 
 /// Toggle overlay suggestions panel mode.

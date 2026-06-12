@@ -13,11 +13,24 @@ use crate::error::StorageError;
 
 impl SqliteStorage {
     pub fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::list_session_stats_inner(read.conn(), limit)
+    }
 
+    /// Async `list_session_stats` over the read funnel (ADR-026 PR-5).
+    pub(crate) async fn list_session_stats_async(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SessionStats>, StorageError> {
+        self.with_conn_read(move |conn| Self::list_session_stats_inner(conn, limit))
+            .await
+    }
+
+    fn list_session_stats_inner(
+        conn: &rusqlite::Connection,
+        limit: usize,
+    ) -> Result<Vec<SessionStats>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT session_id, started_at, ended_at, total_events, total_frames, total_idle_secs
@@ -72,11 +85,26 @@ impl SqliteStorage {
         &self,
         from_hour: &str,
     ) -> Result<Vec<HourlyMetricsRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::list_hourly_metrics_since_inner(read.conn(), from_hour)
+    }
 
+    /// Async `list_hourly_metrics_since` over the read funnel (ADR-026 PR-7).
+    pub(crate) async fn list_hourly_metrics_since_async(
+        &self,
+        from_hour: &str,
+    ) -> Result<Vec<HourlyMetricsRecord>, StorageError> {
+        // owned move into the Send + 'static closure (no borrowed &str).
+        let from_hour = from_hour.to_owned();
+        self.with_conn_read(move |conn| Self::list_hourly_metrics_since_inner(conn, &from_hour))
+            .await
+    }
+
+    fn list_hourly_metrics_since_inner(
+        conn: &rusqlite::Connection,
+        from_hour: &str,
+    ) -> Result<Vec<HourlyMetricsRecord>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT hour, cpu_avg, cpu_max, memory_avg, memory_max, sample_count

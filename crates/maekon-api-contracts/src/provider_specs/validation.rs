@@ -8,7 +8,10 @@ use super::enums::{
     ModelCatalogStrategy, SubprocessAuthProbeMode, SurfaceCapabilityKind, SurfaceExecutionKind,
 };
 use super::helpers::{surface_declares_model_selection, transport_url_is_allowed};
-use super::models::ProviderSurfaceCatalog;
+use super::models::{
+    ProviderCliCompatibilitySpec, ProviderSurfaceCatalog, ProviderSurfaceSpec,
+    SubprocessTransportSpec,
+};
 use super::parsers::{
     parse_auth_scheme, parse_model_catalog_strategy, parse_provider_type, parse_request_shape,
     parse_subprocess_auth_probe_mode, parse_subprocess_invocation_mode,
@@ -315,7 +318,7 @@ pub(super) fn validate_surface_catalog(catalog: &ProviderSurfaceCatalog) -> Resu
                             return Err(format!(
                                 "Surface '{}' has unsupported model catalog response shape '{}'.",
                                 surface.surface_id, transport.response_shape
-                            ))
+                            ));
                         }
                     }
 
@@ -388,6 +391,13 @@ pub(super) fn validate_surface_catalog(catalog: &ProviderSurfaceCatalog) -> Resu
                         surface.surface_id
                     ));
                 }
+                let compatibility = surface.compatibility.as_ref().ok_or_else(|| {
+                    format!(
+                        "Subprocess surface '{}' must declare compatibility.",
+                        surface.surface_id
+                    )
+                })?;
+                validate_subprocess_compatibility(surface, subprocess, compatibility)?;
             }
         }
     }
@@ -420,6 +430,142 @@ pub(super) fn validate_surface_catalog(catalog: &ProviderSurfaceCatalog) -> Resu
         }
     }
 
+    Ok(())
+}
+
+fn validate_subprocess_compatibility(
+    surface: &ProviderSurfaceSpec,
+    subprocess: &SubprocessTransportSpec,
+    compatibility: &ProviderCliCompatibilitySpec,
+) -> Result<(), String> {
+    if compatibility.matrix_version.trim().is_empty() {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility matrix_version cannot be empty.",
+            surface.surface_id
+        ));
+    }
+    if compatibility.minimum_supported_version.trim().is_empty() {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility minimum_supported_version cannot be empty.",
+            surface.surface_id
+        ));
+    }
+    validate_non_empty_entries(
+        &surface.surface_id,
+        "compatibility.supported_oses",
+        &compatibility.supported_oses,
+    )?;
+    validate_non_empty_entries(
+        &surface.surface_id,
+        "compatibility.version_probe_command",
+        &compatibility.version_probe_command,
+    )?;
+    validate_non_empty_entries(
+        &surface.surface_id,
+        "compatibility.ci_fake_cli_contracts",
+        &compatibility.ci_fake_cli_contracts,
+    )?;
+    validate_non_empty_entries(
+        &surface.surface_id,
+        "compatibility.known_bad_versions",
+        &compatibility.known_bad_versions,
+    )?;
+    validate_non_empty_entries(
+        &surface.surface_id,
+        "compatibility.notes",
+        &compatibility.notes,
+    )?;
+
+    let mut seen_oses = HashSet::new();
+    for os in &compatibility.supported_oses {
+        let normalized = os.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "windows" | "macos" | "linux" => {}
+            _ => {
+                return Err(format!(
+                    "Subprocess surface '{}' compatibility contains unsupported OS '{}'.",
+                    surface.surface_id, os
+                ));
+            }
+        }
+        if !seen_oses.insert(normalized) {
+            return Err(format!(
+                "Subprocess surface '{}' compatibility contains duplicate supported OS '{}'.",
+                surface.surface_id, os
+            ));
+        }
+    }
+
+    if compatibility.auth_probe_command != subprocess.auth_probe_command {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility auth_probe_command must match subprocess_transport.",
+            surface.surface_id
+        ));
+    }
+    if compatibility.invocation_mode != subprocess.invocation_mode {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility invocation_mode must match subprocess_transport.",
+            surface.surface_id
+        ));
+    }
+
+    match compatibility.output_envelope.trim() {
+        "file_or_stdout_json"
+        | "json_envelope"
+        | "raw_json_stdout_with_flag_fallback"
+        | "manual_gui_unstructured" => {}
+        other => {
+            return Err(format!(
+                "Subprocess surface '{}' compatibility output_envelope '{}' is unsupported.",
+                surface.surface_id, other
+            ));
+        }
+    }
+
+    match compatibility.ocr_support.trim() {
+        "supported" if surface.supports.ocr => {}
+        "unsupported" if !surface.supports.ocr => {}
+        other => {
+            return Err(format!(
+                "Subprocess surface '{}' compatibility ocr_support '{}' does not match surface supports.",
+                surface.surface_id, other
+            ));
+        }
+    }
+
+    if compatibility.session_support.trim().is_empty() {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility session_support cannot be empty.",
+            surface.surface_id
+        ));
+    }
+    if surface.preferred_for_product_auth && !compatibility.manual_live_smoke_required {
+        return Err(format!(
+            "Subprocess surface '{}' compatibility must require manual live smoke when preferred_for_product_auth is true.",
+            surface.surface_id
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_non_empty_entries(
+    surface_id: &str,
+    field_name: &str,
+    values: &[String],
+) -> Result<(), String> {
+    if values.is_empty() {
+        return Err(format!(
+            "Subprocess surface '{}' {} must contain at least one entry.",
+            surface_id, field_name
+        ));
+    }
+    if values.iter().any(|value| value.trim().is_empty()) {
+        return Err(format!(
+            "Subprocess surface '{}' {} contains an empty entry.",
+            surface_id, field_name
+        ));
+    }
     Ok(())
 }
 

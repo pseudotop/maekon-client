@@ -1,9 +1,8 @@
 //! Inline unit tests for `sqlite::metrics`.
 //!
-//! Test harness convention per the Phase 5-D8 spec
-//! (`docs/reviews/2026-04-18-phase5-d8-storage-test-backfill-spec.md`):
-//! each test module defines its own `open_db()` locally. Do NOT centralize
-//! this helper into `test_utils.rs` — that is an explicit follow-up item.
+//! Test harness convention: each test module defines its own `open_db()`
+//! locally. Do NOT centralize this helper into `test_utils.rs`; keeping the
+//! setup local makes each storage test's migration assumptions explicit.
 
 // `open_db()` is defined for future Err-branch tests that need a raw
 // Connection handle, but is currently unused because every active
@@ -14,7 +13,6 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Timelike, Utc};
-use maekon_core::error::CoreError;
 use maekon_core::models::activity::{ProcessSnapshot, ProcessSnapshotEntry, SessionStats};
 use maekon_core::models::system::{NetworkInfo, SystemMetrics};
 use maekon_core::ports::storage::MetricsStorage;
@@ -270,11 +268,11 @@ async fn cleanup_old_idle_periods_preserves_active_even_if_start_is_old() {
 async fn increment_session_counters_on_nonexistent_is_noop() {
     let storage = open_storage();
     // No upsert first — just call increment on a session_id that doesn't exist.
-    let result = storage
+    // SQLite UPDATE on 0 rows is not an error; the call must also leave no row behind.
+    storage
         .increment_session_counters("does-not-exist", 1, 1, 1)
-        .await;
-    // SQLite UPDATE on 0 rows is not an error.
-    assert!(result.is_ok());
+        .await
+        .expect("increment_session_counters on nonexistent session must not error (#5594)");
 
     let got = storage.get_session("does-not-exist").await.unwrap();
     assert!(got.is_none(), "increment must not create the row");
@@ -461,7 +459,7 @@ async fn get_process_snapshots_invalid_json_in_column_silently_defaults_to_empty
 
     // Direct-insert a row with malformed JSON in snapshot_data.
     {
-        let conn = arc.lock().unwrap();
+        let conn = arc.test_lock();
         conn.execute(
             "INSERT INTO process_snapshots (timestamp, snapshot_data) VALUES (?1, ?2)",
             rusqlite::params![Utc::now().to_rfc3339(), "{not:valid json"],
@@ -487,29 +485,43 @@ async fn get_process_snapshots_invalid_json_in_column_silently_defaults_to_empty
     );
 }
 
+// #4928: 내부 커넥션 뮤텍스를 `parking_lot::Mutex` 로 전환하면서 poison 개념이
+// 사라졌다(parking_lot 은 패닉 시 락을 poison 하지 않음). 따라서 "poison → Err"
+// 계약은 더 이상 성립하지 않는다. 대신 패닉을 일으킨 스레드가 락을 놓은 뒤에도
+// 후속 save_metrics 가 정상 동작함을 검증한다(parking_lot 의 핵심 이점 — B2 해소).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn save_metrics_mutex_poison_returns_err_variant_only() {
+async fn save_metrics_succeeds_after_panicking_lock_holder() {
     let storage = open_storage();
     let conn_arc = storage.connection_arc();
 
-    // Poison the lock from a blocking task.
+    // 다른 스레드에서 락을 잡은 채 패닉 — parking_lot 은 poison 하지 않으므로
+    // 락은 정상적으로 해제된다.
     let c = conn_arc.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        let _guard = c.lock().unwrap();
-        panic!("intentional poison");
+        let _guard = c.test_lock();
+        panic!("intentional panic while holding the lock");
     })
     .await;
 
-    // The subsequent save_metrics should propagate as CoreError::Storage.
-    // Variant-only match — error string varies per call site (see spec Section 7).
-    // iter-47: changed from Internal → Storage when StorageError::Internal
-    // mapping was redirected to storage.failed (observed failure IS a storage op).
-    let result = storage
-        .save_metrics(&sample_metrics(Utc::now(), 10.0))
-        .await;
+    // 후속 save_metrics 는 (poison 없이) 정상 성공해야 한다.
+    let ts = Utc::now();
+    let result = storage.save_metrics(&sample_metrics(ts, 10.0)).await;
+    // Line 510: parking_lot never poisons — save_metrics must return Ok(()).
+    result.expect("parking_lot must not poison; save_metrics should succeed");
+
+    // Read-back: confirm the row actually landed in the DB.
+    let rows = storage
+        .get_metrics(ts - Duration::seconds(1), ts + Duration::seconds(1), 10)
+        .await
+        .expect("get_metrics after panicking lock holder should succeed");
+    assert_eq!(
+        rows.len(),
+        1,
+        "saved metric must be readable after panicking lock holder"
+    );
     assert!(
-        matches!(result, Err(CoreError::Storage { .. })),
-        "expected Err(CoreError::Storage {{ .. }}), got {result:?}"
+        (rows[0].cpu_usage - 10.0).abs() < f32::EPSILON,
+        "cpu_usage must round-trip"
     );
 }
 

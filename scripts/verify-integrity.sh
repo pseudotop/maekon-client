@@ -5,12 +5,21 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTIFACT_DIR="${ROOT_DIR}/artifacts/integrity"
 CARGO_CMD="$ROOT_DIR/scripts/cargo-cache.sh"
 VET_MODE="${INTEGRITY_VET_MODE:-advisory}"
+VET_CHECK_ARGS=(check --locked --no-minimize-exemptions)
 
 mkdir -p "${ARTIFACT_DIR}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     printf "Missing required command: %s\n" "$1" >&2
+    exit 1
+  fi
+}
+
+require_cargo_subcommand() {
+  if ! "$CARGO_CMD" "$1" --version >/dev/null 2>&1; then
+    printf "Missing required cargo subcommand: cargo %s\n" "$1" >&2
+    printf "Install: cargo install cargo-%s --locked\n" "$1" >&2
     exit 1
   fi
 }
@@ -25,39 +34,22 @@ case "$VET_MODE" in
     ;;
 esac
 
-if ! command -v cargo-audit >/dev/null 2>&1; then
-  printf "cargo-audit is required. Install: cargo install cargo-audit --locked\n" >&2
-  exit 1
-fi
-
-if ! command -v cargo-deny >/dev/null 2>&1; then
-  printf "cargo-deny is required. Install: cargo install cargo-deny --locked\n" >&2
-  exit 1
-fi
-
-if ! command -v cargo-vet >/dev/null 2>&1; then
-  printf "cargo-vet is required. Install: cargo install cargo-vet --locked\n" >&2
-  exit 1
-fi
-
-if ! command -v cargo-cyclonedx >/dev/null 2>&1; then
-  printf "cargo-cyclonedx is required. Install: cargo install cargo-cyclonedx --locked\n" >&2
-  exit 1
-fi
-
 cd "${ROOT_DIR}"
+
+require_cargo_subcommand audit
+require_cargo_subcommand deny
+require_cargo_subcommand vet
+require_cargo_subcommand cyclonedx
 
 "$CARGO_CMD" test -p maekon-core update_integrity_policy
 "$CARGO_CMD" test -p maekon-app integrity_guard
 "$CARGO_CMD" test -p maekon-app verify_signature_
-# RUSTSEC-2024-0429 is a GTK3/glib transitive advisory from the Linux Tauri stack.
-# We cannot remediate it without an upstream stack migration, so keep it explicit.
-"$CARGO_CMD" audit --ignore RUSTSEC-2024-0429
+"$CARGO_CMD" audit
 "$CARGO_CMD" deny check licenses advisories sources bans
 if [[ "$VET_MODE" == "strict" ]]; then
-  "$CARGO_CMD" vet check
+  "$CARGO_CMD" vet "${VET_CHECK_ARGS[@]}"
 else
-  if ! "$CARGO_CMD" vet check; then
+  if ! "$CARGO_CMD" vet "${VET_CHECK_ARGS[@]}"; then
     printf "[integrity] cargo-vet advisory failed (strict mode remains enforced on push/schedule).\n" >&2
   fi
 fi

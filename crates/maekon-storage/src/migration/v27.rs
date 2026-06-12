@@ -63,13 +63,16 @@ mod tests {
         )
         .unwrap();
 
-        // Duplicate (regime_label, date) should fail
-        let result = conn.execute(
+        // Duplicate (regime_label, date) should fail with a UNIQUE constraint error.
+        let err = conn.execute(
             "INSERT INTO habit_streaks (regime_label, date, minutes_logged, target_minutes, met)
              VALUES ('deep_work', '2026-04-06', 90, 120, 0)",
             [],
+        ).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("unique") || err.to_string().contains("UNIQUE"),
+            "duplicate (regime_label, date) must fail with a UNIQUE constraint error; got: {err}"
         );
-        assert!(result.is_err());
     }
 
     #[test]

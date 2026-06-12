@@ -16,7 +16,9 @@ pub async fn get_focus_metrics(
     State(context): State<StorageWebContext>,
 ) -> Result<Json<FocusMetricsResponse>, ApiError> {
     debug!("GET /api/focus/metrics");
-    Ok(Json(FocusQueryService::new(context).get_focus_metrics()?))
+    Ok(Json(
+        FocusQueryService::new(context).get_focus_metrics().await?,
+    ))
 }
 
 pub async fn get_work_sessions(
@@ -25,7 +27,9 @@ pub async fn get_work_sessions(
 ) -> Result<Json<Vec<WorkSessionDto>>, ApiError> {
     debug!("GET /api/focus/sessions");
     Ok(Json(
-        FocusQueryService::new(context).get_work_sessions(&query)?,
+        FocusQueryService::new(context)
+            .get_work_sessions(&query)
+            .await?,
     ))
 }
 
@@ -35,7 +39,9 @@ pub async fn get_interruptions(
 ) -> Result<Json<Vec<InterruptionDto>>, ApiError> {
     debug!("GET /api/focus/interruptions");
     Ok(Json(
-        FocusQueryService::new(context).get_interruptions(&query)?,
+        FocusQueryService::new(context)
+            .get_interruptions(&query)
+            .await?,
     ))
 }
 
@@ -43,7 +49,9 @@ pub async fn get_suggestions(
     State(context): State<StorageWebContext>,
 ) -> Result<Json<Vec<LocalSuggestionDto>>, ApiError> {
     debug!("GET /api/focus/suggestions");
-    Ok(Json(FocusQueryService::new(context).get_suggestions()?))
+    Ok(Json(
+        FocusQueryService::new(context).get_suggestions().await?,
+    ))
 }
 
 pub async fn submit_suggestion_feedback(
@@ -55,7 +63,9 @@ pub async fn submit_suggestion_feedback(
         "POST /api/focus/suggestions/{}/feedback action={}",
         id, request.action
     );
-    FocusCommandService::new(context).submit_suggestion_feedback(id, &request)?;
+    FocusCommandService::new(context)
+        .submit_suggestion_feedback(id, &request)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -64,11 +74,9 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -81,8 +89,7 @@ mod tests {
 
     fn loopback_app() -> axum::Router {
         let state = test_app_state();
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[tokio::test]

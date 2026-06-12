@@ -66,6 +66,7 @@ function SettingsContent() {
               <p className={cn('text-xs', colors.text.secondary)}>{t('settings.unsavedChangesHint')}</p>
             </div>
             <Button
+              data-testid="settings-revert-floating"
               type="button"
               variant="secondary"
               size="lg"

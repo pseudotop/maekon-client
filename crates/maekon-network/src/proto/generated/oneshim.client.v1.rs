@@ -530,8 +530,13 @@ pub struct SuggestionEvent {
     pub priority: i32,
     #[prost(double, tag = "4")]
     pub confidence_score: f64,
+    /// Deprecated: use suggestion_type_enum (field 6) for type-safe classification.
+    /// Retained for wire compatibility with pre-cycle18 server releases.
     #[prost(string, tag = "5")]
     pub category: ::prost::alloc::string::String,
+    /// F-RC-12: typed suggestion classification (proto field 6).
+    #[prost(enumeration = "SuggestionType", tag = "6")]
+    pub suggestion_type_enum: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SendFeedbackRequest {
@@ -541,6 +546,61 @@ pub struct SendFeedbackRequest {
     pub action: i32,
     #[prost(string, tag = "3")]
     pub comment: ::prost::alloc::string::String,
+}
+/// Typed suggestion classification enum mirroring oneshim.v1.user_context.SuggestionType.
+/// field 5 (category) is deprecated — consumers should use suggestion_type_enum (field 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SuggestionType {
+    Unspecified = 0,
+    WorkGuidance = 1,
+    EmailDraft = 2,
+    ProductivityTip = 3,
+    WorkflowOptimization = 4,
+    ContextBased = 5,
+    BreakReminder = 6,
+    FocusMode = 7,
+    TakeBreak = 8,
+    NeedFocusTime = 9,
+    RestoreContext = 10,
+}
+impl SuggestionType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUGGESTION_TYPE_UNSPECIFIED",
+            Self::WorkGuidance => "SUGGESTION_TYPE_WORK_GUIDANCE",
+            Self::EmailDraft => "SUGGESTION_TYPE_EMAIL_DRAFT",
+            Self::ProductivityTip => "SUGGESTION_TYPE_PRODUCTIVITY_TIP",
+            Self::WorkflowOptimization => "SUGGESTION_TYPE_WORKFLOW_OPTIMIZATION",
+            Self::ContextBased => "SUGGESTION_TYPE_CONTEXT_BASED",
+            Self::BreakReminder => "SUGGESTION_TYPE_BREAK_REMINDER",
+            Self::FocusMode => "SUGGESTION_TYPE_FOCUS_MODE",
+            Self::TakeBreak => "SUGGESTION_TYPE_TAKE_BREAK",
+            Self::NeedFocusTime => "SUGGESTION_TYPE_NEED_FOCUS_TIME",
+            Self::RestoreContext => "SUGGESTION_TYPE_RESTORE_CONTEXT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUGGESTION_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SUGGESTION_TYPE_WORK_GUIDANCE" => Some(Self::WorkGuidance),
+            "SUGGESTION_TYPE_EMAIL_DRAFT" => Some(Self::EmailDraft),
+            "SUGGESTION_TYPE_PRODUCTIVITY_TIP" => Some(Self::ProductivityTip),
+            "SUGGESTION_TYPE_WORKFLOW_OPTIMIZATION" => Some(Self::WorkflowOptimization),
+            "SUGGESTION_TYPE_CONTEXT_BASED" => Some(Self::ContextBased),
+            "SUGGESTION_TYPE_BREAK_REMINDER" => Some(Self::BreakReminder),
+            "SUGGESTION_TYPE_FOCUS_MODE" => Some(Self::FocusMode),
+            "SUGGESTION_TYPE_TAKE_BREAK" => Some(Self::TakeBreak),
+            "SUGGESTION_TYPE_NEED_FOCUS_TIME" => Some(Self::NeedFocusTime),
+            "SUGGESTION_TYPE_RESTORE_CONTEXT" => Some(Self::RestoreContext),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

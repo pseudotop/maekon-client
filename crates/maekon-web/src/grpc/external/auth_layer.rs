@@ -3,6 +3,7 @@
 //! to the downstream service. On failure: uniform Status::unauthenticated
 //! (detail is in audit log only — no oracle signals to the client).
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -133,6 +134,12 @@ where
                             let bridge = audit_bridge.clone();
                             let remote = peer.remote_addr.to_string();
                             let cmd_id = request_id.clone();
+                            let metrics_for_task = metrics.clone();
+                            // F-RR-27: bracket with deferred_audit_in_flight gauge
+                            // (same pattern as audit_layer.rs D32 gauge bracket).
+                            metrics
+                                .deferred_audit_in_flight
+                                .fetch_add(1, Ordering::Relaxed);
                             tokio::spawn(async move {
                                 bridge
                                     .record(
@@ -148,6 +155,9 @@ where
                                         cmd_id,
                                     )
                                     .await;
+                                metrics_for_task
+                                    .deferred_audit_in_flight
+                                    .fetch_sub(1, Ordering::Relaxed);
                             });
                             return Ok(status_response(Status::unauthenticated("unauthenticated")));
                         }
@@ -164,6 +174,11 @@ where
                         let bridge = audit_bridge.clone();
                         let remote = peer.remote_addr.to_string();
                         let cmd_id = request_id.clone();
+                        let metrics_for_task = metrics.clone();
+                        // F-RR-27: bracket with deferred_audit_in_flight gauge
+                        metrics
+                            .deferred_audit_in_flight
+                            .fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             bridge
                                 .record(
@@ -179,6 +194,9 @@ where
                                     cmd_id,
                                 )
                                 .await;
+                            metrics_for_task
+                                .deferred_audit_in_flight
+                                .fetch_sub(1, Ordering::Relaxed);
                         });
                         return Ok(status_response(Status::unauthenticated("unauthenticated")));
                     }
@@ -208,6 +226,11 @@ where
                             let bridge = audit_bridge.clone();
                             let remote = peer.remote_addr.to_string();
                             let cmd_id = request_id.clone();
+                            let metrics_for_task = metrics.clone();
+                            // F-RR-27: bracket with deferred_audit_in_flight gauge
+                            metrics
+                                .deferred_audit_in_flight
+                                .fetch_add(1, Ordering::Relaxed);
                             tokio::spawn(async move {
                                 bridge
                                     .record(
@@ -223,6 +246,9 @@ where
                                         cmd_id,
                                     )
                                     .await;
+                                metrics_for_task
+                                    .deferred_audit_in_flight
+                                    .fetch_sub(1, Ordering::Relaxed);
                             });
                             return Ok(status_response(Status::unauthenticated("unauthenticated")));
                         }
@@ -239,6 +265,11 @@ where
                         let bridge = audit_bridge.clone();
                         let remote = peer.remote_addr.to_string();
                         let cmd_id = request_id.clone();
+                        let metrics_for_task = metrics.clone();
+                        // F-RR-27: bracket with deferred_audit_in_flight gauge
+                        metrics
+                            .deferred_audit_in_flight
+                            .fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             bridge
                                 .record(
@@ -254,6 +285,9 @@ where
                                     cmd_id,
                                 )
                                 .await;
+                            metrics_for_task
+                                .deferred_audit_in_flight
+                                .fetch_sub(1, Ordering::Relaxed);
                         });
                         return Ok(status_response(Status::unauthenticated("unauthenticated")));
                     }

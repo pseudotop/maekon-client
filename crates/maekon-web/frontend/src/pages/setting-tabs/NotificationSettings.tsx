@@ -3,15 +3,22 @@
  */
 import { useTranslation } from 'react-i18next'
 import type { NotificationSettings as NotificationSettingsType } from '../../api/client'
-import { Card, CardTitle, Checkbox, GuidancePanel, Input } from '../../components/ui'
+import { Button, Card, CardTitle, Checkbox, GuidancePanel, Input } from '../../components/ui'
 import { colors, form, typography } from '../../styles/tokens'
 
 interface NotificationSettingsProps {
   notification: NotificationSettingsType
   onChange: (field: keyof NotificationSettingsType, value: number | boolean) => void
+  onTestNotification?: () => void
+  isTestNotificationPending?: boolean
 }
 
-export default function NotificationSettings({ notification, onChange }: NotificationSettingsProps) {
+export default function NotificationSettings({
+  notification,
+  onChange,
+  onTestNotification,
+  isTestNotificationPending = false,
+}: NotificationSettingsProps) {
   const { t } = useTranslation()
 
   return (
@@ -46,6 +53,25 @@ export default function NotificationSettings({ notification, onChange }: Notific
           </div>
           <Checkbox checked={notification.enabled} onChange={(e) => onChange('enabled', e.target.checked)} />
         </label>
+
+        <div className={`mb-6 flex items-center justify-between gap-4 border-b pb-4 ${form.sectionDivider}`}>
+          <div>
+            <span className={`${colors.text.secondary} ${typography.weight.medium}`}>
+              {t('settings.notifTestAction')}
+            </span>
+            <p className={colors.text.tertiary}>{t('settings.notifTestDesc')}</p>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={onTestNotification}
+            isLoading={isTestNotificationPending}
+            disabled={!notification.enabled || !onTestNotification}
+          >
+            {t('settings.notifTestAction')}
+          </Button>
+        </div>
 
         <div className={`space-y-6 ${!notification.enabled ? 'pointer-events-none opacity-50' : ''}`}>
           {/* idle notification */}

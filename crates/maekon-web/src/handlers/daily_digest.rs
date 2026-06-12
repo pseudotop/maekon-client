@@ -6,6 +6,7 @@ use chrono::Utc;
 use tracing::debug;
 
 use maekon_core::models::daily_digest::{DailyDigest, DigestExporter};
+use maekon_core::models::memory_graph::ClaimStatus;
 
 use crate::error::ApiError;
 use crate::services::dashboard_service;
@@ -28,6 +29,7 @@ pub async fn get_daily_digest(
 
     // Iter-96: CoreError → ApiError via semantic From impl (preserves wire code).
     let digest = dashboard_service::get_or_generate_digest(&state, &date_str, date)
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(digest))
@@ -44,8 +46,9 @@ pub async fn get_daily_digest_today(
         .map_err(|e| ApiError::BadRequest(format!("Invalid date format: {e}")))?;
 
     // Iter-96: CoreError → ApiError via semantic From impl.
-    let digest =
-        dashboard_service::get_or_generate_digest(&state, &today, date).map_err(ApiError::from)?;
+    let digest = dashboard_service::get_or_generate_digest(&state, &today, date)
+        .await
+        .map_err(ApiError::from)?;
 
     Ok(Json(digest))
 }
@@ -65,9 +68,21 @@ pub async fn export_daily_digest(
 
     // Iter-96: CoreError → ApiError via semantic From impl (preserves wire code).
     let digest = dashboard_service::get_or_generate_digest(&state, &date_str, date)
+        .await
         .map_err(ApiError::from)?;
 
-    let markdown = DigestExporter::to_markdown(&digest);
+    // ADR-023: when the memory graph is wired, append the accumulated claims
+    // (the local second-brain view); otherwise render the plain digest.
+    let markdown = match state.core.memory_graph.as_ref() {
+        Some(mg) => {
+            let claims = mg
+                .list_claims_by_status(ClaimStatus::Active)
+                .await
+                .unwrap_or_default();
+            DigestExporter::to_markdown_with_claims(&digest, &claims)
+        }
+        None => DigestExporter::to_markdown(&digest),
+    };
     let filename = format!("daily-digest-{date_str}.md");
 
     Ok((

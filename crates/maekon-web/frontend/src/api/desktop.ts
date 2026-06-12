@@ -9,7 +9,6 @@
  *
  * See:
  * - [ADR-019](../../../../docs/architecture/ADR-019-error-code-infrastructure.md)
- * - [Follow-up #1 design](../../../../docs/reviews/2026-04-20-adr019-followup-ipc-error-dto-design.md)
  *
  * @example
  * ```ts
@@ -66,9 +65,7 @@ export function isIpcError(x: unknown): x is IpcError {
  * can always assign the result directly to UI state.
  *
  * Note: this is deliberately NOT localized. For localized user-facing
- * messages, use the i18n translator from Follow-up #3 (see
- * `docs/reviews/2026-04-20-adr019-followup-frontend-i18n-wiring-design.md`),
- * which keys off `IpcError.code`.
+ * messages, use `translateError`, which keys off `IpcError.code`.
  */
 export function errorMessageFromInvoke(err: unknown): string {
   if (isIpcError(err)) {

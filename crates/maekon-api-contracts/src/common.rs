@@ -3,6 +3,7 @@ use maekon_core::types::{TimeWindow, TimeWindowError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TimeRangeQuery {
     pub from: Option<String>,
     pub to: Option<String>,
@@ -12,6 +13,7 @@ pub struct TimeRangeQuery {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PaginationMeta {
     pub total: u64,
     pub offset: usize,
@@ -20,6 +22,7 @@ pub struct PaginationMeta {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PaginatedResponse<T: Serialize> {
     pub data: Vec<T>,
     pub pagination: PaginationMeta,

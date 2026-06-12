@@ -351,6 +351,14 @@ export function createMockDesktopPermissionSnapshot(
       state: 'needs_attention',
       status_reason: 'macos_screen_capture_missing',
     },
+    microphone: {
+      state: 'needs_attention',
+      status_reason: 'macos_microphone_not_determined',
+    },
+    input_monitoring: {
+      state: 'needs_attention',
+      status_reason: 'macos_input_monitoring_unknown',
+    },
     notifications: {
       state: 'granted',
       status_reason: 'macos_notifications_granted',

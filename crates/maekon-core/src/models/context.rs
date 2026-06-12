@@ -13,6 +13,8 @@ pub struct UserContext {
 pub struct WindowInfo {
     pub title: String,
     pub app_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_bundle_id: Option<String>,
     pub pid: u32,
     pub bounds: Option<WindowBounds>,
 }

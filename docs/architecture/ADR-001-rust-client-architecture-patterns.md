@@ -63,7 +63,7 @@ pub trait ApiClient: Send + Sync {
 
 **Rationale**: While `async fn in trait` was stabilized in Rust 1.75, object safety is not guaranteed when used as `dyn Trait`. `async_trait` is consistently applied as it is essential for the DI pattern (`Arc<dyn T>`).
 
-**Scope**: All traits in `maekon-core/src/ports/` have `#[async_trait]` applied.
+**Scope**: All traits in `maekon-core/src/ports/` have `#[async_trait]` applied. The previously synchronous `FocusStorage` and the composed `WebStorage` (with its 14 sub-traits) + `AnnotationStorage` converged to `#[async_trait]` via the [ADR-026](./ADR-026-async-storage-convergence-consent-port.md) PR-1..PR-9 migration, so there is no remaining sync-port exception. (`ConsentManagerPort`, also added by ADR-026, is the one deliberately-sync port: a pure in-memory policy authority with no `.await` surface — see ADR-026 §1 and Alternative D.)
 
 ### 3. Dependency Injection (DI) Pattern
 

@@ -14,6 +14,11 @@ pre-push:
           exit 0
         fi
         ./scripts/scan-clippy-195-patterns.sh
+    tc-coverage-matrix:
+      # Re-run the lightweight coverage matrix before push so amended commits
+      # and hook-bypassed local edits cannot reach PR review with missing
+      # feature/pipeline representative coverage.
+      run: ./scripts/check-tc-coverage-ack.sh push
     pre-release-check:
       # Runs on: (1) version tag push (v*), (2) release branch push (release/v*)
       run: ./scripts/pre-push-release-check.sh
@@ -89,6 +94,8 @@ post-checkout:
         if command -v cargo-sweep >/dev/null 2>&1 && [ -d target ]; then
           cargo sweep --time 7 2>/dev/null
         fi
+    tmp-workdir-sweep:
+      run: ./scripts/cleanup-agent-tmp.sh --execute --min-age-hours "${MAEKON_TMP_SWEEP_MIN_AGE_HOURS:-24}" --quiet
 
 post-merge:
   commands:
@@ -97,6 +104,8 @@ post-merge:
         if command -v cargo-sweep >/dev/null 2>&1 && [ -d target ]; then
           cargo sweep --time 7 2>/dev/null
         fi
+    tmp-workdir-sweep:
+      run: ./scripts/cleanup-agent-tmp.sh --execute --min-age-hours "${MAEKON_TMP_SWEEP_MIN_AGE_HOURS:-24}" --quiet
 
 pre-commit:
   parallel: true
@@ -110,6 +119,11 @@ pre-commit:
           echo "$MARKERS"
           exit 1
         fi
+    tc-coverage-matrix:
+      # Fast local guard: feature/pipeline/contract registry entries must have
+      # representative or gap-marker TC coverage before the change leaves the
+      # developer machine.
+      run: ./scripts/check-tc-coverage-ack.sh staged
     monitor-loop-size:
       # Prevent monitor loop from exceeding the budget — extract helpers
       # instead of inflating spawn_monitor_loop. Cap raised from 500 to 510
@@ -142,6 +156,13 @@ pre-commit:
         fi
         cargo clippy --workspace --all-targets --quiet -- -D warnings
       stage_fixed: true
+    orphaned-modules:
+      # F-RR-C38-01 가드: src-tauri/src 하위에 git 추적은 되지만 어떤 mod
+      # 선언으로도 도달할 수 없는(= 컴파일되지 않는 죽은) *.rs 파일이 기준선을
+      # 초과해 추가되면 차단한다. suggestion_init.rs/audio_init.rs 등 폐기된
+      # 구현이 정리되지 않고 남는 재발을 경계에서 막는다.
+      glob: "src-tauri/src/**/*.rs"
+      run: ./scripts/check-orphaned-modules.sh
     route-integrity:
       glob: "crates/maekon-web/frontend/src/{routes,pages,components/shell}/**/*.{ts,tsx}"
       run: ./scripts/verify-route-integrity.sh

@@ -131,7 +131,7 @@ fn config_to_settings_roundtrips_saved_ai_provider_profiles() {
         saved_profile.updated_at.as_deref(),
         Some("2026-03-17T00:00:00Z")
     );
-    assert_eq!(saved_profile.ai_provider.access_mode, "ProviderApiKey");
+    assert_eq!(saved_profile.ai_provider.access_mode, "provider_api_key");
     assert_eq!(saved_profile.ai_provider.llm_provider, "Remote");
 
     let llm_api = saved_profile
@@ -139,7 +139,7 @@ fn config_to_settings_roundtrips_saved_ai_provider_profiles() {
         .llm_api
         .as_ref()
         .expect("saved profile llm api");
-    assert_eq!(llm_api.provider_type, "Anthropic");
+    assert_eq!(llm_api.provider_type, "anthropic");
     assert_eq!(
         llm_api.surface_id.as_deref(),
         Some("provider_surface.anthropic.direct_api")

@@ -143,7 +143,7 @@ where
     let mtls_ca_bytes: Option<Vec<u8>> = if cfg.config.auth_mode.is_some_and(|m| m.includes_mtls())
     {
         if let Some(ref ca_path) = cfg.config.mtls_ca_path {
-            Some(std::fs::read(ca_path).map_err(|e| {
+            Some(tokio::fs::read(ca_path).await.map_err(|e| {
                 ServeExternalError::Tls(TlsLoadError::Read {
                     path: ca_path.clone(),
                     source: e,
@@ -164,8 +164,14 @@ where
     let active_conns = Arc::new(AtomicUsize::new(0));
     let cfg_arc = Arc::new(cfg);
 
-    // Spawn the custom accept loop.
-    tokio::spawn(run_accept_loop(
+    // Spawn the custom accept loop and retain the handle so we can abort it if
+    // the tonic server exits (clean shutdown or error). Without storing the
+    // handle, a panic in serve_external_inner followed by a supervisor restart
+    // leaves the old task alive: its listener is dropped so every
+    // `listener.accept()` returns Err, the task hits `warn! + continue` and
+    // spins indefinitely while holding the Arc<ExternalGrpcSpawnConfig> and a
+    // shutdown_rx clone (runtime checklist §5 — graceful shutdown on all loops).
+    let accept_loop_handle = tokio::spawn(run_accept_loop(
         listener,
         acceptor,
         cfg_arc.clone(),
@@ -217,7 +223,7 @@ where
     // RequestIdLayer is OUTERMOST per D14 revised / U5 so auth-rejected audit
     // rows correlate with client's x-request-id.
     let concurrency = cfg_arc.config.max_concurrent_streams;
-    tonic::transport::Server::builder()
+    let serve_result = tonic::transport::Server::builder()
         .concurrency_limit_per_connection(concurrency)
         .timeout(Duration::from_secs(60))
         .layer(request_id_layer::RequestIdLayer) // OUTERMOST per D14 revised / U5
@@ -226,8 +232,31 @@ where
         .add_service(DashboardServiceServer::new(service).max_decoding_message_size(1_048_576))
         .serve_with_incoming_shutdown(stream, shutdown_signal)
         .await
-        .map_err(ServeExternalError::Tonic)?;
+        .map_err(ServeExternalError::Tonic);
 
+    // Reap or abort the accept loop. If it already FINISHED, the tonic server
+    // exited because the conn stream ended — which is a clean shutdown only
+    // when the shutdown signal fired. An accept-loop PANIC also ends the
+    // stream (conn_tx drops), making tonic return Ok(()): without reaping,
+    // the panic would masquerade as a clean exit and the supervisor would
+    // give up instead of respawning (F-QA-C31-06). Resume the panic so
+    // `spawn_with_supervisor`'s catch_unwind sees it and applies the
+    // backoff-respawn policy.
+    let accept_outcome = if accept_loop_handle.is_finished() {
+        accept_loop_handle.await
+    } else {
+        // Still running (normal path): abort so a supervisor restart does not
+        // leave the old loop spinning on a dropped listener.
+        accept_loop_handle.abort();
+        Ok(())
+    };
+
+    serve_result?;
+    if let Err(join_err) = accept_outcome {
+        if join_err.is_panic() {
+            std::panic::resume_unwind(join_err.into_panic());
+        }
+    }
     info!("{log_tag}: server shut down cleanly");
     Ok(())
 }
@@ -314,7 +343,12 @@ mod tests {
         let resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
         let result = build_server_config(resolver, None);
-        assert!(result.is_ok(), "no-mTLS config should succeed");
+        // Security-relevant: build_server_config without a CA bundle must not require mTLS
+        // client auth. Pin the Ok value and confirm the config object is returned intact
+        // rather than just asserting non-error. A regression here would mean the TLS
+        // accept loop starts with an unexpectedly strict client-auth policy. (#5594)
+        let _server_cfg =
+            result.expect("no-mTLS config should succeed; TLS config must build without CA bundle");
     }
 
     /// `serve_external` binds a port and the port becomes connectable.
@@ -403,10 +437,13 @@ mod tests {
 
         // Server task should complete within 2 seconds.
         let result = tokio::time::timeout(Duration::from_secs(2), server_task).await;
-        assert!(
-            result.is_ok(),
-            "server should shut down within 2s of signal"
-        );
+        // Pin the JoinHandle inner value: `serve_external` must return Ok(()) — not panic —
+        // on graceful shutdown. A panic inside `serve_external` (e.g., failed TLS bind) would
+        // produce JoinError::panic, which is a distinct failure mode from a clean exit. (#5594)
+        result
+            .expect("server should shut down within 2s of signal")
+            .expect("serve_external must not panic on clean shutdown")
+            .expect("serve_external must return Ok on clean shutdown");
 
         let _ = kp; // keep alive
     }

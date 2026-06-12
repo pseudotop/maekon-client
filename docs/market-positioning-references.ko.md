@@ -25,7 +25,7 @@ Source pointer:
 - DeepMind AI Pointer: https://deepmind.google/blog/ai-pointer/
 - OpenAI Codex Chronicle: https://developers.openai.com/codex/memories/chronicle
 
-## DeepMind AI Pointer — 4 design principle (참조)
+## DeepMind AI Pointer — 4 Design Principle (참조)
 
 DeepMind는 AI Pointer의 4가지 design principle을 명시한다 (broader 카테고리에 동일하게 적용 가능):
 
@@ -58,7 +58,7 @@ Maekon 사용자 표면 어휘와 broader 시장 frame 매핑:
 | "edge processing" | "Show and Tell" + on-device | 클라우드 round-trip 전 로컬에서 사전 처리 |
 | "delta encoding" | (Maekon 고유) | frame 간 변경분만 전송 (대역폭 절약) |
 
-> 더 넓은 ONESHIM SSOT의 정본 어휘는 **"pointed context → actionable entity"** (제출 자료·투자자 deck에서 사용). 두 어휘는 같은 메커니즘을 매핑 — 로컬 업무 신호 + focus timeline + 화면/OCR edge → 검토 가능한 후보 흐름. 표면 어휘는 청중에 따라 다름 (개발자/사용자 frame vs. 평가관/투자자 frame).
+Maekon은 엔터프라이즈 어휘로 **"pointed context → actionable entity"** 라고도 설명할 수 있습니다. 두 표현은 같은 공개 메커니즘을 가리킵니다 — 로컬 업무 신호 + focus timeline + 화면/OCR edge → 검토 가능한 후보 흐름. 표면 어휘는 청중에 따라 다르지만, 제품 경계는 동일한 Apache-2.0 데스크톱 클라이언트입니다.
 
 ## 직접 경쟁이 아닌 이유
 
@@ -70,11 +70,10 @@ Maekon은 DeepMind AI Pointer 또는 Codex Chronicle의 head-to-head 대체로 �
 
 이는 **카테고리 인접 차별화**이지 직접 경쟁이 아니다.
 
-## Cross-reference
+## Cross-Reference
 
-- ONESHIM SSOT 경쟁 스캔: [K27] DeepMind AI Pointer, [K28] OpenAI Codex Chronicle (전체 entry는 상위 제출 패키지 `plan/_shared/references/competitor.md`)
-- ONESHIM 제품 포지셔닝: `plan/_shared/제품현황.md` v2.22+ "Maekon 어휘 통합 정책" 섹션
 - Maekon README: `## Why Maekon → Market positioning (2026)` 참조
+- 위 공개 source pointer를 이 OSS 문서의 정본 공개 레퍼런스로 유지합니다.
 
 ## 갱신 정책
 

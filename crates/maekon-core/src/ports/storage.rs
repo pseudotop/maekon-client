@@ -10,6 +10,7 @@ use crate::models::activity::{IdlePeriod, ProcessSnapshot, SessionStats};
 use crate::models::event::Event;
 use crate::models::suggestion::Suggestion;
 use crate::models::system::SystemMetrics;
+use crate::models::tiered_memory::SegmentSummary;
 
 /// Local event and suggestion persistence.
 ///
@@ -41,6 +42,17 @@ pub trait StorageService: Send + Sync {
     /// Persist an LLM/rule-based suggestion to the unified `suggestions` table.
     async fn save_suggestion(&self, suggestion: &Suggestion) -> Result<(), CoreError>;
 
+    /// Persist a freshly-closed activity segment to the `activity_segments` table.
+    ///
+    /// This is the **local INSERT producer** (#5662). On a single standalone
+    /// device the table was previously only ever populated by the cross-device
+    /// sync merger (sync is off by default), so every segment-derived surface —
+    /// Daily/Weekly Digest, Timeline, Dashboard timetable, regime distribution,
+    /// Recalibration — rendered empty. Implementations stamp the local HLC +
+    /// `origin_device_id` so the row also propagates correctly once sync is on,
+    /// and must be idempotent on the `id` primary key (segment close may retry).
+    async fn save_activity_segment(&self, summary: &SegmentSummary) -> Result<(), CoreError>;
+
     /// Update the llm_summary column of an existing activity_segments row.
     async fn update_segment_llm_summary(
         &self,
@@ -52,7 +64,10 @@ pub trait StorageService: Send + Sync {
 /// System metrics, process snapshots, idle periods, and session counters.
 ///
 /// # Errors
-/// All methods return `CoreError::Internal` on SQLite failures.
+/// All methods return `CoreError::Storage` (wire: `storage.failed`) on SQLite failures
+/// (lock contention, constraint violation, disk I/O).
+/// Iter-47: previously documented as `Internal`; aligned with `StorageService` after
+/// the mass `StorageError::Internal` → `CoreError::Storage` conversion.
 #[async_trait]
 pub trait MetricsStorage: Send + Sync {
     async fn save_metrics(&self, metrics: &SystemMetrics) -> Result<(), CoreError>;

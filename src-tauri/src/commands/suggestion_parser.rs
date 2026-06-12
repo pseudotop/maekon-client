@@ -1,6 +1,7 @@
 use chrono::Utc;
 use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
 use serde::Deserialize;
+use std::fmt;
 use tracing::debug;
 
 #[derive(Debug, Deserialize)]
@@ -16,6 +17,25 @@ struct ParsedSuggestion {
 #[derive(Debug, Deserialize)]
 struct SuggestionResponse {
     suggestions: Vec<ParsedSuggestion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestionExtractionError {
+    MissingJson,
+    InvalidJson,
+}
+
+impl fmt::Display for SuggestionExtractionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SuggestionExtractionError::MissingJson => {
+                write!(f, "AI response did not include suggestion JSON")
+            }
+            SuggestionExtractionError::InvalidJson => {
+                write!(f, "AI response included malformed suggestion JSON")
+            }
+        }
+    }
 }
 
 fn parse_type(s: &str) -> Option<SuggestionType> {
@@ -40,13 +60,14 @@ fn parse_priority(s: &str) -> Priority {
 
 /// Extract suggestion JSON from AI response text.
 /// Looks for `{"suggestions": [...]}` pattern — either bare or inside ```json fences.
-/// Returns empty vec if nothing found or parsing fails.
-pub fn try_extract_suggestions(response_text: &str) -> Vec<Suggestion> {
+pub fn extract_suggestions(
+    response_text: &str,
+) -> Result<Vec<Suggestion>, SuggestionExtractionError> {
     // Try to find JSON block
     let json_str = extract_json_block(response_text);
     let json_str = match json_str {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Err(SuggestionExtractionError::MissingJson),
     };
 
     // Parse as SuggestionResponse
@@ -54,7 +75,7 @@ pub fn try_extract_suggestions(response_text: &str) -> Vec<Suggestion> {
         Ok(r) => r,
         Err(e) => {
             debug!("suggestion extraction parse error: {e}");
-            return Vec::new();
+            return Err(SuggestionExtractionError::InvalidJson);
         }
     };
 
@@ -63,7 +84,7 @@ pub fn try_extract_suggestions(response_text: &str) -> Vec<Suggestion> {
     // because they bypass the server-side FeedbackScorer pipeline.
     let now = Utc::now();
     let expires = now + chrono::Duration::hours(4);
-    parsed
+    let suggestions: Vec<Suggestion> = parsed
         .suggestions
         .into_iter()
         .filter_map(|p| {
@@ -80,9 +101,20 @@ pub fn try_extract_suggestions(response_text: &str) -> Vec<Suggestion> {
                 expires_at: Some(expires),
                 source: SuggestionSource::LlmLocal,
                 reasoning: p.reasoning,
+                context_scope: None,
             })
         })
-        .collect()
+        .collect();
+    Ok(suggestions)
+}
+
+/// Best-effort extraction for passive chat auto-extraction.
+///
+/// Explicit "Get Suggestions" flows should call [`extract_suggestions`] so
+/// malformed AI responses surface as user-visible errors instead of silent
+/// zero-count success.
+pub fn try_extract_suggestions(response_text: &str) -> Vec<Suggestion> {
+    extract_suggestions(response_text).unwrap_or_default()
 }
 
 /// Extract a JSON object from text. Handles:
@@ -189,10 +221,32 @@ Hope that helps!"#;
     }
 
     #[test]
+    fn explicit_extract_reports_missing_json_without_raw_response() {
+        let text = "No JSON here: alice@example.com OTP 123456 payroll 김범준";
+        let err = extract_suggestions(text).unwrap_err().to_string();
+
+        assert!(err.contains("did not include suggestion JSON"));
+        assert!(!err.contains("alice@example.com"));
+        assert!(!err.contains("123456"));
+        assert!(!err.contains("payroll"));
+        assert!(!err.contains("김범준"));
+    }
+
+    #[test]
     fn malformed_json_returns_empty() {
         let text = r#"{"suggestions": [{"type": "work_guidance", "content": broken}]}"#;
         let results = try_extract_suggestions(text);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn explicit_extract_reports_malformed_json_without_raw_response() {
+        let text = r#"{"suggestions": [{"type": "work_guidance", "content": "alice@example.com", "priority": broken}]}"#;
+        let err = extract_suggestions(text).unwrap_err().to_string();
+
+        assert!(err.contains("malformed suggestion JSON"));
+        assert!(!err.contains("alice@example.com"));
+        assert!(!err.contains("broken"));
     }
 
     #[test]

@@ -70,11 +70,22 @@ impl LanSyncTransport {
         peer_id: &str,
         peer: &LanPeerInfo,
     ) -> Result<String, CoreError> {
+        // Build a per-peer TLS client whose handshake is verified by a
+        // `TofuVerifier`. Pin I/O happens here (async), OUTSIDE the verifier:
+        // read the stored pin before building, then upsert on first contact
+        // after a successful handshake.
+        let advertised_fp = if peer.fingerprint.is_empty() {
+            None
+        } else {
+            Some(peer.fingerprint.clone())
+        };
+        let (client, captured, first_contact) =
+            self.build_peer_client(peer_id, advertised_fp).await?;
+
         let base = Self::peer_url(peer, "");
 
         // Step 1: Request challenge nonce
-        let challenge_resp = self
-            .http_client
+        let challenge_resp = client
             .post(format!("{base}/sync/challenge"))
             .json(&ChallengeRequest {
                 device_id: self.local_device_id.clone(),
@@ -126,8 +137,7 @@ impl LanSyncTransport {
         )?;
 
         // Step 3: Submit verification
-        let verify_resp = self
-            .http_client
+        let verify_resp = client
             .post(format!("{base}/sync/verify"))
             .json(&VerifyRequest {
                 device_id: self.local_device_id.clone(),
@@ -164,6 +174,22 @@ impl LanSyncTransport {
             code: maekon_core::error_codes::NetworkCode::Generic,
             message: format!("parse verify from {peer_id}: {e}"),
         })?;
+
+        // TOFU: on first contact, persist the fingerprint captured during the
+        // (now successful) handshake so subsequent contacts pin against it.
+        // The parking_lot guard is not `Send`, so copy the value out and drop
+        // the guard before awaiting `upsert_pin`.
+        if first_contact {
+            let captured_fp = captured.lock().clone();
+            if let Some(fp) = captured_fp {
+                self.pin_store.upsert_pin(peer_id, &fp).await?;
+                debug!(peer_id, "pinned LAN peer cert on first contact");
+            }
+        }
+        // Cache the verified per-peer client so push/pull reuse it.
+        self.peer_clients
+            .write()
+            .insert(peer_id.to_string(), client);
 
         debug!(
             peer_id,

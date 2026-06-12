@@ -2,11 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens required by overlay components (TrackingBorder, CaptureFlash) */
+/* Design tokens required by overlay-only windows. */
 :root {
   --brand: 13 148 136;
+  --brand-hover: 15 118 110;
+  --brand-text: 13 148 136;
   --brand-signal: 20 184 166;
-  --border: 226 232 240;
+  --brand-bar: 13 148 136;
+
+  --surface-base: 255 255 255;
+  --surface-elevated: 241 245 249;
+  --surface-muted: 226 232 240;
+  --surface-inset: 248 250 252;
+  --surface-sunken: 248 250 252;
+  --surface-overlay: 255 255 255;
+
+  --content: 15 23 42;
+  --content-secondary: 71 85 105;
+  --content-tertiary: 100 116 139;
+  --content-inverse: 255 255 255;
+  --content-muted: 148 163 184;
+  --content-strong: 51 65 85;
+
+  --border: 203 213 225;
+  --border-muted: 226 232 240;
+  --border-strong: 148 163 184;
+
+  --semantic-success: 22 163 74;
+  --semantic-warning: 180 83 9;
+  --semantic-error: 220 38 38;
+  --semantic-info: 37 99 235;
+  --semantic-error-hover: 185 28 28;
+  --semantic-warning-hover: 217 119 6;
+
+  --status-connected: 34 197 94;
+  --status-connecting: 234 179 8;
+  --status-disconnected: 100 116 139;
+  --status-error: 239 68 68;
+
+  --hover: 241 245 249;
+  --active: 226 232 240;
 }
 
 /* TrackingBorder blink animation — inline styles reference this keyframe */

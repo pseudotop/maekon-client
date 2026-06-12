@@ -473,6 +473,23 @@ mod tests {
             (ops, dir)
         }
 
+        // F2 (P2): These three tests require the macOS Keychain daemon (securityd).
+        //
+        // Why `#[ignore]` is kept:
+        //   - On Linux and Windows the OS keychain backend differs (libsecret /
+        //     Windows Credential Manager); these tests exercise macOS-specific paths.
+        //   - Running `cargo test` on a developer machine without a dedicated
+        //     unlocked keychain should not trigger OS keychain dialogs or fail.
+        //   `#[ignore]` preserves that local-default behaviour.
+        //
+        // How to run locally (macOS only):
+        //   cargo test -p maekon-storage -- --ignored keychain
+        //
+        // CI (macos-latest leg of `test-platform`): the job creates a dedicated
+        // CI keychain, sets it as default, unlocks it, and disables auto-lock
+        // before running these tests explicitly via `-- --ignored keychain`.
+        // See the "Prepare CI keychain (macOS)" and "Run keychain integration
+        // tests (macOS)" steps in .github/workflows/ci.yml.
         #[test]
         #[ignore]
         fn keychain_store_and_retrieve() {

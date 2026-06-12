@@ -28,15 +28,21 @@ mod autostart;
 mod background_runtime;
 mod bootstrap_preflight;
 mod bootstrap_runtime;
+mod breaker_registry;
 mod bridge_cli;
 mod capture_services;
 mod cli_subscription_bridge;
+mod codex_approval_policy;
 mod commands;
 mod desktop_permissions;
 mod desktop_startup;
+mod ext_grpc_handles;
 mod fallback_stt;
 mod feature_capabilities;
-#[cfg(feature = "server")]
+// E20-24 (#4816): CompositeFeedbackSink (CoachingEngine + RegimeClassifier) is the
+// pure-local learning hook for accept/reject — needed by OSS local-suggestion builds,
+// so it is gated on `local-suggestions`, not `server`.
+#[cfg(feature = "local-suggestions")]
 mod feedback_sink;
 mod focus_analyzer;
 mod focus_auto;
@@ -65,6 +71,8 @@ mod oauth_provider_registry;
 mod platform_accessibility;
 mod platform_overlay;
 mod provider_adapters;
+#[cfg(feature = "analysis")]
+mod provider_runtime_context;
 mod provider_secret_backend;
 mod runtime_bridges;
 mod runtime_state;
@@ -80,10 +88,15 @@ mod setup;
 mod setup_platform;
 mod setup_shortcuts;
 mod setup_windows;
+mod shortcut_registry;
 mod skill_loader;
 mod storage_runtime;
 mod subprocess_provider;
 mod suggestion_manager;
+// E20-24 (#4816): no-op ApiClient so the local-suggestion FeedbackSender satisfies
+// its required `Arc<dyn ApiClient>` with zero network. See local_api_client.rs.
+#[cfg(feature = "local-suggestions")]
+mod local_api_client;
 mod sync_engine;
 mod telemetry;
 mod tray;
@@ -93,6 +106,9 @@ mod update_coordinator;
 mod update_runtime;
 mod updater;
 mod web_server_runtime;
+mod window_state;
+#[cfg(debug_assertions)]
+mod windows_gui_session_benchmark;
 mod workflow_intelligence;
 
 use tauri::{Manager, RunEvent};
@@ -103,7 +119,17 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+mod cli;
+
+// cli 모듈의 모든 debug-only 심볼을 현재 크레이트 네임스페이스에서 직접 참조 가능하도록 재내보냅니다.
+#[cfg(debug_assertions)]
+use cli::*;
+
 const OFFLINE_MODE_ENV: &str = "MAEKON_OFFLINE_MODE";
+#[cfg(debug_assertions)]
+const DEBUG_RUNTIME_SMOKE_ENV: &str = "MAEKON_DEBUG_RUNTIME_SMOKE_CLI";
+#[cfg(debug_assertions)]
+const DEBUG_RUNTIME_SMOKE_OUTPUT_ENV: &str = "MAEKON_DEBUG_RUNTIME_SMOKE_OUTPUT";
 
 fn configure_runtime_flavor() {
     #[cfg(debug_assertions)]
@@ -136,6 +162,270 @@ where
     })
 }
 
+fn app_help_requested_from<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    matches!(
+        args.into_iter().next().as_ref().map(AsRef::as_ref),
+        Some("--help" | "-h")
+    )
+}
+
+fn app_help_text() -> &'static str {
+    concat!(
+        "Maekon desktop agent\n\n",
+        "Usage: maekon [OPTIONS] [COMMAND]\n\n",
+        "Options:\n",
+        "  -h, --help       Print help and exit\n",
+        "  -V, --version    Print version and exit\n",
+        "      --offline    Start the GUI in local/offline mode\n\n",
+        "Commands:\n",
+        "  auth                       Manage local authentication state\n",
+        "  secret                     Manage local secret bindings\n",
+        "  bridge                     Run local bridge utilities\n",
+        "  debug-runtime-smoke        Debug builds only; requires ",
+        "MAEKON_DEBUG_RUNTIME_SMOKE_CLI=1 and exits with JSON runtime evidence\n"
+    )
+}
+
+#[cfg(debug_assertions)]
+fn debug_runtime_smoke_cli_requested_from<I, S>(args: I, env_value: Option<&str>) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let gate_enabled = env_value.map(str::trim).is_some_and(|value| {
+        matches!(value, "1")
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("on")
+    });
+    if !gate_enabled {
+        return false;
+    }
+
+    matches!(
+        args.into_iter().next().as_ref().map(AsRef::as_ref),
+        Some("debug-runtime-smoke")
+    )
+}
+
+#[cfg(debug_assertions)]
+fn consent_permissions_any_enabled(permissions: &maekon_core::consent::ConsentPermissions) -> bool {
+    permissions.screen_capture
+        || permissions.ocr_processing
+        || permissions.telemetry
+        || permissions.process_monitoring
+        || permissions.input_activity
+        || permissions.window_title_collection
+        || permissions.app_usage_analytics
+        || permissions.clipboard_monitoring
+        || permissions.file_access_monitoring
+        || permissions.activity_pattern_learning
+        || permissions.cross_device_sync
+        || permissions.full_text_extraction
+        || permissions.memory_graph_enrichment
+        || permissions.microphone
+}
+
+#[cfg(debug_assertions)]
+fn debug_runtime_smoke_tcp_reachable(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+#[cfg(debug_assertions)]
+fn debug_runtime_smoke_http_get_ok(port: u16, path: &str) -> bool {
+    use std::io::{Read, Write};
+
+    if port == 0 {
+        return false;
+    }
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) =
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = [0_u8; 64];
+    match stream.read(&mut response) {
+        Ok(0) | Err(_) => false,
+        Ok(n) => std::str::from_utf8(&response[..n])
+            .map(|head| head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200"))
+            .unwrap_or(false),
+    }
+}
+
+#[cfg(debug_assertions)]
+fn run_debug_runtime_smoke_cli_command(app_handle: &tauri::AppHandle) -> i32 {
+    use maekon_core::consent::{ConsentPermissions, ConsentStatus};
+    use std::sync::atomic::Ordering;
+
+    let app_flavor = std::env::var("MAEKON_APP_FLAVOR").unwrap_or_default();
+    let (window_exists, window_visible, window_width, window_height) =
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let visible = window.is_visible().unwrap_or(false);
+            let size = window.inner_size().ok();
+            (
+                true,
+                visible,
+                size.map(|s| s.width).unwrap_or_default(),
+                size.map(|s| s.height).unwrap_or_default(),
+            )
+        } else {
+            (false, false, 0, 0)
+        };
+
+    let (web_port, automation_enabled, sandbox_enabled, sandbox_profile) = app_handle
+        .try_state::<runtime_state::ConfigRuntimeState>()
+        .map(|state| {
+            let config = state.config_manager().get();
+            (
+                state.web_port(),
+                config.automation.enabled,
+                config.automation.sandbox.enabled,
+                format!("{:?}", config.automation.sandbox.profile),
+            )
+        })
+        .unwrap_or_else(|| (0, true, true, "Unavailable".to_string()));
+
+    let (
+        consent_status,
+        consent_permissions,
+        effective_permissions,
+        capture_paused,
+        data_dir_resolved,
+        app_flavor_isolated,
+    ) = app_handle
+        .try_state::<runtime_state::AppState>()
+        .and_then(|state| {
+            let manager = state.capture.consent_manager.as_ref()?;
+            let (status, permissions) = manager.status_and_permissions();
+            let data_dir = maekon_core::config_manager::ConfigManager::data_dir().ok();
+            let app_flavor_isolated = data_dir.as_ref().is_some_and(|path| {
+                !app_flavor.is_empty() && path.display().to_string().contains(&app_flavor)
+            });
+            Some((
+                status,
+                permissions,
+                manager.effective_permissions(),
+                state.capture_paused.load(Ordering::Relaxed),
+                data_dir.is_some(),
+                app_flavor_isolated,
+            ))
+        })
+        .unwrap_or_else(|| {
+            (
+                ConsentStatus::NotGranted,
+                ConsentPermissions::default(),
+                ConsentPermissions::default(),
+                false,
+                false,
+                false,
+            )
+        });
+
+    let web_port_reachable = debug_runtime_smoke_tcp_reachable(web_port);
+    let settings_endpoint_ok = debug_runtime_smoke_http_get_ok(web_port, "/api/settings");
+    let raw_consent_any_enabled = consent_permissions_any_enabled(&consent_permissions);
+    let effective_consent_any_enabled = consent_permissions_any_enabled(&effective_permissions);
+    let default_consent_closed = consent_status == ConsentStatus::NotGranted
+        && !raw_consent_any_enabled
+        && !effective_consent_any_enabled;
+    let ok = window_exists
+        && window_visible
+        && web_port_reachable
+        && settings_endpoint_ok
+        && data_dir_resolved
+        && app_flavor_isolated
+        && !automation_enabled
+        && !sandbox_enabled
+        && default_consent_closed;
+
+    let payload = serde_json::json!({
+        "ok": ok,
+        "command": "debug-runtime-smoke",
+        "processId": std::process::id(),
+        "appFlavor": app_flavor,
+        "offlineMode": offline_mode_enabled(),
+        "window": {
+            "exists": window_exists,
+            "visible": window_visible,
+            "innerWidth": window_width,
+            "innerHeight": window_height,
+        },
+        "web": {
+            "port": web_port,
+            "portReachable": web_port_reachable,
+            "settingsEndpointOk": settings_endpoint_ok,
+        },
+        "automation": {
+            "enabled": automation_enabled,
+            "sandboxEnabled": sandbox_enabled,
+            "sandboxProfile": sandbox_profile,
+        },
+        "consent": {
+            "status": consent_status,
+            "rawPermissions": consent_permissions,
+            "effectivePermissions": effective_permissions,
+            "defaultClosed": default_consent_closed,
+        },
+        "privacy": {
+            "capturePaused": capture_paused,
+            "collectsScreenContent": false,
+            "collectsUserInput": false,
+            "usesBroadDesktopScreenshot": false,
+        },
+        "paths": {
+            "dataDirResolved": data_dir_resolved,
+            "appFlavorIsolated": app_flavor_isolated,
+            "outputEnv": DEBUG_RUNTIME_SMOKE_OUTPUT_ENV,
+        },
+        "shutdownMethod": "app_handle.exit",
+    });
+
+    let serialized = serde_json::to_string_pretty(&payload).unwrap_or_else(|error| {
+        format!(
+            "{{\"ok\":false,\"command\":\"debug-runtime-smoke\",\"error\":\"serialize failed: {error}\"}}"
+        )
+    });
+
+    if let Some(output_path) = std::env::var_os(DEBUG_RUNTIME_SMOKE_OUTPUT_ENV) {
+        if let Some(parent) = std::path::Path::new(&output_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(error) = std::fs::write(&output_path, &serialized) {
+            eprintln!("failed to write runtime smoke output: {error}");
+            println!("{serialized}");
+            return 1;
+        }
+    } else {
+        println!("{serialized}");
+    }
+
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
 /// Wrapper for `tracing_appender::non_blocking::WorkerGuard`.
 ///
 /// Stored as Tauri managed state so it is dropped (and flushed) when the
@@ -160,6 +450,10 @@ fn main() {
             );
             std::process::exit(0);
         }
+        if app_help_requested_from(args.iter().skip(1).map(String::as_str)) {
+            println!("{}", app_help_text());
+            std::process::exit(0);
+        }
     }
 
     // D13 Task 13: `generate-external-cert` CLI subcommand — dispatched BEFORE
@@ -177,6 +471,42 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        let debug_permissions_gate = std::env::var("MAEKON_DEBUG_DESKTOP_PERMISSION_CLI").ok();
+        if let Some(command) = debug_permissions_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_permissions_gate.as_deref(),
+        ) {
+            std::process::exit(run_debug_permissions_cli_command(command));
+        }
+
+        let debug_ax_tree_gate = std::env::var("MAEKON_DEBUG_AX_TREE_CLI").ok();
+        if let Some(command) = debug_ax_tree_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_ax_tree_gate.as_deref(),
+        ) {
+            std::process::exit(run_debug_ax_tree_cli_command(command));
+        }
+
+        let debug_power_gate = std::env::var("MAEKON_DEBUG_POWER_CLI").ok();
+        if let Some(command) = debug_power_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_power_gate.as_deref(),
+        ) {
+            std::process::exit(run_debug_power_cli_command(command));
+        }
+
+        let debug_pointer_capture_gate = std::env::var("MAEKON_DEBUG_POINTER_CAPTURE_CLI").ok();
+        if let Some(command) = debug_pointer_capture_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_pointer_capture_gate.as_deref(),
+        ) {
+            std::process::exit(run_debug_pointer_capture_cli_command(command));
         }
     }
 
@@ -217,18 +547,17 @@ fn main() {
         .with_writer(non_blocking);
 
     // Telemetry layer + handle. ConfigManager does not exist yet at this
-    // point (it is built during bootstrap below), so we seed with
-    // TelemetryConfig::default() which is disabled — no exporter is built.
+    // point (it is built during bootstrap below), so we seed with an explicit
+    // disabled config — no exporter is built before the consent gate runs.
     // The bus-driven reconcile task spawned in bootstrap_runtime.rs picks up
     // the user's real setting on its first iteration and applies it.
     let telemetry_data_dir = maekon_core::config_manager::ConfigManager::data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     std::fs::create_dir_all(&telemetry_data_dir).ok();
-    let (telemetry_layer, telemetry_handle) = telemetry::Handle::new_with_layer(
-        &maekon_core::config::TelemetryConfig::default(),
-        &telemetry_data_dir,
-    )
-    .expect("disabled-at-boot telemetry construction is infallible");
+    let disabled_telemetry = maekon_core::config::TelemetryConfig::disabled();
+    let (telemetry_layer, telemetry_handle) =
+        telemetry::Handle::new_with_layer(&disabled_telemetry, &telemetry_data_dir)
+            .expect("disabled-at-boot telemetry construction is infallible");
     let telemetry_handle = std::sync::Arc::new(telemetry_handle);
 
     // Layer order matters: the OTel layer's type is tied to `Registry` as its
@@ -248,6 +577,16 @@ fn main() {
 
     // CLI pre-dispatch: handle "auth" subcommand before Tauri boot
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(debug_assertions)]
+    {
+        let debug_autostart_gate = std::env::var("MAEKON_DEBUG_AUTOSTART_CLI").ok();
+        if let Some(command) = debug_autostart_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_autostart_gate.as_deref(),
+        ) {
+            std::process::exit(run_debug_autostart_cli_command(command));
+        }
+    }
     if args.len() > 1 && args[1] == "auth" {
         let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -267,9 +606,56 @@ fn main() {
         std::process::exit(exit_code);
     }
 
+    #[cfg(debug_assertions)]
+    let debug_notification_command = {
+        let debug_notification_gate = std::env::var("MAEKON_DEBUG_NOTIFICATION_CLI").ok();
+        debug_notification_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_notification_gate.as_deref(),
+        )
+    };
+
+    #[cfg(debug_assertions)]
+    let debug_permissions_runtime_command = {
+        let debug_permissions_gate = std::env::var("MAEKON_DEBUG_DESKTOP_PERMISSION_CLI").ok();
+        debug_permissions_runtime_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_permissions_gate.as_deref(),
+        )
+    };
+
+    #[cfg(debug_assertions)]
+    let debug_pointer_capture_runtime_command = {
+        let debug_pointer_capture_gate = std::env::var("MAEKON_DEBUG_POINTER_CAPTURE_CLI").ok();
+        debug_pointer_capture_runtime_cli_command_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_pointer_capture_gate.as_deref(),
+        )
+    };
+
+    #[cfg(debug_assertions)]
+    let debug_runtime_smoke_requested = {
+        let debug_runtime_smoke_gate = std::env::var(DEBUG_RUNTIME_SMOKE_ENV).ok();
+        debug_runtime_smoke_cli_requested_from(
+            args.iter().skip(1).map(String::as_str),
+            debug_runtime_smoke_gate.as_deref(),
+        )
+    };
+
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(debug_assertions)]
+    let enable_single_instance = should_enable_single_instance_for_debug_runtime(
+        debug_notification_command,
+        debug_permissions_runtime_command,
+    ) && !debug_runtime_smoke_requested
+        && debug_pointer_capture_runtime_command.is_none();
+    #[cfg(not(debug_assertions))]
+    let enable_single_instance = true;
+
+    if enable_single_instance {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Callback runs in 1st instance when 2nd instance launches.
             // Must be cheap + synchronous (no async, no DB calls).
             // Order matters per spec §5.2 mitigation #1: show() → unminimize() → set_focus().
@@ -280,7 +666,11 @@ fn main() {
                 let _ = window.set_focus();
             }
             // _args, _cwd reserved for future CLI command extension (NG3).
-        }))
+        }));
+    }
+
+    #[allow(unused_mut)]
+    let mut builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -305,12 +695,24 @@ fn main() {
     }
 
     let app = builder
-        .setup(setup::init)
+        .setup(|app| {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            install_debug_macos_notification_delegate_from_env();
+            setup::init(app)
+        })
         .on_window_event(|window, event| {
             // Close-to-tray: 윈도우 닫기 시 숨기기 (실제 종료 아님)
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                window.hide().unwrap_or_default();
-                api.prevent_close();
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    crate::window_state::ensure_main_window_on_available_monitor(window);
+                    crate::window_state::persist_main_window_state(window);
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    crate::window_state::persist_main_window_state(window);
+                    window.hide().unwrap_or_default();
+                    api.prevent_close();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -319,12 +721,14 @@ fn main() {
             commands::settings::update_setting,
             commands::system::get_automation_status,
             commands::settings::get_web_port,
+            commands::settings::get_local_auth_token,
             commands::system::get_secret_backend_capabilities,
             commands::system::get_feature_capabilities,
             commands::system::get_runtime_log_snapshot,
             commands::system::record_frontend_log,
             commands::permissions::get_desktop_permission_status,
             commands::permissions::request_desktop_notification_permission,
+            commands::permissions::request_desktop_screen_capture_permission,
             commands::permissions::open_desktop_permission_settings,
             commands::system::probe_provider_surface_endpoint,
             commands::system::preview_update,
@@ -339,6 +743,8 @@ fn main() {
             commands::integration::oauth_cancel_flow,
             commands::integration::oauth_revoke,
             commands::integration::oauth_connection_status,
+            commands::notification::send_test_notification,
+            commands::notification::simulate_notification_activation,
             commands::ai_session::create_ai_session,
             commands::ai_session::send_session_message,
             commands::ai_session::kill_ai_session,
@@ -348,6 +754,9 @@ fn main() {
             commands::ai_session::load_session_messages,
             commands::ai_session::delete_session_history,
             commands::ai_session::rename_ai_session,
+            commands::ai_session::interrupt_session_turn,
+            commands::ai_session::steer_session_turn,
+            commands::ai_session::respond_codex_approval,
             commands::analysis::get_analysis_config,
             commands::analysis::update_analysis_config,
             commands::analysis::get_analysis_status,
@@ -367,17 +776,26 @@ fn main() {
             commands::coaching::toggle_overlay_mode,
             commands::coaching::get_overlay_state,
             commands::coaching::toggle_overlay_interactive,
+            commands::coaching::get_overlay_fullscreen_policy_state,
             commands::coaching::toggle_suggestions_panel,
             commands::coaching::toggle_automation_confirm,
             commands::coaching::get_coaching_history,
             commands::coaching::get_goal_progress,
             commands::coaching::update_regime_goals,
             commands::coaching::get_habit_streaks,
+            commands::shortcuts::get_global_shortcut_status,
             commands::capture_status::get_capture_status,
             commands::capture_status::toggle_capture_pause,
             commands::capture_status::set_indicator_visible,
             commands::capture_status::get_connection_status,
             commands::capture_status::show_main_window,
+            commands::capture_status::debug_focus_window,
+            commands::capture_status::debug_window_state,
+            commands::capture_status::debug_set_window_bounds,
+            commands::capture_status::debug_place_overlay_for_window,
+            commands::capture_status::debug_normalize_main_window_state,
+            commands::capture_status::debug_normalize_main_window_bounds,
+            commands::capture_status::debug_set_window_fullscreen,
             commands::capture_status::open_devtools,
             commands::capture_status::save_panel_position,
             commands::capture_status::get_panel_position,
@@ -387,16 +805,21 @@ fn main() {
             commands::focus::toggle_focus_mode,
             commands::focus::get_focus_mode_status,
             commands::capture::trigger_manual_capture,
+            commands::capture::extract_ax_tree,
+            commands::capture::start_ax_focus_observer,
+            commands::capture::poll_ax_focus_observer,
+            commands::capture::stop_ax_focus_observer,
             commands::capture::analyze_current_scene,
-            commands::suggestions::get_pending_suggestions,
-            commands::suggestions::get_suggestion_history,
-            commands::suggestions::submit_suggestion_feedback,
-            commands::suggestions::request_chat_suggestions,
-            commands::suggestions::explain_suggestion_in_chat,
-            commands::suggestions::save_suggestion_state,
-            commands::suggestions::get_suggestion_stats,
-            commands::suggestions::get_deferred_suggestions,
-            commands::suggestions::get_suggestion_daily_stats,
+            commands::suggestions::queries::get_pending_suggestions,
+            commands::suggestions::queries::get_suggestion_history,
+            commands::suggestions::feedback::submit_suggestion_feedback,
+            commands::suggestions::replay::record_suggestion_replay_event,
+            commands::suggestions::chat_suggestions::request_chat_suggestions,
+            commands::suggestions::chat_suggestions::explain_suggestion_in_chat,
+            commands::suggestions::queries::save_suggestion_state,
+            commands::suggestions::queries::get_suggestion_stats,
+            commands::suggestions::queries::get_deferred_suggestions,
+            commands::suggestions::queries::get_suggestion_daily_stats,
             commands::sync::get_sync_status,
             commands::sync::trigger_sync_cycle,
             commands::sync::discover_sync_peers,
@@ -427,15 +850,62 @@ fn main() {
             commands::autostart::is_autostart_enabled,
             commands::autostart::mark_autostart_prompt_state,
             commands::bug_report::export_bug_report,
+            commands::audit::export_audit_log,
+            commands::audit::verify_audit_log,
             commands::error_report::report_frontend_error,
             commands::tracking_schedule::get_tracking_schedule,
             commands::tracking_schedule::set_tracking_schedule,
             commands::tracking_schedule::get_tracking_schedule_status,
+            commands::tray::get_tray_state,
+            commands::tray::get_tray_geometry,
+            commands::tray::simulate_tray_action,
+            commands::consent::get_consent,
+            commands::consent::set_consent,
+            commands::consent::withdraw_consent,
+            commands::consent::take_microphone_upgrade_notice,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Maekon");
 
-    app.run(|app_handle, event| match event {
+    app.run(move |app_handle, event| match event {
+        #[cfg(debug_assertions)]
+        RunEvent::Ready if debug_notification_command.is_some() => {
+            let command = debug_notification_command.expect("notification debug command exists");
+            let app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let exit_code = run_debug_notification_cli_command(&app_handle, command);
+                app_handle.exit(exit_code);
+            });
+        }
+        #[cfg(debug_assertions)]
+        RunEvent::Ready if debug_permissions_runtime_command.is_some() => {
+            let command =
+                debug_permissions_runtime_command.expect("permission debug command exists");
+            let app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let exit_code = run_debug_permissions_runtime_cli_command(&app_handle, command);
+                app_handle.exit(exit_code);
+            });
+        }
+        #[cfg(debug_assertions)]
+        RunEvent::Ready if debug_pointer_capture_runtime_command.is_some() => {
+            let command = debug_pointer_capture_runtime_command
+                .expect("pointer capture debug command exists");
+            let app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let exit_code =
+                    run_debug_pointer_capture_runtime_cli_command(&app_handle, command);
+                app_handle.exit(exit_code);
+            });
+        }
+        #[cfg(debug_assertions)]
+        RunEvent::Ready if debug_runtime_smoke_requested => {
+            let app_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let exit_code = run_debug_runtime_smoke_cli_command(&app_handle);
+                app_handle.exit(exit_code);
+            });
+        }
         RunEvent::Exit => {
             info!("Tauri exit: sending shutdown signal");
 
@@ -477,12 +947,26 @@ fn main() {
 
             if let Some(state) = app_handle.try_state::<runtime_state::AppState>() {
                 // Terminate all active AI sessions before shutdown.
+                //
+                // #4345: `RunEvent::Exit` 콜백은 동기 Tauri 메인 스레드에서
+                // 실행되므로 `tokio::runtime::Handle::try_current()` 가 항상
+                // `Err` 를 반환했다 — 메인 스레드에는 진입된 tokio 런타임이
+                // 없기 때문이다. 그 결과 `shutdown_all()` 정리는 한 번도
+                // 실행되지 않는 dead code 였다.
+                //
+                // 대신 별도의 multi-thread 백그라운드 런타임 핸들에서
+                // `block_on` 한다. 이 시점에는 아래 `shutdown_blocking()`
+                // 호출 이전이라 백그라운드 런타임이 아직 살아 있고, 그 런타임의
+                // 워커 스레드가 `shutdown_all` 내부의 await/spawn 을 구동한다.
+                // 메인 스레드에서 *별도* 런타임 핸들에 `block_on` 하는 것은
+                // 유효하다 (`block_in_place`/`Handle::current` panic 위험 없음).
                 if let Some(ai_session_state) =
                     app_handle.try_state::<runtime_state::AiSessionRuntimeState>()
                 {
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        handle.block_on(async { ai_session_state.shutdown_all().await });
-                    }
+                    state
+                        .background_runtime
+                        .handle()
+                        .block_on(async { ai_session_state.shutdown_all().await });
                 }
                 if state.shutdown_tx.send(true).is_err() {
                     warn!("shutdown signal send failed (receivers already dropped)");
@@ -568,6 +1052,11 @@ fn main() {
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
+            #[cfg(debug_assertions)]
+            if matches!(debug_notification_command, Some(DebugNotificationCliCommand::Send)) {
+                debug_macos_notification_delegate::record_reopen_activation();
+            }
+
             // macOS dock 아이콘 클릭 시 메인 윈도우 표시
             if let Some(w) = app_handle.get_webview_window("main") {
                 if let Err(e) = w.show() {
@@ -583,23 +1072,23 @@ fn main() {
 }
 
 #[cfg(test)]
-mod cli_runtime_flag_tests {
-    use super::offline_mode_enabled_from;
-
+mod tests {
     #[test]
-    fn offline_mode_defaults_to_false() {
-        assert!(!offline_mode_enabled_from(Vec::<&str>::new(), None));
+    fn app_help_requested_from_recognizes_exit_flags() {
+        assert!(crate::app_help_requested_from(["--help"]));
+        assert!(crate::app_help_requested_from(["-h"]));
+        assert!(!crate::app_help_requested_from(["--offline"]));
+        assert!(!crate::app_help_requested_from(["auth", "--help"]));
+        assert!(!crate::app_help_requested_from(["debug-runtime-smoke"]));
     }
 
     #[test]
-    fn offline_mode_accepts_cli_flag() {
-        assert!(offline_mode_enabled_from(["--offline"], None));
-        assert!(offline_mode_enabled_from(["--offline=true"], None));
-    }
+    fn app_help_text_mentions_debug_runtime_smoke() {
+        let help = crate::app_help_text();
 
-    #[test]
-    fn offline_mode_accepts_env_override() {
-        assert!(offline_mode_enabled_from(Vec::<&str>::new(), Some("true")));
-        assert!(offline_mode_enabled_from(["--other"], Some("1")));
+        assert!(help.contains("Usage: maekon"));
+        assert!(help.contains("--version"));
+        assert!(help.contains("debug-runtime-smoke"));
+        assert!(help.contains("MAEKON_DEBUG_RUNTIME_SMOKE_CLI"));
     }
 }

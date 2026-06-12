@@ -5,12 +5,11 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md —
-// const-viral cascade + nursery false-positive rate outweigh the value.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
 // P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted
-// crate-wide. See docs/reviews/2026-04-21-p2-remaining-nursery-lints-decision.md.
+// crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -25,11 +24,13 @@
 pub mod ai_model_lifecycle_policy;
 pub mod app_registry;
 pub mod binary_quantizer;
+pub mod codex_approval;
 pub mod config;
 pub mod config_manager;
 pub mod consent;
 pub mod error;
 pub mod error_codes;
+pub mod id_generation;
 pub mod ivf_index;
 pub mod models;
 pub mod ports;
@@ -39,6 +40,7 @@ pub mod sanitized_display;
 pub mod sync;
 pub mod types;
 
+pub use id_generation::{generate_id, generate_id_checked, IdError};
 pub use sanitized_display::{sanitized, SanitizedDisplay};
 
 #[cfg(test)]
@@ -59,6 +61,7 @@ mod tests {
             expires_at: None,
             source: Default::default(),
             reasoning: None,
+            context_scope: None,
         };
 
         let json = serde_json::to_string(&suggestion).unwrap();

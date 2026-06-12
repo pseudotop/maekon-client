@@ -126,6 +126,8 @@ mod tests {
             window_title: title.to_string(),
             resolution: (1920, 1080),
             importance,
+            monitor_id: None,
+            app_bundle_id: None,
         }
     }
 

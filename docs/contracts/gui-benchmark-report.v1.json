@@ -1,0 +1,164 @@
+{
+  "schema_version": "automation.gui.benchmark_report.v1",
+  "report_id": "gui-report-example",
+  "generated_at": "2026-05-31T00:00:00Z",
+  "source": "os_interactive",
+  "report_locations": [
+    "local_json",
+    "ci_artifact",
+    "project_issue_summary",
+    "manual_review_bundle",
+    "criterion_summary"
+  ],
+  "results": [
+    {
+      "result": {
+        "case_id": "INPUT-ACTION-OBSERVABLE-STATE",
+        "outcome": "pass",
+        "latency_ms": 42,
+        "confidence": 0.97,
+        "failure_mode": null,
+        "evidence_paths": ["artifact://gui/state-change/windows/input-action"],
+        "evidence_artifacts": ["benchmark_report", "audit_excerpt", "gui_session_event"],
+        "privacy_status": "redacted",
+        "input_execution_mode": "sandboxed_real_input",
+        "verification_mode": "observable_state_change",
+        "launcher_platform": "windows",
+        "adapter_name": "windows-uia-sandbox",
+        "message": "observable state change verified"
+      },
+      "evidence_fresh": true,
+      "sidecar_present": true,
+      "hmac_secret_present": true
+    },
+    {
+      "result": {
+        "case_id": "SCENE-EXTRACTION-MASKED",
+        "outcome": "degraded",
+        "latency_ms": 88,
+        "confidence": 0.83,
+        "failure_mode": "capability_unavailable",
+        "evidence_paths": ["artifact://gui/scene/macos/masked-summary"],
+        "evidence_artifacts": ["text_metadata"],
+        "privacy_status": "redacted",
+        "input_execution_mode": "unsupported",
+        "verification_mode": "unknown",
+        "launcher_platform": "macos",
+        "adapter_name": "macos-ax",
+        "message": "OCR fallback unavailable"
+      },
+      "evidence_fresh": true,
+      "sidecar_present": false,
+      "hmac_secret_present": true
+    }
+  ],
+  "platform_summaries": [
+    {
+      "platform": "windows",
+      "launcher_platform": "windows",
+      "sidecar_present": true,
+      "hmac_secret_present": true,
+      "capability_snapshot": {
+        "screen_visibility": "available",
+        "accessibility_extraction": "available",
+        "ocr_fallback": "available",
+        "overlay": "available",
+        "input_execution": "available",
+        "permissions": "available",
+        "sandbox_support": "available",
+        "audit": "available",
+        "privacy_policy": "available"
+      },
+      "input_execution_mode": "sandboxed_real_input",
+      "verification_mode": "observable_state_change",
+      "result_count": 1,
+      "pass_count": 1,
+      "fail_count": 0,
+      "skip_count": 0,
+      "blocked_count": 0,
+      "degraded_count": 0,
+      "unsupported_count": 0,
+      "stale_evidence_count": 0,
+      "privacy_statuses": ["redacted"],
+      "caveats": []
+    },
+    {
+      "platform": "macos",
+      "launcher_platform": "macos",
+      "sidecar_present": false,
+      "hmac_secret_present": true,
+      "capability_snapshot": {
+        "screen_visibility": "available",
+        "accessibility_extraction": "available",
+        "ocr_fallback": "unsupported",
+        "overlay": "available",
+        "input_execution": "unsupported",
+        "permissions": "available",
+        "sandbox_support": "unsupported",
+        "audit": "available",
+        "privacy_policy": "available"
+      },
+      "input_execution_mode": "unsupported",
+      "verification_mode": "unknown",
+      "result_count": 1,
+      "pass_count": 0,
+      "fail_count": 0,
+      "skip_count": 0,
+      "blocked_count": 0,
+      "degraded_count": 1,
+      "unsupported_count": 0,
+      "stale_evidence_count": 0,
+      "privacy_statuses": ["redacted"],
+      "caveats": ["OCR fallback unavailable; native input parity not claimed"]
+    }
+  ],
+  "threshold_policy": [
+    {
+      "metric": "latency_p95_ms",
+      "comparator": "less_than_or_equal",
+      "value": 250,
+      "severity": "advisory",
+      "description": "interactive GUI action p95 latency advisory threshold"
+    },
+    {
+      "metric": "success_rate_basis_points",
+      "comparator": "greater_than_or_equal",
+      "value": 9000,
+      "severity": "blocking",
+      "description": "semantic pass rate for real-input-capable cases"
+    },
+    {
+      "metric": "evidence_freshness_seconds",
+      "comparator": "less_than_or_equal",
+      "value": 3600,
+      "severity": "blocking",
+      "description": "safe evidence must be fresh for pass summaries"
+    }
+  ],
+  "threshold_evaluations": [
+    {
+      "metric": "latency_p95_ms",
+      "observed_value": 88,
+      "rule": {
+        "metric": "latency_p95_ms",
+        "comparator": "less_than_or_equal",
+        "value": 250,
+        "severity": "advisory",
+        "description": "interactive GUI action p95 latency advisory threshold"
+      },
+      "decision": "pass"
+    },
+    {
+      "metric": "success_rate_basis_points",
+      "observed_value": 10000,
+      "rule": {
+        "metric": "success_rate_basis_points",
+        "comparator": "greater_than_or_equal",
+        "value": 9000,
+        "severity": "blocking",
+        "description": "semantic pass rate for real-input-capable cases"
+      },
+      "decision": "pass"
+    }
+  ]
+}

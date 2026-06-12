@@ -23,6 +23,9 @@ pub struct IndexMeta {
     pub total_vector_count: u64,
     /// Number of vectors not yet assigned to an IVF cluster.
     pub unindexed_count: u64,
+    /// Number of IVF clusters currently stored (0 if index was never built).
+    /// Used by the routing layer to compute a proportional nprobe value.
+    pub n_clusters: usize,
 }
 
 /// Port for vector index build and search operations.

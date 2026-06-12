@@ -14,10 +14,11 @@ impl SessionsQueryService {
         Self { ctx }
     }
 
-    pub fn list_sessions(&self) -> Result<Vec<SessionResponse>, ApiError> {
+    pub async fn list_sessions(&self) -> Result<Vec<SessionResponse>, ApiError> {
         self.ctx
             .storage
             .list_session_stats(50)
+            .await
             .map_err(ApiError::from)
             .map(|sessions| {
                 sessions

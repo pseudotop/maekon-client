@@ -1,0 +1,169 @@
+use crate::scheduler::shared_regime_state::SharedRegimeState;
+use crate::session_context::SessionContextAssembler;
+use crate::session_manager::SessionManagerImpl;
+use maekon_core::ports::session_context_store::SessionContextStorePort;
+use std::sync::Arc;
+use tauri::AppHandle;
+
+pub(super) type SessionManagerLaunch = Option<(Arc<SessionManagerImpl>, std::time::Duration)>;
+
+/// The Codex approval registry the real UI hook writes to (E21 #5044). Returned
+/// from [`build_session_manager`] so the composition root can install the SAME
+/// instance into `CodexApprovalRuntimeState` for the `respond_codex_approval`
+/// command (single-instance dead-writer guard).
+pub(super) type CodexApprovalRegistry = crate::provider_adapters::CodexApprovalRegistry;
+
+pub(super) fn build_session_manager(
+    app_handle: &AppHandle,
+    sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    config: &maekon_core::config::AppConfig,
+    data_dir_path: &std::path::Path,
+    shared_regime_state: Arc<SharedRegimeState>,
+    // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    // registry from the composition root, threaded into the session manager so
+    // `HttpApiSession`s share one breaker with the other network adapters.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+) -> (SessionManagerLaunch, CodexApprovalRegistry) {
+    let storage_for_audit = sqlite_storage.clone();
+    let persistence_cb: Arc<dyn maekon_automation::audit::AuditPersistence> =
+        Arc::new(move |entry: &maekon_core::models::audit::AuditEntry| {
+            storage_for_audit.save_audit_entry(entry);
+        });
+    let audit_query: Arc<dyn maekon_automation::audit::AuditQuery> = Arc::new(
+        crate::audit_query::SqliteAuditQuery::new(sqlite_storage.clone()),
+    );
+    let audit_pii_sanitizer: Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer> =
+        Arc::new(maekon_vision::privacy::VisionPiiSanitizer);
+    let audit_logger = Arc::new(tokio::sync::RwLock::new(
+        maekon_automation::audit::AuditLogger::new(500, 50)
+            .with_persistence(persistence_cb)
+            .with_query(audit_query)
+            .with_pii_sanitizer(audit_pii_sanitizer),
+    ));
+    let audit_port: Arc<dyn maekon_core::ports::audit_log::AuditLogPort> = Arc::new(
+        maekon_automation::audit::AuditLogAdapter::new(audit_logger.clone()),
+    );
+
+    let session_config = Arc::new(config.ai_session.clone());
+    let idle_reaper_interval =
+        std::time::Duration::from_secs(session_config.health_check_interval_secs);
+    let session_context_store: Arc<dyn SessionContextStorePort> = sqlite_storage.clone();
+
+    let context_assembler = Arc::new(SessionContextAssembler::new(
+        session_context_store,
+        Arc::new(config.clone()),
+        shared_regime_state,
+    ));
+
+    let secret_store = {
+        let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
+            .unwrap_or_else(|_| data_dir_path.to_path_buf());
+        let os_store = crate::provider_secret_backend::create_os_secret_store(&config_dir);
+        match crate::provider_secret_backend::resolve_provider_secret_backend(&config_dir, os_store)
+        {
+            Ok(r) => r.secret_store,
+            Err(e) => {
+                tracing::debug!("provider secret backend unavailable: {e}");
+                None
+            }
+        }
+    };
+
+    // E21 #4882/#4883: privacy guard for external chat sessions. Reuses the
+    // session audit logger for the egress audit trail and a dedicated process
+    // monitor for the active-window/sensitive-app gate.
+    let privacy_guard: Arc<dyn crate::provider_adapters::ConversationContentGuard> = {
+        let process_monitor: Arc<dyn maekon_core::ports::monitor::ProcessMonitor> =
+            Arc::new(maekon_monitor::process::ProcessTracker::new());
+        Arc::new(crate::provider_adapters::ExternalOcrPrivacyGuard::new(
+            data_dir_path.join("consent.json"),
+            config.privacy.pii_filter_level,
+            config.ai_provider.external_data_policy,
+            config.privacy.clone(),
+            process_monitor,
+            Some(audit_logger),
+        ))
+    };
+
+    // E21 #4870 + #5044 (FU-A): FAIL-CLOSED approval decider for Codex
+    // app-server `requestApproval` REQUESTs. Reuses the SAME audit sink as the
+    // rest of the session manager (no private dead-writer logger) and a fresh
+    // PolicyClient for command-execution policy lookups. The UI escalation is
+    // now the REAL `CodexUiApprovalHook`: it parks the decider's oneshot in
+    // `approval_registry` and emits `codex:approval-request` to the overlay
+    // modal, which answers via the `respond_codex_approval` command (reading the
+    // SAME registry). The decider remains the single timeout owner.
+    let approval_registry: CodexApprovalRegistry =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let codex_approval_decider = {
+        let policy_client = Arc::new(maekon_automation::policy::PolicyClient::new());
+        let policy_port: Arc<dyn maekon_core::ports::codex_approval::ApprovalPolicyPort> =
+            Arc::new(crate::codex_approval_policy::PolicyClientApprovalAdapter::new(policy_client));
+        let ui_hook: Arc<dyn maekon_core::ports::codex_approval::UiApprovalHook> =
+            Arc::new(crate::provider_adapters::CodexUiApprovalHook::new(
+                app_handle.clone(),
+                approval_registry.clone(),
+            ));
+        Arc::new(maekon_core::codex_approval::CodexApprovalDecider::new(
+            policy_port,
+            audit_port.clone(),
+            ui_hook,
+        ))
+    };
+
+    let mut manager = SessionManagerImpl::new(session_config, audit_port, Some(context_assembler));
+    if let Some(store) = secret_store {
+        manager = manager.with_secret_store(store);
+    }
+    manager = manager.with_app_handle(app_handle.clone());
+    manager = manager.with_privacy_guard(privacy_guard);
+    // E21 #4871: gate the Codex app-server transport behind the rollout flag
+    // (default Off → codex exec; app-server failures fall back to exec).
+    manager = manager.with_codex_app_server_rollout(config.ai_provider.codex_app_server_rollout);
+    manager = manager.with_codex_approval_decider(codex_approval_decider);
+    // D7 (#4812 / E20-20): share the single workspace-wide breaker registry.
+    manager = manager.with_breaker_registry(breaker_registry);
+    // C2 (#5722): pre-resolve the Ollama base URL + default model from config.
+    // Wired here (full AppConfig in scope) so create_local_llm_session can honour
+    // a wizard-written custom Ollama endpoint without touching AppConfig directly.
+    // The Arc<SessionManagerImpl> is shared with the web runtime (web_server_wiring.rs),
+    // so one wiring point covers both Tauri IPC chat and the web dashboard chat.
+    manager = manager.with_local_llm_target(
+        crate::session_manager::factory::resolve_local_llm_target(&config.ai_provider),
+    );
+    (
+        Some((Arc::new(manager), idle_reaper_interval)),
+        approval_registry,
+    )
+}
+
+pub(super) fn spawn_idle_reaper(
+    handle: &tokio::runtime::Handle,
+    session_manager: &SessionManagerLaunch,
+    sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    retention_days: u32,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    if let Some((sm, idle_reaper_interval)) = session_manager {
+        let sm_clone = sm.clone();
+        let ss_clone: Arc<dyn maekon_core::ports::session_storage::SessionStoragePort> =
+            sqlite_storage;
+        let idle_reaper_interval = *idle_reaper_interval;
+        handle.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(idle_reaper_interval) => {
+                        sm_clone.reap_idle_sessions().await;
+                        if let Ok(count) = ss_clone.purge_expired(retention_days).await {
+                            if count > 0 {
+                                tracing::info!("purged {count} expired session records");
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed() => break,
+                }
+            }
+        });
+        tracing::info!("idle reaper background task started");
+    }
+}

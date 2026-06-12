@@ -189,7 +189,7 @@ impl FeedbackTracker {
             self.gate_counter += 1;
             // gate_allow_ratio determines pass frequency (e.g., 0.33 → ~1-in-3)
             let denominator = (1.0 / self.params.gate_allow_ratio).round() as u32;
-            return denominator > 0 && self.gate_counter % denominator == 0;
+            return denominator > 0 && self.gate_counter.is_multiple_of(denominator);
         }
 
         true

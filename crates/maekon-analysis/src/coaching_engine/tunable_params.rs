@@ -73,7 +73,7 @@ impl TunableParams {
         }
 
         // Periodic decay toward defaults prevents runaway drift
-        if self.feedback_count % DECAY_INTERVAL == 0 {
+        if self.feedback_count.is_multiple_of(DECAY_INTERVAL) {
             self.decay_toward_defaults();
         }
     }

@@ -3,9 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use tokio::sync::{broadcast, RwLock};
-use uuid::Uuid;
-
 use maekon_core::models::gui::{
     GuiInteractionSession, GuiSessionEvent, GuiSessionState, HighlightRequest, HighlightTarget,
 };
@@ -13,6 +10,8 @@ use maekon_core::models::intent::ElementBounds;
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::focus_probe::FocusProbe;
 use maekon_core::ports::overlay_driver::OverlayDriver;
+use tokio::runtime::Handle;
+use tokio::sync::{broadcast, RwLock};
 
 use super::crypto::new_capability_token;
 use super::helpers::{build_candidates, is_expired, map_core_error};
@@ -58,20 +57,22 @@ impl GuiInteractionService {
         }
     }
 
-    pub fn ensure_cleanup_task(self: &Arc<Self>) {
+    /// Start the background session-TTL cleanup task on the supplied runtime
+    /// handle.
+    ///
+    /// F-RR-C40-01 follow-up (#4414): the caller must pass an explicit runtime
+    /// `Handle` (the background runtime). The previous implementation used
+    /// `Handle::try_current()`, which returns `Err` on the synchronous launch
+    /// path — `AutomationController::configure_gui_interaction` runs from the
+    /// controller builder before any async runtime is entered — so the cleanup
+    /// task was silently never started and expired GUI sessions were never
+    /// reaped. Spawning on the threaded-in handle removes that inverted guard.
+    pub fn ensure_cleanup_task(self: &Arc<Self>, handle: &Handle) {
         if self.cleanup_started.swap(true, Ordering::SeqCst) {
             return;
         }
 
         let weak = Arc::downgrade(self);
-        // Guard: tokio::spawn panics if no runtime context exists (e.g., called
-        // from Tauri setup before the async runtime is entered). Use try_spawn
-        // pattern — if Handle::try_current() fails, skip the cleanup task.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!("No tokio runtime — GUI cleanup task not started");
-            self.cleanup_started.store(false, Ordering::SeqCst);
-            return;
-        };
         handle.spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
@@ -145,7 +146,7 @@ impl GuiInteractionService {
             });
         }
 
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = maekon_core::generate_id("ses");
         let session = GuiInteractionSession {
             schema_version: maekon_core::models::gui::GUI_INTERACTION_SCHEMA_VERSION.to_string(),
             session_id: session_id.clone(),
@@ -464,5 +465,77 @@ impl GuiInteractionService {
                 code: maekon_core::error_codes::GuiCode::Unavailable,
                 message: format!("{GUI_HMAC_SECRET_ENV} is missing or empty"),
             })
+    }
+}
+
+#[cfg(test)]
+mod cleanup_task_tests {
+    use super::*;
+    use crate::input_driver::NoOpElementFinder;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::gui::{
+        ExecutionBinding, FocusSnapshot, FocusValidation, HighlightHandle, HighlightRequest,
+    };
+    use maekon_core::models::ui_scene::UiScene;
+
+    struct NoopFocusProbe;
+    #[async_trait]
+    impl FocusProbe for NoopFocusProbe {
+        async fn current_focus(&self) -> Result<FocusSnapshot, CoreError> {
+            unimplemented!("cleanup task never probes focus")
+        }
+        async fn validate_execution_binding(
+            &self,
+            _binding: &ExecutionBinding,
+        ) -> Result<FocusValidation, CoreError> {
+            unimplemented!("cleanup task never validates bindings")
+        }
+    }
+
+    struct NoopOverlayDriver;
+    #[async_trait]
+    impl OverlayDriver for NoopOverlayDriver {
+        async fn show_highlights(
+            &self,
+            _req: HighlightRequest,
+        ) -> Result<HighlightHandle, CoreError> {
+            unimplemented!()
+        }
+        async fn clear_highlights(&self, _handle_id: &str) -> Result<(), CoreError> {
+            unimplemented!()
+        }
+        async fn show_detection(&self, _scene: &UiScene) -> Result<(), CoreError> {
+            unimplemented!()
+        }
+        async fn clear_detection(&self) -> Result<(), CoreError> {
+            unimplemented!()
+        }
+    }
+
+    /// Regression for #4414 (F-RR-C40-01 sibling): `ensure_cleanup_task` must
+    /// start the session-TTL cleanup task via the explicitly-provided runtime
+    /// handle even when invoked from a synchronous context with NO ambient tokio
+    /// runtime — the exact launch-path condition under which the previous
+    /// `Handle::try_current()` guard returned `Err` and silently reset
+    /// `cleanup_started` to false (dead cleanup task).
+    #[test]
+    fn ensure_cleanup_task_uses_explicit_handle_without_ambient_runtime() {
+        let rt = tokio::runtime::Runtime::new().expect("background runtime");
+        let service = Arc::new(GuiInteractionService::new(
+            Arc::new(NoOpElementFinder),
+            Arc::new(NoopFocusProbe),
+            Arc::new(NoopOverlayDriver),
+            None,
+        ));
+
+        // Plain `#[test]` → no ambient runtime. The old try_current() path would
+        // have skipped the task and left cleanup_started == false.
+        service.ensure_cleanup_task(rt.handle());
+
+        assert!(
+            service.cleanup_started.load(Ordering::SeqCst),
+            "cleanup task must be started via the explicit runtime handle"
+        );
     }
 }

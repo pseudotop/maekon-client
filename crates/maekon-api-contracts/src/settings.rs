@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StorageStats {
     pub db_size_bytes: u64,
     pub frames_size_bytes: u64,
@@ -15,6 +16,7 @@ pub struct StorageStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppSettings {
     pub retention_days: u32,
     pub max_storage_mb: u32,
@@ -61,6 +63,7 @@ pub struct AppSettings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NotificationSettings {
     pub enabled: bool,
     pub idle_notification: bool,
@@ -72,6 +75,7 @@ pub struct NotificationSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateSettings {
     pub enabled: bool,
     pub check_interval_hours: u32,
@@ -97,6 +101,7 @@ impl Default for UpdateSettings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TelemetrySettings {
     pub enabled: bool,
     pub crash_reports: bool,
@@ -105,6 +110,7 @@ pub struct TelemetrySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MonitorControlSettings {
     pub process_monitoring: bool,
     pub input_activity: bool,
@@ -122,6 +128,7 @@ impl Default for MonitorControlSettings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrivacySettings {
     pub excluded_apps: Vec<String>,
     pub excluded_app_patterns: Vec<String>,
@@ -131,6 +138,7 @@ pub struct PrivacySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScheduleSettings {
     pub active_hours_enabled: bool,
     pub active_start_hour: u8,
@@ -160,11 +168,13 @@ impl Default for ScheduleSettings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AutomationSettings {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SandboxSettings {
     pub enabled: bool,
     pub profile: String,
@@ -190,6 +200,7 @@ impl Default for SandboxSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AiProviderSettings {
     pub access_mode: String,
     pub ocr_provider: String,
@@ -215,6 +226,7 @@ pub struct AiProviderSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AiProviderProfileConfig {
     pub access_mode: String,
     pub ocr_provider: String,
@@ -236,6 +248,7 @@ pub struct AiProviderProfileConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SavedAiProviderProfile {
     pub profile_id: String,
     pub name: String,
@@ -246,6 +259,7 @@ pub struct SavedAiProviderProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OcrValidationSettings {
     pub enabled: bool,
     pub min_confidence: f64,
@@ -253,6 +267,7 @@ pub struct OcrValidationSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneActionOverrideSettings {
     pub enabled: bool,
     pub reason: String,
@@ -262,6 +277,7 @@ pub struct SceneActionOverrideSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneIntelligenceSettings {
     pub enabled: bool,
     pub overlay_enabled: bool,
@@ -301,7 +317,7 @@ impl Default for SceneIntelligenceSettings {
 impl Default for AiProviderSettings {
     fn default() -> Self {
         Self {
-            access_mode: "ProviderApiKey".to_string(),
+            access_mode: "provider_api_key".to_string(),
             ocr_provider: "Local".to_string(),
             llm_provider: "Local".to_string(),
             external_data_policy: "PiiFilterStrict".to_string(),
@@ -321,7 +337,7 @@ impl Default for AiProviderSettings {
 impl Default for AiProviderProfileConfig {
     fn default() -> Self {
         Self {
-            access_mode: "ProviderApiKey".to_string(),
+            access_mode: "provider_api_key".to_string(),
             ocr_provider: "Local".to_string(),
             llm_provider: "Local".to_string(),
             external_data_policy: "PiiFilterStrict".to_string(),
@@ -348,6 +364,7 @@ impl Default for SavedAiProviderProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExternalApiSettings {
     pub endpoint: String,
     pub api_key_masked: String,
@@ -378,7 +395,7 @@ fn default_external_timeout() -> u64 {
 }
 
 fn default_provider_type() -> String {
-    "Generic".to_string()
+    "generic".to_string()
 }
 
 fn default_credential_auth_mode() -> String {
@@ -457,6 +474,7 @@ impl Default for AppSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AiSessionSettings {
     pub max_concurrent_sessions: u32,
     pub idle_timeout_secs: u64,
@@ -490,11 +508,13 @@ impl Default for AiSessionSettings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SuggestionSettings {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IndicatorSettings {
     pub show_border: bool,
     pub show_panel: bool,
@@ -512,6 +532,7 @@ impl Default for IndicatorSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AnalysisSettings {
     pub enabled: bool,
     pub interval_secs: u64,
@@ -540,6 +561,7 @@ impl Default for AnalysisSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NetworkSettings {
     pub server_base_url: String,
     pub request_timeout_ms: u64,
@@ -561,6 +583,7 @@ impl Default for NetworkSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingSettings {
     pub enabled: bool,
     pub tone: String,
@@ -580,6 +603,7 @@ impl Default for CoachingSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSettings {
     pub enabled: bool,
     pub auth_profile_kind: String,
@@ -599,6 +623,7 @@ impl Default for IntegrationSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SyncSettings {
     pub enabled: bool,
     pub transport: String,
@@ -619,6 +644,465 @@ impl Default for SyncSettings {
             lan_advertise: false,
             compression_enabled: true,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AppSettings 열거형 드리프트 방지 가드
+//
+// `AppSettings` 하위 구조체의 String 필드들은 maekon-core 정의 열거형 값만
+// 허용한다. 아래 테스트들은 각 String 필드의 유효 토큰 집합이 대응하는
+// maekon-core 열거형 변형 집합과 1:1로 일치함을 보장한다.
+//
+// 가드 원리:
+//   1. `_assert_variant_coverage` — 각 열거형 변형을 exhaustive match 로
+//      열거한 후 Display 토큰을 수집하여 AppSettings 기본값에 쓰인 토큰과
+//      크기 및 멤버십을 비교한다. 새 변형 추가 시 exhaustive match 가
+//      컴파일 에러를 발생시키므로 이 함수도 함께 갱신해야 한다.
+//   2. `_round_trip_*` — 기본값 토큰을 실제 serde 역직렬화로 검증한다.
+//      열거형 변형 이름/케이스 변환이 바뀌면 즉시 실패한다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod enum_drift_guard {
+    use super::*;
+    use maekon_core::config::{
+        AiAccessMode, AiProviderType, ExternalDataPolicy, LlmProviderType, OcrProviderType,
+        PiiFilterLevel, SandboxProfile, Weekday,
+    };
+    use std::collections::BTreeSet;
+
+    // ────────────────────────────────────────────────────────────────────
+    // 헬퍼: serde JSON 토큰을 따옴표 없이 반환한다.
+    // ────────────────────────────────────────────────────────────────────
+    fn serde_token<T: serde::Serialize>(v: &T) -> String {
+        serde_json::to_string(v)
+            .expect("직렬화 실패")
+            .trim_matches('"')
+            .to_string()
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // PiiFilterLevel — PrivacySettings::pii_filter_level
+    // ────────────────────────────────────────────────────────────────────
+
+    /// PiiFilterLevel 변형 전체를 exhaustive match 로 열거한다.
+    /// 변형 추가/삭제 시 이 함수의 match 가 컴파일 에러를 낸다.
+    fn pii_filter_level_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            PiiFilterLevel::Off,
+            PiiFilterLevel::Basic,
+            PiiFilterLevel::Standard,
+            PiiFilterLevel::Strict,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                PiiFilterLevel::Off => "guard",
+                PiiFilterLevel::Basic => "guard",
+                PiiFilterLevel::Standard => "guard",
+                PiiFilterLevel::Strict => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn pii_filter_level_default_is_valid_variant() {
+        // AppSettings 기본값 "Standard" 가 PiiFilterLevel 로 역직렬화되어야 한다.
+        let default_val = &AppSettings::default().privacy.pii_filter_level;
+        let quoted = format!("\"{}\"", default_val);
+        serde_json::from_str::<PiiFilterLevel>(&quoted).unwrap_or_else(|_| {
+            panic!(
+                "pii_filter_level 기본값 {:?} 는 PiiFilterLevel 변형이 아님 — \
+                 열거형이 변경됐거나 문자열 케이스가 드리프트됨",
+                default_val
+            )
+        });
+    }
+
+    #[test]
+    fn pii_filter_level_accepted_tokens_match_enum_variants() {
+        // AppSettings 에서 허용되는 토큰 집합 = PiiFilterLevel serde 토큰 집합.
+        // 열거형에 변형이 추가/삭제되면 이 테스트가 실패한다.
+        let all_tokens = pii_filter_level_all_serde_tokens();
+        // 기본값 토큰이 집합에 포함돼 있어야 한다.
+        let default_token = serde_token(&PiiFilterLevel::Standard);
+        assert!(
+            all_tokens.contains(&default_token),
+            "PiiFilterLevel::Standard 의 serde 토큰 {:?} 가 전체 집합에 없음",
+            default_token
+        );
+        // 집합 크기는 현재 4개여야 한다 (Off/Basic/Standard/Strict).
+        // 변형이 추가되면 exhaustive match + 이 단언이 모두 실패한다.
+        assert_eq!(
+            all_tokens.len(),
+            4,
+            "PiiFilterLevel 변형 수가 바뀜 — AppSettings 문서와 기본값을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Weekday — ScheduleSettings::active_days
+    // ────────────────────────────────────────────────────────────────────
+
+    fn weekday_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                Weekday::Mon => "guard",
+                Weekday::Tue => "guard",
+                Weekday::Wed => "guard",
+                Weekday::Thu => "guard",
+                Weekday::Fri => "guard",
+                Weekday::Sat => "guard",
+                Weekday::Sun => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn schedule_active_days_defaults_are_valid_weekday_variants() {
+        // ScheduleSettings 기본값의 각 요일 문자열이 Weekday 로 역직렬화되어야 한다.
+        let defaults = ScheduleSettings::default();
+        for day in &defaults.active_days {
+            let quoted = format!("\"{}\"", day);
+            serde_json::from_str::<Weekday>(&quoted).unwrap_or_else(|_| {
+                panic!(
+                    "active_days 기본값 {:?} 는 Weekday 변형이 아님 — \
+                     열거형이 변경됐거나 문자열 케이스가 드리프트됨",
+                    day
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn weekday_accepted_tokens_match_enum_variants() {
+        let all_tokens = weekday_all_serde_tokens();
+        // Weekday 는 7개 변형이어야 한다.
+        assert_eq!(
+            all_tokens.len(),
+            7,
+            "Weekday 변형 수가 바뀜 — ScheduleSettings 기본값과 문서를 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // SandboxProfile — SandboxSettings::profile
+    // ────────────────────────────────────────────────────────────────────
+
+    fn sandbox_profile_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            SandboxProfile::Permissive,
+            SandboxProfile::Standard,
+            SandboxProfile::Strict,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                SandboxProfile::Permissive => "guard",
+                SandboxProfile::Standard => "guard",
+                SandboxProfile::Strict => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn sandbox_profile_default_is_valid_variant() {
+        let default_val = &SandboxSettings::default().profile;
+        let quoted = format!("\"{}\"", default_val);
+        serde_json::from_str::<SandboxProfile>(&quoted).unwrap_or_else(|_| {
+            panic!(
+                "sandbox.profile 기본값 {:?} 는 SandboxProfile 변형이 아님",
+                default_val
+            )
+        });
+    }
+
+    #[test]
+    fn sandbox_profile_accepted_tokens_match_enum_variants() {
+        let all_tokens = sandbox_profile_all_serde_tokens();
+        assert_eq!(
+            all_tokens.len(),
+            3,
+            "SandboxProfile 변형 수가 바뀜 — SandboxSettings 기본값을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // AiAccessMode — AiProviderSettings::access_mode
+    //
+    // #4874 해소: AiProviderSettings 기본값은 이제 AiAccessMode serde
+    // snake_case 토큰("provider_api_key")과 일치한다. 아래 테스트는 기본값이
+    // 실제로 AiAccessMode 로 역직렬화됨을 보증한다(이전 known_drift 가드 대체).
+    // ────────────────────────────────────────────────────────────────────
+
+    fn ai_access_mode_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            AiAccessMode::ProviderApiKey,
+            AiAccessMode::LocalModel,
+            AiAccessMode::ProviderSubscriptionCli,
+            AiAccessMode::ProviderOAuth,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                AiAccessMode::ProviderApiKey => "guard",
+                AiAccessMode::LocalModel => "guard",
+                AiAccessMode::ProviderSubscriptionCli => "guard",
+                AiAccessMode::ProviderOAuth => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn ai_access_mode_accepted_tokens_match_enum_variants() {
+        // AiAccessMode 는 4개 변형이어야 한다.
+        let all_tokens = ai_access_mode_all_serde_tokens();
+        assert_eq!(
+            all_tokens.len(),
+            4,
+            "AiAccessMode 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+        );
+    }
+
+    #[test]
+    fn ai_access_mode_default_deserializes_to_enum() {
+        // #4874: AiProviderSettings 기본 access_mode 는 canonical AiAccessMode serde
+        // 토큰이어야 저장된 기본값이 역직렬화에 성공한다(이전 "ProviderApiKey" 드리프트).
+        let default_access_mode = AiProviderSettings::default().access_mode;
+        let all_serde_tokens = ai_access_mode_all_serde_tokens();
+        assert!(
+            all_serde_tokens.contains(default_access_mode.as_str()),
+            "access_mode 기본값 {:?} 이 AiAccessMode serde 토큰 {:?} 에 없습니다",
+            default_access_mode,
+            all_serde_tokens
+        );
+        let parsed: AiAccessMode = serde_json::from_str(&format!("\"{default_access_mode}\""))
+            .expect("기본 access_mode 가 AiAccessMode 로 역직렬화되어야 함");
+        assert_eq!(parsed, AiAccessMode::ProviderApiKey);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // OcrProviderType — AiProviderSettings::ocr_provider
+    // ────────────────────────────────────────────────────────────────────
+
+    fn ocr_provider_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [OcrProviderType::Local, OcrProviderType::Remote] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                OcrProviderType::Local => "guard",
+                OcrProviderType::Remote => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn ocr_provider_default_is_valid_variant() {
+        let default_val = &AiProviderSettings::default().ocr_provider;
+        let quoted = format!("\"{}\"", default_val);
+        serde_json::from_str::<OcrProviderType>(&quoted).unwrap_or_else(|_| {
+            panic!(
+                "ocr_provider 기본값 {:?} 는 OcrProviderType 변형이 아님",
+                default_val
+            )
+        });
+    }
+
+    #[test]
+    fn ocr_provider_accepted_tokens_match_enum_variants() {
+        let all_tokens = ocr_provider_all_serde_tokens();
+        assert_eq!(
+            all_tokens.len(),
+            2,
+            "OcrProviderType 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // LlmProviderType — AiProviderSettings::llm_provider
+    // ────────────────────────────────────────────────────────────────────
+
+    fn llm_provider_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [LlmProviderType::Local, LlmProviderType::Remote] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                LlmProviderType::Local => "guard",
+                LlmProviderType::Remote => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn llm_provider_default_is_valid_variant() {
+        let default_val = &AiProviderSettings::default().llm_provider;
+        let quoted = format!("\"{}\"", default_val);
+        serde_json::from_str::<LlmProviderType>(&quoted).unwrap_or_else(|_| {
+            panic!(
+                "llm_provider 기본값 {:?} 는 LlmProviderType 변형이 아님",
+                default_val
+            )
+        });
+    }
+
+    #[test]
+    fn llm_provider_accepted_tokens_match_enum_variants() {
+        let all_tokens = llm_provider_all_serde_tokens();
+        assert_eq!(
+            all_tokens.len(),
+            2,
+            "LlmProviderType 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ExternalDataPolicy — AiProviderSettings::external_data_policy
+    // ────────────────────────────────────────────────────────────────────
+
+    fn external_data_policy_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            ExternalDataPolicy::PiiFilterStrict,
+            ExternalDataPolicy::PiiFilterStandard,
+            ExternalDataPolicy::AllowFiltered,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                ExternalDataPolicy::PiiFilterStrict => "guard",
+                ExternalDataPolicy::PiiFilterStandard => "guard",
+                ExternalDataPolicy::AllowFiltered => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn external_data_policy_default_is_valid_variant() {
+        let default_val = &AiProviderSettings::default().external_data_policy;
+        let quoted = format!("\"{}\"", default_val);
+        serde_json::from_str::<ExternalDataPolicy>(&quoted).unwrap_or_else(|_| {
+            panic!(
+                "external_data_policy 기본값 {:?} 는 ExternalDataPolicy 변형이 아님",
+                default_val
+            )
+        });
+    }
+
+    #[test]
+    fn external_data_policy_accepted_tokens_match_enum_variants() {
+        let all_tokens = external_data_policy_all_serde_tokens();
+        assert_eq!(
+            all_tokens.len(),
+            3,
+            "ExternalDataPolicy 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // AiProviderType — ExternalApiSettings::provider_type
+    // ────────────────────────────────────────────────────────────────────
+
+    fn ai_provider_type_all_serde_tokens() -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        for v in [
+            AiProviderType::Anthropic,
+            AiProviderType::OpenAi,
+            AiProviderType::Google,
+            AiProviderType::Ollama,
+            AiProviderType::Bedrock,
+            AiProviderType::Copilot,
+            AiProviderType::Generic,
+        ] {
+            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            let _ = match v {
+                AiProviderType::Anthropic => "guard",
+                AiProviderType::OpenAi => "guard",
+                AiProviderType::Google => "guard",
+                AiProviderType::Ollama => "guard",
+                AiProviderType::Bedrock => "guard",
+                AiProviderType::Copilot => "guard",
+                AiProviderType::Generic => "guard",
+            };
+            set.insert(serde_token(&v));
+        }
+        set
+    }
+
+    #[test]
+    fn ai_provider_type_default_provider_type_deserializes_to_enum() {
+        // #4874: ExternalApiSettings 기본 provider_type 은 canonical AiProviderType
+        // serde 토큰("generic")이어야 저장된 기본값이 역직렬화된다(이전 "Generic" 드리프트).
+        let default_val = default_provider_type();
+        let all_serde_tokens = ai_provider_type_all_serde_tokens();
+        assert!(
+            all_serde_tokens.contains(default_val.as_str()),
+            "provider_type 기본값 {:?} 이 AiProviderType serde 토큰 {:?} 에 없습니다",
+            default_val,
+            all_serde_tokens
+        );
+        let parsed: AiProviderType = serde_json::from_str(&format!("\"{default_val}\""))
+            .expect("기본 provider_type 이 AiProviderType 로 역직렬화되어야 함");
+        assert_eq!(parsed, AiProviderType::Generic);
+    }
+
+    #[test]
+    fn ai_provider_type_accepted_tokens_match_enum_variants() {
+        let all_tokens = ai_provider_type_all_serde_tokens();
+        // AiProviderType 은 7개 변형이어야 한다.
+        assert_eq!(
+            all_tokens.len(),
+            7,
+            "AiProviderType 변형 수가 바뀜 — ExternalApiSettings 기본값과 \
+             provider_spec 목록을 검토하라"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // AiProviderProfileConfig — access_mode/ocr_provider/llm_provider/
+    //                           external_data_policy 필드 중복 커버리지
+    //
+    // AiProviderProfileConfig 는 AiProviderSettings 와 동일한 String 필드를
+    // 공유한다. 기본값이 같은지 확인한다 (별도 Default impl 이 있으므로).
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ai_provider_profile_config_defaults_match_provider_settings_defaults() {
+        let p = AiProviderSettings::default();
+        let c = AiProviderProfileConfig::default();
+        assert_eq!(
+            p.access_mode, c.access_mode,
+            "AiProviderSettings 와 AiProviderProfileConfig 의 access_mode 기본값이 다름"
+        );
+        assert_eq!(p.ocr_provider, c.ocr_provider, "ocr_provider 기본값 불일치");
+        assert_eq!(p.llm_provider, c.llm_provider, "llm_provider 기본값 불일치");
+        assert_eq!(
+            p.external_data_policy, c.external_data_policy,
+            "external_data_policy 기본값 불일치"
+        );
     }
 }
 

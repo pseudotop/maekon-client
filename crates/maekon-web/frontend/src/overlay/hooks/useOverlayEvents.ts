@@ -1,7 +1,9 @@
 import { useEffect, useReducer } from 'react'
+import { redactSuggestionViews } from '../suggestionPrivacy'
 import type {
   CaptureStatePayload,
   CoachingPayload,
+  CodexApprovalDto,
   DetectionScenePayload,
   FocusHighlightPayload,
   FocusModePayload,
@@ -9,6 +11,8 @@ import type {
   OverlayMode,
   OverlayState,
   PendingConfirmationDto,
+  PointerContextPayload,
+  SuggestionSurfacePayload,
   SuggestionViewDto,
 } from '../types'
 
@@ -24,13 +28,17 @@ type OverlayAction =
   | { type: 'capture-state-changed'; payload: CaptureStatePayload }
   | { type: 'toggle-suggestions-panel'; payload?: boolean }
   | { type: 'capture-feedback'; payload: string }
+  | { type: 'pointer-context-update'; payload: PointerContextPayload }
   | { type: 'set-suggestions'; payload: SuggestionViewDto[] }
+  | { type: 'set-suggestion-surface'; payload: SuggestionSurfacePayload }
   | { type: 'remove-suggestion'; payload: string }
   | { type: 'detection-update'; payload: DetectionScenePayload }
   | { type: 'detection-clear' }
   | { type: 'detection-select'; payload: string | null }
   | { type: 'automation-confirm-request'; payload: PendingConfirmationDto }
   | { type: 'automation-confirm-dismiss' }
+  | { type: 'codex-approval-request'; payload: CodexApprovalDto }
+  | { type: 'codex-approval-dismiss' }
 
 const initialState: OverlayState = {
   mode: 'minimal',
@@ -44,10 +52,13 @@ const initialState: OverlayState = {
   suggestionsPanelOpen: false,
   suggestions: [],
   suggestionBadgeCount: 0,
+  suggestionSurface: { placement: 'window-side-panel', anchor: null },
   captureFlashTimestamp: null,
+  pointerContext: null,
   detectionScene: null,
   detectionSelectedId: null,
   pendingConfirmation: null,
+  pendingCodexApproval: null,
 }
 
 function reducer(state: OverlayState, action: OverlayAction): OverlayState {
@@ -103,6 +114,11 @@ function reducer(state: OverlayState, action: OverlayAction): OverlayState {
         suggestionBadgeCount: state.suggestionsPanelOpen ? 0 : state.suggestionBadgeCount + delta,
       }
     }
+    case 'set-suggestion-surface':
+      return {
+        ...state,
+        suggestionSurface: action.payload,
+      }
     case 'remove-suggestion':
       return {
         ...state,
@@ -110,6 +126,8 @@ function reducer(state: OverlayState, action: OverlayAction): OverlayState {
       }
     case 'capture-feedback':
       return { ...state, captureFlashTimestamp: action.payload }
+    case 'pointer-context-update':
+      return { ...state, pointerContext: action.payload.enabled ? action.payload : null }
     case 'detection-update':
       return {
         ...state,
@@ -125,6 +143,10 @@ function reducer(state: OverlayState, action: OverlayAction): OverlayState {
       return { ...state, pendingConfirmation: action.payload }
     case 'automation-confirm-dismiss':
       return { ...state, pendingConfirmation: null }
+    case 'codex-approval-request':
+      return { ...state, pendingCodexApproval: action.payload }
+    case 'codex-approval-dismiss':
+      return { ...state, pendingCodexApproval: null }
     default:
       return state
   }
@@ -175,35 +197,53 @@ export function useOverlayEvents() {
         dispatch({ type: 'toggle-suggestions-panel' })
       })
 
-      // u11: Suggestions changed — re-fetch
-      const u11 = await listen<{ count: number }>('overlay:suggestions-changed', async () => {
+      // u11: Explicit suggestions panel open/close request (from tracking panel)
+      const u11 = await listen<{ open: boolean }>('overlay:set-suggestions-panel', (e) => {
+        dispatch({ type: 'toggle-suggestions-panel', payload: !!e.payload.open })
+      })
+
+      // u12: Suggestions changed — re-fetch
+      const u12 = await listen<{ count: number }>('overlay:suggestions-changed', async () => {
         const { invoke } = await import('@tauri-apps/api/core')
         try {
           const suggestions = await invoke<SuggestionViewDto[]>('get_pending_suggestions')
-          dispatch({ type: 'set-suggestions', payload: suggestions })
-        } catch (e) {
-          console.warn('get_pending_suggestions failed:', e)
+          dispatch({ type: 'set-suggestions', payload: redactSuggestionViews(suggestions) })
+        } catch (_e) {
+          console.warn('get_pending_suggestions failed')
         }
       })
 
-      // u12: Capture feedback flash
-      const u12 = await listen<{ timestamp: string }>('overlay:capture-feedback', (e) => {
+      // u13: Capture feedback flash
+      const u13 = await listen<{ timestamp: string }>('overlay:capture-feedback', (e) => {
         dispatch({ type: 'capture-feedback', payload: e.payload.timestamp })
       })
 
-      const u13 = await listen<DetectionScenePayload>('overlay:detection-update', (e) => {
+      const u14 = await listen<DetectionScenePayload>('overlay:detection-update', (e) => {
         dispatch({ type: 'detection-update', payload: e.payload })
       })
 
-      const u14 = await listen('overlay:detection-clear', () => {
+      const u15 = await listen('overlay:detection-clear', () => {
         dispatch({ type: 'detection-clear' })
       })
 
-      const u15 = await listen<PendingConfirmationDto>('automation:confirm-request', (e) => {
+      const u16 = await listen<PendingConfirmationDto>('automation:confirm-request', (e) => {
         dispatch({ type: 'automation-confirm-request', payload: e.payload })
       })
 
-      unlisten = [u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15]
+      const u17 = await listen<SuggestionSurfacePayload>('overlay:set-suggestion-surface', (e) => {
+        dispatch({ type: 'set-suggestion-surface', payload: e.payload })
+      })
+
+      // u18: Codex app-server approval request (E21 #5044) → CodexApprovalModal
+      const u18 = await listen<CodexApprovalDto>('codex:approval-request', (e) => {
+        dispatch({ type: 'codex-approval-request', payload: e.payload })
+      })
+
+      const u19 = await listen<PointerContextPayload>('overlay:pointer-context-update', (e) => {
+        dispatch({ type: 'pointer-context-update', payload: e.payload })
+      })
+
+      unlisten = [u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17, u18, u19]
 
       // Query actual backend state (overlay window may be created after state changes)
       try {

@@ -7,7 +7,10 @@ use maekon_automation::policy::PolicyClient;
 use maekon_automation::sandbox::create_platform_sandbox;
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AppConfig};
 use maekon_core::ports::skill_loader::SkillLoader;
-#[cfg(feature = "server")]
+// C1: provider port imports move to 'analysis' — BYOK/OAuth adapters available
+// without 'server' transport feature.
+use maekon_core::ports::llm_provider::LlmCallHealth;
+#[cfg(feature = "analysis")]
 use maekon_core::ports::{oauth::OAuthPort, secret_store::SecretStoreSet};
 use maekon_monitor::process::ProcessTracker;
 use maekon_storage::frame_storage::FrameFileStorage;
@@ -23,6 +26,10 @@ use crate::provider_adapters::ExternalOcrPrivacyGuard;
 pub(crate) struct AutomationControllerBuildResult {
     pub(crate) controller: Option<Arc<AutomationController>>,
     pub(crate) ai_runtime_status: Option<AiRuntimeStatus>,
+    /// #5734: the live per-call LLM health handle forwarded to the web runtime
+    /// so `GET /api/automation/status` can read the true last-call outcome.
+    /// `None` when automation is disabled or the NoOp fallback is active.
+    pub(crate) llm_call_health: Option<Arc<LlmCallHealth>>,
 }
 
 pub(crate) struct AutomationControllerBuilder<'a> {
@@ -33,10 +40,15 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     frame_storage: Option<Arc<FrameFileStorage>>,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     provider_secret_stores: Option<SecretStoreSet>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     oauth_port: Option<Arc<dyn OAuthPort>>,
+    /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    /// registry from the composition root, forwarded to the provider resolvers.
+    /// Defaults to a fresh registry for standalone use; the composition root
+    /// overrides it with the shared Arc via `with_breaker_registry`.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
 }
 
 impl<'a> AutomationControllerBuilder<'a> {
@@ -55,11 +67,23 @@ impl<'a> AutomationControllerBuilder<'a> {
             frame_storage,
             app_handle: None,
             cli_health_flag: None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             provider_secret_stores: None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             oauth_port: None,
+            breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
         }
+    }
+
+    /// Inject the single shared workspace-wide circuit-breaker registry from the
+    /// composition root (D7 #4812 / E20-20). The remote provider adapters this
+    /// builder resolves clone this one Arc.
+    pub(crate) fn with_breaker_registry(
+        mut self,
+        registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    ) -> Self {
+        self.breaker_registry = registry;
+        self
     }
 
     pub(crate) fn with_cli_health_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
@@ -67,7 +91,7 @@ impl<'a> AutomationControllerBuilder<'a> {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(crate) fn with_provider_secret_stores(mut self, secret_stores: SecretStoreSet) -> Self {
         self.provider_secret_stores = Some(secret_stores);
         self
@@ -78,7 +102,7 @@ impl<'a> AutomationControllerBuilder<'a> {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(crate) fn with_oauth_port(mut self, oauth_port: Option<Arc<dyn OAuthPort>>) -> Self {
         self.oauth_port = oauth_port;
         self
@@ -89,6 +113,7 @@ impl<'a> AutomationControllerBuilder<'a> {
             return AutomationControllerBuildResult {
                 controller: None,
                 ai_runtime_status: None,
+                llm_call_health: None, // automation disabled — no health tracking
             };
         }
 
@@ -103,7 +128,15 @@ impl<'a> AutomationControllerBuilder<'a> {
         );
         let skill_loader = discover_skill_loader();
 
-        #[cfg(feature = "server")]
+        // Create the per-call LLM health handle shared between the provider
+        // instance and the status assembly path.  The handle is created here so
+        // the builder controls lifetime and can forward it to the web runtime
+        // bindings regardless of whether the runtime succeeds or falls back.
+        let llm_call_health: Arc<LlmCallHealth> = Arc::new(LlmCallHealth::default());
+
+        // C1: preflight OAuth check moves to 'analysis' (provider port is analysis-gated).
+        // When analysis is off, build_automation_runtime receives no oauth/secret_stores.
+        #[cfg(feature = "analysis")]
         let runtime = preflight_provider_oauth_connection(
             self._runtime_handle,
             &self.config.ai_provider,
@@ -118,10 +151,12 @@ impl<'a> AutomationControllerBuilder<'a> {
                 skill_loader.clone(),
                 self.provider_secret_stores.clone(),
                 validated_oauth_port,
+                self.breaker_registry.clone(),
+                Some(llm_call_health.clone()),
             )
         });
 
-        #[cfg(not(feature = "server"))]
+        #[cfg(not(feature = "analysis"))]
         let runtime = build_automation_runtime(
             &self.config.ai_provider,
             self.config.privacy.pii_filter_level,
@@ -129,6 +164,8 @@ impl<'a> AutomationControllerBuilder<'a> {
             Some(external_ocr_privacy_guard),
             skill_loader,
             None,
+            self.breaker_registry.clone(),
+            Some(llm_call_health.clone()),
         );
 
         match runtime {
@@ -138,6 +175,12 @@ impl<'a> AutomationControllerBuilder<'a> {
                     llm_source: runtime.llm_source.as_str().to_string(),
                     ocr_fallback_reason: runtime.ocr_fallback_reason.clone(),
                     llm_fallback_reason: runtime.llm_fallback_reason.clone(),
+                    // SSE snapshot: reflects state at build time, not live.
+                    // Live value is in AutomationStatusDto via llm_call_health handle.
+                    llm_healthy: runtime
+                        .llm_call_health
+                        .as_ref()
+                        .and_then(|h| h.as_option_bool()),
                 }),
                 controller: Some(Arc::new(build_controller_from_runtime(
                     self.config,
@@ -146,7 +189,11 @@ impl<'a> AutomationControllerBuilder<'a> {
                     runtime,
                     self.app_handle,
                     self.cli_health_flag.clone(),
+                    self._runtime_handle,
                 ))),
+                // Forward the live handle so the web layer can read it at request time
+                // (as_option_bool()) even after the build-time SSE snapshot is stale.
+                llm_call_health: Some(llm_call_health),
             },
             Err(err) => {
                 if should_fallback_to_noop(&self.config.ai_provider) {
@@ -158,11 +205,14 @@ impl<'a> AutomationControllerBuilder<'a> {
                             llm_source: "local-fallback".to_string(),
                             ocr_fallback_reason: Some(fallback_reason.clone()),
                             llm_fallback_reason: Some(fallback_reason),
+                            // NoOp fallback: no LLM calls wired.
+                            llm_healthy: None,
                         }),
                         controller: Some(Arc::new(build_noop_controller(
                             self.config,
                             self.audit_logger,
                         ))),
+                        llm_call_health: None, // NoOp fallback — rule-matcher only, no Ollama
                     };
                 }
 
@@ -179,6 +229,7 @@ impl<'a> AutomationControllerBuilder<'a> {
                 AutomationControllerBuildResult {
                     controller: None,
                     ai_runtime_status,
+                    llm_call_health: None, // provider error — no health tracking possible
                 }
             }
         }
@@ -205,6 +256,7 @@ fn build_controller_from_runtime(
     runtime: crate::automation_runtime::AutomationRuntime,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    runtime_handle: &Handle,
 ) -> AutomationController {
     // Clone handle early so we can wire the confirmation callback after
     // the overlay driver consumes the original.
@@ -235,8 +287,14 @@ fn build_controller_from_runtime(
     };
     controller.set_enabled(true);
     controller.set_scene_finder(runtime.element_finder.clone());
+    // #4539: permissive-noop 경로에서 액션이 누락(거짓 성공)되지 않도록
+    // 실제 입력 드라이버를 인라인 실행기로 배선한다.
+    controller.set_inline_action_executor(runtime.input_driver.clone());
     controller.set_intent_executor(runtime.intent_executor);
     controller.set_intent_planner(runtime.intent_planner);
+    // Wire intent-hint confirmation gate from AutomationConfig.confirmation_policy.
+    // Default is Auto (D2-② product sign-off); users opt into Confirm/Block via config.
+    controller.set_confirmation_policy(config.automation.confirmation_policy);
 
     let focus_probe: Arc<dyn maekon_core::ports::focus_probe::FocusProbe> = Arc::new(
         crate::focus_probe_adapter::ProcessMonitorFocusProbe::new(process_monitor),
@@ -254,9 +312,12 @@ fn build_controller_from_runtime(
         };
 
     let hmac_secret = std::env::var("MAEKON_GUI_TICKET_HMAC_SECRET").ok();
-    if let Err(error) =
-        controller.configure_gui_interaction(focus_probe, overlay_driver, hmac_secret)
-    {
+    if let Err(error) = controller.configure_gui_interaction(
+        focus_probe,
+        overlay_driver,
+        hmac_secret,
+        runtime_handle,
+    ) {
         warn!(error = %error, "GUI interaction setup failed (non-fatal)");
     }
 
@@ -289,7 +350,8 @@ fn build_noop_controller(
     controller
 }
 
-#[cfg(feature = "server")]
+// C1: preflight check is 'analysis'-gated (OAuthPort comes from provider_runtime_context).
+#[cfg(feature = "analysis")]
 fn preflight_provider_oauth_connection(
     handle: &Handle,
     ai_config: &maekon_core::config::AiProviderConfig,
@@ -339,6 +401,8 @@ fn oauth_runtime_error_status(ai_config: &AiProviderConfig, reason: String) -> A
         llm_source: "oauth".to_string(),
         ocr_fallback_reason: Some(reason.clone()),
         llm_fallback_reason: Some(reason),
+        // OAuth error path: no LLM call was attempted.
+        llm_healthy: None,
     }
 }
 

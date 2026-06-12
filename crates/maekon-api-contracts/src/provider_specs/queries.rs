@@ -10,8 +10,8 @@ use super::helpers::{
     validate_parameter_usage,
 };
 use super::models::{
-    ProviderAvailabilityProbeSpec, ProviderKnownModelSpec, ProviderSurfaceSpec,
-    SubprocessTransportSpec,
+    ProviderAvailabilityProbeSpec, ProviderCliCompatibilitySpec, ProviderKnownModelSpec,
+    ProviderSurfaceSpec, SubprocessTransportSpec,
 };
 use super::parsers::{
     parse_model_catalog_strategy, parse_subprocess_auth_probe_mode,
@@ -77,6 +77,26 @@ pub fn subprocess_transport(surface_id: &str) -> Result<&'static SubprocessTrans
 
 pub fn subprocess_supports_json_output(surface_id: &str) -> Result<bool, String> {
     Ok(subprocess_transport(surface_id)?.json_output_supported)
+}
+
+/// The CLI-compatibility spec for a subprocess surface (E21 #4863). Carries the
+/// `version_probe_command` (e.g. `["--version"]`), the prose
+/// `minimum_supported_version` policy, the `known_bad_versions` denylist, and
+/// `manual_live_smoke_required`. Mirrors [`subprocess_transport`]'s lookup +
+/// presence guard. The factory reads this to source the `codex --version` probe
+/// args and the inform-only version cross-check; ALL of those checks are
+/// graceful (warn-and-proceed), so a missing/empty `version_probe_command`
+/// simply defaults to `["--version"]` at the call site rather than erroring.
+pub fn subprocess_compatibility(
+    surface_id: &str,
+) -> Result<&'static ProviderCliCompatibilitySpec, String> {
+    let surface = provider_surface_spec(surface_id)?;
+    surface.compatibility.as_ref().ok_or_else(|| {
+        format!(
+            "Surface '{}' is missing a compatibility spec.",
+            surface.surface_id
+        )
+    })
 }
 
 pub fn subprocess_invocation_mode(surface_id: &str) -> Result<SubprocessInvocationMode, String> {

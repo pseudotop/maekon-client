@@ -1,8 +1,8 @@
-import { Cpu, HardDrive, Wifi, WifiOff, Zap, ZapOff } from 'lucide-react'
+import { Camera, Cpu, HardDrive, Wifi, WifiOff, Zap, ZapOff } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSSE } from '../../hooks/useSSE'
-import { iconSize, layout } from '../../styles/tokens'
+import { iconSize, layout, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatBytes } from '../../utils/formatters'
 
@@ -34,12 +34,15 @@ function useAutomationStatus(connected: boolean) {
 
 export default function StatusBar() {
   const { t } = useTranslation()
-  const { status, latestMetrics } = useSSE()
+  const { status, latestFrame, latestMetrics } = useSSE()
 
   const connected = status === 'connected'
   const automationOn = useAutomationStatus(connected)
   const cpuText = latestMetrics ? `${latestMetrics.cpu_usage.toFixed(1)}%` : '--'
   const ramText = latestMetrics ? formatBytes(latestMetrics.memory_used) : '--'
+  const lastCaptureTimestamp = latestFrame?.timestamp ?? null
+  const lastCaptureMs = lastCaptureTimestamp ? Date.parse(lastCaptureTimestamp) : Number.NaN
+  const captureActive = Number.isFinite(lastCaptureMs) && Math.abs(Date.now() - lastCaptureMs) <= 2_000
 
   return (
     <div
@@ -78,6 +81,34 @@ export default function StatusBar() {
               <ZapOff className={cn(iconSize.xs, 'opacity-60')} aria-hidden="true" />
               <span>{t('shell.automationOff', 'Auto: OFF')}</span>
             </>
+          )}
+        </output>
+
+        <div className={layout.statusBar.separator} />
+
+        <output className="flex min-w-0 items-center gap-1 px-1.5" aria-live="polite" aria-atomic="true">
+          <span
+            role="img"
+            aria-label={captureActive ? 'Capture active' : 'Capture waiting'}
+            className={cn(
+              'h-2 w-2 shrink-0 rounded-full',
+              captureActive ? 'bg-status-connected' : 'bg-status-connecting opacity-70',
+            )}
+          />
+          <Camera className={iconSize.xs} aria-hidden="true" />
+          {lastCaptureTimestamp ? (
+            <time
+              role="timer"
+              aria-label="LastCaptureTimestamp"
+              dateTime={lastCaptureTimestamp}
+              className={cn('max-w-[180px] truncate tabular-nums', typography.family.mono)}
+            >
+              {lastCaptureTimestamp}
+            </time>
+          ) : (
+            <span role="timer" aria-label="LastCaptureTimestamp" className={cn('tabular-nums', typography.family.mono)}>
+              --
+            </span>
           )}
         </output>
       </div>

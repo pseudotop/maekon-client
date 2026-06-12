@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::error::CoreError;
 use crate::models::context::{ProcessInfo, UserContext, WindowInfo};
 use crate::models::event::ProcessDetail;
-use crate::models::system::SystemMetrics;
+use crate::models::system::{PowerStatus, SystemMetrics};
 
 /// Collects CPU, memory, disk, and network metrics.
 ///
@@ -19,6 +19,10 @@ use crate::models::system::SystemMetrics;
 #[async_trait]
 pub trait SystemMonitor: Send + Sync {
     async fn collect_metrics(&self) -> Result<SystemMetrics, CoreError>;
+
+    async fn current_power_status(&self) -> Result<PowerStatus, CoreError> {
+        Ok(PowerStatus::default())
+    }
 }
 
 /// Active window detection and process enumeration.

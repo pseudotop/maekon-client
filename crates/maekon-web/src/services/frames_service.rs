@@ -19,7 +19,7 @@ impl FramesQueryService {
         Self { ctx }
     }
 
-    pub fn get_frames(
+    pub async fn get_frames(
         &self,
         params: &TimeRangeQuery,
     ) -> Result<PaginatedResponse<FrameResponse>, ApiError> {
@@ -33,11 +33,11 @@ impl FramesQueryService {
 
         // Fetch all frames in range (no limit) so we can filter by importance first,
         // then paginate the filtered result for correct total count.
-        // get_frames is out of plan scope (still takes DateTime<Utc>): decompose.
         let all_frames = self
             .ctx
             .storage
-            .get_frames(window.start, window.end, usize::MAX)?;
+            .get_frames(window.start, window.end, usize::MAX)
+            .await?;
 
         let filtered: Vec<_> = all_frames
             .into_iter()
@@ -62,6 +62,7 @@ impl FramesQueryService {
                     .ctx
                     .storage
                     .get_tag_ids_for_frames(&frame_ids)
+                    .await
                     .map_err(ApiError::from)?;
 
                 data.into_iter()
@@ -89,7 +90,7 @@ impl FramesQueryService {
     }
 
     pub async fn get_frame_image(&self, frame_id: i64) -> Response {
-        let file_path = match self.ctx.storage.get_frame_file_path(frame_id) {
+        let file_path = match self.ctx.storage.get_frame_file_path(frame_id).await {
             Ok(Some(path)) => path,
             Ok(None) => {
                 return ApiError::NotFound(format!("frame {frame_id} has no image"))
@@ -112,7 +113,7 @@ impl FramesQueryService {
                 }
             }
         } else {
-            match std::fs::read(&full_path) {
+            match tokio::fs::read(&full_path).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return ApiError::Internal(format!("file read failure: {error}"))

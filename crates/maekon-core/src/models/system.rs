@@ -14,6 +14,16 @@ pub struct SystemMetrics {
     pub typing_wpm: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PowerStatus {
+    pub external_power_connected: Option<bool>,
+    pub battery_percent: Option<f32>,
+    #[serde(default)]
+    pub low_battery: bool,
+    #[serde(default)]
+    pub battery_saver_active: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkInfo {
     pub upload_speed: u64,

@@ -23,6 +23,30 @@ pub struct EdgeFrameProcessor {
     ocr_extractor: Option<crate::ocr::OcrExtractor>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureMetadataInput<'a> {
+    pub trigger_type: &'a str,
+    pub app_name: &'a str,
+    pub window_title: &'a str,
+    pub resolution: (u32, u32),
+    pub importance: f32,
+    pub monitor_id: Option<usize>,
+    pub app_bundle_id: Option<&'a str>,
+}
+
+pub fn build_frame_metadata(input: CaptureMetadataInput<'_>) -> FrameMetadata {
+    FrameMetadata {
+        timestamp: Utc::now(),
+        trigger_type: input.trigger_type.to_string(),
+        app_name: input.app_name.to_string(),
+        window_title: privacy::sanitize_title(input.window_title),
+        resolution: input.resolution,
+        importance: input.importance,
+        monitor_id: input.monitor_id,
+        app_bundle_id: input.app_bundle_id.map(ToString::to_string),
+    }
+}
+
 impl EdgeFrameProcessor {
     #[allow(unused_variables)]
     pub fn new(thumbnail_width: u32, thumbnail_height: u32, ocr_tessdata: Option<PathBuf>) -> Self {
@@ -39,99 +63,93 @@ impl EdgeFrameProcessor {
     }
 }
 
-#[cfg(not(feature = "ocr"))]
-fn extract_ocr_text(_frame: &DynamicImage, _processor: &EdgeFrameProcessor) -> Option<String> {
-    None
-}
-
-#[cfg(feature = "ocr")]
-fn extract_ocr_text(frame: &DynamicImage, processor: &EdgeFrameProcessor) -> Option<String> {
-    let extractor = processor.ocr_extractor.as_ref()?;
-    match extractor.extract(frame) {
-        Ok(text) if !text.is_empty() => {
-            let sanitized = privacy::sanitize_title(&text);
-            Some(sanitized)
-        }
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!("OCR extraction failed: {e}");
-            None
-        }
-    }
-}
-
-/// Extract OCR regions with bounding boxes from the frame.
-/// Returns empty Vec when OCR feature is disabled.
-#[cfg(not(feature = "ocr"))]
-fn extract_ocr_regions(
-    _frame: &DynamicImage,
-    _processor: &EdgeFrameProcessor,
-) -> Vec<maekon_core::models::frame::OcrRegion> {
-    Vec::new()
-}
-
-/// Extract OCR regions with bounding boxes from the frame.
-#[cfg(feature = "ocr")]
-fn extract_ocr_regions(
-    frame: &DynamicImage,
-    processor: &EdgeFrameProcessor,
-) -> Vec<maekon_core::models::frame::OcrRegion> {
-    let Some(extractor) = processor.ocr_extractor.as_ref() else {
-        return Vec::new();
-    };
-    match extractor.extract_regions(frame) {
-        Ok(regions) => {
-            debug!("OCR extracted {} regions", regions.len());
-            regions
-        }
-        Err(e) => {
-            tracing::warn!("OCR region extraction failure: {e}");
-            Vec::new()
-        }
-    }
-}
-
 #[async_trait]
 impl FrameProcessor for EdgeFrameProcessor {
     async fn capture_and_process(
         &self,
         capture_request: &CaptureRequest,
     ) -> Result<ProcessedFrame, CoreError> {
-        let sanitized_title = privacy::sanitize_title(&capture_request.window_title);
         let importance = capture_request.importance;
 
-        let current_frame = Arc::new(
-            self.capture
-                .capture_for_window(capture_request.window_bounds.as_ref())?,
-        );
+        // Screen capture is a blocking OS syscall (xcap). Offload to the
+        // blocking thread pool so the Tokio scheduler is not stalled.
+        let capture = self.capture.clone();
+        let window_bounds = capture_request.window_bounds;
+        let (captured_frame, selected_monitor_id) = tokio::task::spawn_blocking(move || {
+            capture.capture_for_window_with_monitor(window_bounds.as_ref())
+        })
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("capture task panicked: {e}"),
+        })?
+        .map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("screen capture failed: {e}"),
+        })?;
+        let current_frame = Arc::new(captured_frame);
         let (w, h) = (current_frame.width(), current_frame.height());
 
-        let metadata = FrameMetadata {
-            timestamp: Utc::now(),
-            trigger_type: capture_request.trigger_type.clone(),
-            app_name: capture_request.app_name.clone(),
-            window_title: sanitized_title,
+        let metadata = build_frame_metadata(CaptureMetadataInput {
+            trigger_type: &capture_request.trigger_type,
+            app_name: &capture_request.app_name,
+            window_title: &capture_request.window_title,
             resolution: (w, h),
             importance,
-        };
+            monitor_id: capture_request.monitor_id.or(selected_monitor_id),
+            app_bundle_id: capture_request.app_bundle_id.as_deref(),
+        });
 
         let mut ocr_regions = Vec::new();
         let mut raw_rgba: Option<Vec<u8>> = None;
 
         let image_payload = if importance >= 0.8 {
             debug!("frame (in progress {:.1})", importance);
-            // Offload heavy High-quality encoding to blocking thread
+            // Offload CPU-heavy encoding and synchronous OCR to blocking thread.
             let frame_ref = Arc::clone(&current_frame);
-            let encoded = tokio::task::spawn_blocking(move || {
-                encoder::encode_webp_base64(&frame_ref, WebPQuality::High)
+            #[cfg(feature = "ocr")]
+            let ocr_extractor_path = self
+                .ocr_extractor
+                .as_ref()
+                .and_then(|e| e.tessdata_path().cloned());
+            #[cfg(not(feature = "ocr"))]
+            let _ocr_extractor_path: Option<std::path::PathBuf> = None;
+            let scale_factor = capture_request.screen_scale_factor;
+            let (encoded, ocr_text_val, raw_regions) = tokio::task::spawn_blocking(move || {
+                let enc = encoder::encode_webp_base64(&frame_ref, WebPQuality::High)?;
+
+                #[cfg(feature = "ocr")]
+                let (text_val, regions) = {
+                    let extractor = crate::ocr::OcrExtractor::new(ocr_extractor_path);
+                    let text = match extractor.extract(&frame_ref) {
+                        Ok(t) if !t.is_empty() => Some(crate::privacy::sanitize_title(&t)),
+                        _ => None,
+                    };
+                    let regions = match extractor.extract_regions(&frame_ref) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!("OCR region extraction failure: {e}");
+                            Vec::new()
+                        }
+                    };
+                    (text, regions)
+                };
+                #[cfg(not(feature = "ocr"))]
+                let (text_val, regions): (
+                    Option<String>,
+                    Vec<maekon_core::models::frame::OcrRegion>,
+                ) = (None, Vec::new());
+
+                Ok::<_, crate::error::VisionError>((enc, text_val, regions))
             })
             .await
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("encode task panicked: {e}"),
             })??;
-            let ocr_text = extract_ocr_text(&current_frame, self);
-            ocr_regions = extract_ocr_regions(&current_frame, self);
+            let ocr_text = ocr_text_val;
+            ocr_regions =
+                crate::ocr_geometry::scale_ocr_regions_to_logical(&raw_regions, scale_factor);
             // Preserve raw RGBA for ML classifier (before current_frame is moved)
             if !ocr_regions.is_empty() {
                 raw_rgba = Some(current_frame.to_rgba8().into_vec());
@@ -204,8 +222,10 @@ impl FrameProcessor for EdgeFrameProcessor {
             let th = self.thumbnail_height;
             let frame_ref = Arc::clone(&current_frame);
             let encoded = tokio::task::spawn_blocking(move || {
-                let thumb = thumbnail::fast_resize(&frame_ref, tw, th)?;
-                encoder::encode_webp_base64(&thumb, WebPQuality::Low)
+                let thumb = thumbnail::resize_to_fit(&frame_ref, tw, th)?;
+                let (width, height) = (thumb.width(), thumb.height());
+                let data = encoder::encode_webp_base64(&thumb, WebPQuality::Low)?;
+                Ok::<_, crate::error::VisionError>((data, width, height))
             })
             .await
             .map_err(|e| CoreError::Internal {
@@ -213,9 +233,9 @@ impl FrameProcessor for EdgeFrameProcessor {
                 message: format!("encode task panicked: {e}"),
             })??;
             Some(ImagePayload::Thumbnail {
-                data: encoded,
-                width: self.thumbnail_width,
-                height: self.thumbnail_height,
+                data: encoded.0,
+                width: encoded.1,
+                height: encoded.2,
             })
         } else {
             debug!("(in progress {:.1})", importance);
@@ -241,7 +261,7 @@ impl FrameProcessor for EdgeFrameProcessor {
         let th = self.thumbnail_height;
         tokio::task::spawn_blocking(move || {
             let frame = capture.capture_primary()?;
-            let thumb = thumbnail::fast_resize(&frame, tw, th)?;
+            let thumb = thumbnail::resize_to_fit(&frame, tw, th)?;
             let encoded = encoder::encode_webp_base64(&thumb, WebPQuality::Low)?;
             use base64::Engine;
             base64::engine::general_purpose::STANDARD

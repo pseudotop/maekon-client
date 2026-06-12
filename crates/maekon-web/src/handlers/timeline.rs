@@ -95,6 +95,7 @@ mod tests {
             window_title: "main.rs".to_string(),
             importance: 0.85,
             image_url: "/api/frames/1/image".to_string(),
+            ocr_text: None,
         };
         let json = serde_json::to_string(&frame).unwrap();
         assert!(json.contains("\"type\":\"Frame\""));
@@ -133,6 +134,7 @@ mod tests {
                 window_title: "Tab 1".to_string(),
                 importance: 0.5,
                 image_url: "/api/frames/1/image".to_string(),
+                ocr_text: None,
             },
             TimelineItem::Frame {
                 id: 2,
@@ -141,6 +143,7 @@ mod tests {
                 window_title: "Tab 2".to_string(),
                 importance: 0.5,
                 image_url: "/api/frames/2/image".to_string(),
+                ocr_text: None,
             },
             TimelineItem::Frame {
                 id: 3,
@@ -149,6 +152,7 @@ mod tests {
                 window_title: "main.rs".to_string(),
                 importance: 0.8,
                 image_url: "/api/frames/3/image".to_string(),
+                ocr_text: None,
             },
         ];
 

@@ -269,8 +269,10 @@ async fn push_and_pull_roundtrip() {
     // Authenticate
     let token = authenticate(&client, &base, passphrase, client_id, server_id).await;
 
-    // Push an encrypted changeset
-    let cs = test_changeset();
+    // Push an encrypted changeset. #5211: the origin must match the authenticated client.
+    let mut cs = test_changeset();
+    cs.origin_device_id = client_id.to_string();
+    cs.segments[0]["origin_device_id"] = serde_json::json!(client_id);
     let json = serde_json::to_vec(&cs).unwrap();
     let encrypted = sync_crypto::encrypt(passphrase, &json).unwrap();
 
@@ -286,7 +288,7 @@ async fn push_and_pull_roundtrip() {
     // Verify the server received it
     let received = server.drain_received();
     assert_eq!(received.len(), 1);
-    assert_eq!(received[0].origin_device_id, "peer-1");
+    assert_eq!(received[0].origin_device_id, client_id);
 
     // Enqueue an outbound changeset and pull it
     let outbound_cs = ChangeSet {
@@ -297,7 +299,10 @@ async fn push_and_pull_roundtrip() {
             counter: 1,
             device_id: server_id.to_string(),
         },
-        segments: vec![serde_json::json!({"id": "seg-out"})],
+        segments: vec![serde_json::json!({
+            "id": "seg-out",
+            "origin_device_id": server_id
+        })],
         ..Default::default()
     };
     server.enqueue_outbound(outbound_cs);
@@ -488,10 +493,13 @@ fn session_store_basics() {
     // Second take fails
     assert!(store.take_nonce(&hex).is_none());
 
-    // Create and validate session
+    // Create and validate session (#5211: token resolves to the peer's device_id)
     let token = store.create_session("peer-1");
-    assert!(store.validate_token(&token));
-    assert!(!store.validate_token("invalid"));
+    assert_eq!(
+        store.authenticated_device_id(&token).as_deref(),
+        Some("peer-1")
+    );
+    assert!(store.authenticated_device_id("invalid").is_none());
 }
 
 #[tokio::test]
@@ -694,9 +702,10 @@ async fn tls_with_real_cert() {
         .get(format!("http://127.0.0.1:{port}/sync/info"))
         .send()
         .await;
+    let plain_err = plain_result.unwrap_err();
     assert!(
-        plain_result.is_err(),
-        "plain HTTP should not succeed against TLS server"
+        plain_err.is_connect() || plain_err.is_request(),
+        "plain HTTP to TLS port must fail with a connection/request error; got: {plain_err}"
     );
 
     server.stop();

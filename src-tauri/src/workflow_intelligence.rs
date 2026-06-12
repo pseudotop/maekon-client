@@ -232,6 +232,18 @@ impl WorkflowIntelligence {
         let segment = self.active_segment.take()?;
         self.register_segment(segment, min_relevance, now)
     }
+
+    /// 테스트 전용: 집계된 앱-사용 항목 수 (#4802 app_usage_analytics 게이트 검증용).
+    #[cfg(test)]
+    pub(crate) fn usage_len(&self) -> usize {
+        self.usage.len()
+    }
+
+    /// 테스트 전용: 활성 workflow 세그먼트 존재 여부 (#4802 게이트 검증용).
+    #[cfg(test)]
+    pub(crate) fn has_active_segment(&self) -> bool {
+        self.active_segment.is_some()
+    }
 }
 
 fn should_split_segment(
@@ -337,7 +349,8 @@ impl WorkflowIntelligence {
         entry.representative_path = app_path;
         entry.representative_intents = intents_label;
 
-        let emit = entry.occurrences == 3 || (entry.occurrences > 3 && entry.occurrences % 5 == 0);
+        let emit = entry.occurrences == 3
+            || (entry.occurrences > 3 && entry.occurrences.is_multiple_of(5));
         if !emit {
             return None;
         }

@@ -7,6 +7,7 @@ use serde::Deserialize;
 /// Supports optional filtering by `command_id` and a `limit` cap (DoS guard).
 /// `status` is reserved for future use (currently no-op).
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuditExportQuery {
     /// Filter entries by exact `command_id` match.
     /// Empty string is treated as absent (falls back to `recent_entries`).

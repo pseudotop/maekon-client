@@ -29,10 +29,34 @@ pub async fn discover_provider_models_for_integration(
 mod tests {
     use super::*;
     use crate::AppState;
+    use async_trait::async_trait;
     use axum::Json;
+    use maekon_core::ports::provider_model_catalog::{
+        ProviderModelCatalogError, ProviderModelCatalogPort, ProviderModelCatalogRequest,
+        ProviderModelCatalogResponse,
+    };
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
     use tokio::sync::broadcast;
+
+    #[derive(Clone)]
+    struct FixedStatusModelCatalogPort {
+        status: u16,
+        body: String,
+    }
+
+    #[async_trait]
+    impl ProviderModelCatalogPort for FixedStatusModelCatalogPort {
+        async fn fetch_models(
+            &self,
+            _request: ProviderModelCatalogRequest,
+        ) -> Result<ProviderModelCatalogResponse, ProviderModelCatalogError> {
+            Ok(ProviderModelCatalogResponse {
+                status: self.status,
+                body: self.body.clone(),
+            })
+        }
+    }
 
     fn test_state() -> AppState {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
@@ -42,6 +66,15 @@ mod tests {
 
     fn test_context() -> AiModelCatalogWebContext {
         AiModelCatalogWebContext::from_state(&test_state())
+    }
+
+    fn test_context_with_catalog_status(status: u16) -> AiModelCatalogWebContext {
+        let mut state = test_state();
+        state.analysis.model_catalog_client = Some(Arc::new(FixedStatusModelCatalogPort {
+            status,
+            body: format!("http {status}"),
+        }));
+        AiModelCatalogWebContext::from_state(&state)
     }
 
     #[tokio::test]
@@ -67,31 +100,22 @@ mod tests {
         }
     }
 
-    // iter-83 regression guards for iter-60 ApiError-form HTTP status mapping
-    // in ai_model_catalog_web_service::discover_provider_models. The service
-    // ultimately calls the user-provided endpoint for model discovery, so a
-    // mockito server pointed at an OpenAI-style base URL suffices.
     async fn run_model_catalog_status_test(status: u16) -> ApiError {
-        let mut server = mockito::Server::new_async().await;
-        let _mock = server
-            .mock("GET", mockito::Matcher::Any)
-            .with_status(status as usize)
-            .with_body(format!("http {status}"))
-            .create_async()
-            .await;
-
         let request = ProviderModelsRequest {
             provider_type: "openai".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: Some(server.url()),
+            endpoint: Some("https://example.test/v1/models".to_string()),
             surface: Some("llm_api".to_string()),
             surface_id: Some("provider_surface.openai.direct_api".to_string()),
             use_saved_secret: false,
         };
 
-        discover_provider_models(State(test_context()), Json(request))
-            .await
-            .expect_err("expected error response from mock server")
+        discover_provider_models(
+            State(test_context_with_catalog_status(status)),
+            Json(request),
+        )
+        .await
+        .expect_err("expected error response from model catalog port")
     }
 
     #[tokio::test]

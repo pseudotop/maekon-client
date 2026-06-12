@@ -16,8 +16,9 @@ pub async fn create_backup(
     State(context): State<BackupWebContext>,
     Query(params): Query<BackupQuery>,
 ) -> Result<Response, ApiError> {
-    let BackupDownload { filename, body } =
-        BackupQueryService::new(context).create_backup_download(&params)?;
+    let BackupDownload { filename, body } = BackupQueryService::new(context)
+        .create_backup_download(&params)
+        .await?;
 
     Ok((
         [
@@ -37,7 +38,9 @@ pub async fn restore_backup(
     Json(archive): Json<BackupArchive>,
 ) -> Result<Json<RestoreResult>, ApiError> {
     Ok(Json(
-        BackupCommandService::new(context).restore_backup(&archive)?,
+        BackupCommandService::new(context)
+            .restore_backup(&archive)
+            .await?,
     ))
 }
 

@@ -17,6 +17,7 @@ fn make_suggestion(id: &str, priority: Priority, content: &str) -> Suggestion {
         expires_at: None,
         source: SuggestionSource::LlmServer,
         reasoning: None,
+        context_scope: None,
     }
 }
 

@@ -34,7 +34,7 @@ fn policy_to_dto(p: &ExecutionPolicy) -> ExecutionPolicyDto {
         allowed_paths: p.allowed_paths.clone(),
         allow_network: p.allow_network,
         require_signed_token: p.require_signed_token,
-        confirmation: format!("{:?}", p.confirmation),
+        confirmation: p.confirmation.to_string(),
     }
 }
 
@@ -52,8 +52,8 @@ fn dto_to_policy(d: &ExecutionPolicyDto) -> ExecutionPolicy {
         _ => None,
     });
     let confirmation = match d.confirmation.as_str() {
-        "Auto" => maekon_core::config::ConfirmationRequirement::Auto,
-        "Block" => maekon_core::config::ConfirmationRequirement::Block,
+        "AUTO" => maekon_core::config::ConfirmationRequirement::Auto,
+        "BLOCK" => maekon_core::config::ConfirmationRequirement::Block,
         _ => maekon_core::config::ConfirmationRequirement::Confirm,
     };
     ExecutionPolicy {
@@ -239,5 +239,139 @@ impl AutomationPort for AutomationController {
 
     async fn remove_execution_policy(&self, policy_id: &str) -> Result<bool, CoreError> {
         Ok(self.policy_client.remove_policy(policy_id).await)
+    }
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    use crate::policy::AuditLevel;
+    use maekon_core::config::SandboxProfile;
+    use maekon_core::models::automation::ExecutionPolicyDto;
+
+    fn make_dto(sandbox: &str, audit: &str) -> ExecutionPolicyDto {
+        ExecutionPolicyDto {
+            policy_id: "test-policy".to_string(),
+            process_name: "test".to_string(),
+            process_hash: None,
+            allowed_args: vec![],
+            requires_sudo: false,
+            max_execution_time_ms: 5000,
+            audit_level: audit.to_string(),
+            sandbox_profile: Some(sandbox.to_string()),
+            allowed_paths: vec![],
+            allow_network: Some(false),
+            require_signed_token: false,
+            confirmation: "CONFIRM".to_string(),
+        }
+    }
+
+    /// F-RC-C35-03: SandboxProfile Display and serde(rename_all = "PascalCase") roundtrip.
+    /// policy_to_dto uses {:?} (PascalCase), dto_to_policy matches PascalCase literals.
+    /// Display now also emits PascalCase — all three paths are consistent.
+    #[test]
+    fn sandbox_profile_round_trip() {
+        for (variant, token) in [
+            (SandboxProfile::Permissive, "Permissive"),
+            (SandboxProfile::Standard, "Standard"),
+            (SandboxProfile::Strict, "Strict"),
+        ] {
+            // Display must produce PascalCase (aligned with dto_to_policy matcher)
+            assert_eq!(
+                format!("{}", variant),
+                token,
+                "Display mismatch for {:?}",
+                variant
+            );
+            // Debug must also produce PascalCase (used by policy_to_dto)
+            assert_eq!(
+                format!("{:?}", variant),
+                token,
+                "Debug mismatch for {:?}",
+                variant
+            );
+            // serde JSON must produce PascalCase
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", token),
+                "serde mismatch for {:?}",
+                variant
+            );
+            // dto -> policy -> dto round-trip
+            let dto = make_dto(token, "Basic");
+            let policy = dto_to_policy(&dto);
+            assert_eq!(policy.sandbox_profile, Some(variant));
+        }
+    }
+
+    #[test]
+    fn audit_level_round_trip() {
+        for (variant, token) in [
+            (AuditLevel::None, "None"),
+            (AuditLevel::Basic, "Basic"),
+            (AuditLevel::Detailed, "Detailed"),
+        ] {
+            // Debug (used by policy_to_dto) must produce PascalCase
+            assert_eq!(
+                format!("{:?}", variant),
+                token,
+                "Debug mismatch for {:?}",
+                variant
+            );
+            // serde JSON must produce PascalCase
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", token),
+                "serde mismatch for {:?}",
+                variant
+            );
+            // dto -> policy round-trip
+            let dto = make_dto("Standard", token);
+            let policy = dto_to_policy(&dto);
+            assert_eq!(policy.audit_level, variant);
+        }
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use crate::policy::{AuditLevel, ExecutionPolicy};
+
+    fn make_policy(confirmation: maekon_core::config::ConfirmationRequirement) -> ExecutionPolicy {
+        ExecutionPolicy {
+            policy_id: "rt-test".to_string(),
+            process_name: "test-proc".to_string(),
+            process_hash: None,
+            allowed_args: vec![],
+            requires_sudo: false,
+            max_execution_time_ms: 5000,
+            audit_level: AuditLevel::Basic,
+            sandbox_profile: None,
+            allowed_paths: vec![],
+            allow_network: None,
+            require_signed_token: false,
+            confirmation,
+        }
+    }
+
+    #[test]
+    fn confirmation_round_trip_all_variants() {
+        for variant in [
+            maekon_core::config::ConfirmationRequirement::Auto,
+            maekon_core::config::ConfirmationRequirement::Confirm,
+            maekon_core::config::ConfirmationRequirement::Block,
+        ] {
+            let policy = make_policy(variant);
+            let dto = policy_to_dto(&policy);
+            let restored = dto_to_policy(&dto);
+            assert_eq!(
+                restored.confirmation, variant,
+                "round-trip failed for variant {:?}: dto confirmation string was {:?}",
+                variant, dto.confirmation
+            );
+        }
     }
 }

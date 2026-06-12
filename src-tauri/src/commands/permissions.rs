@@ -4,6 +4,7 @@ use crate::desktop_permissions::{
     get_desktop_permission_snapshot,
     open_desktop_permission_settings as open_desktop_permission_settings_impl,
     request_desktop_notification_permission as request_notification_permission_snapshot,
+    request_desktop_screen_capture_permission as request_screen_capture_permission_snapshot,
     DesktopPermissionSnapshot,
 };
 use crate::ipc_error::IpcError;
@@ -28,6 +29,13 @@ pub async fn request_desktop_notification_permission<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<DesktopPermissionSnapshot, IpcError> {
     request_notification_permission_snapshot(&app).map_err(permission_error)
+}
+
+#[command]
+pub async fn request_desktop_screen_capture_permission<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<DesktopPermissionSnapshot, IpcError> {
+    request_screen_capture_permission_snapshot(&app).map_err(permission_error)
 }
 
 #[command]

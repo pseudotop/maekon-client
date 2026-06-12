@@ -320,29 +320,48 @@ mod tests {
 
     #[test]
     fn validate_accepts_default_settings() {
-        assert!(validate_settings_input(&valid_settings()).is_ok());
+        let s = valid_settings();
+        // validate_settings_input returns Result<(), ApiError>; Ok(()) is the
+        // complete correct outcome for well-formed defaults.  The contract has no
+        // payload beyond the Ok discriminant (#5594).
+        validate_settings_input(&s).expect("AppSettings::default() must pass all validation rules");
     }
 
     #[test]
     fn validate_rejects_zero_retention_days() {
         let mut s = valid_settings();
         s.retention_days = 0;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_retention_days_above_365() {
         let mut s = valid_settings();
         s.retention_days = 366;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_accepts_retention_days_boundary() {
-        for days in [1, 365] {
+        for days in [1u32, 365] {
             let mut s = valid_settings();
             s.retention_days = days;
-            assert!(validate_settings_input(&s).is_ok());
+            // Pin the exact boundary value that was accepted: the loop variable
+            // must have been applied to the struct before validation (#5594).
+            validate_settings_input(&s)
+                .unwrap_or_else(|e| panic!("retention_days={days} must be accepted; got {e:?}"));
+            assert_eq!(
+                s.retention_days, days,
+                "struct field must equal tested boundary"
+            );
         }
     }
 
@@ -350,22 +369,36 @@ mod tests {
     fn validate_rejects_max_storage_below_100() {
         let mut s = valid_settings();
         s.max_storage_mb = 99;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_max_storage_above_10000() {
         let mut s = valid_settings();
         s.max_storage_mb = 10001;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_accepts_max_storage_boundary() {
-        for mb in [100, 10000] {
+        for mb in [100u32, 10000] {
             let mut s = valid_settings();
             s.max_storage_mb = mb;
-            assert!(validate_settings_input(&s).is_ok());
+            // Pin the exact boundary value that was accepted (#5594).
+            validate_settings_input(&s)
+                .unwrap_or_else(|e| panic!("max_storage_mb={mb} must be accepted; got {e:?}"));
+            assert_eq!(
+                s.max_storage_mb, mb,
+                "struct field must equal tested boundary"
+            );
         }
     }
 
@@ -373,50 +406,84 @@ mod tests {
     fn validate_rejects_web_port_below_1024() {
         let mut s = valid_settings();
         s.web_port = 1023;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_accepts_web_port_1024() {
         let mut s = valid_settings();
         s.web_port = 1024;
-        assert!(validate_settings_input(&s).is_ok());
+        // Pin the exact boundary port: 1024 is the minimum valid unprivileged port.
+        // validate_settings_input must accept it and the field must equal what was set (#5594).
+        validate_settings_input(&s).expect("web_port=1024 (minimum valid port) must be accepted");
+        assert_eq!(
+            s.web_port, 1024u16,
+            "struct field must equal tested boundary"
+        );
     }
 
     #[test]
     fn validate_rejects_ocr_min_confidence_above_1() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.min_confidence = 1.01;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_ocr_min_confidence_negative() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.min_confidence = -0.01;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_ocr_min_confidence_nan() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.min_confidence = f64::NAN;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_ocr_min_confidence_inf() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.min_confidence = f64::INFINITY;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_accepts_ocr_min_confidence_boundary() {
-        for val in [0.0, 1.0] {
+        for val in [0.0f64, 1.0] {
             let mut s = valid_settings();
             s.ai_provider.ocr_validation.min_confidence = val;
-            assert!(validate_settings_input(&s).is_ok());
+            // Pin the exact boundary value: 0.0 and 1.0 are the inclusive endpoints
+            // of the valid [0.0, 1.0] range (#5594).
+            validate_settings_input(&s).unwrap_or_else(|e| {
+                panic!("ocr_validation.min_confidence={val} must be accepted; got {e:?}")
+            });
+            assert!(
+                (s.ai_provider.ocr_validation.min_confidence - val).abs() < f64::EPSILON,
+                "struct field must equal tested boundary"
+            );
         }
     }
 
@@ -424,50 +491,82 @@ mod tests {
     fn validate_rejects_ocr_max_invalid_ratio_above_1() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.max_invalid_ratio = 1.001;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_ocr_max_invalid_ratio_nan() {
         let mut s = valid_settings();
         s.ai_provider.ocr_validation.max_invalid_ratio = f64::NAN;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_scene_min_confidence_above_1() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.min_confidence = 1.5;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_scene_min_confidence_neg_inf() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.min_confidence = f64::NEG_INFINITY;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_scene_max_elements_zero() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.max_elements = 0;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_scene_max_elements_above_1000() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.max_elements = 1001;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_accepts_scene_max_elements_boundary() {
-        for val in [1, 1000] {
+        for val in [1u32, 1000] {
             let mut s = valid_settings();
             s.ai_provider.scene_intelligence.max_elements = val;
-            assert!(validate_settings_input(&s).is_ok());
+            // Pin the exact boundary value: 1 and 1000 are the inclusive endpoints
+            // of the valid [1, 1000] range (#5594).
+            validate_settings_input(&s).unwrap_or_else(|e| {
+                panic!("scene_intelligence.max_elements={val} must be accepted; got {e:?}")
+            });
+            assert_eq!(
+                s.ai_provider.scene_intelligence.max_elements, val,
+                "struct field must equal tested boundary"
+            );
         }
     }
 
@@ -475,14 +574,22 @@ mod tests {
     fn validate_rejects_calibration_min_elements_zero() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.calibration_min_elements = 0;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_rejects_calibration_min_elements_above_1000() {
         let mut s = valid_settings();
         s.ai_provider.scene_intelligence.calibration_min_elements = 1001;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
@@ -491,7 +598,11 @@ mod tests {
         s.ai_provider
             .scene_intelligence
             .calibration_min_avg_confidence = 1.1;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
@@ -500,7 +611,11 @@ mod tests {
         s.ai_provider
             .scene_intelligence
             .calibration_min_avg_confidence = f64::NAN;
-        assert!(validate_settings_input(&s).is_err());
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_pii_filter_level ──────────────────────────────────────
@@ -541,7 +656,11 @@ mod tests {
 
     #[test]
     fn parse_pii_filter_level_invalid() {
-        assert!(parse_pii_filter_level("maximum").is_err());
+        let err = parse_pii_filter_level("maximum").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_weekday ───────────────────────────────────────────────
@@ -570,8 +689,16 @@ mod tests {
 
     #[test]
     fn parse_weekday_invalid() {
-        assert!(parse_weekday("monday").is_err());
-        assert!(parse_weekday("").is_err());
+        let err = parse_weekday("monday").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest for 'monday', got: {err:?}"
+        );
+        let err = parse_weekday("").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest for '', got: {err:?}"
+        );
     }
 
     // ── parse_sandbox_profile ───────────────────────────────────────
@@ -598,7 +725,11 @@ mod tests {
 
     #[test]
     fn parse_sandbox_profile_invalid() {
-        assert!(parse_sandbox_profile("relaxed").is_err());
+        let err = parse_sandbox_profile("relaxed").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_ocr_provider ──────────────────────────────────────────
@@ -614,7 +745,11 @@ mod tests {
 
     #[test]
     fn parse_ocr_provider_invalid() {
-        assert!(parse_ocr_provider("cloud").is_err());
+        let err = parse_ocr_provider("cloud").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_ai_access_mode ────────────────────────────────────────
@@ -666,7 +801,11 @@ mod tests {
 
     #[test]
     fn parse_ai_access_mode_invalid() {
-        assert!(parse_ai_access_mode("bearer").is_err());
+        let err = parse_ai_access_mode("bearer").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_llm_provider ──────────────────────────────────────────
@@ -682,7 +821,11 @@ mod tests {
 
     #[test]
     fn parse_llm_provider_invalid() {
-        assert!(parse_llm_provider("hybrid").is_err());
+        let err = parse_llm_provider("hybrid").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_external_data_policy ──────────────────────────────────
@@ -709,7 +852,11 @@ mod tests {
 
     #[test]
     fn parse_external_data_policy_invalid() {
-        assert!(parse_external_data_policy("allow_all").is_err());
+        let err = parse_external_data_policy("allow_all").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_credential_auth_mode ──────────────────────────────────
@@ -746,7 +893,11 @@ mod tests {
 
     #[test]
     fn parse_credential_auth_mode_invalid() {
-        assert!(parse_credential_auth_mode("basic_auth").is_err());
+        let err = parse_credential_auth_mode("basic_auth").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── parse_credential_backend_kind ───────────────────────────────
@@ -799,7 +950,11 @@ mod tests {
 
     #[test]
     fn parse_credential_backend_kind_invalid() {
-        assert!(parse_credential_backend_kind("memory").is_err());
+        let err = parse_credential_backend_kind("memory").unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     // ── is_managed_auth_mode ────────────────────────────────────────

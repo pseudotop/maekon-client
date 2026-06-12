@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::memory_graph::MemoryClaim;
 use super::tiered_memory::WorkType;
 
 /// Aggregated daily summary containing timeline, statistics, and LLM insight.
@@ -131,6 +132,30 @@ impl DigestExporter {
     /// Render a daily digest as Markdown.
     pub fn to_markdown(digest: &DailyDigest) -> String {
         let mut md = String::with_capacity(2048);
+        Self::render_body(&mut md, digest);
+        Self::push_footer(&mut md, digest);
+        md
+    }
+
+    /// Render a daily digest as Markdown with an appended "Accumulated Claims"
+    /// section (ADR-023 local symbolic-memory second-brain view). When `claims`
+    /// is empty this is byte-identical to [`Self::to_markdown`].
+    pub fn to_markdown_with_claims(digest: &DailyDigest, claims: &[MemoryClaim]) -> String {
+        let mut md = String::with_capacity(2048);
+        Self::render_body(&mut md, digest);
+        if !claims.is_empty() {
+            md.push_str("## Accumulated Claims\n\n");
+            for claim in claims {
+                md.push_str(&format!("- *({})* {}\n", claim.kind.as_str(), claim.text));
+            }
+            md.push('\n');
+        }
+        Self::push_footer(&mut md, digest);
+        md
+    }
+
+    /// Shared body renderer: title → insights → timeline → statistics → comparison.
+    fn render_body(md: &mut String, digest: &DailyDigest) {
         md.push_str(&format!("# Daily Digest — {}\n\n", digest.date));
 
         // Insights
@@ -192,13 +217,14 @@ impl DigestExporter {
                 cmp.context_switch_delta
             ));
         }
+    }
 
+    /// Shared footer renderer.
+    fn push_footer(md: &mut String, digest: &DailyDigest) {
         md.push_str(&format!(
             "\n---\n*Generated at {}*\n",
             digest.generated_at.format("%Y-%m-%d %H:%M UTC")
         ));
-
-        md
     }
 }
 
@@ -377,5 +403,35 @@ mod tests {
         d.timeline.clear();
         let md = DigestExporter::to_markdown(&d);
         assert!(!md.contains("## Timeline"));
+    }
+
+    #[test]
+    fn export_markdown_with_claims_section() {
+        use crate::models::memory_graph::{ClaimKind, ClaimStatus};
+        let digest = sample_digest_for_export();
+        let claims = vec![MemoryClaim {
+            claim_id: "clm_x".to_string(),
+            kind: ClaimKind::Episodic,
+            text: "90min in Deep Focus".to_string(),
+            source: "digest_timeline".to_string(),
+            confidence: 1.0,
+            status: ClaimStatus::Active,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        }];
+        let md = DigestExporter::to_markdown_with_claims(&digest, &claims);
+        assert!(md.contains("## Accumulated Claims"));
+        assert!(md.contains("- *(episodic)* 90min in Deep Focus"));
+        // Footer stays last.
+        assert!(md.trim_end().ends_with("UTC*"));
+    }
+
+    #[test]
+    fn export_markdown_with_empty_claims_equals_plain() {
+        let digest = sample_digest_for_export();
+        assert_eq!(
+            DigestExporter::to_markdown_with_claims(&digest, &[]),
+            DigestExporter::to_markdown(&digest),
+        );
     }
 }

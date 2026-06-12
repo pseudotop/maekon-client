@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use maekon_automation::input_driver::{NoOpElementFinder, NoOpInputDriver};
+use maekon_automation::input_driver::{
+    create_platform_input_driver, NoOpElementFinder, NoOpInputDriver,
+};
 use maekon_automation::intent_planner::LlmIntentPlanner;
 use maekon_automation::intent_resolver::{IntentExecutor, IntentResolver};
 use maekon_core::config::{AiAccessMode, AiProviderConfig, PiiFilterLevel};
@@ -9,6 +11,7 @@ use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::input_driver::InputDriver;
 use maekon_core::ports::intent_planner::IntentPlanner;
+use maekon_core::ports::llm_provider::LlmCallHealth;
 use maekon_core::ports::secret_store::SecretStoreSet;
 use maekon_core::ports::skill_loader::SkillLoader;
 use maekon_storage::frame_storage::FrameFileStorage;
@@ -20,13 +23,16 @@ use crate::platform_accessibility::create_platform_accessibility_finder;
 use crate::provider_adapters::{
     resolve_ai_provider_adapters, ExternalOcrPrivacyGuard, ProviderSource,
 };
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::ports::oauth::OAuthPort;
 
 pub struct AutomationRuntime {
     pub element_finder: Arc<dyn ElementFinder>,
     pub intent_executor: Arc<IntentExecutor>,
     pub intent_planner: Arc<dyn IntentPlanner>,
+    /// Permissive-noop 경로(#4539)에서 액션을 인-프로세스로 실행할 입력 드라이버.
+    /// 컨트롤러 빌더가 `set_inline_action_executor`에 전달한다.
+    pub input_driver: Arc<dyn InputDriver>,
     pub access_mode: AiAccessMode,
     pub ocr_provider_name: String,
     pub llm_provider_name: String,
@@ -34,6 +40,11 @@ pub struct AutomationRuntime {
     pub llm_source: ProviderSource,
     pub ocr_fallback_reason: Option<String>,
     pub llm_fallback_reason: Option<String>,
+    /// Per-call LLM health handle for the automation intent path.
+    /// Present only when the LocalModel arm (C3) or the explicit Local LLM
+    /// choice (FU-3) wires an Ollama-backed provider.  Absent for Remote /
+    /// OAuth / CLI arms — extend those in a follow-up if needed.
+    pub llm_call_health: Option<Arc<LlmCallHealth>>,
 }
 
 pub struct CompositeElementFinder {
@@ -127,6 +138,7 @@ impl ElementFinder for CompositeElementFinder {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_automation_runtime(
     ai_config: &AiProviderConfig,
     pii_filter_level: PiiFilterLevel,
@@ -134,15 +146,25 @@ pub fn build_automation_runtime(
     external_ocr_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     skill_loader: Option<Arc<dyn SkillLoader>>,
     secret_stores: Option<SecretStoreSet>,
-    #[cfg(feature = "server")] oauth_port: Option<Arc<dyn OAuthPort>>,
+    #[cfg(feature = "analysis")] oauth_port: Option<Arc<dyn OAuthPort>>,
+    // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    // registry from the composition root, forwarded to the provider resolvers.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    // Per-call LLM health handle for the automation intent path (LocalModel/FU-3).
+    // Created by the caller (automation_controller_builder) and shared with the
+    // provider instance via `resolve_local_model_llm_provider`.
+    // `None` is safe: disables health tracking (same as today for all other arms).
+    llm_call_health: Option<Arc<LlmCallHealth>>,
 ) -> Result<AutomationRuntime, CoreError> {
     let adapters = resolve_ai_provider_adapters(
         ai_config,
         pii_filter_level,
         external_ocr_privacy_guard,
         secret_stores,
-        #[cfg(feature = "server")]
+        #[cfg(feature = "analysis")]
         oauth_port,
+        breaker_registry,
+        llm_call_health.clone(),
     )?;
 
     let ocr_provider_name = adapters.ocr.provider_name().to_string();
@@ -170,16 +192,16 @@ pub fn build_automation_runtime(
         Arc::new(NoOpElementFinder)
     };
 
-    let accessibility_finder = create_platform_accessibility_finder();
+    let accessibility_finder = create_platform_accessibility_finder(pii_filter_level);
     let element_finder: Arc<dyn ElementFinder> = Arc::new(CompositeElementFinder::new(vec![
         accessibility_finder,
         ocr_finder,
     ]));
 
-    let input_driver: Arc<dyn InputDriver> = Arc::new(NoOpInputDriver);
+    let input_driver: Arc<dyn InputDriver> = Arc::from(create_platform_input_driver());
     let resolver = IntentResolver::new(
         element_finder.clone(),
-        input_driver,
+        input_driver.clone(),
         IntentConfig::default(),
     );
     let intent_executor = Arc::new(IntentExecutor::new(resolver, IntentConfig::default()));
@@ -194,6 +216,7 @@ pub fn build_automation_runtime(
         element_finder,
         intent_executor,
         intent_planner,
+        input_driver,
         access_mode: ai_config.access_mode,
         ocr_provider_name,
         llm_provider_name,
@@ -201,6 +224,7 @@ pub fn build_automation_runtime(
         llm_source: adapters.llm_source,
         ocr_fallback_reason: adapters.ocr_fallback_reason,
         llm_fallback_reason: adapters.llm_fallback_reason,
+        llm_call_health,
     })
 }
 
@@ -300,29 +324,29 @@ impl ElementFinder for LatestFrameOcrElementFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use async_trait::async_trait;
     use chrono::Utc;
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::config::{
         AiAccessMode, AiProviderType, CredentialAuthMode, CredentialBackendKind, CredentialBinding,
         ExternalApiEndpoint, PrivacyConfig, SecretRef,
     };
     use maekon_core::config::{AiProviderConfig, LlmProviderType, OcrProviderType};
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::models::context::{ProcessInfo, WindowInfo};
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::models::event::ProcessDetail;
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::ports::monitor::ProcessMonitor;
     use maekon_core::ports::ocr_provider::{OcrProvider, OcrResult};
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_core::ports::secret_store::{
         provider_api_key_secret_ref, secret_env_var_name, SecretStoreSet,
     };
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     use maekon_storage::env_secret_store::EnvSecretStore;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -372,12 +396,12 @@ mod tests {
             .expect("Failed to create test frame storage")
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     struct StaticProcessMonitor {
         active_window: Option<WindowInfo>,
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     #[async_trait]
     impl ProcessMonitor for StaticProcessMonitor {
         async fn get_active_window(&self) -> Result<Option<WindowInfo>, CoreError> {
@@ -397,10 +421,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     fn remote_ocr_guard(temp_dir: &TempDir) -> ExternalOcrPrivacyGuard {
         let consent_path = temp_dir.path().join("consent.json");
-        let mut consent_manager = ConsentManager::new(consent_path.clone());
+        let consent_manager = ConsentManager::new(consent_path.clone());
         consent_manager
             .grant_consent(
                 ConsentPermissions {
@@ -421,6 +445,7 @@ mod tests {
                 active_window: Some(WindowInfo {
                     title: "main.rs".to_string(),
                     app_name: "Code".to_string(),
+                    app_bundle_id: None,
                     pid: 42,
                     bounds: None,
                 }),
@@ -429,7 +454,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     fn secret_bound_remote_endpoint(profile_id: &str) -> ExternalApiEndpoint {
         let (namespace, key) = provider_api_key_secret_ref("generic", profile_id).unwrap();
         ExternalApiEndpoint {
@@ -451,7 +476,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     fn remote_secret_stores() -> SecretStoreSet {
         let mut snapshot = std::collections::HashMap::new();
         for profile_id in ["ocr", "llm"] {
@@ -503,8 +528,68 @@ mod tests {
         assert!(matches!(err, CoreError::ElementNotFound { .. }));
     }
 
+    // ── C3: LocalModel arm ────────────────────────────────────────────────────
+
     #[test]
-    #[cfg(feature = "server")]
+    fn build_runtime_local_model_uses_local_ollama_source() {
+        // C3: LocalModel arm → resolve_local_model_llm_provider → LocalOllama
+        // (catalog default http://localhost:11434 is loopback).
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::LocalModel,
+            ..AiProviderConfig::default()
+        };
+        let runtime = build_automation_runtime(
+            &config,
+            PiiFilterLevel::Standard,
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "analysis")]
+            None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
+        )
+        .expect("LocalModel arm must not return Err");
+        assert_eq!(runtime.access_mode, AiAccessMode::LocalModel);
+        // OCR stays local.
+        assert_eq!(runtime.ocr_source, ProviderSource::Local);
+        // LLM: LocalOllama or Local (ok-degrade on construction failure).
+        assert!(
+            matches!(
+                runtime.llm_source,
+                ProviderSource::LocalOllama | ProviderSource::Local
+            ),
+            "unexpected llm_source: {:?}",
+            runtime.llm_source
+        );
+    }
+
+    #[test]
+    fn build_runtime_local_model_never_errors() {
+        // Decision 1 invariant: LocalModel arm is infallible.
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::LocalModel,
+            fallback_to_local: false, // even with fallback disabled — must not err
+            ..AiProviderConfig::default()
+        };
+        let result = build_automation_runtime(
+            &config,
+            PiiFilterLevel::Standard,
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "analysis")]
+            None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
+        );
+        result.expect("LocalModel arm must not return Err");
+    }
+
+    #[test]
+    #[cfg(feature = "analysis")]
     fn build_runtime_falls_back_when_remote_config_is_missing() {
         let config = AiProviderConfig {
             ocr_provider: OcrProviderType::Remote,
@@ -522,8 +607,10 @@ mod tests {
             None,
             None,
             None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
         )
         .unwrap();
         assert_eq!(runtime.access_mode, AiAccessMode::ProviderApiKey);
@@ -557,8 +644,10 @@ mod tests {
             None,
             None,
             None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
         ) {
             Ok(_) => panic!("Expected an error"),
             // Iter-109: emission variant depends on whether the `server`
@@ -578,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     fn build_runtime_uses_remote_sources_when_endpoints_are_valid() {
         let ocr_endpoint = secret_bound_remote_endpoint("ocr");
         let llm_endpoint = secret_bound_remote_endpoint("llm");
@@ -599,8 +688,10 @@ mod tests {
             Some(remote_ocr_guard(&temp_dir)),
             None,
             Some(remote_secret_stores()),
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
         )
         .unwrap();
         assert_eq!(runtime.ocr_source, ProviderSource::Remote);
@@ -611,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     fn build_runtime_requires_external_ocr_privacy_guard_for_remote_ocr() {
         let ocr_endpoint = secret_bound_remote_endpoint("ocr");
         let config = AiProviderConfig {
@@ -629,14 +720,14 @@ mod tests {
             None,
             None,
             Some(remote_secret_stores()),
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             None,
+            crate::breaker_registry::CircuitBreakerRegistry::new(),
+            None, // llm_call_health — not tracked in unit tests
         );
-        assert!(
-            result.is_err(),
-            "Remote OCR should require a runtime privacy guard"
-        );
-        let err = result.err().unwrap();
+        let err = result
+            .err()
+            .expect("expected Err from AutomationRuntime build without privacy guard");
         assert!(err.to_string().contains("runtime privacy guard"));
     }
 }

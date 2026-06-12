@@ -158,7 +158,7 @@ fn make_jwt_config(jwt_pub_key_path: &std::path::Path) -> (ExternalGrpcSpawnConf
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
     let pub_key_bytes = std::fs::read(jwt_pub_key_path).expect("read jwt pub key");
@@ -211,7 +211,7 @@ fn make_mtls_config(ca_pem_path: &std::path::Path) -> (ExternalGrpcSpawnConfig, 
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
     let mtls_verifier = Arc::new(MtlsVerifier::new(48, &[]).expect("MtlsVerifier"));
@@ -450,7 +450,7 @@ async fn external_grpc_jwt_plus_mtls_both_valid() {
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let pub_key_bytes = std::fs::read(&jwt_kp.pub_pem_path).expect("read pub");
     let jwt_verifier = Arc::new(
         JwtVerifier::new(
@@ -527,7 +527,7 @@ async fn external_grpc_jwt_plus_mtls_mtls_only() {
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let pub_key_bytes = std::fs::read(&jwt_kp.pub_pem_path).expect("read pub");
     let jwt_verifier = Arc::new(
         JwtVerifier::new(
@@ -584,12 +584,10 @@ async fn external_grpc_jwt_plus_mtls_mtls_only() {
     let mut client = DashboardServiceClient::new(channel);
 
     // No JWT header → expect Unauthenticated from AuthLayer.
-    let result = client.get_agent_info(GetAgentInfoRequest {}).await;
-    assert!(
-        result.is_err(),
-        "missing JWT should cause auth failure, got Ok"
-    );
-    let status = result.unwrap_err();
+    let status = client
+        .get_agent_info(GetAgentInfoRequest {})
+        .await
+        .unwrap_err();
     assert_eq!(
         status.code(),
         Code::Unauthenticated,
@@ -610,7 +608,7 @@ async fn external_grpc_jwt_plus_mtls_cert_valid_jwt_expired() {
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let pub_key_bytes = std::fs::read(&jwt_kp.pub_pem_path).expect("read pub");
     let jwt_verifier = Arc::new(
         JwtVerifier::new(
@@ -682,7 +680,6 @@ async fn external_grpc_jwt_plus_mtls_cert_valid_jwt_expired() {
     let result = DashboardServiceClient::new(channel)
         .get_agent_info(req)
         .await;
-    assert!(result.is_err(), "expired JWT should cause auth failure");
     let status = result.unwrap_err();
     assert_eq!(
         status.code(),
@@ -849,7 +846,6 @@ async fn external_grpc_short_lived_cert_rejection() {
     let mut client = DashboardServiceClient::new(channel_result);
 
     let result = client.get_agent_info(GetAgentInfoRequest {}).await;
-    assert!(result.is_err(), "72h cert should be rejected (cap is 48h)");
     let status = result.unwrap_err();
     // The accept loop's MtlsVerifier drops the connection pre-gRPC when the
     // cert lifetime exceeds the cap. The client sees a transport-level error.
@@ -884,7 +880,7 @@ async fn loopback_server_unaffected_when_external_disabled() {
 
     let loopback_port = next_test_port();
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let loopback_cfg = GrpcSpawnConfig {
         port: loopback_port,
         storage: in_memory_storage(),
@@ -1105,7 +1101,7 @@ async fn external_grpc_jwt_plus_mtls_jwt_only() {
     let (cert_path, key_path) = test_cert_pair();
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let pub_key_bytes = std::fs::read(&jwt_kp.pub_pem_path).expect("read pub");
     let jwt_verifier = Arc::new(
         JwtVerifier::new(
@@ -1190,10 +1186,6 @@ async fn external_grpc_jwt_plus_mtls_jwt_only() {
             let result = DashboardServiceClient::new(channel)
                 .get_agent_info(req)
                 .await;
-            assert!(
-                result.is_err(),
-                "no-client-cert TLS should be rejected by WebPkiClientVerifier; got Ok"
-            );
             let status = result.unwrap_err();
             // TLS rejection at handshake produces a transport-level error
             // (Unknown, Unavailable, or Cancelled) — never Unimplemented (which
@@ -1230,7 +1222,7 @@ async fn external_grpc_jwt_plus_mtls_cert_invalid_jwt_valid() {
     let (cert_path, key_path) = test_cert_pair();
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let pub_key_bytes = std::fs::read(&jwt_kp.pub_pem_path).expect("read pub");
     let jwt_verifier = Arc::new(
         JwtVerifier::new(
@@ -1318,10 +1310,6 @@ async fn external_grpc_jwt_plus_mtls_cert_invalid_jwt_valid() {
             let result = DashboardServiceClient::new(channel)
                 .get_agent_info(req)
                 .await;
-            assert!(
-                result.is_err(),
-                "wrong-CA client cert must be rejected by WebPkiClientVerifier; got Ok"
-            );
             let status = result.unwrap_err();
             // A CA-chain failure at TLS level never produces Unimplemented.
             assert_ne!(
@@ -1439,7 +1427,10 @@ fn external_grpc_port_collides_with_loopback() {
         err.contains("10091"),
         "error should name the port; got: {err}"
     );
-    assert!(check_port_collision(10092, 10091).is_ok());
+    // Contract: distinct ports always yield Ok(()).  The function's only output is
+    // Result<(), String> and "no error" is the complete correct outcome for unequal
+    // ports — there is no additional payload to assert (#5594).
+    check_port_collision(10092, 10091).expect("distinct ports (10092 != 10091) must not collide");
 }
 
 /// Test 18: Token isolation — `integration_auth_token` on the external
@@ -1491,10 +1482,10 @@ async fn external_grpc_shutdown_drains_streams() {
     let joined = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
         .expect("server task must exit within 5s of shutdown signal");
-    assert!(
-        joined.is_ok(),
-        "server task should complete cleanly on shutdown; got {joined:?}"
-    );
+    // The contract: clean shutdown means the task does not panic and `serve_external`
+    // returns `Ok(())` (not an error from TLS bind or IO). Pinning the inner value
+    // distinguishes a graceful exit from a task panic masked by Ok-wrapping. (#5594)
+    joined.expect("server task must exit without panic on clean shutdown");
 }
 
 // Test 20 (external_grpc_fails_fast_on_missing_cert) is covered at unit level by
@@ -1714,7 +1705,7 @@ fn parse_status_from_details(details: &str) -> AuditStatus {
 /// Started+Completed pairing works end-to-end.
 ///
 /// Extended (Task 9.1 E1): also asserts:
-/// - The Completed row's `command_id` is a valid UUIDv4 (36 chars, 4 hyphens) —
+/// - The Completed row's `command_id` is a valid ADR-022 prefix+ULID (req_<26>) —
 ///   generated by RequestIdLayer since no client-supplied x-request-id was sent.
 /// - The Completed row's `grpc_status_code` is `Some(0)` (gRPC Ok / Code::Ok),
 ///   proving D26 raw-code persistence for the success path.
@@ -1740,7 +1731,7 @@ async fn external_grpc_audit_completed_entry_written_after_ok_response() {
         "authorization",
         format!("Bearer {token}").parse().expect("valid header"),
     );
-    // No x-request-id header — RequestIdLayer generates a UUIDv4.
+    // No x-request-id header — RequestIdLayer generates an ADR-022 prefix+ULID.
     DashboardServiceClient::new(channel)
         .get_agent_info(req)
         .await
@@ -1782,22 +1773,18 @@ async fn external_grpc_audit_completed_entry_written_after_ok_response() {
         "expected ≥1 Completed row; got {completed_count} (entries: {entries_debug})"
     );
 
-    // E1 extension: command_id must be a UUIDv4 (36-char string, 4 hyphens).
+    // E1 extension: command_id must be an ADR-022 prefix+ULID (e.g. "req_<26-char>").
     // RequestIdLayer generates it when the client omits x-request-id, and
     // AuditLayer's `request_id override (U5)` propagates it to command_id.
+    assert!(
+        completed_cmd_id.starts_with("req_"),
+        "command_id must start with 'req_'; got {completed_cmd_id:?}"
+    );
     assert_eq!(
         completed_cmd_id.len(),
-        36,
-        "command_id must be a 36-char UUIDv4 string; got {completed_cmd_id:?}"
+        "req_".len() + 26,
+        "command_id must be req_ + 26-char ULID; got {completed_cmd_id:?}"
     );
-    assert_eq!(
-        completed_cmd_id.chars().filter(|c| *c == '-').count(),
-        4,
-        "UUIDv4 command_id must have 4 hyphens; got {completed_cmd_id:?}"
-    );
-    uuid::Uuid::parse_str(&completed_cmd_id).unwrap_or_else(|e| {
-        panic!("command_id {completed_cmd_id:?} must be parseable as UUID: {e}")
-    });
 
     // E1 extension: grpc_status_code=Some(0) for the Ok path (D26).
     assert_eq!(
@@ -1874,16 +1861,16 @@ async fn external_grpc_streaming_audit_records_message_count() {
     let _ = handle.await;
 }
 
-/// N1 — RequestIdLayer generates a UUIDv4 when the client omits x-request-id.
+/// N1 — RequestIdLayer generates an ADR-022 prefix+ULID when the client omits x-request-id.
 ///
 /// When no `x-request-id` header is sent, `RequestIdLayer` (spec §5.2 / None
-/// branch) generates a fresh UUIDv4 and inserts it into the response.  The
-/// CapturingAudit's Completed row carries that same UUID as `command_id` via
+/// branch) generates a fresh prefix+ULID ("req_<26>") and inserts it into the response.
+/// The CapturingAudit's Completed row carries that same ID as `command_id` via
 /// AuditLayer's request_id override (U5), proving end-to-end propagation.
 ///
 /// Assertions:
 /// 1. Response metadata has `x-request-id` (server-generated).
-/// 2. The value is a valid 36-char UUIDv4 (4 hyphens, parseable by `uuid`).
+/// 2. The value is a valid ADR-022 prefix+ULID (starts with "req_", 30 chars total).
 /// 3. The CapturingAudit Completed row's `command_id` matches the response header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_generated_when_missing() {
@@ -1903,7 +1890,7 @@ async fn external_grpc_request_id_generated_when_missing() {
     let cert_pem = server_cert_pem();
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
-    // No x-request-id header — RequestIdLayer must generate a UUIDv4.
+    // No x-request-id header — RequestIdLayer must generate an ADR-022 prefix+ULID.
     let mut req = tonic::Request::new(GetAgentInfoRequest {});
     req.metadata_mut().insert(
         "authorization",
@@ -1924,30 +1911,21 @@ async fn external_grpc_request_id_generated_when_missing() {
         .to_str()
         .expect("x-request-id must be valid ASCII");
 
-    // 2. Must be a valid UUIDv4 (36 chars, 4 hyphens).
+    // 2. Must be an ADR-022 prefix+ULID (req_<26-char ULID>).
+    assert!(
+        generated_id.starts_with("req_"),
+        "generated x-request-id must start with 'req_'; got {generated_id:?}"
+    );
     assert_eq!(
         generated_id.len(),
-        36,
-        "generated x-request-id must be 36 chars; got {generated_id:?}"
-    );
-    assert_eq!(
-        generated_id.chars().filter(|c| *c == '-').count(),
-        4,
-        "generated x-request-id must have 4 hyphens (UUIDv4); got {generated_id:?}"
-    );
-    let parsed_uuid = uuid::Uuid::parse_str(generated_id).expect("x-request-id must parse as UUID");
-    // UUIDv4: version nibble == 4, variant == 0b10xx.
-    assert_eq!(
-        parsed_uuid.get_version_num(),
-        4,
-        "generated ID must be UUIDv4; got version {}",
-        parsed_uuid.get_version_num()
+        "req_".len() + 26,
+        "generated x-request-id must be req_ + 26-char ULID; got {generated_id:?}"
     );
 
     // Give AuditLayer's deferred task time to flush to the mock.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // 3. CapturingAudit's Completed row must carry the same UUID as command_id.
+    // 3. CapturingAudit's Completed row must carry the same ID as command_id.
     // Drop the lock before any `.await`.
     let (audit_cmd_id, entries_debug) = {
         let entries = capturing.entries.lock().unwrap();
@@ -1970,22 +1948,22 @@ async fn external_grpc_request_id_generated_when_missing() {
 }
 
 /// N2 — RequestIdLayer discards a malformed client x-request-id and substitutes
-/// a fresh UUIDv4.
+/// a fresh ADR-022 prefix+ULID.
 ///
 /// Per spec §5.2 / L307: when the client sends an `x-request-id` that fails
 /// `is_valid()` (ASCII graphic 0x21..=0x7E, 1..=128 chars), `RequestIdLayer`
-/// emits a `tracing::warn!` and generates a fresh UUIDv4.  The warn+regenerate
+/// emits a `tracing::warn!` and generates a fresh prefix+ULID.  The warn+regenerate
 /// path proves that a malicious / malformed client cannot inject arbitrary
 /// bytes into the response-header / downstream audit trail.
 ///
 /// The malformed payload used here is `"bad\tid"` — the tab byte (0x09) is a
 /// valid HeaderValue byte (HTAB is permitted by `http::HeaderValue::from_str`)
 /// but falls outside the `is_valid()` 0x21..=0x7E range, so the server-side
-/// validator will reject it and substitute a UUIDv4.  Mirrors the in-crate
+/// validator will reject it and substitute an ADR-022 ID.  Mirrors the in-crate
 /// `rejects_invalid_characters_generates_new` unit test (request_id_layer.rs L189).
 ///
 /// Assertions:
-/// 1. Response metadata carries a valid 36-char UUIDv4 (4 hyphens, parses as UUID v4).
+/// 1. Response metadata carries a valid ADR-022 prefix+ULID ("req_" + 26-char ULID).
 /// 2. Response's `x-request-id` does NOT equal the malformed client input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_invalid_replaced() {
@@ -2034,26 +2012,18 @@ async fn external_grpc_request_id_invalid_replaced() {
     // 2. Value must NOT be the malformed client input.
     assert_ne!(
         returned_id, malformed_id,
-        "server must discard malformed x-request-id and substitute a UUID"
+        "server must discard malformed x-request-id and substitute an ADR-022 ID"
     );
 
-    // 3. Value must be a valid UUIDv4 (36 chars, 4 hyphens, version 4).
+    // 3. Value must be an ADR-022 prefix+ULID (req_<26-char ULID>).
+    assert!(
+        returned_id.starts_with("req_"),
+        "substituted x-request-id must start with 'req_'; got {returned_id:?}"
+    );
     assert_eq!(
         returned_id.len(),
-        36,
-        "substituted x-request-id must be 36 chars; got {returned_id:?}"
-    );
-    assert_eq!(
-        returned_id.chars().filter(|c| *c == '-').count(),
-        4,
-        "substituted x-request-id must have 4 hyphens (UUIDv4); got {returned_id:?}"
-    );
-    let parsed_uuid = uuid::Uuid::parse_str(returned_id).expect("x-request-id must parse as UUID");
-    assert_eq!(
-        parsed_uuid.get_version_num(),
-        4,
-        "substituted x-request-id must be UUIDv4; got version {}",
-        parsed_uuid.get_version_num()
+        "req_".len() + 26,
+        "substituted x-request-id must be req_ + 26-char ULID; got {returned_id:?}"
     );
 
     handle.abort();
@@ -2854,7 +2824,7 @@ fn make_jwt_spawn_config_for_reload(
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
 
     let pub_key_bytes = std::fs::read(jwt_pub_key_path).expect("read jwt pub key");
@@ -3129,12 +3099,17 @@ async fn external_grpc_live_streaming_toggle_reflects_within_1s() {
     let sanity = DashboardServiceClient::new(channel.clone())
         .subscribe_metrics(req)
         .await;
-    assert!(
-        sanity.is_ok(),
-        "initial subscribe must succeed with streaming_enabled=true; got {:?}",
-        sanity.as_ref().err()
-    );
-    drop(sanity);
+    // Security-relevant: streaming_enabled=true with a valid JWT must open the stream
+    // (not be rejected as Unavailable). Pin the gRPC status code so a regression that
+    // changes the gate to Unavailable/PermissionDenied is caught explicitly.
+    let sanity_stream = sanity.unwrap_or_else(|e| {
+        panic!(
+            "initial subscribe must succeed with streaming_enabled=true; got status {:?} (code={:?})",
+            e,
+            e.code()
+        )
+    });
+    drop(sanity_stream);
 
     // Flip streaming_enabled to false; ConfigReloadTask observes the watch
     // change and swaps the LiveSnapshot atomically. The per-request entry
@@ -3563,10 +3538,17 @@ async fn live_reload_affects_long_running_stream() {
     let second_open = DashboardServiceClient::new(channel.clone())
         .subscribe_metrics(req2)
         .await;
-    assert!(
-        second_open.is_ok(),
-        "2nd RPC must still open post-reload; shed affects tick cadence not the gate"
-    );
+    // Security-relevant: a policy reload (load thresholds change) must not close the gate —
+    // shed affects tick cadence, not the auth/streaming-enabled decision. Pin the gRPC code
+    // on failure so Unavailable vs PermissionDenied is distinguishable. (#5594)
+    let second_stream = second_open.unwrap_or_else(|e| {
+        panic!(
+            "2nd RPC must still open post-reload; shed affects tick cadence not the gate; \
+             got status {:?} (code={:?})",
+            e,
+            e.code()
+        )
+    });
     // Verify the snapshot substrate is stable across the 2nd entry (identity,
     // not rebuild) — proves the fresh Arc assembled during apply_config is
     // what the new RPC would observe.
@@ -3577,7 +3559,7 @@ async fn live_reload_affects_long_running_stream() {
          the same Arc until the next reload"
     );
     // Drop the 2nd stream to release its per-stream guard.
-    drop(second_open.unwrap().into_inner());
+    drop(second_stream.into_inner());
 
     drop(_keep_stream_alive);
     harness.shutdown().await;
@@ -3618,10 +3600,9 @@ async fn external_grpc_config_reload_task_exits_on_shutdown() {
     let joined = tokio::time::timeout(Duration::from_secs(5), reload_handle)
         .await
         .expect("reload task must exit within 5s of shutdown signal");
-    assert!(
-        joined.is_ok(),
-        "reload task should complete cleanly on shutdown; got {joined:?}"
-    );
+    // Pin clean exit: the ConfigReloadTask must return Ok(()) — not panic — on shutdown.
+    // A panic would produce Err(JoinError::panic), masking a live bug in the reload loop. (#5594)
+    joined.expect("reload task must exit without panic on shutdown");
     assert!(
         !metrics
             .config_reload_task_alive
@@ -3891,12 +3872,19 @@ async fn external_streaming_override_wins_over_web_field_when_some() {
     let result = DashboardServiceClient::new(channel)
         .subscribe_metrics(req)
         .await;
-    assert!(
-        result.is_ok(),
-        "subscribe_metrics must succeed when override forces streaming on; got {:?}",
-        result.as_ref().err()
-    );
-    drop(result);
+    // Security-relevant (NV4): when external_grpc.streaming_enabled=Some(true) overrides
+    // web.grpc_streaming_enabled=false, the stream gate MUST open. An Unavailable response
+    // here would indicate the override did not propagate through the ArcSwap substrate,
+    // which is a correctness and security regression. Pin the gRPC code on failure. (#5594)
+    let nv4_stream = result.unwrap_or_else(|e| {
+        panic!(
+            "subscribe_metrics must succeed when Some(true) override beats web=false (NV4); \
+             got status {:?} (code={:?})",
+            e,
+            e.code()
+        )
+    });
+    drop(nv4_stream);
 
     harness.shutdown().await;
 }

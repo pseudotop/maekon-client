@@ -1,5 +1,8 @@
 #![cfg(target_os = "windows")]
 
+use crate::active_window_parse::{
+    decode_window_title, idle_secs_from_ticks, window_bounds_from_edges,
+};
 use crate::error::MonitorError;
 use maekon_core::models::context::{MousePosition, WindowBounds, WindowInfo};
 use tracing::debug;
@@ -23,11 +26,7 @@ pub fn get_active_window_windows() -> Result<Option<WindowInfo>, MonitorError> {
 
         let mut title_buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
-        let title = if len > 0 {
-            String::from_utf16_lossy(&title_buf[..len as usize])
-        } else {
-            String::new()
-        };
+        let title = decode_window_title(&title_buf, len);
 
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, &mut pid);
@@ -36,14 +35,17 @@ pub fn get_active_window_windows() -> Result<Option<WindowInfo>, MonitorError> {
 
         let bounds = get_window_bounds(hwnd);
 
+        // Title is PII — log a content-free digest only (#5591).
         debug!(
-            "active window: {app_name} - {title} (PID: {pid}, {:?})",
+            "active window: {app_name} ({}) (PID: {pid}, {:?})",
+            crate::log_privacy::title_digest(&title),
             bounds.map(|b| format!("{}x{} at ({},{})", b.width, b.height, b.x, b.y))
         );
 
         Ok(Some(WindowInfo {
             title,
             app_name,
+            app_bundle_id: None,
             pid,
             bounds,
         }))
@@ -57,19 +59,7 @@ fn get_window_bounds(hwnd: HWND) -> Option<WindowBounds> {
     unsafe {
         let mut rect: RECT = std::mem::zeroed();
         if GetWindowRect(hwnd, &mut rect) != 0 {
-            let width = (rect.right - rect.left) as u32;
-            let height = (rect.bottom - rect.top) as u32;
-
-            if width > 0 && height > 0 {
-                Some(WindowBounds {
-                    x: rect.left,
-                    y: rect.top,
-                    width,
-                    height,
-                })
-            } else {
-                None
-            }
+            window_bounds_from_edges(rect.left, rect.top, rect.right, rect.bottom)
         } else {
             None
         }
@@ -99,8 +89,7 @@ pub fn get_idle_time_windows() -> Option<u64> {
 
         if GetLastInputInfo(&mut last_input) != 0 {
             let current_tick = windows_sys::Win32::System::SystemInformation::GetTickCount();
-            let idle_ms = current_tick.wrapping_sub(last_input.dwTime);
-            Some((idle_ms / 1000) as u64)
+            Some(idle_secs_from_ticks(current_tick, last_input.dwTime))
         } else {
             None
         }

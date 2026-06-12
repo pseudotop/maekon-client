@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  # Restored after the rc.6 un-bitrot campaign drove the full suite green —
+  # required ruleset checks must come from pull_request/push runs.
   push:
     branches: [main, develop]
   pull_request:
@@ -18,7 +20,12 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -Dwarnings
+  # `-W warnings`, NOT `-D`: the vendored `patches/` crates (muda/tao/wry) are
+  # uncapped local path deps, so a global `-D` gates third-party code we don't
+  # lint-own (their macOS impls carry deprecated objc2 statics today). The
+  # first-party deny lives in the `check` job's explicit
+  # `clippy --workspace --all-targets -- -D warnings` steps.
+  RUSTFLAGS: -W warnings
 
 jobs:
   changes:
@@ -30,7 +37,7 @@ jobs:
       ci: ${{ steps.filter.outputs.ci }}
       release_metadata_only: ${{ steps.filter.outputs.release_metadata_only }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
 
@@ -47,13 +54,15 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.frontend == 'true' ||
-      needs.changes.outputs.ci == 'true'
+      needs.changes.outputs.ci == 'true' ||
+      (github.event_name != 'pull_request' &&
+      needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: '22'
           package-manager-cache: false
@@ -107,7 +116,7 @@ jobs:
 
       - name: Upload Playwright report artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: frontend-playwright-artifacts
           path: |
@@ -120,7 +129,7 @@ jobs:
         run: tar -czf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend dist
 
       - name: Upload frontend dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: frontend-dist-bundle
           path: crates/maekon-web/frontend/frontend-dist.tar.gz
@@ -130,7 +139,7 @@ jobs:
         run: tar -czf crates/maekon-web/frontend/storybook-review-static.tar.gz -C crates/maekon-web/frontend storybook-review-static
 
       - name: Upload Storybook artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: frontend-storybook-bundle
           path: crates/maekon-web/frontend/storybook-review-static.tar.gz
@@ -145,7 +154,7 @@ jobs:
       needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
 
@@ -153,16 +162,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -172,11 +183,13 @@ jobs:
             libxcb1-dev \
             libxcb-render0-dev \
             libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libxcb-xfixes0-dev \
+            cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache Rust build artifacts
@@ -189,6 +202,9 @@ jobs:
 
       - name: Verify architecture dependency direction
         run: ./scripts/check-architecture-deps.sh
+
+      - name: Verify consent erasure barrier (#4928)
+        run: ./scripts/check-consent-erasure-barrier.sh
 
       - name: Verify web contract boundary
         run: ./scripts/verify-web-contract-boundary.sh
@@ -203,7 +219,7 @@ jobs:
         run: ./scripts/generate-http-openapi.sh dist/maekon-web.v1.openapi.yaml
 
       - name: Upload HTTP OpenAPI snapshot artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-web-v1-openapi
           path: dist/maekon-web.v1.openapi.yaml
@@ -214,6 +230,9 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           HEAD_SHA: ${{ github.sha }}
         run: ./scripts/verify-commit-message-hygiene.sh "$PR_BASE_SHA" "$HEAD_SHA"
+
+      - name: Verify CI build artifact guardrails
+        run: bash scripts/ci/check-build-artifact-guardrails.sh
 
       - name: CI grep heuristic for #[instrument] on sensitive fns
         run: bash scripts/ci/grep-no-instrument-on-sensitive-fns.sh
@@ -228,6 +247,14 @@ jobs:
 
       - name: Run clippy (standalone)
         run: ./scripts/cargo-cache.sh clippy --workspace --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+
+      # #5734 / C3 adversarial finding: no CI cell built maekon-app with
+      # --no-default-features, so breakage of that cell landed silently
+      # (#5032 history; the cell was found pre-broken again in E35 C1).
+      # A plain `cargo check` is intentional — this guards compile health of
+      # the no-network/no-analysis build, not its (different) warning set.
+      - name: Check maekon-app (--no-default-features)
+        run: ./scripts/cargo-cache.sh check -p maekon-app --no-default-features
 
       - name: Run clippy (server features)
         run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features server -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
@@ -256,12 +283,52 @@ jobs:
       - name: Run clippy (telemetry feature)
         run: ./scripts/cargo-cache.sh clippy -p maekon-app --all-targets --features telemetry -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
 
+      # F2 (P2): Feature-matrix dead-spot coverage.
+      #
+      # cloud-stt: pure Rust (reqwest multipart) — no native lib dependency.
+      #   `maekon-audio/src/lib.rs` gates the entire `cloud_stt` module behind
+      #   `#[cfg(feature = "cloud-stt")]`, so `cargo test --workspace` without
+      #   this feature compiles and runs 22 tests; with the feature enabled it
+      #   runs 30 (8 additional mockito-backed unit tests in cloud_stt.rs).
+      #   Those 8 tests were a dead spot in CI until this step was added.
+      #   No native library dependency; cost is pure Rust compilation (~tens of seconds).
+      - name: Test maekon-audio (--features cloud-stt)
+        run: ./scripts/cargo-cache.sh test -p maekon-audio --features cloud-stt
+
+      # windows-sandbox: the feature flag switches code paths inside
+      #   `maekon-automation/src/sandbox/windows.rs`, which is itself
+      #   `#[cfg(target_os = "windows")]`. On this ubuntu runner the
+      #   windows.rs module is not compiled regardless of the feature flag,
+      #   so `cargo check --features windows-sandbox` verifies that the
+      #   feature declaration and Cargo.toml wiring are not broken and that
+      #   the remaining platform-neutral code (win_limits.rs, sbpl.rs) still
+      #   compiles cleanly. Real enforcement is exercised by
+      #   `test-platform: windows-latest` default-workspace run.
+      #   Estimated CI cost: ~3–5 s (incremental, no new native deps).
+      - name: Check maekon-automation (--features windows-sandbox)
+        run: ./scripts/cargo-cache.sh check -p maekon-automation --features windows-sandbox
+
+      # F2 (P2): whisper — promoted from excluded to a live CI cell (#5812).
+      #   whisper-rs builds whisper.cpp via cmake (cmake is now installed in the
+      #   "Install Linux dependencies" step above). bindgen also needs clang to
+      #   generate bindings from the C/C++ headers; libclang-dev is already in
+      #   that same step. No additional system packages are required beyond those
+      #   two (already present).
+      #   This is `test` (same rationale as the cloud-stt cell above): the
+      #   feature's unit tests are model-free (guard/param tests — 23 pass
+      #   locally without any model download); model-requiring paths are not
+      #   exercised by the suite. Test vs check adds no meaningful cost — the
+      #   cmake + C++ build of whisper.cpp dominates (~2–3 min, incremental
+      #   after the first cached run).
+      - name: Test maekon-audio (--features whisper)
+        run: ./scripts/cargo-cache.sh test -p maekon-audio --features whisper
+
       # D13-v2b PR-B2 follow-up: enforce CRIT-12 invariant that `test-support`
       # is never transitively enabled via `grpc-dashboard`. If this smoke build
       # ever fails because a production code path references a test-support
       # gated symbol, the feature leak must be fixed before release.
       - name: Smoke build (grpc-dashboard, no test-support)
-        run: ./scripts/cargo-cache.sh build -p maekon-web --no-default-features --features grpc-dashboard
+        run: ./scripts/cargo-cache.sh build --locked -p maekon-web --no-default-features --features grpc-dashboard
 
   perf-gates:
     name: Performance Gates
@@ -273,22 +340,24 @@ jobs:
     env:
       MAEKON_ENABLE_PERF_GATES: '1'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -301,7 +370,9 @@ jobs:
             libxcb-xfixes0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
@@ -309,10 +380,10 @@ jobs:
           key: ci-perf-gates
 
       - name: Run automation perf gate tests
-        run: ./scripts/cargo-cache.sh test --release -p maekon-automation perf_budget_ -- --nocapture
+        run: ./scripts/cargo-cache.sh test --locked --release -p maekon-automation perf_budget_ -- --nocapture
 
       - name: Run vision perf gate tests
-        run: ./scripts/cargo-cache.sh test --release -p maekon-vision perf_budget_ -- --nocapture
+        run: ./scripts/cargo-cache.sh test --locked --release -p maekon-vision perf_budget_ -- --nocapture
 
   test:
     name: Test
@@ -328,7 +399,7 @@ jobs:
     env:
       RUN_HEAVY_TESTS: ${{ github.event_name == 'workflow_dispatch' || ((needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true') && needs.changes.outputs.release_metadata_only != 'true') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Skip heavy Rust tests for metadata-only or non-Rust changes
         if: env.RUN_HEAVY_TESTS != 'true'
@@ -339,16 +410,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -362,7 +435,9 @@ jobs:
 
       - name: Install Rust toolchain
         if: env.RUN_HEAVY_TESTS == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -380,23 +455,29 @@ jobs:
           TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
           touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
 
+      # The linux sandbox layering test (#5604) executes the REAL worker via
+      # the cargo-test parent-dir lookup — build it before the test run.
+      - name: Build sandbox worker binary
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: ./scripts/cargo-cache.sh build --locked -p maekon-sandbox-worker
+
       - name: Run tests (standalone)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --workspace
+        run: ./scripts/cargo-cache.sh test --locked --workspace
 
       - name: Run tests (server features)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --workspace --features server
+        run: ./scripts/cargo-cache.sh test --locked --workspace --features server
 
       - name: Run tests (grpc features)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --workspace --features grpc
+        run: ./scripts/cargo-cache.sh test --locked --workspace --features grpc
 
       # D13-v2b PR-B2: execute the SubscribeMetrics handler tests.
       # test-support enables MockSystemMonitor + active_stream_count accessor.
       - name: Run tests (grpc-dashboard + test-support)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test -p maekon-web --no-default-features --features grpc-dashboard,test-support
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-web --no-default-features --features grpc-dashboard,test-support
 
       # D13-v2c follow-up (PR #491): execute the 36 external_grpc_integration
       # tests + 2 sibling integration files (audit_query_surface,
@@ -408,19 +489,163 @@ jobs:
       # convergence are not actually executed by CI.
       - name: Run tests (grpc-dashboard-external + external-grpc-tools + test-support)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support
 
       - name: Run tests (lan-sync features)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test -p maekon-network --features lan-sync
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-network --features lan-sync
 
       - name: Run tests (linux-sandbox features)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test -p maekon-automation --features linux-sandbox
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-automation --features linux-sandbox
 
       - name: Run tests (telemetry feature)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test -p maekon-app --features telemetry -- --test-threads=1
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-app --features telemetry -- --test-threads=1
+
+  # #4826 (E20-34): run the test suite on macOS + Windows so platform-gated code
+  # (`#[cfg(target_os = "macos"/"windows")]`) is actually EXERCISED, not just
+  # compiled on the Linux leg. New OS-gated tests this lights up:
+  #   - macOS:   maekon-monitor::macos (active-window/idle/circuit-breaker),
+  #              maekon-vision accessibility (AX) + native_detect/native_ocr,
+  #              maekon-automation::sandbox::macos (App Sandbox / SBPL).
+  #   - Windows: maekon-vision accessibility (UIA), maekon-automation::sandbox::windows
+  #              (Job Objects), src-tauri cli::windows_sandbox_overhead.
+  # The ubuntu `test` job above stays the COMPREHENSIVE leg (full feature matrix +
+  # linux-sandbox/server/grpc/telemetry). These legs run only the DEFAULT-feature
+  # `cargo test --workspace` — the heavy native-lib features (ocr/whisper/embedding/
+  # ml-detect) are non-default and installed on no runner, and the Linux-only
+  # features (linux-sandbox/systemd-notify/linux-atspi) don't apply off-Linux.
+  #
+  # OS-dependency notes (researched for #4826):
+  #   - macOS needs NO extra system packages (CoreAudio/CoreGraphics/WKWebView/
+  #     Keychain ship with the SDK). The macOS `--workspace` test build was verified
+  #     to link locally on aarch64-apple-darwin.
+  #   - Windows needs ONLY the OpenSSL setup (rusqlite `bundled-sqlcipher`, a DEFAULT
+  #     dep, links libssl/libcrypto on Windows) — same action the `build:` job uses.
+  #     WebView2 ships on the runner. (Windows could not be verified locally — host
+  #     is macOS — so this leg is design+inspection; if a `--workspace` link error
+  #     surfaces, fall back to `-p maekon-app` + `-p maekon-monitor -p maekon-vision
+  #     -p maekon-automation` to still capture the OS-gated tests.)
+  #   - Direct `cargo` (not scripts/cargo-cache.sh, which is bash + `du`) for shell
+  #     portability on Windows; the rust-cache action handles caching.
+  #   - RUSTFLAGS stays `-W warnings` for these legs (the workflow-global env is
+  #     now also `-W`; the first-party deny gate is the `check` job's explicit
+  #     `clippy -- -D warnings`): the goal
+  #     here is to EXECUTE platform tests, not to lint them. This is REQUIRED, not
+  #     cosmetic — verified locally that even the macOS `--workspace` *test* build
+  #     fails under `-Dwarnings` on PRE-EXISTING unused imports (e.g.
+  #     `DigestStorage` in maekon-storage tests), which the dispatch-only CI never
+  #     caught. Holding these legs to `-Dwarnings` would red them on lint debt
+  #     unrelated to platform behaviour (and Windows warnings can't be previewed
+  #     from a macOS host). Per-OS lint is a separate concern (extend `check`).
+  test-platform:
+    name: Test (${{ matrix.os }})
+    needs: [changes, check]
+    if: >
+      always() &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.ci == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      # Relax the workflow-global `-Dwarnings` for the platform test legs (see job comment).
+      RUSTFLAGS: -W warnings
+      RUN_HEAVY_TESTS: ${{ github.event_name == 'workflow_dispatch' || ((needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true') && needs.changes.outputs.release_metadata_only != 'true') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Skip heavy Rust tests for metadata-only or non-Rust changes
+        if: env.RUN_HEAVY_TESTS != 'true'
+        run: echo "Only metadata-only or non-Rust changes; marking platform Test green without the heavy suite."
+
+      - name: Configure OpenSSL for SQLCipher (Windows)
+        if: env.RUN_HEAVY_TESTS == 'true' && runner.os == 'Windows'
+        uses: ./.github/actions/setup-windows-openssl
+
+      - name: Install Rust toolchain
+        if: env.RUN_HEAVY_TESTS == 'true'
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        if: env.RUN_HEAVY_TESTS == 'true'
+        uses: ./.github/actions/rust-cache
+        with:
+          key: ci-test-${{ matrix.target }}
+
+      - name: Create frontend dist stub for Tauri generate_context!()
+        if: env.RUN_HEAVY_TESTS == 'true'
+        shell: bash
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+
+      - name: Create sandbox worker stub for Tauri externalBin
+        if: env.RUN_HEAVY_TESTS == 'true'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}.exe"
+          else
+            touch "src-tauri/maekon-sandbox-worker-${TARGET}"
+            chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
+          fi
+
+      - name: Run tests (default workspace)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        run: cargo test --locked --workspace
+
+      # F2 (P2): windows-sandbox feature — Win32 Job Object + token-restriction code
+      # (`#[cfg(target_os = "windows")]` in maekon-automation/src/sandbox/windows.rs)
+      # is ONLY compiled on this Windows leg. The ubuntu check-only step in the
+      # `check` job validates Cargo feature wiring; this step executes the actual
+      # Windows sandbox tests with the feature flag enabled.
+      #
+      # Shell portability note: `test-platform` uses direct `cargo` (not
+      # scripts/cargo-cache.sh) for cross-platform compatibility — same pattern as
+      # the `Run tests (default workspace)` step directly above. The rust-cache
+      # action installed earlier handles caching for both steps.
+      #
+      # Local (macOS) verification: not possible — `#[cfg(target_os = "windows")]`
+      # guards are compiled out. Command form verified by inspection against the
+      # `Run tests (default workspace)` step above (identical `cargo test --locked`
+      # invocation, narrowed to `-p maekon-automation`).
+      - name: Test maekon-automation (--features windows-sandbox)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'windows-latest'
+        run: cargo test --locked -p maekon-automation --features windows-sandbox
+
+      # F2 (P2): keychain integration tests — promoted from #[ignore] to CI cell
+      # (#5643 residual). The macOS runner provides a real Keychain daemon (securityd).
+      # A dedicated CI keychain is created so these tests never touch the runner's
+      # default login keychain. `security set-keychain-settings maekon-ci.keychain`
+      # (no -u or -l flags) disables auto-lock and auto-sleep-lock, keeping the
+      # keychain accessible for the duration of the job.
+      # The `#[ignore]` attribute is kept on the tests so that `cargo test` on a
+      # local developer machine (without keychain setup) does not run them by default.
+      # CI runs them explicitly via `-- --ignored keychain`.
+      - name: Prepare CI keychain (macOS)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'macos-latest'
+        run: |
+          security create-keychain -p "" maekon-ci.keychain
+          security default-keychain -s maekon-ci.keychain
+          security unlock-keychain -p "" maekon-ci.keychain
+          security set-keychain-settings maekon-ci.keychain
+      - name: Run keychain integration tests (macOS)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'macos-latest'
+        run: cargo test --locked -p maekon-storage -- --ignored keychain
 
   linux-autostart-unit:
     name: Linux Autostart Unit Tests
@@ -434,22 +659,24 @@ jobs:
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install Linux dependencies (Tauri GTK/WebKit + libsystemd-dev for sd-notify)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -463,7 +690,9 @@ jobs:
             libsystemd-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
@@ -479,23 +708,23 @@ jobs:
           touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
 
       - name: Run linux_autostart_unit smoke test
-        run: cargo test -p maekon-app --features systemd-notify --test linux_autostart_unit
+        run: cargo test --locked -p maekon-app --features systemd-notify --test linux_autostart_unit
 
       - name: Run autostart inline linux_tests
-        run: cargo test -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_tests
 
       - name: Run autostart inline linux_capability_tests
-        run: cargo test -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_capability_tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_capability_tests
 
       - name: Run migration_hashes tests
-        run: cargo test -p maekon-app --features systemd-notify --bin maekon lifecycle::migration_hashes::tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon lifecycle::migration_hashes::tests
 
       - name: Run sd_notify tests
-        run: cargo test -p maekon-app --features systemd-notify --bin maekon lifecycle::sd_notify::tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon lifecycle::sd_notify::tests
 
   build:
     name: Build (${{ matrix.target }})
-    needs: [changes, test]
+    needs: [changes, test, frontend]
     if: >
       github.event_name != 'pull_request' &&
       (github.event_name == 'workflow_dispatch' ||
@@ -519,25 +748,33 @@ jobs:
             artifact_name: maekon-linux-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
-      - name: Try to download frontend dist artifact
+      - name: Download frontend dist artifact
         uses: ./.github/actions/download-artifact
-        continue-on-error: true
         with:
           github-token: ${{ github.token }}
           name: frontend-dist-bundle
           path: crates/maekon-web/frontend
 
-      - name: Extract frontend dist artifact or create stub
+      - name: Extract and verify frontend dist artifact
         shell: bash
         run: |
-          if [ -f crates/maekon-web/frontend/frontend-dist.tar.gz ]; then
-            tar -xzf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend
+          set -euo pipefail
+          artifact="crates/maekon-web/frontend/frontend-dist.tar.gz"
+          index_html="crates/maekon-web/frontend/dist/index.html"
+          if [ ! -f "$artifact" ]; then
+            echo "::error::Missing frontend-dist-bundle artifact; CI build artifacts require real frontend dist"
+            exit 1
           fi
-          if [ ! -f crates/maekon-web/frontend/dist/index.html ]; then
-            mkdir -p crates/maekon-web/frontend/dist
-            echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+          tar -xzf "$artifact" -C crates/maekon-web/frontend
+          if [ ! -f "$index_html" ]; then
+            echo "::error::frontend-dist-bundle did not contain dist/index.html"
+            exit 1
+          fi
+          if grep -qx '<html></html>' "$index_html"; then
+            echo "::error::Blank frontend dist stub detected in CI build artifact path"
+            exit 1
           fi
 
       - name: Configure OpenSSL for SQLCipher (Windows)
@@ -549,16 +786,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -575,8 +814,9 @@ jobs:
         run: ./scripts/verify-deb-metadata.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust build artifacts
@@ -609,7 +849,7 @@ jobs:
         # pulls optional maekon-embedding dependencies, including ort-sys,
         # which has no x86_64-apple-darwin prebuilt ONNX Runtime artifact for
         # this feature set. The shipped app build is maekon-app + grpc.
-        run: ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }} -p maekon-app --features grpc
+        run: ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -624,7 +864,7 @@ jobs:
           Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe -DestinationPath ${{ matrix.artifact_name }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: ${{ matrix.artifact_name }}
           path: |

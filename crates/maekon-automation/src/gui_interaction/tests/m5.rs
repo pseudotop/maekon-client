@@ -45,11 +45,20 @@ async fn m3_subscribe_session_accepts_valid_token() {
     );
     let (sid, token) = create_test_session(&service).await;
 
-    // Subscribing after session creation with the correct token must succeed.
-    let result = service.subscribe_session(&sid, &token).await;
+    // Subscribing after session creation with the correct token must succeed
+    // and return a live broadcast channel.
+    let mut rx = service
+        .subscribe_session(&sid, &token)
+        .await
+        .expect("subscribe_session should succeed with valid token");
+    // A brand-new Receiver sees no buffered events yet; the channel must be
+    // open (not closed).
     assert!(
-        result.is_ok(),
-        "subscribe_session should succeed with valid token"
+        !matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ),
+        "broadcast channel must remain open after successful subscription"
     );
 }
 

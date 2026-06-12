@@ -369,8 +369,21 @@ async fn subscribe_session_succeeds_with_valid_token() {
 
     let (sid, token) = create_test_session(&service).await;
 
-    let rx = service.subscribe_session(&sid, &token).await;
-    assert!(rx.is_ok(), "Valid token should allow subscription");
+    // subscribe_session with the correct token must return a broadcast
+    // Receiver — validate by immediately checking we can call try_recv on it
+    // (lagged/empty is fine; the channel itself must be live).
+    let mut rx = service
+        .subscribe_session(&sid, &token)
+        .await
+        .expect("subscribe_session with valid token must succeed");
+    // A new Receiver on an idle session returns Empty, not a channel error.
+    assert!(
+        !matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ),
+        "broadcast channel must be open after successful subscription"
+    );
 }
 
 #[tokio::test]
@@ -625,7 +638,16 @@ async fn prepare_execution_recovers_from_transient_drift() {
             },
         )
         .await;
-    assert!(plan.is_ok(), "Should recover after transient drift");
+    let plan =
+        plan.expect("prepare_execution must succeed after recovering from one transient drift");
+    assert_eq!(
+        plan.session_id, sid,
+        "returned plan must reference the correct session"
+    );
+    assert!(
+        !plan.actions.is_empty(),
+        "execution plan must contain at least one action"
+    );
     // 1 (confirm) + 2 (prepare: drift then recover) = 3
     assert_eq!(
         probe.validation_call_count.load(Ordering::SeqCst),
@@ -654,7 +676,16 @@ async fn prepare_execution_recovers_after_two_drifts() {
             },
         )
         .await;
-    assert!(plan.is_ok(), "Should recover after two drifts");
+    let plan =
+        plan.expect("prepare_execution must succeed after recovering from two transient drifts");
+    assert_eq!(
+        plan.session_id, sid,
+        "returned plan must reference the correct session"
+    );
+    assert!(
+        !plan.actions.is_empty(),
+        "execution plan must contain at least one action"
+    );
     // 1 (confirm) + 3 (prepare: drift, drift, recover) = 4
     assert_eq!(
         probe.validation_call_count.load(Ordering::SeqCst),
@@ -896,9 +927,14 @@ async fn prepare_execution_allows_ticket_within_grace_window() {
         .prepare_execution(&sid, &token, GuiExecutionRequest { ticket })
         .await;
 
+    let plan = result.expect("Ticket expired 1.2s ago must be accepted within 5s grace window");
+    assert_eq!(
+        plan.session_id, sid,
+        "returned plan must reference the correct session"
+    );
     assert!(
-        result.is_ok(),
-        "Ticket expired 1.2s ago should be accepted within 5s grace window"
+        !plan.actions.is_empty(),
+        "execution plan must contain at least one action"
     );
 }
 
@@ -1001,9 +1037,17 @@ async fn partial_execution_allows_retry_with_new_ticket() {
         .await
         .unwrap();
 
-    // New ticket should work for retry
+    // New ticket should work for retry.
     let plan = service
         .prepare_execution(&sid, &token, GuiExecutionRequest { ticket: new_ticket })
-        .await;
-    assert!(plan.is_ok(), "Retry with new ticket should succeed");
+        .await
+        .expect("prepare_execution with a fresh ticket must succeed after execution rollback");
+    assert_eq!(
+        plan.session_id, sid,
+        "retry plan must reference the correct session"
+    );
+    assert!(
+        !plan.actions.is_empty(),
+        "retry execution plan must contain at least one action"
+    );
 }

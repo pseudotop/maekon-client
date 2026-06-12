@@ -5,10 +5,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -22,7 +22,7 @@
 // "tighten via single-usage" heuristic cannot rewrite (produces invalid
 // Rust — confirmed on similar sites in PR #468). The nursery lint's false-
 // positive rate here outweighs its diagnostic value.
-// See docs/reviews/2026-04-21-p2-significant-drop-tightening-spec.md §Category B.
+// Rationale is embedded here so public source remains self-contained.
 #![allow(clippy::significant_drop_tightening)]
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
 #![deny(clippy::derive_partial_eq_without_eq)]
@@ -61,6 +61,12 @@ pub mod error;
 pub use error::NetworkError;
 
 pub mod ai_llm_client;
+// Re-export from maekon-core so callers using `maekon_network::LlmCallHealth`
+// continue to compile without change.  The canonical definition lives in
+// `maekon_core::ports::llm_provider::LlmCallHealth` (adapter crates must not
+// depend on each other — this re-export preserves backward compatibility for
+// src-tauri which imports via the network crate path).
+pub use maekon_core::ports::llm_provider::LlmCallHealth;
 pub mod ai_ocr_client;
 pub mod analysis_client;
 pub mod auth;
@@ -69,13 +75,19 @@ pub mod circuit_breaker;
 pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState,
 };
+pub mod codex_app_server;
+pub mod codex_app_server_session;
 pub mod compression;
 pub mod connectivity;
+pub mod feature_perf_uploader;
 pub mod http_api_session;
 pub mod http_client;
 pub mod integration;
 pub mod local_llm_session;
 pub mod oauth;
+pub mod ollama_discovery;
+mod provider_error_body;
+pub mod provider_model_catalog_client;
 pub mod remote_embedding_client;
 pub mod resilience;
 pub mod sse_client;

@@ -16,7 +16,8 @@ This document defines the versioned HTTP contract for the GUI V2 interaction API
 1. Clients MUST read and branch on `schema_version` when present.
 2. New additive fields are backward compatible inside the same version.
 3. Breaking field changes require a new schema version string.
-4. The `x-gui-session-token` header is mandatory for all endpoints except session creation.
+4. Non-stream endpoints require the `x-gui-session-token` header except session creation.
+5. Browser SSE clients MUST use the path-scoped `maekon_gui_session_token` cookie for `/events`; capability tokens MUST NOT be placed in URLs.
 
 ## Endpoints
 
@@ -32,15 +33,24 @@ This document defines the versioned HTTP contract for the GUI V2 interaction API
 
 ## Authentication
 
-All endpoints except `POST /sessions` require the capability token header:
+All non-stream endpoints except `POST /sessions` require the capability token header:
 
 ```
 x-gui-session-token: {token}
 ```
 
+The SSE endpoint accepts the same token from a path-scoped cookie so browser
+`EventSource` can authenticate without a custom header:
+
+```
+Cookie: maekon_gui_session_token={token}
+```
+
 - The token is returned in `GuiCreateSessionResponse.capability_token`.
 - Empty or whitespace-only values are rejected with `401 Unauthorized`.
 - Tokens are scoped to a single session.
+- Header fallback is accepted on the SSE endpoint for non-browser clients.
+- Query-string tokens are not part of the contract.
 
 ## State machine
 

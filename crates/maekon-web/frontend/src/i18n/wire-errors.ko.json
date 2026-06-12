@@ -1,5 +1,6 @@
 {
   "audio.capture_failed": "오디오 캡처 실패: {message}",
+  "audio.integrity_check_failed": "오디오 무결성 검사 실패: {message}",
   "audio.stt_failed": "음성 인식 실패: {message}",
   "auth.failed": "인증 실패: {message}",
   "autostart.counter_increment_failed": "자동 시작 세션 카운터 증가 실패",

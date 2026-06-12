@@ -35,4 +35,24 @@ pub trait TextSearchProvider: Send + Sync {
 
     /// Index (or update) the searchable text for a given segment.
     async fn sync_segment(&self, segment_id: &str, searchable_text: &str) -> Result<(), CoreError>;
+
+    /// Execute a phrase search: all CJK bigram tokens of `query` are joined into
+    /// a single quoted FTS5 phrase, requiring them to appear contiguously in the
+    /// shadow index. Returns only documents where the full phrase matches.
+    ///
+    /// The default implementation returns an empty vec, meaning tier-0 phrase
+    /// boosting is simply absent for providers that do not implement this method.
+    /// This preserves full binary compatibility — existing implementations
+    /// (`SqliteStorage`, test mocks) require no change.
+    ///
+    /// # Fail-open design
+    /// Phrase search is a supplementary recall signal. An Err here would suppress
+    /// tier-0 ranking without improving accuracy; fail-open (empty vec) is correct.
+    async fn search_fts_phrase(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<TextSearchResult>, CoreError> {
+        Ok(vec![])
+    }
 }

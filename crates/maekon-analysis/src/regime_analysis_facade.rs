@@ -169,8 +169,12 @@ mod tests {
     #[test]
     fn detect_regimes_empty_features() {
         let facade = RegimeAnalysisFacade::new(ClusteringAlgorithm::Kmeans);
-        let result = facade.detect_regimes(&[], Utc::now());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        let regimes = facade
+            .detect_regimes(&[], Utc::now())
+            .expect("empty feature set must not error");
+        assert!(
+            regimes.is_empty(),
+            "no regimes can be detected from zero features"
+        );
     }
 }

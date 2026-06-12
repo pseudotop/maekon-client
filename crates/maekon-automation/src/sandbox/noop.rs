@@ -46,8 +46,13 @@ mod tests {
         let sandbox = NoOpSandbox;
         let action = AutomationAction::MouseMove { x: 100, y: 200 };
         let config = SandboxConfig::default();
-        let result = sandbox.execute_sandboxed(&action, &config).await;
-        assert!(result.is_ok());
+        // NoOpSandbox.execute_sandboxed is a direct Ok(()) — no subprocess, no state.
+        // Ok(()) is the full contract; the unit return type has no value to inspect
+        // beyond success. (#5594: Ok-only is justified for this pure no-op driver.)
+        sandbox
+            .execute_sandboxed(&action, &config)
+            .await
+            .expect("NoOpSandbox::execute_sandboxed must always return Ok(())");
     }
 
     #[test]

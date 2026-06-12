@@ -12,6 +12,8 @@ mod api_adapter;
 #[cfg(feature = "grpc")]
 mod auth_client;
 #[cfg(feature = "grpc")]
+mod auth_meta;
+#[cfg(feature = "grpc")]
 mod config;
 #[cfg(feature = "grpc")]
 mod context_client;

@@ -15,39 +15,46 @@ impl SqliteStorage {
         &self,
         device_name: &str,
     ) -> Result<(String, String), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
+        // device_identity 는 ALL_TABLES 이며 신규 INSERT 를 포함하므로 write_lock 을
+        // 사용한다(앱 시작 시 호출되며 erase 경로와 겹치지 않는다). deletion_flag set
+        // 시 스킵되면 빈 식별자가 반환되나, erase 중에는 이 경로가 호출되지 않는다.
+        self.conn
+            .write_lock()
+            .run((String::new(), String::new()), |conn| {
+                // Try to read existing identity first.
+                let existing: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT device_id, device_name FROM device_identity WHERE id = 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .ok();
 
-        // Try to read existing identity first.
-        let existing: Option<(String, String)> = conn
-            .query_row(
-                "SELECT device_id, device_name FROM device_identity WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
+                if let Some(identity) = existing {
+                    return Ok(identity);
+                }
 
-        if let Some(identity) = existing {
-            return Ok(identity);
-        }
+                // First launch -- generate a new UUID v4 device_id.
+                // device_id is sent to the server in IntegrationBootstrapRequest; format
+                // is kept as UUID v4 to avoid a server-side wire-contract regression
+                // (ADR-022 exemption: server-wire IDs with unverified format contract).
+                let device_id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO device_identity (id, device_id, device_name) VALUES (1, ?1, ?2)",
+                    rusqlite::params![device_id, device_name],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to insert device identity: {e}"))
+                })?;
 
-        // First launch -- generate a new UUID v4 device_id.
-        let device_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO device_identity (id, device_id, device_name) VALUES (1, ?1, ?2)",
-            rusqlite::params![device_id, device_name],
-        )
-        .map_err(|e| StorageError::Internal(format!("Failed to insert device identity: {e}")))?;
+                info!(
+                    device_id = %device_id,
+                    device_name = %device_name,
+                    "device identity generated (first launch)"
+                );
 
-        info!(
-            device_id = %device_id,
-            device_name = %device_name,
-            "device identity generated (first launch)"
-        );
-
-        Ok((device_id, device_name.to_string()))
+                Ok((device_id, device_name.to_string()))
+            })
     }
 
     /// Reset the device identity by deleting the existing row and generating
@@ -58,17 +65,17 @@ impl SqliteStorage {
         &self,
         device_name: &str,
     ) -> Result<(String, String), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
-
-        conn.execute("DELETE FROM device_identity WHERE id = 1", [])
-            .map_err(|e| {
-                StorageError::Internal(format!("Failed to delete device identity: {e}"))
+        // 쓰기 — write_lock(deletion_flag set 시 스킵). 삭제 후 락이 해제되면
+        // ensure_device_identity 가 새 식별자를 생성한다.
+        self.conn
+            .write_lock()
+            .run::<_, (), StorageError>((), |conn| {
+                conn.execute("DELETE FROM device_identity WHERE id = 1", [])
+                    .map_err(|e| {
+                        StorageError::Internal(format!("Failed to delete device identity: {e}"))
+                    })?;
+                Ok(())
             })?;
-
-        drop(conn); // Release lock before calling ensure_device_identity
 
         self.ensure_device_identity(device_name)
     }

@@ -1,5 +1,6 @@
 {
   "audio.capture_failed": "Audio capture failed: {message}",
+  "audio.integrity_check_failed": "Audio integrity check failed: {message}",
   "audio.stt_failed": "Speech-to-text failed: {message}",
   "auth.failed": "Authentication failed: {message}",
   "autostart.counter_increment_failed": "Failed to increment autostart session counter",

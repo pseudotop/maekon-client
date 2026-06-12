@@ -1,0 +1,83 @@
+{
+  "schema_version": "automation.gui.ai_provider_settings_smoke.v1",
+  "issue": 4756,
+  "execution": {
+    "runner": "manual-windows-desktop",
+    "workflow_dispatch_or_manual_only": true,
+    "desktop_session_required": true,
+    "installed_artifact_required": true
+  },
+  "navigation": {
+    "route": "/settings/ai-automation",
+    "tab_selector": "[data-testid='settings-ai-automation-tab']",
+    "access_mode_selector": "[data-testid='settings-ai-access-mode']",
+    "llm_surface_selector": "[data-testid='settings-llm-provider-surface']",
+    "headless_limitation_reason": "Headless tests can assert data contracts, but cannot prove the installed Windows desktop shell renders provider CLI readiness badges, floating save/revert controls, or privacy-safe captured evidence."
+  },
+  "providers": [
+    {
+      "display_name": "Claude",
+      "surface_id": "provider_surface.anthropic.subprocess_cli",
+      "expected_ui_selector": "[data-testid='settings-provider-surface-status-llm_api'][data-surface-id='provider_surface.anthropic.subprocess_cli']",
+      "readiness_selector": "[data-testid='settings-provider-cli-readiness-llm_api']",
+      "readiness_badges": [
+        "installed",
+        "auth_ready",
+        "invocation_ready",
+        "unavailable"
+      ],
+      "account_identifier_recorded": false
+    },
+    {
+      "display_name": "Codex",
+      "surface_id": "provider_surface.openai.subprocess_cli",
+      "expected_ui_selector": "[data-testid='settings-provider-surface-status-llm_api'][data-surface-id='provider_surface.openai.subprocess_cli']",
+      "readiness_selector": "[data-testid='settings-provider-cli-readiness-llm_api']",
+      "readiness_badges": [
+        "installed",
+        "auth_ready",
+        "invocation_ready",
+        "unavailable"
+      ],
+      "account_identifier_recorded": false
+    },
+    {
+      "display_name": "Gemini",
+      "surface_id": "provider_surface.google.subprocess_cli",
+      "expected_ui_selector": "[data-testid='settings-provider-surface-status-llm_api'][data-surface-id='provider_surface.google.subprocess_cli']",
+      "readiness_selector": "[data-testid='settings-provider-cli-readiness-llm_api']",
+      "readiness_badges": [
+        "installed",
+        "auth_ready",
+        "invocation_ready",
+        "unavailable"
+      ],
+      "account_identifier_recorded": false
+    }
+  ],
+  "save_revert": {
+    "save_selector": "[data-testid='settings-save']",
+    "floating_save_selector": "[data-testid='settings-save-floating']",
+    "revert_selector": "[data-testid='settings-revert-floating']",
+    "active_routing_selector": "[data-testid='settings-ai-provider-active-routing-llm']",
+    "routing_integrity_after_revert": "provider_routing_unchanged"
+  },
+  "evidence": {
+    "redacted_screenshot_or_structured_snapshot": true,
+    "raw_account_identifiers_recorded": false,
+    "raw_home_paths_recorded": false,
+    "required_artifacts": [
+      "redacted_settings_screenshot_or_ui_snapshot",
+      "provider_cli_readiness_snapshot",
+      "save_revert_routing_integrity_snapshot"
+    ],
+    "failure_taxonomy": [
+      "settings_navigation_failure",
+      "provider_row_missing",
+      "cli_badge_render_mismatch",
+      "provider_cli_subprocess_failure",
+      "save_revert_routing_corruption",
+      "privacy_redaction_failure"
+    ]
+  }
+}

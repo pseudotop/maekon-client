@@ -15,16 +15,8 @@ use tokio::sync::oneshot;
 #[derive(Debug, Default)]
 pub struct MockServerState {
     pub request_count: AtomicU64,
-    pub contexts: RwLock<HashMap<String, Vec<ContextUploadRecord>>>,
     pub sessions: RwLock<HashMap<String, SessionInfo>>,
     pub tokens: RwLock<HashMap<String, TokenInfo>>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ContextUploadRecord {
-    pub timestamp: String,
-    pub app_name: String,
-    pub window_title: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,27 +65,6 @@ pub struct SessionCreateResponse {
     pub user_id: String,
     pub client_id: String,
     pub permissions: Vec<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct ContextUploadRequest {
-    pub session_id: String,
-    pub timestamp: String,
-    pub metadata: ContextMetadata,
-    pub ocr_text: Option<String>,
-    pub image: Option<serde_json::Value>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct ContextMetadata {
-    pub timestamp: String,
-    pub trigger_type: String,
-    pub app_name: String,
-    pub window_title: String,
-    pub resolution: (u32, u32),
-    pub importance: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,10 +138,6 @@ impl MockServer {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn context_count(&self) -> usize {
-        self.state.contexts.read().values().map(|v| v.len()).sum()
-    }
-
     pub fn session_count(&self) -> usize {
         self.state.sessions.read().len()
     }
@@ -193,10 +160,17 @@ fn create_router(state: Arc<MockServerState>) -> Router {
             "/user_context/sessions/{session_id}/heartbeat",
             post(handle_health),
         )
-        .route("/user_context/contexts", post(handle_context_upload))
         .route("/user_context/batches", post(handle_batch_sync))
         .route("/user_context/suggestions/feedback", post(handle_feedback))
         .route("/user_context/suggestions/stream", get(handle_sse_stream))
+        // U2-sse-e2e: 프로덕션 `SseStreamClient::stream_url`이 실제로 GET 하는 경로.
+        // (`crates/maekon-network/src/sse_client.rs::stream_url`는
+        //  `{base_url}/user_context/sessions/stream?session_id=...`를 호출한다.)
+        // 실제 `suggestion` SSE 이벤트를 흘려보내 receiver→queue→notifier 체인을 구동한다.
+        .route(
+            "/user_context/sessions/stream",
+            get(handle_suggestion_sse_stream),
+        )
         .with_state(state)
 }
 
@@ -290,33 +264,6 @@ async fn handle_health(State(state): State<Arc<MockServerState>>) -> impl IntoRe
     })
 }
 
-async fn handle_context_upload(
-    State(state): State<Arc<MockServerState>>,
-    Json(req): Json<ContextUploadRequest>,
-) -> impl IntoResponse {
-    state
-        .request_count
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    let record = ContextUploadRecord {
-        timestamp: req.timestamp,
-        app_name: req.metadata.app_name,
-        window_title: req.metadata.window_title,
-    };
-
-    state
-        .contexts
-        .write()
-        .entry(req.session_id)
-        .or_default()
-        .push(record);
-
-    (
-        StatusCode::CREATED,
-        Json(serde_json::json!({"status": "ok"})),
-    )
-}
-
 async fn handle_batch_sync(
     State(state): State<Arc<MockServerState>>,
     Json(req): Json<BatchSyncRequest>,
@@ -347,6 +294,55 @@ async fn handle_sse_stream(State(state): State<Arc<MockServerState>>) -> impl In
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let body = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/event-stream")],
+        body,
+    )
+}
+
+/// U2-sse-e2e: 실제 `suggestion` 이벤트를 방출하는 SSE 스트림 핸들러.
+///
+/// 프로덕션 `SseStreamClient::connect`가 `Eventsource`로 파싱하는 텍스트 형식을 그대로
+/// 내보낸다. 이벤트 순서:
+///   1. `connection` — `SseEvent::Connected` 로 파싱됨 (`session_id` 필요)
+///   2. `suggestion` — `SseEvent::Suggestion(Suggestion)` 로 파싱됨 (JSON 본문은
+///      `maekon_core::models::suggestion::Suggestion` serde 계약을 따름:
+///      enum 은 SCREAMING_SNAKE_CASE)
+///   3. `close`      — `SseEvent::Close` → receiver 의 run() 루프가 종료됨
+///
+/// `close` 이벤트로 스트림을 끝맺으므로 receiver 가 재연결 루프에 빠지지 않고
+/// 자연스럽게 run() 을 반환한다. 단일 정적 본문이지만 실제 HTTP/SSE 전송 경로를
+/// 통과하므로 in-memory 테스트가 아닌 라이브 e2e 다.
+async fn handle_suggestion_sse_stream(
+    State(state): State<Arc<MockServerState>>,
+) -> impl IntoResponse {
+    state
+        .request_count
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // Suggestion serde 계약과 정확히 일치하는 JSON 본문을 직렬화로 생성한다.
+    // (필드명/enum 표기를 손으로 적지 않고 serde_json::json! 으로 구성)
+    let suggestion_json = serde_json::json!({
+        "suggestion_id": "u2-sse-e2e-1",
+        "suggestion_type": "WORK_GUIDANCE",
+        "content": "라이브 SSE 경로로 전달된 제안",
+        "priority": "HIGH",
+        "confidence_score": 0.91,
+        "relevance_score": 0.88,
+        "is_actionable": true,
+        "created_at": "2026-06-03T10:00:00Z",
+        "source": "LLM_SERVER"
+    })
+    .to_string();
+
+    // SSE 프레임: 각 이벤트는 `event:`/`data:` 라인 + 빈 줄로 구분된다.
+    let body = format!(
+        "event: connection\ndata: {{\"session_id\":\"u2-sse-session\"}}\n\n\
+         event: suggestion\ndata: {suggestion_json}\n\n\
+         event: close\ndata: \n\n"
+    );
 
     (
         StatusCode::OK,
@@ -408,33 +404,6 @@ mod tests {
         assert!(body.session_id.starts_with("session_"));
         assert_eq!(body.client_id, "test_client_123");
         assert_eq!(server.session_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_context_upload() {
-        let server = MockServer::start().await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("{}/user_context/contexts", server.url()))
-            .json(&serde_json::json!({
-                "session_id": "test_session_123",
-                "timestamp": "2024-01-15T10:30:00Z",
-                "metadata": {
-                    "timestamp": "2024-01-15T10:30:00Z",
-                    "trigger_type": "AppSwitch",
-                    "app_name": "VSCode",
-                    "window_title": "main.rs - maekon",
-                    "resolution": [1920, 1080],
-                    "importance": 0.8
-                }
-            }))
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), 201);
-        assert_eq!(server.context_count(), 1);
     }
 
     #[tokio::test]

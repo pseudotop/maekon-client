@@ -22,9 +22,9 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.5"
+version = "0.0.1-rc.6"
 license = "Apache-2.0"
-rust-version = "1.77.1"
+rust-version = "1.88.0"  # jsonwebtoken 10.4.0 MSRV (cycle 32 F-SC-C33-02)
 repository = "https://github.com/pseudotop/maekon-client"
 homepage = "https://github.com/pseudotop/maekon-client"
 authors = ["Maekon Contributors"]
@@ -59,11 +59,14 @@ flate2 = "1"
 zstd = "0.13"
 lz4_flex = "0.13"
 
-# ML inference (ONNX Runtime — already transitive via fastembed)
-ort = "2.0.0-rc.11"
+# ML inference (ONNX Runtime — aligned with fastembed's transitive version)
+ort = "2.0.0-rc.12"
 
 # 이미지 처리 (Edge Processing)
-image = "0.25"
+# Keep decoder/encoder surface explicit. The client captures raw RGBA frames,
+# writes PNG for privacy redaction, decodes PNG/JPEG/WebP inputs, and keeps
+# WebP encoding on the dedicated `webp` crate. AVIF/rav1e stays disabled.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 fast_image_resize = "6"
 webp = "0.3"
 xcap = "0.9"
@@ -71,10 +74,10 @@ leptess = "0.14"
 base64 = "0.22"
 
 # Tauri v2 (iced → Tauri 마이그레이션)
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri = { version = "2", features = ["image-png", "macos-private-api"] }
 tauri-build = "2"
 tauri-plugin-global-shortcut = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-notification = "2"
 tauri-plugin-webdriver = "0.2"
 
@@ -131,12 +134,13 @@ hex = "0.4"
 
 # LAN Sync (Phase 3b-2)
 rcgen = "0.14"
-mdns-sd = "0.19"
+mdns-sd = "0.20"
 axum-server = "0.8"
 rustls-pki-types = "1"
 
 # External gRPC binding (D13-v2c)
 arc-swap = "1"
+aws-lc-rs = "1.16.2"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
@@ -174,7 +178,7 @@ enigo = { version = "0.6", features = ["serde"] }
 # 자동 업데이트 (self-replace only — reqwest 0.12 중복 제거)
 bsdiff = "0.2"
 self-replace = "1.5"
-tar = "0.4"
+tar = "0.4.46"
 zip = "8"
 
 # 웹 프레임워크 (Axum)
@@ -211,10 +215,11 @@ objc2-quartz-core = { version = "0.3", features = [
     "objc2-core-foundation",
     "objc2-core-graphics",
 ] }
+objc2-user-notifications = "0.3"
 
 # Windows 플랫폼 API
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_Security_Authentication_Identity"] }
-windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_System_Com", "Win32_Foundation", "Win32_System_Variant", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation"] }
+windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Ole", "Win32_Foundation", "Win32_System_Variant", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation"] }
 
 # 내부 크레이트
 maekon-core = { path = "crates/maekon-core" }
@@ -229,6 +234,8 @@ maekon-web = { path = "crates/maekon-web" }
 maekon-automation = { path = "crates/maekon-automation" }
 maekon-analysis = { path = "crates/maekon-analysis" }
 maekon-embedding = { path = "crates/maekon-embedding" }
+maekon-sandbox-worker = { path = "crates/maekon-sandbox-worker" }
+maekon-lint = { path = "crates/maekon-lint" }
 
 # POSIX 디스크 공간 조회 (statvfs)
 libc = "0.2"
@@ -239,3 +246,13 @@ tokio-test = "0.4"
 tempfile = "3"
 assert_matches = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
+
+[patch.crates-io]
+tao = { path = "patches/tao-0.35.2" }
+tauri = { path = "patches/tauri-2.11.2" }
+tauri-runtime = { path = "patches/tauri-runtime-2.11.2" }
+wry = { path = "patches/wry-0.55.1" }
+tauri-runtime-wry = { path = "patches/tauri-runtime-wry-2.11.2" }
+tray-icon = { path = "patches/tray-icon-0.23.1" }
+muda = { path = "patches/muda-0.19.1" }
+tauri-plugin-webdriver = { path = "patches/tauri-plugin-webdriver-0.2.1" }

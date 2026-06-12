@@ -80,8 +80,11 @@ mod tests {
     #[test]
     fn prepare_input_rejects_invalid_size() {
         let rgba = vec![0u8; 100]; // too small for claimed dimensions
-        let result = prepare_input(&rgba, 32, 32);
-        assert!(result.is_err());
+        let err = prepare_input(&rgba, 32, 32).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "buffer-dimension mismatch must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     /// Iter-105 regression guard: buffer-dimension mismatch emits the

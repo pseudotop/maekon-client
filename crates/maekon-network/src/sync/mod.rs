@@ -16,6 +16,8 @@ pub mod lan_server;
 #[cfg(feature = "lan-sync")]
 pub mod lan_tls;
 #[cfg(feature = "lan-sync")]
+mod lan_tofu_verifier;
+#[cfg(feature = "lan-sync")]
 pub mod lan_transport;
 
 pub use remote_transport::RemoteSyncTransport;

@@ -1,4 +1,4 @@
-use axum::http::HeaderMap;
+use axum::http::{header::COOKIE, HeaderMap};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
@@ -22,6 +22,7 @@ use crate::error::ApiError;
 use crate::services::web_contexts::AutomationGuiWebContext;
 
 pub const GUI_SESSION_HEADER: &str = "x-gui-session-token";
+pub const GUI_SESSION_STREAM_COOKIE: &str = "maekon_gui_session_token";
 pub const GUI_SCHEMA_VERSION: &str = "automation.gui.v2";
 
 #[derive(Clone)]
@@ -165,7 +166,7 @@ impl AutomationGuiStreamService {
         headers: &HeaderMap,
     ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
         let controller = require_controller(&self.ctx)?;
-        let capability_token = read_capability_token(headers)?;
+        let capability_token = read_stream_capability_token(headers)?;
         let rx = controller
             .gui_subscribe_events(session_id, &capability_token)
             .await
@@ -209,6 +210,79 @@ pub(crate) fn read_capability_token(headers: &HeaderMap) -> Result<String, ApiEr
                 GUI_SESSION_HEADER
             ))
         })
+}
+
+pub(crate) fn read_stream_capability_token(headers: &HeaderMap) -> Result<String, ApiError> {
+    read_cookie_capability_token(headers)
+        .or_else(|| read_header_capability_token(headers))
+        .ok_or_else(|| {
+            ApiError::Unauthorized(format!(
+                "Missing GUI stream credential: cookie '{}' or header '{}'",
+                GUI_SESSION_STREAM_COOKIE, GUI_SESSION_HEADER
+            ))
+        })
+}
+
+fn read_header_capability_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(GUI_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn read_cookie_capability_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|raw_cookie| raw_cookie.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find_map(|(name, value)| {
+            if name.trim() != GUI_SESSION_STREAM_COOKIE {
+                return None;
+            }
+
+            decode_cookie_value(value.trim())
+                .map(|decoded| decoded.trim().to_string())
+                .filter(|decoded| !decoded.is_empty())
+        })
+}
+
+fn decode_cookie_value(value: &str) -> Option<String> {
+    if !value.as_bytes().contains(&b'%') {
+        return Some(value.to_string());
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let high = hex_value(bytes[i + 1])?;
+            let low = hex_value(bytes[i + 2])?;
+            decoded.push((high << 4) | low);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub(crate) fn map_gui_error(error: GuiInteractionError) -> ApiError {

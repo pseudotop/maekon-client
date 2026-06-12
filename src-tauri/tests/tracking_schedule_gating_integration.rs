@@ -20,9 +20,17 @@
 //! wired yet). Tests assert `true`, so they FAIL (red). A.9 wires the gates
 //! and greens them.
 //!
-//! **Tier 3 — Ungated sanity (tests 17-20)**: Verify that heartbeat, oauth,
-//! metrics, and audio IPC behave consistently with spec §3.8. Some are green
-//! in A.8 (ungated loops), one (audio IPC) is red until A.9 adds the guard.
+//! **Tier 3 — TS-decoupled / ungated sanity (tests 17-19 + audio IPC)**: Verify
+//! that heartbeat and oauth refresh are TS-ungated (spec §3.8 rows 14-15) and
+//! that the audio IPC guard fires (CONS-PC04). The system-metrics loop is NOT a
+//! plain "ungated" loop: it is gated on consent (`telemetry`) ONLY, decoupled
+//! from TS/pause/active-hours (CONS-PM09 / spec §3.8 row 16 — infra-health data
+//! continues during a TS mute window). That consent-only-but-TS-decoupled
+//! property is verified for real against the production helper by
+//! `metrics_collection_permitted_tests` in
+//! `src-tauri/src/scheduler/loops/system.rs` (the former theater test 20 here is
+//! removed — see the note where it used to live). process/aggregation loops keep
+//! the full-composite gate.
 //!
 //! # Serial Requirement
 //!
@@ -896,34 +904,26 @@ fn oauth_refresh_loop_continues_during_ts() {
     );
 }
 
-/// Test 20: metrics loop is NOT gated by TS (spec §3.8 row 16, CONS-PM09).
-///
-/// System metrics collection (CPU, memory, disk) is infrastructure-level data
-/// separate from user-activity capture. Must continue during TS.
-/// GREEN in A.8 and A.9 — metrics loop is explicitly excluded from gating.
-#[serial_test::serial(ts_gating)]
-#[test]
-fn metrics_loop_continues_during_ts() {
-    let cfg = cfg_ts_active();
-    let consent = consent_granted();
-    let capture_paused = false;
-
-    let capture_gate = gate_result(&cfg, &consent, capture_paused);
-
-    // System metrics (spawn_metrics_loop in loops/system.rs) are infrastructure
-    // health data, not user-activity capture. Ungated per CONS-PM09 / spec §3.8.
-    let metrics_would_continue = true; // ungated per spec §3.8 row 16
-
-    assert!(
-        metrics_would_continue,
-        "metrics loop must continue during TS (CONS-PM09 / spec §3.8 row 16 — not gated)"
-    );
-
-    assert!(
-        !capture_gate,
-        "sanity: capture gate should be closed with TS active config"
-    );
-}
+// Test 20 (REMOVED — was theater): the old `metrics_loop_continues_during_ts`
+// asserted a hardcoded `let metrics_would_continue = true;` and never invoked the
+// real gate, so it stayed green even when the metrics loop was (incorrectly)
+// re-coupled to the full-composite TS gate. The metrics decoupling property
+// (metrics gated on consent `telemetry` ONLY, NOT on TS/pause/active-hours per
+// CONS-PM09 / spec §3.8 row 16) is now verified for real — against the actual
+// production helper — by `metrics_collection_permitted_tests` in
+// `src-tauri/src/scheduler/loops/system.rs`:
+//   - `valid_telemetry_consent_returns_true_regardless_of_ts` proves the gate
+//     opens on telemetry consent alone, with no TS/config input at all (so a
+//     TS-active window cannot close it — the TS-decoupling property), and
+//   - the absent/Expired/UpdateRequired/telemetry:false cases prove fail-closed.
+// That unit test FAILS to compile/pass if someone re-points the metrics loop at
+// the full-composite `collection_permitted` (which takes config + paused), and
+// the consumer-contract test `crt_prv_sch_019_*` in
+// `src-tauri/tests/scheduler_loop_contract.rs` asserts the loop body actually
+// calls `metrics_collection_permitted` (anti dead-writer). An integration-level
+// `gate_result(...)`-based assertion cannot cover this because the binary crate
+// has no `[lib]` target, so the real consent-only metrics decision is not
+// reachable from here.
 
 // ── Supplemental: End-to-end gate verification (bonus) ───────────────────────
 

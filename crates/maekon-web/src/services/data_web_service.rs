@@ -15,7 +15,12 @@ impl DataCommandService {
         Self { ctx }
     }
 
-    pub fn delete_data_range(
+    /// ADR-026 PR-4: the SQLite calls (`list_frame_file_paths_in_range`,
+    /// `delete_data_in_range`) are now async and route through the storage
+    /// funnel internally, so the hand-rolled `spawn_blocking` wrapper is removed
+    /// and each call is awaited directly. Best-effort frame-file deletion uses
+    /// `tokio::fs::remove_file` to keep the worker thread free.
+    pub async fn delete_data_range(
         &self,
         request: &DeleteRangeRequest,
     ) -> Result<DeleteResult, ApiError> {
@@ -29,22 +34,24 @@ impl DataCommandService {
             .period()
             .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-        let mut result = DeleteResult::empty();
         let delete_all = request.data_types.is_empty();
-        let data_types = &request.data_types;
+        let data_types = request.data_types.clone();
+        let frames_dir = self.ctx.frames_dir.clone();
+        let storage = self.ctx.storage.clone();
+
+        let mut result = DeleteResult::empty();
 
         if delete_all || data_types.iter().any(|item| item == "frames") {
-            if let Some(ref frames_dir) = self.ctx.frames_dir {
-                let paths = self
-                    .ctx
-                    .storage
+            if let Some(ref dir) = frames_dir {
+                let paths = storage
                     .list_frame_file_paths_in_range(&window)
+                    .await
                     .map_err(|error| ApiError::Internal(error.to_string()))?;
 
                 for path in paths {
-                    match resolve_stored_frame_path(frames_dir, &path) {
+                    match resolve_stored_frame_path(dir, &path) {
                         Ok(full_path) => {
-                            if let Err(e) = std::fs::remove_file(&full_path) {
+                            if let Err(e) = tokio::fs::remove_file(&full_path).await {
                                 debug!("remove_file failed: {e}");
                             }
                         }
@@ -54,9 +61,7 @@ impl DataCommandService {
             }
         }
 
-        let deleted = self
-            .ctx
-            .storage
+        let deleted = storage
             .delete_data_in_range(
                 &window,
                 delete_all || data_types.iter().any(|item| item == "events"),
@@ -65,6 +70,7 @@ impl DataCommandService {
                 delete_all || data_types.iter().any(|item| item == "processes"),
                 delete_all || data_types.iter().any(|item| item == "idle"),
             )
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         result.events_deleted = deleted.events_deleted;
@@ -77,42 +83,65 @@ impl DataCommandService {
         Ok(result)
     }
 
-    pub fn delete_all_data(&self) -> Result<DeleteResult, ApiError> {
-        let frame_paths = if self.ctx.frames_dir.is_some() {
-            self.ctx
-                .storage
-                .list_all_frame_file_paths()
-                .map_err(|error| ApiError::Internal(error.to_string()))?
-        } else {
-            Vec::new()
-        };
+    /// ADR-026 PR-4: the SQLite calls (`list_all_frame_file_paths`,
+    /// `delete_all_data`) are now async and offload internally, so the
+    /// hand-rolled `spawn_blocking` wrapper is removed and each call is awaited
+    /// directly. `delete_all_data` is the GDPR erase body — its impl runs the
+    /// `lock_for_erase` transaction on `spawn_blocking` (it must NOT route
+    /// through `write_lock`, which would skip the wipe once `deletion_flag` is
+    /// set). Best-effort frame-file deletion uses `tokio::fs::remove_file`.
+    pub async fn delete_all_data(&self) -> Result<DeleteResult, ApiError> {
+        let frames_dir = self.ctx.frames_dir.clone();
+        let storage = self.ctx.storage.clone();
 
-        // Phase 1: Atomic DB deletion (transaction — all-or-nothing)
-        self.ctx
-            .storage
-            .delete_all_data()
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let outcome: Result<DeleteResult, ApiError> = async {
+            let frame_paths = if frames_dir.is_some() {
+                storage
+                    .list_all_frame_file_paths()
+                    .await
+                    .map_err(|error| ApiError::Internal(error.to_string()))?
+            } else {
+                Vec::new()
+            };
 
-        // Phase 2: Best-effort frame file deletion (after DB commit)
-        if let Some(ref frames_dir) = self.ctx.frames_dir {
-            for path in frame_paths {
-                match resolve_stored_frame_path(frames_dir, &path) {
-                    Ok(file_path) => {
-                        if let Err(e) = std::fs::remove_file(&file_path) {
-                            debug!("remove_file failed: {e}");
+            // Phase 1: Atomic DB deletion (transaction — all-or-nothing)
+            storage
+                .delete_all_data()
+                .await
+                .map_err(|error| ApiError::Internal(error.to_string()))?;
+
+            // Phase 2: Best-effort frame file deletion (after DB commit)
+            if let Some(ref dir) = frames_dir {
+                for path in frame_paths {
+                    match resolve_stored_frame_path(dir, &path) {
+                        Ok(file_path) => {
+                            if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                                debug!("remove_file failed: {e}");
+                            }
                         }
-                    }
-                    Err(error) => {
-                        debug!("skip frame file deletion: {error}");
+                        Err(error) => {
+                            debug!("skip frame file deletion: {error}");
+                        }
                     }
                 }
             }
+
+            let mut result = DeleteResult::empty();
+            result.message = "All data was deleted".to_string();
+            Ok(result)
         }
+        .await;
 
-        let mut result = DeleteResult::empty();
-        result.message = "All data was deleted".to_string();
-
-        Ok(result)
+        // #4478 G3: on a SUCCESSFUL local erasure, ask the SyncEngine to propagate a
+        // device-wide DeletionEvent to LAN peers so the erased rows cannot be
+        // re-hydrated from a peer. Set only on success (a failed wipe must not
+        // propagate); a no-op when sync is disabled (nobody reads the flag).
+        if outcome.is_ok() {
+            if let Some(ref flag) = self.ctx.erasure_requested {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        outcome
     }
 }
 
@@ -151,8 +180,25 @@ mod tests {
         AppState::with_core(storage, event_tx)
     }
 
-    #[test]
-    fn delete_data_range_requires_from_and_to() {
+    #[tokio::test]
+    async fn delete_all_data_sets_erasure_propagation_flag() {
+        // #4478 G3: a successful "Delete all data" sets the erasure-propagation
+        // signal so the SyncEngine pushes a device-wide DeletionEvent to peers.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut ctx = StorageWebContext::from_state(&test_state());
+        ctx.erasure_requested = Some(flag.clone());
+        let service = DataCommandService::new(ctx);
+
+        service.delete_all_data().await.expect("delete_all_data");
+        assert!(
+            flag.load(Ordering::Acquire),
+            "erasure_requested must be set after a successful local erasure"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_data_range_requires_from_and_to() {
         let service = DataCommandService::new(StorageWebContext::from_state(&test_state()));
         let request = DeleteRangeRequest {
             from: String::new(),
@@ -160,7 +206,7 @@ mod tests {
             data_types: vec![],
         };
 
-        let result = service.delete_data_range(&request);
+        let result = service.delete_data_range(&request).await;
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
     }
 

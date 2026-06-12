@@ -174,6 +174,7 @@ mod tests {
         WindowInfo {
             title: "editor".to_string(),
             app_name: "Code".to_string(),
+            app_bundle_id: None,
             pid: 101,
             bounds: Some(WindowBounds {
                 x: 0,

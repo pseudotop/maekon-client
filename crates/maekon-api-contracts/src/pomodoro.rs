@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Request body for POST /api/pomodoro/start.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StartPomodoroRequest {
     /// Work duration in minutes. Defaults to 25.
     pub duration_minutes: Option<u32>,
@@ -13,6 +14,7 @@ pub struct StartPomodoroRequest {
 
 /// Response for Pomodoro session endpoints.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PomodoroSessionResponse {
     pub id: String,
     pub started_at: String,

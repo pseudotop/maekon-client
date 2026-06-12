@@ -90,12 +90,22 @@ mod tests {
         let result = provider.extract_elements(b"fake-image", "png").await;
         #[cfg(not(feature = "ocr"))]
         {
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_empty());
+            // Without the "ocr" feature the provider is a no-op stub: contract is Ok(empty vec).
+            let elements =
+                result.expect("stub LocalOcrProvider must return Ok even for invalid image bytes");
+            assert!(
+                elements.is_empty(),
+                "stub LocalOcrProvider must return an empty element list (got {})",
+                elements.len()
+            );
         }
         #[cfg(feature = "ocr")]
         {
-            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, CoreError::OcrError { .. }),
+                "invalid image bytes must produce OcrError, got: {err:?}"
+            );
         }
     }
 }

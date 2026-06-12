@@ -3,7 +3,9 @@ fn main() {
     // To regenerate after .proto changes, run: scripts/regenerate-protos.sh
     //
     // Register proto files for cargo to watch — triggers rebuild if changed.
-    let proto_dir = "../../api/proto/maekon/client/v1";
+    // Consumer Contract is now at `oneshim/client/v1` (parent SSOT migration).
+    // Path alignment: clients/maekon-client/api/proto/oneshim/client/v1/*.proto
+    let proto_dir = "../../api/proto/oneshim/client/v1";
     for name in ["auth", "session", "context", "suggestion", "health"] {
         println!("cargo:rerun-if-changed={proto_dir}/{name}.proto");
     }

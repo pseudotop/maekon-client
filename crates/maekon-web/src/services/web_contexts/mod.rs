@@ -8,8 +8,10 @@ use maekon_core::config::CredentialBackendKind;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::automation::AutomationPort;
+use maekon_core::ports::coaching::CoachingPort;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
@@ -17,6 +19,7 @@ use maekon_core::ports::system_info_provider::SystemInfoProvider;
 use maekon_core::ports::conversation_session::SessionManager;
 
 use crate::services::integration_assembler::IntegrationStatusConfigSnapshot;
+use crate::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider;
 use crate::storage_port::WebStorage;
 use crate::update_control::UpdateControl;
 use crate::AiRuntimeStatus;
@@ -31,6 +34,9 @@ pub struct StorageWebContext {
     /// sanitization. Cloned from AppState.diagnostics.pii_sanitizer at
     /// context construction time.
     pub pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
+    /// #4478 G3: one-shot erasure-propagation signal the `delete_all_data`
+    /// service sets so a local GDPR erasure reaches LAN sync peers.
+    pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl StorageWebContext {
@@ -40,6 +46,7 @@ impl StorageWebContext {
             frames_dir: state.core.frames_dir.clone(),
             frame_storage: state.core.frame_storage.clone(),
             pii_sanitizer: state.diagnostics.pii_sanitizer.clone(),
+            erasure_requested: state.core.erasure_requested.clone(),
         }
     }
 }
@@ -118,6 +125,9 @@ pub struct SettingsWebContext {
     pub(crate) secret_store: Option<Arc<dyn SecretStore>>,
     pub(crate) secret_stores: Option<SecretStoreSet>,
     pub(crate) audit_logger: Option<Arc<dyn AuditLogPort>>,
+    /// #5707: 설정 저장 후 coaching 엔진에 hot-reload 신호를 보내기 위한 핸들.
+    /// `None`이면 엔진이 연결되지 않은 환경(단독 웹 서버, 테스트)이므로 skip.
+    pub(crate) coaching_engine: Option<Arc<dyn CoachingPort>>,
 }
 
 impl SettingsWebContext {
@@ -130,6 +140,7 @@ impl SettingsWebContext {
             secret_store: state.secrets.store.clone(),
             secret_stores: state.secrets.stores.clone(),
             audit_logger: state.automation.audit_logger.clone(),
+            coaching_engine: state.analysis.coaching_engine.clone(),
         }
     }
 }
@@ -145,6 +156,7 @@ pub struct AiModelCatalogWebContext {
     pub(crate) config_manager: Option<ConfigManager>,
     pub(crate) secret_store: Option<Arc<dyn SecretStore>>,
     pub(crate) secret_stores: Option<SecretStoreSet>,
+    pub(crate) model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
 }
 
 impl AiModelCatalogWebContext {
@@ -153,6 +165,7 @@ impl AiModelCatalogWebContext {
             config_manager: state.core.config_manager.clone(),
             secret_store: state.secrets.store.clone(),
             secret_stores: state.secrets.stores.clone(),
+            model_catalog_client: state.analysis.model_catalog_client.clone(),
         }
     }
 }
@@ -171,6 +184,7 @@ pub struct SupportDiagnosticsContext {
     pub automation_controller_configured: bool,
     pub update_control_configured: bool,
     pub audit_logger: Option<Arc<dyn AuditLogPort>>,
+    pub provider_cli_diagnostics: Option<Arc<dyn ProviderCliDiagnosticsProvider>>,
 }
 
 impl SupportDiagnosticsContext {
@@ -182,6 +196,7 @@ impl SupportDiagnosticsContext {
             automation_controller_configured: state.automation.controller.is_some(),
             update_control_configured: state.core.update_control.is_some(),
             audit_logger: state.automation.audit_logger.clone(),
+            provider_cli_diagnostics: state.diagnostics.provider_cli_diagnostics.clone(),
         }
     }
 }
@@ -200,6 +215,10 @@ pub struct AutomationWebContext {
     pub audit_logger: Option<Arc<dyn AuditLogPort>>,
     pub automation_controller: Option<Arc<dyn AutomationPort>>,
     pub ai_runtime_status: Option<AiRuntimeStatus>,
+    /// #5734: per-call LLM health handle. `None` when health tracking is not wired.
+    /// Read via `as_option_bool()` at request time to produce the live
+    /// `AutomationStatusDto.llm_healthy` value (not a build-time snapshot).
+    pub llm_call_health: Option<std::sync::Arc<maekon_core::ports::llm_provider::LlmCallHealth>>,
 }
 
 impl AutomationWebContext {
@@ -211,6 +230,7 @@ impl AutomationWebContext {
             audit_logger: state.automation.audit_logger.clone(),
             automation_controller: state.automation.controller.clone(),
             ai_runtime_status: state.automation.ai_runtime_status.clone(),
+            llm_call_health: state.automation.llm_call_health.clone(),
         }
     }
 }

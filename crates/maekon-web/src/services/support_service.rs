@@ -20,7 +20,7 @@ impl SupportDiagnosticsQueryService {
     pub async fn get_diagnostics(&self) -> DiagnosticsBundleDto {
         let settings_queries = SettingsQueryService::new(self.ctx.settings.clone());
         let settings_snapshot = settings_queries.get_settings();
-        let (storage_stats, storage_error) = match settings_queries.get_storage_stats() {
+        let (storage_stats, storage_error) = match settings_queries.get_storage_stats().await {
             Ok(stats) => (Some(stats), None),
             Err(err) => (None, Some(err.to_string())),
         };
@@ -64,12 +64,19 @@ impl SupportDiagnosticsQueryService {
                 (Vec::new(), Vec::new())
             };
 
+        let provider_cli = if let Some(provider) = self.ctx.provider_cli_diagnostics.as_ref() {
+            provider.provider_cli_diagnostics().await
+        } else {
+            Vec::new()
+        };
+
         assemble_diagnostics_bundle(
             health,
             settings_snapshot,
             storage_stats,
             recent_audit_entries,
             recent_policy_events,
+            provider_cli,
         )
     }
 }

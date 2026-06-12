@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isStandaloneModeEnabled } from '../api/standalone'
-import { resolveApiUrl } from '../utils/api-base'
+import { resolveApiUrl, resolveLocalAuthToken, setLocalAuthCookie, withLocalAuthQuery } from '../utils/api-base'
 
 export interface MetricsUpdate {
   timestamp: string
@@ -109,12 +109,18 @@ export function useSSE(options: UseSSEOptions = {}): UseSSEResult {
     }
 
     setStatus('connecting')
-    const streamUrl = await resolveApiUrl('/api/stream')
+    const baseStreamUrl = await resolveApiUrl('/api/stream')
+    // E20-41 (#4833): EventSource cannot set headers. Resolve the token, then
+    // authenticate via the ?local_auth= query (cross-origin Tauri) and the cookie
+    // (same-origin browser). The server redacts the query from logs.
+    await resolveLocalAuthToken()
+    setLocalAuthCookie()
+    const streamUrl = withLocalAuthQuery(baseStreamUrl)
     if (connectToken !== connectTokenRef.current) {
       return
     }
 
-    const eventSource = new EventSource(streamUrl)
+    const eventSource = new EventSource(streamUrl, { withCredentials: true })
     if (connectToken !== connectTokenRef.current) {
       eventSource.close()
       return

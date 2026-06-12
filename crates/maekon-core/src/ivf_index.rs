@@ -4,7 +4,7 @@
 //! sqrt(N) clusters. At query time, only the closest `nprobe` clusters are scanned,
 //! reducing search from O(N) to O(N/sqrt(N)) = O(sqrt(N)).
 //!
-//! See: docs/superpowers/specs/2026-03-19-p3-vector-phase-c-advanced-compression-design.md
+//! Public architecture context: docs/architecture/ADR-013-llm-summary-vector-rag.md.
 
 use crate::error::CoreError;
 use crate::quantization::{QuantizedVector, ScalarQuantizer};
@@ -491,8 +491,14 @@ mod tests {
             n_iterations: 10,
             seed: 42,
         };
-        let result = IvfIndex::build(&vectors, &config);
-        assert!(result.is_err());
+        // IvfIndex는 Debug를 구현하지 않으므로 .err().unwrap() 패턴 사용
+        let err = IvfIndex::build(&vectors, &config)
+            .err()
+            .expect("fewer-vectors-than-clusters must return Err");
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "fewer vectors than clusters must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
@@ -503,8 +509,14 @@ mod tests {
             n_iterations: 10,
             seed: 42,
         };
-        let result = IvfIndex::build(&vectors, &config);
-        assert!(result.is_err());
+        // IvfIndex는 Debug를 구현하지 않으므로 .err().unwrap() 패턴 사용
+        let err = IvfIndex::build(&vectors, &config)
+            .err()
+            .expect("empty vector set must return Err");
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "empty vector set must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]

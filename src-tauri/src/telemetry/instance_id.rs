@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     /// T-X2-9 — drives all state-table rows (§3.7):
-    /// 1. First opt-in creates the file with 0600 perms (Unix).
+    /// 1. First exporter activation creates the file with 0600 perms (Unix).
     /// 2. Boot with enabled=true + file exists: `ensure` returns the same UUID.
     /// 3. Boot with enabled=false + file exists: file untouched (proven by
     ///    content equivalence after the later `ensure` — if we wrote between
@@ -96,10 +96,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_path_buf();
 
-        // Row 1: first opt-in creates the file.
+        // Row 1: first exporter activation creates the file.
         let first = ensure_instance_id(&data_dir).unwrap();
         let path = data_dir.join(FILE_NAME);
-        assert!(path.exists(), "file must exist after first opt-in");
+        assert!(path.exists(), "file must exist after first activation");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -114,7 +114,7 @@ mod tests {
         // Rows 4 + 5 (enabled=false / opt-out): file must still hold the
         // original UUID. The telemetry bootstrap path simply never reads or
         // writes the file while disabled, so the content must match what
-        // was written on first opt-in.
+        // was written on first activation.
         assert!(path.exists(), "opt-out must not delete the file");
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.trim(), first);

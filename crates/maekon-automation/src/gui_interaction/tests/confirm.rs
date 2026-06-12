@@ -178,7 +178,21 @@ fn sign_and_verify_ticket_roundtrip() {
         ..ticket
     };
 
-    assert!(verify_ticket(secret, &signed).is_ok());
+    // Contract: verify_ticket must succeed when the signature was produced by sign_ticket
+    // with the same secret and an unmodified ticket body. The neighbouring
+    // verify_ticket_rejects_tampered_nonce test confirms the Err branch.
+    verify_ticket(secret, &signed).expect("verify_ticket must accept a correctly signed ticket");
+    // Additionally confirm the signature string itself is a non-empty hex string —
+    // encoding bugs would produce an empty or malformed value that later
+    // verify calls would reject as InvalidSignatureFormat.
+    assert!(
+        !signed.signature.is_empty(),
+        "signature produced by sign_ticket must be non-empty"
+    );
+    assert!(
+        signed.signature.chars().all(|c| c.is_ascii_hexdigit()),
+        "sign_ticket must produce a lowercase hex-encoded HMAC-SHA256 signature"
+    );
 }
 
 #[test]
@@ -205,7 +219,11 @@ fn verify_ticket_rejects_tampered_nonce() {
         ..ticket
     };
 
-    assert!(verify_ticket(secret, &tampered).is_err());
+    let err = verify_ticket(secret, &tampered).unwrap_err();
+    assert!(
+        matches!(err, GuiInteractionError::TicketInvalid { .. }),
+        "tampered nonce must produce TicketInvalid, got: {err:?}"
+    );
 }
 
 // ── Action builder tests ────────────────────────────────────────────
@@ -273,5 +291,9 @@ fn build_actions_type_text_rejects_empty_text() {
         text: Some("  ".to_string()),
     };
 
-    assert!(build_actions_for_candidate(&candidate, &action).is_err());
+    let err = build_actions_for_candidate(&candidate, &action).unwrap_err();
+    assert!(
+        matches!(err, GuiInteractionError::BadRequest { .. }),
+        "empty text must produce BadRequest, got: {err:?}"
+    );
 }

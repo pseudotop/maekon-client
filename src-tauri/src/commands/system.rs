@@ -2,6 +2,8 @@ use std::path::Path;
 
 use chrono::Utc;
 use maekon_api_contracts::support::RuntimeLogSnapshotDto;
+use maekon_core::config::PiiFilterLevel;
+use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use tauri::command;
 
 use crate::feature_capabilities::{
@@ -19,9 +21,29 @@ const MAX_LOG_LINE_LIMIT: usize = 500;
 const MAX_FRONTEND_LOG_MESSAGE_LEN: usize = 4_000;
 const MAX_FRONTEND_LOG_CONTEXT_LEN: usize = 12_000;
 
+fn sanitize_runtime_log_snapshot(
+    snapshot: RuntimeLogSnapshotDto,
+    sanitizer: Option<&dyn PiiSanitizer>,
+) -> RuntimeLogSnapshotDto {
+    let Some(sanitizer) = sanitizer else {
+        return snapshot;
+    };
+
+    RuntimeLogSnapshotDto {
+        generated_at: snapshot.generated_at,
+        log_dir: sanitizer.sanitize_text(&snapshot.log_dir, PiiFilterLevel::Standard),
+        log_file: snapshot
+            .log_file
+            .map(|file| sanitizer.sanitize_text(&file, PiiFilterLevel::Standard)),
+        line_count: snapshot.line_count,
+        recent_text: sanitizer.sanitize_text(&snapshot.recent_text, PiiFilterLevel::Standard),
+    }
+}
+
 fn runtime_log_snapshot_from_dir(
     log_dir: &Path,
     line_limit: usize,
+    sanitizer: Option<&dyn PiiSanitizer>,
 ) -> Result<RuntimeLogSnapshotDto, String> {
     let latest_log = log_helpers::newest_log_file(log_dir)?;
     let (log_file, line_count, recent_text) = if let Some(path) = latest_log {
@@ -31,13 +53,15 @@ fn runtime_log_snapshot_from_dir(
         (None, 0, String::new())
     };
 
-    Ok(RuntimeLogSnapshotDto {
+    let snapshot = RuntimeLogSnapshotDto {
         generated_at: Utc::now().to_rfc3339(),
         log_dir: log_dir.display().to_string(),
         log_file,
         line_count,
         recent_text,
-    })
+    };
+
+    Ok(sanitize_runtime_log_snapshot(snapshot, sanitizer))
 }
 
 pub(crate) fn sanitize_frontend_surface(surface: &str) -> String {
@@ -181,8 +205,15 @@ pub async fn probe_provider_surface_endpoint(
     surface_id: String,
     endpoint_kind: String,
     endpoint: String,
+    allow_external_egress: Option<bool>,
 ) -> Result<ProviderEndpointProbeResult, IpcError> {
-    Ok(probe_provider_surface_endpoint_impl(&surface_id, &endpoint_kind, &endpoint).await)
+    Ok(probe_provider_surface_endpoint_impl(
+        &surface_id,
+        &endpoint_kind,
+        &endpoint,
+        allow_external_egress.unwrap_or(false),
+    )
+    .await)
 }
 
 #[command]
@@ -192,8 +223,13 @@ pub async fn get_runtime_log_snapshot(
     let line_limit = line_limit
         .unwrap_or(DEFAULT_LOG_LINE_LIMIT)
         .clamp(10, MAX_LOG_LINE_LIMIT);
-    runtime_log_snapshot_from_dir(&log_helpers::runtime_log_dir(), line_limit)
-        .map_err(|msg| IpcError::new("internal.generic", msg))
+    let sanitizer = maekon_vision::privacy::VisionPiiSanitizer;
+    runtime_log_snapshot_from_dir(
+        &log_helpers::runtime_log_dir(),
+        line_limit,
+        Some(&sanitizer),
+    )
+    .map_err(|msg| IpcError::new("internal.generic", msg))
 }
 
 #[command]
@@ -253,11 +289,21 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    struct MarkerSanitizer;
+
+    impl PiiSanitizer for MarkerSanitizer {
+        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
+            text.replace("alice@example.com", "[EMAIL]")
+                .replace("/Users/alice", "[USER]")
+                .replace("sk-ant-secret", "[PROVIDER_SECRET]")
+        }
+    }
+
     #[test]
     fn runtime_log_snapshot_returns_empty_when_directory_is_missing() {
         let dir = PathBuf::from("/nonexistent/maekon-log-tests");
         let snapshot =
-            runtime_log_snapshot_from_dir(&dir, 50).expect("snapshot should still succeed");
+            runtime_log_snapshot_from_dir(&dir, 50, None).expect("snapshot should still succeed");
 
         assert_eq!(snapshot.log_dir, dir.display().to_string());
         assert!(snapshot.log_file.is_none());
@@ -276,13 +322,40 @@ mod tests {
         fs::write(&newer, "new-1\nnew-2\nnew-3\n").expect("write newer log");
 
         let snapshot =
-            runtime_log_snapshot_from_dir(temp.path(), 2).expect("snapshot should succeed");
+            runtime_log_snapshot_from_dir(temp.path(), 2, None).expect("snapshot should succeed");
         let log_file = snapshot.log_file.expect("newest file should be selected");
 
         assert_eq!(snapshot.log_dir, temp.path().display().to_string());
         assert!(log_file.ends_with("maekon.log.newer"));
         assert_eq!(snapshot.line_count, 2);
         assert_eq!(snapshot.recent_text, "new-2\nnew-3");
+    }
+
+    #[test]
+    fn runtime_log_snapshot_sanitizes_support_display_and_copy_text() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let user_dir = temp.path().join("Users").join("alice").join("Library");
+        fs::create_dir_all(&user_dir).expect("create nested log dir");
+        let log = user_dir.join("maekon.log");
+        fs::write(
+            &log,
+            "provider failed for alice@example.com\nendpoint token sk-ant-secret\n",
+        )
+        .expect("write log");
+        let sanitizer = MarkerSanitizer;
+
+        let snapshot = runtime_log_snapshot_from_dir(&user_dir, 20, Some(&sanitizer))
+            .expect("snapshot should succeed");
+
+        assert!(snapshot.log_dir.contains("[USER]"));
+        assert!(!snapshot.log_dir.contains("/Users/alice"));
+        let log_file = snapshot.log_file.expect("log file should be selected");
+        assert!(log_file.contains("[USER]"));
+        assert!(!log_file.contains("/Users/alice"));
+        assert!(snapshot.recent_text.contains("[EMAIL]"));
+        assert!(snapshot.recent_text.contains("[PROVIDER_SECRET]"));
+        assert!(!snapshot.recent_text.contains("alice@example.com"));
+        assert!(!snapshot.recent_text.contains("sk-ant-secret"));
     }
 
     #[test]

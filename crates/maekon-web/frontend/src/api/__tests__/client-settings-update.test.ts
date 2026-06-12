@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../utils/api-base', () => ({
   resolveApiUrl: vi.fn(async (url: string) => url),
+  withLocalAuthHeaders: vi.fn((init?: RequestInit) => init ?? {}),
 }))
 
 vi.mock('../standalone', () => ({

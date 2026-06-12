@@ -61,11 +61,15 @@ fn build_tray_tooltip(cfg: &TrackingScheduleConfig) -> String {
 
 /// Apply a tooltip update to the main-tray icon.
 fn apply_tray_tooltip<R: Runtime>(app: &AppHandle<R>, tooltip: &str) {
+    #[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
     if let Some(tray) = app.tray_by_id("main-tray") {
         if let Err(e) = tray.set_tooltip(Some(tooltip)) {
             debug!("tray tooltip update failed: {e}");
         }
     }
+    // Linux without `app-tray`: no tray icon exists to retitle.
+    #[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+    let _ = (app, tooltip);
 }
 
 /// Spawn the tray-watch async task.

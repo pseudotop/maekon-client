@@ -8,7 +8,7 @@ use tracing::debug;
 
 use maekon_core::config::AnalysisConfig;
 use maekon_core::models::event::Event;
-use maekon_core::models::suggestion::Suggestion;
+use maekon_core::models::suggestion::{Suggestion, SuggestionContextScope};
 use maekon_core::ports::analysis_provider::AnalysisProvider;
 use maekon_core::ports::storage::StorageService;
 
@@ -254,7 +254,7 @@ impl ContextAnalyzer {
             .analyze(&ctx.user_context_json, &ctx.system_prompt)
             .await?;
 
-        let filtered = self.filter_suggestions(suggestions);
+        let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
         // Update last analysis timestamp
         let mut last = self.last_analysis_at.lock().await;
@@ -353,7 +353,7 @@ impl ContextAnalyzer {
             .analyze(&ctx.user_context_json, &ctx.system_prompt)
             .await?;
 
-        let filtered = self.filter_suggestions(suggestions);
+        let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
         let mut last = self.last_analysis_at.lock().await;
         *last = Some(Utc::now());
@@ -475,6 +475,37 @@ impl ContextAnalyzer {
         }
         hasher.finish()
     }
+
+    fn attach_context_scope(
+        mut suggestions: Vec<Suggestion>,
+        current: &CurrentActivity,
+    ) -> Vec<Suggestion> {
+        let app_name = normalized_optional_scope(&current.app_name);
+        let window_title = normalized_optional_scope(&current.window_title);
+
+        for suggestion in &mut suggestions {
+            let scope = suggestion
+                .context_scope
+                .get_or_insert_with(SuggestionContextScope::default);
+            if scope.app_name.is_none() {
+                scope.app_name = app_name.clone();
+            }
+            if scope.window_title.is_none() {
+                scope.window_title = window_title.clone();
+            }
+        }
+
+        suggestions
+    }
+}
+
+fn normalized_optional_scope(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -536,6 +567,13 @@ mod tests {
             Ok(())
         }
 
+        async fn save_activity_segment(
+            &self,
+            _summary: &maekon_core::models::tiered_memory::SegmentSummary,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
         async fn update_segment_llm_summary(
             &self,
             _segment_id: &str,
@@ -576,7 +614,7 @@ mod tests {
 
     fn make_suggestion(content: &str, confidence: f64) -> Suggestion {
         Suggestion {
-            suggestion_id: uuid::Uuid::new_v4().to_string(),
+            suggestion_id: maekon_core::id_generation::generate_id("sug"),
             suggestion_type: SuggestionType::ProductivityTip,
             content: content.to_string(),
             priority: Priority::Medium,
@@ -587,6 +625,7 @@ mod tests {
             expires_at: None,
             source: SuggestionSource::LlmLocal,
             reasoning: None,
+            context_scope: None,
         }
     }
 
@@ -594,7 +633,7 @@ mod tests {
         (0..count)
             .map(|i| {
                 Event::Context(ContextEvent {
-                    app_name: if i % 2 == 0 {
+                    app_name: if i.is_multiple_of(2) {
                         "VSCode".to_string()
                     } else {
                         "Slack".to_string()
@@ -729,6 +768,12 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_empty());
+        let scope = result[0]
+            .context_scope
+            .as_ref()
+            .expect("event-driven suggestion should keep context scope");
+        assert_eq!(scope.app_name.as_deref(), Some("VSCode"));
+        assert_eq!(scope.window_title.as_deref(), Some("main.rs"));
     }
 
     #[test]

@@ -1,0 +1,149 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-NATIVE-012"],
+  "scenarios": [
+    {
+      "key": "safari-checkout-total",
+      "placement": "bottom-dock",
+      "native_context": {
+        "active_app": "Safari",
+        "bundle_id": "com.apple.Safari",
+        "active_process": {
+          "process_name": "Safari",
+          "bundle_id": "com.apple.Safari",
+          "pid": 4177,
+          "screen_id": "main",
+          "window_title": "Checkout",
+          "window_bounds": { "x": 64, "y": 72, "width": 920, "height": 640 }
+        },
+        "display_value": "$248.20",
+        "expression": "checkout total",
+        "target_entity": {
+          "entity_id": "safari:checkout:total",
+          "kind": "web_total",
+          "label": "checkout total",
+          "value": "$248.20",
+          "bounds": { "x": 704, "y": 412, "width": 156, "height": 42 },
+          "center": { "x": 782, "y": 433 },
+          "confidence": 0.89,
+          "sources": ["ocr", "screenshot"]
+        },
+        "highlight": {
+          "target_entity_id": "safari:checkout:total",
+          "bounds": { "x": 704, "y": 412, "width": 156, "height": 42 }
+        }
+      },
+      "expected": {
+        "breadcrumb": "Safari > checkout total $248.20",
+        "visible_title": "Check checkout total before submit",
+        "suggestion_id": "safari-checkout-total-review",
+        "hidden_titles": ["General focus check-in", "Apply coupon code carefully", "Review shipping address"],
+        "forbidden_preconsent_commands": ["submit_form", "send_external", "type_text"]
+      }
+    },
+    {
+      "key": "safari-coupon-field",
+      "placement": "window-side-panel",
+      "native_context": {
+        "active_app": "Safari",
+        "bundle_id": "com.apple.Safari",
+        "active_process": {
+          "process_name": "Safari",
+          "bundle_id": "com.apple.Safari",
+          "pid": 4177,
+          "screen_id": "main",
+          "window_title": "Checkout",
+          "window_bounds": { "x": 64, "y": 72, "width": 920, "height": 640 }
+        },
+        "display_value": "",
+        "expression": "coupon field",
+        "target_entity": {
+          "entity_id": "safari:checkout:coupon-field",
+          "kind": "text_field",
+          "label": "coupon field",
+          "value": "empty",
+          "bounds": { "x": 412, "y": 332, "width": 220, "height": 38 },
+          "center": { "x": 522, "y": 351 },
+          "confidence": 0.87,
+          "sources": ["ax", "screenshot"]
+        },
+        "highlight": {
+          "target_entity_id": "safari:checkout:coupon-field",
+          "bounds": { "x": 412, "y": 332, "width": 220, "height": 38 }
+        }
+      },
+      "expected": {
+        "breadcrumb": "Safari > coupon field empty",
+        "visible_title": "Apply coupon code carefully",
+        "suggestion_id": "safari-coupon-field-review",
+        "hidden_titles": ["General focus check-in", "Check checkout total before submit", "Review shipping address"],
+        "forbidden_preconsent_commands": ["submit_form", "send_external", "type_text"]
+      }
+    }
+  ],
+  "suggestions": [
+    {
+      "id": "generic-focus-check-in",
+      "title": "General focus check-in",
+      "body": "Offer a general focus reminder unrelated to the highlighted browser control.",
+      "priority": "medium",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.94,
+      "created_at": "2026-05-23T08:10:00Z",
+      "is_read": false,
+      "reasoning": "Generic wellness suggestion should not override an anchored GUI target.",
+      "context_scope": null
+    },
+    {
+      "id": "safari-coupon-field-review",
+      "title": "Apply coupon code carefully",
+      "body": "Explain how to use the coupon field, but do not type into Safari until the user confirms.",
+      "priority": "high",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.89,
+      "created_at": "2026-05-23T08:10:10Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is the coupon text field.",
+      "context_scope": {
+        "app_name": "Safari",
+        "window_title": "Checkout",
+        "target_id": "safari:checkout:coupon-field"
+      }
+    },
+    {
+      "id": "safari-checkout-total-review",
+      "title": "Check checkout total before submit",
+      "body": "Review the visible checkout total before any submit action.",
+      "priority": "high",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.88,
+      "created_at": "2026-05-23T08:10:20Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is the checkout total.",
+      "context_scope": {
+        "app_name": "Safari",
+        "window_title": "Checkout",
+        "target_id": "safari:checkout:total"
+      }
+    },
+    {
+      "id": "safari-shipping-address-review",
+      "title": "Review shipping address",
+      "body": "Review the shipping address field, but do not modify the form before consent.",
+      "priority": "medium",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.82,
+      "created_at": "2026-05-23T08:10:30Z",
+      "is_read": false,
+      "reasoning": "The active GUI target would be a shipping address field.",
+      "context_scope": {
+        "app_name": "Safari",
+        "window_title": "Checkout",
+        "target_id": "safari:checkout:shipping-address"
+      }
+    }
+  ]
+}

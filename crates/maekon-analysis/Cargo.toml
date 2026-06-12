@@ -10,7 +10,7 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-maekon-core = { path = "../maekon-core" }
+maekon-core = { workspace = true }
 thiserror.workspace = true
 async-trait.workspace = true
 chrono = { workspace = true, features = ["serde"] }

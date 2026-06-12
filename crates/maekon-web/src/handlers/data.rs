@@ -11,14 +11,18 @@ pub async fn delete_data_range(
     Json(request): Json<DeleteRangeRequest>,
 ) -> Result<Json<DeleteResult>, ApiError> {
     Ok(Json(
-        DataCommandService::new(context).delete_data_range(&request)?,
+        DataCommandService::new(context)
+            .delete_data_range(&request)
+            .await?,
     ))
 }
 
 pub async fn delete_all_data(
     State(context): State<StorageWebContext>,
 ) -> Result<Json<DeleteResult>, ApiError> {
-    Ok(Json(DataCommandService::new(context).delete_all_data()?))
+    Ok(Json(
+        DataCommandService::new(context).delete_all_data().await?,
+    ))
 }
 
 #[cfg(test)]

@@ -72,7 +72,6 @@ mod tests {
         let _g2 = StreamCounterGuard::try_acquire(counter.clone(), 2).expect("slot 2");
         assert_eq!(counter.load(Ordering::Relaxed), 2);
         let result = StreamCounterGuard::try_acquire(counter.clone(), 2);
-        assert!(result.is_err());
         assert_eq!(result.unwrap_err().code(), tonic::Code::ResourceExhausted,);
         // Counter should NOT reflect the rejected acquire — revert succeeded.
         assert_eq!(

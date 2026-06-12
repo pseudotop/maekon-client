@@ -258,8 +258,6 @@ This was accepted as a known limitation in PR-B1 risk register §13. If it happe
 
 ## References
 
-- **PR-B1 spec**: `docs/superpowers/specs/2026-04-25-phase9-pr-b-autostart-ipc-foundation-design.md`
-- **PR-B2 spec**: `docs/superpowers/specs/2026-04-25-phase9-pr-b2-autostart-linux-deep-design.md`
 - **ADR-019**: wire-code infrastructure (`crates/maekon-core/src/error_codes/autostart.rs`)
 - **Single-instance plugin**: tauri-plugin-single-instance v2
-- **Install guide**: [`docs/install.md`](./install.md) — binary installation (also covers legacy filename / environment-variable names)
+- **Install guide**: [`docs/install.md`](../install.md) — binary installation (also covers legacy filename / environment-variable names)

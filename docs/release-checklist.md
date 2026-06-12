@@ -19,6 +19,10 @@
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
+- [ ] Provider-owned CLI compatibility gate passes:
+  `provider_specs::tests::subprocess_compatibility_matrix_matches_e18_release_gate_contract`,
+  `provider_specs::tests::rejects_subprocess_surface_without_compatibility_matrix`, and
+  `provider_specs::tests::subprocess_output_contracts_match_e18_matrix`
 
 ## Manual Verification
 - [ ] `cargo build --release` succeeds on macOS
@@ -26,6 +30,13 @@
 - [ ] App launches and shows Dashboard with real data
 - [ ] Settings save/load round-trip works
 - [ ] Auto-updater detects the new version (staging)
+- [ ] Provider-owned CLI live smoke is recorded for each preferred headless CLI
+  surface using the privacy-safe checklist in
+  `docs/qa/provider-cli-compatibility-matrix.md`
+- [ ] E19 desktop smoke release-decision manifest is generated and accepted
+  before final sign-off; it must include History-First evidence mapping for
+  every release-critical claim and must reject missing, stale, incomplete, or
+  privacy-blocked evidence.
 
 ## Test Layers Verification
 - [ ] Layer 1 (Rust): `cargo test --workspace` — 0 failures
@@ -51,6 +62,13 @@
 - [ ] Every downloadable artifact has a matching `.sha256` sidecar
 - [ ] Signature sidecars are present when signature verification is advertised
 - [ ] macOS artifacts are signed, notarized, and stapled when applicable
+- [ ] The final notarized bytes for `maekon-macos-universal.dmg` and
+  `maekon-macos-universal.pkg` were republished with regenerated `.sha256`,
+  `.sig`, and provenance after stapling
+- [ ] `notarization-final-byte-manifest.json` is present and records the same
+  SHA-256 digests as the final downloadable macOS installers
+- [ ] Release Guard accepted the current macOS release assets and would reject a
+  stale checksum or stale signature sidecar
 - [ ] Installer smoke uses `pseudotop/maekon-client` release URLs
 - [ ] Updater smoke uses the public repository/channel, not legacy `maekon-client`
 
@@ -72,7 +90,7 @@ Required for public RC release:
 
 Required before stable promotion:
 
-- `MAEKON_RELEASE_APP_ID`
+- `MAEKON_RELEASE_APP_CLIENT_ID`
 - `MAEKON_RELEASE_APP_PRIVATE_KEY`
 
 The release App installation must be able to read repository security alerts
@@ -85,10 +103,23 @@ Optional but recommended for release freshness:
 
 - `MAEKON_LANDING_DEPLOY_HOOK`
 
+Required before AI live smoke dispatch:
+
+- `MAEKON_AI_SMOKE_LLM_ENDPOINT`
+- `MAEKON_AI_SMOKE_LLM_API_KEY`
+- `MAEKON_AI_SMOKE_LLM_MODEL`
+- `MAEKON_AI_SMOKE_OCR_ENDPOINT`
+- `MAEKON_AI_SMOKE_OCR_API_KEY`
+- `MAEKON_AI_SMOKE_OCR_MODEL`
+
 ## Documentation
-- [ ] CHANGELOG.md updated
+- [ ] CHANGELOG.md contains a curated `## [<version>] - YYYY-MM-DD` section that passes `scripts/verify-release-notes-policy.sh --public --version <version>`
 - [ ] Breaking changes documented (if any)
 - [ ] Release notes and install docs explain that Maekon is the app display name while `maekon-*` artifacts and the `maekon` CLI command remain compatibility identifiers
+- [ ] Release notes mention provider-owned CLI drift diagnostics: update the
+  provider CLI, restart Maekon when Settings reports a stale process
+  environment, refresh Support Diagnostics, and include only sanitized provider
+  CLI diagnostics in bug reports
 - [ ] If this is the first public release, README/install docs no longer say release assets are unavailable
 
 ## Sign-off

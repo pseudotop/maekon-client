@@ -141,6 +141,76 @@ fn resolves_subprocess_surface_modes() {
 }
 
 #[test]
+fn app_server_surface_resolves_and_keeps_exec_surface_intact() {
+    // E21 #4866 production wiring: the new app-server surface exists, resolves to
+    // the CodexAppServer mode, carries the launch args, and the shipped catalog
+    // still validates.
+    let catalog = list_provider_surface_specs().expect("catalog loads");
+    validate_surface_catalog(&catalog).expect("catalog (incl. app-server surface) must validate");
+
+    assert_eq!(
+        subprocess_invocation_mode("provider_surface.openai.codex_app_server")
+            .expect("app-server mode resolves"),
+        SubprocessInvocationMode::CodexAppServer
+    );
+    assert_eq!(
+        subprocess_transport("provider_surface.openai.codex_app_server")
+            .expect("app-server transport")
+            .app_server_args,
+        vec!["app-server".to_string()]
+    );
+
+    // Regression: the existing exec surface is untouched (still codex_exec_json).
+    assert_eq!(
+        subprocess_invocation_mode("provider_surface.openai.subprocess_cli")
+            .expect("exec mode resolves"),
+        SubprocessInvocationMode::CodexExecJson
+    );
+}
+
+#[test]
+fn codex_app_server_compatibility_exposes_version_probe_for_e21_4863() {
+    // E21 #4863: the factory sources the `codex --version` probe args + the
+    // inform-only version cross-check from this compatibility spec. Assert the
+    // single wired reader (`subprocess_compatibility`) resolves and that the
+    // app-server surface declares a `--version` probe + a non-empty prose
+    // minimum + the manual-live-smoke gate flag.
+    let compat = subprocess_compatibility("provider_surface.openai.codex_app_server")
+        .expect("app-server compatibility spec resolves");
+    assert_eq!(
+        compat.version_probe_command,
+        vec!["--version".to_string()],
+        "the codex --version probe args must come from the catalog"
+    );
+    assert!(
+        !compat.minimum_supported_version.is_empty(),
+        "minimum_supported_version is prose policy and must be present"
+    );
+    assert!(
+        compat.manual_live_smoke_required,
+        "AC1 (installed-CLI 1-turn) is the sole remaining manual gate"
+    );
+}
+
+#[test]
+fn codex_app_server_surface_uses_account_read_probe_and_exec_keeps_text() {
+    // E21 #4868 Part 1: the app-server surface swaps to the structured,
+    // read-only account/read probe, while the exec fallback surface keeps the
+    // text grep. A catalog mistake that swaps EITHER surface's auth_probe_mode
+    // fails this assertion (load-bearing).
+    assert_eq!(
+        subprocess_auth_probe_mode("provider_surface.openai.codex_app_server")
+            .expect("app-server auth probe mode resolves"),
+        SubprocessAuthProbeMode::CodexAccountReadJson
+    );
+    assert_eq!(
+        subprocess_auth_probe_mode("provider_surface.openai.subprocess_cli")
+            .expect("exec auth probe mode resolves"),
+        SubprocessAuthProbeMode::CodexLoginStatusText
+    );
+}
+
+#[test]
 fn loads_managed_oauth_provisioning_from_catalog() {
     let surface = provider_surface_spec("provider_surface.google.managed_oauth")
         .expect("google managed surface should load");
@@ -194,6 +264,7 @@ fn lists_subprocess_surface_specs_from_catalog() {
     assert!(ids.contains(&"provider_surface.openai.subprocess_cli"));
     assert!(ids.contains(&"provider_surface.anthropic.subprocess_cli"));
     assert!(ids.contains(&"provider_surface.google.subprocess_cli"));
+    assert!(ids.contains(&"provider_surface.google.antigravity_cli"));
 }
 
 #[test]
@@ -202,6 +273,173 @@ fn reports_json_output_support_for_gemini_subprocess() {
         subprocess_supports_json_output("provider_surface.google.subprocess_cli")
             .expect("json output support should resolve")
     );
+}
+
+#[test]
+fn subprocess_output_contracts_match_e18_matrix() {
+    let headless = [
+        (
+            "provider_surface.openai.subprocess_cli",
+            "codex",
+            SubprocessInvocationMode::CodexExecJson,
+        ),
+        (
+            "provider_surface.anthropic.subprocess_cli",
+            "claude-code",
+            SubprocessInvocationMode::ClaudePrintJson,
+        ),
+        (
+            "provider_surface.google.subprocess_cli",
+            "gemini-cli",
+            SubprocessInvocationMode::GeminiCliPrompt,
+        ),
+    ];
+
+    for (surface_id, tool_id, invocation_mode) in headless {
+        let surface = provider_surface_spec(surface_id).expect("surface should resolve");
+        let transport = subprocess_transport(surface_id).expect("transport should resolve");
+
+        assert!(surface.supports.llm, "{surface_id} should support LLM");
+        assert!(surface.supports.ocr, "{surface_id} should support OCR");
+        assert_eq!(transport.tool_id, tool_id);
+        assert_eq!(
+            subprocess_invocation_mode(surface_id).expect("mode should resolve"),
+            invocation_mode
+        );
+        assert!(
+            subprocess_supports_json_output(surface_id).expect("json support should resolve"),
+            "{surface_id} should declare structured JSON output support"
+        );
+    }
+
+    let antigravity = provider_surface_spec("provider_surface.google.antigravity_cli")
+        .expect("antigravity surface should resolve");
+    let antigravity_transport = subprocess_transport("provider_surface.google.antigravity_cli")
+        .expect("antigravity transport should resolve");
+    assert!(!antigravity.supports.llm);
+    assert!(!antigravity.supports.ocr);
+    assert_eq!(
+        subprocess_invocation_mode("provider_surface.google.antigravity_cli")
+            .expect("mode should resolve"),
+        SubprocessInvocationMode::ManualChatGui
+    );
+    assert!(!antigravity_transport.json_output_supported);
+}
+
+#[test]
+fn subprocess_compatibility_matrix_matches_e18_release_gate_contract() {
+    let headless = [
+        (
+            "provider_surface.openai.subprocess_cli",
+            "codex",
+            "codex_exec_json",
+            "file_or_stdout_json",
+            "supported",
+            "stateless_oneshot",
+        ),
+        (
+            "provider_surface.anthropic.subprocess_cli",
+            "claude-code",
+            "claude_print_json",
+            "json_envelope",
+            "supported",
+            "stateless_oneshot_with_stream_events",
+        ),
+        (
+            "provider_surface.google.subprocess_cli",
+            "gemini-cli",
+            "gemini_cli_prompt",
+            "raw_json_stdout_with_flag_fallback",
+            "supported",
+            "stateless_oneshot",
+        ),
+    ];
+
+    for (surface_id, tool_id, invocation_mode, output_envelope, ocr_support, session_support) in
+        headless
+    {
+        let surface = provider_surface_spec(surface_id).expect("surface should resolve");
+        let transport = subprocess_transport(surface_id).expect("transport should resolve");
+        let compatibility = surface
+            .compatibility
+            .as_ref()
+            .expect("subprocess surface should declare compatibility");
+
+        assert_eq!(compatibility.matrix_version, "2026-06-02.e18-12");
+        assert_eq!(transport.tool_id, tool_id);
+        assert_eq!(compatibility.invocation_mode, invocation_mode);
+        assert_eq!(compatibility.output_envelope, output_envelope);
+        assert_eq!(compatibility.ocr_support, ocr_support);
+        assert_eq!(compatibility.session_support, session_support);
+        assert_eq!(
+            compatibility.auth_probe_command, transport.auth_probe_command,
+            "{surface_id} compatibility auth probe must match transport"
+        );
+        assert!(
+            compatibility
+                .supported_oses
+                .iter()
+                .all(|value| ["windows", "macos", "linux"].contains(&value.as_str())),
+            "{surface_id} uses an unsupported OS token"
+        );
+        assert!(
+            compatibility.supported_oses.len() >= 3,
+            "{surface_id} should cover Windows, macOS, and Linux"
+        );
+        assert!(
+            !compatibility.minimum_supported_version.trim().is_empty(),
+            "{surface_id} should declare a minimum supported version policy"
+        );
+        assert!(
+            !compatibility.ci_fake_cli_contracts.is_empty(),
+            "{surface_id} should declare CI-safe fake CLI contracts"
+        );
+        assert!(
+            compatibility.manual_live_smoke_required,
+            "{surface_id} should require privacy-safe manual smoke before release"
+        );
+    }
+
+    let antigravity = provider_surface_spec("provider_surface.google.antigravity_cli")
+        .expect("antigravity surface should resolve");
+    let antigravity_compatibility = antigravity
+        .compatibility
+        .as_ref()
+        .expect("manual GUI CLI surface should still declare compatibility");
+    assert_eq!(antigravity_compatibility.invocation_mode, "manual_chat_gui");
+    assert_eq!(antigravity_compatibility.ocr_support, "unsupported");
+    assert_eq!(antigravity_compatibility.session_support, "manual_gui_only");
+    assert!(!antigravity_compatibility.manual_live_smoke_required);
+}
+
+#[test]
+fn rejects_subprocess_surface_without_compatibility_matrix() {
+    let mut catalog = list_provider_surface_specs().expect("surface catalog should load");
+    let surface = catalog
+        .surfaces
+        .iter_mut()
+        .find(|surface| surface.surface_id == "provider_surface.openai.subprocess_cli")
+        .expect("subprocess surface should exist");
+    surface.compatibility = None;
+
+    let err = validate_surface_catalog(&catalog)
+        .expect_err("subprocess compatibility should be required");
+    assert!(err.contains("must declare compatibility"));
+}
+
+#[test]
+fn records_antigravity_as_manual_gui_cli_not_default_llm_runtime() {
+    let surface = provider_surface_spec("provider_surface.google.antigravity_cli")
+        .expect("antigravity surface should exist");
+    assert_eq!(surface.display_name, "Antigravity CLI");
+    assert_eq!(surface.stability, "experimental");
+    assert!(!surface.preferred_for_product_auth);
+    assert!(!surface.supports.llm);
+    assert!(surface.supports.context_bridge);
+    let transport = subprocess_transport("provider_surface.google.antigravity_cli")
+        .expect("antigravity subprocess transport should resolve");
+    assert_eq!(transport.tool_id, "antigravity");
+    assert_eq!(transport.invocation_mode, "manual_chat_gui");
 }
 
 #[test]
@@ -406,4 +644,33 @@ fn loads_surface_execution_capabilities_from_catalog() {
     assert!(google.ocr_capabilities.supports_geometry);
     assert!(google.ocr_capabilities.supports_confidence);
     assert!(openai.ocr_capabilities.requires_structured_output_model);
+}
+
+/// CI lint (ADR-025 §7, #5071): the `host_injects_token: false` invariant MUST
+/// hold on every `cli_subscription` surface. maekon must NEVER ship a surface
+/// that host-injects a user's ChatGPT token — that is ADR-025 Decision 4
+/// (WON'T-IMPLEMENT), the exact pattern Anthropic enforced against. The field is
+/// serde-ignored by `ProviderSurfaceSpec`, so read the raw embedded catalog JSON.
+#[test]
+fn cli_subscription_surfaces_never_host_inject_token() {
+    let catalog: serde_json::Value =
+        serde_json::from_str(PROVIDER_SURFACE_SPECS_JSON).expect("catalog JSON parses");
+    let surfaces = catalog["surfaces"]
+        .as_array()
+        .expect("catalog has a surfaces array");
+    for surface in surfaces {
+        if surface.get("credential_kind").and_then(|v| v.as_str()) == Some("cli_subscription") {
+            let host_injects = surface.get("host_injects_token").and_then(|v| v.as_bool());
+            assert_ne!(
+                host_injects,
+                Some(true),
+                "cli_subscription surface {} sets host_injects_token=true — forbidden by \
+                 ADR-025 Decision 4 (host-token injection is WON'T-IMPLEMENT)",
+                surface
+                    .get("surface_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unknown>")
+            );
+        }
+    }
 }

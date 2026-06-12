@@ -1,13 +1,26 @@
+use crate::active_window_parse::parse_osascript_active_window;
 use crate::error::MonitorError;
+use crate::log_privacy::title_digest;
+use core_foundation::array::CFArray;
+use core_foundation::base::{CFType, TCFType};
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
+use core_foundation::string::CFString;
 use core_graphics::event::CGEvent;
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::window::{
+    copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
+    kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerName,
+    kCGWindowOwnerPID,
+};
 use maekon_core::models::context::{MousePosition, WindowBounds, WindowInfo};
+use maekon_core::models::system::PowerStatus;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
 
@@ -23,11 +36,262 @@ const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 /// if the permission was granted in the meantime.
 const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 60;
 
+/// Public entry point for active-window detection on macOS.
+///
+/// Strategy (E20-2): try the NATIVE CoreGraphics + Accessibility path first —
+/// it requires no per-cycle subprocess fork — and fall back to the legacy
+/// osascript path only when the native path yields nothing (e.g. no window,
+/// or its result is filtered as our own window). The osascript fallback keeps
+/// the LIVE circuit breaker so a missing Accessibility permission cannot make
+/// us fork `osascript` every second.
 pub async fn get_active_window_macos() -> Result<Option<WindowInfo>, MonitorError> {
+    // Native FFI is synchronous and touches the window server / AX; run it off
+    // the async runtime so a slow CoreGraphics call can never stall the reactor.
+    let native = tokio::task::spawn_blocking(get_active_window_native)
+        .await
+        .unwrap_or_else(|join_err| {
+            warn!("native active-window task panicked/cancelled: {join_err}");
+            None
+        });
+
+    if let Some(window) = native {
+        // Title is PII — log a content-free digest only (#5638).
+        debug!(
+            "active window (native): {} ({})",
+            window.app_name,
+            title_digest(&window.title)
+        );
+        return Ok(Some(window));
+    }
+
+    // Native path returned nothing (no on-screen window, or it was our own /
+    // filtered). Fall back to the osascript path, which carries the breaker.
+    get_active_window_via_osascript().await
+}
+
+/// Native macOS active-window detection: CGWindowList for app/pid/bounds (no
+/// permission) + Accessibility `AXTitle` for the window title (gated on the
+/// Accessibility permission). Returns `None` when no usable foreground window
+/// is found, or when it resolves to our own window (same filters as osascript).
+///
+/// Synchronous by design; callers run it under `spawn_blocking`.
+fn get_active_window_native() -> Option<WindowInfo> {
+    // #4794 review: without Accessibility permission we cannot read the window
+    // TITLE (AX), and CGWindowList alone can't either (kCGWindowName would need
+    // Screen-Recording — deliberately avoided). Returning `None` here makes the
+    // orchestrator fall through to the osascript path, which DOES get the title
+    // (System Events TCC) and carries the circuit breaker — preserving parity with
+    // the pre-#4794 behavior on AX-ungranted hosts. The per-1s osascript fork is
+    // eliminated only on the happy path where AX IS granted (the perf goal). The
+    // trust check is a cheap syscall (no fork, no prompt), not an osascript fork.
+    if !crate::macos_ax_ffi::is_process_trusted() {
+        return None;
+    }
+
+    let front = frontmost_via_cgwindowlist()?;
+
+    // Apply the same self-window filters the osascript path uses.
+    if is_own_app_name(&front.owner_name) {
+        debug!("skipping own app window (native): {}", front.owner_name);
+        return None;
+    }
+    if front.owner_pid > 0 && front.owner_pid == std::process::id() {
+        debug!(
+            "skipping own window by PID (native): {} (pid={})",
+            front.owner_name, front.owner_pid
+        );
+        return None;
+    }
+
+    // AX is trusted here (checked above). A genuinely title-less window yields an
+    // empty string — correct (the window really has no title; osascript would too),
+    // so we keep the native result rather than re-forking osascript.
+    let title = title_via_ax(front.owner_pid).unwrap_or_default();
+
+    Some(WindowInfo {
+        title,
+        app_name: front.owner_name,
+        // CGWindowList does not expose the bundle id; the osascript path is the
+        // one that fills this in. Native leaves it `None`.
+        app_bundle_id: None,
+        pid: front.owner_pid,
+        bounds: front.bounds,
+    })
+}
+
+/// Read the focused window's title for `pid` via the Accessibility API.
+///
+/// Returns `None` when Accessibility permission is not granted (so the caller
+/// can fall back to osascript), or when the app has no titled focused window.
+fn title_via_ax(pid: u32) -> Option<String> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    crate::macos_ax_ffi::focused_window_title(pid as i32)
+}
+
+/// A single CGWindowList entry, reduced to the fields we need. This plain-data
+/// struct is what the pure-logic helpers operate on, so they stay headless-
+/// testable (no live window server required).
+#[derive(Debug, Clone)]
+struct RawCgWindow {
+    owner_name: String,
+    owner_pid: u32,
+    layer: i64,
+    on_screen: bool,
+    bounds: Option<WindowBounds>,
+}
+
+/// Query CGWindowList for the frontmost on-screen, layer-0 (normal) window and
+/// reduce it to owner name / pid / bounds. No permission required.
+fn frontmost_via_cgwindowlist() -> Option<RawCgWindow> {
+    // On-screen windows, front-to-back order, excluding desktop chrome.
+    let option = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    // Untyped `CFArray<*const c_void>`; each element is a CFDictionary.
+    let info: CFArray = copy_window_info(option, kCGNullWindowID)?;
+
+    let mut parsed: Vec<RawCgWindow> = Vec::with_capacity(info.len() as usize);
+    for item in info.iter() {
+        // `item` is a raw `*const c_void` from the array (get-rule borrow).
+        // SAFETY: the array owns each element; we wrap it under the Get Rule so
+        // the temporary `CFType` does not over-release the array's element.
+        let cf = unsafe { CFType::wrap_under_get_rule(*item) };
+        if let Some(dict) = cf.downcast::<CFDictionary>() {
+            if let Some(window) = parse_cg_window_entry(&dict) {
+                parsed.push(window);
+            }
+        }
+    }
+
+    pick_frontmost_layer_zero(&parsed).cloned()
+}
+
+/// Parse one CGWindowList CFDictionary entry into a [`RawCgWindow`].
+///
+/// Reads `kCGWindowOwnerName`, `kCGWindowOwnerPID`, `kCGWindowLayer`,
+/// `kCGWindowIsOnscreen`, and the nested `kCGWindowBounds` dict.
+fn parse_cg_window_entry(dict: &CFDictionary) -> Option<RawCgWindow> {
+    // SAFETY: the kCGWindow* statics are CFStringRef constants exported by the
+    // CoreGraphics framework (default `link` feature). We only borrow them to
+    // build a lookup key; ownership is not transferred.
+    let owner_name = cf_dict_string(dict, unsafe { kCGWindowOwnerName }).unwrap_or_default();
+    let owner_pid = cf_dict_i64(dict, unsafe { kCGWindowOwnerPID })
+        .filter(|pid| *pid >= 0)
+        .map(|pid| pid as u32)
+        .unwrap_or(0);
+    let layer = cf_dict_i64(dict, unsafe { kCGWindowLayer }).unwrap_or(i64::MAX);
+    let on_screen = cf_dict_i64(dict, unsafe { kCGWindowIsOnscreen })
+        .map(|v| v != 0)
+        .unwrap_or(true);
+    let bounds = cf_dict_subdict(dict, unsafe { kCGWindowBounds })
+        .and_then(|b| parse_cg_window_bounds_dict(&b));
+
+    Some(RawCgWindow {
+        owner_name,
+        owner_pid,
+        layer,
+        on_screen,
+        bounds,
+    })
+}
+
+/// Resolve a value pointer for a CoreGraphics `CFStringRef` key constant.
+///
+/// SAFETY: `key` must be a valid `CFStringRef` (one of the `kCGWindow*`
+/// statics). We wrap it under the Get Rule purely to obtain a borrowed
+/// `*const c_void` lookup key; ownership of the static is not transferred.
+unsafe fn cf_dict_value_for_cg_key(
+    dict: &CFDictionary,
+    key: core_foundation::string::CFStringRef,
+) -> Option<CFType> {
+    let key = CFString::wrap_under_get_rule(key);
+    let value = dict.find(key.as_CFTypeRef())?;
+    // SAFETY: the dictionary owns the value; Get Rule keeps the count balanced.
+    Some(CFType::wrap_under_get_rule(*value))
+}
+
+/// Look up a `CFString` value by a CoreGraphics CFStringRef key constant.
+fn cf_dict_string(
+    dict: &CFDictionary,
+    key: core_foundation::string::CFStringRef,
+) -> Option<String> {
+    // SAFETY: `key` is a `kCGWindow*` framework static (valid CFStringRef).
+    let cf = unsafe { cf_dict_value_for_cg_key(dict, key) }?;
+    cf.downcast::<CFString>().map(|s| s.to_string())
+}
+
+/// Look up a numeric value (as i64) by a CoreGraphics CFStringRef key constant.
+fn cf_dict_i64(dict: &CFDictionary, key: core_foundation::string::CFStringRef) -> Option<i64> {
+    // SAFETY: `key` is a `kCGWindow*` framework static (valid CFStringRef).
+    let cf = unsafe { cf_dict_value_for_cg_key(dict, key) }?;
+    cf.downcast::<CFNumber>().and_then(|n| n.to_i64())
+}
+
+/// Look up a nested CFDictionary value by a CoreGraphics CFStringRef key.
+fn cf_dict_subdict(
+    dict: &CFDictionary,
+    key: core_foundation::string::CFStringRef,
+) -> Option<CFDictionary> {
+    // SAFETY: `key` is a `kCGWindow*` framework static (valid CFStringRef).
+    let cf = unsafe { cf_dict_value_for_cg_key(dict, key) }?;
+    cf.downcast::<CFDictionary>()
+}
+
+/// Parse a CGWindowBounds CFDictionary (`{X, Y, Width, Height}` numbers) into
+/// a [`WindowBounds`], or `None` when the rect is degenerate (zero area).
+///
+/// Pure logic over a CoreFoundation dictionary — constructible headless, so
+/// this is unit-tested directly (CoreFoundation needs no window server).
+fn parse_cg_window_bounds_dict(bounds: &CFDictionary) -> Option<WindowBounds> {
+    let x = cf_dict_f64_by_str(bounds, "X")?;
+    let y = cf_dict_f64_by_str(bounds, "Y")?;
+    let width = cf_dict_f64_by_str(bounds, "Width")?;
+    let height = cf_dict_f64_by_str(bounds, "Height")?;
+
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    Some(WindowBounds {
+        x: x as i32,
+        y: y as i32,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+/// Helper for [`parse_cg_window_bounds_dict`]: read an `f64` keyed by a literal
+/// Rust string (the bounds sub-dict uses plain "X"/"Y"/"Width"/"Height" keys).
+fn cf_dict_f64_by_str(dict: &CFDictionary, key: &str) -> Option<f64> {
+    let key = CFString::new(key);
+    let value = dict.find(key.as_CFTypeRef())?;
+    // SAFETY: the dictionary owns the value; Get Rule keeps the count balanced.
+    let cf = unsafe { CFType::wrap_under_get_rule(*value) };
+    cf.downcast::<CFNumber>().and_then(|n| n.to_f64())
+}
+
+/// Given parsed CGWindowList entries (in CGWindowList front-to-back order),
+/// pick the frontmost normal window: the FIRST entry that is on-screen and on
+/// layer 0 (the normal application-window layer). Returns `None` when none
+/// qualifies (e.g. only menu-bar / overlay layers are present).
+///
+/// Pure logic — unit-tested headless.
+fn pick_frontmost_layer_zero(windows: &[RawCgWindow]) -> Option<&RawCgWindow> {
+    windows
+        .iter()
+        .find(|w| w.on_screen && w.layer == 0 && w.owner_pid > 0)
+}
+
+/// Legacy osascript-based active-window detection. KEPT VERBATIM as the
+/// fallback for when the native path returns `None` (e.g. Accessibility
+/// permission missing → no AX title, or no usable native foreground window).
+/// Carries the LIVE circuit breaker so a missing permission can't make us fork
+/// `osascript` every cycle.
+async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, MonitorError> {
     let timeouts = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
     if timeouts >= CIRCUIT_BREAKER_THRESHOLD {
         // Circuit breaker is open — periodically retry to detect permission grant
-        if timeouts % CIRCUIT_BREAKER_RETRY_INTERVAL != 0 {
+        if !timeouts.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
             CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
             return Ok(None);
         }
@@ -47,6 +311,10 @@ pub async fn get_active_window_macos() -> Result<Option<WindowInfo>, MonitorErro
             set frontApp to first application process whose frontmost is true
             set appName to name of frontApp
             set appPid to unix id of frontApp
+            set appBundleId to ""
+            try
+                set appBundleId to bundle identifier of frontApp
+            end try
             set winTitle to ""
             set winPos to {0, 0}
             set winSize to {0, 0}
@@ -56,7 +324,7 @@ pub async fn get_active_window_macos() -> Result<Option<WindowInfo>, MonitorErro
                 set winPos to position of frontWin
                 set winSize to size of frontWin
             end try
-            return appName & "|" & winTitle & "|" & (item 1 of winPos as integer) & "|" & (item 2 of winPos as integer) & "|" & (item 1 of winSize as integer) & "|" & (item 2 of winSize as integer) & "|" & (appPid as integer)
+            return appName & "|" & winTitle & "|" & (item 1 of winPos as integer) & "|" & (item 2 of winPos as integer) & "|" & (item 1 of winSize as integer) & "|" & (item 2 of winSize as integer) & "|" & (appPid as integer) & "|" & appBundleId
         end tell"#,
             )
             .output(),
@@ -89,70 +357,49 @@ pub async fn get_active_window_macos() -> Result<Option<WindowInfo>, MonitorErro
     }
 
     let raw_stdout = String::from_utf8_lossy(&output.stdout);
-    let result = raw_stdout.trim().to_string();
-    let parts: Vec<&str> = result.split('|').collect();
-
-    // Temporary: use info! to diagnose empty window_title issue
-    info!(
-        "osascript raw: parts={} len={} result={:?}",
-        parts.len(),
-        raw_stdout.len(),
-        &result[..result.len().min(120)]
-    );
-
-    if parts.is_empty() {
+    let Some(parsed) = parse_osascript_active_window(&raw_stdout) else {
         return Ok(None);
-    }
-
-    let app_name = parts[0].to_string();
-    let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
-
-    // Filter out Maekon's own windows (tracking panel, overlay, dashboard).
-    // App name check catches WebView child processes whose PID differs from
-    // the main binary (Tauri v2 may spawn separate WebKit processes).
-    if is_own_app_name(&app_name) {
-        debug!("skipping own app window: {app_name} - {title}");
-        return Ok(None);
-    }
-    let front_pid = parts
-        .get(6)
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
-    if front_pid > 0 && front_pid == std::process::id() {
-        debug!("skipping own window by PID: {app_name} - {title} (pid={front_pid})");
-        return Ok(None);
-    }
-
-    let bounds = if parts.len() >= 6 {
-        let x = parts[2].parse::<i32>().unwrap_or(0);
-        let y = parts[3].parse::<i32>().unwrap_or(0);
-        let width = parts[4].parse::<u32>().unwrap_or(0);
-        let height = parts[5].parse::<u32>().unwrap_or(0);
-
-        if width > 0 && height > 0 {
-            Some(WindowBounds {
-                x,
-                y,
-                width,
-                height,
-            })
-        } else {
-            None
-        }
-    } else {
-        None
     };
 
+    // Filter out Maekon's own windows (tracking panel, overlay, dashboard).
+    // App-name check catches WebView child processes whose PID differs from
+    // the main binary (Tauri v2 may spawn separate WebKit processes).
+    if is_own_app_name(&parsed.app_name) {
+        // Title is PII — log a content-free digest only (#5638).
+        debug!(
+            "skipping own app window: {} ({})",
+            parsed.app_name,
+            title_digest(&parsed.title)
+        );
+        return Ok(None);
+    }
+    if parsed.pid > 0 && parsed.pid == std::process::id() {
+        // Title is PII — log a content-free digest only (#5638).
+        debug!(
+            "skipping own window by PID: {} ({}) (pid={})",
+            parsed.app_name,
+            title_digest(&parsed.title),
+            parsed.pid
+        );
+        return Ok(None);
+    }
+
+    // Title is PII — log a content-free digest only (#5638).
     debug!(
-        "active window: {app_name} - {title} ({:?})",
-        bounds.map(|b| format!("{}x{} at ({},{})", b.width, b.height, b.x, b.y))
+        "active window: {} ({}) ({:?})",
+        parsed.app_name,
+        title_digest(&parsed.title),
+        parsed
+            .bounds
+            .map(|b| format!("{}x{} at ({},{})", b.width, b.height, b.x, b.y))
     );
 
     Ok(Some(WindowInfo {
-        title,
-        app_name,
-        pid: front_pid,
-        bounds,
+        title: parsed.title,
+        app_name: parsed.app_name,
+        app_bundle_id: parsed.bundle_id,
+        pid: parsed.pid,
+        bounds: parsed.bounds,
     }))
 }
 
@@ -167,14 +414,10 @@ fn is_own_app_name_for_exe(app_name: &str, current_exe: Option<&Path>) -> bool {
         return false;
     }
 
-    // Legacy display names from pre-Maekon bundles can still appear in existing
-    // installs and in old macOS accessibility/TCC entries.
-    if matches!(app_name, "MAEKON" | "Maekon") {
-        return true;
-    }
-
     let Some(current_exe) = current_exe else {
-        return false;
+        // Legacy display names from pre-Maekon bundles can still appear in
+        // existing installs and in old macOS accessibility/TCC entries.
+        return matches!(app_name, "MAEKON" | "Maekon");
     };
 
     own_app_name_candidates(current_exe)
@@ -206,6 +449,30 @@ fn own_app_name_candidates(current_exe: &Path) -> Vec<String> {
 
     candidates
 }
+
+pub async fn current_power_status_macos() -> Result<PowerStatus, MonitorError> {
+    let output = timeout(
+        Duration::from_secs(2),
+        Command::new("/usr/bin/pmset")
+            .arg("-g")
+            .arg("batt")
+            .output(),
+    )
+    .await
+    .map_err(|_| MonitorError::Internal("pmset power status timed out".to_string()))?
+    .map_err(|e| MonitorError::Internal(format!("pmset execution failure: {e}")))?;
+
+    if !output.status.success() {
+        return Ok(PowerStatus::default());
+    }
+
+    Ok(crate::power_parse::parse_pmset_batt_output(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+// pmset-parsing tests moved to the cfg-free `crate::power_parse` module (#5138)
+// so the battery/AC detection + low-battery threshold are verified on every OS.
 
 pub async fn get_idle_time_macos() -> Option<u64> {
     let output = timeout(
@@ -266,8 +533,12 @@ mod tests {
         // Reset circuit breaker for test isolation
         CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
         let result = get_active_window_macos().await;
-        // Either Ok(Some(..)) if permission granted, or Err if timeout
-        assert!(result.is_ok() || result.is_err());
+        // Either Ok(Some(..)) if a foreground window is resolvable (native or
+        // osascript), Ok(None) if not, or Err if osascript timed out.
+        // This assertion is a tautology — it merely proves the call does not
+        // panic or hang. Justified: macOS GUI session may or may not be
+        // available on CI; both Ok and Err are valid outcomes (#5594).
+        let _ = result; // call returns without panic — contract verified
     }
 
     #[tokio::test]
@@ -297,13 +568,20 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn circuit_breaker_skips_when_tripped() {
-        // Simulate threshold timeouts
+        // The circuit breaker is a property of the osascript fallback path, so
+        // exercise it directly: the native CGWindowList path runs first in the
+        // orchestrator and (on a host with a live window server) would resolve a
+        // real window, bypassing the breaker entirely.
         CONSECUTIVE_TIMEOUTS.store(CIRCUIT_BREAKER_THRESHOLD, Ordering::Relaxed);
 
-        // Should return Ok(None) immediately without spawning osascript
-        let result = get_active_window_macos().await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
+        // Should return Ok(None) immediately without spawning osascript.
+        let result = get_active_window_via_osascript()
+            .await
+            .expect("tripped breaker must short-circuit to Ok");
+        assert!(
+            result.is_none(),
+            "tripped breaker must skip osascript and yield None"
+        );
 
         // Counter should have incremented
         let count = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
@@ -342,5 +620,120 @@ mod tests {
     fn own_app_name_keeps_legacy_names() {
         assert!(is_own_app_name_for_exe("MAEKON", None));
         assert!(is_own_app_name_for_exe("Maekon", None));
+    }
+
+    // ── Native CGWindowList pure-logic tests ────────────────────────────────
+    //
+    // These exercise the headless-safe helpers only. CoreFoundation objects
+    // (CFDictionary/CFNumber/CFString) are constructible without a window
+    // server, so building a synthetic CGWindowBounds dict is reliable here.
+    // We do NOT test `frontmost_via_cgwindowlist` / `title_via_ax` directly —
+    // those need a live window server / AX permission and would be flaky.
+
+    use core_foundation::dictionary::CFDictionary as CFDict;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString as CFStr;
+
+    /// Build a synthetic CGWindowBounds-style dict (`{X, Y, Width, Height}`).
+    fn bounds_dict(x: f64, y: f64, w: f64, h: f64) -> CFDictionary {
+        CFDict::from_CFType_pairs(&[
+            (CFStr::new("X"), CFNumber::from(x)),
+            (CFStr::new("Y"), CFNumber::from(y)),
+            (CFStr::new("Width"), CFNumber::from(w)),
+            (CFStr::new("Height"), CFNumber::from(h)),
+        ])
+        .into_untyped()
+    }
+
+    fn raw(owner: &str, pid: u32, layer: i64, on_screen: bool) -> RawCgWindow {
+        RawCgWindow {
+            owner_name: owner.to_string(),
+            owner_pid: pid,
+            layer,
+            on_screen,
+            bounds: None,
+        }
+    }
+
+    #[test]
+    fn parse_bounds_dict_reads_all_four_fields() {
+        let dict = bounds_dict(12.0, 34.0, 800.0, 600.0);
+        let bounds = parse_cg_window_bounds_dict(&dict).expect("bounds present");
+        assert_eq!(bounds.x, 12);
+        assert_eq!(bounds.y, 34);
+        assert_eq!(bounds.width, 800);
+        assert_eq!(bounds.height, 600);
+    }
+
+    #[test]
+    fn parse_bounds_dict_truncates_fractional_coords() {
+        // CGWindowBounds values can be fractional on HiDPI; we truncate to ints.
+        let dict = bounds_dict(-5.9, 10.4, 1280.6, 720.2);
+        let bounds = parse_cg_window_bounds_dict(&dict).expect("bounds present");
+        assert_eq!(bounds.x, -5);
+        assert_eq!(bounds.y, 10);
+        assert_eq!(bounds.width, 1280);
+        assert_eq!(bounds.height, 720);
+    }
+
+    #[test]
+    fn parse_bounds_dict_rejects_zero_area() {
+        assert!(parse_cg_window_bounds_dict(&bounds_dict(0.0, 0.0, 0.0, 100.0)).is_none());
+        assert!(parse_cg_window_bounds_dict(&bounds_dict(0.0, 0.0, 100.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn parse_bounds_dict_missing_key_is_none() {
+        let dict = CFDict::from_CFType_pairs(&[
+            (CFStr::new("X"), CFNumber::from(1.0)),
+            (CFStr::new("Y"), CFNumber::from(2.0)),
+            // Width / Height intentionally absent.
+        ])
+        .into_untyped();
+        assert!(parse_cg_window_bounds_dict(&dict).is_none());
+    }
+
+    #[test]
+    fn pick_frontmost_skips_non_zero_layers() {
+        // Menu-bar / overlay layers (non-zero) appear first; the first layer-0
+        // on-screen window should win.
+        let windows = vec![
+            raw("Menubar", 100, 25, true), // status bar layer
+            raw("Dock", 101, 20, true),    // dock layer
+            raw("Safari", 200, 0, true),   // real app window
+            raw("Finder", 300, 0, true),   // behind Safari
+        ];
+        let front = pick_frontmost_layer_zero(&windows).expect("a layer-0 window");
+        assert_eq!(front.owner_name, "Safari");
+        assert_eq!(front.owner_pid, 200);
+    }
+
+    #[test]
+    fn pick_frontmost_requires_on_screen() {
+        let windows = vec![
+            raw("Hidden", 100, 0, false), // off-screen, must be skipped
+            raw("Visible", 200, 0, true),
+        ];
+        let front = pick_frontmost_layer_zero(&windows).expect("an on-screen window");
+        assert_eq!(front.owner_name, "Visible");
+    }
+
+    #[test]
+    fn pick_frontmost_requires_real_pid() {
+        // pid 0 entries (no owner) must not be selected.
+        let windows = vec![raw("Phantom", 0, 0, true), raw("Real", 42, 0, true)];
+        let front = pick_frontmost_layer_zero(&windows).expect("a real-pid window");
+        assert_eq!(front.owner_pid, 42);
+    }
+
+    #[test]
+    fn pick_frontmost_none_when_no_normal_window() {
+        let windows = vec![raw("Menubar", 100, 25, true), raw("Cursor", 101, 99, true)];
+        assert!(pick_frontmost_layer_zero(&windows).is_none());
+    }
+
+    #[test]
+    fn pick_frontmost_empty_is_none() {
+        assert!(pick_frontmost_layer_zero(&[]).is_none());
     }
 }

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Flattened view of the `LoadPolicy` thresholds for JSON serialisation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LoadPolicyView {
     pub cpu_low_pct: f32,
     pub cpu_medium_pct: f32,
@@ -19,6 +20,7 @@ pub struct LoadPolicyView {
 
 /// Response body for `GET /api/external-grpc/live-config`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LiveConfigResponse {
     pub streaming_enabled: bool,
     pub load_policy_snapshot: LoadPolicyView,

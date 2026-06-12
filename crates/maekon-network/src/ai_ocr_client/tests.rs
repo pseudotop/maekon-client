@@ -12,7 +12,6 @@ fn new_remote_ocr_empty_key_error() {
         credential: None,
     };
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("not configured"));
 }
@@ -28,8 +27,17 @@ fn new_remote_ocr_with_key() {
         surface_id: None,
         credential: None,
     };
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_ok());
+    let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
+        .expect("non-empty api_key must produce a valid RemoteOcrProvider");
+    // Pin that the stored endpoint and provider type match what was configured.
+    assert_eq!(
+        provider.endpoint, "https://api.example.com",
+        "endpoint must be stored from config"
+    );
+    assert!(
+        matches!(provider.provider_type, AiProviderType::Generic),
+        "provider_type must be Generic as configured"
+    );
 }
 
 #[test]
@@ -87,7 +95,6 @@ fn ollama_ocr_rejects_known_text_only_model() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("OCR-capable"));
 }
@@ -105,7 +112,6 @@ fn local_openai_compatible_ocr_requires_explicit_model_selection() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
@@ -125,7 +131,6 @@ fn local_openai_compatible_ocr_rejects_model_without_structured_output() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let message = result.unwrap_err().to_string();
     assert!(
         message.contains("structured JSON output")
@@ -147,7 +152,6 @@ fn new_remote_ocr_rejects_retired_model_by_policy() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("retired as of"));
 }
@@ -185,7 +189,6 @@ fn new_remote_ocr_rejects_known_non_ocr_model() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("not marked as OCR-capable"));
 }
@@ -203,7 +206,6 @@ fn google_ocr_rejects_explicit_model_selection() {
     };
 
     let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("does not support configurable model selection"));
 }
@@ -349,11 +351,15 @@ fn apply_auth_headers_succeeds_for_supported_schemes() {
     ] {
         let builder = client.get("https://api.example.com");
         let result = apply_auth_headers(scheme, builder, "test-key");
-        assert!(
-            result.is_ok(),
-            "apply_auth_headers({scheme:?}, ..) unexpectedly failed: {:?}",
-            result.err()
-        );
+        let builder = result.unwrap_or_else(|e| {
+            panic!("apply_auth_headers({scheme:?}, ..) unexpectedly failed: {e:?}")
+        });
+        // The returned builder must have had auth headers added (confirmed by exercising each
+        // scheme branch).  The RequestBuilder is consumed by .build(); we use .build() to verify
+        // it is not in an error state (e.g. invalid header value from the auth injection).
+        builder.build().unwrap_or_else(|e| {
+            panic!("apply_auth_headers({scheme:?}): resulting RequestBuilder is invalid: {e:?}")
+        });
     }
 }
 
@@ -392,20 +398,25 @@ fn ocr_strategy_try_from_rejects_bedrock_converse() {
 /// the BedrockConverse Err arm.
 #[test]
 fn ocr_strategy_try_from_accepts_supported_shapes() {
-    for shape in [
-        ProviderRequestShape::AnthropicMessages,
-        ProviderRequestShape::AnthropicVisionMessages,
-        ProviderRequestShape::OpenAiChatCompletions,
-        ProviderRequestShape::OpenAiVisionChatCompletions,
-        ProviderRequestShape::OpenAiResponses,
-        ProviderRequestShape::GoogleGenerateContent,
-        ProviderRequestShape::GoogleVisionAnnotate,
-    ] {
-        let result = OcrProviderStrategy::try_from(shape);
-        assert!(
-            result.is_ok(),
-            "OcrProviderStrategy::try_from({shape:?}) unexpectedly failed: {:?}",
-            result.err()
+    // Each (shape, expected_variant_debug) pair asserts the dispatch table is correct.
+    let cases: &[(ProviderRequestShape, &str)] = &[
+        (ProviderRequestShape::AnthropicMessages, "Anthropic"),
+        (ProviderRequestShape::AnthropicVisionMessages, "Anthropic"),
+        (ProviderRequestShape::OpenAiChatCompletions, "OpenAi"),
+        (ProviderRequestShape::OpenAiVisionChatCompletions, "OpenAi"),
+        (ProviderRequestShape::OpenAiResponses, "OpenAi"),
+        (ProviderRequestShape::GoogleGenerateContent, "Google"),
+        (ProviderRequestShape::GoogleVisionAnnotate, "Google"),
+    ];
+    for (shape, expected_variant) in cases {
+        let strategy = OcrProviderStrategy::try_from(*shape).unwrap_or_else(|e| {
+            panic!("OcrProviderStrategy::try_from({shape:?}) unexpectedly failed: {e:?}")
+        });
+        // Verify the correct variant is produced, not just that Ok was returned.
+        assert_eq!(
+            format!("{strategy:?}"),
+            *expected_variant,
+            "OcrProviderStrategy::try_from({shape:?}) mapped to wrong variant"
         );
     }
 }

@@ -3,7 +3,13 @@ use serde::Deserialize;
 
 /// Request body for `POST /api/frames/{frame_id}/annotations`.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CreateAnnotationRequest {
+    // Cross-crate `maekon-core` string enum — contained as an opaque string.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub annotation_type: AnnotationType,
     pub x: f32,
     pub y: f32,

@@ -1,6 +1,7 @@
 //! MacOsNativeAccessibility — extract, batch, traverse, filter,
 //! AccessibilityExtractor trait impl.
 
+use std::process::Command;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,13 +15,13 @@ use zeroize::Zeroizing;
 
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
+use maekon_core::error_codes::NotFoundCode;
 use maekon_core::models::focused_element::{AccessibilityElement, ElementRect, FocusedElementInfo};
 use maekon_core::ports::accessibility::AccessibilityExtractor;
 
 use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 
 use crate::accessibility::ffi_macos::ax::*;
-use crate::privacy::sanitize_title_with_level;
 
 /// Circuit breaker: skip AX calls after consecutive failures.
 static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
@@ -65,11 +66,74 @@ impl MacOsNativeAccessibility {
         unsafe { AXIsProcessTrustedWithOptions(ptr::null()) }
     }
 
+    fn candidate_process_names(app_name: &str) -> Vec<String> {
+        let trimmed = app_name.trim();
+        let without_app_suffix = trimmed.strip_suffix(".app").unwrap_or(trimmed);
+        let last_path_component = without_app_suffix
+            .rsplit('/')
+            .next()
+            .unwrap_or(without_app_suffix);
+
+        let mut candidates = vec![last_path_component.to_string()];
+        if last_path_component.eq_ignore_ascii_case("maekon dev")
+            || last_path_component.eq_ignore_ascii_case("maekon")
+        {
+            candidates.push("maekon".to_string());
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
+    fn pgrep_exact(name: &str) -> Option<PidT> {
+        let output = Command::new("/usr/bin/pgrep")
+            .args(["-x", name])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.trim().parse::<PidT>().ok())
+    }
+
+    fn is_current_process_candidate(name: &str) -> bool {
+        let Ok(current_exe) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(executable_name) = current_exe.file_stem().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        name.eq_ignore_ascii_case(executable_name)
+            || current_exe
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .filter_map(|component| component.strip_suffix(".app"))
+                .any(|bundle_name| name.eq_ignore_ascii_case(bundle_name))
+    }
+
+    fn find_application_pid(app_name: &str) -> Result<PidT, CoreError> {
+        for candidate in Self::candidate_process_names(app_name) {
+            if Self::is_current_process_candidate(&candidate) {
+                return Ok(std::process::id() as PidT);
+            }
+            if let Some(pid) = Self::pgrep_exact(&candidate) {
+                return Ok(pid);
+            }
+        }
+        Err(CoreError::NotFound {
+            code: NotFoundCode::ResourceMissing,
+            resource_type: "macos_accessibility_application".to_string(),
+            id: app_name.to_string(),
+        })
+    }
+
     /// Circuit breaker: check if calls are allowed.
     fn circuit_allows() -> bool {
         let failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed);
         if failures >= CIRCUIT_BREAKER_THRESHOLD {
-            if failures % CIRCUIT_BREAKER_RETRY_INTERVAL != 0 {
+            if !failures.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
                 CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
@@ -417,54 +481,32 @@ impl MacOsNativeAccessibility {
 
     /// Apply PII-level filtering to raw extracted data.
     fn filter_by_level(raw: RawFocusedElement, level: PiiFilterLevel) -> FocusedElementInfo {
-        match level {
-            PiiFilterLevel::Strict => FocusedElementInfo {
-                role: raw.role,
-                position: raw.position,
-                ..Default::default()
-            },
-            PiiFilterLevel::Standard => FocusedElementInfo {
-                role: raw.role,
-                position: raw.position,
-                label: raw
-                    .title
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or(raw.placeholder.clone()),
-                value_length: raw.value.as_deref().map(|v| v.len() as u32),
-                ..Default::default()
-            },
-            PiiFilterLevel::Basic => {
-                let text = raw
-                    .value
-                    .as_deref()
-                    .map(|v| sanitize_title_with_level(v, PiiFilterLevel::Basic));
-                FocusedElementInfo {
-                    role: raw.role,
-                    position: raw.position,
-                    label: raw
-                        .title
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .or(raw.placeholder.clone()),
-                    value_length: raw.value.as_deref().map(|v| v.len() as u32),
-                    extracted_text: text,
-                }
-            }
-            PiiFilterLevel::Off => FocusedElementInfo {
-                role: raw.role,
-                position: raw.position,
-                label: raw
-                    .title
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or(raw.placeholder.clone()),
-                value_length: raw.value.as_deref().map(|v| v.len() as u32),
-                extracted_text: raw.value.as_deref().map(|v| v.to_string()),
-            },
-        }
-        // raw.title and raw.value (Zeroizing<String>) are dropped here,
-        // zeroing memory automatically.
+        // Resolve the macOS label (title, falling back to placeholder), then
+        // apply the shared per-level redaction — the single source of truth in
+        // `crate::accessibility::pii_filter` (#5120).
+        //
+        // Strict exposes no label, so do NOT materialize it there: `title` is a
+        // `Zeroizing<String>` and a `.to_string()` copy would be dropped
+        // un-zeroed. Resolving it only when the level actually uses it keeps the
+        // Strict path copy-free (#5131 follow-up).
+        let label = if level == PiiFilterLevel::Strict {
+            None
+        } else {
+            raw.title
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| raw.placeholder.clone())
+        };
+        super::super::pii_filter::apply_pii_level(
+            raw.role,
+            label,
+            // `raw.value` is `Option<Zeroizing<String>>`; deref to `&str`.
+            raw.value.as_deref().map(String::as_str),
+            raw.position,
+            level,
+        )
+        // raw.title and raw.value (Zeroizing<String>) are dropped here, zeroing
+        // memory automatically.
     }
 }
 
@@ -585,6 +627,65 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
         } else {
             Self::record_success();
             debug!(count = result.len(), "AX window tree extracted");
+        }
+
+        Ok(result)
+    }
+
+    async fn extract_application_elements(
+        &self,
+        app_name: &str,
+        max_depth: u32,
+        max_elements: usize,
+        pii_level: PiiFilterLevel,
+        has_full_text_consent: bool,
+    ) -> Result<Vec<AccessibilityElement>, CoreError> {
+        if !Self::check_permission() {
+            return Err(CoreError::PermissionDenied {
+                code: maekon_core::error_codes::PermissionCode::PermissionDenied,
+                message: "macOS Accessibility permission not granted. \
+                 Enable in System Settings > Privacy & Security > Accessibility."
+                    .to_string(),
+            });
+        }
+        if !Self::circuit_allows() {
+            return Ok(Vec::new());
+        }
+
+        let effective_level = if pii_level == PiiFilterLevel::Off && !has_full_text_consent {
+            PiiFilterLevel::Standard
+        } else {
+            pii_level
+        };
+        let app_name = app_name.to_string();
+
+        let result =
+            tokio::task::spawn_blocking(move || -> Result<Vec<AccessibilityElement>, CoreError> {
+                unsafe {
+                    let pid = Self::find_application_pid(&app_name)?;
+                    let app_ref = AXUIElementCreateApplication(pid);
+                    if app_ref.is_null() {
+                        return Ok(Vec::new());
+                    }
+
+                    let mut remaining = max_elements;
+                    let elements =
+                        Self::traverse_tree(app_ref, 0, max_depth, &mut remaining, effective_level);
+                    CFRelease(app_ref);
+                    Ok(elements)
+                }
+            })
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("AX application tree traversal task failed: {e}"),
+            })??;
+
+        if result.is_empty() {
+            Self::record_failure();
+        } else {
+            Self::record_success();
+            debug!(count = result.len(), "AX application tree extracted");
         }
 
         Ok(result)

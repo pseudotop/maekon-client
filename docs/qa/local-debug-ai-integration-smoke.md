@@ -10,6 +10,11 @@ This is not a replacement for:
 
 It is the fastest local path for confirming that the desktop app, web delivery layer, and runtime wiring behave correctly together.
 
+For computer-use and native-shell TCs that must be verified through runtime
+audit entries, use the private debug-client audit protocol from the internal TC
+workspace as the execution protocol for evidence capture and pass/fail
+recording.
+
 ## 1. Recommended Local Preparation
 
 Run these first from the repository root:
@@ -35,6 +40,19 @@ Preferred interactive desktop run:
 cd src-tauri && cargo tauri dev
 ```
 
+Preferred bundled-app run on macOS:
+
+```bash
+./scripts/build-macos-dev-bundle.sh
+open -n "target/debug/bundle/macos/Maekon Dev.app"
+```
+
+Use the bundled path when interactive desktop automation needs LaunchServices
+to resolve the app as `com.maekon.app.dev`. `cargo tauri dev` may launch a raw
+debug binary that is reachable through the local API but absent from app
+discovery.
+Quit any installed release `Maekon` process before launching the dev bundle.
+
 For headless or remote smoke paths where macOS tray bootstrap can fail:
 
 ```bash
@@ -44,6 +62,14 @@ MAEKON_DISABLE_TRAY=1 ./scripts/cargo-cache.sh run -p maekon-app -- --offline --
 Use the headless variant only for non-interactive debug/smoke sessions.
 
 ## 3. What to Check Manually in the Running App
+
+### Debug Audit TC Smoke
+
+- Confirm `GET /api/settings` responds on the local debug API.
+- Capture an audit baseline from `GET /api/automation/audit?limit=50`.
+- Execute the TC or bug reproduction steps in the running client.
+- Query `GET /api/automation/audit?limit=50` again and verify the audit delta.
+- Preserve screenshots, runtime logs, and audit JSON under the TC evidence path.
 
 ### AI / Provider Surface Smoke
 
@@ -111,5 +137,6 @@ This is why the project keeps multiple layers:
 - Settings and integration screens load cleanly.
 - AI provider surface selection and persistence behave correctly.
 - Integration status/telemetry reads look sane.
+- Audit entries match any debug-audit TC exercised during the run.
 - No unexpected handler/runtime errors appear during basic navigation.
 - Automated GUI coverage remains green for the touched delivery paths.

@@ -14,9 +14,17 @@ use maekon_core::models::tiered_memory::Regime;
 pub fn filter_by_regime(suggestions: &mut Vec<Suggestion>, regime: Option<&Regime>) {
     let Some(regime) = regime else { return };
 
-    let label = regime.name.as_deref().unwrap_or(&regime.auto_label);
+    // #4818 review: check BOTH the user-facing name AND the auto_label — a regime
+    // whose `name` was set to something else (e.g. "Deep Work") must still gate if
+    // its `auto_label` classifies it as Deep Focus. Keying off `name` alone would
+    // silently no-op the gate for any named/renamed focus regime.
+    let in_deep_focus = regime
+        .name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("Deep Focus"))
+        || regime.auto_label.starts_with("Deep Focus");
 
-    if label.starts_with("Deep Focus") {
+    if in_deep_focus {
         suggestions.retain(|s| s.priority >= Priority::High);
     }
     // Communication, Research, Mixed: no filtering
@@ -30,12 +38,13 @@ pub fn filter_by_regime(suggestions: &mut Vec<Suggestion>, regime: Option<&Regim
 mod tests {
     use super::*;
     use chrono::Utc;
+    use maekon_core::id_generation::generate_id;
     use maekon_core::models::suggestion::{SuggestionSource, SuggestionType};
     use maekon_core::models::tiered_memory::{RegimeFeatures, RegimeStatus, TriggerParams};
 
     fn make_suggestion(priority: Priority) -> Suggestion {
         Suggestion {
-            suggestion_id: uuid::Uuid::new_v4().to_string(),
+            suggestion_id: generate_id("sug"),
             suggestion_type: SuggestionType::ProductivityTip,
             content: "Test suggestion".to_string(),
             priority,
@@ -46,6 +55,7 @@ mod tests {
             expires_at: None,
             source: SuggestionSource::RuleBased,
             reasoning: None,
+            context_scope: None,
         }
     }
 
@@ -76,6 +86,23 @@ mod tests {
         filter_by_regime(&mut suggestions, Some(&regime));
 
         assert_eq!(suggestions.len(), 2);
+        assert!(suggestions.iter().all(|s| s.priority >= Priority::High));
+    }
+
+    #[test]
+    fn deep_focus_gates_even_when_name_overrides_auto_label() {
+        // #4818 review: a regime whose `name` is NOT "Deep Focus*" but whose
+        // `auto_label` IS must still gate — keying off `name` alone would no-op.
+        let mut regime = make_regime("Deep Focus (VSCode)");
+        regime.name = Some("Deep Work".to_string());
+        let mut suggestions = vec![
+            make_suggestion(Priority::Low),
+            make_suggestion(Priority::High),
+        ];
+
+        filter_by_regime(&mut suggestions, Some(&regime));
+
+        assert_eq!(suggestions.len(), 1);
         assert!(suggestions.iter().all(|s| s.priority >= Priority::High));
     }
 

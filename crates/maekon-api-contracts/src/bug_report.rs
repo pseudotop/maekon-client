@@ -5,17 +5,24 @@ use crate::support::{DiagnosticsBundleDto, RuntimeLogSnapshotDto};
 
 /// Complete bug report bundle for export/sharing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BugReportBundleDto {
     pub bug_id: String,
     pub diagnostics: DiagnosticsBundleDto,
     pub system: SystemInfoDto,
     pub connection: ConnectionStatusDto,
     pub runtime_logs: Option<RuntimeLogSnapshotDto>,
+    // Cross-crate `maekon-core` string enum — contained as an opaque string.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub pii_filter_level: PiiFilterLevel,
 }
 
 /// System hardware and software information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SystemInfoDto {
     pub app_version: String,
     pub os_name: String,
@@ -30,6 +37,7 @@ pub struct SystemInfoDto {
 
 /// Server connection status snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConnectionStatusDto {
     pub server_reachable: bool,
     pub last_sync_at: Option<String>,
@@ -39,6 +47,7 @@ pub struct ConnectionStatusDto {
 
 /// Request parameters for creating a bug report.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CreateBugReportRequest {
     #[serde(default = "default_include_logs")]
     pub include_logs: bool,

@@ -9,7 +9,11 @@ use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2::msg_send;
 #[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::runtime::{AnyClass, AnyObject, Bool};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{ns_string, NSString};
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
@@ -38,6 +42,8 @@ pub struct DesktopPermissionSnapshot {
     pub platform: String,
     pub accessibility: DesktopPermissionEntry,
     pub screen_capture: DesktopPermissionEntry,
+    pub microphone: DesktopPermissionEntry,
+    pub input_monitoring: DesktopPermissionEntry,
     pub notifications: DesktopPermissionEntry,
 }
 
@@ -48,6 +54,8 @@ pub fn get_desktop_permission_snapshot<R: Runtime>(
         platform: current_platform().to_string(),
         accessibility: accessibility_permission_entry(),
         screen_capture: screen_capture_permission_entry(),
+        microphone: microphone_permission_entry(),
+        input_monitoring: input_monitoring_permission_entry(),
         notifications: notification_permission_entry(app_handle),
     }
 }
@@ -57,6 +65,15 @@ pub fn request_desktop_notification_permission<R: Runtime>(
 ) -> Result<DesktopPermissionSnapshot, String> {
     #[cfg(target_os = "macos")]
     request_macos_notification_permission(app_handle)?;
+
+    Ok(get_desktop_permission_snapshot(app_handle))
+}
+
+pub fn request_desktop_screen_capture_permission<R: Runtime>(
+    app_handle: &AppHandle<R>,
+) -> Result<DesktopPermissionSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    request_macos_screen_capture_permission(app_handle)?;
 
     Ok(get_desktop_permission_snapshot(app_handle))
 }
@@ -124,6 +141,13 @@ fn macos_permission_settings_url(permission_kind: &str) -> Option<&'static str> 
         "screen_capture" => {
             Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         }
+        "microphone" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
+        "input_monitoring" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+        }
+        "notifications" => Some("x-apple.systempreferences:com.apple.preference.notifications"),
         _ => None,
     }
 }
@@ -200,6 +224,82 @@ fn screen_capture_permission_entry() -> DesktopPermissionEntry {
 }
 
 #[cfg(target_os = "macos")]
+fn microphone_permission_entry() -> DesktopPermissionEntry {
+    match macos_microphone_authorization_status() {
+        Ok(3) => granted(Some("macos_microphone_granted")),
+        Ok(0) => needs_attention("macos_microphone_not_determined"),
+        Ok(1) => needs_attention("macos_microphone_restricted"),
+        Ok(2) => needs_attention("macos_microphone_denied"),
+        Ok(_) => unavailable("macos_microphone_unknown_status"),
+        Err(_) => unavailable("macos_microphone_probe_failed"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn microphone_permission_entry() -> DesktopPermissionEntry {
+    not_required(Some("windows_microphone_managed_by_os"))
+}
+
+#[cfg(target_os = "linux")]
+fn microphone_permission_entry() -> DesktopPermissionEntry {
+    not_required(Some("linux_microphone_managed_by_session"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn microphone_permission_entry() -> DesktopPermissionEntry {
+    unavailable("microphone_unsupported")
+}
+
+#[cfg(target_os = "macos")]
+fn input_monitoring_permission_entry() -> DesktopPermissionEntry {
+    match macos_input_monitoring_access_status() {
+        Ok(0) => granted(Some("macos_input_monitoring_granted")),
+        Ok(1) => needs_attention("macos_input_monitoring_denied"),
+        Ok(2) => needs_attention("macos_input_monitoring_unknown"),
+        Ok(_) => unavailable("macos_input_monitoring_unknown_status"),
+        Err(_) => unavailable("macos_input_monitoring_probe_failed"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn input_monitoring_permission_entry() -> DesktopPermissionEntry {
+    not_required(Some("windows_input_monitoring_managed_by_os"))
+}
+
+#[cfg(target_os = "linux")]
+fn input_monitoring_permission_entry() -> DesktopPermissionEntry {
+    not_required(Some("linux_input_monitoring_managed_by_session"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn input_monitoring_permission_entry() -> DesktopPermissionEntry {
+    unavailable("input_monitoring_unsupported")
+}
+
+#[cfg(target_os = "macos")]
+fn request_macos_screen_capture_permission<R: Runtime>(
+    app_handle: &AppHandle<R>,
+) -> Result<(), String> {
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let tx = Arc::new(Mutex::new(Some(tx)));
+    let request_sender = Arc::clone(&tx);
+
+    app_handle
+        .run_on_main_thread(move || {
+            let granted = unsafe { CGRequestScreenCaptureAccess() };
+            send_once(&request_sender, granted);
+        })
+        .map_err(|error| error.to_string())?;
+
+    let _granted = rx
+        .recv_timeout(REQUEST_TIMEOUT)
+        .map_err(|_| "timed out waiting for macOS screen capture authorization".to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn notification_permission_entry<R: Runtime>(app_handle: &AppHandle<R>) -> DesktopPermissionEntry {
     match macos_notification_authorization_status(app_handle) {
         Ok(0) => needs_attention("macos_notifications_not_determined"),
@@ -234,7 +334,9 @@ fn request_macos_notification_permission<R: Runtime>(
     const UN_AUTHORIZATION_OPTION_BADGE: usize = 1 << 0;
     const UN_AUTHORIZATION_OPTION_SOUND: usize = 1 << 1;
     const UN_AUTHORIZATION_OPTION_ALERT: usize = 1 << 2;
-    const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+    let request_timeout = macos_notification_request_timeout();
+
+    macos_notification_center_available_for_current_process()?;
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let tx = Arc::new(Mutex::new(Some(tx)));
@@ -261,12 +363,11 @@ fn request_macos_notification_permission<R: Runtime>(
             }
 
             let sender = Arc::clone(&request_sender);
-            let handler = RcBlock::new(move |_granted: Bool, error: *mut AnyObject| {
-                let result = if error.is_null() {
-                    Ok(())
-                } else {
-                    Err("macos notification authorization failed".to_string())
-                };
+            let handler = RcBlock::new(move |granted: Bool, error: *mut AnyObject| {
+                let result = macos_notification_authorization_request_result(
+                    granted.as_bool(),
+                    macos_notification_error_message(error),
+                );
                 send_once(&sender, result);
             });
 
@@ -278,11 +379,69 @@ fn request_macos_notification_permission<R: Runtime>(
                 requestAuthorizationWithOptions: options,
                 completionHandler: &*handler
             ];
+
+            // UNUserNotificationCenter completes asynchronously; keep the
+            // Objective-C block alive beyond this main-thread closure.
+            std::mem::forget(handler);
         })
         .map_err(|error| error.to_string())?;
 
-    rx.recv_timeout(REQUEST_TIMEOUT)
+    rx.recv_timeout(request_timeout)
         .map_err(|_| "timed out waiting for macOS notification authorization".to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_request_timeout() -> Duration {
+    macos_notification_request_timeout_from(
+        std::env::var("MAEKON_DEBUG_NOTIFICATION_REQUEST_TIMEOUT_SECONDS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_request_timeout_from(env_value: Option<&str>) -> Duration {
+    let seconds = env_value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds.min(60))
+        .unwrap_or(5);
+    Duration::from_secs(seconds)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_authorization_request_result(
+    granted: bool,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    if let Some(error_message) = error_message
+        .map(|message| message.trim().to_string())
+        .filter(|message| !message.is_empty())
+    {
+        return Err(format!(
+            "macos notification authorization failed: {error_message}"
+        ));
+    }
+
+    if granted {
+        Ok(())
+    } else {
+        Err("macos notification authorization was not granted".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_error_message(error: *mut AnyObject) -> Option<String> {
+    if error.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let desc: Retained<NSString> = msg_send![&*error, localizedDescription];
+        let domain: Retained<NSString> = msg_send![&*error, domain];
+        let code: isize = msg_send![&*error, code];
+        Some(format!("{} (domain: {}, code: {})", desc, domain, code))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -290,6 +449,8 @@ fn macos_notification_authorization_status<R: Runtime>(
     app_handle: &AppHandle<R>,
 ) -> Result<isize, String> {
     const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    macos_notification_center_available_for_current_process()?;
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let tx = Arc::new(Mutex::new(Some(tx)));
@@ -330,11 +491,64 @@ fn macos_notification_authorization_status<R: Runtime>(
                 notification_center,
                 getNotificationSettingsWithCompletionHandler: &*handler
             ];
+
+            // UNUserNotificationCenter invokes this completion handler
+            // asynchronously, so it must outlive the main-thread closure.
+            std::mem::forget(handler);
         })
         .map_err(|error| error.to_string())?;
 
     rx.recv_timeout(PROBE_TIMEOUT)
         .map_err(|_| "timed out waiting for macOS notification settings".to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_center_available_for_current_process() -> Result<(), String> {
+    if std::env::var_os("MAEKON_ALLOW_UNBUNDLED_NOTIFICATION_CENTER").is_some() {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("macos notification bundle probe failed: {error}"))?;
+    if macos_path_has_app_bundle(&exe) {
+        Ok(())
+    } else {
+        Err(format!(
+            "macos notification center unavailable for unbundled executable: {}",
+            exe.display()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_path_has_app_bundle(path: &std::path::Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_microphone_authorization_status() -> Result<isize, String> {
+    unsafe {
+        let Some(capture_device_class) = AnyClass::get(c"AVCaptureDevice") else {
+            return Err("macos microphone authorization class unavailable".to_string());
+        };
+
+        let status: isize = msg_send![
+            capture_device_class,
+            authorizationStatusForMediaType: ns_string!("soun")
+        ];
+        Ok(status)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_input_monitoring_access_status() -> Result<u32, String> {
+    const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+    Ok(unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) })
 }
 
 #[cfg(target_os = "macos")]
@@ -352,6 +566,17 @@ fn send_once<T>(sender: &Arc<Mutex<Option<std::sync::mpsc::SyncSender<T>>>>, val
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "macos")]
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOHIDCheckAccess(request_type: u32) -> u32;
 }
 
 #[cfg(target_os = "macos")]
@@ -368,6 +593,43 @@ mod tests {
         assert!(!current_platform().is_empty());
     }
 
+    #[test]
+    fn desktop_permission_snapshot_serializes_voice_and_input_entries() {
+        let snapshot = DesktopPermissionSnapshot {
+            platform: "macos".to_string(),
+            accessibility: DesktopPermissionEntry {
+                state: DesktopPermissionState::Granted,
+                status_reason: Some("macos_accessibility_granted".to_string()),
+            },
+            screen_capture: DesktopPermissionEntry {
+                state: DesktopPermissionState::Granted,
+                status_reason: Some("macos_screen_capture_granted".to_string()),
+            },
+            microphone: DesktopPermissionEntry {
+                state: DesktopPermissionState::NeedsAttention,
+                status_reason: Some("macos_microphone_not_determined".to_string()),
+            },
+            input_monitoring: DesktopPermissionEntry {
+                state: DesktopPermissionState::NeedsAttention,
+                status_reason: Some("macos_input_monitoring_unknown".to_string()),
+            },
+            notifications: DesktopPermissionEntry {
+                state: DesktopPermissionState::Granted,
+                status_reason: Some("macos_notifications_granted".to_string()),
+            },
+        };
+
+        let json = serde_json::to_value(&snapshot).expect("snapshot must serialize");
+        assert_eq!(
+            json["microphone"]["status_reason"],
+            "macos_microphone_not_determined"
+        );
+        assert_eq!(
+            json["input_monitoring"]["status_reason"],
+            "macos_input_monitoring_unknown"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_permission_settings_urls_match_expected_targets() {
@@ -379,6 +641,66 @@ mod tests {
             macos_permission_settings_url("screen_capture"),
             Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         );
-        assert_eq!(macos_permission_settings_url("notifications"), None);
+        assert_eq!(
+            macos_permission_settings_url("microphone"),
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        );
+        assert_eq!(
+            macos_permission_settings_url("input_monitoring"),
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+        );
+        assert_eq!(
+            macos_permission_settings_url("notifications"),
+            Some("x-apple.systempreferences:com.apple.preference.notifications")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notification_authorization_result_preserves_denial_and_error_details() {
+        assert_eq!(
+            macos_notification_authorization_request_result(false, None).unwrap_err(),
+            "macos notification authorization was not granted"
+        );
+        assert_eq!(
+            macos_notification_authorization_request_result(
+                false,
+                Some("notifications are disabled for this bundle".to_string())
+            )
+            .unwrap_err(),
+            "macos notification authorization failed: notifications are disabled for this bundle"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notification_request_timeout_accepts_bounded_debug_override() {
+        assert_eq!(
+            macos_notification_request_timeout_from(None),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            macos_notification_request_timeout_from(Some(" 20 ")),
+            std::time::Duration::from_secs(20)
+        );
+        assert_eq!(
+            macos_notification_request_timeout_from(Some("0")),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            macos_notification_request_timeout_from(Some("600")),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notification_bundle_probe_detects_app_ancestor() {
+        assert!(macos_path_has_app_bundle(std::path::Path::new(
+            "/Applications/Maekon.app/Contents/MacOS/maekon"
+        )));
+        assert!(!macos_path_has_app_bundle(std::path::Path::new(
+            "/tmp/target/debug/maekon"
+        )));
     }
 }

@@ -1,6 +1,12 @@
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { buildBugReportIssueUrl, buildMailtoUrl, createBugReport, formatBundleForClipboard } from '../api/bug-report'
+import {
+  buildBugReportIssueUrl,
+  buildMailtoUrl,
+  createBugReport,
+  formatBundleForClipboard,
+  sanitizeBugReportBundleForDisplay,
+} from '../api/bug-report'
 import type { BugReportBundle } from '../api/contracts'
 import { addToast } from '../hooks/useToast'
 import { translateError, type WireErrorLocale } from '../i18n/translateError'
@@ -46,7 +52,7 @@ export default function BugReportWizard({ open, onClose }: BugReportWizardProps)
     setError(null)
     try {
       const result = await createBugReport(includeLogs, piiLevel)
-      setBundle(result)
+      setBundle(sanitizeBugReportBundleForDisplay(result))
       setStep('review')
     } catch (err) {
       const message = err instanceof Error ? err.message : t('settings.bugReportGenerateFailed')
@@ -335,6 +341,9 @@ interface ReviewStepProps {
 }
 
 function ReviewStep({ bundle, expandedSections, onToggleSection, onCopyBugId, t }: ReviewStepProps) {
+  const runtimeLogs = bundle.runtime_logs
+  const providerCli = bundle.diagnostics.provider_cli ?? []
+
   return (
     <div className="space-y-4">
       <Card variant="default" padding="md" className="flex items-center justify-between">
@@ -393,6 +402,58 @@ function ReviewStep({ bundle, expandedSections, onToggleSection, onCopyBugId, t 
             value={bundle.connection.websocket_connected ? t('settings.supportYes') : t('settings.supportNo')}
           />
         </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title={`${t('settings.bugReportProviderCli')} (${providerCli.length})`}
+        sectionKey="providerCli"
+        expanded={expandedSections.providerCli ?? providerCli.length > 0}
+        onToggle={onToggleSection}
+      >
+        {providerCli.length === 0 ? (
+          <p className="text-content-muted text-xs">{t('settings.bugReportNoProviderCli')}</p>
+        ) : (
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-DEFAULT bg-surface-base p-2 text-[11px] text-content-secondary">
+            {providerCli
+              .map((entry) =>
+                [
+                  `${entry.surface_id}: ${entry.readiness} / ${entry.availability}`,
+                  entry.dependency_status
+                    ? `  ${t('settings.bugReportProviderCliDependency')}: ${entry.dependency_status}`
+                    : '',
+                  entry.env_refresh_required ? `  ${t('settings.bugReportProviderCliRestartRequired')}` : '',
+                  entry.status_reason ? `  ${entry.status_reason}` : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              )
+              .join('\n\n')}
+          </pre>
+        )}
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title={`${t('settings.bugReportRuntimeLogs')} (${runtimeLogs?.line_count ?? 0})`}
+        sectionKey="runtimeLogs"
+        expanded={expandedSections.runtimeLogs ?? Boolean(runtimeLogs?.recent_text)}
+        onToggle={onToggleSection}
+      >
+        {!runtimeLogs ? (
+          <p className="text-content-muted text-xs">{t('settings.bugReportNoRuntimeLogs')}</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <ReviewField label={t('settings.bugReportRuntimeLogsGenerated')} value={runtimeLogs.generated_at} />
+              <ReviewField label={t('settings.bugReportRuntimeLogsLineCount')} value={String(runtimeLogs.line_count)} />
+              {runtimeLogs.log_file && (
+                <ReviewField label={t('settings.bugReportRuntimeLogsFile')} value={runtimeLogs.log_file} />
+              )}
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-DEFAULT bg-surface-base p-2 text-[11px] text-content-secondary">
+              {runtimeLogs.recent_text || t('settings.bugReportNoRuntimeLogText')}
+            </pre>
+          </div>
+        )}
       </CollapsibleSection>
 
       <CollapsibleSection

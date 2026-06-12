@@ -24,6 +24,18 @@
 public-minimal export 에 포함하지 않습니다. 공개 contributor 에게 필요한
 영속적 결정은 ADR, guide, contract, security 문서로 승격합니다.
 
+## 아키텍처 및 색인 정책
+
+- 공개 독자는 ADR을 보려면 `docs/architecture/README.md`에서 시작하고,
+  shipped behavior는 `docs/guides/`, `docs/contracts/`, `docs/security/`,
+  crate 문서에서 확인합니다.
+- 내부 유지보수자는 TC catalog 백필이나 아키텍처 승격 전에 parent SSOT의
+  plan index를 먼저 확인합니다. 이 내부 색인은 공개 export에서 빠지는
+  planning, research, private TC 기록을 직접 가리킬 수 있습니다.
+- 공개 문서와 export source comment는 자체 완결적이어야 합니다. source
+  comment에 영속 설명이 필요하면 먼저 public ADR, guide, contract,
+  security doc, crate doc으로 승격합니다.
+
 ## 빠른 배치 규칙
 
 1. `docs/architecture/`에는 `ADR-XXX-*` 형식만 둡니다.

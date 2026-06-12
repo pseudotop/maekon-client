@@ -1,3 +1,4 @@
+// OOS-TBD: ADR-013 file split (cycle 37+) — LOC: 647
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,15 @@ pub enum IntegrationAuthProfileKind {
     #[default]
     EnvToken,
     OidcDeviceFlow,
+}
+
+impl std::fmt::Display for IntegrationAuthProfileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EnvToken => f.write_str("env_token"),
+            Self::OidcDeviceFlow => f.write_str("oidc_device_flow"),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

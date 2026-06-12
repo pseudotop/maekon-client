@@ -3,7 +3,6 @@ use super::extractor::*;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::focused_element::ElementRect;
 use maekon_core::ports::accessibility::AccessibilityExtractor;
-use zeroize::Zeroizing;
 
 #[test]
 fn filter_strict_only_role_and_position() {
@@ -97,8 +96,12 @@ async fn extract_focused_element_integration() {
     let result = extractor
         .extract_focused_element(PiiFilterLevel::Standard, false)
         .await;
-    assert!(result.is_ok());
-    // May be None if no element is focused (headless CI)
+    // Contract: with Accessibility permission granted the AX API must not return Err.
+    // Value may be None when no element is focused (e.g. headless CI) — that is Ok(None).
+    // #5594: Ok-only is the full contract here; the caller guards against the no-permission
+    // path above, so Err would indicate a genuine AX API failure.
+    result
+        .expect("extract_focused_element must return Ok when Accessibility permission is granted");
 }
 
 /// Integration test for tree traversal -- requires Accessibility permission.
@@ -114,10 +117,16 @@ async fn extract_window_elements_integration() {
     let result = extractor
         .extract_window_elements(3, 300, PiiFilterLevel::Standard, false)
         .await;
-    assert!(result.is_ok());
-    let elements = result.unwrap();
-    // Should return at least 1 element (the window or focused element)
-    // May return 0 on headless CI
+    // Contract: with Accessibility permission the traversal must not return Err.
+    let elements = result
+        .expect("extract_window_elements must return Ok when Accessibility permission is granted");
+    // May return 0 on headless CI; each returned element must have a non-empty role.
+    for elem in &elements {
+        assert!(
+            !elem.role.is_empty(),
+            "every returned element must have a non-empty role"
+        );
+    }
     eprintln!("extracted {} elements", elements.len());
 }
 
@@ -155,9 +164,11 @@ async fn extract_window_elements_batch_traversal() {
     let result = extractor
         .extract_window_elements(2, 100, PiiFilterLevel::Off, true)
         .await;
-    assert!(result.is_ok());
-    let elements = result.unwrap();
-    // Each element should have a non-empty role from the batch fetch
+    // Contract: batch traversal must not return Err when Accessibility permission is granted.
+    let elements = result.expect(
+        "batch extract_window_elements must return Ok when Accessibility permission is granted",
+    );
+    // Each element must have a non-empty role populated by the batch AX attribute fetch.
     for elem in &elements {
         assert!(!elem.role.is_empty(), "batch fetch should populate role");
     }
@@ -168,9 +179,11 @@ async fn extract_window_elements_batch_traversal() {
     );
 }
 
-/// Apply PII filter to test data by reconstructing the filter logic.
-/// This duplicates the private struct so we can test the filtering
-/// without exposing internals.
+/// Apply the PII filter to test data through the production redaction
+/// (`pii_filter::apply_pii_level`). Previously this re-implemented the filter
+/// logic verbatim — so the tests validated a copy, not shipped code; the #5120
+/// seam exposed the real function, so this is now a thin adapter over it
+/// (label resolved the same way the macOS extractor does: title → placeholder).
 fn apply_filter(
     role: &str,
     title: Option<&str>,
@@ -179,55 +192,8 @@ fn apply_filter(
     position: Option<ElementRect>,
     level: PiiFilterLevel,
 ) -> maekon_core::models::focused_element::FocusedElementInfo {
-    use crate::privacy::sanitize_title_with_level;
-    use maekon_core::models::focused_element::FocusedElementInfo;
-
-    let title_z = title.map(|s| Zeroizing::new(s.to_string()));
-    let value_z = value.map(|s| Zeroizing::new(s.to_string()));
-    let placeholder_s = placeholder.map(|s| s.to_string());
-
-    let result = match level {
-        PiiFilterLevel::Strict => FocusedElementInfo {
-            role: role.to_string(),
-            position,
-            ..Default::default()
-        },
-        PiiFilterLevel::Standard => FocusedElementInfo {
-            role: role.to_string(),
-            position,
-            label: title_z
-                .as_deref()
-                .map(|s| s.to_string())
-                .or(placeholder_s.clone()),
-            value_length: value_z.as_deref().map(|v| v.len() as u32),
-            ..Default::default()
-        },
-        PiiFilterLevel::Basic => {
-            let text = value_z
-                .as_deref()
-                .map(|v| sanitize_title_with_level(v, PiiFilterLevel::Basic));
-            FocusedElementInfo {
-                role: role.to_string(),
-                position,
-                label: title_z
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or(placeholder_s.clone()),
-                value_length: value_z.as_deref().map(|v| v.len() as u32),
-                extracted_text: text,
-            }
-        }
-        PiiFilterLevel::Off => FocusedElementInfo {
-            role: role.to_string(),
-            position,
-            label: title_z
-                .as_deref()
-                .map(|s| s.to_string())
-                .or(placeholder_s.clone()),
-            value_length: value_z.as_deref().map(|v| v.len() as u32),
-            extracted_text: value_z.as_deref().map(|v| v.to_string()),
-        },
-    };
-    // Zeroizing values dropped here.
-    result
+    let label = title
+        .map(str::to_string)
+        .or_else(|| placeholder.map(str::to_string));
+    super::super::pii_filter::apply_pii_level(role.to_string(), label, value, position, level)
 }

@@ -12,7 +12,7 @@ use super::super::Scheduler;
 impl Scheduler {
     /// Periodically check and refresh OAuth tokens.
     #[tracing::instrument(skip_all)]
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(in crate::scheduler) fn spawn_oauth_refresh_loop(
         &self,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -25,23 +25,32 @@ impl Scheduler {
 
         let coordinator = self.oauth_coordinator.as_ref()?.clone();
 
+        // Collect the configured provider IDs at spawn time.  The registry reads
+        // from a static catalog so no async work is needed here, and the list is
+        // stable for the lifetime of the loop.  An empty list means no managed-
+        // OAuth providers are configured — the loop still runs so it can process
+        // ReauthRequired events that were emitted before startup.
+        let provider_ids = crate::oauth_provider_registry::configured_oauth_provider_ids();
+
         Some(tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_secs(OAUTH_REFRESH_INTERVAL_SECS));
+            let mut interval = super::intervals::coalescing_interval(Duration::from_secs(
+                OAUTH_REFRESH_INTERVAL_SECS,
+            ));
             let mut event_rx = coordinator.subscribe();
             let mut last_reauth_notify: Option<tokio::time::Instant> = None;
-            let provider_id = "openai".to_string();
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let outcome = coordinator.check_and_refresh(&provider_id).await;
-                        debug!(provider_id = %provider_id, ?outcome, "OAuth refresh tick");
+                        for provider_id in &provider_ids {
+                            let outcome = coordinator.check_and_refresh(provider_id).await;
+                            debug!(provider_id = %provider_id, ?outcome, "OAuth refresh tick");
+                        }
                     }
                     event = event_rx.recv() => {
                         if let Ok(TokenEvent::ReauthRequired { ref provider_id }) = event {
                             let should_notify = last_reauth_notify
-                                .map_or(true, |t| t.elapsed() > Duration::from_secs(300));
+                                .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
                             if should_notify {
                                 warn!(
                                     provider_id = %provider_id,
@@ -95,6 +104,20 @@ impl Scheduler {
         let config_mgr_s = self.config_manager.clone();
         let consent_mgr_s = self.consent_manager.clone();
         let capture_paused_s = self.capture_paused.clone();
+        // #5069: feature-perf recorder (None ⇒ pass-through). Times one sync push
+        // cycle as the `sync` feature execution. Off-by-default sync ⇒ 0 samples
+        // until cross-device sync is enabled — honest, not faked.
+        #[cfg(feature = "analysis")]
+        let perf_recorder_s: Option<
+            Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>,
+        > = self
+            .feature_perf
+            .clone()
+            .map(|u| u as Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>);
+        #[cfg(not(feature = "analysis"))]
+        let perf_recorder_s: Option<
+            Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>,
+        > = None;
 
         tokio::spawn(async move {
             let engine = match sync_engine {
@@ -108,24 +131,39 @@ impl Scheduler {
             // Startup delay: wait 10 seconds before first sync
             tokio::time::sleep(Duration::from_secs(10)).await;
 
-            let mut interval = tokio::time::interval(sync_interval);
+            let mut interval = super::intervals::coalescing_interval(sync_interval);
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
+                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
+                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
                         let consent = consent_mgr_s.as_ref()
-                            .and_then(|cm| cm.current_consent().map(|r| r.permissions.clone()))
+                            .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_s.load(Ordering::Relaxed);
                         let permitted = config_mgr_s.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
                             .unwrap_or(!paused);
                         if !permitted {
-                            debug!("cross-device sync: capture gate closed (TS/consent/paused) — skipping tick");
+                            // #5165: the capture gate (screen_capture / active-hours /
+                            // paused) must NOT block GDPR Art. 17 erasure propagation — a
+                            // tombstone is an erasure, not data collection. Propagate any
+                            // pending erasure, then skip the (gated) normal data sync.
+                            if let Err(e) = engine.propagate_pending_erasure().await {
+                                warn!(err.code = %e.code(), "cross-device erasure propagation failed: {e}");
+                            }
+                            debug!("cross-device sync: capture gate closed — propagated any pending erasure, skipping normal sync");
                             continue;
                         }
-                        match engine.run_cycle().await {
+                        let cycle = maekon_core::ports::feature_perf::time_feature(
+                            perf_recorder_s.as_ref(),
+                            maekon_core::models::feature_performance::feature_keys::SYNC,
+                            engine.run_cycle(),
+                        )
+                        .await;
+                        match cycle {
                             Ok(Some(result)) => {
                                 info!(
                                     applied = result.applied,
@@ -154,6 +192,45 @@ impl Scheduler {
         })
     }
 
+    /// #5069: periodic feature-performance flush loop. Drains the per-feature_key
+    /// buffer and ships samples to the server (consent-gated + egress-audited
+    /// inside `flush()`). Returns `None` when the emitter is not wired (non-analysis
+    /// builds or missing consent/sink) so no idle task is spawned.
+    #[cfg(feature = "analysis")]
+    pub(in crate::scheduler) fn spawn_feature_perf_flush_loop(
+        &self,
+        flush_interval: Duration,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let uploader = self.feature_perf.clone()?;
+        Some(tokio::spawn(async move {
+            let mut interval = super::intervals::coalescing_interval(flush_interval);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let report = uploader.flush().await;
+                        if report.uploaded + report.requeued + report.dropped + report.blocked > 0 {
+                            debug!(
+                                uploaded = report.uploaded,
+                                requeued = report.requeued,
+                                dropped = report.dropped,
+                                blocked = report.blocked,
+                                "feature-perf flush"
+                            );
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        // Best-effort final drain (may be cut short by the
+                        // run_scheduler_loops abort — operational samples only).
+                        let _ = uploader.flush().await;
+                        info!("feature-perf flush loop ended");
+                        break;
+                    }
+                }
+            }
+        }))
+    }
+
     #[tracing::instrument(skip_all)]
     #[allow(unused_variables)]
     pub(in crate::scheduler) async fn run_scheduler_loops(
@@ -171,7 +248,11 @@ impl Scheduler {
         let aggregation = self.config.aggregation_interval;
         let session_id = self.config.session_id.clone();
         let idle_threshold = self.config.idle_threshold_secs;
-        let egress_policy = Arc::new(PlatformEgressPolicy::new(&self.config));
+        // #4805: egress 를 텔레메트리 동의에 바인딩 — 공유 ConsentManager 주입.
+        let egress_policy = Arc::new(
+            PlatformEgressPolicy::new(&self.config)
+                .with_consent_manager(self.consent_manager.clone()),
+        );
 
         info!(
             platform_sync_enabled = egress_policy.is_enabled(),
@@ -336,7 +417,7 @@ impl Scheduler {
         let notification_task =
             self.spawn_notification_loop(self.focus_mode.clone(), shutdown_rx.clone());
 
-        let focus_task = self.spawn_focus_loop(shutdown_rx.clone());
+        let focus_task = self.spawn_focus_loop(shared_regime.clone(), shutdown_rx.clone());
 
         let event_snapshot_task = self.spawn_event_snapshot_loop(
             detailed_process_interval,
@@ -347,12 +428,21 @@ impl Scheduler {
         );
 
         // 10. OAuth token refresh (conditional — returns None if no coordinator)
-        #[cfg(feature = "server")]
+        #[cfg(feature = "analysis")]
         let oauth_task = self.spawn_oauth_refresh_loop(shutdown_rx.clone(), app_handle);
 
         // 11. LLM analysis loop (periodic + change-detection)
         let analysis_config = self.config.analysis_config.clone();
-        let analysis_task = self.spawn_analysis_loop(analysis_config, shutdown_rx.clone());
+        // E20-26 (#4818): thread shared regime state so the local-suggestion
+        // enqueue path inside the analysis loop is regime/context-aware.
+        let analysis_task =
+            self.spawn_analysis_loop(analysis_config, shared_regime.clone(), shutdown_rx.clone());
+
+        // #5069: feature-performance flush loop (Option — None unless the emitter
+        // is wired in an analysis build). 5-min cadence matches cross-device sync.
+        #[cfg(feature = "analysis")]
+        let feature_perf_flush_task =
+            self.spawn_feature_perf_flush_loop(Duration::from_secs(300), shutdown_rx.clone());
 
         // 12. Cross-device sync loop (P3 Phase 3a-2)
         let cross_device_sync_task = self.spawn_cross_device_sync_loop(
@@ -414,7 +504,7 @@ impl Scheduler {
             None
         };
 
-        #[cfg(feature = "server")]
+        #[cfg(feature = "local-suggestions")]
         let suggestion_maintenance_task = if self.suggestions_enabled {
             self.suggestion_manager.as_ref().map(|mgr| {
                 super::suggestions::spawn_suggestion_maintenance_loop(
@@ -423,7 +513,15 @@ impl Scheduler {
                     mgr.retry_queue().clone(),
                     mgr.feedback().clone(),
                     mgr.storage().clone(),
-                    None, // on_change wired via on_new callback on receiver
+                    // #5694: resurfaced (deferred) suggestions refresh the overlay.
+                    // NOTE: this loop only spawns when config.suggestions.enabled is
+                    // true (default false) — inert under stock config; wired so the
+                    // surface is correct the moment the flag is enabled.
+                    self.magic_overlay.as_ref().map(|o| {
+                        let o = o.clone();
+                        std::sync::Arc::new(move |count: usize| o.emit_suggestions_changed(count))
+                            as std::sync::Arc<dyn Fn(usize) + Send + Sync>
+                    }),
                     shutdown_rx.clone(),
                 )
             })
@@ -470,7 +568,7 @@ impl Scheduler {
         }
 
         // Feature-gated optional tasks
-        #[cfg(feature = "server")]
+        #[cfg(feature = "analysis")]
         if let Some(task) = oauth_task {
             task.abort();
             if let Err(e) = task.await {
@@ -487,6 +585,15 @@ impl Scheduler {
                 }
             }
         }
+        #[cfg(feature = "analysis")]
+        if let Some(task) = feature_perf_flush_task {
+            task.abort();
+            if let Err(e) = task.await {
+                if !e.is_cancelled() {
+                    error!("feature-perf flush loop panicked: {e}");
+                }
+            }
+        }
         #[cfg(feature = "server")]
         if let Some(task) = suggestion_sse_task {
             task.abort();
@@ -496,7 +603,7 @@ impl Scheduler {
                 }
             }
         }
-        #[cfg(feature = "server")]
+        #[cfg(feature = "local-suggestions")]
         if let Some(task) = suggestion_maintenance_task {
             task.abort();
             if let Err(e) = task.await {

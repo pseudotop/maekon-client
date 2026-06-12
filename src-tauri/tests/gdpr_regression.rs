@@ -8,7 +8,7 @@ use maekon_storage::sqlite::SqliteStorage;
 /// Helper: insert sample data into core tables so we can verify deletion.
 fn seed_sample_data(storage: &SqliteStorage) {
     let conn = storage.connection_arc();
-    let guard = conn.lock().expect("lock");
+    let guard = conn.retained_write_lock();
 
     // V1 tables
     guard
@@ -102,12 +102,82 @@ fn seed_sample_data(storage: &SqliteStorage) {
             [],
         )
         .expect("insert coaching event");
+
+    // V34: ADR-023 memory-graph (durable activity-derived claims + evidence edges).
+    guard
+        .execute(
+            "INSERT INTO memory_claims \
+             (claim_id, kind, text, source, confidence, status, created_at, updated_at) \
+             VALUES ('clm1', 'reflective', 'note', 'digest_highlight', 0.8, 'active', \
+             1700000000, 1700000000)",
+            [],
+        )
+        .expect("insert memory claim");
+    guard
+        .execute(
+            "INSERT INTO memory_edges \
+             (edge_id, src_id, dst_id, edge_type, confidence, evidence_ref, source, created_at) \
+             VALUES ('edg1', 'clm1', 'seg1', 'evidence', 1.0, 'seg1', 'rule', 1700000000)",
+            [],
+        )
+        .expect("insert memory edge");
+
+    // #4478: V18-V31 user-data tables (audit_log/session_audit_log excluded).
+    guard
+        .execute(
+            "INSERT INTO ai_sessions (session_id, provider, transport) \
+             VALUES ('ai-sess-1', 'anthropic', 'http')",
+            [],
+        )
+        .expect("insert ai session");
+    guard
+        .execute(
+            "INSERT INTO ai_conversation_messages (session_id, role, content, seq) \
+             VALUES ('ai-sess-1', 'user', 'secret prompt content', 0)",
+            [],
+        )
+        .expect("insert ai message");
+    guard
+        .execute(
+            "INSERT INTO frame_annotations \
+             (annotation_id, frame_id, annotation_type, x, y, created_at) \
+             VALUES ('ann-1', 1, 'note', 0.5, 0.5, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert frame annotation");
+    guard
+        .execute(
+            "INSERT INTO habit_streaks (regime_label, date, target_minutes) \
+             VALUES ('Deep Focus', '2026-01-01', 120)",
+            [],
+        )
+        .expect("insert habit streak");
+    guard
+        .execute(
+            "INSERT INTO regime_manager_state (id, payload) VALUES (0, '{}')",
+            [],
+        )
+        .expect("insert regime manager state");
+    guard
+        .execute(
+            "INSERT INTO automation_presets (id, name, steps_json, created_at, updated_at) \
+             VALUES ('preset-1', 'p', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert automation preset");
+    guard
+        .execute(
+            "INSERT INTO feedback_retries (suggestion_id, feedback_type, next_retry_at) \
+             VALUES ('sug-1', 'accept', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert feedback retry");
 }
 
 /// Helper: count rows in a table.
 fn count_rows(storage: &SqliteStorage, table: &str) -> u64 {
     let conn = storage.connection_arc();
-    let guard = conn.lock().expect("lock");
+    let guard = conn.retained_write_lock();
     guard
         .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
             row.get::<_, i64>(0)
@@ -153,6 +223,27 @@ fn delete_all_data_clears_all_tables() {
         count_rows(&storage, "coaching_events") > 0,
         "coaching_events should be seeded"
     );
+    assert!(
+        count_rows(&storage, "memory_claims") > 0,
+        "memory_claims should be seeded"
+    );
+    assert!(
+        count_rows(&storage, "memory_edges") > 0,
+        "memory_edges should be seeded"
+    );
+    // #4478 user-data tables (sample — the rest are covered by tables_to_check).
+    assert!(
+        count_rows(&storage, "ai_conversation_messages") > 0,
+        "ai_conversation_messages should be seeded"
+    );
+    assert!(
+        count_rows(&storage, "frame_annotations") > 0,
+        "frame_annotations should be seeded"
+    );
+    assert!(
+        count_rows(&storage, "regime_manager_state") > 0,
+        "regime_manager_state should be seeded"
+    );
 
     // Execute GDPR deletion
     storage.delete_all_data().expect("delete_all_data");
@@ -182,6 +273,7 @@ fn delete_all_data_clears_all_tables() {
         "regimes",
         "trigger_params_snapshots",
         "search_fts",
+        "search_trigram",
         "vector_binary_codes",
         "vector_index_meta",
         "ivf_centroids",
@@ -193,6 +285,18 @@ fn delete_all_data_clears_all_tables() {
         "coaching_events",
         "regime_goals",
         "coaching_effectiveness",
+        // #4478: V18-V31 user-data tables (audit_log/session_audit_log excluded
+        // pending a SOC2 retention decision; app_meta/schema_version are metadata).
+        "ai_conversation_messages",
+        "ai_sessions",
+        "frame_annotations",
+        "habit_streaks",
+        "regime_manager_state",
+        "automation_presets",
+        "feedback_retries",
+        // V34: ADR-023 memory-graph
+        "memory_claims",
+        "memory_edges",
     ];
 
     for table in tables_to_check {
@@ -222,7 +326,7 @@ fn transaction_rollback_preserves_data_on_failure() {
     // transaction preserves all data.
     {
         let conn = storage.connection_arc();
-        let mut guard = conn.lock().expect("lock");
+        let mut guard = conn.retained_write_lock();
         let tx = guard.transaction().expect("begin tx");
 
         // Delete events (succeeds)
@@ -262,13 +366,18 @@ fn fts5_table_cleared_within_transaction() {
     // Insert multiple FTS5 rows
     {
         let conn = storage.connection_arc();
-        let guard = conn.lock().expect("lock");
+        let guard = conn.retained_write_lock();
         for i in 0..5 {
             guard
                 .execute(
                     &format!(
-                        "INSERT INTO search_fts (segment_id, content_type, searchable_text) \
-                         VALUES ('seg{i}', 'segment', 'searchable content for segment number {i}')"
+                        // V41 schema: searchable_text is UNINDEXED; MATCH queries run against
+                        // the `shadow` column. For ASCII text, cjk_bigram_shadow is a
+                        // pass-through, so shadow == searchable_text (V41 parity).
+                        "INSERT INTO search_fts (segment_id, content_type, searchable_text, shadow) \
+                         VALUES ('seg{i}', 'segment', \
+                                 'searchable content for segment number {i}', \
+                                 'searchable content for segment number {i}')"
                     ),
                     [],
                 )
@@ -285,7 +394,7 @@ fn fts5_table_cleared_within_transaction() {
     // Verify FTS5 search works before deletion
     {
         let conn = storage.connection_arc();
-        let guard = conn.lock().expect("lock");
+        let guard = conn.retained_write_lock();
         let fts_count: i64 = guard
             .query_row(
                 "SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH 'searchable'",
@@ -309,7 +418,7 @@ fn fts5_table_cleared_within_transaction() {
     // FTS5 MATCH query should return 0 results
     {
         let conn = storage.connection_arc();
-        let guard = conn.lock().expect("lock");
+        let guard = conn.retained_write_lock();
         let fts_count: i64 = guard
             .query_row(
                 "SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH 'searchable'",
@@ -322,4 +431,150 @@ fn fts5_table_cleared_within_transaction() {
             "FTS5 MATCH should return 0 after GDPR deletion"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test: FTS5 SHADOW index segments are purged (no residual tokenized PII)
+// ---------------------------------------------------------------------------
+#[test]
+fn fts5_shadow_index_purged_after_erasure() {
+    // #4478 G2: `DELETE FROM search_fts` clears the `*_content` backing table (the
+    // raw OCR/window-title text) but leaves tombstoned term postings — tokenized
+    // user content — in the `*_data` index segments. The post-commit rebuild in
+    // delete_all_data must compact `*_data` back to the empty-fresh baseline.
+    let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+    {
+        let conn = storage.connection_arc();
+        let guard = conn.retained_write_lock();
+        for i in 0..6 {
+            guard
+                .execute(
+                    &format!(
+                        "INSERT INTO search_fts (segment_id, content_type, searchable_text) \
+                         VALUES ('seg{i}', 'segment', 'zsecretpii sensitive token {i}')"
+                    ),
+                    [],
+                )
+                .expect("seed search_fts");
+            guard
+                .execute(
+                    &format!(
+                        "INSERT INTO search_trigram (segment_id, content) \
+                         VALUES ('seg{i}', 'zsecretpii sensitive token {i}')"
+                    ),
+                    [],
+                )
+                .expect("seed search_trigram");
+        }
+    }
+
+    // Empty-fresh baseline for the `*_data` backing tables.
+    let fresh = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+    let fresh_fts_data = count_rows(&fresh, "search_fts_data");
+    let fresh_trigram_data = count_rows(&fresh, "search_trigram_data");
+
+    // Sanity: indexing grew the `*_data` segments past the empty baseline.
+    assert!(
+        count_rows(&storage, "search_fts_data") > fresh_fts_data,
+        "indexing should grow search_fts_data above the empty baseline"
+    );
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    // Raw content gone + logical rows gone + no MATCH.
+    assert_eq!(count_rows(&storage, "search_fts"), 0);
+    assert_eq!(
+        count_rows(&storage, "search_fts_content"),
+        0,
+        "raw FTS text (*_content) must be purged"
+    );
+    {
+        let conn = storage.connection_arc();
+        let guard = conn.retained_write_lock();
+        let m: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH 'zsecretpii'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(m, 0, "no MATCH after erasure");
+    }
+
+    // `*_data` index segments compacted back to the empty-fresh baseline — no
+    // residual tokenized term postings (this is what the post-commit rebuild fixes;
+    // without it, the count stays inflated by the DELETE tombstones).
+    assert!(
+        count_rows(&storage, "search_fts_data") <= fresh_fts_data,
+        "search_fts_data must be purged to the empty baseline (no residual postings)"
+    );
+    assert!(
+        count_rows(&storage, "search_trigram_data") <= fresh_trigram_data,
+        "search_trigram_data must be purged to the empty baseline"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #4834 + #4928 interaction: audit_log SHA-256 hash chain survives erasure
+// ---------------------------------------------------------------------------
+//
+// `delete_all_data` 는 `audit_log` 를 ALL_TABLES 에서 의도적으로 제외하므로
+// (retained 보존 테이블) GDPR Art.17 전체 소거 후에도 감사 체인이 보존되고
+// 무결해야 한다. consent_revoked 감사가 erase 시점에 일어나며 체인은 erase
+// 중/후에도 연장된다.
+#[test]
+fn audit_chain_survives_gdpr_delete_all_data() {
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+    seed_sample_data(&storage);
+
+    // 소거 전 감사 항목 3건 기록(체인 형성).
+    for i in 0..3 {
+        storage.save_audit_entry(&AuditEntry {
+            entry_id: format!("erase-audit-{i}"),
+            timestamp: chrono::Utc::now(),
+            session_id: "s".to_string(),
+            command_id: "c".to_string(),
+            action_type: "a".to_string(),
+            status: AuditStatus::Completed,
+            details: Some("pre-erase".to_string()),
+            execution_time_ms: Some(1),
+        });
+    }
+    let before = storage.verify_audit_chain();
+    assert!(before.ok, "pre-erase chain must be valid: {before:?}");
+    assert_eq!(before.verified_count, 3);
+
+    // GDPR 전체 소거.
+    storage.delete_all_data().expect("delete_all_data");
+
+    // audit_log 는 보존되어 체인이 살아남고 무결해야 한다.
+    let after = storage.verify_audit_chain();
+    assert!(
+        after.ok,
+        "audit chain must survive GDPR erase intact (retained table): {after:?}"
+    );
+    assert_eq!(
+        after.verified_count, 3,
+        "audit_log 행은 delete_all_data 가 건드리지 않아 체인이 보존된다"
+    );
+
+    // 소거 이후 새 감사 항목을 append 해도 체인이 계속 연장되어야 한다.
+    storage.save_audit_entry(&AuditEntry {
+        entry_id: "post-erase".to_string(),
+        timestamp: chrono::Utc::now(),
+        session_id: "s".to_string(),
+        command_id: "c".to_string(),
+        action_type: "a".to_string(),
+        status: AuditStatus::Completed,
+        details: Some("post-erase append".to_string()),
+        execution_time_ms: Some(1),
+    });
+    let extended = storage.verify_audit_chain();
+    assert!(
+        extended.ok,
+        "post-erase append must keep chain valid: {extended:?}"
+    );
+    assert_eq!(extended.verified_count, 4, "erase 후에도 체인은 연장된다");
 }

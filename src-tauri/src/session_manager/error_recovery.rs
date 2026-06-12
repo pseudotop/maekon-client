@@ -100,7 +100,14 @@ impl SessionManagerImpl {
             "recovering session"
         );
 
-        // The adapter itself handles --continue/resume for session continuity
+        // NOTE: this self-heal only holds for per-turn re-spawn adapters (Claude
+        // re-runs the CLI with --continue/resume on each turn, so a transient
+        // process death is transparently re-established on the next message).
+        // The codex app-server adapter holds ONE long-lived process; it has NO
+        // per-call re-spawn, so a dead AppServerProcess Arc returned here is NOT
+        // self-healing. Re-attaching its thread via CodexAppServerSession::resume
+        // (thread/resume) is deferred to the SessionManager mock-harness (#4872),
+        // which can persist the spawn Command/SessionConfig needed to rebuild it.
         managed.state = SessionState::Active;
         Ok(managed.session.clone())
     }

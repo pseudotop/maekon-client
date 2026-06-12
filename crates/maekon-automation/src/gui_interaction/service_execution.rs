@@ -106,7 +106,7 @@ impl GuiInteractionService {
             .clamp(5, 300);
         let ticket = maekon_core::models::gui::GuiExecutionTicket {
             schema_version: maekon_core::models::gui::GUI_TICKET_SCHEMA_VERSION.to_string(),
-            ticket_id: Uuid::new_v4().to_string(),
+            ticket_id: maekon_core::generate_id("tkt"),
             session_id: session_id.to_string(),
             scene_id,
             element_id: candidate.element.element_id.clone(),

@@ -141,7 +141,7 @@ async function notifyCompletion(_phase: 'work' | 'break', title: string, body: s
   if (!('Notification' in window)) return
   const permissionState = await desktopNotificationState()
   if (permissionState === 'granted') {
-    new Notification(title, { body, icon: '/favicon.ico' })
+    new Notification(title, { body, icon: '/favicon.svg' })
   } else if (permissionState === 'unknown') {
     await requestDesktopNotificationAccess()
   }

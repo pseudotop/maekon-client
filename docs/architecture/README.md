@@ -4,6 +4,16 @@
 
 Architecture Decision Records capture single, named architectural decisions for the `client-rust` workspace. They are the authoritative record of *what* was decided and *why*. Implementation detail belongs in companion implementation records, not in the ADR itself.
 
+## Registry Scope
+
+This public ADR registry covers the Maekon desktop client only: Tauri, IPC,
+Rust runtime crates, privacy/policy gates, and local-first integration surfaces.
+ADR numbers are local to this registry and should not be interpreted as global
+ONESHIM architecture numbers.
+
+New ADRs go in this registry only when the decision changes the public Maekon
+client workspace.
+
 ## Writing a new ADR
 
 1. Read [`ADR-TEMPLATE.md`](./ADR-TEMPLATE.md) (or the Korean companion `ADR-TEMPLATE.ko.md`).
@@ -36,8 +46,15 @@ Architecture Decision Records capture single, named architectural decisions for 
 | [017](./ADR-017-feedback-signal-sink.md) | FeedbackSignalSink | Accepted | core port, suggestion, analysis |
 | [018](./ADR-018-regime-manager-persistence.md) | RegimeManager Persistence | Accepted | core port, storage, analysis |
 | [019](./ADR-019-error-code-infrastructure.md) | Error Code Infrastructure + AWS Bedrock Intentional Non-Support | Accepted | All crates — wire-format error codes |
+| [020](./ADR-020-macos-private-api-policy.md) | macOS Private API Policy (`macOSPrivateApi: true`) | Accepted | `src-tauri/tauri.conf.json`, `src-tauri/src/magic_overlay.rs` |
+| [021](./ADR-021-config-consent-core-placement.md) | Config and Consent Core Placement | Accepted | `ConfigManager`, `ConsentManager`, runtime wiring |
+| [022](./ADR-022-client-id-generation-ulid.md) | Client ID Generation — prefix+ULID Convention | Accepted | All crates — entity ID generation |
+| [023](./ADR-023-local-symbolic-memory-graph.md) | Local Symbolic Memory-Graph Layer for Standalone Client | Accepted | `maekon-storage` (v34), `maekon-core` ports/models (substrate landed) |
+| [024](./ADR-024-conversation-content-guard-port.md) | Conversation Content Guard Port | Accepted | `provider_adapters/guarded_conversation.rs`, `session_manager/factory.rs`, `ConversationSession` port |
+| [025](./ADR-025-codex-chatgpt-subscription-tos-gate.md) | OpenAI Codex / ChatGPT Subscription ToS Gate (App-Server Path) | Accepted | `provider-surface-catalog.json`, `session_manager/factory.rs`, `provider_adapters/llm_resolver.rs` |
+| [026](./ADR-026-async-storage-convergence-consent-port.md) | Async Storage Convergence + Object-Safe ConsentManagerPort | Accepted | `maekon-core` storage ports + `consent.rs`, `maekon-storage/src/sqlite`, `maekon-web`, `focus_analyzer` |
 
-**Next available ID**: `ADR-020`.
+**Next available ID**: `ADR-027`.
 
 ## Conventions Summary
 
@@ -67,6 +84,10 @@ Avoid `Approved` — it was historically used in a few ADRs but has no consisten
 
 - **`docs/architecture/`** (this directory) — the *what and why* of an architectural decision.
 - Companion implementation records — the *how* of a specific change. These may live outside the public-minimal export when they are planning artifacts rather than durable public documentation.
+- Source comments and public docs should point to public ADRs, guides,
+  contracts, security docs, or crate docs. If an internal plan/research record
+  becomes the only explanation for shipped behavior, promote the durable part
+  before making it a public reference.
 
 When a new ADR requires implementation, the typical flow is:
 

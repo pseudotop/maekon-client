@@ -1,6 +1,6 @@
 {
   "name": "maekon-dashboard",
-  "version": "0.0.1-rc.5",
+  "version": "0.0.1-rc.6",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5273 --strictPort",
@@ -11,6 +11,7 @@
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
     "test": "vitest run",
+    "test:pnpm-config": "node scripts/test-pnpm-config.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "qa:pwcli:help": "pnpm exec playwright-cli --help",
@@ -46,7 +47,7 @@
     "react-dom": "^18.3.1",
     "react-i18next": "^15.1.0",
     "react-markdown": "^9.0.0",
-    "react-router-dom": "^6.27.0",
+    "react-router-dom": "^6.30.4",
     "react-syntax-highlighter": "^16.1.1",
     "recharts": "^2.14.1",
     "remark-gfm": "^4.0.0",
@@ -85,10 +86,5 @@
     "vite": "^6.4.2",
     "vitest": "^4.1.5",
     "webdriverio": "^9.27.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "serialize-javascript": "7.0.5"
-    }
   }
 }

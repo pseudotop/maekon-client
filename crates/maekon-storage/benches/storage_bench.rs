@@ -99,6 +99,8 @@ fn bench_frame_metadata_save(c: &mut Criterion) {
                                 window_title: format!("Window {}", i),
                                 resolution: (1920, 1080),
                                 importance: 0.5 + (i % 5) as f32 * 0.1,
+                                monitor_id: None,
+                                app_bundle_id: None,
                             };
                             let path = format!("frames/2026-01-31/{:03}.webp", i);
                             (metadata, path)
@@ -225,6 +227,8 @@ fn bench_tags(c: &mut Criterion) {
                     window_title: "Window".to_string(),
                     resolution: (1920, 1080),
                     importance: 0.8,
+                    monitor_id: None,
+                    app_bundle_id: None,
                 };
                 let frame_id = storage
                     .save_frame_metadata(&metadata, Some("frames/test.webp"), None)

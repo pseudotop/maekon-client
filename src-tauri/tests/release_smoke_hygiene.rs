@@ -1,8 +1,30 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+fn asset_contains_maekon_brand_color(path: &Path) -> bool {
+    let bytes = fs::read(path).unwrap_or_else(|err| {
+        panic!(
+            "installer branding asset should be readable: {} ({err})",
+            path.display()
+        )
+    });
+    let brand_rgb = [
+        [0x15, 0x04, 0x3a],
+        [0x55, 0x34, 0xd7],
+        [0x61, 0xf4, 0xd6],
+        [0x0d, 0xe0, 0xa2],
+    ];
+
+    brand_rgb.iter().any(|rgb| {
+        let bgr = [rgb[2], rgb[1], rgb[0]];
+        bytes
+            .windows(3)
+            .any(|window| window == rgb.as_slice() || window == bgr.as_slice())
+    })
 }
 
 #[test]
@@ -68,6 +90,41 @@ fn release_workflow_runs_signed_installer_smoke_before_publishing() {
             "./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature"
         ),
         "release workflow should run installer smoke in fail-closed signature mode before publishing"
+    );
+}
+
+#[test]
+fn release_notes_quick_install_commands_are_pinned_to_release_tag() {
+    let root = repo_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow is readable");
+
+    assert!(
+        !workflow
+            .contains("raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh")
+            && !workflow.contains(
+                "raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1"
+            ),
+        "release note quick-install commands must not fetch mutable main-branch installer scripts"
+    );
+    assert!(
+        workflow.contains(
+            "raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.sh"
+        ) && workflow.contains(
+            "raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.ps1",
+        ),
+        "release note quick-install commands should fetch installer scripts from the release tag"
+    );
+    assert!(
+        workflow
+            .matches("MAEKON_VERSION=${VERSION} bash /tmp/maekon-install.sh --require-signature")
+            .count()
+            >= 2
+            && workflow
+                .matches("-Version ${VERSION} -RequireSignature")
+                .count()
+                >= 2,
+        "both prerelease and stable quick-install commands should pin the artifact version"
     );
 }
 
@@ -156,6 +213,137 @@ fn release_archives_and_macos_app_bundle_include_sandbox_worker_sidecar() {
         workflow.contains(r#"cp binaries/maekon-sandbox-worker "$APP_BUNDLE/Contents/MacOS/maekon-sandbox-worker""#),
         "the hand-built macOS app bundle should include the sandbox worker sidecar"
     );
+}
+
+#[test]
+fn windows_msi_manifest_installs_sandbox_worker_sidecar() {
+    let root = repo_root();
+    let wix_manifest =
+        fs::read_to_string(root.join("src-tauri/wix/main.wxs")).expect("WiX manifest is readable");
+
+    assert!(
+        wix_manifest.contains("Name='maekon-sandbox-worker.exe'")
+            && wix_manifest
+                .contains(r#"Source='$(var.CargoTargetBinDir)\maekon-sandbox-worker.exe'"#),
+        "Windows MSI manifest should install the sandbox worker beside maekon.exe"
+    );
+}
+
+#[test]
+fn windows_installers_use_maekon_branding_assets() {
+    let root = repo_root();
+    let tauri_config = fs::read_to_string(root.join("src-tauri/tauri.conf.json"))
+        .expect("Tauri config is readable");
+    let wix_manifest =
+        fs::read_to_string(root.join("src-tauri/wix/main.wxs")).expect("WiX manifest is readable");
+
+    for expected in [
+        r#""headerImage": "nsis/header.bmp""#,
+        r#""sidebarImage": "nsis/sidebar.bmp""#,
+        r#""installerIcon": "icons/icon.ico""#,
+    ] {
+        assert!(
+            tauri_config.contains(expected),
+            "NSIS installer should keep Maekon branding asset reference: {expected}"
+        );
+    }
+
+    for expected in [
+        "WixUIBannerBmp",
+        "WixUIDialogBmp",
+        "ARPPRODUCTICON",
+        "icons\\icon.ico",
+    ] {
+        assert!(
+            wix_manifest.contains(expected),
+            "MSI installer should keep Maekon branding manifest reference: {expected}"
+        );
+    }
+
+    for asset in [
+        "src-tauri/nsis/header.bmp",
+        "src-tauri/nsis/sidebar.bmp",
+        "src-tauri/wix/banner.bmp",
+        "src-tauri/wix/dialog.bmp",
+    ] {
+        let asset_path = root.join(asset);
+        assert!(
+            asset_path.exists(),
+            "Windows installer branding asset should exist: {asset}"
+        );
+        assert!(
+            asset_contains_maekon_brand_color(&asset_path),
+            "Windows installer branding asset should contain Maekon brand colors: {asset}"
+        );
+    }
+}
+
+#[test]
+fn release_workflow_publishes_windows_nsis_setup_exe() {
+    let root = repo_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow is readable");
+
+    for expected in [
+        "Install Tauri CLI",
+        "Build NSIS setup installer",
+        "tauri build",
+        "--bundles nsis",
+        "tauri-nsis-ci-config.json",
+        "Upload NSIS setup artifact",
+        "maekon-windows-x64-setup-exe",
+        "*.exe",
+    ] {
+        assert!(
+            workflow.contains(expected),
+            "release workflow should publish the Windows NSIS setup exe: {expected}"
+        );
+    }
+}
+
+#[test]
+fn release_reliability_smoke_runs_updater_regression_on_all_release_platforms() {
+    let root = repo_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow is readable");
+
+    assert!(
+        !workflow.contains("run_updater_tests: false"),
+        "release reliability smoke should not silently skip updater regressions on macOS or Windows"
+    );
+    assert!(
+        workflow.matches("run_updater_tests: true").count() >= 3,
+        "linux, macOS, and Windows release reliability smoke entries should run updater tests"
+    );
+}
+
+#[test]
+fn release_smoke_builds_real_sandbox_worker_sidecar_for_tauri_external_bin() {
+    let root = repo_root();
+    let release_workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow is readable");
+    let release_smoke_workflow =
+        fs::read_to_string(root.join(".github/workflows/release-smoke.yml"))
+            .expect("release-smoke workflow is readable");
+
+    for (name, workflow) in [
+        ("release.yml", release_workflow.as_str()),
+        ("release-smoke.yml", release_smoke_workflow.as_str()),
+    ] {
+        assert!(
+            !workflow.contains("Create sandbox worker stub for Tauri externalBin"),
+            "{name} must build the real sandbox worker sidecar instead of touching a stub"
+        );
+        assert!(
+            workflow.contains("-p maekon-sandbox-worker"),
+            "{name} must build maekon-sandbox-worker before Tauri externalBin validation"
+        );
+        assert!(
+            workflow.contains("maekon-sandbox-worker-${TRIPLE}")
+                || workflow.contains("maekon-sandbox-worker-${TARGET}"),
+            "{name} must copy the built sidecar into Tauri's expected externalBin name"
+        );
+    }
 }
 
 #[test]

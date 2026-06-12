@@ -5,20 +5,22 @@
 //! given HLC watermark. Respects SyncConfig data minimization flags.
 
 use async_trait::async_trait;
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use rusqlite::{Connection, OptionalExtension};
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::error::StorageError;
+use crate::sqlite::hlc_clock::ERASURE_HLC_META_KEY;
+use crate::sqlite::GuardedConnection;
 use maekon_core::config::SyncConfig;
 use maekon_core::error::CoreError;
-use maekon_core::models::sync::{ChangeSet, ChangeSetKind};
+use maekon_core::models::sync::{ChangeSet, ChangeSetKind, Tombstone};
 use maekon_core::ports::change_extractor::ChangeExtractor;
 use maekon_core::sync::Hlc;
 
 /// SQLite-backed ChangeExtractor adapter.
 pub struct SqliteSyncExtractor {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<GuardedConnection>,
     device_id: String,
     device_name: String,
     sync_config: SyncConfig,
@@ -26,7 +28,7 @@ pub struct SqliteSyncExtractor {
 
 impl SqliteSyncExtractor {
     pub fn new(
-        conn: Arc<Mutex<Connection>>,
+        conn: Arc<GuardedConnection>,
         device_id: String,
         device_name: String,
         sync_config: SyncConfig,
@@ -41,7 +43,27 @@ impl SqliteSyncExtractor {
 
     /// Backfill origin_device_id for pre-sync rows (empty string -> local device_id).
     /// Called once on first extraction. Idempotent.
+    ///
+    /// #4928 round-3 (FIX A): 이 함수는 ALL_TABLES 6개 테이블에 `UPDATE` 를 발행하므로
+    /// **반드시 `write_lock()` funnel 을 통과**해야 한다(read 경로 우회 금지). erasure 가
+    /// 진행 중이면 funnel 이 스킵하므로 (`Skipped` → row 미변경) 곧 wipe 될 DB 를
+    /// backfill 하지 않는다 — 의미상 올바르며 read-funnel 로 mutation 을 밀반입하지 않는다.
     fn backfill_origin_device_id(conn: &Connection, device_id: &str) -> Result<u64, StorageError> {
+        // ⚠️ GDPR SYNC GUARD (#4478 G3) — authoritative cross-device sync table set.
+        // Adding a table here replicates its rows to LAN peers; a contributor MUST:
+        //   1. add `hlc_wall_ms`/`hlc_counter`/`origin_device_id` columns (a schema
+        //      migration — the HLC extractor below requires them);
+        //   2. add it to `handle_deletion_event` in `sync_merger.rs` so a device-wide
+        //      erasure (revoke_consent) propagates the delete to peers;
+        //   3. note that erasure cross-device convergence is moving to a retained
+        //      `sync_tombstones` outbox (schema landed V38/#5178; producer+apply in
+        //      #5179/#5180, epic #5174) — until that wires up, a local `delete_all_data`
+        //      can still be RE-HYDRATED from a peer that was offline at erasure time;
+        //   4. add a PII opt-in flag (cf. `include_content_activities` /
+        //      `include_embedding_text`) if the table carries user content.
+        // Do NOT add `memory_claims`/`memory_edges` (ADR-023) — they are intentionally
+        // device-local; syncing LLM-enriched claims would need all of the above plus a
+        // PII gate the extractor does not have.
         let tables = [
             "activity_segments",
             "regimes",
@@ -106,8 +128,51 @@ impl SqliteSyncExtractor {
         Ok(results)
     }
 
+    /// Emit `sync_tombstones` (V38, #5174 S2) rows with HLC > `since` — the retained
+    /// erasure outbox flowing through the normal sync stream so offline peers converge.
+    /// Same HLC>since predicate as the live tables; rows are content-free skeletons.
+    fn query_tombstones_since(
+        conn: &Connection,
+        since: &Hlc,
+    ) -> Result<Vec<Tombstone>, StorageError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at \
+                 FROM sync_tombstones \
+                 WHERE (hlc_wall_ms > ?1) \
+                    OR (hlc_wall_ms = ?1 AND hlc_counter > ?2) \
+                    OR (hlc_wall_ms = ?1 AND hlc_counter = ?2 AND origin_device_id > ?3) \
+                 ORDER BY hlc_wall_ms, hlc_counter",
+            )
+            .map_err(|e| StorageError::Internal(format!("prepare tombstone query: {e}")))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![since.wall_ms, since.counter, &since.device_id],
+                |row| {
+                    Ok(Tombstone {
+                        table_name: row.get(0)?,
+                        row_id: row.get(1)?,
+                        origin_device_id: row.get(2)?,
+                        hlc_wall_ms: row.get(3)?,
+                        hlc_counter: row.get(4)?,
+                        deleted_at: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| StorageError::Internal(format!("query sync_tombstones: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(
+                r.map_err(|e| StorageError::Internal(format!("row read sync_tombstones: {e}")))?,
+            );
+        }
+        Ok(out)
+    }
+
     /// Find the maximum HLC across all syncable tables.
     fn compute_max_hlc(conn: &Connection, device_id: &str) -> Result<Hlc, StorageError> {
+        // Mirror of the sync table set — see the GDPR SYNC GUARD on
+        // `backfill_origin_device_id` before adding any table (#4478 G3).
         let tables = [
             "activity_segments",
             "regimes",
@@ -139,6 +204,33 @@ impl SqliteSyncExtractor {
                 max = candidate;
             }
         }
+
+        // sync_tombstones (V38, #5174 S2): the retained erasure outbox must also raise the
+        // watermark so a tombstone-only changeset (post-wipe, the 6 live tables empty)
+        // advances the peer's watermark PAST the tombstones (B2). NOT added to the `tables`
+        // array above — that array drives `backfill_origin_device_id`, which must never
+        // touch the retained outbox.
+        let (tw, tc): (u64, u32) = conn
+            .query_row(
+                "SELECT COALESCE(MAX(hlc_wall_ms), 0), COALESCE(MAX(hlc_counter), 0) \
+                 FROM sync_tombstones WHERE hlc_wall_ms = (\
+                   SELECT COALESCE(MAX(hlc_wall_ms), 0) FROM sync_tombstones\
+                 )",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!("max HLC query on sync_tombstones: {e}"))
+            })?;
+        let candidate = Hlc {
+            wall_ms: tw,
+            counter: tc,
+            device_id: device_id.to_string(),
+        };
+        if candidate > max {
+            max = candidate;
+        }
+
         Ok(max)
     }
 }
@@ -151,41 +243,54 @@ impl ChangeExtractor for SqliteSyncExtractor {
         let device_id = self.device_id.clone();
         let device_name = self.device_name.clone();
         let include_content = self.sync_config.include_content_activities;
+        let include_llm_summary = self.sync_config.include_llm_summary;
         let include_embed_text = self.sync_config.include_embedding_text;
 
         tokio::task::spawn_blocking(move || {
-            let guard = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
+            // #4928 round-3 (FIX A): backfill 은 ALL_TABLES UPDATE 이므로 write_lock funnel
+            // 을 통과시킨다(read 경로로 mutation 밀반입 금지). erasure 진행 중이면 funnel 이
+            // 스킵하여 곧 wipe 될 행을 backfill 하지 않는다 — 의미상 무해.
+            conn.write_lock()
+                .run(0u64, |c| Self::backfill_origin_device_id(c, &device_id))?;
 
-            // Backfill on first extraction
-            Self::backfill_origin_device_id(&guard, &device_id)?;
+            // 이후 추출은 순수 읽기 경로 — read_lock(deletion_flag 무관)으로 충분하다.
+            let read = conn.read_lock();
+            let guard = read.conn();
 
             // --- Build per-table JSON extraction queries ---
             // Each query uses json_object() to produce a self-contained JSON row.
 
-            // activity_segments (append-only)
-            let seg_cols = if include_content {
-                "json_object('id',id,'start_time',start_time,'end_time',end_time,\
-                 'duration_secs',duration_secs,'regime_id',regime_id,\
-                 'dominant_category',dominant_category,'app_breakdown',app_breakdown,\
-                 'llm_summary',llm_summary,'content_activities_json',content_activities_json,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)"
+            // activity_segments (append-only). Content fields are INDEPENDENTLY gated:
+            // `llm_summary` (an LLM narrative of screen activity) behind include_llm_summary,
+            // `content_activities_json` behind include_content_activities — both default off
+            // so a data-minimized sync carries neither (#5174 privacy parity). trigger_reason
+            // (NOT NULL) is always emitted so the peer's merge_segment INSERT satisfies the
+            // constraint (#5202).
+            let llm_summary_col = if include_llm_summary {
+                "'llm_summary',llm_summary,"
             } else {
+                ""
+            };
+            let content_activities_col = if include_content {
+                "'content_activities_json',content_activities_json,"
+            } else {
+                ""
+            };
+            let seg_cols = format!(
                 "json_object('id',id,'start_time',start_time,'end_time',end_time,\
-                 'duration_secs',duration_secs,'regime_id',regime_id,\
+                 'duration_secs',duration_secs,'trigger_reason',trigger_reason,\
+                 'regime_id',regime_id,\
                  'dominant_category',dominant_category,'app_breakdown',app_breakdown,\
-                 'llm_summary',llm_summary,\
+                 {llm_summary_col}{content_activities_col}\
                  'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
                  'origin_device_id',origin_device_id)"
-            };
+            );
             let segments =
-                Self::query_table_changes(&guard, "activity_segments", seg_cols, &since)?;
+                Self::query_table_changes(guard, "activity_segments", &seg_cols, &since)?;
 
             // regimes (LWW, includes tombstone columns)
             let regimes = Self::query_table_changes(
-                &guard,
+                guard,
                 "regimes",
                 "json_object('id',id,'label',label,'detected_at',detected_at,\
                  'last_seen_at',last_seen_at,'occurrence_count',occurrence_count,\
@@ -199,7 +304,7 @@ impl ChangeExtractor for SqliteSyncExtractor {
 
             // regime_overrides (append-only)
             let overrides = Self::query_table_changes(
-                &guard,
+                guard,
                 "regime_overrides",
                 "json_object('override_id',override_id,'segment_id',segment_id,\
                  'original_regime_id',original_regime_id,'action_type',action_type,\
@@ -225,17 +330,28 @@ impl ChangeExtractor for SqliteSyncExtractor {
                  'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
                  'origin_device_id',origin_device_id)"
             };
-            let embeddings =
-                Self::query_table_changes(&guard, "embedding_vectors", embed_cols, &since)?;
+            let mut embeddings =
+                Self::query_table_changes(guard, "embedding_vectors", embed_cols, &since)?;
+            // #5210: a SEGMENT_SUMMARY embedding's text AND vector both represent the
+            // llm_summary screen-activity narrative. When include_llm_summary is off, exclude
+            // those rows entirely (not just their original_text) so include_embedding_text is
+            // not a backdoor that re-exposes the gated narrative. They regenerate locally.
+            if !include_llm_summary {
+                embeddings.retain(|e| {
+                    e.get("content_type").and_then(|v| v.as_str()) != Some("SEGMENT_SUMMARY")
+                });
+            }
 
             // suggestions (LWW, monotonic status merge)
             let suggestions = Self::query_table_changes(
-                &guard,
+                guard,
                 "suggestions",
                 "json_object('suggestion_id',suggestion_id,'suggestion_type',suggestion_type,\
                  'source',source,'content',content,'priority',priority,\
                  'confidence_score',confidence_score,'relevance_score',relevance_score,\
                  'is_actionable',is_actionable,'reasoning',reasoning,\
+                 'context_app',context_app,'context_window',context_window,\
+                 'context_target_id',context_target_id,\
                  'shown_at',shown_at,'dismissed_at',dismissed_at,'acted_at',acted_at,\
                  'created_at',created_at,'expires_at',expires_at,\
                  'is_deleted',is_deleted,'deleted_at',deleted_at,\
@@ -246,7 +362,7 @@ impl ChangeExtractor for SqliteSyncExtractor {
 
             // trigger_params_snapshots (append-only)
             let param_snapshots = Self::query_table_changes(
-                &guard,
+                guard,
                 "trigger_params_snapshots",
                 "json_object('id',id,'created_at',created_at,'preset',preset,\
                  'params_json',params_json,\
@@ -255,8 +371,19 @@ impl ChangeExtractor for SqliteSyncExtractor {
                 &since,
             )?;
 
-            // Compute new watermark from max HLC across all extracted rows
-            let watermark = Self::compute_max_hlc(&guard, &device_id)?;
+            // sync_tombstones (V38, #5174 S2): the retained erasure outbox rides the normal
+            // changeset stream so an offline peer converges on its next pull. Pure read.
+            let tombstones = Self::query_tombstones_since(guard, &since)?;
+
+            // Compute the new watermark as the DB-GLOBAL max HLC for this device
+            // (compute_max_hlc scans each whole syncable table with no `> since`
+            // filter — it is NOT the max of just this batch). This DB-global
+            // monotonicity is load-bearing: the watermark is the egress-ledger
+            // dedup_key for a CrossDeviceSync push (#5147), so two distinct pushes
+            // always get distinct keys and only an exact same-batch re-push
+            // collapses. Do NOT "fix" this toward batch-max — it would let two
+            // different egresses share a record_id and silently drop an audit row.
+            let watermark = Self::compute_max_hlc(guard, &device_id)?;
 
             Ok::<ChangeSet, StorageError>(ChangeSet {
                 kind: ChangeSetKind::Data,
@@ -270,6 +397,7 @@ impl ChangeExtractor for SqliteSyncExtractor {
                 suggestions,
                 param_snapshots,
                 preferences: Vec::new(), // deferred to Phase 3b
+                tombstones,
             })
         })
         .await
@@ -285,10 +413,34 @@ impl ChangeExtractor for SqliteSyncExtractor {
         let device_id = self.device_id.clone();
 
         tokio::task::spawn_blocking(move || {
-            let guard = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
-            Self::compute_max_hlc(&guard, &device_id)
+            // 읽기 — read_lock(deletion_flag 무관).
+            let read = conn.read_lock();
+            Self::compute_max_hlc(read.conn(), &device_id)
+        })
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("spawn_blocking join error: {e}"),
+        })?
+        .map_err(CoreError::from)
+    }
+
+    async fn persisted_erasure_hlc(&self) -> Result<Option<Hlc>, CoreError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<Hlc>, StorageError> {
+            // 읽기 — read_lock(deletion_flag 무관). erasure 진행 중(flag set)에도 retained
+            // anchor 를 읽어 DeletionEvent watermark 를 stamp 해야 하므로 read_lock 이 옳다.
+            let read = conn.read_lock();
+            let value: Option<String> = read
+                .conn()
+                .query_row(
+                    "SELECT value FROM app_meta WHERE key = ?1",
+                    rusqlite::params![ERASURE_HLC_META_KEY],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| StorageError::Internal(format!("read erasure anchor: {e}")))?;
+            Ok(value.and_then(|v| serde_json::from_str::<Hlc>(&v).ok()))
         })
         .await
         .map_err(|e| CoreError::Internal {
@@ -344,7 +496,7 @@ mod tests {
         // Insert a segment with empty origin_device_id (simulating pre-V14 data)
         {
             let conn = storage.connection_arc();
-            let guard = conn.lock().unwrap();
+            let guard = conn.test_lock();
             guard
                 .execute(
                     "INSERT INTO activity_segments \
@@ -368,7 +520,7 @@ mod tests {
 
         // Verify backfill happened
         let conn = storage.connection_arc();
-        let guard = conn.lock().unwrap();
+        let guard = conn.test_lock();
         let origin: String = guard
             .query_row(
                 "SELECT origin_device_id FROM activity_segments WHERE id = 'seg-1'",
@@ -379,12 +531,66 @@ mod tests {
         assert_eq!(origin, device_id);
     }
 
+    /// #4928 round-3 (FIX A): backfill 은 write_lock funnel 을 통과하므로 deletion_flag
+    /// 가 set 이면 self-skip 한다 — 곧 wipe 될 행의 origin_device_id 가 변경되지 않는다.
+    #[tokio::test]
+    async fn backfill_self_skips_when_deletion_flag_set() {
+        use std::sync::atomic::Ordering;
+
+        let (storage, device_id) = setup();
+        // pre-V14 행(빈 origin_device_id) 삽입.
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments \
+                 (id, start_time, end_time, duration_secs, trigger_reason, \
+                  dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES ('seg-skip', '2026-01-01T00:00:00', '2026-01-01T01:00:00', \
+                         3600, 'timer', 'Development', 100, 1, '')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // deletion_flag set → backfill write_lock 가 스킵되어야 한다.
+        storage
+            .connection_arc()
+            .deletion_flag()
+            .store(true, Ordering::Release);
+
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id.clone(),
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        // get_changes_since 자체는 성공해야 한다(읽기는 스킵 안 함).
+        let _ = extractor.get_changes_since(&Hlc::default()).await.unwrap();
+
+        // origin_device_id 가 여전히 빈 문자열이어야 한다(backfill 스킵 증명).
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        let origin: String = guard
+            .query_row(
+                "SELECT origin_device_id FROM activity_segments WHERE id = 'seg-skip'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            origin, "",
+            "deletion_flag set 시 backfill UPDATE 는 스킵되어 row 가 변경되지 않아야 한다"
+        );
+    }
+
     #[tokio::test]
     async fn watermark_filters_old_rows() {
         let (storage, device_id) = setup();
         {
             let conn = storage.connection_arc();
-            let guard = conn.lock().unwrap();
+            let guard = conn.test_lock();
             // Row with HLC (100, 1)
             guard
                 .execute(
@@ -425,5 +631,226 @@ mod tests {
         let cs = extractor.get_changes_since(&since).await.unwrap();
         assert_eq!(cs.segments.len(), 1);
         assert_eq!(cs.segments[0]["id"], "seg-new");
+    }
+
+    #[tokio::test]
+    async fn erase_captures_tombstones_and_extractor_emits_them() {
+        // S2 end-to-end: erase folds a content-free tombstone skeleton into the retained
+        // outbox + persists the erasure_hlc anchor; the extractor then emits the skeleton
+        // into the normal changeset stream so an offline peer converges.
+        let (storage, device_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-e', '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', 100, 1, ?1)",
+                    rusqlite::params![device_id],
+                )
+                .unwrap();
+        }
+
+        storage.delete_all_data().unwrap();
+
+        {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            let segs: i64 = g
+                .query_row("SELECT COUNT(*) FROM activity_segments", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(segs, 0, "live row hard-deleted");
+            let (tw, origin): (i64, String) = g
+                .query_row(
+                    "SELECT hlc_wall_ms, origin_device_id FROM sync_tombstones \
+                     WHERE table_name='activity_segments' AND row_id='seg-e'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(tw > 0, "tombstone stamped with the erasure HLC");
+            assert_eq!(origin, device_id, "origin-scoped to the local device");
+            let anchor: i64 = g
+                .query_row(
+                    "SELECT COUNT(*) FROM app_meta WHERE key='sync.erasure_hlc'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(anchor, 1, "erasure_hlc anchor persisted (retained)");
+        }
+
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id.clone(),
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        let cs = extractor.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(cs.tombstones.len(), 1, "tombstone emitted");
+        assert_eq!(cs.tombstones[0].table_name, "activity_segments");
+        assert_eq!(cs.tombstones[0].row_id, "seg-e");
+        assert!(
+            !cs.is_empty(),
+            "a tombstone-only changeset must be non-empty (push gate)"
+        );
+
+        // #5181: the SyncEngine reads this anchor to bound the device-wide DeletionEvent.
+        let anchor = extractor.persisted_erasure_hlc().await.unwrap();
+        let anchor = anchor.expect("erasure anchor present after erase");
+        assert!(anchor.wall_ms > 0, "anchor carries the erasure HLC");
+        assert_eq!(
+            anchor.device_id, device_id,
+            "anchor stamped by the local device"
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_erasure_hlc_none_before_any_erase() {
+        // #5181: with no erase yet, the anchor is absent → the engine falls back to now()
+        // (effectively unbounded), never panicking.
+        let (storage, device_id) = setup();
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id,
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        assert!(extractor.persisted_erasure_hlc().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn extractor_emits_trigger_reason() {
+        // #5202: the emitted segment row must carry trigger_reason (NOT NULL on the peer).
+        let (storage, device_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-tr', '2026-01-01', '2026-01-01', 3600, 'manual', 'Dev', 100, 1, ?1)",
+                    rusqlite::params![device_id],
+                )
+                .unwrap();
+        }
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id,
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        let cs = extractor.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(cs.segments.len(), 1);
+        assert_eq!(cs.segments[0]["trigger_reason"], "manual");
+    }
+
+    #[tokio::test]
+    async fn llm_summary_gated_by_include_flag() {
+        // #5174 privacy: llm_summary (an LLM narrative of screen activity) must only sync
+        // when include_llm_summary is opted in — the default-off path omits it entirely.
+        let (storage, device_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, llm_summary, hlc_wall_ms, hlc_counter, \
+                     origin_device_id) VALUES ('seg-s', '2026-01-01', '2026-01-01', 3600, \
+                     'timer', 'Dev', 'reviewed the Q2 headcount spreadsheet', 100, 1, ?1)",
+                    rusqlite::params![device_id],
+                )
+                .unwrap();
+        }
+
+        // Default config (include_llm_summary = false): the narrative is NOT emitted.
+        let default_ex = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id.clone(),
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        let cs = default_ex.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(cs.segments.len(), 1);
+        assert!(
+            cs.segments[0].get("llm_summary").is_none(),
+            "llm_summary must be absent when not opted in"
+        );
+
+        // Opted in: the narrative IS emitted.
+        let cfg = SyncConfig {
+            include_llm_summary: true,
+            ..SyncConfig::default()
+        };
+        let opted_ex =
+            SqliteSyncExtractor::new(storage.connection_arc(), device_id, "Test".to_string(), cfg);
+        let cs2 = opted_ex.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(
+            cs2.segments[0]["llm_summary"],
+            "reviewed the Q2 headcount spreadsheet"
+        );
+    }
+
+    #[tokio::test]
+    async fn segment_summary_embedding_excluded_when_llm_summary_off() {
+        // #5210: include_embedding_text must not be a backdoor for the llm_summary narrative.
+        // A SEGMENT_SUMMARY embedding (text+vector = the narrative) is excluded when
+        // include_llm_summary is off; a CONTENT_ACTIVITY embedding still syncs.
+        let (storage, device_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            for (seg, ct, w) in [
+                ("seg-sum", "SEGMENT_SUMMARY", 100),
+                ("seg-act", "CONTENT_ACTIVITY", 101),
+            ] {
+                guard
+                    .execute(
+                        "INSERT INTO embedding_vectors (segment_id, content_type, original_text, \
+                         vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+                         VALUES (?1, ?2, 'narrative', x'0102', 'm1', '2026-01-01', ?3, 0, ?4)",
+                        rusqlite::params![seg, ct, w, device_id],
+                    )
+                    .unwrap();
+            }
+        }
+
+        // include_embedding_text ON, include_llm_summary OFF → SEGMENT_SUMMARY excluded.
+        let cfg_off = SyncConfig {
+            include_embedding_text: true,
+            include_llm_summary: false,
+            ..SyncConfig::default()
+        };
+        let ex_off = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id.clone(),
+            "T".to_string(),
+            cfg_off,
+        );
+        let cs = ex_off.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(
+            cs.embeddings.len(),
+            1,
+            "only the non-summary embedding syncs"
+        );
+        assert_eq!(cs.embeddings[0]["content_type"], "CONTENT_ACTIVITY");
+
+        // include_llm_summary ON → both sync.
+        let cfg_on = SyncConfig {
+            include_embedding_text: true,
+            include_llm_summary: true,
+            ..SyncConfig::default()
+        };
+        let ex_on =
+            SqliteSyncExtractor::new(storage.connection_arc(), device_id, "T".to_string(), cfg_on);
+        let cs2 = ex_on.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(
+            cs2.embeddings.len(),
+            2,
+            "both embeddings sync when llm_summary is on"
+        );
     }
 }

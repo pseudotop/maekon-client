@@ -1,4 +1,5 @@
 use maekon_api_contracts::events::EventResponse;
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::event::Event;
 
 pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
@@ -27,7 +28,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::Context(value) => EventResponse {
-            event_id: format!("ctx_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("ctx"),
             event_type: "Context".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: Some(value.app_name.clone()),
@@ -39,7 +40,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::Input(value) => EventResponse {
-            event_id: format!("input_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("input"),
             event_type: "Input".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: Some(value.app_name.clone()),
@@ -63,7 +64,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::Process(value) => EventResponse {
-            event_id: format!("proc_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("proc"),
             event_type: "Process".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: None,
@@ -81,7 +82,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::Window(value) => EventResponse {
-            event_id: format!("win_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("win"),
             event_type: "Window".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: Some(value.window.app_name.clone()),
@@ -98,7 +99,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::Clipboard(value) => EventResponse {
-            event_id: format!("clip_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("clip"),
             event_type: "Clipboard".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: None,
@@ -110,7 +111,7 @@ pub(crate) fn assemble_event_response(event: Event) -> EventResponse {
             }),
         },
         Event::FileAccess(value) => EventResponse {
-            event_id: format!("fa_{}", uuid::Uuid::new_v4()),
+            event_id: generate_id("fa"),
             event_type: "FileAccess".to_string(),
             timestamp: value.timestamp.to_rfc3339(),
             app_name: None,

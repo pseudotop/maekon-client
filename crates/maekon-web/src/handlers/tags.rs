@@ -12,7 +12,7 @@ use crate::services::web_contexts::StorageWebContext;
 pub async fn list_tags(
     State(context): State<StorageWebContext>,
 ) -> Result<Json<Vec<TagResponse>>, ApiError> {
-    Ok(Json(TagsQueryService::new(context).list_tags()?))
+    Ok(Json(TagsQueryService::new(context).list_tags().await?))
 }
 
 /// POST /api/tags
@@ -20,7 +20,9 @@ pub async fn create_tag(
     State(context): State<StorageWebContext>,
     Json(req): Json<CreateTagRequest>,
 ) -> Result<Json<TagResponse>, ApiError> {
-    Ok(Json(TagsCommandService::new(context).create_tag(&req)?))
+    Ok(Json(
+        TagsCommandService::new(context).create_tag(&req).await?,
+    ))
 }
 
 /// GET /api/tags/:id
@@ -28,7 +30,7 @@ pub async fn get_tag(
     State(context): State<StorageWebContext>,
     Path(tag_id): Path<i64>,
 ) -> Result<Json<TagResponse>, ApiError> {
-    Ok(Json(TagsQueryService::new(context).get_tag(tag_id)?))
+    Ok(Json(TagsQueryService::new(context).get_tag(tag_id).await?))
 }
 
 /// PUT /api/tags/:id
@@ -38,7 +40,9 @@ pub async fn update_tag(
     Json(req): Json<UpdateTagRequest>,
 ) -> Result<Json<TagResponse>, ApiError> {
     Ok(Json(
-        TagsCommandService::new(context).update_tag(tag_id, &req)?,
+        TagsCommandService::new(context)
+            .update_tag(tag_id, &req)
+            .await?,
     ))
 }
 
@@ -47,7 +51,9 @@ pub async fn delete_tag(
     State(context): State<StorageWebContext>,
     Path(tag_id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(TagsCommandService::new(context).delete_tag(tag_id)?))
+    Ok(Json(
+        TagsCommandService::new(context).delete_tag(tag_id).await?,
+    ))
 }
 
 /// GET /api/frames/:frame_id/tags
@@ -56,7 +62,9 @@ pub async fn get_frame_tags(
     Path(frame_id): Path<i64>,
 ) -> Result<Json<Vec<TagResponse>>, ApiError> {
     Ok(Json(
-        TagsQueryService::new(context).get_frame_tags(frame_id)?,
+        TagsQueryService::new(context)
+            .get_frame_tags(frame_id)
+            .await?,
     ))
 }
 
@@ -66,7 +74,9 @@ pub async fn add_tag_to_frame(
     Path((frame_id, tag_id)): Path<(i64, i64)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     Ok(Json(
-        TagsCommandService::new(context).add_tag_to_frame(frame_id, tag_id)?,
+        TagsCommandService::new(context)
+            .add_tag_to_frame(frame_id, tag_id)
+            .await?,
     ))
 }
 
@@ -76,7 +86,9 @@ pub async fn remove_tag_from_frame(
     Path((frame_id, tag_id)): Path<(i64, i64)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     Ok(Json(
-        TagsCommandService::new(context).remove_tag_from_frame(frame_id, tag_id)?,
+        TagsCommandService::new(context)
+            .remove_tag_from_frame(frame_id, tag_id)
+            .await?,
     ))
 }
 
@@ -87,7 +99,10 @@ pub async fn batch_add_tag(
 ) -> Result<Json<BatchTagResponse>, ApiError> {
     let mut tagged_count = 0u32;
     for frame_id in &req.frame_ids {
-        match TagsCommandService::new(context.clone()).add_tag_to_frame(*frame_id, req.tag_id) {
+        match TagsCommandService::new(context.clone())
+            .add_tag_to_frame(*frame_id, req.tag_id)
+            .await
+        {
             Ok(_) => tagged_count += 1,
             Err(e) => {
                 tracing::warn!("batch tag: frame {} failed: {}", frame_id, e);

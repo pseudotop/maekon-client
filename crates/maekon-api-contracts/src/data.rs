@@ -2,6 +2,7 @@ use maekon_core::types::{TimeWindow, TimeWindowError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeleteRangeRequest {
     pub from: String,
     pub to: String,
@@ -25,6 +26,7 @@ impl DeleteRangeRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeleteResult {
     pub success: bool,
     pub events_deleted: u64,

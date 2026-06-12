@@ -5,9 +5,9 @@
 //! helper that both binary entry-points need.
 
 use chrono::{DateTime, Utc};
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
 use maekon_core::models::work_session::AppCategory;
-use uuid::Uuid;
 
 // ── Configuration ─────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ pub fn make_rule_suggestion(
     priority: Priority,
 ) -> Suggestion {
     Suggestion {
-        suggestion_id: Uuid::new_v4().to_string(),
+        suggestion_id: generate_id("sug"),
         suggestion_type,
         content,
         priority,
@@ -98,6 +98,7 @@ pub fn make_rule_suggestion(
         expires_at: None,
         source: SuggestionSource::RuleBased,
         reasoning: None,
+        context_scope: None,
     }
 }
 

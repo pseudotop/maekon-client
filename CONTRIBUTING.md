@@ -125,7 +125,8 @@ cargo clippy --workspace --all-features
 - Use inline comments (`//`) to explain intent in complex logic.
 - For documentation governance, follow [docs/DOCUMENTATION_POLICY.md](./docs/DOCUMENTATION_POLICY.md).
 - Korean companion policy: [docs/DOCUMENTATION_POLICY.ko.md](./docs/DOCUMENTATION_POLICY.ko.md)
-- For mutable quality metrics, update [docs/STATUS.md](./docs/STATUS.md) only.
+- For mutable quality metrics, use the current GitHub Actions run page as the
+  live source of truth.
 
 ```rust
 /// Screen capture trigger — decides whether to capture based on event importance.

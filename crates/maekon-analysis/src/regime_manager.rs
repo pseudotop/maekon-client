@@ -192,7 +192,7 @@ impl RegimeManager {
         for (ai, &i) in active.iter().enumerate() {
             for &j in &active[ai + 1..] {
                 let d = euclidean_distance(&self.regimes[i].centroid, &self.regimes[j].centroid);
-                if best.as_ref().map_or(true, |b| d < b.2) {
+                if best.as_ref().is_none_or(|b| d < b.2) {
                     best = Some((i, j, d));
                 }
             }

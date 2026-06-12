@@ -22,123 +22,135 @@ impl CalibrationWriter for SqliteStorage {
             return Ok(());
         }
 
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("SQLite lock poisoned: {e}"),
-        })?;
-
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("Failed to begin transaction: {e}"),
-            })?;
-
-        // Ensure params snapshot exists (idempotent upsert).
-        // Each entry carries `params_json` — we deduplicate by `params_version_id`
-        // and only insert when a snapshot for that version doesn't already exist.
-        {
-            let mut insert_snapshot = tx
-                .prepare_cached(
-                    "INSERT OR IGNORE INTO trigger_params_snapshots (id, preset, params_json)
-                     VALUES (?1, ?2, ?3)",
-                )
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, calibration_log/trigger_params_snapshots ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            let tx = conn
+                .unchecked_transaction()
                 .map_err(|e| CoreError::Storage {
                     code: maekon_core::error_codes::StorageCode::Failed,
-                    message: format!("prepare snapshot stmt: {e}"),
+                    message: format!("Failed to begin transaction: {e}"),
                 })?;
 
-            let mut seen_versions = std::collections::HashSet::new();
-            for entry in entries {
-                if seen_versions.insert(&entry.params_version_id) {
-                    let json = if entry.params_json.is_empty() {
-                        "{}"
-                    } else {
-                        &entry.params_json
-                    };
-                    insert_snapshot
-                        .execute(params![entry.params_version_id, "default", json])
-                        .map_err(|e| CoreError::Storage {
+            // Ensure params snapshot exists (idempotent upsert).
+            // Each entry carries `params_json` — we deduplicate by `params_version_id`
+            // and only insert when a snapshot for that version doesn't already exist.
+            {
+                let mut insert_snapshot = tx
+                    .prepare_cached(
+                        "INSERT OR IGNORE INTO trigger_params_snapshots \
+                     (id, preset, params_json, hlc_wall_ms, hlc_counter, origin_device_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .map_err(|e| CoreError::Storage {
+                        code: maekon_core::error_codes::StorageCode::Failed,
+                        message: format!("prepare snapshot stmt: {e}"),
+                    })?;
+
+                let mut seen_versions = std::collections::HashSet::new();
+                for entry in entries {
+                    if seen_versions.insert(&entry.params_version_id) {
+                        let json = if entry.params_json.is_empty() {
+                            "{}"
+                        } else {
+                            &entry.params_json
+                        };
+                        // F0/#5186: stamp on the TRANSACTION handle (`&tx`) so the clock
+                        // advance commits/rolls back atomically with this insert (B1). An
+                        // IGNORE'd (already-present) snapshot wastes one tick — harmless.
+                        let h = self.clock.next(&tx).map_err(|e| CoreError::Storage {
                             code: maekon_core::error_codes::StorageCode::Failed,
-                            message: format!("insert params snapshot: {e}"),
+                            message: format!("hlc stamp: {e}"),
                         })?;
+                        insert_snapshot
+                            .execute(params![
+                                entry.params_version_id,
+                                "default",
+                                json,
+                                h.wall_ms,
+                                h.counter,
+                                h.device_id
+                            ])
+                            .map_err(|e| CoreError::Storage {
+                                code: maekon_core::error_codes::StorageCode::Failed,
+                                message: format!("insert params snapshot: {e}"),
+                            })?;
+                    }
                 }
             }
-        }
 
-        // Insert calibration entries
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT INTO calibration_log
+            // Insert calibration entries
+            {
+                let mut stmt = tx
+                    .prepare_cached(
+                        "INSERT INTO calibration_log
                      (timestamp, event_type, app_name, app_category,
                       event_importance, density_signal, importance_signal,
                       context_signal, buffer_signal, trigger_score,
                       trigger_action, active_regime_id, params_version_id, is_noise)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                )
-                .map_err(|e| CoreError::Storage {
-                    code: maekon_core::error_codes::StorageCode::Failed,
-                    message: format!("prepare calibration stmt: {e}"),
-                })?;
+                    )
+                    .map_err(|e| CoreError::Storage {
+                        code: maekon_core::error_codes::StorageCode::Failed,
+                        message: format!("prepare calibration stmt: {e}"),
+                    })?;
 
-            for entry in entries {
-                let action_str = entry.trigger_action.map(|a| enum_to_sql_str(&a));
-                let category_str = enum_to_sql_str(&entry.app_category);
+                for entry in entries {
+                    let action_str = entry.trigger_action.map(|a| enum_to_sql_str(&a));
+                    let category_str = enum_to_sql_str(&entry.app_category);
 
-                stmt.execute(params![
-                    entry.timestamp.to_rfc3339(),
-                    entry.event_type,
-                    entry.app_name,
-                    category_str,
-                    entry.event_importance,
-                    entry.density_signal,
-                    entry.importance_signal,
-                    entry.context_signal,
-                    entry.buffer_signal,
-                    entry.trigger_score,
-                    action_str,
-                    entry.active_regime_id,
-                    entry.params_version_id,
-                    entry.is_noise as i32,
-                ])
-                .map_err(|e| CoreError::Storage {
-                    code: maekon_core::error_codes::StorageCode::Failed,
-                    message: format!("insert calibration entry: {e}"),
-                })?;
+                    stmt.execute(params![
+                        entry.timestamp.to_rfc3339(),
+                        entry.event_type,
+                        entry.app_name,
+                        category_str,
+                        entry.event_importance,
+                        entry.density_signal,
+                        entry.importance_signal,
+                        entry.context_signal,
+                        entry.buffer_signal,
+                        entry.trigger_score,
+                        action_str,
+                        entry.active_regime_id,
+                        entry.params_version_id,
+                        entry.is_noise as i32,
+                    ])
+                    .map_err(|e| CoreError::Storage {
+                        code: maekon_core::error_codes::StorageCode::Failed,
+                        message: format!("insert calibration entry: {e}"),
+                    })?;
+                }
             }
-        }
 
-        tx.commit().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("commit calibration batch: {e}"),
-        })?;
+            tx.commit().map_err(|e| CoreError::Storage {
+                code: maekon_core::error_codes::StorageCode::Failed,
+                message: format!("commit calibration batch: {e}"),
+            })?;
 
-        debug!("logged {} calibration entries", entries.len());
-        Ok(())
+            debug!("logged {} calibration entries", entries.len());
+            Ok(())
+        })
     }
 
     fn flag_noise_range(&self, window: &TimeWindow) -> Result<u64, CoreError> {
         let from = window.start;
         let to = window.end;
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("SQLite lock poisoned: {e}"),
-        })?;
 
-        let updated = conn
-            .execute(
-                "UPDATE calibration_log SET is_noise = 1
-                 WHERE timestamp >= ?1 AND timestamp <= ?2",
-                params![from.to_rfc3339(), to.to_rfc3339()],
-            )
-            .map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("flag noise range: {e}"),
-            })?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → 0건 갱신 반환).
+        self.conn.write_lock().run(0u64, |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE calibration_log SET is_noise = 1
+                     WHERE timestamp >= ?1 AND timestamp <= ?2",
+                    params![from.to_rfc3339(), to.to_rfc3339()],
+                )
+                .map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("flag noise range: {e}"),
+                })?;
 
-        debug!("flagged {} calibration entries as noise", updated);
-        Ok(updated as u64)
+            debug!("flagged {} calibration entries as noise", updated);
+            Ok(updated as u64)
+        })
     }
 }
 
@@ -381,7 +393,7 @@ mod tests {
             context_signal: 0.2,
             buffer_signal: 0.1,
             trigger_score: 0.6,
-            trigger_action: if idx % 2 == 0 {
+            trigger_action: if idx.is_multiple_of(2) {
                 Some(TriggerAction::Start)
             } else {
                 None
@@ -406,6 +418,53 @@ mod tests {
         let loaded = storage.get_entries(&window, false).await.unwrap();
         assert_eq!(loaded.len(), 5);
         assert_eq!(loaded[0].app_name, "App0");
+    }
+
+    #[tokio::test]
+    async fn log_batch_stamps_trigger_params_snapshots() {
+        // F0/#5186: the trigger_params_snapshots INSERT runs inside a transaction; it must
+        // be HLC-stamped on the `&tx` handle (B1) so it propagates via sync. Two distinct
+        // param versions → two distinctly-stamped snapshots.
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        {
+            let c = storage.conn.test_lock();
+            c.execute(
+                "INSERT INTO device_identity (id, device_id, device_name) VALUES (1, 'dev-c', 'C')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut e0 = make_entry(0);
+        e0.params_version_id = "pv-a".to_string();
+        let mut e1 = make_entry(1);
+        e1.params_version_id = "pv-b".to_string();
+        storage.log_batch(&[e0, e1]).unwrap();
+
+        let rows: Vec<(i64, i64, String)> = {
+            let c = storage.conn.test_lock();
+            let mut stmt = c
+                .prepare(
+                    "SELECT hlc_wall_ms, hlc_counter, origin_device_id \
+                     FROM trigger_params_snapshots ORDER BY id",
+                )
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            v
+        };
+        assert_eq!(rows.len(), 2, "two distinct param versions → two snapshots");
+        for (wall, _counter, dev) in &rows {
+            assert!(*wall > 0, "snapshot must be HLC-stamped");
+            assert_eq!(dev, "dev-c", "snapshot origin_device_id must be stamped");
+        }
+        assert_ne!(
+            (rows[0].0, rows[0].1),
+            (rows[1].0, rows[1].1),
+            "per-row stamping → distinct HLC per snapshot"
+        );
     }
 
     #[tokio::test]

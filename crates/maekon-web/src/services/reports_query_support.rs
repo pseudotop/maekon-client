@@ -73,7 +73,7 @@ pub(crate) struct DailyStatsInput<'a> {
     pub(crate) idle_periods: &'a [maekon_core::models::activity::IdlePeriod],
 }
 
-pub(crate) fn build_daily_stats(input: DailyStatsInput<'_>) -> Vec<DailyStat> {
+pub(crate) async fn build_daily_stats(input: DailyStatsInput<'_>) -> Vec<DailyStat> {
     let mut daily_map = HashMap::new();
     let mut current = input.from;
     while current < input.to {
@@ -90,7 +90,7 @@ pub(crate) fn build_daily_stats(input: DailyStatsInput<'_>) -> Vec<DailyStat> {
     }
 
     if let Ok(window) = maekon_core::types::TimeWindow::new(input.from, input.to) {
-        if let Ok(daily_active) = input.ctx.storage.get_daily_active_secs(&window) {
+        if let Ok(daily_active) = input.ctx.storage.get_daily_active_secs(&window).await {
             for (day, secs) in &daily_active {
                 if let Some(stat) = daily_map.get_mut(day) {
                     stat.active_secs = *secs as u64;
@@ -148,7 +148,7 @@ pub(crate) fn build_daily_stats(input: DailyStatsInput<'_>) -> Vec<DailyStat> {
     daily_stats
 }
 
-pub(crate) fn build_app_stats(
+pub(crate) async fn build_app_stats(
     ctx: &StorageWebContext,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
@@ -174,6 +174,7 @@ pub(crate) fn build_app_stats(
     let session_app_durations: HashMap<String, i64> = ctx
         .storage
         .get_app_durations_by_date(&from_rfc, &to_rfc)
+        .await
         .map(|durations| durations.into_iter().collect())
         .unwrap_or_default();
 

@@ -19,6 +19,7 @@ pub async fn list_digests(
     let digests = context
         .storage
         .list_weekly_digests(limit)
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(digests))
@@ -33,6 +34,7 @@ pub async fn current_digest(
     let digest = context
         .storage
         .get_current_week_digest()
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(digest))

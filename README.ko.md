@@ -19,7 +19,7 @@ Maekon은 ONESHIM 없이도 독립 사용 가능한 Apache-2.0 local-first 데�
 
 ## Source Build 빠른 시작
 
-공개 저장소는 준비되었고, `v0.0.1-rc.5`가 현재 공개 prerelease로 게시되어
+공개 저장소는 준비되었고, `v0.0.1-rc.6`가 현재 공개 prerelease로 게시되어
 있습니다. GitHub의 `latest` release endpoint는 prerelease를 포함하지 않으므로
 릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을 사용하세요. 개발 및
 debug 빌드는 로컬 source checkout에서 실행합니다.
@@ -115,7 +115,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 
 ## 요구 사항
 
-- Rust 1.75 이상
+- Rust 1.88.0 이상
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## 개발자 빠른 시작 (소스에서 빌드)
@@ -206,7 +206,7 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 현재 공개 바이너리 릴리즈는 prerelease `v0.0.1-rc.5`입니다. GitHub의
+> 현재 공개 바이너리 릴리즈는 prerelease `v0.0.1-rc.6`입니다. GitHub의
 > `latest` stable URL은 첫 stable 릴리즈 전까지 사용할 수 없으므로, 아래
 > 명령은 prerelease 버전을 명시적으로 고정합니다.
 
@@ -214,7 +214,7 @@ macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.5 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh
 ```
 
 Windows (PowerShell):
@@ -223,14 +223,14 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.5
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6
 ```
 
 ### 릴리즈 아티팩트
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-현재 게시된 prerelease는 `v0.0.1-rc.5`입니다. 아래 표는 설치 프로그램,
+현재 게시된 prerelease는 `v0.0.1-rc.6`입니다. 아래 표는 설치 프로그램,
 업데이터, checksum, signature 흐름에서 사용하는 release asset 이름을
 문서화한 것입니다.
 

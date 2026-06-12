@@ -183,6 +183,10 @@ impl FileAccessWatcher {
     /// Only scans top-level files in each monitored folder (non-recursive) to
     /// keep the scan lightweight. Deep scanning can be enabled by walking
     /// subdirectories if needed.
+    ///
+    /// # Concurrency
+    /// Sync method. Async callers MUST wrap in `tokio::task::spawn_blocking` —
+    /// internally calls `std::fs::read_dir` in a loop. See F-RR-C24-01 for prior incident.
     // P2 PR-A: `file_mtimes` mutex is held across the directory scan + state
     // update as the atomicity guard for "see-current-state + detect-changes +
     // record-new-state". Tightening would race with concurrent poll calls.

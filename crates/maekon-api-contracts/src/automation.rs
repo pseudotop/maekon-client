@@ -2,6 +2,7 @@ use maekon_core::models::intent::{AutomationIntent, ElementBounds, IntentResult,
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AutomationStatusDto {
     pub enabled: bool,
     pub sandbox_enabled: bool,
@@ -16,9 +17,38 @@ pub struct AutomationStatusDto {
     pub llm_fallback_reason: Option<String>,
     pub external_data_policy: String,
     pub pending_audit_entries: usize,
+    /// Per-call LLM health for the automation intent path.
+    ///
+    /// - `None`         — no call yet / health handle not wired (non-LocalModel arms).
+    /// - `Some(true)`   — last intent LLM call succeeded.
+    /// - `Some(false)`  — last intent LLM call failed; rule-matcher fallback active.
+    ///
+    /// This field is read at request time from a live `Arc<LlmCallHealth>` shared
+    /// with the provider instance, so it always reflects the current per-call state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub llm_healthy: Option<bool>,
+    /// Intent-hint confirmation policy (SCREAMING_SNAKE_CASE serde token).
+    ///
+    /// Mirrors `ConfirmationRequirement` variants: `"AUTO"` / `"CONFIRM"` / `"BLOCK"`.
+    /// Frontend uses this to conditionally branch the "Runs immediately…" caption:
+    /// - `"AUTO"`    → "Runs immediately under strict sandbox" (existing key)
+    /// - `"CONFIRM"` → "Requires your confirmation before running"
+    /// - `"BLOCK"`   → "Automation execution is disabled by policy"
+    ///
+    /// Defaults to `"AUTO"` when no config manager is wired (no-config fast path).
+    #[serde(default = "default_auto_policy")]
+    pub confirmation_policy: String,
+}
+
+// serde(default = ...) 호출자가 있으나 rustc 분석에서는 비사용으로 오진됨.
+#[allow(dead_code)]
+fn default_auto_policy() -> String {
+    "AUTO".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuditEntryDto {
     pub schema_version: String,
     pub entry_id: String,
@@ -34,6 +64,7 @@ pub struct AuditEntryDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     pub limit: usize,
@@ -45,6 +76,7 @@ fn default_audit_limit() -> usize {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PolicyEventQuery {
     #[serde(default = "default_policy_event_limit")]
     pub limit: usize,
@@ -55,6 +87,7 @@ fn default_policy_event_limit() -> usize {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AutomationStatsDto {
     pub total_executions: usize,
     pub successful: usize,
@@ -69,6 +102,7 @@ pub struct AutomationStatsDto {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PoliciesDto {
     pub automation_enabled: bool,
     pub sandbox_profile: String,
@@ -84,11 +118,18 @@ pub struct PoliciesDto {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PresetListDto {
+    // Cross-crate `maekon-core` type — contained as an opaque object array.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object_array")
+    )]
     pub presets: Vec<WorkflowPreset>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PresetRunResult {
     pub preset_id: String,
     pub success: bool,
@@ -102,6 +143,7 @@ pub struct PresetRunResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecuteIntentHintRequest {
     pub command_id: Option<String>,
     pub session_id: String,
@@ -109,14 +151,25 @@ pub struct ExecuteIntentHintRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecuteIntentHintResponse {
     pub command_id: String,
     pub session_id: String,
+    // Cross-crate `maekon-core` types — contained as opaque objects.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub planned_intent: AutomationIntent,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub result: IntentResult,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SceneActionType {
     Click,
@@ -124,6 +177,7 @@ pub enum SceneActionType {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecuteSceneActionRequest {
     pub command_id: Option<String>,
     pub session_id: String,
@@ -131,6 +185,11 @@ pub struct ExecuteSceneActionRequest {
     pub scene_id: Option<String>,
     pub element_id: String,
     pub action_type: SceneActionType,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub bbox_abs: ElementBounds,
     pub role: Option<String>,
     pub label: Option<String>,
@@ -139,6 +198,7 @@ pub struct ExecuteSceneActionRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecuteSceneActionResponse {
     pub schema_version: String,
     pub command_id: String,
@@ -149,11 +209,21 @@ pub struct ExecuteSceneActionResponse {
     pub applied_privacy_policy: String,
     pub scene_action_override_active: bool,
     pub scene_action_override_expires_at: Option<String>,
+    // Cross-crate `maekon-core` types — contained as opaque objects.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object_array")
+    )]
     pub executed_intents: Vec<AutomationIntent>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub result: IntentResult,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AutomationContractsDto {
     pub audit_schema_version: String,
     pub scene_schema_version: String,
@@ -161,6 +231,7 @@ pub struct AutomationContractsDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneQuery {
     pub app_name: Option<String>,
     pub screen_id: Option<String>,
@@ -168,6 +239,7 @@ pub struct SceneQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneCalibrationQuery {
     pub app_name: Option<String>,
     pub screen_id: Option<String>,
@@ -175,6 +247,7 @@ pub struct SceneCalibrationQuery {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneCalibrationDto {
     pub schema_version: String,
     pub scene_id: String,
@@ -186,4 +259,97 @@ pub struct SceneCalibrationDto {
     pub min_required_avg_confidence: f64,
     pub passed: bool,
     pub reasons: Vec<String>,
+}
+
+// ── #5734 serde tests for AutomationStatusDto.llm_healthy ────────────────────
+#[cfg(test)]
+mod tests {
+    use super::AutomationStatusDto;
+
+    fn base_dto(llm_healthy: Option<bool>) -> AutomationStatusDto {
+        AutomationStatusDto {
+            enabled: true,
+            sandbox_enabled: false,
+            sandbox_profile: "none".to_string(),
+            ocr_provider: "local".to_string(),
+            llm_provider: "local".to_string(),
+            ocr_source: "local".to_string(),
+            llm_source: "local".to_string(),
+            ocr_fallback_reason: None,
+            llm_fallback_reason: None,
+            external_data_policy: "off".to_string(),
+            pending_audit_entries: 0,
+            llm_healthy,
+            confirmation_policy: "AUTO".to_string(),
+        }
+    }
+
+    /// `llm_healthy: None` must be omitted from JSON (`skip_serializing_if`).
+    #[test]
+    fn automation_status_llm_healthy_none_is_omitted() {
+        let dto = base_dto(None);
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(
+            !json.contains("llm_healthy"),
+            "llm_healthy=None should be absent from JSON, got: {json}"
+        );
+    }
+
+    /// `llm_healthy: Some(true)` must serialize as `"llm_healthy":true`.
+    #[test]
+    fn automation_status_llm_healthy_some_true_serializes() {
+        let dto = base_dto(Some(true));
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(
+            json.contains("\"llm_healthy\":true"),
+            "expected llm_healthy:true in JSON, got: {json}"
+        );
+    }
+
+    /// `llm_healthy: Some(false)` must serialize as `"llm_healthy":false`.
+    #[test]
+    fn automation_status_llm_healthy_some_false_serializes() {
+        let dto = base_dto(Some(false));
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(
+            json.contains("\"llm_healthy\":false"),
+            "expected llm_healthy:false in JSON, got: {json}"
+        );
+    }
+
+    /// `confirmation_policy` serializes as a SCREAMING_SNAKE_CASE string.
+    #[test]
+    fn automation_status_confirmation_policy_serializes_screaming_case() {
+        let dto = base_dto(None);
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(
+            json.contains("\"confirmation_policy\":\"AUTO\""),
+            "expected confirmation_policy:AUTO in JSON, got: {json}"
+        );
+    }
+
+    /// All three ConfirmationRequirement variants serialize and pass through the
+    /// `default_auto_policy` function correctly.
+    #[test]
+    fn automation_status_confirmation_policy_variants_round_trip() {
+        for policy in ["AUTO", "CONFIRM", "BLOCK"] {
+            let mut dto = base_dto(None);
+            dto.confirmation_policy = policy.to_string();
+            let json = serde_json::to_string(&dto).expect("serialize");
+            assert!(
+                json.contains(&format!("\"confirmation_policy\":\"{policy}\"")),
+                "expected confirmation_policy:{policy} in JSON, got: {json}"
+            );
+        }
+    }
+
+    /// `default_auto_policy()` returns `"AUTO"` — the fail-safe for no-config paths.
+    #[test]
+    fn automation_status_confirmation_policy_default_is_auto() {
+        assert_eq!(
+            super::default_auto_policy(),
+            "AUTO",
+            "default_auto_policy must return AUTO"
+        );
+    }
 }

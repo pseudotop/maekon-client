@@ -17,7 +17,7 @@
 use maekon_core::models::event::{ContextEvent, Event};
 use maekon_core::{
     error::CoreError,
-    models::{event::EventBatch, frame::ContextUpload, suggestion::SuggestionFeedback},
+    models::{event::EventBatch, suggestion::SuggestionFeedback},
     ports::api_client::{ApiClient, SessionCreateResponse},
 };
 use maekon_network::batch_uploader::BatchUploader;
@@ -45,10 +45,6 @@ impl ApiClient for AlwaysOkApiClient {
     }
 
     async fn upload_batch(&self, _batch: &EventBatch) -> Result<(), CoreError> {
-        Ok(())
-    }
-
-    async fn upload_context(&self, _upload: &ContextUpload) -> Result<(), CoreError> {
         Ok(())
     }
 

@@ -6,7 +6,7 @@
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use chrono::{DateTime, Utc};
 use maekon_core::models::frame::FrameMetadata;
 use maekon_storage::sqlite::SqliteStorage;
@@ -21,6 +21,9 @@ use maekon_web::WebServer;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const LOCAL_AUTH_HEADER: &str = "x-local-auth";
+const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
+
 /// Build a fresh in-memory `SqliteStorage` plus the loopback Axum router.
 /// The storage handle is returned so callers can seed test data before issuing
 /// HTTP requests.
@@ -29,10 +32,20 @@ fn loopback_app_with_storage() -> (axum::Router, Arc<SqliteStorage>) {
     // Keep one concrete handle for seeding (concrete inherent methods like
     // save_frame_metadata are not on the WebStorage trait).
     let storage_for_seed = Arc::clone(&storage);
-    let (event_tx, _) = broadcast::channel(16);
+    let (event_tx, _) = broadcast::channel(128);
     // `storage` (Arc<SqliteStorage>) coerces to Arc<dyn WebStorage> on call.
-    let state = AppState::with_core(storage, event_tx);
+    let mut state = AppState::with_core(storage, event_tx);
+    state.auth.local_auth_token = Some(Arc::from(TEST_LOCAL_AUTH_TOKEN));
     let router = WebServer::build_router(state)
+        .layer(axum::middleware::map_request(
+            |mut req: axum::extract::Request| async move {
+                req.headers_mut().insert(
+                    LOCAL_AUTH_HEADER,
+                    HeaderValue::from_static(TEST_LOCAL_AUTH_TOKEN),
+                );
+                req
+            },
+        ))
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
     (router, storage_for_seed)
 }
@@ -51,6 +64,8 @@ fn seed_frame(storage: &SqliteStorage, ts: &str) {
         window_title: "Test Window".to_string(),
         resolution: (1920, 1080),
         importance: 0.5,
+        monitor_id: None,
+        app_bundle_id: None,
     };
     storage
         .save_frame_metadata(&meta, None, None)

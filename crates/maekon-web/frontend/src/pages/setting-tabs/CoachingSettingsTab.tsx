@@ -101,6 +101,23 @@ export default function CoachingSettingsTab() {
 
   return (
     <div className="space-y-6">
+      {/* #5707: Master enable/disable toggle for the coaching system.
+          Uses handleCoachingChange('enabled', v) — identical call site as
+          profile toggles. Persists via the settings save flow in SettingsLayout. */}
+      <Card variant="default" padding="md">
+        <CardContent>
+          <ToggleRow
+            label={t('coaching.enableMasterToggle', 'Enable coaching')}
+            description={t(
+              'coaching.enableMasterToggleDesc',
+              'Master switch — enables or disables all coaching nudges and notifications.',
+            )}
+            checked={coaching?.enabled ?? false}
+            onChange={(checked) => handleCoachingChange('enabled', checked)}
+          />
+        </CardContent>
+      </Card>
+
       {/* Section: Regime Goals (existing) */}
       <Card variant="default" padding="md">
         <CardHeader>

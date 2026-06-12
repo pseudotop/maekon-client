@@ -41,6 +41,52 @@ fn token_header_trims_whitespace() {
     assert_eq!(token, "tok123");
 }
 
+// ── read_stream_capability_token tests ─────────────────────────────
+
+#[test]
+fn stream_token_accepts_cookie() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::COOKIE,
+        format!("{GUI_SESSION_STREAM_COOKIE}=abc123")
+            .parse()
+            .unwrap(),
+    );
+
+    let token = read_stream_capability_token(&headers).unwrap();
+    assert_eq!(token, "abc123");
+}
+
+#[test]
+fn stream_token_accepts_percent_encoded_cookie() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::COOKIE,
+        format!("{GUI_SESSION_STREAM_COOKIE}=abc%3A123")
+            .parse()
+            .unwrap(),
+    );
+
+    let token = read_stream_capability_token(&headers).unwrap();
+    assert_eq!(token, "abc:123");
+}
+
+#[test]
+fn stream_token_falls_back_to_header() {
+    let mut headers = HeaderMap::new();
+    headers.insert(GUI_SESSION_HEADER, "stream-header-token".parse().unwrap());
+
+    let token = read_stream_capability_token(&headers).unwrap();
+    assert_eq!(token, "stream-header-token");
+}
+
+#[test]
+fn stream_token_rejects_missing_cookie_and_header() {
+    let headers = HeaderMap::new();
+    let err = read_stream_capability_token(&headers).unwrap_err();
+    assert!(matches!(err, ApiError::Unauthorized(_)));
+}
+
 // ── map_gui_error tests ─────────────────────────────────────────────
 
 #[test]

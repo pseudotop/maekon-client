@@ -109,6 +109,7 @@ impl FewShotSelector {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use maekon_core::id_generation::generate_id;
 
     fn make_entry(
         feedback_type: &str,
@@ -117,7 +118,7 @@ mod tests {
         content: &str,
     ) -> SuggestionHistoryEntry {
         SuggestionHistoryEntry {
-            suggestion_id: uuid::Uuid::new_v4().to_string(),
+            suggestion_id: generate_id("sug"),
             suggestion_type: "ProductivityTip".to_string(),
             content: content.to_string(),
             confidence: 0.8,

@@ -75,4 +75,33 @@ pub trait CoachingPort: Send + Sync {
     fn regime_minutes_today_blocking(&self) -> u32 {
         0
     }
+
+    /// Return the label of the currently active regime (async).
+    ///
+    /// async fn 핸들러에서 `_blocking` 변형 대신 이 메서드를 사용한다.
+    /// `block_in_place` + `block_on` 체인을 제거해 워커 스레드 점유를 방지한다.
+    /// (F-RR-C37-01 수정)
+    async fn current_regime_label(&self) -> Option<String> {
+        self.current_regime_label_blocking()
+    }
+
+    /// Return total minutes spent in regimes today (async).
+    ///
+    /// async fn 핸들러에서 `_blocking` 변형 대신 이 메서드를 사용한다.
+    /// (F-RR-C37-01 수정)
+    async fn regime_minutes_today(&self) -> u32 {
+        self.regime_minutes_today_blocking()
+    }
+
+    /// Hot-reload the coaching config at runtime (#5707 hot-reload seam).
+    ///
+    /// Default implementation is a deliberate no-op so existing mock
+    /// implementations in `maekon-web` handler tests continue to compile
+    /// without change.  `CoachingEngine` overrides this in `port_impl.rs`
+    /// to delegate to `CoachingEngine::update_config`.
+    ///
+    /// Called from:
+    /// - `src-tauri/src/commands/settings.rs::update_setting` (Tauri IPC path)
+    /// - `crates/maekon-web/src/handlers/settings.rs::update_settings` (REST path)
+    async fn apply_config(&self, _config: crate::config::CoachingConfig) {}
 }

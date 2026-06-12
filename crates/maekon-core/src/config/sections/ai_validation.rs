@@ -24,6 +24,28 @@ pub enum CredentialAuthMode {
     CliBridge,
 }
 
+impl std::fmt::Display for CredentialBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OsSecretStore => f.write_str("os_secret_store"),
+            Self::FileSecretStore => f.write_str("file_secret_store"),
+            Self::Env => f.write_str("env"),
+            Self::BridgeManaged => f.write_str("bridge_managed"),
+            Self::Unavailable => f.write_str("unavailable"),
+        }
+    }
+}
+
+impl std::fmt::Display for CredentialAuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey => f.write_str("api_key"),
+            Self::ManagedOAuth => f.write_str("managed_oauth"),
+            Self::CliBridge => f.write_str("cli_bridge"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretRef {
     pub namespace: String,
@@ -380,5 +402,36 @@ mod tests {
         };
         let err = cfg.validate().expect_err("expected invalid-value error");
         assert_eq!(err.code(), "config.invalid");
+    }
+
+    #[test]
+    fn credential_backend_kind_display_matches_serde_token() {
+        assert_eq!(
+            CredentialBackendKind::OsSecretStore.to_string(),
+            "os_secret_store"
+        );
+        assert_eq!(
+            CredentialBackendKind::FileSecretStore.to_string(),
+            "file_secret_store"
+        );
+        assert_eq!(CredentialBackendKind::Env.to_string(), "env");
+        assert_eq!(
+            CredentialBackendKind::BridgeManaged.to_string(),
+            "bridge_managed"
+        );
+        assert_eq!(
+            CredentialBackendKind::Unavailable.to_string(),
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn credential_auth_mode_display_matches_serde_token() {
+        assert_eq!(CredentialAuthMode::ApiKey.to_string(), "api_key");
+        assert_eq!(
+            CredentialAuthMode::ManagedOAuth.to_string(),
+            "managed_oauth"
+        );
+        assert_eq!(CredentialAuthMode::CliBridge.to_string(), "cli_bridge");
     }
 }

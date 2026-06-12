@@ -1,0 +1,87 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-UX-002"],
+  "suggestions": [
+    {
+      "id": "keyboard-accept-proposal",
+      "title": "Keyboard accept proposal",
+      "body": "Accept can be reached and triggered without pointer input.",
+      "priority": "medium",
+      "category": "keyboard-a11y",
+      "source": "local",
+      "confidence_score": 0.9,
+      "created_at": "2026-05-22T00:00:00Z",
+      "is_read": false,
+      "reasoning": "Keyboard-only action coverage."
+    },
+    {
+      "id": "keyboard-reject-proposal",
+      "title": "Keyboard reject proposal",
+      "body": "Reject can be reached and triggered without pointer input.",
+      "priority": "medium",
+      "category": "keyboard-a11y",
+      "source": "local",
+      "confidence_score": 0.88,
+      "created_at": "2026-05-22T00:00:01Z",
+      "is_read": false,
+      "reasoning": "Keyboard-only action coverage."
+    },
+    {
+      "id": "keyboard-defer-proposal",
+      "title": "Keyboard defer proposal",
+      "body": "Later opens a keyboard reachable snooze menu.",
+      "priority": "low",
+      "category": "keyboard-a11y",
+      "source": "local",
+      "confidence_score": 0.84,
+      "created_at": "2026-05-22T00:00:02Z",
+      "is_read": false,
+      "reasoning": "Keyboard-only action coverage."
+    },
+    {
+      "id": "keyboard-explain-proposal",
+      "title": "Keyboard explain proposal",
+      "body": "Explain can be triggered without removing the suggestion.",
+      "priority": "medium",
+      "category": "keyboard-a11y",
+      "source": "local",
+      "confidence_score": 0.86,
+      "created_at": "2026-05-22T00:00:03Z",
+      "is_read": false,
+      "reasoning": "Keyboard-only action coverage."
+    }
+  ],
+  "expected": {
+    "panel_label": "Suggestions panel",
+    "closed_panel_class": "translate-x-[calc(100%+1rem)]",
+    "actions": [
+      {
+        "title": "Keyboard explain proposal",
+        "button": "Explain",
+        "command": "explain_suggestion_in_chat",
+        "suggestion_id": "keyboard-explain-proposal"
+      },
+      {
+        "title": "Keyboard defer proposal",
+        "button": "Later",
+        "command": "submit_suggestion_feedback",
+        "suggestion_id": "keyboard-defer-proposal",
+        "action": "defer",
+        "snooze_minutes": 30
+      },
+      {
+        "title": "Keyboard reject proposal",
+        "button": "Reject",
+        "command": "submit_suggestion_feedback",
+        "suggestion_id": "keyboard-reject-proposal",
+        "action": "reject"
+      },
+      {
+        "title": "Keyboard accept proposal",
+        "button": "Accept",
+        "command": "submit_suggestion_feedback",
+        "suggestion_id": "keyboard-accept-proposal",
+        "action": "accept"
+      }
+    ]
+  }
+}

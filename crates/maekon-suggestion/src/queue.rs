@@ -41,13 +41,22 @@ fn content_fingerprint(suggestion: &Suggestion) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     suggestion.suggestion_type.hash(&mut hasher);
+    suggestion.source.hash(&mut hasher);
+    suggestion.context_scope.hash(&mut hasher);
     let normalized: String = suggestion
         .content
         .to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let truncated = &normalized[..normalized.len().min(200)];
+    // Truncate at a char boundary (#5691): a raw byte slice panics when byte
+    // 200 falls inside a multi-byte char — Korean content (3 bytes/char) hits
+    // this almost always, killing the enqueue path.
+    let mut cut = normalized.len().min(200);
+    while !normalized.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let truncated = &normalized[..cut];
     truncated.hash(&mut hasher);
     hasher.finish()
 }
@@ -172,11 +181,8 @@ impl SuggestionQueue {
             self.fingerprints.remove(fp);
         }
         let before = self.items.len();
-        self.items.retain(|p| {
-            p.suggestion
-                .expires_at
-                .map_or(true, |expires| expires > now)
-        });
+        self.items
+            .retain(|p| p.suggestion.expires_at.is_none_or(|expires| expires > now));
         before - self.items.len()
     }
 }
@@ -200,6 +206,7 @@ mod tests {
             expires_at: None,
             source: Default::default(),
             reasoning: None,
+            context_scope: None,
         }
     }
 
@@ -295,6 +302,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_content_allowed_in_different_context_scope() {
+        let mut queue = SuggestionQueue::new(50);
+        let s1 = make_suggestion("s1", Priority::High);
+        let mut s2 = make_suggestion("s2", Priority::Critical);
+        s2.content = s1.content.clone();
+        s2.suggestion_type = s1.suggestion_type.clone();
+        s2.context_scope = Some(maekon_core::models::suggestion::SuggestionContextScope {
+            app_name: Some("Calculator".to_string()),
+            window_title: Some("Calculator".to_string()),
+            target_id: Some("display-result".to_string()),
+        });
+
+        assert!(queue.push(s1));
+        assert!(queue.push(s2));
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
     fn different_content_accepted() {
         let mut queue = SuggestionQueue::new(50);
         let s1 = make_suggestion("s1", Priority::High);
@@ -361,5 +386,30 @@ mod tests {
         s2.content = content;
         s2.suggestion_type = stype;
         assert!(queue.push(s2));
+    }
+
+    /// #5691: the fingerprint truncation used a raw byte slice at 200, which
+    /// panics when that byte falls inside a multi-byte char. Korean content
+    /// (3 bytes/char) hits a non-boundary almost always — this enqueue must
+    /// not panic and dedup must still work on the truncated prefix.
+    #[test]
+    fn fingerprint_handles_multibyte_content_past_truncation() {
+        let mut queue = SuggestionQueue::new(50);
+        let korean = "한".repeat(100); // 300 bytes; byte 200 is mid-char
+        let mut s1 = make_suggestion("s1", Priority::High);
+        s1.content = korean.clone();
+        assert!(
+            queue.push(s1),
+            "multibyte content must enqueue without panic"
+        );
+
+        // Identical multibyte content must still dedup via the fingerprint
+        // (make_suggestion gives both the same type/source/scope).
+        let mut s2 = make_suggestion("s2", Priority::High);
+        s2.content = korean;
+        assert!(
+            !queue.push(s2),
+            "identical multibyte content must be deduplicated"
+        );
     }
 }

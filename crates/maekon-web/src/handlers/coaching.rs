@@ -13,10 +13,16 @@ pub async fn get_coaching_history(
     State(state): State<AppState>,
     Query(params): Query<CoachingHistoryQuery>,
 ) -> Result<Json<Vec<CoachingEventResponse>>, ApiError> {
+    let limit = params.limit.unwrap_or(50);
+    let offset = params.offset.unwrap_or(0);
+    // ADR-026 PR-8: `query_coaching_events` is now async and offloads the SQLite
+    // read onto `spawn_blocking` internally, so await it directly instead of
+    // wrapping the (now-async) call in a hand-rolled `spawn_blocking`.
     let events = state
         .core
         .storage
-        .query_coaching_events(params.limit.unwrap_or(50), params.offset.unwrap_or(0))
+        .query_coaching_events(limit, offset)
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(
@@ -32,7 +38,7 @@ pub async fn get_goals(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<GoalProgressResponse>>, ApiError> {
     if let Some(ref engine) = state.analysis.coaching_engine {
-        let progress = engine.all_goal_progress_blocking();
+        let progress = engine.all_goal_progress().await;
         Ok(Json(
             progress
                 .into_iter()
@@ -50,7 +56,7 @@ pub async fn update_goals(
     Json(body): Json<UpdateGoalsRequest>,
 ) -> Result<Json<()>, ApiError> {
     if let Some(ref engine) = state.analysis.coaching_engine {
-        engine.update_regime_goals_blocking(&body.goals);
+        engine.update_regime_goals(&body.goals).await;
     }
     Ok(Json(()))
 }
@@ -60,21 +66,28 @@ pub async fn get_coaching_stats_today(
     State(state): State<AppState>,
 ) -> Result<Json<CoachingStatsTodayResponse>, ApiError> {
     let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    // ADR-026 PR-8: `query_coaching_events_since` is now async and offloads the
+    // SQLite read onto `spawn_blocking` internally — await it directly.
     let today_count = state
         .core
         .storage
         .query_coaching_events_since(&today_str)
+        .await
+        .ok()
         .map(|events| events.len() as u32)
         .unwrap_or(0);
 
+    // F-RR-C37-01: `_blocking` 변형 대신 async 변형을 사용한다.
+    // `block_in_place` + `block_on` 체인은 async fn 핸들러에서 워커 스레드를 점유하므로
+    // Tokio 단일 스레드 런타임(#[tokio::test] 기본값)에서 패닉을 유발한다.
     let current_regime = if let Some(ref engine) = state.analysis.coaching_engine {
-        engine.current_regime_label_blocking()
+        engine.current_regime_label().await
     } else {
         None
     };
 
     let regime_minutes = if let Some(ref engine) = state.analysis.coaching_engine {
-        engine.regime_minutes_today_blocking()
+        engine.regime_minutes_today().await
     } else {
         0
     };
@@ -92,10 +105,13 @@ pub async fn get_habits(
     Query(params): Query<HabitStreakQuery>,
 ) -> Result<Json<Vec<HabitStreakResponse>>, ApiError> {
     let days = params.days.unwrap_or(7);
+    // ADR-026 PR-8: `query_habit_streaks` is now async and offloads the SQLite
+    // read onto `spawn_blocking` internally — await it directly.
     let rows = state
         .core
         .storage
         .query_habit_streaks(days)
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(
@@ -109,14 +125,12 @@ mod tests {
     use crate::AppState;
     use async_trait::async_trait;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_core::models::coaching::GoalProgressView;
     use maekon_core::ports::coaching::CoachingPort;
     use maekon_storage::sqlite::SqliteStorage;
     use std::collections::HashMap;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -152,6 +166,13 @@ mod tests {
         fn regime_minutes_today_blocking(&self) -> u32 {
             90
         }
+        // F-RR-C37-01: async 변형 — MockCoachingEngine은 _blocking 기본 위임 대신 직접 구현.
+        async fn current_regime_label(&self) -> Option<String> {
+            Some("deep_work".to_string())
+        }
+        async fn regime_minutes_today(&self) -> u32 {
+            90
+        }
     }
 
     fn test_app_state() -> AppState {
@@ -167,8 +188,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[tokio::test]
@@ -366,6 +386,19 @@ mod tests {
         assert_eq!(parsed["regime_minutes_today"], 90);
     }
 
+    /// F-RR-C37-01 회귀 방지: async 포트 메서드가 단일 스레드 런타임(#[tokio::test] 기본값)에서
+    /// 패닉 없이 동작함을 검증한다. 이 테스트가 존재하는 동안 `block_in_place` 회귀는
+    /// `cannot block_in_place inside a current-thread runtime` 패닉으로 즉시 감지된다.
+    #[tokio::test]
+    async fn coaching_stats_async_port_methods_do_not_block_in_place() {
+        let engine = MockCoachingEngine;
+        // async 변형이 단일 스레드 컨텍스트에서 패닉 없이 값을 반환해야 한다.
+        let label = engine.current_regime_label().await;
+        let minutes = engine.regime_minutes_today().await;
+        assert_eq!(label, Some("deep_work".to_string()));
+        assert_eq!(minutes, 90);
+    }
+
     #[tokio::test]
     async fn get_habits_returns_empty_by_default() {
         let app = loopback_app(test_app_state());
@@ -397,6 +430,7 @@ mod tests {
             .core
             .storage
             .upsert_habit_streak("deep_work", &today, 90, 120, false)
+            .await
             .unwrap();
 
         let app = loopback_app(state);

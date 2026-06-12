@@ -146,6 +146,16 @@ impl AuthMode {
     }
 }
 
+impl std::fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Jwt => f.write_str("jwt"),
+            Self::Mtls => f.write_str("mtls"),
+            Self::JwtAndMtls => f.write_str("jwt+mtls"),
+        }
+    }
+}
+
 /// JWT signing algorithm. Asymmetric-only.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum JwtAlgorithm {
@@ -153,6 +163,15 @@ pub enum JwtAlgorithm {
     Rs256,
     #[serde(rename = "ES256")]
     Es256,
+}
+
+impl std::fmt::Display for JwtAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rs256 => f.write_str("RS256"),
+            Self::Es256 => f.write_str("ES256"),
+        }
+    }
 }
 
 /// Validation error kinds returned by `ExternalGrpcConfig::validate`.
@@ -298,21 +317,34 @@ mod tests {
     #[test]
     fn validate_disabled_always_ok() {
         let cfg = ExternalGrpcConfig::default();
-        assert!(cfg.validate().is_ok());
+        // Contract: validate() short-circuits to Ok(()) when enabled=false regardless of
+        // other fields. This is the documented early-return in ExternalGrpcConfig::validate.
+        cfg.validate()
+            .expect("disabled ExternalGrpcConfig must always pass validation");
+        // Confirm the precondition that makes the early-return fire.
+        assert!(!cfg.enabled, "default config must have enabled=false");
     }
 
     #[test]
     fn validate_jwt_mode_missing_pubkey_errors() {
         let mut cfg = cfg_enabled_jwt();
         cfg.jwt_public_key_path = None;
-        assert!(cfg.validate().is_err());
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ExternalGrpcConfigError::MissingJwtPubKey),
+            "missing JWT pubkey must produce MissingJwtPubKey, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_jwt_mode_missing_issuer_errors() {
         let mut cfg = cfg_enabled_jwt();
         cfg.jwt_expected_issuer = None;
-        assert!(cfg.validate().is_err());
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ExternalGrpcConfigError::MissingJwtIssuer),
+            "missing JWT issuer must produce MissingJwtIssuer, got: {err:?}"
+        );
     }
 
     #[test]
@@ -320,21 +352,33 @@ mod tests {
         let mut cfg = cfg_enabled_jwt();
         cfg.auth_mode = Some(AuthMode::Mtls);
         cfg.mtls_ca_path = None;
-        assert!(cfg.validate().is_err());
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ExternalGrpcConfigError::MissingMtlsCa),
+            "missing mTLS CA must produce MissingMtlsCa, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_port_zero_errors() {
         let mut cfg = cfg_enabled_jwt();
         cfg.port = 0;
-        assert!(cfg.validate().is_err());
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ExternalGrpcConfigError::InvalidPort),
+            "port=0 must produce InvalidPort, got: {err:?}"
+        );
     }
 
     #[test]
     fn validate_enabled_without_auth_mode_errors() {
         let mut cfg = cfg_enabled_jwt();
         cfg.auth_mode = None;
-        assert!(cfg.validate().is_err());
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ExternalGrpcConfigError::MissingAuthMode),
+            "missing auth_mode must produce MissingAuthMode, got: {err:?}"
+        );
     }
 
     #[test]
@@ -365,5 +409,18 @@ mod tests {
             !json.contains("streaming_enabled"),
             "None value must skip serialization to avoid polluting saved config files: got {json}"
         );
+    }
+
+    #[test]
+    fn auth_mode_display_matches_serde_rename() {
+        assert_eq!(AuthMode::Jwt.to_string(), "jwt");
+        assert_eq!(AuthMode::Mtls.to_string(), "mtls");
+        assert_eq!(AuthMode::JwtAndMtls.to_string(), "jwt+mtls");
+    }
+
+    #[test]
+    fn jwt_algorithm_display_matches_serde_rename() {
+        assert_eq!(JwtAlgorithm::Rs256.to_string(), "RS256");
+        assert_eq!(JwtAlgorithm::Es256.to_string(), "ES256");
     }
 }

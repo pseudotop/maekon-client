@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 /// Query parameters for GET /api/coaching/history.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingHistoryQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -13,6 +14,7 @@ pub struct CoachingHistoryQuery {
 
 /// Response DTO for a single coaching event.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingEventResponse {
     pub event_id: String,
     pub trigger_type: String,
@@ -47,6 +49,7 @@ impl From<CoachingEventRow> for CoachingEventResponse {
 
 /// Response DTO for goal progress.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GoalProgressResponse {
     pub regime_label: String,
     pub current_minutes: u32,
@@ -69,6 +72,7 @@ impl From<GoalProgressView> for GoalProgressResponse {
 
 /// Response DTO for GET /api/coaching/stats/today — aggregated coaching stats for the current day.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingStatsTodayResponse {
     pub nudges_count: u32,
     pub current_regime: Option<String>,
@@ -77,12 +81,14 @@ pub struct CoachingStatsTodayResponse {
 
 /// Request body for PUT /api/coaching/goals.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateGoalsRequest {
     pub goals: HashMap<String, u32>,
 }
 
 /// Query parameters for GET /api/coaching/habits.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HabitStreakQuery {
     /// Number of days to look back. Defaults to 7.
     pub days: Option<u32>,
@@ -90,6 +96,7 @@ pub struct HabitStreakQuery {
 
 /// Response DTO for a single habit streak row.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HabitStreakResponse {
     pub regime_label: String,
     pub date: String,

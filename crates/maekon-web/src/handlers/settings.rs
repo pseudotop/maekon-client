@@ -12,7 +12,9 @@ pub async fn get_storage_stats(
     State(context): State<SettingsWebContext>,
 ) -> Result<Json<StorageStats>, ApiError> {
     Ok(Json(
-        SettingsQueryService::new(context).get_storage_stats()?,
+        SettingsQueryService::new(context)
+            .get_storage_stats()
+            .await?,
     ))
 }
 
@@ -55,7 +57,7 @@ mod tests {
         assert!(!settings.automation.enabled);
         assert!(!settings.sandbox.enabled);
         assert_eq!(settings.sandbox.profile, "Standard");
-        assert_eq!(settings.ai_provider.access_mode, "ProviderApiKey");
+        assert_eq!(settings.ai_provider.access_mode, "provider_api_key");
         assert_eq!(settings.ai_provider.ocr_provider, "Local");
         assert_eq!(settings.ai_provider.llm_provider, "Local");
         assert!(settings.ai_provider.fallback_to_local);
@@ -133,8 +135,14 @@ mod tests {
         });
 
         settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
-        let result = app_config.ai_provider.validate_selected_remote_endpoints();
-        assert!(result.is_err());
+        let err = app_config
+            .ai_provider
+            .validate_selected_remote_endpoints()
+            .unwrap_err();
+        assert!(
+            matches!(err, maekon_core::error::CoreError::Config { .. }),
+            "missing API key must return CoreError::Config, got: {err:?}"
+        );
     }
 
     #[test]

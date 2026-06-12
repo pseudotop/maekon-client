@@ -67,7 +67,7 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 - Línea base de integridad autónoma: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Runbook de operaciones de integridad: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - Índice de documentación: [docs/README.md](./docs/README.md)
-- Guía de lanzamiento público: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
+- Lista de verificación de versiones: [docs/release-checklist.md](./docs/release-checklist.md)
 - Plantillas de guía de automatización: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Runbook de adopción autónoma: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - Guía de los primeros 5 minutos: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -101,7 +101,7 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 
 ## Requisitos
 
-- Rust 1.77.1 o posterior
+- Rust 1.88.0 o posterior
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## Inicio Rápido para Desarrolladores (Compilar desde el Código Fuente)

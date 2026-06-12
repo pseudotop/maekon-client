@@ -7,6 +7,8 @@ use maekon_core::models::storage_records::{
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::sync::Arc;
 
+use crate::error::ApiError;
+
 /// D5 iter-15: export belt-and-suspenders sanitization. Storage ingest
 /// paths (iter-3 OCR, iter-11 FileAccess, capture-time window_title at
 /// iter-14 boundary) already sanitize before write. This second pass at
@@ -20,17 +22,19 @@ use std::sync::Arc;
 /// (not direct `maekon-vision::privacy::sanitize_title_with_level`).
 const EXPORT_SANITIZE_LEVEL: PiiFilterLevel = PiiFilterLevel::Standard;
 
-fn export_sanitize(s: String, sanitizer: &Option<Arc<dyn PiiSanitizer>>) -> String {
-    match sanitizer {
-        Some(sn) => sn.sanitize_text(&s, EXPORT_SANITIZE_LEVEL),
-        None => s,
-    }
+fn require_export_sanitizer(
+    sanitizer: &Option<Arc<dyn PiiSanitizer>>,
+) -> Result<&dyn PiiSanitizer, ApiError> {
+    sanitizer.as_deref().ok_or_else(|| {
+        ApiError::Internal("PII sanitizer not configured for export assembly".to_string())
+    })
 }
 
-fn export_sanitize_opt(
-    s: Option<String>,
-    sanitizer: &Option<Arc<dyn PiiSanitizer>>,
-) -> Option<String> {
+fn export_sanitize(s: String, sanitizer: &dyn PiiSanitizer) -> String {
+    sanitizer.sanitize_text(&s, EXPORT_SANITIZE_LEVEL)
+}
+
+fn export_sanitize_opt(s: Option<String>, sanitizer: &dyn PiiSanitizer) -> Option<String> {
     s.map(|v| export_sanitize(v, sanitizer))
 }
 
@@ -59,21 +63,23 @@ pub(crate) fn assemble_metric_export_record(row: MetricExportRow) -> MetricExpor
 pub(crate) fn assemble_event_export_record(
     row: EventExportRow,
     sanitizer: &Option<Arc<dyn PiiSanitizer>>,
-) -> EventExportRecord {
-    EventExportRecord {
+) -> Result<EventExportRecord, ApiError> {
+    let sanitizer = require_export_sanitizer(sanitizer)?;
+    Ok(EventExportRecord {
         event_id: row.event_id,
         event_type: row.event_type,
         timestamp: row.timestamp,
         app_name: export_sanitize_opt(row.app_name, sanitizer),
         window_title: export_sanitize_opt(row.window_title, sanitizer),
-    }
+    })
 }
 
 pub(crate) fn assemble_frame_export_record(
     row: FrameExportRow,
     sanitizer: &Option<Arc<dyn PiiSanitizer>>,
-) -> FrameExportRecord {
-    FrameExportRecord {
+) -> Result<FrameExportRecord, ApiError> {
+    let sanitizer = require_export_sanitizer(sanitizer)?;
+    Ok(FrameExportRecord {
         id: row.id,
         timestamp: row.timestamp,
         trigger_type: row.trigger_type,
@@ -82,5 +88,51 @@ pub(crate) fn assemble_frame_export_record(
         importance: row.importance,
         resolution: format!("{}x{}", row.resolution_w, row.resolution_h),
         ocr_text: export_sanitize_opt(row.ocr_text, sanitizer),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSanitizer;
+
+    impl PiiSanitizer for MockSanitizer {
+        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
+            text.replace("alice@example.com", "[EMAIL]")
+                .replace("010-1234-5678", "[PHONE]")
+        }
+    }
+
+    fn event_row() -> EventExportRow {
+        EventExportRow {
+            event_id: "event-1".to_string(),
+            event_type: "window_focus".to_string(),
+            timestamp: "2026-05-25T15:12:00Z".to_string(),
+            app_name: Some("Mail alice@example.com".to_string()),
+            window_title: Some("Call 010-1234-5678".to_string()),
+        }
+    }
+
+    #[test]
+    fn event_export_fails_closed_when_sanitizer_missing() {
+        let err = assemble_event_export_record(event_row(), &None).unwrap_err();
+        assert!(
+            matches!(err, ApiError::Internal(_)),
+            "missing sanitizer must return ApiError::Internal, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("PII sanitizer not configured"),
+            "error message mismatch, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn event_export_sanitizes_user_text_fields() {
+        let sanitizer: Arc<dyn PiiSanitizer> = Arc::new(MockSanitizer);
+        let record = assemble_event_export_record(event_row(), &Some(sanitizer)).unwrap();
+
+        assert_eq!(record.app_name.as_deref(), Some("Mail [EMAIL]"));
+        assert_eq!(record.window_title.as_deref(), Some("Call [PHONE]"));
     }
 }

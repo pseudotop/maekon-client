@@ -13,7 +13,8 @@ use std::convert::Infallible;
 use crate::error::ApiError;
 #[cfg(test)]
 use crate::services::automation_gui_service::{
-    map_gui_error, read_capability_token, GUI_SCHEMA_VERSION, GUI_SESSION_HEADER,
+    map_gui_error, read_capability_token, read_stream_capability_token, GUI_SCHEMA_VERSION,
+    GUI_SESSION_HEADER, GUI_SESSION_STREAM_COOKIE,
 };
 use crate::services::automation_gui_service::{
     AutomationGuiCommandService, AutomationGuiQueryService, AutomationGuiStreamService,

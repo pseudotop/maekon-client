@@ -2,12 +2,15 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use maekon_core::config::AppConfig;
-use maekon_core::consent::ConsentManager;
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
+use maekon_core::ports::consent_manager::ConsentManagerPort;
+#[cfg(feature = "analysis")]
+use maekon_core::ports::secret_store::SecretStoreSet;
 
 use crate::scheduler::AdaptiveTriggerState;
 
 use super::embedding_setup::EmbeddingComponents;
+use crate::provider_adapters::ExternalOcrPrivacyGuard;
 
 /// Result of the analysis pipeline setup.
 pub(super) struct AnalysisResult {
@@ -25,14 +28,22 @@ pub(super) struct AnalysisResult {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_analysis_pipeline(
     config: &AppConfig,
-    consent_manager: &Option<Arc<ConsentManager>>,
+    consent_manager: &Option<Arc<dyn ConsentManagerPort>>,
     calibration_writer: Option<Arc<dyn CalibrationWriter>>,
     calibration_reader: Option<Arc<dyn CalibrationReader>>,
     override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
     recluster_requested: Arc<std::sync::atomic::AtomicBool>,
     embedding: &mut EmbeddingComponents,
+    external_llm_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     injected_regime_manager: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
     injected_regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
+    // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    // registry threaded from the composition root, used by the LLM WorkType
+    // refiner's analysis provider built below.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    // Provider secret stores for BYOK credential resolution — threaded from
+    // `AgentRuntimeBundle`.  Gated on `analysis`; ignored in other builds.
+    #[cfg(feature = "analysis")] secret_stores: Option<&SecretStoreSet>,
 ) -> AnalysisResult {
     // Config validation: embedding requires tiered_memory
     if config.analysis.embedding.enabled && !config.analysis.tiered_memory.enabled {
@@ -65,11 +76,23 @@ pub(super) fn build_analysis_pipeline(
             let tm_config = &config.analysis.tiered_memory;
             // Create LLM WorkType refiner independently of embedding pipeline.
             // Uses its own FallbackAnalysisProvider — stateless, no shared state concern.
+            // Normalise the secret_stores reference for the build_analysis_provider
+            // call below: `analysis` builds forward the real SecretStoreSet; other
+            // builds supply None::<&()> to satisfy the not(analysis) fallback signature.
+            #[cfg(feature = "analysis")]
+            let secret_stores_for_refiner = secret_stores;
+            #[cfg(not(feature = "analysis"))]
+            let secret_stores_for_refiner: Option<&()> = None;
+
             let llm_work_type_refiner = if config.analysis.llm_work_type_enabled {
                 config.ai_provider.llm_api.as_ref().map(|_llm_api| {
                     let provider: Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider> =
                         crate::agent_runtime::analysis_helpers::build_analysis_provider(
                             &config.ai_provider,
+                            config.privacy.pii_filter_level,
+                            external_llm_privacy_guard.clone(),
+                            secret_stores_for_refiner,
+                            breaker_registry.clone(),
                         )
                         .map(|(p, _)| p)
                         .unwrap_or_else(|| {

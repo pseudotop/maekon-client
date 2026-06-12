@@ -2,14 +2,21 @@ use std::env;
 use std::time::Duration;
 
 use maekon_core::config::{AiProviderType, ExternalApiEndpoint};
+use maekon_core::ports::credential_source::CredentialSource;
+use maekon_core::ports::embedding_provider::EmbeddingProvider;
 use maekon_core::ports::llm_provider::{LlmProvider, ScreenContext};
 use maekon_core::ports::ocr_provider::OcrProvider;
 use maekon_network::ai_llm_client::RemoteLlmProvider;
 use maekon_network::ai_ocr_client::RemoteOcrProvider;
+use maekon_network::circuit_breaker::CircuitBreakerRegistry;
+use maekon_network::remote_embedding_client::RemoteEmbeddingProvider;
 use tokio::time::sleep;
 
 const RUN_SMOKE_ENV: &str = "MAEKON_RUN_AI_LIVE_SMOKE";
 const RUN_OCR_ENV: &str = "MAEKON_AI_SMOKE_RUN_OCR";
+/// Opt-in gate for embedding live smoke — mirrors OCR's RUN_OCR_ENV pattern.
+/// Default: skip. Set to "1" / "true" / "yes" / "on" to opt in.
+const RUN_EMBEDDING_ENV: &str = "MAEKON_AI_SMOKE_RUN_EMBEDDING";
 
 const SAMPLE_PNG_1X1: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
@@ -35,6 +42,15 @@ async fn ai_provider_live_smoke() {
         eprintln!(
             "Skipping OCR live smoke because {} is disabled.",
             RUN_OCR_ENV
+        );
+    }
+
+    if parse_bool_env(RUN_EMBEDDING_ENV).unwrap_or(false) {
+        run_embedding_smoke().await;
+    } else {
+        eprintln!(
+            "Skipping embedding live smoke because {} is disabled.",
+            RUN_EMBEDDING_ENV
         );
     }
 }
@@ -131,10 +147,139 @@ async fn run_ocr_smoke() {
     );
 }
 
+/// Live smoke test for the embedding provider.
+///
+/// Activated only when both `MAEKON_RUN_AI_LIVE_SMOKE` and
+/// `MAEKON_AI_SMOKE_RUN_EMBEDDING` are set.
+///
+/// Required env:
+///   `MAEKON_AI_SMOKE_EMB_ENDPOINT` — full URL, e.g. `http://localhost:11434/api/embeddings`
+///
+/// Optional env:
+///   `MAEKON_AI_SMOKE_EMB_MODEL`    — model name (default: empty string; Ollama ignores it)
+///   `MAEKON_AI_SMOKE_EMB_DIMS`     — expected output dimensions (default: 768)
+///
+/// Authentication: inherits `MAEKON_AI_SMOKE_LLM_API_KEY` if set; otherwise
+/// uses `CredentialSource::NoAuth` (suitable for local Ollama endpoints).
+async fn run_embedding_smoke() {
+    // Resolve endpoint (required).
+    let endpoint = required_primary_value(SmokeTarget::Embedding, "ENDPOINT");
+
+    // Resolve model (optional — empty string is accepted by Ollama).
+    let model = optional_primary_value(SmokeTarget::Embedding, "MODEL").unwrap_or_default();
+
+    // Resolve expected dimensions (optional, default 768).
+    let dims: usize = env::var("MAEKON_AI_SMOKE_EMB_DIMS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&d| d > 0)
+        .unwrap_or(768);
+
+    // Resolve credential: prefer explicit embedding key, fall back to LLM key,
+    // fall back to NoAuth (for Ollama loopback endpoints).
+    let credential = optional_api_key_value(SmokeTarget::Embedding)
+        .or_else(|| optional_api_key_value(SmokeTarget::Llm))
+        .map(CredentialSource::ApiKey)
+        .unwrap_or(CredentialSource::NoAuth);
+
+    let timeout_secs = resolve_timeout_secs(SmokeTarget::Embedding);
+
+    let provider = RemoteEmbeddingProvider::new_with_credential(
+        endpoint.clone(),
+        credential,
+        model,
+        dims,
+        timeout_secs,
+        CircuitBreakerRegistry::new(),
+    );
+
+    // ── embed("hello world") ──────────────────────────────────────────────
+    let mut last_err = None;
+    for attempt in 1..=2 {
+        match provider.embed("hello world").await {
+            Ok(vector) => {
+                assert_eq!(
+                    vector.len(),
+                    dims,
+                    "embed() dimension mismatch: got {} expected {}",
+                    vector.len(),
+                    dims
+                );
+                assert!(
+                    vector.iter().all(|x| x.is_finite()),
+                    "embed() returned non-finite values"
+                );
+                assert!(
+                    vector.iter().any(|x| *x != 0.0),
+                    "embed() returned an all-zero vector"
+                );
+                break;
+            }
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < 2 {
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+    if let Some(err) = last_err {
+        // Only panic if the last attempt also failed (loop broke on success above).
+        // Re-check: if last_err is Some we never hit the break, so it's a real failure.
+        panic!("embedding smoke (embed) failed after retries: {}", err);
+    }
+
+    // ── embed_batch(&["foo", "bar"]) ──────────────────────────────────────
+    let batch_inputs = vec!["foo".to_string(), "bar".to_string()];
+    let mut last_batch_err = None;
+    for attempt in 1..=2 {
+        match provider.embed_batch(&batch_inputs).await {
+            Ok(vectors) => {
+                assert_eq!(
+                    vectors.len(),
+                    2,
+                    "embed_batch() must return one vector per input"
+                );
+                for (i, v) in vectors.iter().enumerate() {
+                    assert_eq!(
+                        v.len(),
+                        dims,
+                        "embed_batch() vector[{i}] dimension mismatch: got {} expected {}",
+                        v.len(),
+                        dims
+                    );
+                    assert!(
+                        v.iter().all(|x| x.is_finite()),
+                        "embed_batch() vector[{i}] contains non-finite values"
+                    );
+                    assert!(
+                        v.iter().any(|x| *x != 0.0),
+                        "embed_batch() vector[{i}] is all-zero"
+                    );
+                }
+                break;
+            }
+            Err(err) => {
+                last_batch_err = Some(err);
+                if attempt < 2 {
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+    if let Some(err) = last_batch_err {
+        panic!(
+            "embedding smoke (embed_batch) failed after retries: {}",
+            err
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmokeTarget {
     Llm,
     Ocr,
+    Embedding,
 }
 
 impl SmokeTarget {
@@ -142,6 +287,7 @@ impl SmokeTarget {
         match self {
             Self::Llm => "MAEKON_AI_SMOKE_LLM",
             Self::Ocr => "MAEKON_AI_SMOKE_OCR",
+            Self::Embedding => "MAEKON_AI_SMOKE_EMB",
         }
     }
 }
@@ -176,6 +322,11 @@ fn build_endpoint(target: SmokeTarget) -> ExternalApiEndpoint {
     match target {
         SmokeTarget::Llm => build_llm_endpoint(),
         SmokeTarget::Ocr => build_ocr_endpoint(),
+        // Embedding target uses RemoteEmbeddingProvider directly and does not
+        // go through ExternalApiEndpoint — this branch is unreachable in practice.
+        SmokeTarget::Embedding => {
+            unreachable!("Embedding smoke uses RemoteEmbeddingProvider directly")
+        }
     }
 }
 

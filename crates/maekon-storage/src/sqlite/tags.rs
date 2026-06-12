@@ -4,6 +4,17 @@ use tracing::debug;
 
 use super::{FrameRecord, SqliteStorage, TagRecord};
 
+// ---------------------------------------------------------------------------
+// `*_async` helpers (ADR-026 PR-5) route the SQLite work through the
+// `with_conn`/`with_conn_read` funnel (`spawn_blocking`) so the single
+// `parking_lot` connection guard is acquired on a blocking-pool thread and
+// never held across an `.await` (#4928 erase barrier preserved: writes still
+// pass through `write_lock`, reads through `read_lock`). Owned data is moved
+// into the `Send + 'static` closures (no borrowed `&str`). The sync inherent
+// methods below are retained for storage unit tests + benches; both paths run
+// the same SQL.
+// ---------------------------------------------------------------------------
+
 impl SqliteStorage {
     pub fn get_tag_ids_for_frames(
         &self,
@@ -13,11 +24,30 @@ impl SqliteStorage {
             return Ok(HashMap::new());
         }
 
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
+        Self::get_tag_ids_for_frames_inner(conn, frame_ids)
+    }
 
+    /// Async `get_tag_ids_for_frames` over the read funnel (ADR-026 PR-5).
+    pub(crate) async fn get_tag_ids_for_frames_async(
+        &self,
+        frame_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<i64>>, StorageError> {
+        if frame_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // owned move into the Send + 'static closure.
+        let frame_ids = frame_ids.to_vec();
+        self.with_conn_read(move |conn| Self::get_tag_ids_for_frames_inner(conn, &frame_ids))
+            .await
+    }
+
+    fn get_tag_ids_for_frames_inner(
+        conn: &rusqlite::Connection,
+        frame_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<i64>>, StorageError> {
         let placeholders: Vec<String> = frame_ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "SELECT frame_id, tag_id FROM frame_tags WHERE frame_id IN ({})",
@@ -53,11 +83,45 @@ impl SqliteStorage {
 
     /// # Arguments
     pub fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → 빈 TagRecord, tags ∈ ALL_TABLES).
+        let skip = Self::create_tag_skip(name, color);
+        self.conn
+            .write_lock()
+            .run(skip, |conn| Self::create_tag_inner(conn, name, color))
+    }
 
+    /// Async `create_tag` over the write funnel (ADR-026 PR-5).
+    pub(crate) async fn create_tag_async(
+        &self,
+        name: &str,
+        color: &str,
+    ) -> Result<TagRecord, StorageError> {
+        // owned move into the Send + 'static closure.
+        let name = name.to_string();
+        let color = color.to_string();
+        let skip = Self::create_tag_skip(&name, &color);
+        self.with_conn_skip(skip, move |conn| {
+            Self::create_tag_inner(conn, &name, &color)
+        })
+        .await
+    }
+
+    /// Skip-sentinel (empty `TagRecord`) returned when a write is skipped because
+    /// `deletion_flag`/`erasing` is set (#4928 erase barrier).
+    fn create_tag_skip(name: &str, color: &str) -> TagRecord {
+        TagRecord {
+            id: 0,
+            name: name.to_string(),
+            color: color.to_string(),
+            created_at: String::new(),
+        }
+    }
+
+    fn create_tag_inner(
+        conn: &rusqlite::Connection,
+        name: &str,
+        color: &str,
+    ) -> Result<TagRecord, StorageError> {
         conn.execute(
             "INSERT INTO tags (name, color) VALUES (?1, ?2)",
             rusqlite::params![name, color],
@@ -84,11 +148,17 @@ impl SqliteStorage {
     }
 
     pub fn get_all_tags(&self) -> Result<Vec<TagRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::get_all_tags_inner(read.conn())
+    }
 
+    /// Async `get_all_tags` over the read funnel (ADR-026 PR-5).
+    pub(crate) async fn get_all_tags_async(&self) -> Result<Vec<TagRecord>, StorageError> {
+        self.with_conn_read(Self::get_all_tags_inner).await
+    }
+
+    fn get_all_tags_inner(conn: &rusqlite::Connection) -> Result<Vec<TagRecord>, StorageError> {
         let mut stmt = conn
             .prepare("SELECT id, name, color, created_at FROM tags ORDER BY name")
             .map_err(|e| StorageError::Internal(format!("Failed to prepare query: {e}")))?;
@@ -110,11 +180,24 @@ impl SqliteStorage {
     }
 
     pub fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::get_tag_inner(read.conn(), tag_id)
+    }
 
+    /// Async `get_tag` over the read funnel (ADR-026 PR-5).
+    pub(crate) async fn get_tag_async(
+        &self,
+        tag_id: i64,
+    ) -> Result<Option<TagRecord>, StorageError> {
+        self.with_conn_read(move |conn| Self::get_tag_inner(conn, tag_id))
+            .await
+    }
+
+    fn get_tag_inner(
+        conn: &rusqlite::Connection,
+        tag_id: i64,
+    ) -> Result<Option<TagRecord>, StorageError> {
         let result = conn.query_row(
             "SELECT id, name, color, created_at FROM tags WHERE id = ?1",
             rusqlite::params![tag_id],
@@ -136,11 +219,19 @@ impl SqliteStorage {
     }
 
     pub fn delete_tag(&self, tag_id: i64) -> Result<bool, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false, tags ∈ ALL_TABLES).
+        self.conn
+            .write_lock()
+            .run(false, |conn| Self::delete_tag_inner(conn, tag_id))
+    }
 
+    /// Async `delete_tag` over the write funnel (ADR-026 PR-5).
+    pub(crate) async fn delete_tag_async(&self, tag_id: i64) -> Result<bool, StorageError> {
+        self.with_conn(move |conn| Self::delete_tag_inner(conn, tag_id))
+            .await
+    }
+
+    fn delete_tag_inner(conn: &rusqlite::Connection, tag_id: i64) -> Result<bool, StorageError> {
         let deleted = conn
             .execute("DELETE FROM tags WHERE id = ?1", rusqlite::params![tag_id])
             .map_err(|e| StorageError::Internal(format!("Failed to delete tag: {e}")))?;
@@ -150,11 +241,27 @@ impl SqliteStorage {
     }
 
     pub fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, frame_tags ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            Self::add_tag_to_frame_inner(conn, frame_id, tag_id)
+        })
+    }
 
+    /// Async `add_tag_to_frame` over the write funnel (ADR-026 PR-5).
+    pub(crate) async fn add_tag_to_frame_async(
+        &self,
+        frame_id: i64,
+        tag_id: i64,
+    ) -> Result<(), StorageError> {
+        self.with_conn(move |conn| Self::add_tag_to_frame_inner(conn, frame_id, tag_id))
+            .await
+    }
+
+    fn add_tag_to_frame_inner(
+        conn: &rusqlite::Connection,
+        frame_id: i64,
+        tag_id: i64,
+    ) -> Result<(), StorageError> {
         conn.execute(
             "INSERT OR IGNORE INTO frame_tags (frame_id, tag_id) VALUES (?1, ?2)",
             rusqlite::params![frame_id, tag_id],
@@ -166,11 +273,27 @@ impl SqliteStorage {
     }
 
     pub fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        self.conn.write_lock().run(false, |conn| {
+            Self::remove_tag_from_frame_inner(conn, frame_id, tag_id)
+        })
+    }
 
+    /// Async `remove_tag_from_frame` over the write funnel (ADR-026 PR-5).
+    pub(crate) async fn remove_tag_from_frame_async(
+        &self,
+        frame_id: i64,
+        tag_id: i64,
+    ) -> Result<bool, StorageError> {
+        self.with_conn(move |conn| Self::remove_tag_from_frame_inner(conn, frame_id, tag_id))
+            .await
+    }
+
+    fn remove_tag_from_frame_inner(
+        conn: &rusqlite::Connection,
+        frame_id: i64,
+        tag_id: i64,
+    ) -> Result<bool, StorageError> {
         let deleted = conn
             .execute(
                 "DELETE FROM frame_tags WHERE frame_id = ?1 AND tag_id = ?2",
@@ -186,11 +309,24 @@ impl SqliteStorage {
     }
 
     pub fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::get_tags_for_frame_inner(read.conn(), frame_id)
+    }
 
+    /// Async `get_tags_for_frame` over the read funnel (ADR-026 PR-5).
+    pub(crate) async fn get_tags_for_frame_async(
+        &self,
+        frame_id: i64,
+    ) -> Result<Vec<TagRecord>, StorageError> {
+        self.with_conn_read(move |conn| Self::get_tags_for_frame_inner(conn, frame_id))
+            .await
+    }
+
+    fn get_tags_for_frame_inner(
+        conn: &rusqlite::Connection,
+        frame_id: i64,
+    ) -> Result<Vec<TagRecord>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT t.id, t.name, t.color, t.created_at
@@ -222,10 +358,9 @@ impl SqliteStorage {
         tag_id: i64,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         let mut stmt = conn
             .prepare(
@@ -262,11 +397,32 @@ impl SqliteStorage {
     }
 
     pub fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        self.conn.write_lock().run(false, |conn| {
+            Self::update_tag_inner(conn, tag_id, name, color)
+        })
+    }
 
+    /// Async `update_tag` over the write funnel (ADR-026 PR-5).
+    pub(crate) async fn update_tag_async(
+        &self,
+        tag_id: i64,
+        name: &str,
+        color: &str,
+    ) -> Result<bool, StorageError> {
+        // owned move into the Send + 'static closure.
+        let name = name.to_string();
+        let color = color.to_string();
+        self.with_conn(move |conn| Self::update_tag_inner(conn, tag_id, &name, &color))
+            .await
+    }
+
+    fn update_tag_inner(
+        conn: &rusqlite::Connection,
+        tag_id: i64,
+        name: &str,
+        color: &str,
+    ) -> Result<bool, StorageError> {
         let updated = conn
             .execute(
                 "UPDATE tags SET name = ?1, color = ?2 WHERE id = ?3",
@@ -320,7 +476,7 @@ mod tests {
 
         // Seed 2 frames via direct SQL (test has no frame API handy).
         {
-            let conn = storage.conn.lock().unwrap();
+            let conn = storage.conn.test_lock();
             conn.execute(
                 "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image) \
                  VALUES ('2026-04-18T00:00:00Z', 'manual', 'a', 'a', 0.5, 1920, 1080, 0)",

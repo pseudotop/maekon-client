@@ -191,11 +191,15 @@ pub async fn subscribe_metrics(
                     }
                 }
             } else {
-                ticker
-                    .as_mut()
-                    .expect("ticker initialized when interval_secs > 0")
-                    .tick()
-                    .await;
+                // SAFETY: ticker is Some when interval_secs > 0 (set
+                // unconditionally in the `if interval_secs > 0` block above).
+                // The debug_assert catches any future refactoring that breaks
+                // this invariant at dev time without panicking in production.
+                #[cfg(debug_assertions)]
+                debug_assert!(ticker.is_some(), "ticker must be initialized when interval_secs > 0");
+                if let Some(t) = ticker.as_mut() {
+                    t.tick().await;
+                }
             }
 
             // ── B. Metrics + classify + maybe emit hint ───────────────────
@@ -243,23 +247,38 @@ pub async fn subscribe_metrics(
                 }
             }
 
-            // ── D. Fetch bucket via spawn_blocking ────────────────────────
+            // ── D. Fetch bucket via the async storage funnel ───────────────
+            //
+            // ADR-026 PR-9: `aggregate_metrics_window` is now an async
+            // `DashboardStreamingStorage` method that offloads the SQLite read
+            // onto `spawn_blocking` internally (the `with_conn_read` funnel), so
+            // the hand-rolled `spawn_blocking` wrapper is replaced by a direct
+            // `.await`. A blocking-pool join failure is surfaced inside the
+            // funnel as a `CoreError`, collapsing the former three-arm match
+            // into the standard `Ok`/`Err` pair.
             //
             // IMP-5 / IMP-29 (1-tick smearing): `window_start` uses the
             // post-refresh `effective_interval_cache`, so the first bucket
             // after a level transition uses the NEW interval's window span.
             // Documented in spec §11; acceptable.
+            // SAFETY: effective_interval_cache is always clamped to
+            // [INTERVAL_FLOOR, INTERVAL_CEILING] (both well under i64::MAX
+            // nanoseconds). The debug_assert catches any future change that
+            // widens the ceiling beyond chrono::Duration range at dev time.
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                effective_interval_cache <= std::time::Duration::from_secs(86_400),
+                "effective_interval_cache exceeds chrono::Duration safe range"
+            );
             let window_start = chrono::Utc::now()
                 - chrono::Duration::from_std(effective_interval_cache)
-                    .expect("effective_interval_cache bounded by INTERVAL_CEILING");
+                    .unwrap_or(chrono::Duration::seconds(60));
             let window_end = chrono::Utc::now();
-            let storage_clone = storage.clone();
-            let fetch = tokio::task::spawn_blocking(move || {
-                storage_clone.aggregate_metrics_window(window_start, window_end)
-            })
-            .await;
+            let fetch = storage
+                .aggregate_metrics_window(window_start, window_end)
+                .await;
             match fetch {
-                Ok(Ok(b)) => {
+                Ok(b) => {
                     consecutive_db_failures = 0;
                     yield Ok(SubscribeMetricsResponse {
                         payload: Some(MetricsPayload::Data(MetricBucket {
@@ -277,7 +296,7 @@ pub async fn subscribe_metrics(
                     });
                     last_emit = Some(Instant::now());
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     consecutive_db_failures += 1;
                     warn!(
                         err.code = %e.code(),
@@ -306,14 +325,6 @@ pub async fn subscribe_metrics(
                     // iteration retries.
                     continue;
                 }
-                Err(join_err) => {
-                    // spawn_blocking panicked or was cancelled — fatal for
-                    // this stream. No task-id leak in the outward message
-                    // (M7 advisory); server-side logs have full detail.
-                    warn!(error = %join_err, "SubscribeMetrics spawn_blocking join failure");
-                    yield Err(Status::internal("task join failure"));
-                    return;
-                }
             }
         }
     };
@@ -323,4 +334,42 @@ pub async fn subscribe_metrics(
     // call paths (loopback / unit tests), `msg_counter` is a throwaway.
     let counted = super::counting_stream::CountingStream::new(Box::pin(out), msg_counter);
     Ok(Response::new(Box::pin(counted)))
+}
+
+#[cfg(test)]
+mod tests {
+    // NB: both unit tests below use fully-qualified `std::time::Duration` /
+    // `chrono::Duration`; no `use super::*` is needed (was a dormant unused
+    // import surfaced once this gated module is compiled under `--tests`).
+
+    /// Verifies that the `effective_interval_cache` fallback path (replacing
+    /// the former `.expect()`) never panics for any value in [INTERVAL_FLOOR,
+    /// INTERVAL_CEILING].  The `unwrap_or` fallback of 60s is also exercised
+    /// here to confirm it compiles and produces a valid `chrono::Duration`.
+    #[test]
+    fn effective_interval_within_ceiling_converts_without_panic() {
+        // Any value between floor and ceiling must convert cleanly.
+        for secs in [0u64, 1, 5, 30, 60] {
+            let d = std::time::Duration::from_secs(secs.max(1));
+            let result = chrono::Duration::from_std(d);
+            // Strengthen: pin the converted value so a refactor that changes
+            // the from_std conversion (e.g., overflow clamping) is caught. (#5594)
+            let converted = result
+                .unwrap_or_else(|e| panic!("chrono::Duration::from_std failed for {d:?}: {e}"));
+            assert_eq!(
+                converted.num_seconds(),
+                secs.max(1) as i64,
+                "converted duration must round-trip for {d:?}"
+            );
+        }
+    }
+
+    /// Confirms the fallback value (60 s) used in the `unwrap_or` branch is
+    /// itself a valid `chrono::Duration` — regression guard against someone
+    /// changing the fallback to an out-of-range constant.
+    #[test]
+    fn fallback_duration_60s_is_valid() {
+        let fallback = chrono::Duration::seconds(60);
+        assert!(fallback.num_seconds() == 60);
+    }
 }

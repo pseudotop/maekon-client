@@ -53,6 +53,8 @@ pub fn parse_subprocess_invocation_mode(raw: &str) -> Result<SubprocessInvocatio
         "codex_exec_json" => Ok(SubprocessInvocationMode::CodexExecJson),
         "claude_print_json" => Ok(SubprocessInvocationMode::ClaudePrintJson),
         "gemini_cli_prompt" => Ok(SubprocessInvocationMode::GeminiCliPrompt),
+        "manual_chat_gui" => Ok(SubprocessInvocationMode::ManualChatGui),
+        "codex_app_server" => Ok(SubprocessInvocationMode::CodexAppServer),
         other => Err(format!("Unsupported subprocess invocation mode '{other}'.")),
     }
 }
@@ -62,6 +64,9 @@ pub fn parse_subprocess_auth_probe_mode(raw: &str) -> Result<SubprocessAuthProbe
         "none" => Ok(SubprocessAuthProbeMode::None),
         "codex_login_status_text" => Ok(SubprocessAuthProbeMode::CodexLoginStatusText),
         "claude_auth_status_json" => Ok(SubprocessAuthProbeMode::ClaudeAuthStatusJson),
+        // E21 #4868 Part 1: structured read-only `account/read` probe for the
+        // codex app-server surface (replaces the text grep on that surface only).
+        "codex_account_read_json" => Ok(SubprocessAuthProbeMode::CodexAccountReadJson),
         other => Err(format!("Unsupported subprocess auth probe mode '{other}'.")),
     }
 }
@@ -109,5 +114,76 @@ pub(super) fn default_model_support_status(raw: &str) -> ProviderModelSupportSta
         "supported" => ProviderModelSupportStatus::Supported,
         "unsupported" => ProviderModelSupportStatus::Unsupported,
         _ => ProviderModelSupportStatus::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_codex_app_server_invocation_mode() {
+        // E21-2 (#4864): app-server is a new headless invocation mode alongside
+        // the exec-based ones. The runtime adapter lands in #4865.
+        assert_eq!(
+            parse_subprocess_invocation_mode("codex_app_server"),
+            Ok(SubprocessInvocationMode::CodexAppServer)
+        );
+    }
+
+    #[test]
+    fn codex_exec_json_invocation_mode_unchanged() {
+        // Regression guard: adding the app-server variant must not disturb the
+        // existing exec path (#4864 AC).
+        assert_eq!(
+            parse_subprocess_invocation_mode("codex_exec_json"),
+            Ok(SubprocessInvocationMode::CodexExecJson)
+        );
+    }
+
+    #[test]
+    fn unknown_invocation_mode_still_errors() {
+        let err = parse_subprocess_invocation_mode("nope_not_a_mode").unwrap_err();
+        assert!(
+            err.contains("Unsupported subprocess invocation mode"),
+            "unknown mode must report unsupported; got: {err}"
+        );
+    }
+
+    #[test]
+    fn parses_codex_account_read_auth_probe_mode() {
+        // E21 #4868 Part 1: the new structured account/read probe mode string maps
+        // to the dedicated variant.
+        assert_eq!(
+            parse_subprocess_auth_probe_mode("codex_account_read_json"),
+            Ok(SubprocessAuthProbeMode::CodexAccountReadJson)
+        );
+    }
+
+    #[test]
+    fn existing_auth_probe_modes_unchanged() {
+        // Regression guard: adding the account/read variant must not disturb the
+        // existing text/JSON probe modes.
+        assert_eq!(
+            parse_subprocess_auth_probe_mode("codex_login_status_text"),
+            Ok(SubprocessAuthProbeMode::CodexLoginStatusText)
+        );
+        assert_eq!(
+            parse_subprocess_auth_probe_mode("claude_auth_status_json"),
+            Ok(SubprocessAuthProbeMode::ClaudeAuthStatusJson)
+        );
+        assert_eq!(
+            parse_subprocess_auth_probe_mode("none"),
+            Ok(SubprocessAuthProbeMode::None)
+        );
+    }
+
+    #[test]
+    fn unknown_auth_probe_mode_still_errors() {
+        let err = parse_subprocess_auth_probe_mode("nope_not_a_probe_mode").unwrap_err();
+        assert!(
+            err.contains("Unsupported subprocess auth probe mode"),
+            "unknown probe mode must report unsupported; got: {err}"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FocusMetricsDto {
     pub date: String,
     pub total_active_secs: u64,
@@ -14,12 +15,14 @@ pub struct FocusMetricsDto {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FocusMetricsResponse {
     pub today: FocusMetricsDto,
     pub history: Vec<FocusMetricsDto>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkSessionDto {
     pub id: i64,
     pub started_at: String,
@@ -33,6 +36,7 @@ pub struct WorkSessionDto {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InterruptionDto {
     pub id: i64,
     pub interrupted_at: String,
@@ -46,6 +50,7 @@ pub struct InterruptionDto {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LocalSuggestionDto {
     pub id: i64,
     pub suggestion_type: String,
@@ -57,6 +62,7 @@ pub struct LocalSuggestionDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SuggestionFeedbackRequest {
     pub action: String,
 }

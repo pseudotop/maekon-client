@@ -14,28 +14,31 @@ impl TagsQueryService {
         Self { ctx }
     }
 
-    pub fn list_tags(&self) -> Result<Vec<TagResponse>, ApiError> {
+    pub async fn list_tags(&self) -> Result<Vec<TagResponse>, ApiError> {
         self.ctx
             .storage
             .get_all_tags()
+            .await
             .map_err(ApiError::from)
             .map(|tags| tags.into_iter().map(assemble_tag_response).collect())
     }
 
-    pub fn get_tag(&self, tag_id: i64) -> Result<TagResponse, ApiError> {
+    pub async fn get_tag(&self, tag_id: i64) -> Result<TagResponse, ApiError> {
         let tag = self
             .ctx
             .storage
-            .get_tag(tag_id)?
+            .get_tag(tag_id)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Tag ID: {tag_id}")))?;
 
         Ok(assemble_tag_response(tag))
     }
 
-    pub fn get_frame_tags(&self, frame_id: i64) -> Result<Vec<TagResponse>, ApiError> {
+    pub async fn get_frame_tags(&self, frame_id: i64) -> Result<Vec<TagResponse>, ApiError> {
         self.ctx
             .storage
             .get_tags_for_frame(frame_id)
+            .await
             .map_err(ApiError::from)
             .map(|tags| tags.into_iter().map(assemble_tag_response).collect())
     }
@@ -51,17 +54,17 @@ impl TagsCommandService {
         Self { ctx }
     }
 
-    pub fn create_tag(&self, request: &CreateTagRequest) -> Result<TagResponse, ApiError> {
+    pub async fn create_tag(&self, request: &CreateTagRequest) -> Result<TagResponse, ApiError> {
         let color = request
             .color
             .clone()
             .unwrap_or_else(|| "#3b82f6".to_string());
 
-        let tag = self.ctx.storage.create_tag(&request.name, &color)?;
+        let tag = self.ctx.storage.create_tag(&request.name, &color).await?;
         Ok(assemble_tag_response(tag))
     }
 
-    pub fn update_tag(
+    pub async fn update_tag(
         &self,
         tag_id: i64,
         request: &UpdateTagRequest,
@@ -69,17 +72,20 @@ impl TagsCommandService {
         let updated = self
             .ctx
             .storage
-            .update_tag(tag_id, &request.name, &request.color)?;
+            .update_tag(tag_id, &request.name, &request.color)
+            .await?;
 
         if !updated {
             return Err(ApiError::NotFound(format!("Tag ID: {tag_id}")));
         }
 
-        TagsQueryService::new(self.ctx.clone()).get_tag(tag_id)
+        TagsQueryService::new(self.ctx.clone())
+            .get_tag(tag_id)
+            .await
     }
 
-    pub fn delete_tag(&self, tag_id: i64) -> Result<serde_json::Value, ApiError> {
-        let deleted = self.ctx.storage.delete_tag(tag_id)?;
+    pub async fn delete_tag(&self, tag_id: i64) -> Result<serde_json::Value, ApiError> {
+        let deleted = self.ctx.storage.delete_tag(tag_id).await?;
 
         if !deleted {
             return Err(ApiError::NotFound(format!("Tag ID: {tag_id}")));
@@ -88,21 +94,25 @@ impl TagsCommandService {
         Ok(serde_json::json!({ "message": "Tag deleted." }))
     }
 
-    pub fn add_tag_to_frame(
+    pub async fn add_tag_to_frame(
         &self,
         frame_id: i64,
         tag_id: i64,
     ) -> Result<serde_json::Value, ApiError> {
-        self.ctx.storage.add_tag_to_frame(frame_id, tag_id)?;
+        self.ctx.storage.add_tag_to_frame(frame_id, tag_id).await?;
         Ok(serde_json::json!({ "message": "Tag added to frame." }))
     }
 
-    pub fn remove_tag_from_frame(
+    pub async fn remove_tag_from_frame(
         &self,
         frame_id: i64,
         tag_id: i64,
     ) -> Result<serde_json::Value, ApiError> {
-        let removed = self.ctx.storage.remove_tag_from_frame(frame_id, tag_id)?;
+        let removed = self
+            .ctx
+            .storage
+            .remove_tag_from_frame(frame_id, tag_id)
+            .await?;
 
         if !removed {
             return Err(ApiError::NotFound(format!(

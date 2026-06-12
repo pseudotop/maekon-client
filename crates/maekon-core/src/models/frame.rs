@@ -52,6 +52,10 @@ pub struct FrameMetadata {
     pub window_title: String,
     pub resolution: (u32, u32),
     pub importance: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_id: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_bundle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,17 +100,6 @@ pub struct ProcessedFrame {
     /// Only populated when importance >= 0.8 and OCR regions are non-empty.
     #[serde(skip)]
     pub raw_rgba: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextUpload {
-    pub session_id: String,
-    pub timestamp: DateTime<Utc>,
-    pub metadata: FrameMetadata,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ocr_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<ImagePayload>,
 }
 
 #[cfg(test)]

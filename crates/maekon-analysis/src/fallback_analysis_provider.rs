@@ -11,7 +11,10 @@ use std::sync::{
 
 use async_trait::async_trait;
 use maekon_core::{
-    error::CoreError, models::suggestion::Suggestion, ports::analysis_provider::AnalysisProvider,
+    error::CoreError,
+    models::memory_graph::{ClaimStatusChange, RelationEdgeProposal},
+    models::suggestion::Suggestion,
+    ports::analysis_provider::AnalysisProvider,
 };
 
 // ── FallbackAnalysisProvider ───────────────────────────────────────────────
@@ -108,6 +111,56 @@ impl AnalysisProvider for FallbackAnalysisProvider {
         }
     }
 
+    async fn extract_relations(
+        &self,
+        claims_json: &str,
+        system_prompt: &str,
+    ) -> Result<Vec<RelationEdgeProposal>, CoreError> {
+        // MUST override: the trait default `Ok(vec![])` would silently bypass a
+        // healthy primary provider (F1 fallback-trap).
+        match self
+            .primary
+            .extract_relations(claims_json, system_prompt)
+            .await
+        {
+            Ok(rels) => {
+                self.primary_healthy.store(true, Ordering::Relaxed);
+                Ok(rels)
+            }
+            Err(e) => {
+                self.primary_healthy.store(false, Ordering::Relaxed);
+                tracing::warn!("primary extract_relations failed, trying fallback: {e}");
+                self.fallback
+                    .extract_relations(claims_json, system_prompt)
+                    .await
+            }
+        }
+    }
+
+    async fn detect_contradictions(
+        &self,
+        claims_json: &str,
+        system_prompt: &str,
+    ) -> Result<Vec<ClaimStatusChange>, CoreError> {
+        match self
+            .primary
+            .detect_contradictions(claims_json, system_prompt)
+            .await
+        {
+            Ok(changes) => {
+                self.primary_healthy.store(true, Ordering::Relaxed);
+                Ok(changes)
+            }
+            Err(e) => {
+                self.primary_healthy.store(false, Ordering::Relaxed);
+                tracing::warn!("primary detect_contradictions failed, trying fallback: {e}");
+                self.fallback
+                    .detect_contradictions(claims_json, system_prompt)
+                    .await
+            }
+        }
+    }
+
     fn provider_name(&self) -> &str {
         self.primary.provider_name()
     }
@@ -181,6 +234,7 @@ mod tests {
                 expires_at: None,
                 source: SuggestionSource::LlmLocal,
                 reasoning: None,
+                context_scope: None,
             }])
         }
 
@@ -304,5 +358,84 @@ mod tests {
         {
             assert!(msg.contains("No LLM provider configured"));
         }
+    }
+
+    // ── ADR-023 Phase-2 D1/D2 provider-method tests ────────────────────────
+
+    use maekon_core::models::memory_graph::{ClaimStatus, EdgeType};
+
+    /// Overrides the new D1/D2 methods to return one proposal each.
+    struct RelationProvider;
+
+    #[async_trait]
+    impl AnalysisProvider for RelationProvider {
+        async fn analyze(&self, _c: &str, _s: &str) -> Result<Vec<Suggestion>, CoreError> {
+            Ok(vec![])
+        }
+        async fn extract_relations(
+            &self,
+            _c: &str,
+            _s: &str,
+        ) -> Result<Vec<RelationEdgeProposal>, CoreError> {
+            Ok(vec![RelationEdgeProposal {
+                src_claim_id: "clm_a".into(),
+                dst_id: "clm_b".into(),
+                edge_type: EdgeType::Supports,
+                confidence: 0.9,
+                evidence_ref: None,
+            }])
+        }
+        async fn detect_contradictions(
+            &self,
+            _c: &str,
+            _s: &str,
+        ) -> Result<Vec<ClaimStatusChange>, CoreError> {
+            Ok(vec![ClaimStatusChange {
+                loser_claim_id: "clm_a".into(),
+                winner_claim_id: "clm_b".into(),
+                new_status: ClaimStatus::Superseded,
+                confidence: 0.95,
+                rationale: None,
+            }])
+        }
+        fn provider_name(&self) -> &str {
+            "relation"
+        }
+    }
+
+    #[tokio::test]
+    async fn noop_new_methods_return_empty_not_err() {
+        // F1/AC6: NoOp inherits the default Ok(vec![]) for both new methods.
+        let provider = NoOpAnalysisProvider;
+        assert!(provider
+            .extract_relations("{}", "")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(provider
+            .detect_contradictions("{}", "")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_delegates_new_methods_to_healthy_primary() {
+        // F1 fallback-trap: without the Fallback override, the trait default
+        // Ok(vec![]) would silently bypass this healthy primary and return empty.
+        let provider = FallbackAnalysisProvider::new(
+            Arc::new(RelationProvider),
+            Arc::new(NoOpAnalysisProvider),
+        );
+        let rels = provider.extract_relations("{}", "").await.unwrap();
+        assert_eq!(
+            rels.len(),
+            1,
+            "healthy primary's relation must not be bypassed"
+        );
+        assert_eq!(rels[0].edge_type, EdgeType::Supports);
+        let changes = provider.detect_contradictions("{}", "").await.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].new_status, ClaimStatus::Superseded);
     }
 }

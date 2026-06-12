@@ -1,9 +1,9 @@
 use maekon_core::config::{AppConfig, CredentialBackendKind};
 use maekon_core::config_manager::ConfigManager;
-use maekon_core::consent::ConsentManager;
 use maekon_core::ports::accessibility::AccessibilityExtractor;
 use maekon_core::ports::audio_capture::AudioCapturePort;
 use maekon_core::ports::coaching::CoachingPort;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::integration::{IntegrationAuthPort, IntegrationSessionPort};
@@ -26,10 +26,10 @@ use crate::magic_overlay::MagicOverlayHandle;
 use crate::session_manager::SessionManagerImpl;
 use crate::suggestion_manager::SuggestionManager;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(crate) type OAuthCoordinator =
     Option<Arc<maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator>>;
-#[cfg(not(feature = "server"))]
+#[cfg(not(feature = "analysis"))]
 pub(crate) type OAuthCoordinator = Option<()>;
 
 /// Health flags for the analysis LLM provider fallback chain.
@@ -49,7 +49,7 @@ pub struct CaptureContext {
     /// Accessibility extractor for scene analysis (A2).
     pub accessibility_extractor: Option<Arc<dyn AccessibilityExtractor>>,
     /// Consent manager for PII level gating in accessibility extraction (A2).
-    pub consent_manager: Option<Arc<ConsentManager>>,
+    pub consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Work type classifier for scene analysis (A2).
     pub work_classifier: Option<Arc<dyn WorkTypeClassifier>>,
 }
@@ -139,20 +139,57 @@ impl AiSessionRuntimeState {
     }
 }
 
+/// Feature-scoped Tauri managed state holding the Codex approval registry
+/// (E21 #5044). Holds the SAME `Arc<Mutex<HashMap<..>>>` the real
+/// `CodexUiApprovalHook` writes to, so the `respond_codex_approval` IPC command
+/// can resolve the parked oneshot for a `request_id`. Default is an empty map
+/// (no approvals can be resolved until the hook + decider are wired).
+#[derive(Clone)]
+pub struct CodexApprovalRuntimeState {
+    registry: crate::provider_adapters::CodexApprovalRegistry,
+}
+
+impl Default for CodexApprovalRuntimeState {
+    fn default() -> Self {
+        Self {
+            registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+}
+
+impl CodexApprovalRuntimeState {
+    /// Wrap an existing registry Arc — used to install the SAME instance the
+    /// hook writes to (single-instance dead-writer guard).
+    pub(crate) fn new(registry: crate::provider_adapters::CodexApprovalRegistry) -> Self {
+        Self { registry }
+    }
+
+    pub(crate) fn registry(&self) -> &crate::provider_adapters::CodexApprovalRegistry {
+        &self.registry
+    }
+}
+
 /// Feature-scoped Tauri managed state for audio capture and STT commands.
 pub struct AudioRuntimeState {
     config_manager: ConfigManager,
     /// ConsentManager for GDPR-compliant gate check in start_audio_capture (CONS-PC04 / D13).
-    consent_manager: Option<Arc<ConsentManager>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Tray-pause veto flag for start_audio_capture gate (CONS-PC02 / D13).
     capture_paused: Arc<AtomicBool>,
     audio: AudioContext,
+    /// Immediate VAD re-gate signal. Fired by the pause handler (and, in future,
+    /// a consent-revoke command) so a privacy-revoking gesture tears down the
+    /// microphone at once rather than waiting for the ≤2 s backstop tick.
+    audio_regate: Arc<tokio::sync::Notify>,
+    /// Remembers (at the pause edge) whether VAD was running, so an unpause can
+    /// auto-restart it. One-shot: set at pause, read-and-cleared at unpause.
+    vad_resume_pending: Arc<AtomicBool>,
 }
 
 impl AudioRuntimeState {
     pub(crate) fn new(
         config_manager: ConfigManager,
-        consent_manager: Option<Arc<ConsentManager>>,
+        consent_manager: Option<Arc<dyn ConsentManagerPort>>,
         capture_paused: Arc<AtomicBool>,
         audio: AudioContext,
     ) -> Self {
@@ -161,6 +198,8 @@ impl AudioRuntimeState {
             consent_manager,
             capture_paused,
             audio,
+            audio_regate: Arc::new(tokio::sync::Notify::new()),
+            vad_resume_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -182,7 +221,7 @@ impl AudioRuntimeState {
         &self.config_manager
     }
 
-    pub(crate) fn consent_manager(&self) -> Option<&Arc<ConsentManager>> {
+    pub(crate) fn consent_manager(&self) -> Option<&Arc<dyn ConsentManagerPort>> {
         self.consent_manager.as_ref()
     }
 
@@ -190,10 +229,32 @@ impl AudioRuntimeState {
         &self.capture_paused
     }
 
+    pub(crate) fn audio_regate(&self) -> &Arc<tokio::sync::Notify> {
+        &self.audio_regate
+    }
+
+    pub(crate) fn set_vad_resume_pending(&self, pending: bool) {
+        self.vad_resume_pending
+            .store(pending, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Read and clear the resume flag (one-shot).
+    pub(crate) fn take_vad_resume_pending(&self) -> bool {
+        self.vad_resume_pending
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(crate) fn audio(&self) -> &AudioContext {
         &self.audio
     }
 }
+
+/// E20-41 (#4833): Tauri managed state holding the ephemeral per-session
+/// local-API auth token. Read by the `get_local_auth_token` IPC command — the
+/// WebView's race-safe fallback when the injected `window.__MAEKON_LOCAL_AUTH__`
+/// global is not yet set. IPC is a Tauri-internal channel (not HTTP), so exposing
+/// the token here does not widen the multi-user-loopback attack surface.
+pub struct LocalAuthTokenState(pub Arc<str>);
 
 /// Feature-scoped Tauri managed state for config-backed IPC commands.
 pub struct ConfigRuntimeState {
@@ -273,7 +334,8 @@ pub struct AutomationRuntimeState {
     controller: Option<Arc<dyn maekon_core::ports::automation::AutomationPort>>,
 }
 
-#[allow(dead_code)] // wired when automation controller is available
+// #5703: removed stale `#[allow(dead_code)]` — controller is now wired via
+// `with_automation_runtime` in the ManagedStateBuilder chain.
 impl AutomationRuntimeState {
     pub(crate) fn new(
         controller: Option<Arc<dyn maekon_core::ports::automation::AutomationPort>>,
@@ -451,6 +513,7 @@ impl Default for ManagedStateCapabilityProfile {
 pub(crate) struct ManagedStateRegistration {
     pub(crate) app_state: AppState,
     pub(crate) ai_session_runtime_state: AiSessionRuntimeState,
+    pub(crate) codex_approval_runtime_state: CodexApprovalRuntimeState,
     pub(crate) audio_runtime_state: AudioRuntimeState,
     pub(crate) config_runtime_state: ConfigRuntimeState,
     pub(crate) suggestion_runtime_state: SuggestionRuntimeState,
@@ -469,6 +532,7 @@ pub(crate) struct ManagedStateRegistration {
 pub(crate) struct ManagedStateBuilder {
     app_state: AppState,
     ai_session_runtime_state: AiSessionRuntimeState,
+    codex_approval_runtime_state: CodexApprovalRuntimeState,
     audio_runtime_state: AudioRuntimeState,
     config_runtime_state: ConfigRuntimeState,
     suggestion_runtime_state: SuggestionRuntimeState,
@@ -490,6 +554,7 @@ impl ManagedStateBuilder {
         Self {
             app_state,
             ai_session_runtime_state: AiSessionRuntimeState::default(),
+            codex_approval_runtime_state: CodexApprovalRuntimeState::default(),
             audio_runtime_state,
             config_runtime_state,
             suggestion_runtime_state: SuggestionRuntimeState::default(),
@@ -510,6 +575,17 @@ impl ManagedStateBuilder {
         ai_session_runtime_state: AiSessionRuntimeState,
     ) -> Self {
         self.ai_session_runtime_state = ai_session_runtime_state;
+        self
+    }
+
+    /// Install the Codex approval registry state (E21 #5044). The registry held
+    /// here MUST be the SAME `Arc` the `CodexUiApprovalHook` writes to, so the
+    /// `respond_codex_approval` command resolves the parked oneshot.
+    pub(crate) fn with_codex_approval_runtime(
+        mut self,
+        codex_approval_runtime_state: CodexApprovalRuntimeState,
+    ) -> Self {
+        self.codex_approval_runtime_state = codex_approval_runtime_state;
         self
     }
 
@@ -534,6 +610,17 @@ impl ManagedStateBuilder {
         self
     }
 
+    /// Wire the AutomationRuntimeState so all 7 automation IPC commands gain a live
+    /// controller. Without this call the state defaults to `Default` (controller = None)
+    /// and every IPC returns service.unavailable. (#5703)
+    pub(crate) fn with_automation_runtime(
+        mut self,
+        automation_runtime_state: AutomationRuntimeState,
+    ) -> Self {
+        self.automation_runtime_state = automation_runtime_state;
+        self
+    }
+
     #[allow(dead_code)] // wired when embedding provider is available
     pub(crate) fn with_embedding_runtime(
         mut self,
@@ -543,7 +630,7 @@ impl ManagedStateBuilder {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(crate) fn with_oauth(
         mut self,
         oauth_port: Option<Arc<dyn OAuthPort>>,
@@ -554,7 +641,7 @@ impl ManagedStateBuilder {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(crate) fn with_secret_backend_profile(
         mut self,
         capability_profile: ManagedStateCapabilityProfile,
@@ -588,6 +675,7 @@ impl ManagedStateBuilder {
         ManagedStateRegistration {
             app_state: self.app_state,
             ai_session_runtime_state: self.ai_session_runtime_state,
+            codex_approval_runtime_state: self.codex_approval_runtime_state,
             audio_runtime_state: self.audio_runtime_state,
             config_runtime_state: self.config_runtime_state,
             suggestion_runtime_state: self.suggestion_runtime_state,
@@ -609,6 +697,7 @@ impl ManagedStateRegistration {
     pub(crate) fn register_on(self, app: &mut App) {
         app.manage(self.app_state);
         app.manage(self.ai_session_runtime_state);
+        app.manage(self.codex_approval_runtime_state);
         app.manage(self.audio_runtime_state);
         app.manage(self.config_runtime_state);
         app.manage(self.suggestion_runtime_state);
@@ -718,12 +807,45 @@ mod tests {
     }
 
     #[test]
+    fn audio_runtime_state_shares_one_regate_notify() {
+        // The pause handler and the VAD task must observe the SAME Notify instance.
+        let temp = TempDir::new().expect("temp dir");
+        let config_manager =
+            ConfigManager::with_path(temp.path().join("config.json")).expect("config manager");
+        let state = AudioRuntimeState::disabled(config_manager);
+        assert!(
+            Arc::ptr_eq(state.audio_regate(), state.audio_regate()),
+            "audio_regate() must return the same shared Notify instance"
+        );
+    }
+
+    #[test]
+    fn vad_resume_pending_set_then_take_is_one_shot() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_manager =
+            ConfigManager::with_path(temp.path().join("config.json")).expect("config manager");
+        let state = AudioRuntimeState::disabled(config_manager);
+
+        assert!(!state.take_vad_resume_pending(), "defaults to false");
+        state.set_vad_resume_pending(true);
+        assert!(
+            state.take_vad_resume_pending(),
+            "take returns the set value"
+        );
+        assert!(
+            !state.take_vad_resume_pending(),
+            "take clears — a second take is false (one-shot)"
+        );
+    }
+
+    #[test]
     fn audio_runtime_state_disabled_seeds_capture_paused_true() {
         // Regression guard: the `disabled()` placeholder state must seed
-        // `capture_paused` with `true`. That value is consumed by the 4-term
-        // privacy gate in `commands::audio::start_audio_capture`; a `false`
-        // seed would bypass the pause veto if a future wiring change let a
-        // real `AudioContext` reach this state without going through
+        // `capture_paused` with `true`. That value is consumed by the shared
+        // 4-term privacy gate (`commands::audio::ensure_capture_permitted`,
+        // used by BOTH `start_audio_capture` and `start_vad_listening`); a
+        // `false` seed would bypass the pause veto if a future wiring change let
+        // a real `AudioContext` reach this state without going through
         // `with_audio_runtime`.
         use std::sync::atomic::Ordering;
 

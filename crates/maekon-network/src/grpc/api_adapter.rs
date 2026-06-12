@@ -1,5 +1,5 @@
 //! gRPC API adapter — bridges UnifiedClient to the ApiClient port trait.
-//! REST-only operations (create_session, end_session, upload_batch, upload_context)
+//! REST-only operations (create_session, end_session, upload_batch)
 //! delegate directly to HttpApiClient. gRPC-capable operations (heartbeat, feedback)
 //! delegate to UnifiedClient.
 
@@ -15,8 +15,6 @@ use tracing::debug;
 use maekon_core::error::CoreError;
 #[cfg(feature = "grpc")]
 use maekon_core::models::event::EventBatch;
-#[cfg(feature = "grpc")]
-use maekon_core::models::frame::ContextUpload;
 #[cfg(feature = "grpc")]
 use maekon_core::models::suggestion::{FeedbackType, SuggestionFeedback};
 #[cfg(feature = "grpc")]
@@ -61,11 +59,6 @@ impl ApiClient for GrpcApiAdapter {
     async fn upload_batch(&self, batch: &EventBatch) -> Result<(), CoreError> {
         debug!("GrpcApiAdapter: upload_batch via REST");
         self.http_fallback.upload_batch(batch).await
-    }
-
-    async fn upload_context(&self, upload: &ContextUpload) -> Result<(), CoreError> {
-        debug!("GrpcApiAdapter: upload_context via REST");
-        self.http_fallback.upload_context(upload).await
     }
 
     async fn send_feedback(&self, feedback: &SuggestionFeedback) -> Result<(), CoreError> {

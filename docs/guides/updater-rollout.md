@@ -59,7 +59,7 @@ Anywhere in the GitHub Release body. The updater's regex-style parser looks for 
 
 ### Added
 
-- Phase 4 Updater Hardening (D9 + D10 + D11). See [design doc](...).
+- Phase 4 Updater Hardening (D9 + D10 + D11).
 
 ### Fixed
 

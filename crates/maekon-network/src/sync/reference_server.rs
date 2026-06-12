@@ -67,7 +67,9 @@ struct PullQuery {
 
 /// Handle to a running reference server.
 ///
-/// Dropping the handle does NOT stop the server; call `shutdown()` explicitly.
+/// Dropping the handle aborts the server task (best-effort).
+/// For a clean shutdown with graceful drain, call `shutdown()` explicitly.
+/// F-RR-C25-03: Drop impl added — mirrors LanPeerServer::drop pattern.
 pub struct ReferenceServerHandle {
     port: u16,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -96,6 +98,23 @@ impl ReferenceServerHandle {
             if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
                 debug!("timeout failed: {e}");
             }
+        }
+    }
+}
+
+/// F-RR-C25-03: Drop impl — 핸들이 암묵적으로 소멸할 때 서버 태스크를 abort 한다.
+/// 테스트 코드에서 핸들을 명시적으로 shutdown() 하지 않고 scope 를 벗어날 때
+/// 서버 태스크가 살아 남아 포트를 점유하는 문제를 방지한다.
+/// (LanPeerServer::drop — crates/maekon-network/src/sync/lan_server/mod.rs:367 — 동일 패턴)
+impl Drop for ReferenceServerHandle {
+    fn drop(&mut self) {
+        // shutdown_tx 가 남아 있으면 신호 전송 (수신자가 이미 사라졌으면 무시)
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        // JoinHandle abort — tokio 런타임이 살아 있는 동안 태스크를 즉시 취소한다.
+        if let Some(handle) = self.server_handle.take() {
+            handle.abort();
         }
     }
 }

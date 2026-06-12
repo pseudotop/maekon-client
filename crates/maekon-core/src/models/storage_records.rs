@@ -167,6 +167,9 @@ pub struct SuggestionRecord {
     pub relevance_score: f64,
     pub is_actionable: bool,
     pub reasoning: Option<String>,
+    pub context_app: Option<String>,
+    pub context_window: Option<String>,
+    pub context_target_id: Option<String>,
     pub shown_at: Option<String>,
     pub dismissed_at: Option<String>,
     pub acted_at: Option<String>,
@@ -194,6 +197,11 @@ impl SuggestionRecord {
                 SuggestionType::WorkflowOptimization
             }
             "CONTEXT_BASED" | "ContextBased" => SuggestionType::ContextBased,
+            "BREAK_REMINDER" | "BreakReminder" => SuggestionType::BreakReminder,
+            "FOCUS_MODE" | "FocusMode" => SuggestionType::FocusMode,
+            "TAKE_BREAK" | "TakeBreak" => SuggestionType::TakeBreak,
+            "NEED_FOCUS_TIME" | "NeedFocusTime" => SuggestionType::NeedFocusTime,
+            "RESTORE_CONTEXT" | "RestoreContext" => SuggestionType::RestoreContext,
             _ => return None,
         };
         let priority = match self.priority.as_str() {
@@ -207,6 +215,11 @@ impl SuggestionRecord {
             SuggestionSource::LLM_LOCAL_STR | "LlmLocal" => SuggestionSource::LlmLocal,
             _ => SuggestionSource::RuleBased,
         };
+        let context_scope = suggestion_context_scope_from_record(
+            self.context_app,
+            self.context_window,
+            self.context_target_id,
+        );
         Some(Suggestion {
             suggestion_id: self.suggestion_id,
             suggestion_type,
@@ -225,8 +238,81 @@ impl SuggestionRecord {
             }),
             source,
             reasoning: self.reasoning,
+            context_scope,
         })
     }
+}
+
+fn suggestion_context_scope_from_record(
+    context_app: Option<String>,
+    context_window: Option<String>,
+    context_target_id: Option<String>,
+) -> Option<crate::models::suggestion::SuggestionContextScope> {
+    use crate::models::suggestion::SuggestionContextScope;
+
+    let scope = SuggestionContextScope {
+        app_name: non_empty_context_value(context_app),
+        window_title: non_empty_context_value(context_window),
+        target_id: non_empty_context_value(context_target_id),
+    };
+
+    if scope.app_name.is_none() && scope.window_title.is_none() && scope.target_id.is_none() {
+        None
+    } else {
+        Some(scope)
+    }
+}
+
+fn non_empty_context_value(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+/// Egress 감사 원장 한 행 (`egress_ledger` 테이블, V36, #4803/E20).
+///
+/// 디바이스를 떠난(`disposition='uploaded'`) 또는 정책상 차단된
+/// (`disposition='blocked'`) 이벤트를 규제 준수 증거로 기록한다.
+/// `IntegrationInsightAuditRecord` 와 동일한 형태(serde + Clone + Debug)를 따른다.
+fn default_recipient_count() -> i64 {
+    1
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EgressLedgerRecord {
+    /// 호출자가 생성하는 UUID. `egress_ledger.record_id` UNIQUE 로 재실행 중복 제거.
+    pub record_id: String,
+    /// 이벤트 유형. 텔레메트리 producer: Context/Window/User/Input/Process/System/
+    /// Clipboard/FileAccess. 동기화 producer(#5143): `CrossDeviceSync`(일반 push)
+    /// 또는 `DeletionEvent`(GDPR Art.17 tombstone push).
+    pub event_type: String,
+    /// 연관 이벤트 id (nullable). events 테이블 id 또는 생성된 식별자.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    /// 직렬화된 payload 바이트 크기. 평문(plaintext) 직렬화 크기이며, 암호화/압축
+    /// 후의 on-wire 크기가 아니다(#5143). LAN fan-out 은 동일 직렬화를 N 피어로
+    /// 보내므로 실제 egress 총량 = `byte_count * recipient_count` (#5147 item 2).
+    pub byte_count: i64,
+    /// egress 수신처 개수(#5147 item 2). LAN multi-peer push = 전달 성공 피어 수,
+    /// File/Remote(단일 목적지) = 1. 누락 시(이전 레코드/텔레메트리) 1 로 기본.
+    #[serde(default = "default_recipient_count")]
+    pub recipient_count: i64,
+    /// egress 대상 (업로드 엔드포인트 / sink 타깃 문자열). 텔레메트리:
+    /// `server.batch_upload`. 동기화: `sync.lan`/`sync.remote`/`sync.file`
+    /// (peer/endpoint 상세는 일부러 기록하지 않음).
+    pub destination: String,
+    /// egress 처분 — `'uploaded'` 또는 `'blocked'`.
+    pub disposition: String,
+    /// egress 시점의 동의 스냅샷. 텔레메트리 path = telemetry/upload 동의; 동기화
+    /// path = `cross_device_sync=<bool>`(#5143).
+    pub consent_state: String,
+    /// 발생 시각 (RFC3339).
+    pub occurred_at: String,
 }
 
 /// Summary of an activity segment for daily digest generation.

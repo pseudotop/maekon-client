@@ -3,7 +3,9 @@ use tauri::command;
 
 use crate::ipc_error::IpcError;
 use crate::runtime_state::AppState;
-use maekon_core::ports::web_storage::DigestStorage;
+// ADR-026 PR-6: `state.storage` is the concrete `Arc<SqliteStorage>`, so the
+// digest calls below resolve to the synchronous inherent twins — no
+// `DigestStorage` trait import (or `.await`) is needed here.
 
 // ── Semantic search IPC commands ──────────────────────────────
 
@@ -80,7 +82,13 @@ pub async fn get_dashboard_day(
         return serde_json::to_value(&cached).map_err(IpcError::from);
     }
 
-    // Not cached — generate from segments on-demand
+    // Not cached — generate from segments on-demand.
+    //
+    // #4631 MINOR-2: the absence of a consent re-check here is intentional. This
+    // is a user-initiated derive (the user opened their dashboard) from segment
+    // data already collected under consent — not background collection. It does
+    // not touch the "nothing collected without consent" invariant; gating it
+    // would only block a user from viewing a digest of their own consented data.
     let segment_records = state
         .storage
         .get_segments_for_date(&date_str)

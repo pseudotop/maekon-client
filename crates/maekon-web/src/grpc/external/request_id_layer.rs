@@ -5,7 +5,7 @@
 //! client's correlation ID.
 //!
 //! Validation rule: ASCII graphic 0x21..=0x7E, length 1..=128. Invalid
-//! values trigger UUIDv4 generation (never reject the request — the header
+//! values trigger ADR-022 request ID generation (never reject the request — the header
 //! is informational).
 
 use std::future::Future;
@@ -13,8 +13,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use http::HeaderValue;
+use maekon_core::id_generation::generate_id;
 use tower::{Layer, Service};
-use uuid::Uuid;
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -73,11 +73,11 @@ where
                 tracing::warn!(
                     incoming = %raw.chars().take(32).collect::<String>(),
                     reason = "validation_failed",
-                    "external_grpc: invalid x-request-id, generating new UUID"
+                    "external_grpc: invalid x-request-id, generating new request ID"
                 );
-                Uuid::new_v4().to_string()
+                generate_id("req")
             }
-            None => Uuid::new_v4().to_string(),
+            None => generate_id("req"),
         };
         req.extensions_mut().insert(RequestId(request_id.clone()));
 
@@ -102,7 +102,7 @@ where
 
 /// Validation: ASCII graphic bytes only, length 1..=128.
 ///
-/// Safely UUIDv4-compatible by construction (UUIDv4 is 36 chars of [0-9a-f-]).
+/// Generated fallback IDs use the ADR-022 `{prefix}_{ULID}` shape.
 /// Rejects whitespace (0x20, \t, \n, \r), control chars, and non-ASCII.
 fn is_valid(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| (0x21..=0x7E).contains(&b))
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generates_uuid_when_missing() {
+    async fn generates_request_id_when_missing() {
         let svc = RequestIdLayer.layer(EchoService {
             preset_response_header: None,
         });
@@ -176,13 +176,8 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert_eq!(id.len(), 36, "UUIDv4 text is 36 chars");
-        assert_eq!(
-            id.chars().filter(|c| *c == '-').count(),
-            4,
-            "UUIDv4 has 4 hyphens"
-        );
-        Uuid::parse_str(id).expect("valid UUID");
+        assert!(id.starts_with("req_"));
+        assert_eq!(id.len(), "req_".len() + 26);
     }
 
     #[tokio::test]
@@ -205,7 +200,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert_ne!(id, "bad\tchar");
-        assert_eq!(id.len(), 36, "fell back to UUID");
+        assert!(id.starts_with("req_"));
     }
 
     #[tokio::test]
@@ -244,7 +239,7 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert_eq!(id.len(), 36);
+        assert!(id.starts_with("req_"));
     }
 
     #[tokio::test]
@@ -264,7 +259,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert_ne!(id, "abc def");
-        assert_eq!(id.len(), 36);
+        assert!(id.starts_with("req_"));
     }
 
     #[tokio::test]

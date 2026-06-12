@@ -1,10 +1,39 @@
 name: gRPC Governance
 
 on:
-  push:
-    branches: [main, develop]
+  workflow_dispatch:
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+    paths:
+      - ".github/actions/rust-cache/**"
+      - ".github/workflows/grpc-governance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "api/proto/**"
+      - "crates/maekon-network/src/proto/**"
+      - "crates/maekon-web/src/proto/generated/**"
+      - "scripts/regenerate-dashboard-protos.sh"
+      - "scripts/regenerate-protos.sh"
+      - "scripts/verify-grpc-compatibility.sh"
+      - "scripts/verify-grpc-mtls-config.sh"
+      - "scripts/verify-grpc-readiness.sh"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/actions/rust-cache/**"
+      - ".github/workflows/grpc-governance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "api/proto/**"
+      - "crates/maekon-network/src/proto/**"
+      - "crates/maekon-web/src/proto/generated/**"
+      - "scripts/regenerate-dashboard-protos.sh"
+      - "scripts/regenerate-protos.sh"
+      - "scripts/verify-grpc-compatibility.sh"
+      - "scripts/verify-grpc-mtls-config.sh"
+      - "scripts/verify-grpc-readiness.sh"
 
 permissions:
   contents: read
@@ -18,7 +47,7 @@ jobs:
     name: gRPC Contract and Readiness Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
 
@@ -26,16 +55,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -48,7 +79,9 @@ jobs:
             libxcb-xfixes0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
@@ -62,6 +95,59 @@ jobs:
         run: |
           TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
           touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+
+      # F-RC-C22-01: Consumer Contract proto source presence.
+      # Public repository root is already the Maekon client snapshot, so the
+      # upstream SSOT comparison runs before export.
+      - name: Verify proto source is present
+        run: |
+          CLIENT_PROTO="api/proto/oneshim/client/v1"
+          if [ ! -d "$CLIENT_PROTO" ]; then
+            echo "MISSING PROTO SOURCE: $CLIENT_PROTO" >&2
+            exit 1
+          fi
+          echo "OK: public proto source exists."
+
+      # regenerate-protos.sh 의 임시 proto-gen 크레이트(prost-build)가 PATH 의
+      # protoc 을 요구한다 — 러너에 기본 설치되어 있지 않다.
+      - name: Install protoc (proto regeneration prerequisite)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          protoc --version
+
+      # F-RC-C22-01: 생성 코드 staleness 감지
+      # regenerate-protos.sh 실행 후 git diff 로 커밋된 코드와 비교.
+      # build.rs 암묵적 재생성만으로는 필드/enum 누락을 감지하지 못하는 문제 차단.
+      - name: Regenerate proto code and verify no diff (F-RC-C22-01)
+        run: |
+          ./scripts/regenerate-protos.sh
+          if ! git diff --quiet -- crates/maekon-network/src/proto/generated/; then
+            echo "STALE GENERATED CODE: regenerate-protos.sh 결과가 커밋된 파일과 다릅니다." >&2
+            git diff -- crates/maekon-network/src/proto/generated/ >&2
+            echo "" >&2
+            echo "  scripts/regenerate-protos.sh 를 실행하고" >&2
+            echo "  생성된 파일을 커밋하세요." >&2
+            exit 1
+          fi
+          echo "OK: 생성된 proto 코드가 최신입니다."
+
+      # F-RC-C34-01: Dashboard proto 생성 코드 drift 감지
+      # regenerate-dashboard-protos.sh 실행 후 git diff 로 커밋된 코드와 비교.
+      # build.rs watch path 가 maekon/ -> oneshim/ 으로 정정됨 (cycle 34 fix).
+      - name: Regenerate dashboard protos (F-RC-C34-01)
+        run: bash scripts/regenerate-dashboard-protos.sh
+      - name: Check dashboard proto drift (F-RC-C34-01)
+        run: |
+          if ! git diff --quiet crates/maekon-web/src/proto/generated/; then
+            echo "::error::Dashboard proto generated code drift detected"
+            git diff crates/maekon-web/src/proto/generated/
+            echo ""
+            echo "  scripts/regenerate-dashboard-protos.sh 를 실행하고"
+            echo "  생성된 파일을 커밋하세요."
+            exit 1
+          fi
+          echo "OK: Dashboard proto 생성 코드가 최신입니다."
 
       - name: Run gRPC compatibility matrix gate
         run: ./scripts/verify-grpc-compatibility.sh

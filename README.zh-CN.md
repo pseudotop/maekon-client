@@ -67,7 +67,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 - 独立模式完整性基线: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 完整性操作手册: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - 文档索引: [docs/README.md](./docs/README.md)
-- 公开发布指南: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
+- 发布检查清单: [docs/release-checklist.md](./docs/release-checklist.md)
 - 自动化指南模板: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - 独立模式采用手册: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - 5 分钟入门指南: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -101,7 +101,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 
 ## 系统要求
 
-- Rust 1.77.1 或更高版本
+- Rust 1.88.0 或更高版本
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## 开发者快速开始（从源码构建）

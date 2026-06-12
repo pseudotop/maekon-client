@@ -6,11 +6,11 @@ mod sync_setup;
 use anyhow::Result;
 use maekon_core::config::AppConfig;
 use maekon_core::config_manager::ConfigManager;
-use maekon_core::consent::ConsentManager;
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
 use maekon_core::ports::coaching_storage::CoachingStoragePort;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::storage::StorageService;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator;
 use maekon_web::RealtimeEvent;
 use std::path::{Path, PathBuf};
@@ -36,18 +36,30 @@ pub(crate) struct AgentRuntimeBundle {
     override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
     /// Shared flag for on-demand re-clustering requests from Tauri/REST.
     recluster_requested: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared flag set by the web "Delete all data" endpoint so a local GDPR
+    /// erasure propagates a device-wide DeletionEvent to LAN sync peers (#4478 G3).
+    erasure_requested: Arc<std::sync::atomic::AtomicBool>,
     /// Pre-built VectorStore for the embedding pipeline (None if embedding disabled).
     vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
     data_dir: PathBuf,
     config: AppConfig,
     config_manager: ConfigManager,
-    consent_manager: Option<Arc<ConsentManager>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Concrete SQLite storage for sync engine wiring.
     sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
     offline_mode: bool,
     event_tx: Option<broadcast::Sender<RealtimeEvent>>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     oauth_coordinator: Option<Arc<TokenRefreshCoordinator>>,
+    /// Provider secret stores for BYOK credential resolution at request time.
+    ///
+    /// Threaded from `ProviderRuntimeContext` so analysis and embedding
+    /// adapters can resolve OS-keychain-backed keys via
+    /// `CredentialSource::StoredSecret`.  Gated on `analysis` (same as
+    /// `oauth_coordinator`) because the secret-store infrastructure lives in
+    /// `maekon-network` (analysis feature gate).
+    #[cfg(feature = "analysis")]
+    provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
     app_handle: AppHandle,
     coaching_engine: Option<Arc<maekon_analysis::CoachingEngine>>,
     coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
@@ -65,7 +77,8 @@ pub(crate) struct AgentRuntimeBundle {
     #[cfg(feature = "server")]
     suggestion_receiver: Option<Arc<maekon_suggestion::receiver::SuggestionReceiver>>,
     /// Suggestion manager — provides deferred/retry queue access for maintenance loop.
-    #[cfg(feature = "server")]
+    /// E20-24 (#4816): gated on `local-suggestions` so the OSS local pipeline gets it.
+    #[cfg(feature = "local-suggestions")]
     suggestion_manager: Option<Arc<crate::suggestion_manager::SuggestionManager>>,
     suggestions_enabled: bool,
     focus_mode: Option<Arc<crate::focus_mode::FocusModeState>>,
@@ -90,6 +103,12 @@ pub(crate) struct AgentRuntimeBundle {
     /// Pre-constructed `RegimeClassifier` handle shared with the composition
     /// root so `CompositeFeedbackSink` can fan accept/reject signals into it.
     regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
+    /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    /// registry threaded from the composition root. All network adapters built
+    /// inside `run()` (remote embedding, analysis primary/fallback, LLM-summary,
+    /// WorkType refiner, enrichment) clone this one Arc, so adapters targeting
+    /// the same endpoint converge on a single breaker (iter-011 consolidation).
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
 }
 
 impl AgentRuntimeBundle {
@@ -125,10 +144,28 @@ impl AgentRuntimeBundle {
         if let Some(ref flag) = self.analysis_health_flag {
             builder = builder.with_analysis_health_flag(flag.clone());
         }
+        // D7 (#4812 / E20-20): hand the SAME shared breaker registry to the
+        // support context so its `ContextAnalyzer` analysis provider converges on
+        // the same breaker as every other adapter built in this runtime.
+        builder = builder.with_breaker_registry(self.breaker_registry.clone());
         // Clone before the move into Scheduler::with_config_manager below.
         builder = builder.with_config_manager(self.config_manager.clone());
+        // Wire provider secret stores so the ContextAnalyzer analysis provider
+        // resolves OS-keychain-backed BYOK keys at request time.
+        #[cfg(feature = "analysis")]
+        if let Some(ref stores) = self.provider_secret_stores {
+            builder = builder.with_provider_secret_stores(stores.clone());
+        }
         let support = builder.build().await?;
         let accessibility_extractor = support.accessibility_extractor.clone();
+        let external_llm_privacy_guard = crate::provider_adapters::ExternalOcrPrivacyGuard::new(
+            self.data_dir.join("consent.json"),
+            self.config.privacy.pii_filter_level,
+            self.config.ai_provider.external_data_policy,
+            self.config.privacy.clone(),
+            support.process_monitor.clone(),
+            None,
+        );
 
         let mut scheduler = Scheduler::new(
             support.scheduler_config,
@@ -147,11 +184,45 @@ impl AgentRuntimeBundle {
         .with_notification_manager(support.notification_manager)
         .with_focus_analyzer(support.focus_analyzer);
 
+        // ADR-023: share the single SqliteStorage Arc as the MemoryGraphPort so the
+        // aggregation loop can promote daily-digest content into durable claims +
+        // evidence edges (Port Instance Sharing guardrail — no second handle).
+        scheduler = scheduler.with_memory_graph(Arc::clone(&self.sqlite_storage_concrete)
+            as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>);
+
+        // ADR-023 Phase-2: belief revision. The enrichment provider is LOCAL-LLM-
+        // gated by construction (non-loopback endpoints → NoOp); a per-claim PII
+        // masker is applied at the enrichment boundary (MG-PII-03). The aggregation
+        // loop additionally gates each run on memory_graph_enrichment consent + the
+        // belief_revision_enabled flag.
+        {
+            let enrichment_provider =
+                crate::agent_runtime::analysis_helpers::build_enrichment_provider(
+                    &self.config.ai_provider,
+                    self.config.privacy.pii_filter_level,
+                    self.breaker_registry.clone(),
+                );
+            let mask_level = self.config.privacy.pii_filter_level;
+            let belief_pii_filter: maekon_analysis::BeliefPiiFilter =
+                Arc::new(move |text: &str| {
+                    maekon_vision::privacy::sanitize_title_with_level(text, mask_level)
+                });
+            let belief_revision = maekon_analysis::BeliefRevision::new(
+                enrichment_provider,
+                Arc::clone(&self.sqlite_storage_concrete)
+                    as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+                belief_pii_filter,
+                self.config.analysis.supersede_confidence_threshold,
+                self.config.analysis.belief_revision_enabled,
+            );
+            scheduler = scheduler.with_belief_revision(Arc::new(belief_revision));
+        }
+
         if let Some(ref analyzer) = support.context_analyzer {
             scheduler = scheduler.with_context_analyzer(analyzer.clone());
         }
 
-        #[cfg(feature = "server")]
+        #[cfg(feature = "analysis")]
         if let Some(coordinator) = self.oauth_coordinator {
             scheduler = scheduler.with_oauth_coordinator(coordinator);
         }
@@ -161,8 +232,14 @@ impl AgentRuntimeBundle {
         }
 
         // --- Layer 2: Build embedding + LLM summary pipeline ---
-        let mut embedding =
-            embedding_setup::build_embedding_components(&self.config, self.vector_store.clone());
+        let mut embedding = embedding_setup::build_embedding_components(
+            &self.config,
+            self.vector_store.clone(),
+            Some(external_llm_privacy_guard.clone()),
+            #[cfg(feature = "analysis")]
+            self.provider_secret_stores.as_ref(),
+            self.breaker_registry.clone(),
+        );
 
         // Wire embedding provider + vector store into scheduler if available.
         if let (Some(ref vs), Some(ref ep)) =
@@ -257,8 +334,12 @@ impl AgentRuntimeBundle {
             self.override_store.clone(),
             self.recluster_requested.clone(),
             &mut embedding,
+            Some(external_llm_privacy_guard.clone()),
             self.regime_manager.clone(),
             self.regime_classifier.clone(),
+            self.breaker_registry.clone(),
+            #[cfg(feature = "analysis")]
+            self.provider_secret_stores.as_ref(),
         );
         if let Some(state) = analysis.adaptive_trigger_state {
             scheduler = scheduler.with_adaptive_trigger(state);
@@ -270,6 +351,7 @@ impl AgentRuntimeBundle {
             &self.data_dir,
             &self.sqlite_storage_concrete,
             self.consent_manager.clone(),
+            Some(self.erasure_requested.clone()),
         )
         .await;
         if let Some(sync_engine) = sync.sync_engine {
@@ -279,6 +361,28 @@ impl AgentRuntimeBundle {
         // --- Phase 3: Wire ConsentManager into scheduler for runtime consent checks ---
         if let Some(ref cm) = self.consent_manager {
             scheduler = scheduler.with_consent_manager(cm.clone());
+        }
+
+        // --- #5069: feature-performance emitter ---
+        // Needs all three: the REST sink (analysis/server builds only), the
+        // consent authority (telemetry gate), and the egress ledger sink (the
+        // shared SqliteStorage — #4803 audit). Absent any one ⇒ recorder stays
+        // None and every `time_feature(..)` wrap is a zero-overhead pass-through.
+        #[cfg(feature = "analysis")]
+        if let (Some(sink), Some(cm)) = (
+            support.feature_perf_sink_opt.clone(),
+            self.consent_manager.clone(),
+        ) {
+            let egress: Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink> =
+                self.sqlite_storage_concrete.clone();
+            let uploader = Arc::new(
+                maekon_network::feature_perf_uploader::FeaturePerfUploader::new(
+                    sink,
+                    cm,
+                    Some(egress),
+                ),
+            );
+            scheduler = scheduler.with_feature_perf(uploader);
         }
 
         // --- Coaching engine + storage + overlay wiring ---
@@ -314,11 +418,31 @@ impl AgentRuntimeBundle {
             scheduler = scheduler.with_shared_regime(shared_regime);
         }
 
+        // #5810: wire regime crash-durability checkpoint — same store as the
+        // shutdown path (built from the shared sqlite_storage_concrete connection)
+        // and the same regime_manager Arc (injected by the composition root).
+        {
+            let regime_store: Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort> =
+                Arc::new(
+                    maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
+                        self.sqlite_storage_concrete.connection_arc(),
+                    ),
+                );
+            scheduler = scheduler.with_regime_storage(regime_store);
+        }
+        if let Some(rm) = self.regime_manager.clone() {
+            scheduler = scheduler.with_regime_manager_arc(rm);
+        }
+
         // --- Analysis provider for coaching LLM personalization ---
         #[cfg(feature = "analysis")]
-        if let Some((provider, _health)) =
-            analysis_helpers::build_analysis_provider(&self.config.ai_provider)
-        {
+        if let Some((provider, _health)) = analysis_helpers::build_analysis_provider(
+            &self.config.ai_provider,
+            self.config.privacy.pii_filter_level,
+            Some(external_llm_privacy_guard.clone()),
+            self.provider_secret_stores.as_ref(),
+            self.breaker_registry.clone(),
+        ) {
             scheduler = scheduler.with_analysis_provider(provider);
         }
 
@@ -345,6 +469,7 @@ impl AgentRuntimeBundle {
         scheduler = scheduler.with_suggestions_enabled(self.suggestions_enabled);
         // Prefer receiver from support context (built with SSE client);
         // fall back to externally-injected receiver if present.
+        // SSE receiver (server-sourced suggestions) — server feature only.
         #[cfg(feature = "server")]
         {
             let receiver = support.suggestion_receiver.or(self.suggestion_receiver);
@@ -363,9 +488,14 @@ impl AgentRuntimeBundle {
             if let Some(receiver) = receiver {
                 scheduler = scheduler.with_suggestion_receiver(receiver);
             }
-            if let Some(mgr) = self.suggestion_manager {
-                scheduler = scheduler.with_suggestion_manager(mgr);
-            }
+        }
+        // E20-24 (#4816): the local SuggestionManager is wired in OSS builds too —
+        // it is the live queue the local analysis producer pushes into and the IPC
+        // accept/reject path reads. Gated on `local-suggestions`, separate from the
+        // server-only SSE receiver above.
+        #[cfg(feature = "local-suggestions")]
+        if let Some(mgr) = self.suggestion_manager {
+            scheduler = scheduler.with_suggestion_manager(mgr);
         }
 
         // --- Phase 2: Accessibility extractor (gated by config + consent) ---
@@ -406,17 +536,21 @@ pub(crate) struct AgentRuntimeBuilder<'a> {
     calibration_reader: Option<Arc<dyn CalibrationReader>>,
     override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
     recluster_requested: Arc<std::sync::atomic::AtomicBool>,
+    erasure_requested: Arc<std::sync::atomic::AtomicBool>,
     vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
     data_dir: &'a Path,
     config: &'a AppConfig,
     config_manager: ConfigManager,
-    consent_manager: Option<Arc<ConsentManager>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Concrete SQLite storage for sync engine wiring.
     sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
     offline_mode: bool,
     event_tx: Option<broadcast::Sender<RealtimeEvent>>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     oauth_coordinator: Option<Arc<TokenRefreshCoordinator>>,
+    /// Provider secret stores — see matching field on `AgentRuntimeBundle`.
+    #[cfg(feature = "analysis")]
+    provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
     app_handle: AppHandle,
     coaching_engine: Option<Arc<maekon_analysis::CoachingEngine>>,
     coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
@@ -433,7 +567,7 @@ pub(crate) struct AgentRuntimeBuilder<'a> {
     tray_app_handle: Option<tauri::AppHandle>,
     #[cfg(feature = "server")]
     suggestion_receiver: Option<Arc<maekon_suggestion::receiver::SuggestionReceiver>>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "local-suggestions")]
     suggestion_manager: Option<Arc<crate::suggestion_manager::SuggestionManager>>,
     suggestions_enabled: bool,
     focus_mode: Option<Arc<crate::focus_mode::FocusModeState>>,
@@ -452,6 +586,11 @@ pub(crate) struct AgentRuntimeBuilder<'a> {
     /// matching fields on `AgentRuntimeBundle` for the rationale.
     regime_manager: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
     regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
+    /// D7 (#4812 / E20-20): shared workspace-wide circuit-breaker registry from
+    /// the composition root. Defaults to a fresh registry so this builder works
+    /// standalone (e.g. in tests); the composition root overrides it with the
+    /// single shared Arc via `with_breaker_registry`.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
 }
 
 impl<'a> AgentRuntimeBuilder<'a> {
@@ -465,6 +604,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
         config: &'a AppConfig,
         config_manager: ConfigManager,
         recluster_requested: Arc<std::sync::atomic::AtomicBool>,
+        erasure_requested: Arc<std::sync::atomic::AtomicBool>,
         app_handle: AppHandle,
     ) -> Self {
         Self {
@@ -475,6 +615,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             calibration_reader: None,
             override_store: None,
             recluster_requested,
+            erasure_requested,
             vector_store: None,
             sqlite_storage_concrete,
             data_dir,
@@ -483,8 +624,10 @@ impl<'a> AgentRuntimeBuilder<'a> {
             consent_manager: None,
             offline_mode: false,
             event_tx: None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             oauth_coordinator: None,
+            #[cfg(feature = "analysis")]
+            provider_secret_stores: None,
             app_handle,
             coaching_engine: None,
             coaching_storage: None,
@@ -501,7 +644,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             tray_app_handle: None,
             #[cfg(feature = "server")]
             suggestion_receiver: None,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "local-suggestions")]
             suggestion_manager: None,
             suggestions_enabled: false,
             focus_mode: None,
@@ -512,7 +655,19 @@ impl<'a> AgentRuntimeBuilder<'a> {
             analysis_health_flag: None,
             regime_manager: None,
             regime_classifier: None,
+            breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
         }
+    }
+
+    /// Inject the single shared workspace-wide circuit-breaker registry from the
+    /// composition root (D7 #4812 / E20-20). All network adapters this runtime
+    /// builds will clone this one Arc.
+    pub(crate) fn with_breaker_registry(
+        mut self,
+        registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    ) -> Self {
+        self.breaker_registry = registry;
+        self
     }
 
     /// Inject pre-constructed RegimeManager + RegimeClassifier handles so the
@@ -570,7 +725,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    pub(crate) fn with_consent_manager(mut self, cm: Arc<ConsentManager>) -> Self {
+    pub(crate) fn with_consent_manager(mut self, cm: Arc<dyn ConsentManagerPort>) -> Self {
         self.consent_manager = Some(cm);
         self
     }
@@ -588,12 +743,26 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     pub(crate) fn with_oauth_coordinator(
         mut self,
         oauth_coordinator: Option<Arc<TokenRefreshCoordinator>>,
     ) -> Self {
         self.oauth_coordinator = oauth_coordinator;
+        self
+    }
+
+    /// Inject the provider secret store set so analysis and embedding adapters
+    /// can resolve OS-keychain-backed keys at request time.
+    ///
+    /// Called by `ProviderRuntimeContext::configure_agent_builder`; gated on
+    /// `analysis` (same as `oauth_coordinator`).
+    #[cfg(feature = "analysis")]
+    pub(crate) fn with_provider_secret_stores(
+        mut self,
+        stores: maekon_core::ports::secret_store::SecretStoreSet,
+    ) -> Self {
+        self.provider_secret_stores = Some(stores);
         self
     }
 
@@ -683,7 +852,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "local-suggestions")]
     pub(crate) fn with_suggestion_manager(
         mut self,
         manager: Arc<crate::suggestion_manager::SuggestionManager>,
@@ -692,7 +861,11 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    #[allow(dead_code)] // used when feature = "server"
+    // E20-24 (#4816): invoked under `local-suggestions` (default-on); the shared
+    // queue/scorer it sets are consumed only by the server SSE receiver
+    // (agent_runtime_support.rs, cfg server), so the value terminates unused in
+    // OSS builds — `allow(dead_code)` keeps --no-default-features quiet.
+    #[allow(dead_code)]
     pub(crate) fn with_shared_suggestion_queue(
         mut self,
         queue: Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
@@ -701,7 +874,9 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    #[allow(dead_code)] // used when feature = "server"
+    // E20-24 (#4816): see with_shared_suggestion_queue — set under local-suggestions,
+    // read only by the server SSE receiver, so unused in OSS builds.
+    #[allow(dead_code)]
     pub(crate) fn with_shared_scorer(
         mut self,
         scorer: Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>,
@@ -732,6 +907,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             calibration_reader: self.calibration_reader,
             override_store: self.override_store,
             recluster_requested: self.recluster_requested,
+            erasure_requested: self.erasure_requested,
             vector_store: self.vector_store,
             data_dir: self.data_dir.to_path_buf(),
             config: self.config.clone(),
@@ -740,8 +916,10 @@ impl<'a> AgentRuntimeBuilder<'a> {
             sqlite_storage_concrete: self.sqlite_storage_concrete,
             offline_mode: self.offline_mode,
             event_tx: self.event_tx,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "analysis")]
             oauth_coordinator: self.oauth_coordinator,
+            #[cfg(feature = "analysis")]
+            provider_secret_stores: self.provider_secret_stores,
             app_handle: self.app_handle,
             coaching_engine: self.coaching_engine,
             coaching_storage: self.coaching_storage,
@@ -758,7 +936,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             tray_app_handle: self.tray_app_handle,
             #[cfg(feature = "server")]
             suggestion_receiver: self.suggestion_receiver,
-            #[cfg(feature = "server")]
+            #[cfg(feature = "local-suggestions")]
             suggestion_manager: self.suggestion_manager,
             suggestions_enabled: self.suggestions_enabled,
             focus_mode: self.focus_mode,
@@ -769,6 +947,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             analysis_health_flag: self.analysis_health_flag,
             regime_manager: self.regime_manager,
             regime_classifier: self.regime_classifier,
+            breaker_registry: self.breaker_registry,
         }
     }
 }

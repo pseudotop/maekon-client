@@ -32,6 +32,9 @@ mod tests {
 
     #[test]
     fn distinct_ports_ok() {
-        assert!(check_port_collision(10092, 10091).is_ok());
+        // Contract: distinct ports produce Ok(()).  The function returns Result<(), String>
+        // so "no error" is the complete correct outcome — there is no payload to pin (#5594).
+        check_port_collision(10092, 10091)
+            .expect("distinct ports (10092 != 10091) must not collide");
     }
 }

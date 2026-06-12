@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExportQuery {
     pub from: Option<String>,
     pub to: Option<String>,
@@ -13,6 +14,7 @@ fn default_format() -> String {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricExportRecord {
     pub timestamp: String,
     pub cpu_usage: f32,
@@ -26,6 +28,7 @@ pub struct MetricExportRecord {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EventExportRecord {
     pub event_id: String,
     pub event_type: String,
@@ -35,6 +38,7 @@ pub struct EventExportRecord {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrameExportRecord {
     pub id: i64,
     pub timestamp: String,

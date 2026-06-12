@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use crate::controller::gate::{
-    CommandExecutionGate, GUI_SESSION_POLICY_TOKEN, INTENT_HINT_POLICY_TOKEN,
+    audit_action_label, CommandExecutionGate, GUI_SESSION_POLICY_TOKEN, INTENT_HINT_POLICY_TOKEN,
 };
 use crate::error::AutomationError;
 use crate::gui_interaction::{
@@ -14,6 +14,7 @@ use crate::gui_interaction::{
     GuiHighlightRequest, GuiInteractionError,
 };
 use crate::policy::AuditLevel;
+use maekon_core::config::ConfirmationRequirement;
 use maekon_core::error::CoreError;
 use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
 use maekon_core::models::gui::{GuiExecutionTicket, GuiInteractionSession, GuiSessionEvent};
@@ -168,7 +169,7 @@ impl AutomationController {
                 AuditLevel::Basic,
                 &cmd.command_id,
                 &cmd.session_id,
-                &format!("{:?}", cmd.intent),
+                &audit_intent_label(&cmd.intent),
             );
         }
 
@@ -211,6 +212,32 @@ impl AutomationController {
 
         let start = Instant::now();
         let planned_intent = planner.plan(intent_hint).await?;
+
+        // ── confirmation_policy gate ───────────────────────────────────────
+        // Applied after planning so the modal can show the planned action type.
+        // Default Auto = D2-② product sign-off (immediate-run under strict sandbox).
+        match self.confirmation_policy {
+            ConfirmationRequirement::Block => {
+                // Blocked by user config — deny immediately without executing.
+                return Err(AutomationError::PolicyBlocked);
+            }
+            ConfirmationRequirement::Confirm => {
+                // Route through the same HITL infrastructure used by the preset
+                // path (mod.rs::request_confirmation / on_confirmation_needed).
+                // 30 s timeout → fail-closed denied (mirrors preset semantics).
+                let action_label = format!("{:?}", planned_intent);
+                let approved = self
+                    .request_confirmation(command_id, "intent-hint", &[action_label], "CONFIRM")
+                    .await?;
+                if !approved {
+                    return Err(AutomationError::UserDenied);
+                }
+            }
+            ConfirmationRequirement::Auto => {
+                // Auto: proceed without prompt (D2-② default behaviour).
+            }
+        }
+
         let intent_command = IntentCommand {
             command_id: command_id.to_string(),
             session_id: session_id.to_string(),
@@ -524,5 +551,49 @@ impl AutomationController {
         service
             .subscribe_session(session_id, capability_token)
             .await
+    }
+}
+
+fn audit_intent_label(intent: &AutomationIntent) -> String {
+    match intent {
+        AutomationIntent::ClickElement {
+            text,
+            role,
+            app_name,
+            button,
+        } => format!(
+            "ClickElement {{ text_present={}, role_present={}, app_present={}, button={} }}",
+            text.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            role.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            app_name
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            button
+        ),
+        AutomationIntent::TypeIntoElement {
+            element_text,
+            role,
+            text,
+        } => format!(
+            "TypeIntoElement {{ element_text_present={}, role_present={}, text_len={} }}",
+            element_text
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            role.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            text.chars().count()
+        ),
+        AutomationIntent::ExecuteHotkey { keys } => {
+            format!("ExecuteHotkey {{ keys={} }}", keys.join("+"))
+        }
+        AutomationIntent::WaitForText { text, timeout_ms } => format!(
+            "WaitForText {{ text_present={}, timeout_ms={} }}",
+            !text.trim().is_empty(),
+            timeout_ms
+        ),
+        AutomationIntent::ActivateApp { app_name } => format!(
+            "ActivateApp {{ app_present={} }}",
+            !app_name.trim().is_empty()
+        ),
+        AutomationIntent::Raw(action) => format!("Raw({})", audit_action_label(action)),
     }
 }

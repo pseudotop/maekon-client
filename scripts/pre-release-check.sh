@@ -93,30 +93,13 @@ echo ""
 # --- 4. CHANGELOG.md ---
 echo "[CHANGELOG]"
 if [ -f "CHANGELOG.md" ]; then
-  if changelog_has_entry "$VERSION"; then
-    pass "CHANGELOG.md has entry for [$VERSION]"
-    # Check if it has a date
-    if grep -q "## \[$VERSION\] - " CHANGELOG.md; then
-      pass "CHANGELOG entry has a date"
-    else
-      warn "CHANGELOG entry for [$VERSION] has no date"
-    fi
-    # Check if section has content (not just the header)
-    SECTION_LINE=$(grep -n "## \[$VERSION\]" CHANGELOG.md | head -1 | cut -d: -f1)
-    NEXT_SECTION_LINE=$(awk -v start="$((SECTION_LINE + 1))" 'NR > start && /^## \[/ { print NR; exit }' CHANGELOG.md)
-    if [ -n "$NEXT_SECTION_LINE" ]; then
-      CONTENT_LINES=$(sed -n "$((SECTION_LINE + 1)),$((NEXT_SECTION_LINE - 1))p" CHANGELOG.md | grep -c '[^[:space:]]' || true)
-    else
-      CONTENT_LINES=$(sed -n "$((SECTION_LINE + 1)),\$p" CHANGELOG.md | grep -c '[^[:space:]]' || true)
-    fi
-    if [ "$CONTENT_LINES" -gt 2 ]; then
-      pass "CHANGELOG section has content ($CONTENT_LINES non-empty lines)"
-    else
-      warn "CHANGELOG section looks sparse ($CONTENT_LINES non-empty lines)"
-    fi
+  if POLICY_OUTPUT="$(scripts/verify-release-notes-policy.sh --public --version "$VERSION" 2>&1)"; then
+    pass "CHANGELOG release notes policy passed"
+    printf '%s\n' "$POLICY_OUTPUT" | sed 's/^/       /'
   else
-    fail "CHANGELOG.md missing entry for [$VERSION]"
-    echo "       Fix: Add '## [$VERSION] - $(date +%Y-%m-%d)' section to CHANGELOG.md"
+    fail "CHANGELOG release notes policy failed for [$VERSION]"
+    printf '%s\n' "$POLICY_OUTPUT" | sed 's/^/       /'
+    echo "       Fix: Add '## [$VERSION] - $(date +%Y-%m-%d)' with reviewed release notes to CHANGELOG.md"
   fi
 else
   fail "CHANGELOG.md not found"

@@ -6,7 +6,7 @@ REPO="${MAEKON_REPOSITORY:-pseudotop/maekon-client}"
 VERSION="${MAEKON_VERSION:-latest}"
 INSTALL_DIR="${MAEKON_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="${MAEKON_RELEASE_BASE_URL:-}"
-REQUIRE_SIGNATURE="${MAEKON_REQUIRE_SIGNATURE:-0}"
+REQUIRE_SIGNATURE="${MAEKON_REQUIRE_SIGNATURE:-1}"
 UPDATE_SIGNATURE_PUBLIC_KEY="${MAEKON_UPDATE_PUBLIC_KEY:-fPiU9KchUIXZ7qOcjJIVp+W8rsO/WI7yStD+AiNuYvw=}"
 BINARY_NAME="maekon"
 SIDECAR_NAME="maekon-sandbox-worker"
@@ -23,7 +23,8 @@ Options:
   --install-dir <path>     Installation directory. Default: ~/.local/bin
   --repo <owner/name>      GitHub repository. Default: pseudotop/maekon-client
   --base-url <url>         Release asset base URL override (for local/rehearsal mirrors)
-  --require-signature      Fail if Ed25519 signature verification cannot be completed
+  --require-signature      Fail if Ed25519 signature verification cannot be completed (default)
+  --allow-unsigned         Developer/test override: allow install when signature verification is unavailable
   -h, --help               Show help
 
 Environment:
@@ -31,7 +32,7 @@ Environment:
   MAEKON_INSTALL_DIR
   MAEKON_REPOSITORY
   MAEKON_RELEASE_BASE_URL
-  MAEKON_REQUIRE_SIGNATURE=1
+  MAEKON_REQUIRE_SIGNATURE=1 (default; set to 0 only for developer/test unsigned rehearsals)
   MAEKON_UPDATE_PUBLIC_KEY=<base64 ed25519 public key>
 EOF
 }
@@ -81,12 +82,12 @@ download_file() {
 
   if command -v curl >/dev/null 2>&1; then
     curl --fail --silent --show-error --location "$url" --output "$output"
-    return 0
+    return $?
   fi
 
   if command -v wget >/dev/null 2>&1; then
     wget -qO "$output" "$url"
-    return 0
+    return $?
   fi
 
   fatal "Neither curl nor wget is installed."
@@ -245,6 +246,10 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_SIGNATURE=1
       shift
       ;;
+    --allow-unsigned)
+      REQUIRE_SIGNATURE=0
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -261,7 +266,7 @@ ARCH_NAME="$(uname -m)"
 # Linux runtime dependency check
 if [[ "$OS_NAME" == "Linux" ]]; then
   MISSING=""
-  for lib in libwebkit2gtk-4.1-0 libgtk-3-0 libappindicator3-1; do
+  for lib in libwebkitgtk-6.0-4 libgtk-4-1; do
     if ! dpkg -s "$lib" >/dev/null 2>&1; then
       MISSING="$MISSING $lib"
     fi
@@ -300,7 +305,14 @@ CHECKSUM_URL="$ARTIFACT_URL.sha256"
 SIGNATURE_URL="$ARTIFACT_URL.sig"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-install.XXXXXX")"
-trap 'rm -rf "$TMP_DIR"' EXIT
+touch "$TMP_DIR/.maekon-tmp-owned"
+printf '%s\n' "$$" > "$TMP_DIR/.maekon-tmp-owner-pid"
+cleanup_tmp_dir() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup_tmp_dir EXIT
+trap 'cleanup_tmp_dir; exit 130' INT
+trap 'cleanup_tmp_dir; exit 143' TERM
 
 ARTIFACT_PATH="$TMP_DIR/$ASSET_NAME"
 CHECKSUM_PATH="$ARTIFACT_PATH.sha256"
@@ -337,7 +349,7 @@ else
   if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
     fatal "Failed to download signature file while --require-signature is enabled: $SIGNATURE_URL"
   fi
-  warn "Signature file download failed. Continuing because --require-signature is not enabled."
+  warn "Signature file download failed. Continuing only because unsigned installs were explicitly allowed."
 fi
 
 if [[ "$SIGNATURE_DOWNLOADED" == "1" ]]; then
@@ -355,14 +367,13 @@ if [[ "$SIGNATURE_DOWNLOADED" == "1" ]]; then
       if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
         fatal "Signature verification failed or PyNaCl is missing."
       fi
-      warn "Signature verification skipped (PyNaCl missing or verification failed)."
-      warn "Run with --require-signature to fail closed."
+      warn "Signature verification skipped only because unsigned installs were explicitly allowed."
     fi
   else
     if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
       fatal "Python is required for signature verification."
     fi
-    warn "Python is not available, skipping signature verification."
+    warn "Python is not available; continuing only because unsigned installs were explicitly allowed."
   fi
 fi
 

@@ -21,6 +21,21 @@ use crate::http_client::build_reqwest_client_for_url;
 /// SSE 활동 타임아웃 기본값 — 5분 동안 메시지가 없으면 재연결을 트리거한다.
 const ACTIVITY_TIMEOUT_SECS: u64 = 300;
 
+/// 연속 재연결 시도 상한 — 이 횟수만큼 연속 실패하면 재연결을 포기한다.
+/// 성공적으로 스트림이 연결되면 카운터는 0으로 초기화된다.
+const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+
+/// HTTP 상태 코드가 영구적(재시도 무의미) 실패인지 판별한다.
+///
+/// 401(인증 실패)·403(권한 없음)은 토큰/권한 문제이므로 재연결을 반복해도
+/// 동일하게 실패한다. 즉시 포기하여 무한 재시도를 방지한다.
+fn is_permanent_failure(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    )
+}
+
 pub struct SseStreamClient {
     base_url: String,
     token_manager: Arc<TokenManager>,
@@ -170,6 +185,8 @@ impl SseClient for SseStreamClient {
         info!("SSE connection started");
 
         let mut retry_delay = 1u64;
+        // 연속 재연결 시도 횟수 — 스트림이 성공적으로 열리면 0으로 초기화된다.
+        let mut reconnect_attempts = 0u32;
 
         loop {
             let token = self.token_manager.get_token().await?;
@@ -193,6 +210,20 @@ impl SseClient for SseStreamClient {
                         return Ok(());
                     }
 
+                    reconnect_attempts += 1;
+                    if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                        warn!(
+                            attempts = reconnect_attempts,
+                            "SSE reconnect give-up — max attempts reached"
+                        );
+                        return Err(CoreError::Network {
+                            code: maekon_core::error_codes::NetworkCode::Generic,
+                            message: format!(
+                                "SSE reconnect aborted after {reconnect_attempts} consecutive failures"
+                            ),
+                        });
+                    }
+
                     warn!("SSE reconnect waiting: {retry_delay}s");
                     tokio::time::sleep(Duration::from_secs(retry_delay)).await;
                     retry_delay = (retry_delay * 2).min(max_retry);
@@ -201,13 +232,40 @@ impl SseClient for SseStreamClient {
             };
 
             if !response.status().is_success() {
+                let status = response.status();
                 warn!(
-                    status = %response.status(),
+                    status = %status,
                     "SSE connection failure"
                 );
 
+                // 401/403 등 영구 실패는 재시도해도 동일하게 실패하므로 즉시 포기한다.
+                if is_permanent_failure(status) {
+                    warn!(
+                        status = %status,
+                        "SSE permanent failure — not retrying"
+                    );
+                    return Err(CoreError::Auth {
+                        code: maekon_core::error_codes::AuthCode::Failed,
+                        message: format!("SSE stream rejected with permanent status {status}"),
+                    });
+                }
+
                 if tx.is_closed() {
                     return Ok(());
+                }
+
+                reconnect_attempts += 1;
+                if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                    warn!(
+                        attempts = reconnect_attempts,
+                        "SSE reconnect give-up — max attempts reached"
+                    );
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!(
+                            "SSE reconnect aborted after {reconnect_attempts} consecutive failures"
+                        ),
+                    });
                 }
 
                 warn!("SSE reconnect waiting: {retry_delay}s");
@@ -218,7 +276,9 @@ impl SseClient for SseStreamClient {
 
             let mut stream = response.bytes_stream().eventsource();
             debug!("SSE connection established");
+            // 연결 성공 — 백오프와 give-up 카운터를 모두 초기화한다.
             retry_delay = 1;
+            reconnect_attempts = 0;
 
             let activity_timeout = Duration::from_secs(ACTIVITY_TIMEOUT_SECS);
 
@@ -290,6 +350,20 @@ impl SseClient for SseStreamClient {
                 return Ok(());
             }
 
+            reconnect_attempts += 1;
+            if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                warn!(
+                    attempts = reconnect_attempts,
+                    "SSE reconnect give-up — max attempts reached"
+                );
+                return Err(CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: format!(
+                        "SSE reconnect aborted after {reconnect_attempts} consecutive failures"
+                    ),
+                });
+            }
+
             warn!("SSE reconnect waiting: {retry_delay}s");
             tokio::time::sleep(Duration::from_secs(retry_delay)).await;
             retry_delay = (retry_delay * 2).min(max_retry);
@@ -300,6 +374,13 @@ impl SseClient for SseStreamClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runtime-built password fixture — a string literal at the `login()` call
+    /// site trips CodeQL `rust/hard-coded-cryptographic-value` (public alerts
+    /// #175/#176); mirrors `auth::tests::primary_password`.
+    fn primary_password() -> String {
+        String::from_utf8(vec![b'x'; 16]).expect("password fixture bytes must be UTF-8")
+    }
 
     #[test]
     fn parse_connection_event() {
@@ -376,9 +457,14 @@ mod tests {
         let result =
             SseStreamClient::new_with_tls("http://api.example.com", Arc::new(tm), 30, &tls);
 
+        // .err().expect(..) instead of .unwrap_err(): SseStreamClient (the Ok
+        // type) does not implement Debug, which unwrap_err requires.
+        let cfg_err = result
+            .err()
+            .expect("remote cleartext HTTP must be rejected at construction");
         assert!(
-            result.is_err(),
-            "remote SSE endpoints must not send session identifiers over cleartext HTTP"
+            matches!(cfg_err, crate::error::NetworkError::Config(_)),
+            "remote cleartext HTTP must yield NetworkError::Config; got: {cfg_err:?}"
         );
     }
 
@@ -396,6 +482,131 @@ mod tests {
         let tm = TokenManager::new("http://localhost");
         let client = SseStreamClient::new("http://localhost", Arc::new(tm), 30);
         assert_eq!(client.gap_count(), 0);
+    }
+
+    #[test]
+    fn permanent_failure_detects_auth_statuses() {
+        // 401·403 은 영구 실패로 분류되어 재시도하지 않아야 한다.
+        assert!(is_permanent_failure(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(is_permanent_failure(reqwest::StatusCode::FORBIDDEN));
+    }
+
+    #[test]
+    fn permanent_failure_excludes_transient_statuses() {
+        // 5xx·429·404 등은 일시적일 수 있으므로 재시도 대상(영구 실패 아님)이다.
+        assert!(!is_permanent_failure(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(!is_permanent_failure(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(!is_permanent_failure(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(!is_permanent_failure(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(!is_permanent_failure(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_permanent_failure(reqwest::StatusCode::OK));
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn permanent_failure_returns_auth_error_without_retry() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+
+        // stub: 1) login 요청에 유효 토큰 응답, 2) SSE 요청에 401 응답
+        let server_task = tokio::spawn(async move {
+            // login (POST /api/v1/auth/tokens)
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"{"access_token":"tok","refresh_token":"ref","expires_in":3600}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+            // SSE stream → 401 Unauthorized (영구 실패)
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let tm = TokenManager::new(&base);
+        tm.login("user@example.com", &primary_password())
+            .await
+            .unwrap();
+        let client = SseStreamClient::new(&base, Arc::new(tm), 30);
+
+        let (tx, _rx) = mpsc::channel::<SseEvent>(8);
+        let result = client.connect("sess_perm", tx).await;
+
+        server_task.abort();
+
+        // 무한 재시도 대신 Auth 에러로 즉시 종료되어야 한다.
+        assert!(
+            matches!(result, Err(CoreError::Auth { .. })),
+            "401 should map to a permanent Auth error, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn give_up_ceiling_returns_network_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+
+        // stub: login 요청 1회만 처리하고 종료 → 이후 SSE 연결은 모두 거부(연결 실패)
+        let server_task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"{"access_token":"tok","refresh_token":"ref","expires_in":3600}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+            // listener drop → 이후 연결 거부됨
+        });
+
+        let tm = TokenManager::new(&base);
+        tm.login("user@example.com", &primary_password())
+            .await
+            .unwrap();
+        // login 응답이 처리되도록 서버 태스크 완료를 기다린다(listener drop 보장).
+        let _ = server_task.await;
+
+        // max_retry_secs=0 이므로 백오프 sleep 없이 빠르게 give-up 상한에 도달한다.
+        let client = SseStreamClient::new(&base, Arc::new(tm), 0);
+
+        let (tx, _rx) = mpsc::channel::<SseEvent>(8);
+        let result = client.connect("sess_giveup", tx).await;
+
+        // 무한 재시도 대신 give-up 상한에서 Network 에러로 종료되어야 한다.
+        assert!(
+            matches!(result, Err(CoreError::Network { .. })),
+            "exhausted reconnects should map to a Network error, got: {result:?}"
+        );
     }
 
     #[test]

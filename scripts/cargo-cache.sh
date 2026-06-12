@@ -3,10 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGET_DIR="${MAEKON_TARGET_DIR:-$PROJECT_ROOT/target}"
 TARGET_SOFT_LIMIT_MB="${MAEKON_TARGET_SOFT_LIMIT_MB:-8192}"
 TARGET_HARD_LIMIT_MB="${MAEKON_TARGET_HARD_LIMIT_MB:-12288}"
 TARGET_AUTO_PRUNE="${MAEKON_TARGET_AUTO_PRUNE:-1}"
+
+if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -n "${MAEKON_TARGET_DIR:-}" ] && [ "$CARGO_TARGET_DIR" != "$MAEKON_TARGET_DIR" ]; then
+  echo "Error: CARGO_TARGET_DIR and MAEKON_TARGET_DIR disagree." >&2
+  echo "Set only CARGO_TARGET_DIR, or set both to the same path." >&2
+  exit 1
+fi
+
+TARGET_DIR="${CARGO_TARGET_DIR:-${MAEKON_TARGET_DIR:-$PROJECT_ROOT/target}}"
+export CARGO_TARGET_DIR="$TARGET_DIR"
 
 if ! [[ "$TARGET_SOFT_LIMIT_MB" =~ ^[0-9]+$ ]]; then
   echo "Error: MAEKON_TARGET_SOFT_LIMIT_MB must be a positive integer."
@@ -90,7 +98,8 @@ if [ $# -eq 0 ]; then
   echo "  MAEKON_TARGET_AUTO_PRUNE (default: 1)"
   echo "  MAEKON_TARGET_SOFT_LIMIT_MB (default: 8192)"
   echo "  MAEKON_TARGET_HARD_LIMIT_MB (default: 12288)"
-  echo "  MAEKON_TARGET_DIR (default: <repo>/target)"
+  echo "  CARGO_TARGET_DIR (default: <repo>/target)"
+  echo "  MAEKON_TARGET_DIR (legacy alias for CARGO_TARGET_DIR)"
   exit 1
 fi
 

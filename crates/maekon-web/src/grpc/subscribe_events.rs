@@ -169,13 +169,10 @@ pub async fn subscribe_events(
                                     .unwrap_or_else(|_| chrono::Utc::now());
                                 let dash = DashboardEvent {
                                     occurred_at: Some(to_proto_ts(ts)),
-                                    payload: Some(DashboardEventPayload::Frame(FrameEvent {
-                                        frame_id: frame.id,
-                                        app_name: frame.app_name,
-                                        window_title: frame.window_title,
-                                        importance: frame.importance,
-                                        trigger_type: frame.trigger_type,
-                                    })),
+                                    payload: Some(DashboardEventPayload::Frame(build_frame_event(
+                                        frame,
+                                        pii_sanitizer.as_deref(),
+                                    ))),
                                 };
                                 yield Ok(SubscribeEventsResponse {
                                     payload: Some(EventsPayload::Event(dash)),
@@ -280,6 +277,22 @@ pub async fn subscribe_events(
     Ok(Response::new(Box::pin(counted) as SubscribeEventsStream))
 }
 
+fn build_frame_event(
+    frame: maekon_api_contracts::stream::FrameUpdate,
+    pii_sanitizer: Option<&dyn PiiSanitizer>,
+) -> FrameEvent {
+    FrameEvent {
+        frame_id: frame.id,
+        app_name: crate::grpc::privacy::sanitize_dashboard_text(frame.app_name, pii_sanitizer),
+        window_title: crate::grpc::privacy::sanitize_dashboard_text(
+            frame.window_title,
+            pii_sanitizer,
+        ),
+        importance: frame.importance,
+        trigger_type: frame.trigger_type,
+    }
+}
+
 /// Build the proto AiRuntimeStatusEvent, applying PII sanitisation when configured.
 /// Returns a sentinel (all "unknown" / "") when status is None.
 fn build_ai_runtime_status_event(
@@ -315,5 +328,40 @@ fn build_ai_runtime_status_event(
                     .unwrap_or_default(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maekon_api_contracts::stream::FrameUpdate;
+
+    struct MarkerSanitizer;
+
+    impl PiiSanitizer for MarkerSanitizer {
+        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
+            text.replace("secret@example.com", "[EMAIL]")
+                .replace("Acme Roadmap", "[TITLE]")
+        }
+    }
+
+    #[test]
+    fn frame_events_sanitize_app_and_window_titles() {
+        let event = build_frame_event(
+            FrameUpdate {
+                id: 42,
+                timestamp: "2026-05-25T09:00:00Z".to_string(),
+                app_name: "secret@example.com".to_string(),
+                window_title: "Acme Roadmap".to_string(),
+                importance: 0.7,
+                trigger_type: "timer".to_string(),
+            },
+            Some(&MarkerSanitizer),
+        );
+
+        assert_eq!(event.app_name, "[EMAIL]");
+        assert_eq!(event.window_title, "[TITLE]");
+        assert_eq!(event.frame_id, 42);
+        assert_eq!(event.trigger_type, "timer");
     }
 }

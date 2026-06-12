@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# check-config-sync.sh — Port & version consistency checker
+# check-config-sync.sh - Port & version consistency checker
 #
 # Validates that port numbers, version strings, and CSP config
 # are synchronized across Rust, frontend, and Tauri config files.
 #
 # Exit codes:
-#   0 — all checks passed
-#   1 — one or more mismatches found
+#   0 - all checks passed
+#   1 - one or more mismatches found
 #
 # Usage:
 #   ./scripts/check-config-sync.sh                      # run source/config checks
@@ -47,12 +47,99 @@ fail() {
 
 pass() { green "OK"; }
 
+json_value() {
+  local file="$1"
+  local path="$2"
+
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const [file, path] = process.argv.slice(1);
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+let value = data;
+for (const segment of path.split(".")) {
+  value = value?.[segment];
+}
+if (value === undefined || value === null) {
+  process.exit(2);
+}
+if (typeof value === "object") {
+  console.log(JSON.stringify(value));
+} else {
+  console.log(String(value));
+}
+' "$file" "$path"
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    case "$path" in
+      version) jq -r '.version // empty' "$file" ;;
+      app.security.csp) jq -r '.app.security.csp // empty' "$file" ;;
+      app.windows.0.visible) jq -r '.app.windows[0].visible // empty' "$file" ;;
+      app.windows.0.titleBarStyle) jq -r '.app.windows[0].titleBarStyle // empty' "$file" ;;
+      *) return 2 ;;
+    esac
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$path" <<'PY'
+import json
+import sys
+
+file_path, dotted_path = sys.argv[1], sys.argv[2]
+with open(file_path, encoding="utf-8") as handle:
+    value = json.load(handle)
+for segment in dotted_path.split("."):
+    if isinstance(value, list):
+        value = value[int(segment)]
+    else:
+        value = value[segment]
+print(value)
+PY
+    return
+  fi
+
+  return 127
+}
+
+extract_csp_directive_ports() {
+  local csp="$1"
+  local directive="$2"
+
+  printf '%s\n' "$csp" \
+    | tr ';' '\n' \
+    | awk -v directive="$directive" '$1 == directive { for (i = 2; i <= NF; i++) print $i }' \
+    | grep -oE '127\.0\.0\.1:[0-9]+' \
+    | grep -oE '[0-9]+$' \
+    | sort -n \
+    | uniq || true
+}
+
+missing_ports_in_range() {
+  local ports="$1"
+  local start="$2"
+  local end="$3"
+  local missing=""
+  local port="$start"
+
+  while [ "$port" -le "$end" ]; do
+    if ! printf '%s\n' "$ports" | grep -qx "$port"; then
+      missing="$missing $port"
+    fi
+    port=$((port + 1))
+  done
+
+  printf '%s\n' "$missing"
+}
+
 echo "=== Config Sync Check ==="
 echo ""
 
-# ─── 1. Version Sync ───────────────────────────────────────────────
+# 1. Version Sync
 
-echo "── Version Sync ──"
+echo "-- Version Sync --"
 
 # Source of truth: Cargo.toml workspace version
 CARGO_VERSION=$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
@@ -60,7 +147,7 @@ CARGO_VERSION=$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | sed 's/.*"\(.*\)".
 # package.json version
 PKG_JSON="$REPO_ROOT/crates/maekon-web/frontend/package.json"
 if [ -f "$PKG_JSON" ]; then
-  PKG_VERSION=$(python3 -c "import json; print(json.load(open('$PKG_JSON'))['version'])" 2>/dev/null || echo "PARSE_ERROR")
+  PKG_VERSION=$(json_value "$PKG_JSON" version 2>/dev/null || echo "PARSE_ERROR")
   info "Cargo.toml ($CARGO_VERSION) == package.json ($PKG_VERSION)"
   if [ "$CARGO_VERSION" = "$PKG_VERSION" ]; then
     pass
@@ -92,9 +179,9 @@ fi
 
 echo ""
 
-# ─── 2. Port Sync ──────────────────────────────────────────────────
+# 2. Port Sync
 
-echo "── Port Sync ──"
+echo "-- Port Sync --"
 
 # Rust DEFAULT_WEB_PORT (source of truth)
 RUST_PORT_FILE="$REPO_ROOT/crates/maekon-core/src/config/sections/network.rs"
@@ -112,22 +199,47 @@ if [ -f "$TS_CONST_FILE" ]; then
   fi
 fi
 
-# CSP connect-src must include the default port
+# Production and dev CSP must both include the loopback dashboard range. Tauri v2
+# replaces the dev CSP leaf instead of deep-merging it, so each config must carry
+# the local Axum API/SSE and frame image origins explicitly.
 TAURI_CONF="$REPO_ROOT/src-tauri/tauri.conf.json"
+TAURI_DEV_CONF="$REPO_ROOT/src-tauri/tauri.dev.conf.json"
 if [ -f "$TAURI_CONF" ]; then
-  CSP_LINE=$(python3 -c "import json; print(json.load(open('$TAURI_CONF'))['app']['security']['csp'])" 2>/dev/null || echo "")
-  if echo "$CSP_LINE" | grep -q "127.0.0.1:${RUST_PORT}"; then
-    info "CSP connect-src includes port $RUST_PORT"
-    pass
-  else
-    info "CSP connect-src includes port $RUST_PORT"
-    fail "" "Add http://127.0.0.1:$RUST_PORT to CSP connect-src in tauri.conf.json"
-  fi
+  PROD_CSP=$(json_value "$TAURI_CONF" app.security.csp 2>/dev/null || echo "")
 
-  # Check that CSP doesn't include ports outside standard range
-  CSP_PORTS=$(echo "$CSP_LINE" | grep -o '127\.0\.0\.1:[0-9]*' | grep -o '[0-9]*$' | sort -u)
   RUST_PORT_BASE=$((RUST_PORT / 10 * 10))  # e.g., 10090 -> 10090
   RUST_PORT_END=$((RUST_PORT_BASE + 9))     # e.g., 10099
+
+  PROD_CONNECT_PORTS=$(extract_csp_directive_ports "$PROD_CSP" connect-src)
+  PROD_IMG_PORTS=$(extract_csp_directive_ports "$PROD_CSP" img-src)
+  PROD_CONNECT_MISSING=$(missing_ports_in_range "$PROD_CONNECT_PORTS" "$RUST_PORT_BASE" "$RUST_PORT_END")
+  PROD_IMG_MISSING=$(missing_ports_in_range "$PROD_IMG_PORTS" "$RUST_PORT_BASE" "$RUST_PORT_END")
+  if [ -z "$PROD_CONNECT_MISSING" ] && [ -z "$PROD_IMG_MISSING" ]; then
+    info "Prod CSP allows dashboard ports ($RUST_PORT_BASE-$RUST_PORT_END)"
+    pass
+  else
+    info "Prod CSP allows dashboard ports ($RUST_PORT_BASE-$RUST_PORT_END)"
+    fail "" "Add missing production CSP ports: connect-src:$PROD_CONNECT_MISSING img-src:$PROD_IMG_MISSING"
+  fi
+
+  DEV_CSP=""
+  if [ -f "$TAURI_DEV_CONF" ]; then
+    DEV_CSP=$(json_value "$TAURI_DEV_CONF" app.security.csp 2>/dev/null || echo "")
+    DEV_CONNECT_PORTS=$(extract_csp_directive_ports "$DEV_CSP" connect-src)
+    DEV_IMG_PORTS=$(extract_csp_directive_ports "$DEV_CSP" img-src)
+    DEV_CONNECT_MISSING=$(missing_ports_in_range "$DEV_CONNECT_PORTS" "$RUST_PORT_BASE" "$RUST_PORT_END")
+    DEV_IMG_MISSING=$(missing_ports_in_range "$DEV_IMG_PORTS" "$RUST_PORT_BASE" "$RUST_PORT_END")
+    if [ -z "$DEV_CONNECT_MISSING" ] && [ -z "$DEV_IMG_MISSING" ]; then
+      info "Dev CSP allows dashboard ports"
+      pass
+    else
+      info "Dev CSP allows dashboard ports"
+      fail "" "Add missing dev CSP ports: connect-src:$DEV_CONNECT_MISSING img-src:$DEV_IMG_MISSING"
+    fi
+  fi
+
+  # Check that configured localhost CSP ports stay inside the dashboard fallback range.
+  CSP_PORTS=$(printf '%s\n%s\n' "$PROD_CSP" "$DEV_CSP" | grep -o '127\.0\.0\.1:[0-9]*' | grep -o '[0-9]*$' | sort -u || true)
   NON_STANDARD=""
   for p in $CSP_PORTS; do
     if [ "$p" -lt "$RUST_PORT_BASE" ] || [ "$p" -gt "$RUST_PORT_END" ]; then
@@ -160,22 +272,22 @@ fi
 
 echo ""
 
-# ─── 3. Tauri Config Consistency ───────────────────────────────────
+# 3. Tauri Config Consistency
 
-echo "── Tauri Config ──"
+echo "-- Tauri Config --"
 
 if [ -f "$TAURI_CONF" ]; then
   # Window should have visible: false (setup.rs shows it after init)
-  VISIBLE=$(python3 -c "import json; w=json.load(open('$TAURI_CONF'))['app']['windows'][0]; print(w.get('visible', True))" 2>/dev/null)
+  VISIBLE=$(json_value "$TAURI_CONF" app.windows.0.visible 2>/dev/null || echo "true")
   info "Main window visible=false (deferred show)"
-  if [ "$VISIBLE" = "False" ]; then
+  if [ "$VISIBLE" = "False" ] || [ "$VISIBLE" = "false" ]; then
     pass
   else
     fail "" "Set visible: false in tauri.conf.json windows[0]"
   fi
 
   # macOS: titleBarStyle should be Overlay
-  TITLE_STYLE=$(python3 -c "import json; w=json.load(open('$TAURI_CONF'))['app']['windows'][0]; print(w.get('titleBarStyle', 'MISSING'))" 2>/dev/null)
+  TITLE_STYLE=$(json_value "$TAURI_CONF" app.windows.0.titleBarStyle 2>/dev/null || echo "MISSING")
   info "titleBarStyle = Overlay (macOS native traffic lights)"
   if [ "$TITLE_STYLE" = "Overlay" ]; then
     pass
@@ -186,9 +298,9 @@ fi
 
 echo ""
 
-# ─── 4. Frontend build output exists ───────────────────────────────
+# 4. Frontend build output exists
 
-echo "── Build Artifacts ──"
+echo "-- Build Artifacts --"
 
 DIST_DIR="$REPO_ROOT/crates/maekon-web/frontend/dist"
 if [ -d "$DIST_DIR" ] && [ -f "$DIST_DIR/index.html" ]; then
@@ -211,7 +323,7 @@ fi
 
 echo ""
 
-# ─── Summary ───────────────────────────────────────────────────────
+# Summary
 
 if [ "$ERRORS" -gt 0 ]; then
   red "=== $ERRORS check(s) FAILED ==="

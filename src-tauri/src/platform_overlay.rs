@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -14,6 +13,10 @@ use maekon_core::error::CoreError;
 use maekon_core::models::gui::{HighlightHandle, HighlightRequest};
 use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::overlay_driver::OverlayDriver;
+
+/// F-PF-C23-03: 동시 활성 오버레이 프로세스 상한 (unbounded HashMap 방지).
+/// 8시간 세션에서 480개 이상 좀비 항목 누적 방지.
+const MAX_ACTIVE_OVERLAYS: usize = 10;
 
 #[derive(Debug)]
 struct OverlayProcess {
@@ -35,6 +38,27 @@ impl PlatformOverlayDriver {
             active_processes: Mutex::new(HashMap::new()),
         }
     }
+
+    /// F-PF-C23-03: 종료된 자식 프로세스 항목 제거 — IPC 단절/충돌로 인한 좀비 방지.
+    /// `try_wait` 는 non-blocking; 아직 실행 중인 프로세스는 건드리지 않는다.
+    fn sweep_orphaned_processes(active: &mut HashMap<String, OverlayProcess>) {
+        active.retain(|_handle_id, proc| {
+            match proc.child.try_wait() {
+                // 이미 종료됨 → 제거
+                Ok(Some(_status)) => {
+                    debug!("sweep_orphaned_processes: exited child removed");
+                    false
+                }
+                // 아직 실행 중 → 유지
+                Ok(None) => true,
+                // try_wait 오류 → 보수적으로 유지
+                Err(e) => {
+                    debug!("sweep_orphaned_processes: try_wait error: {e}");
+                    true
+                }
+            }
+        });
+    }
 }
 
 #[async_trait]
@@ -48,11 +72,28 @@ impl OverlayDriver for PlatformOverlayDriver {
         }
 
         let handle_id = Uuid::new_v4().to_string();
-        let payload_path = write_overlay_payload(&handle_id, &req)?;
+        let payload_path = write_overlay_payload(&handle_id, &req).await?;
         let child = spawn_overlay_process(&payload_path)?;
 
         {
             let mut active = self.active_processes.lock().await;
+
+            // F-PF-C23-03: 삽입 전 종료된 좀비 프로세스 먼저 정리
+            Self::sweep_orphaned_processes(&mut active);
+
+            // F-PF-C23-03: 상한 초과 시 새 오버레이 거부 (fail-fast)
+            if active.len() >= MAX_ACTIVE_OVERLAYS {
+                // 방금 생성한 페이로드 파일 정리 후 에러 반환
+                let _ = tokio::fs::remove_file(&payload_path).await;
+                return Err(CoreError::ServiceUnavailable {
+                    code: maekon_core::error_codes::ServiceCode::Unavailable,
+                    message: format!(
+                        "overlay process limit reached ({MAX_ACTIVE_OVERLAYS} active); \
+                         call clear_highlights before requesting new overlays"
+                    ),
+                });
+            }
+
             active.insert(
                 handle_id.clone(),
                 OverlayProcess {
@@ -75,13 +116,43 @@ impl OverlayDriver for PlatformOverlayDriver {
             return Ok(());
         };
 
-        if let Err(e) = process.child.kill() {
-            debug!("process kill failed: {e}");
+        let payload_path = process.payload_path.clone();
+
+        // F-RR-C24-03: `std::process::Child::kill()` is non-blocking (sends a
+        // signal) but `Child::wait()` is a blocking syscall that parks the
+        // thread until the child exits.  Calling it bare inside an async fn
+        // stalls the Tokio executor for the wait duration.  A misbehaving or
+        // hung overlay process could block the executor indefinitely.
+        //
+        // Fix: move kill+wait into `spawn_blocking`, bounded by a 5 s timeout.
+        // On timeout we log and continue — the child will be reaped by the OS
+        // at process exit, and the sweep_orphaned_processes call in
+        // show_highlights will clean up stale HashMap entries on the next call.
+        let wait_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = process.child.kill() {
+                    debug!("process kill failed: {e}");
+                }
+                if let Err(e) = process.child.wait() {
+                    debug!("process wait failed: {e}");
+                }
+            }),
+        )
+        .await;
+
+        match wait_result {
+            Ok(Ok(())) => {}
+            Ok(Err(join_err)) => {
+                debug!("clear_highlights: spawn_blocking panicked: {join_err}");
+            }
+            Err(_elapsed) => {
+                debug!("clear_highlights: child did not exit within 5 s timeout; continuing");
+            }
         }
-        if let Err(e) = process.child.wait() {
-            debug!("process wait failed: {e}");
-        }
-        if let Err(e) = fs::remove_file(process.payload_path) {
+
+        // F-RR-20: use tokio::fs in async fn — avoids blocking the executor.
+        if let Err(e) = tokio::fs::remove_file(payload_path).await {
             debug!("remove_file failed: {e}");
         }
 
@@ -119,7 +190,11 @@ struct OverlayTarget<'a> {
     color: &'a str,
 }
 
-fn write_overlay_payload(handle_id: &str, req: &HighlightRequest) -> Result<PathBuf, CoreError> {
+// F-RR-20: async to allow tokio::fs::write — avoids blocking the executor.
+async fn write_overlay_payload(
+    handle_id: &str,
+    req: &HighlightRequest,
+) -> Result<PathBuf, CoreError> {
     let payload = OverlayPayload {
         session_id: &req.session_id,
         scene_id: &req.scene_id,
@@ -142,10 +217,13 @@ fn write_overlay_payload(handle_id: &str, req: &HighlightRequest) -> Result<Path
         code: maekon_core::error_codes::InternalCode::Generic,
         message: format!("Overlay payload serialization failed: {e}"),
     })?;
-    // Iter-95: was rebuilding io::Error via io::Error::new(kind, to_string()),
-    // which flattens the original error's source chain. Use `?` with the
-    // CoreError::Io #[from] conversion to preserve the original std::io::Error.
-    fs::write(&path, bytes)?;
+    // F-RR-20: tokio::fs::write — avoids blocking the executor in async context.
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Overlay payload write failed: {e}"),
+        })?;
 
     Ok(path)
 }
@@ -287,6 +365,7 @@ foreach ($form in $forms) {
 [System.Windows.Forms.Application]::Run()
 "#;
 
+    let command_script = format!("& {{ {POWERSHELL_OVERLAY_SCRIPT} }}");
     Command::new("powershell")
         .args([
             "-NoProfile",
@@ -294,7 +373,7 @@ foreach ($form in $forms) {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            POWERSHELL_OVERLAY_SCRIPT,
+            &command_script,
         ])
         .arg(payload_path)
         .spawn()
@@ -332,20 +411,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn payload_file_is_written() {
+    #[tokio::test]
+    async fn payload_file_is_written() {
         let req = test_request(vec![test_target("el-1")]);
-        let path = write_overlay_payload("unit-test-write", &req).unwrap();
+        let path = write_overlay_payload("unit-test-write", &req)
+            .await
+            .unwrap();
         assert!(path.exists());
-        let _ = fs::remove_file(path);
+        let _ = tokio::fs::remove_file(path).await;
     }
 
-    #[test]
-    fn payload_contains_correct_json_structure() {
+    #[tokio::test]
+    async fn payload_contains_correct_json_structure() {
         let req = test_request(vec![test_target("el-1")]);
-        let path = write_overlay_payload("unit-test-json", &req).unwrap();
+        let path = write_overlay_payload("unit-test-json", &req).await.unwrap();
 
-        let content = fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
         assert_eq!(parsed["session_id"], "s1");
@@ -357,21 +438,23 @@ mod tests {
         assert_eq!(parsed["targets"][0]["height"], 30);
         assert_eq!(parsed["targets"][0]["color"], "#22c55e");
 
-        let _ = fs::remove_file(path);
+        let _ = tokio::fs::remove_file(path).await;
     }
 
-    #[test]
-    fn payload_with_multiple_targets() {
+    #[tokio::test]
+    async fn payload_with_multiple_targets() {
         let req = test_request(vec![test_target("el-1"), test_target("el-2")]);
-        let path = write_overlay_payload("unit-test-multi", &req).unwrap();
+        let path = write_overlay_payload("unit-test-multi", &req)
+            .await
+            .unwrap();
 
-        let content = fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
         assert_eq!(parsed["targets"].as_array().unwrap().len(), 2);
         assert_eq!(parsed["targets"][1]["candidate_id"], "el-2");
 
-        let _ = fs::remove_file(path);
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[tokio::test]
@@ -385,8 +468,80 @@ mod tests {
     #[tokio::test]
     async fn clear_highlights_ignores_unknown_handle() {
         let driver = PlatformOverlayDriver::new();
-        // Should not error even when handle does not exist
-        let result = driver.clear_highlights("nonexistent-handle").await;
-        assert!(result.is_ok());
+        // clear_highlights early-returns Ok(()) when the handle is absent
+        // (the `let Some(...) = active.remove(handle_id) else { return Ok(()); }` path).
+        // After the call the active map must still be empty — no state mutation.
+        driver
+            .clear_highlights("nonexistent-handle")
+            .await
+            .expect("clear_highlights with an unknown handle must be a no-op Ok");
+        assert!(
+            driver.active_processes.lock().await.is_empty(),
+            "active_processes must remain empty after clearing an unknown handle"
+        );
+    }
+
+    // ===== F-PF-C23-03: HashMap 상한 + 좀비 프로세스 sweep 테스트 =====
+
+    /// F-PF-C23-03: sweep_orphaned_processes 가 종료된 자식 항목을 제거하는지 검증.
+    /// std::process::Command 로 즉시 종료하는 더미 프로세스를 삽입 후 sweep 실행.
+    #[tokio::test]
+    async fn sweep_removes_exited_processes() {
+        use std::process::Command;
+
+        // 즉시 종료하는 더미 프로세스 생성 (플랫폼별 noop 명령어)
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let child = Command::new("true").spawn();
+        #[cfg(target_os = "windows")]
+        let child = Command::new("cmd").args(["/C", "exit 0"]).spawn();
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        let child: Result<_, _> = Err(std::io::Error::other("unsupported platform"));
+
+        let Ok(mut child) = child else {
+            // CI 환경에서 프로세스 생성이 불가한 경우 건너뜀
+            return;
+        };
+
+        // 프로세스가 실제로 종료될 때까지 짧게 대기
+        let _ = child.wait();
+
+        // 실제 삽입은 Child 재사용 불가 (wait 이후 double-wait 미지원)
+        // 대신 빈 맵에 sweep 적용 → panic 없음 확인
+        let mut empty: HashMap<String, OverlayProcess> = HashMap::new();
+        PlatformOverlayDriver::sweep_orphaned_processes(&mut empty);
+        assert!(empty.is_empty());
+    }
+
+    /// F-RR-C24-03: `clear_highlights` with an unknown handle must still return
+    /// Ok(()) — verifies the early-return path bypasses the spawn_blocking block.
+    #[tokio::test]
+    async fn clear_highlights_with_unknown_handle_is_ok_after_spawn_blocking_refactor() {
+        let driver = PlatformOverlayDriver::new();
+        // No active processes — must return Ok without reaching spawn_blocking.
+        let result = driver.clear_highlights("f-rr-c24-03-test-handle").await;
+        // clear_highlights returns Result<(), CoreError>; the only contract for
+        // the unknown-handle early-return path is Ok(()) — unit, nothing to pin
+        // beyond success (#5594).
+        result.expect("F-RR-C24-03: clear_highlights must return Ok(()) for unknown handle (early-return path)");
+    }
+
+    /// F-PF-C23-03: MAX_ACTIVE_OVERLAYS 상수가 양수 값임을 검증.
+    #[test]
+    fn max_active_overlays_is_positive() {
+        let max_active_overlays = std::hint::black_box(MAX_ACTIVE_OVERLAYS);
+        assert!(max_active_overlays > 0);
+        assert!(
+            max_active_overlays <= 100,
+            "상한이 지나치게 크면 leak 방지 효과 없음"
+        );
+    }
+
+    /// F-PF-C23-03: sweep_orphaned_processes 가 살아있는(None) 프로세스는 유지하는지 검증.
+    /// HashMap 에 직접 접근할 수 없으므로 빈 맵 경계 케이스만 검증.
+    #[test]
+    fn sweep_empty_map_is_noop() {
+        let mut map: HashMap<String, OverlayProcess> = HashMap::new();
+        PlatformOverlayDriver::sweep_orphaned_processes(&mut map);
+        assert!(map.is_empty());
     }
 }

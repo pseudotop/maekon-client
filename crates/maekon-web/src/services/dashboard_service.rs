@@ -21,30 +21,30 @@ use crate::AppState;
 /// `From<CoreError> for ApiError` conversion — the stringified form
 /// lost wire codes at the service boundary, collapsing every storage
 /// failure into `ApiError::Internal`.
-pub fn get_or_generate_digest(
+pub async fn get_or_generate_digest(
     state: &AppState,
     date_str: &str,
     date: NaiveDate,
 ) -> Result<DailyDigest, CoreError> {
     // 1. Check cache
-    if let Some(cached) = state.core.storage.get_daily_digest(date_str)? {
+    if let Some(cached) = state.core.storage.get_daily_digest(date_str).await? {
         return Ok(cached);
     }
 
     // 2. Generate from segments
-    let segment_records = state.core.storage.get_segments_for_date(date_str)?;
+    let segment_records = state.core.storage.get_segments_for_date(date_str).await?;
 
-    let digest = build_daily_digest(&segment_records, date, state);
+    let digest = build_daily_digest(&segment_records, date, state).await;
 
     // 3. Cache the result
-    if let Err(e) = state.core.storage.save_daily_digest(&digest) {
+    if let Err(e) = state.core.storage.save_daily_digest(&digest).await {
         warn!("Failed to cache daily digest: {e}");
     }
 
     Ok(digest)
 }
 
-fn build_daily_digest(
+async fn build_daily_digest(
     records: &[SegmentSummaryRecord],
     date: NaiveDate,
     state: &AppState,
@@ -74,7 +74,7 @@ fn build_daily_digest(
         })
         .collect();
 
-    let statistics = compute_statistics(records, state, &date);
+    let statistics = compute_statistics(records, state, &date).await;
 
     DailyDigest {
         date,
@@ -85,7 +85,7 @@ fn build_daily_digest(
     }
 }
 
-fn compute_statistics(
+async fn compute_statistics(
     records: &[SegmentSummaryRecord],
     state: &AppState,
     date: &NaiveDate,
@@ -151,6 +151,7 @@ fn compute_statistics(
         .core
         .storage
         .get_daily_digest(&prev_date)
+        .await
         .ok()
         .flatten()
         .map(|prev| DayComparison {

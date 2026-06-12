@@ -168,6 +168,83 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(version, CURRENT_VERSION);
 
+    // V36: egress_ledger table (egress 감사 원장, #4803).
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='egress_ledger'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "egress_ledger table should exist at CURRENT_VERSION"
+    );
+
+    // V37: audit_log 해시 체인 컬럼(seq/prev_hash/entry_hash) + partial unique index (#4834).
+    let chain_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(audit_log)").unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    for c in ["seq", "prev_hash", "entry_hash"] {
+        assert!(
+            chain_cols.iter().any(|x| x == c),
+            "audit_log.{c} chain column should exist at CURRENT_VERSION"
+        );
+    }
+    let idx_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_audit_log_seq'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx_count, 1,
+        "idx_audit_log_seq partial unique index should exist at CURRENT_VERSION"
+    );
+
+    // V38: sync_tombstones retained outbox table + HLC index (#5174/#5178).
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sync_tombstones'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "sync_tombstones table should exist at CURRENT_VERSION"
+    );
+    let idx_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND name='idx_sync_tombstones_hlc'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx_count, 1,
+        "idx_sync_tombstones_hlc index should exist at CURRENT_VERSION"
+    );
+
+    // V39: hlc_clock singleton (persistent monotonic HLC floor, #5186).
+    let (tbl, rows): (i64, i64) = conn
+        .query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hlc_clock'), \
+               (SELECT COUNT(*) FROM hlc_clock)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(tbl, 1, "hlc_clock table should exist at CURRENT_VERSION");
+    assert_eq!(rows, 1, "hlc_clock singleton row should be seeded");
+
     // V9 tables
     let count: i64 = conn
         .query_row(
@@ -425,6 +502,18 @@ fn migration_all_versions() {
         )
         .unwrap();
     assert_eq!(count, 1);
+
+    // V34 — memory_claims + memory_edges (ADR-023 substrate)
+    for table in ["memory_claims", "memory_edges"] {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "table {table} should exist after migrations");
+    }
 
     // Final version check
     let version: u32 = conn

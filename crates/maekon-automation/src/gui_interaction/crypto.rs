@@ -91,7 +91,7 @@ pub(super) fn encode_hex(bytes: &[u8]) -> String {
 }
 
 pub(super) fn decode_hex(input: &str) -> Option<Vec<u8>> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return None;
     }
 

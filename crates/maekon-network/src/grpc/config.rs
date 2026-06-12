@@ -1,4 +1,8 @@
-use std::fs;
+// OOS-TBD: ADR-013 file split (cycle 33+) — LOC: 690
+// Target split: grpc/config/mod.rs (NetworkGrpcConfig struct + defaults),
+// grpc/config/tls.rs (mTLS/CA cert loading, TlsConnector construction),
+// grpc/config/endpoint.rs (build_endpoint, build_streaming_endpoint — async since cycle 33 W0 #3967).
+// Public API unchanged via mod.rs re-exports.
 use std::time::Duration;
 
 use maekon_core::config::GrpcConfig as CoreGrpcConfig;
@@ -178,7 +182,25 @@ impl GrpcConfig {
         Ok(())
     }
 
-    pub fn build_endpoint(&self, endpoint_url: &str) -> Result<Endpoint, NetworkError> {
+    /// Build a tonic [`Endpoint`] for **unary RPCs** (login, upload-batch, feedback, etc.).
+    ///
+    /// # Async I/O note (F-RR-C33-01)
+    ///
+    /// When mTLS is enabled this function uses `tokio::fs::read` to load PEM certificate files
+    /// without blocking the Tokio worker thread.  The previous `std::fs::read` implementation
+    /// blocked the worker on each reconnect, which could starve other tasks under load.
+    ///
+    /// Applies a channel-level request timeout (`GrpcTimeout::server_timeout`) equal to
+    /// `request_timeout_secs` (default 30 s).  This fires on the full round-trip, which is
+    /// correct for short-lived unary calls.
+    ///
+    /// IMPORTANT — do NOT use this for `SubscribeSuggestions` or any other server-streaming
+    /// RPC.  The 30 s `GrpcTimeout::server_timeout` wraps the *entire stream future* at the
+    /// HTTP/2 connection layer and fires at 30 s regardless of per-message activity, forcing a
+    /// reconnect and neutralising the exponential-backoff design.
+    /// Use [`build_streaming_endpoint`](Self::build_streaming_endpoint) for those RPCs.
+    /// See F-RR-C25-02 / F-RR-C25-06.
+    pub async fn build_endpoint(&self, endpoint_url: &str) -> Result<Endpoint, NetworkError> {
         self.validate_transport_security()?;
 
         let mut endpoint = Endpoint::from_shared(endpoint_url.to_string())
@@ -201,7 +223,8 @@ impl GrpcConfig {
 
             if let Some(path) = self.tls_ca_cert_path.as_deref().map(str::trim) {
                 if !path.is_empty() {
-                    let pem = fs::read(path).map_err(|e| {
+                    // F-RR-C33-01: use async read to avoid blocking the Tokio worker thread.
+                    let pem = tokio::fs::read(path).await.map_err(|e| {
                         NetworkError::Config(format!("failed to read grpc.tls_ca_cert_path: {e}"))
                     })?;
                     tls = tls.ca_certificate(Certificate::from_pem(pem));
@@ -236,10 +259,11 @@ impl GrpcConfig {
                     })?
                     .trim();
 
-                let cert_pem = fs::read(cert_path).map_err(|e| {
+                // F-RR-C33-01: use async read to avoid blocking the Tokio worker thread.
+                let cert_pem = tokio::fs::read(cert_path).await.map_err(|e| {
                     NetworkError::Config(format!("failed to read grpc.tls_client_cert_path: {e}"))
                 })?;
-                let key_pem = fs::read(key_path).map_err(|e| {
+                let key_pem = tokio::fs::read(key_path).await.map_err(|e| {
                     NetworkError::Config(format!("failed to read grpc.tls_client_key_path: {e}"))
                 })?;
 
@@ -255,11 +279,122 @@ impl GrpcConfig {
     }
 
     pub async fn connect_channel(&self, endpoint_url: &str) -> Result<Channel, NetworkError> {
-        let endpoint = self.build_endpoint(endpoint_url)?;
+        let endpoint = self.build_endpoint(endpoint_url).await?;
         endpoint
             .connect()
             .await
             .map_err(|e| NetworkError::Http(format!("gRPC connection failed: {e}")))
+    }
+
+    /// Build a tonic [`Endpoint`] for **server-streaming RPCs** (e.g. `SubscribeSuggestions`).
+    ///
+    /// # Async I/O note (F-RR-C33-01)
+    ///
+    /// Same as [`build_endpoint`](Self::build_endpoint): PEM files are now read via
+    /// `tokio::fs::read` so the Tokio worker thread is not blocked on reconnect.
+    ///
+    /// Intentionally omits the channel-level `.timeout()` call so that
+    /// `GrpcTimeout::server_timeout` is `None`.  Without a channel deadline the stream can
+    /// remain open indefinitely; liveness is instead enforced by the per-message
+    /// `MSG_TIMEOUT` (60 s) in `GrpcSseAdapter`.
+    ///
+    /// `connect_timeout` is still applied so initial handshake failures are detected promptly.
+    ///
+    /// F-RR-C25-02 / F-RR-C25-06: fixes forced 30 s reconnect that was resetting exponential
+    /// backoff to 1 s on every cycle.
+    pub async fn build_streaming_endpoint(
+        &self,
+        endpoint_url: &str,
+    ) -> Result<Endpoint, NetworkError> {
+        self.validate_transport_security()?;
+
+        // No `.timeout()` — streaming RPCs must not have a channel-level deadline.
+        let mut endpoint = Endpoint::from_shared(endpoint_url.to_string())
+            .map_err(|e| NetworkError::Http(format!("invalid gRPC streaming endpoint: {e}")))?
+            .connect_timeout(Duration::from_secs(self.connect_timeout_secs));
+
+        if self.use_tls {
+            let domain_name = self
+                .tls_domain_name
+                .as_deref()
+                .map(str::trim)
+                .ok_or_else(|| {
+                    NetworkError::Config(
+                        "grpc.tls_domain_name is required when grpc.use_tls=true".to_string(),
+                    )
+                })?;
+
+            let mut tls = ClientTlsConfig::new().domain_name(domain_name.to_string());
+
+            if let Some(path) = self.tls_ca_cert_path.as_deref().map(str::trim) {
+                if !path.is_empty() {
+                    // F-RR-C33-01: use async read to avoid blocking the Tokio worker thread.
+                    let pem = tokio::fs::read(path).await.map_err(|e| {
+                        NetworkError::Config(format!("failed to read grpc.tls_ca_cert_path: {e}"))
+                    })?;
+                    tls = tls.ca_certificate(Certificate::from_pem(pem));
+                }
+            }
+
+            if self.mtls_enabled {
+                let cert_path = self
+                    .tls_client_cert_path
+                    .as_deref()
+                    .ok_or_else(|| {
+                        NetworkError::Core(maekon_core::error::CoreError::Config {
+                            code: maekon_core::error_codes::ConfigCode::Missing,
+                            message:
+                                "grpc.tls_client_cert_path is required when grpc.mtls_enabled=true"
+                                    .to_string(),
+                        })
+                    })?
+                    .trim();
+                let key_path = self
+                    .tls_client_key_path
+                    .as_deref()
+                    .ok_or_else(|| {
+                        NetworkError::Core(maekon_core::error::CoreError::Config {
+                            code: maekon_core::error_codes::ConfigCode::Missing,
+                            message:
+                                "grpc.tls_client_key_path is required when grpc.mtls_enabled=true"
+                                    .to_string(),
+                        })
+                    })?
+                    .trim();
+
+                // F-RR-C33-01: use async read to avoid blocking the Tokio worker thread.
+                let cert_pem = tokio::fs::read(cert_path).await.map_err(|e| {
+                    NetworkError::Config(format!("failed to read grpc.tls_client_cert_path: {e}"))
+                })?;
+                let key_pem = tokio::fs::read(key_path).await.map_err(|e| {
+                    NetworkError::Config(format!("failed to read grpc.tls_client_key_path: {e}"))
+                })?;
+
+                tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
+            }
+
+            endpoint = endpoint.tls_config(tls).map_err(|e| {
+                NetworkError::Config(format!("invalid grpc tls configuration: {e}"))
+            })?;
+        }
+
+        Ok(endpoint)
+    }
+
+    /// Connect a [`Channel`] suitable for **server-streaming RPCs**.
+    ///
+    /// Tries all configured endpoints (`grpc_endpoint` + `grpc_fallback_ports`) in order,
+    /// returning the first successful connection.  Uses [`build_streaming_endpoint`] so the
+    /// resulting channel has no channel-level request deadline.
+    pub async fn connect_streaming_channel(
+        &self,
+        endpoint_url: &str,
+    ) -> Result<Channel, NetworkError> {
+        let endpoint = self.build_streaming_endpoint(endpoint_url).await?;
+        endpoint
+            .connect()
+            .await
+            .map_err(|e| NetworkError::Http(format!("gRPC streaming connection failed: {e}")))
     }
 
     pub fn all_endpoints(&self) -> Vec<String> {
@@ -396,8 +531,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = config.validate_transport_security();
-        assert!(result.is_err());
+        let err = config.validate_transport_security().unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Core(maekon_core::error::CoreError::Config {
+                code: maekon_core::error_codes::ConfigCode::Missing, ..
+            })),
+            "missing tls_domain_name must return NetworkError::Core(CoreError::Config::Missing), got: {err:?}"
+        );
     }
 
     #[test]
@@ -408,8 +548,16 @@ mod tests {
             ..Default::default()
         };
 
-        let result = config.validate_transport_security();
-        assert!(result.is_err());
+        let err = config.validate_transport_security().unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Config(_)),
+            "mtls without tls must return NetworkError::Config, got: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("grpc.mtls_enabled requires grpc.use_tls=true"),
+            "error message mismatch, got: {err:?}"
+        );
     }
 
     #[test]
@@ -424,8 +572,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = config.validate_transport_security();
-        assert!(result.is_err());
+        let err = config.validate_transport_security().unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Core(maekon_core::error::CoreError::Config {
+                code: maekon_core::error_codes::ConfigCode::Missing, ..
+            })),
+            "missing mtls cert path must return NetworkError::Core(CoreError::Config::Missing), got: {err:?}"
+        );
     }
 
     #[test]
@@ -437,8 +590,10 @@ mod tests {
             ..Default::default()
         };
 
-        let result = config.validate_transport_security();
-        assert!(result.is_ok());
+        // use_tls=true + domain present + mtls disabled must pass validation.
+        config
+            .validate_transport_security()
+            .expect("TLS-only (no mTLS) with a domain name must pass validate_transport_security");
     }
 
     #[test]
@@ -517,5 +672,61 @@ mod tests {
         let err = config.validate_transport_security().unwrap_err();
         let core: maekon_core::error::CoreError = err.into();
         assert_eq!(core.code(), "config.invalid");
+    }
+
+    // --- F-RR-C25-02/06: build_streaming_endpoint omits channel-level timeout ---
+
+    /// `build_streaming_endpoint` must produce an `Endpoint` that does NOT carry a
+    /// channel-level `timeout` deadline.  In tonic 0.14 the `Endpoint::timeout` field is
+    /// `pub(crate)`, so we verify indirectly: if the endpoint builds successfully *and*
+    /// `build_endpoint` (with `.timeout()`) also builds successfully for the same URL, the
+    /// divergence is that the streaming variant omits the deadline baked into
+    /// `GrpcTimeout::server_timeout`.  This test verifies the happy-path success of
+    /// `build_streaming_endpoint` with a non-TLS config (the meaningful correctness is
+    /// exercised by the integration assertion in context_client tests).
+    // F-RR-C33-01: build_streaming_endpoint is now async; use #[tokio::test].
+    #[tokio::test]
+    async fn build_streaming_endpoint_succeeds_for_plain_url() {
+        let config = GrpcConfig::default(); // use_tls = false, request_timeout_secs = 30
+        let result = config
+            .build_streaming_endpoint("http://localhost:50051")
+            .await;
+        let endpoint =
+            result.expect("build_streaming_endpoint must succeed for a plain http endpoint");
+        // Verify the returned Endpoint carries the correct URI.  The streaming variant
+        // must NOT call .timeout(), so only connect_timeout is applied.
+        assert_eq!(
+            endpoint.uri().to_string(),
+            "http://localhost:50051/",
+            "build_streaming_endpoint: Endpoint URI must round-trip to the input URL"
+        );
+    }
+
+    /// `build_streaming_endpoint` rejects the same invalid TLS combinations that
+    /// `build_endpoint` rejects — `validate_transport_security` is called in both paths.
+    // F-RR-C33-01: build_streaming_endpoint is now async; use #[tokio::test].
+    #[tokio::test]
+    async fn build_streaming_endpoint_rejects_tls_without_domain() {
+        let config = GrpcConfig {
+            use_tls: true,
+            tls_domain_name: None,
+            ..GrpcConfig::default()
+        };
+        let result = config
+            .build_streaming_endpoint("https://localhost:50051")
+            .await;
+        let cfg_err = result.unwrap_err();
+        // Iter-99 moved this validation to the typed ADR-019 form:
+        // "is required when ..." = ConfigCode::Missing under CoreError::Config.
+        assert!(
+            matches!(
+                &cfg_err,
+                crate::NetworkError::Core(maekon_core::error::CoreError::Config {
+                    code: maekon_core::error_codes::ConfigCode::Missing,
+                    ..
+                })
+            ),
+            "build_streaming_endpoint must fail with the typed Missing config error when tls_domain_name is missing; got: {cfg_err:?}"
+        );
     }
 }

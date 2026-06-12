@@ -81,6 +81,7 @@ mod tests {
             llm_source: "remote".to_string(),
             ocr_fallback_reason: Some("`ocr_api` config is missing".to_string()),
             llm_fallback_reason: None,
+            llm_healthy: None,
         });
         let json = serde_json::to_string(&event).expect("ai runtime status should serialize");
         assert!(json.contains("\"type\":\"ai_runtime_status\""));
@@ -105,6 +106,7 @@ mod tests {
                 llm_source: "remote".to_string(),
                 ocr_fallback_reason: None,
                 llm_fallback_reason: None,
+                llm_healthy: None,
             })),
             "ai_runtime_status"
         );

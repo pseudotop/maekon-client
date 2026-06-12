@@ -10,7 +10,9 @@ use crate::services::web_contexts::StorageWebContext;
 pub async fn list_sessions(
     State(context): State<StorageWebContext>,
 ) -> Result<Json<Vec<SessionResponse>>, ApiError> {
-    Ok(Json(SessionsQueryService::new(context).list_sessions()?))
+    Ok(Json(
+        SessionsQueryService::new(context).list_sessions().await?,
+    ))
 }
 
 /// GET /api/sessions/:id
@@ -30,11 +32,9 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -46,8 +46,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[test]

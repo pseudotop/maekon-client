@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 
 use crate::error::CoreError;
+use crate::models::memory_graph::{ClaimStatusChange, RelationEdgeProposal};
 use crate::models::suggestion::Suggestion;
 
 /// LLM-backed analysis port.
@@ -46,6 +47,36 @@ pub trait AnalysisProvider: Send + Sync {
             code: crate::error_codes::ProviderCode::AnalysisFailed,
             message: "summarize_text not implemented for this provider".into(),
         })
+    }
+
+    /// ADR-023 Phase-2 D1: extract epistemic relations (`supports`/`refines`/
+    /// `contradicts`) between memory-graph claims.
+    ///
+    /// DEFAULT returns `Ok(vec![])` — an empty result is meaningful ("no
+    /// relations found"), so `NoOp`/unconfigured providers degrade SILENTLY
+    /// (never `Err`, never panic), mirroring `analyze`'s empty-vec contract and
+    /// deliberately NOT `summarize_text`'s `Err` default. Adapters that support
+    /// it MUST override. This text is fed to a LOCAL-only LLM (the caller gates
+    /// egress; see `AnalysisClient::new_local_enrichment`).
+    async fn extract_relations(
+        &self,
+        _claims_json: &str,
+        _system_prompt: &str,
+    ) -> Result<Vec<RelationEdgeProposal>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    /// ADR-023 Phase-2 D2: detect contradictions among claims and propose
+    /// `active → superseded` resolutions.
+    ///
+    /// DEFAULT returns `Ok(vec![])` (same degrade-by-default contract as
+    /// `extract_relations`). Adapters that support it MUST override.
+    async fn detect_contradictions(
+        &self,
+        _claims_json: &str,
+        _system_prompt: &str,
+    ) -> Result<Vec<ClaimStatusChange>, CoreError> {
+        Ok(Vec::new())
     }
 
     fn provider_name(&self) -> &str;

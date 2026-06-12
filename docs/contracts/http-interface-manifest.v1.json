@@ -1,7 +1,7 @@
 {
   "schema_version": "http.interface.manifest.v1",
-  "document_version": 5,
-  "updated_at": "2026-04-07",
+  "document_version": 6,
+  "updated_at": "2026-06-04",
   "source": {
     "routes_file": "crates/maekon-web/src/routes.rs",
     "contracts_crate": "crates/maekon-api-contracts"
@@ -12,11 +12,15 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/metrics"
+          "path": "/api/metrics",
+          "response_type": "MetricsResponse",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/metrics/hourly"
+          "path": "/api/metrics/hourly",
+          "response_type": "HourlyMetricsResponse",
+          "response_is_array": true
         }
       ]
     },
@@ -25,7 +29,9 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/processes"
+          "path": "/api/processes",
+          "response_type": "ProcessSnapshotResponse",
+          "response_is_array": true
         }
       ]
     },
@@ -34,7 +40,9 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/idle"
+          "path": "/api/idle",
+          "response_type": "IdlePeriodResponse",
+          "response_is_array": true
         }
       ]
     },
@@ -43,11 +51,14 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/sessions"
+          "path": "/api/sessions",
+          "response_type": "SessionResponse",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/sessions/{id}"
+          "path": "/api/sessions/{id}",
+          "response_type": "SessionResponse"
         }
       ]
     },
@@ -68,7 +79,8 @@
         },
         {
           "method": "POST",
-          "path": "/api/frames/{frame_id}/annotations"
+          "path": "/api/frames/{frame_id}/annotations",
+          "request_type": "CreateAnnotationRequest"
         },
         {
           "method": "DELETE",
@@ -76,7 +88,9 @@
         },
         {
           "method": "POST",
-          "path": "/api/frames/batch-tags"
+          "path": "/api/frames/batch-tags",
+          "request_type": "BatchTagRequest",
+          "response_type": "BatchTagResponse"
         }
       ]
     },
@@ -94,19 +108,24 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/stats/summary"
+          "path": "/api/stats/summary",
+          "response_type": "DailySummaryResponse"
         },
         {
           "method": "GET",
-          "path": "/api/stats/apps"
+          "path": "/api/stats/apps",
+          "response_type": "AppUsageResponse"
         },
         {
           "method": "GET",
-          "path": "/api/stats/heatmap"
+          "path": "/api/stats/heatmap",
+          "response_type": "HeatmapResponse"
         },
         {
           "method": "GET",
-          "path": "/api/stats/gui-heatmap"
+          "path": "/api/stats/gui-heatmap",
+          "response_type": "GuiHeatmapCell",
+          "response_is_array": true
         }
       ]
     },
@@ -115,7 +134,8 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/reports"
+          "path": "/api/reports",
+          "response_type": "ReportResponse"
         }
       ]
     },
@@ -124,15 +144,19 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/settings"
+          "path": "/api/settings",
+          "response_type": "AppSettings"
         },
         {
           "method": "POST",
-          "path": "/api/settings"
+          "path": "/api/settings",
+          "request_type": "AppSettings",
+          "response_type": "AppSettings"
         },
         {
           "method": "GET",
-          "path": "/api/storage/stats"
+          "path": "/api/storage/stats",
+          "response_type": "StorageStats"
         }
       ]
     },
@@ -141,11 +165,14 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/ai/provider-surfaces"
+          "path": "/api/ai/provider-surfaces",
+          "response_type": "ProviderSurfaceCatalog"
         },
         {
           "method": "POST",
-          "path": "/api/ai/providers/models"
+          "path": "/api/ai/providers/models",
+          "request_type": "ProviderModelsRequest",
+          "response_type": "ProviderModelsResponse"
         }
       ]
     },
@@ -166,7 +193,8 @@
         },
         {
           "method": "POST",
-          "path": "/api/ai/sessions/{id}/messages"
+          "path": "/api/ai/sessions/{id}/messages",
+          "request_type": "AiSendMessageRequest"
         }
       ]
     },
@@ -175,11 +203,13 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/integration/status"
+          "path": "/api/integration/status",
+          "response_type": "IntegrationStatus"
         },
         {
           "method": "GET",
-          "path": "/api/integration/audit"
+          "path": "/api/integration/audit",
+          "response_type": "IntegrationAuditLogResponse"
         },
         {
           "method": "GET",
@@ -187,35 +217,46 @@
         },
         {
           "method": "POST",
-          "path": "/api/integration/auth/device/start"
+          "path": "/api/integration/auth/device/start",
+          "response_type": "IntegrationDeviceAuthorizationCommandResult"
         },
         {
           "method": "POST",
-          "path": "/api/integration/auth/device/poll"
+          "path": "/api/integration/auth/device/poll",
+          "request_type": "IntegrationDeviceAuthorizationFlowRequest",
+          "response_type": "IntegrationDeviceAuthorizationCommandResult"
         },
         {
           "method": "POST",
-          "path": "/api/integration/auth/device/cancel"
+          "path": "/api/integration/auth/device/cancel",
+          "request_type": "IntegrationDeviceAuthorizationFlowRequest",
+          "response_type": "IntegrationDeviceAuthorizationCommandResult"
         },
         {
           "method": "POST",
-          "path": "/api/integration/auth/reset"
+          "path": "/api/integration/auth/reset",
+          "response_type": "IntegrationDeviceAuthorizationCommandResult"
         },
         {
           "method": "GET",
-          "path": "/api/integration/inbox"
+          "path": "/api/integration/inbox",
+          "response_type": "IntegrationInboxResponse"
         },
         {
           "method": "POST",
-          "path": "/api/integration/inbox/refresh"
+          "path": "/api/integration/inbox/refresh",
+          "response_type": "IntegrationInboxRefreshResponse"
         },
         {
           "method": "POST",
-          "path": "/api/integration/inbox/{prompt_id}/ack"
+          "path": "/api/integration/inbox/{prompt_id}/ack",
+          "response_type": "IntegrationInboxActionResponse"
         },
         {
           "method": "POST",
-          "path": "/api/integration/inbox/{prompt_id}/dismiss"
+          "path": "/api/integration/inbox/{prompt_id}/dismiss",
+          "request_type": "IntegrationInboxDismissRequest",
+          "response_type": "IntegrationInboxActionResponse"
         }
       ]
     },
@@ -224,19 +265,24 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/integration/v1/status"
+          "path": "/integration/v1/status",
+          "response_type": "IntegrationStatus"
         },
         {
           "method": "GET",
-          "path": "/integration/v1/audit"
+          "path": "/integration/v1/audit",
+          "response_type": "IntegrationAuditLogResponse"
         },
         {
           "method": "GET",
-          "path": "/integration/v1/ai/provider-surfaces"
+          "path": "/integration/v1/ai/provider-surfaces",
+          "response_type": "ProviderSurfaceCatalog"
         },
         {
           "method": "POST",
-          "path": "/integration/v1/ai/providers/models"
+          "path": "/integration/v1/ai/providers/models",
+          "request_type": "ProviderModelsRequest",
+          "response_type": "ProviderModelsResponse"
         }
       ]
     },
@@ -245,11 +291,14 @@
       "operations": [
         {
           "method": "DELETE",
-          "path": "/api/data/range"
+          "path": "/api/data/range",
+          "request_type": "DeleteRangeRequest",
+          "response_type": "DeleteResult"
         },
         {
           "method": "DELETE",
-          "path": "/api/data/all"
+          "path": "/api/data/all",
+          "response_type": "DeleteResult"
         }
       ]
     },
@@ -258,7 +307,8 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/search"
+          "path": "/api/search",
+          "response_type": "SearchResponse"
         }
       ]
     },
@@ -305,7 +355,8 @@
         },
         {
           "method": "POST",
-          "path": "/api/backup/restore"
+          "path": "/api/backup/restore",
+          "request_type": "BackupArchive"
         }
       ]
     },
@@ -314,19 +365,26 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/tags"
+          "path": "/api/tags",
+          "response_type": "TagResponse",
+          "response_is_array": true
         },
         {
           "method": "POST",
-          "path": "/api/tags"
+          "path": "/api/tags",
+          "request_type": "CreateTagRequest",
+          "response_type": "TagResponse"
         },
         {
           "method": "GET",
-          "path": "/api/tags/{id}"
+          "path": "/api/tags/{id}",
+          "response_type": "TagResponse"
         },
         {
           "method": "PUT",
-          "path": "/api/tags/{id}"
+          "path": "/api/tags/{id}",
+          "request_type": "UpdateTagRequest",
+          "response_type": "TagResponse"
         },
         {
           "method": "DELETE",
@@ -334,7 +392,9 @@
         },
         {
           "method": "GET",
-          "path": "/api/frames/{frame_id}/tags"
+          "path": "/api/frames/{frame_id}/tags",
+          "response_type": "TagResponse",
+          "response_is_array": true
         },
         {
           "method": "POST",
@@ -351,7 +411,8 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/timeline"
+          "path": "/api/timeline",
+          "response_type": "TimelineResponse"
         }
       ]
     },
@@ -360,23 +421,31 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/focus/metrics"
+          "path": "/api/focus/metrics",
+          "response_type": "FocusMetricsResponse"
         },
         {
           "method": "GET",
-          "path": "/api/focus/sessions"
+          "path": "/api/focus/sessions",
+          "response_type": "WorkSessionDto",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/focus/interruptions"
+          "path": "/api/focus/interruptions",
+          "response_type": "InterruptionDto",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/focus/suggestions"
+          "path": "/api/focus/suggestions",
+          "response_type": "LocalSuggestionDto",
+          "response_is_array": true
         },
         {
           "method": "POST",
-          "path": "/api/focus/suggestions/{id}/feedback"
+          "path": "/api/focus/suggestions/{id}/feedback",
+          "request_type": "SuggestionFeedbackRequest"
         }
       ]
     },
@@ -385,31 +454,40 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/automation/status"
+          "path": "/api/automation/status",
+          "response_type": "AutomationStatusDto"
         },
         {
           "method": "GET",
-          "path": "/api/automation/contracts"
+          "path": "/api/automation/contracts",
+          "response_type": "AutomationContractsDto"
         },
         {
           "method": "GET",
-          "path": "/api/automation/audit"
+          "path": "/api/automation/audit",
+          "response_type": "AuditEntryDto",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/automation/policy-events"
+          "path": "/api/automation/policy-events",
+          "response_type": "AuditEntryDto",
+          "response_is_array": true
         },
         {
           "method": "GET",
-          "path": "/api/automation/policies"
+          "path": "/api/automation/policies",
+          "response_type": "PoliciesDto"
         },
         {
           "method": "GET",
-          "path": "/api/automation/stats"
+          "path": "/api/automation/stats",
+          "response_type": "AutomationStatsDto"
         },
         {
           "method": "GET",
-          "path": "/api/automation/presets"
+          "path": "/api/automation/presets",
+          "response_type": "PresetListDto"
         },
         {
           "method": "POST",
@@ -425,15 +503,20 @@
         },
         {
           "method": "POST",
-          "path": "/api/automation/presets/{id}/run"
+          "path": "/api/automation/presets/{id}/run",
+          "response_type": "PresetRunResult"
         },
         {
           "method": "POST",
-          "path": "/api/automation/execute-hint"
+          "path": "/api/automation/execute-hint",
+          "request_type": "ExecuteIntentHintRequest",
+          "response_type": "ExecuteIntentHintResponse"
         },
         {
           "method": "POST",
-          "path": "/api/automation/execute-scene-action"
+          "path": "/api/automation/execute-scene-action",
+          "request_type": "ExecuteSceneActionRequest",
+          "response_type": "ExecuteSceneActionResponse"
         },
         {
           "method": "GET",
@@ -441,7 +524,8 @@
         },
         {
           "method": "GET",
-          "path": "/api/automation/scene/calibration"
+          "path": "/api/automation/scene/calibration",
+          "response_type": "SceneCalibrationDto"
         },
         {
           "method": "GET",
@@ -466,27 +550,37 @@
       "operations": [
         {
           "method": "POST",
-          "path": "/api/automation/gui/sessions"
+          "path": "/api/automation/gui/sessions",
+          "request_type": "GuiCreateSessionRequest",
+          "response_type": "GuiCreateSessionResponse"
         },
         {
           "method": "GET",
-          "path": "/api/automation/gui/sessions/{id}"
+          "path": "/api/automation/gui/sessions/{id}",
+          "response_type": "GuiSessionResponse"
         },
         {
           "method": "DELETE",
-          "path": "/api/automation/gui/sessions/{id}"
+          "path": "/api/automation/gui/sessions/{id}",
+          "response_type": "GuiSessionResponse"
         },
         {
           "method": "POST",
-          "path": "/api/automation/gui/sessions/{id}/highlight"
+          "path": "/api/automation/gui/sessions/{id}/highlight",
+          "request_type": "GuiHighlightRequest",
+          "response_type": "GuiSessionResponse"
         },
         {
           "method": "POST",
-          "path": "/api/automation/gui/sessions/{id}/confirm"
+          "path": "/api/automation/gui/sessions/{id}/confirm",
+          "request_type": "GuiConfirmRequest",
+          "response_type": "GuiConfirmResponse"
         },
         {
           "method": "POST",
-          "path": "/api/automation/gui/sessions/{id}/execute"
+          "path": "/api/automation/gui/sessions/{id}/execute",
+          "request_type": "GuiExecutionRequest",
+          "response_type": "GuiExecuteResponse"
         },
         {
           "method": "GET",
@@ -499,7 +593,8 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/onboarding/quickstart"
+          "path": "/api/onboarding/quickstart",
+          "response_type": "OnboardingQuickstartDto"
         }
       ]
     },
@@ -508,15 +603,19 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/support/diagnostics"
+          "path": "/api/support/diagnostics",
+          "response_type": "DiagnosticsBundleDto"
         },
         {
           "method": "POST",
-          "path": "/api/support/bug-report"
+          "path": "/api/support/bug-report",
+          "request_type": "CreateBugReportRequest",
+          "response_type": "BugReportBundleDto"
         },
         {
           "method": "GET",
-          "path": "/api/support/bug-report/latest"
+          "path": "/api/support/bug-report/latest",
+          "response_type": "BugReportBundleDto"
         }
       ]
     },
@@ -525,11 +624,14 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/update/status"
+          "path": "/api/update/status",
+          "response_type": "UpdateStatus"
         },
         {
           "method": "POST",
-          "path": "/api/update/action"
+          "path": "/api/update/action",
+          "request_type": "UpdateActionRequest",
+          "response_type": "UpdateActionResponse"
         },
         {
           "method": "GET",
@@ -542,11 +644,18 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/suggestions"
+          "path": "/api/suggestions",
+          "response_type": "SuggestionDto",
+          "response_is_array": true
         },
         {
           "method": "POST",
           "path": "/api/suggestions/{id}/dismiss"
+        },
+        {
+          "method": "POST",
+          "path": "/api/suggestions/{id}/feedback",
+          "request_type": "SuggestionFeedbackRequest"
         }
       ]
     },
@@ -555,7 +664,9 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/semantic-search"
+          "path": "/api/semantic-search",
+          "response_type": "SemanticSearchResult",
+          "response_is_array": true
         }
       ]
     },
@@ -628,19 +739,25 @@
         },
         {
           "method": "GET",
-          "path": "/api/coaching/goals"
+          "path": "/api/coaching/goals",
+          "response_type": "GoalProgressResponse",
+          "response_is_array": true
         },
         {
           "method": "PUT",
-          "path": "/api/coaching/goals"
+          "path": "/api/coaching/goals",
+          "request_type": "UpdateGoalsRequest"
         },
         {
           "method": "GET",
-          "path": "/api/coaching/stats/today"
+          "path": "/api/coaching/stats/today",
+          "response_type": "CoachingStatsTodayResponse"
         },
         {
           "method": "GET",
-          "path": "/api/coaching/habits"
+          "path": "/api/coaching/habits",
+          "response_type": "HabitStreakResponse",
+          "response_is_array": true
         }
       ]
     },
@@ -653,7 +770,9 @@
         },
         {
           "method": "GET",
-          "path": "/api/playbooks/presets"
+          "path": "/api/playbooks/presets",
+          "response_type": "CoachingEventResponse",
+          "response_is_array": true
         }
       ]
     },
@@ -670,11 +789,13 @@
         },
         {
           "method": "POST",
-          "path": "/api/pomodoro/cancel"
+          "path": "/api/pomodoro/cancel",
+          "response_type": "PomodoroSessionResponse"
         },
         {
           "method": "POST",
-          "path": "/api/pomodoro/complete"
+          "path": "/api/pomodoro/complete",
+          "response_type": "PomodoroSessionResponse"
         }
       ]
     },
@@ -691,7 +812,8 @@
         },
         {
           "method": "GET",
-          "path": "/api/tracking-schedule/status"
+          "path": "/api/tracking-schedule/status",
+          "response_type": "TrackingScheduleStatus"
         }
       ]
     },
@@ -700,7 +822,8 @@
       "operations": [
         {
           "method": "GET",
-          "path": "/api/external-grpc/live-config"
+          "path": "/api/external-grpc/live-config",
+          "response_type": "LiveConfigResponse"
         }
       ]
     },
@@ -713,5 +836,9 @@
         }
       ]
     }
-  ]
+  ],
+  "schemas": {
+    "source": "cargo run -p maekon-api-contracts --bin emit-openapi-schemas --features schema",
+    "note": "Full DTO disclosure (owner decision). request_type/response_type reference components.schemas; unmapped ops fall back to GenericObject."
+  }
 }

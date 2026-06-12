@@ -47,6 +47,17 @@ export interface CaptureStatePayload {
   indicator_visible: boolean
 }
 
+export interface PointerContextPayload {
+  enabled: boolean
+  x: number | null
+  y: number | null
+  click_count: number
+  click_pulse: boolean
+  reduced_motion: boolean
+  ttl_ms: number
+  sample_rate_hz: number
+}
+
 export interface ModePayload {
   mode: OverlayMode
 }
@@ -67,6 +78,47 @@ export interface SuggestionViewDto {
   created_at: string
   is_read: boolean
   reasoning: string | null
+  context_scope?: {
+    app_name?: string | null
+    window_title?: string | null
+    target_id?: string | null
+  } | null
+}
+
+export type SuggestionSurfacePlacement = 'adjacent-popover' | 'window-side-panel' | 'bottom-dock'
+
+export interface SuggestionGuiAnchorPayload {
+  active_app: string
+  bundle_id: string
+  active_process: {
+    process_name: string
+    bundle_id: string
+    pid: number | null
+    screen_id: string
+    window_title: string
+    window_bounds: { x: number; y: number; width: number; height: number }
+  }
+  display_value: string
+  expression: string
+  target_entity: {
+    entity_id: string
+    kind: string
+    label: string
+    value: string
+    bounds: { x: number; y: number; width: number; height: number }
+    center: { x: number; y: number }
+    confidence: number
+    sources: string[]
+  }
+  highlight: {
+    target_entity_id: string
+    bounds: { x: number; y: number; width: number; height: number }
+  }
+}
+
+export interface SuggestionSurfacePayload {
+  placement: SuggestionSurfacePlacement
+  anchor: SuggestionGuiAnchorPayload | null
 }
 
 export interface DetectionElementPayload {
@@ -99,6 +151,24 @@ export interface PendingConfirmationDto {
   requested_at: string
 }
 
+/**
+ * A pending Codex `app-server` approval request (E21 #5044). Emitted by the Rust
+ * `CodexUiApprovalHook` as the `codex:approval-request` event payload. camelCase
+ * mirrors the Rust `UiApprovalContext` `#[serde(rename_all = "camelCase")]`.
+ * Carries only render-safe summary fields (no file contents / secrets). The
+ * eventual answer is sent back via the `respond_codex_approval` command.
+ */
+export interface CodexApprovalDto {
+  requestId: number
+  summary: string
+  /** 'command' | 'file_change' */
+  kind: string
+  processName: string | null
+  args: string[]
+  diffLineCount: number | null
+  networkHost: string | null
+}
+
 export interface SuggestionHistoryDto extends SuggestionViewDto {
   feedback: string | null
 }
@@ -122,8 +192,12 @@ export interface OverlayState {
   suggestionsPanelOpen: boolean
   suggestions: SuggestionViewDto[]
   suggestionBadgeCount: number
+  suggestionSurface: SuggestionSurfacePayload
   captureFlashTimestamp: string | null
+  pointerContext: PointerContextPayload | null
   detectionScene: DetectionScenePayload | null
   detectionSelectedId: string | null
   pendingConfirmation: PendingConfirmationDto | null
+  /** A pending Codex app-server approval awaiting an accept/decline/cancel (E21 #5044). */
+  pendingCodexApproval: CodexApprovalDto | null
 }

@@ -262,10 +262,17 @@ mod tests {
             "[::ffff:127.0.0.1]:10080",
             "LOCALHOST:10080", // case-insensitive
         ] {
-            assert!(
-                validate_authority(Some(a)).is_ok(),
-                "authority should be allowlisted: {a}"
-            );
+            // Security-relevant: validate_authority is the DNS-rebinding guard.
+            // A regression that accidentally returns Err for a loopback authority
+            // would silently block legitimate callers. Pin the Ok value (unit) to
+            // distinguish from a permission-denied / invalid-argument error. (#5594)
+            validate_authority(Some(a)).unwrap_or_else(|e| {
+                panic!(
+                    "authority should be allowlisted but was rejected: {a} — got {:?} (code={:?})",
+                    e,
+                    e.code()
+                )
+            });
         }
     }
 
@@ -278,12 +285,10 @@ mod tests {
             "",
             "[fe80::1]:10080",
         ] {
-            let result = validate_authority(Some(a));
-            assert!(result.is_err(), "authority should be rejected: {a}");
             assert_eq!(
-                result.unwrap_err().code(),
+                validate_authority(Some(a)).unwrap_err().code(),
                 tonic::Code::PermissionDenied,
-                "expected PermissionDenied for {a}"
+                "authority should be rejected with PermissionDenied: {a}"
             );
         }
     }

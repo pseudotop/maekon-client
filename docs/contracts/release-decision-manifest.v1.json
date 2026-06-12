@@ -1,0 +1,92 @@
+{
+  "schema_version": "automation.gui.benchmark_report.v1.release_decision",
+  "source_report_schema_version": "automation.gui.benchmark_report.v1",
+  "evidence_policy_schema_version": "automation.gui.permission_evidence.v1",
+  "generated_at": "2026-06-02T10:05:00Z",
+  "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "release_tag": "v0.1.0-rc.5",
+  "artifact_checksum": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "run": {
+    "workflow_run_url": "https://github.com/pseudotop/maekon-client/actions/runs/123",
+    "manual_evidence_id": null,
+    "runner": {
+      "os": "Windows",
+      "labels": ["windows-latest", "desktop-smoke"]
+    }
+  },
+  "benchmark_report": {
+    "schema_version": "automation.gui.benchmark_report.v1",
+    "generated_at": "2026-06-02T10:00:00Z",
+    "source": "os_interactive",
+    "results": [
+      {
+        "result": {
+          "case_id": "INPUT-ACTION-OBSERVABLE-STATE",
+          "outcome": "pass",
+          "latency_ms": 42,
+          "confidence": 0.98,
+          "failure_mode": null,
+          "evidence_paths": ["artifact://gui/state-change/windows/input-action"],
+          "evidence_artifacts": ["benchmark_report", "audit_excerpt", "gui_session_event"],
+          "privacy_status": "redacted",
+          "input_execution_mode": "sandboxed_real_input",
+          "verification_mode": "observable_state_change",
+          "launcher_platform": "windows",
+          "adapter_name": "windows-uia-sandbox",
+          "message": "observable state change verified"
+        },
+        "evidence_fresh": true,
+        "sidecar_present": true,
+        "hmac_secret_present": true
+      }
+    ]
+  },
+  "evidence_artifacts": [
+    {
+      "id": "release-smoke-log-windows",
+      "path": "artifact://release-smoke-log-windows",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "privacy_status": "redacted",
+      "redaction_status": "redacted",
+      "sanitized": true
+    }
+  ],
+  "privacy_status": "redacted",
+  "redaction_status": "redacted",
+  "cleanup": {
+    "status": "pass",
+    "summary": "Runner temp artifacts removed."
+  },
+  "covered_issue_numbers": [4755, 4765],
+  "claims": [
+    {
+      "claim": "Windows input action evidence maps to release acceptance",
+      "state": "pass",
+      "history_relevant": true,
+      "evidence": {
+        "initial": {
+          "sha": "1111111111111111111111111111111111111111",
+          "date": "2026-05-30",
+          "path": "docs/qa/runs/initial.md",
+          "summary": "Initial Windows input evidence gap captured."
+        },
+        "pivot": {
+          "sha": "2222222222222222222222222222222222222222",
+          "date": "2026-06-01",
+          "path": "docs/qa/runs/pivot.md",
+          "summary": "Pivot added observable-state verification."
+        },
+        "current": {
+          "sha": "3333333333333333333333333333333333333333",
+          "date": "2026-06-02",
+          "path": "artifact://gui/state-change/windows/input-action",
+          "summary": "Current smoke artifact is redacted and fresh."
+        }
+      }
+    }
+  ],
+  "release_decision": {
+    "state": "pass",
+    "reasons": []
+  }
+}

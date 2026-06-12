@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { AppWindow, Clock, Image, Monitor, Tag as TagIcon } from 'lucide-react'
+import { AppWindow, Clock, FileText, Image, Monitor, Tag as TagIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { TimelineResponse } from '../../api/client'
 import { fetchFrameTags } from '../../api/client'
 import TimelineScrubber from '../../components/TimelineScrubber'
 import { Badge } from '../../components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
-import { iconSize } from '../../styles/tokens'
+import { iconSize, typography } from '../../styles/tokens'
 import type { PlaybackState } from './types'
 
 // ── TimelineScrubberSection ─────────────────────────────────────
@@ -113,6 +113,16 @@ export function FrameCard({ playback, viewportSlot, statusSlot }: FrameCardProps
                 </Badge>
               </div>
             </div>
+
+            {currentFrame.ocr_text && (
+              <section aria-label={t('replay.capturedOcr')} className="rounded-md border border-border-subtle p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <FileText className={`${iconSize.base} text-content-muted`} />
+                  <span className={`${typography.weight.medium} text-content text-sm`}>{t('replay.capturedOcr')}</span>
+                </div>
+                <p className="whitespace-pre-wrap text-content-secondary text-sm">{currentFrame.ocr_text}</p>
+              </section>
+            )}
 
             {/* Frame tags */}
             {currentFrameTags.length > 0 && (

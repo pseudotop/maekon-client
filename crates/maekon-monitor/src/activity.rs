@@ -127,6 +127,7 @@ mod tests {
             Ok(Some(WindowInfo {
                 title: "test.rs".to_string(),
                 app_name: "Code".to_string(),
+                app_bundle_id: None,
                 pid: 1234,
                 bounds: None,
             }))

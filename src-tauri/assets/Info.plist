@@ -15,5 +15,9 @@
     <!-- Microphone: Push-to-Talk voice input for AI chat -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Maekon uses the microphone for voice-to-text input in the AI chat.</string>
+
+    <!-- Input Monitoring: shortcut observation + input automation -->
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Maekon uses input monitoring to observe shortcuts and run consented input automation.</string>
 </dict>
 </plist>

@@ -195,7 +195,12 @@ export default function GeneralTab() {
       </Card>
 
       <div id="section-notification">
-        <NotificationSettings notification={formData.notification} onChange={settingsForm.handleNotificationChange} />
+        <NotificationSettings
+          notification={formData.notification}
+          onChange={settingsForm.handleNotificationChange}
+          onTestNotification={settingsForm.testNotificationMutation.mutate}
+          isTestNotificationPending={settingsForm.testNotificationMutation.isPending}
+        />
       </div>
 
       <div id="section-schedule">
@@ -620,6 +625,35 @@ function SupportToolsCard() {
                     <p className="text-content-muted text-xs">{t('settings.supportPolicyCount')}</p>
                     <p className="text-content text-sm">{diagnostics.recent_policy_events.length}</p>
                   </div>
+                </div>
+                <div>
+                  <p className="text-content-muted text-xs">{t('settings.supportProviderCli')}</p>
+                  {(diagnostics.provider_cli ?? []).length === 0 ? (
+                    <p className="text-content-secondary text-sm">{t('settings.supportProviderCliEmpty')}</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {(diagnostics.provider_cli ?? []).map((entry) => (
+                        <div key={entry.surface_id} className="rounded border border-DEFAULT bg-surface-base p-2">
+                          <p className="text-content text-sm">
+                            {entry.surface_id}: {entry.readiness} / {entry.availability}
+                          </p>
+                          {entry.dependency_status && (
+                            <p className="text-content-secondary text-xs">
+                              {t('settings.supportProviderCliDependency')}: {entry.dependency_status}
+                            </p>
+                          )}
+                          {entry.env_refresh_required && (
+                            <p className="text-content-secondary text-xs">
+                              {t('settings.supportProviderCliRestartRequired')}
+                            </p>
+                          )}
+                          {entry.status_reason && (
+                            <p className="text-content-secondary text-xs">{entry.status_reason}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </Card>
             )}

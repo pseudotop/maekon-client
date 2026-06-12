@@ -1,6 +1,7 @@
-import { screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
+import type { FeatureCapabilitySnapshot, ProviderSurfaceSpec } from '../../api/contracts'
 import AdvancedTab from './AdvancedTab'
 import AudioTab from './AudioTab'
 import AiAutomationTab from './ai-automation'
@@ -39,6 +40,13 @@ function mockSettingsContext() {
       handleMonitorChange: vi.fn(),
       handleTelemetryChange: vi.fn(),
       requestNotificationPermissionMutation: { isPending: false, mutate: vi.fn() },
+      requestScreenCapturePermissionMutation: { isPending: false, mutate: vi.fn() },
+      testNotificationMutation: { isPending: false, mutate: vi.fn() },
+      openDesktopPermissionSettingsMutation: {
+        isPending: false,
+        mutate: vi.fn(),
+        pendingPermissionKind: null,
+      },
       setExportFormat: vi.fn(),
       setFormData: vi.fn(),
     },
@@ -56,14 +64,99 @@ function mockSettingsContext() {
   return formData
 }
 
-function mockAiAutomationContext() {
+function cliSurface(): ProviderSurfaceSpec {
+  return {
+    surface_id: 'provider_surface.openai.subprocess_cli',
+    vendor_id: 'openai',
+    display_name: 'Codex CLI',
+    credential_kind: 'provider_subscription',
+    execution_kind: 'subprocess_cli',
+    placement_kind: 'installed_cli',
+    stability: 'preview',
+    preferred_for_product_auth: true,
+    provisioning: null,
+    llm_transport: null,
+    ocr_transport: null,
+    availability_probe: null,
+    llm_capabilities: null,
+    ocr_capabilities: null,
+    default_models: {
+      llm_models: [],
+      ocr_models: [],
+    },
+    model_catalog_transport: null,
+    parameter_profiles: {
+      llm: { supported: [] },
+      ocr: { supported: [] },
+    },
+    known_models: [],
+    unknown_model_policy: null,
+  } as unknown as ProviderSurfaceSpec
+}
+
+function featureSnapshotForCli(
+  readiness: NonNullable<FeatureCapabilitySnapshot['features'][number]['provider_cli_readiness']>,
+  availability: FeatureCapabilitySnapshot['features'][number]['availability'],
+  dependencyStatus: FeatureCapabilitySnapshot['features'][number]['provider_cli_discovery'] extends infer Discovery
+    ? Discovery extends { dependency_status: infer Status }
+      ? Status | null
+      : never
+    : never,
+): FeatureCapabilitySnapshot {
+  return {
+    features: [
+      {
+        feature_id: 'provider_surface.openai.subprocess_cli',
+        maturity: 'beta',
+        availability,
+        provider_cli_readiness: readiness,
+        provider_cli_discovery: dependencyStatus
+          ? {
+              candidate_name: 'codex',
+              executable_path: 'C:/Tools/Codex/codex.exe',
+              version_status: 'not_checked',
+              dependency_status: dependencyStatus,
+              status_reason: dependencyStatus === 'missing' ? 'cli_dependency_missing' : null,
+              env_refresh_required: dependencyStatus === 'stale_process_env',
+            }
+          : null,
+        preferred: true,
+        requires: ['cli:codex'],
+        status_reason: readiness === 'not_detected' ? 'cli_not_installed' : 'cli_detected',
+        status_copy_key: 'featureCapability.surface.provider_surface.openai.subprocess_cli.partially_available',
+        setup_copy_key: null,
+        setup_docs_url: null,
+        configuration_env_vars: [],
+      },
+    ],
+  }
+}
+
+function mockAiAutomationContext(options?: {
+  surface?: ProviderSurfaceSpec
+  featureCapabilities?: FeatureCapabilitySnapshot
+}) {
   const formData = makeDefaultFormData()
   formData.ai_provider = {
     ...formData.ai_provider,
-    access_mode: 'ProviderApiKey',
+    access_mode: options?.surface ? 'ProviderSubscriptionCli' : 'ProviderApiKey',
     ocr_provider: 'Local',
-    llm_provider: 'Local',
+    llm_provider: options?.surface ? 'Remote' : 'Local',
     external_data_policy: 'PiiFilterStandard',
+    llm_api: options?.surface
+      ? {
+          surface_id: options.surface.surface_id,
+          provider: 'openai',
+          model: 'gpt-5-codex',
+          endpoint: null,
+          api_key_masked: '',
+          has_secret: false,
+          backend_kind: 'unavailable',
+          auth_mode: 'provider_subscription_cli',
+          secret_display_hint: null,
+          model_source: 'manual',
+        }
+      : formData.ai_provider.llm_api,
   }
   mockUseLoadedFormData.mockReturnValue(formData)
   mockUseSettingsFormContext.mockReturnValue({
@@ -73,7 +166,9 @@ function mockAiAutomationContext() {
       modelCatalogNotice: { ocr_api: null, llm_api: null },
       canDiscoverModels: vi.fn(() => false),
       discoverModels: vi.fn(),
-      getCompatibleSurfaceOptions: vi.fn(() => []),
+      getCompatibleSurfaceOptions: vi.fn((endpointKind: string) =>
+        endpointKind === 'llm_api' && options?.surface ? [options.surface] : [],
+      ),
       getModelCompatibilityNotice: vi.fn(() => null),
       getModelOptions: vi.fn(() => []),
       handleAiProviderChange: vi.fn(),
@@ -87,15 +182,17 @@ function mockAiAutomationContext() {
       handleSceneIntelligenceChange: vi.fn(),
       handleSelectAiProviderProfile: vi.fn(),
       handleDeleteAiProviderProfile: vi.fn(),
-      resolveEndpointSurface: vi.fn(() => undefined),
+      resolveEndpointSurface: vi.fn((endpointKind: string) =>
+        endpointKind === 'llm_api' ? options?.surface : undefined,
+      ),
     },
     data: {
-      featureCapabilities: null,
+      featureCapabilities: options?.featureCapabilities ?? null,
       llmEndpointProbe: null,
       llmEndpointProbeLoading: false,
       ocrEndpointProbe: null,
       ocrEndpointProbeLoading: false,
-      providerCatalog: { surfaces: [] },
+      providerCatalog: { surfaces: options?.surface ? [options.surface] : [] },
       secretBackendCapabilities: null,
     },
   })
@@ -201,5 +298,123 @@ describe('Settings guidance copy', () => {
     expect(
       screen.getByText('This choice controls which provider setup fields become active below.'),
     ).toBeInTheDocument()
+  })
+
+  it('renders LocalModel as the fourth access mode option in the dropdown', () => {
+    mockAiAutomationContext()
+
+    renderWithProviders(<AiAutomationTab />)
+
+    const select = screen.getByTestId('settings-ai-access-mode')
+    const options = Array.from(select.querySelectorAll('option')).map((o) => o.value)
+
+    expect(options).toContain('ProviderApiKey')
+    expect(options).toContain('ProviderSubscriptionCli')
+    expect(options).toContain('ProviderOAuth')
+    expect(options).toContain('LocalModel')
+    expect(options[3]).toBe('LocalModel')
+    expect(screen.getByRole('option', { name: 'Local model' })).toBeInTheDocument()
+  })
+
+  it('calls handleAiProviderChange with LocalModel when that option is selected', () => {
+    const handleAiProviderChange = vi.fn()
+    const formData = makeDefaultFormData()
+    formData.ai_provider = { ...formData.ai_provider, access_mode: 'ProviderApiKey' }
+    mockUseLoadedFormData.mockReturnValue(formData)
+    mockUseSettingsFormContext.mockReturnValue({
+      form: {
+        formData,
+        modelCatalogLoading: null,
+        modelCatalogNotice: { ocr_api: null, llm_api: null },
+        canDiscoverModels: vi.fn(() => false),
+        discoverModels: vi.fn(),
+        getCompatibleSurfaceOptions: vi.fn(() => []),
+        getModelCompatibilityNotice: vi.fn(() => null),
+        getModelOptions: vi.fn(() => []),
+        handleAiProviderChange,
+        handleAutomationChange: vi.fn(),
+        handleExternalApiChange: vi.fn(),
+        handleOcrValidationChange: vi.fn(),
+        handleProviderSurfaceChange: vi.fn(),
+        handleSandboxChange: vi.fn(),
+        handleSaveAiProviderProfile: vi.fn(),
+        handleSceneActionOverrideChange: vi.fn(),
+        handleSceneIntelligenceChange: vi.fn(),
+        handleSelectAiProviderProfile: vi.fn(),
+        handleDeleteAiProviderProfile: vi.fn(),
+        resolveEndpointSurface: vi.fn(() => undefined),
+      },
+      data: {
+        featureCapabilities: null,
+        llmEndpointProbe: null,
+        llmEndpointProbeLoading: false,
+        ocrEndpointProbe: null,
+        ocrEndpointProbeLoading: false,
+        providerCatalog: { surfaces: [] },
+        secretBackendCapabilities: null,
+      },
+    })
+
+    // onChange トリガーで handleAiProviderChange('access_mode', 'LocalModel') が呼ばれることを確認
+    const { getByTestId } = renderWithProviders(<AiAutomationTab />)
+    const select = getByTestId('settings-ai-access-mode') as HTMLSelectElement
+
+    fireEvent.change(select, { target: { value: 'LocalModel' } })
+
+    expect(handleAiProviderChange).toHaveBeenCalledWith('access_mode', 'LocalModel')
+  })
+
+  it('shows provider CLI readiness and dependency states in the LLM surface panel', () => {
+    const surface = cliSurface()
+    const scenarios = [
+      {
+        readiness: 'auth_required' as const,
+        availability: 'partially_available' as const,
+        dependencyStatus: 'ready' as const,
+        expected: ['Sign-in required', 'Dependency ready', 'Partially available'],
+      },
+      {
+        readiness: 'auth_ready' as const,
+        availability: 'partially_available' as const,
+        dependencyStatus: 'ready' as const,
+        expected: ['Signed in; invocation unavailable', 'Dependency ready'],
+      },
+      {
+        readiness: 'auth_unverified' as const,
+        availability: 'partially_available' as const,
+        dependencyStatus: 'missing' as const,
+        expected: ['Auth not verified', 'Dependency missing'],
+      },
+      {
+        readiness: 'not_detected' as const,
+        availability: 'unavailable' as const,
+        dependencyStatus: null,
+        expected: ['CLI not detected', 'Unavailable'],
+      },
+      {
+        readiness: 'invocation_ready' as const,
+        availability: 'partially_available' as const,
+        dependencyStatus: 'stale_process_env' as const,
+        expected: ['Ready to invoke', 'Restart required'],
+      },
+    ]
+
+    for (const scenario of scenarios) {
+      cleanup()
+      mockAiAutomationContext({
+        surface,
+        featureCapabilities: featureSnapshotForCli(
+          scenario.readiness,
+          scenario.availability,
+          scenario.dependencyStatus,
+        ),
+      })
+
+      renderWithProviders(<AiAutomationTab />)
+
+      for (const label of scenario.expected) {
+        expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+      }
+    }
   })
 })

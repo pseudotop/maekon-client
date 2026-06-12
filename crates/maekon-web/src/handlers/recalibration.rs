@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::{DateTime, Duration, Utc};
 use maekon_api_contracts::recalibration::{CreateOverrideRequest, ListOverridesQuery};
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::recalibration::RegimeOverride;
 
 use crate::error::ApiError;
@@ -29,7 +30,7 @@ pub async fn create_override(
         })?;
 
     let entry = RegimeOverride {
-        override_id: uuid::Uuid::new_v4().to_string(),
+        override_id: generate_id("ovr"),
         segment_id: body.segment_id,
         original_regime_id: body.original_regime_id,
         user_action: body.action,
@@ -189,7 +190,6 @@ mod tests {
         > = store.as_ref().ok_or_else(|| {
             ApiError::ServiceUnavailable("Override store not configured".to_string())
         });
-        assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
             ApiError::ServiceUnavailable(_)
@@ -202,7 +202,6 @@ mod tests {
         let result = flag.as_ref().ok_or_else(|| {
             ApiError::ServiceUnavailable("Recluster flag not configured".to_string())
         });
-        assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
             ApiError::ServiceUnavailable(_)

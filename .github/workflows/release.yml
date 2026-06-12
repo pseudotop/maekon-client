@@ -33,6 +33,7 @@ jobs:
   verify-version:
     name: Verify Version Consistency
     runs-on: ubuntu-latest
+    environment: release-signing
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_sha: ${{ steps.release.outputs.release_sha }}
@@ -42,12 +43,12 @@ jobs:
     steps:
       - name: Generate release App token
         id: app_token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
           client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
@@ -186,17 +187,12 @@ jobs:
             exit 1
           fi
 
-      - name: Verify CHANGELOG.md has entry for this version
+      - name: Verify CHANGELOG.md release notes policy
         shell: bash
         run: |
           set -euo pipefail
-          source ./scripts/release-common.sh
           TAG_VERSION="${RELEASE_TAG#v}"
-          if ! changelog_has_entry "${TAG_VERSION}"; then
-            echo "::error::CHANGELOG.md missing entry for [$TAG_VERSION]"
-            echo "Fix: Add ## [$TAG_VERSION] - $(date +%Y-%m-%d) section to CHANGELOG.md"
-            exit 1
-          fi
+          ./scripts/verify-release-notes-policy.sh --public --version "${TAG_VERSION}"
 
       - name: Enforce rc-first stable promotion
         if: steps.release.outputs.release_kind == 'stable'
@@ -399,12 +395,12 @@ jobs:
     needs: verify-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: '22'
           package-manager-cache: false
@@ -434,7 +430,7 @@ jobs:
         run: tar -czf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend dist
 
       - name: Upload frontend dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: frontend-dist-bundle
           path: crates/maekon-web/frontend/frontend-dist.tar.gz
@@ -465,12 +461,12 @@ jobs:
             asset_ext: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@v6
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -497,16 +493,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -523,8 +521,9 @@ jobs:
         run: ./scripts/verify-deb-metadata.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust build artifacts
@@ -575,11 +574,30 @@ jobs:
         shell: bash
         run: ./scripts/cargo-cache.sh install cargo-wix
 
+      - name: Install Tauri CLI
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2
+
       - name: Build MSI installer
         if: runner.os == 'Windows'
         shell: bash
         working-directory: src-tauri
         run: ../scripts/cargo-cache.sh wix -p maekon-app --nocapture --target ${{ matrix.target }}
+
+      - name: Build NSIS setup installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG_PATH="${RUNNER_TEMP}/tauri-nsis-ci-config.json"
+          printf '{"build":{"beforeBuildCommand":""}}\n' > "$CONFIG_PATH"
+          ./scripts/cargo-cache.sh tauri build \
+            --bundles nsis \
+            --target ${{ matrix.target }} \
+            --features grpc \
+            --ci \
+            --config "$CONFIG_PATH"
 
       # ── DEB 패키지 (Linux only) ──
       - name: Install cargo-deb
@@ -628,7 +646,7 @@ jobs:
           "$($hash.Hash.ToLower())  ${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" | Out-File -Encoding ascii "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256"
 
       - name: Upload zip/tar artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: ${{ matrix.artifact_name }}-archive
           path: |
@@ -685,7 +703,7 @@ jobs:
 
       - name: Upload MSI artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-windows-x64-msi
           path: |
@@ -693,9 +711,19 @@ jobs:
             src-tauri/target/wix/*.msi
           if-no-files-found: error
 
+      - name: Upload NSIS setup artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: maekon-windows-x64-setup-exe
+          path: |
+            target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
       - name: Upload DEB artifact
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-linux-x64-deb
           path: target/${{ matrix.target }}/debian/*.deb
@@ -705,6 +733,7 @@ jobs:
     name: Build macOS Universal Binary
     needs: [verify-version, build-release]
     runs-on: macos-latest
+    environment: release-signing
     timeout-minutes: 120
     env:
       TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
@@ -715,12 +744,12 @@ jobs:
       MACOS_APP_SIGNING_IDENTITY: ${{ secrets.MACOS_APP_SIGNING_IDENTITY }}
       MACOS_INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@v6
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -769,7 +798,7 @@ jobs:
           shasum -a 256 dist/maekon-macos-universal.tar.gz > dist/maekon-macos-universal.tar.gz.sha256
 
       - name: Upload universal artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-macos-universal
           path: |
@@ -791,6 +820,36 @@ jobs:
               exit 1
             fi
           done
+
+      # NEW-C3 (#2934): Confirm that tauri.conf.json signingIdentity is null.
+      # Maekon intentionally bypasses Tauri's built-in signer (signingIdentity: null)
+      # and uses an explicit codesign/productsign pipeline below.  If a developer
+      # accidentally sets signingIdentity to a non-null value in tauri.conf.json, the
+      # Tauri bundler would attempt to sign during 'cargo tauri build', which fails in
+      # CI because the release certificate is not present at compile time.
+      # This step detects that drift early and fails with a clear diagnostic.
+      # Reference: docs/guides/macos-release-signing-runbook.md, ADR-020.
+      - name: Verify tauri.conf.json signingIdentity is null (manual-signing contract)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGNING_IDENTITY="$(python3 - <<'PYEOF'
+          import json, sys
+          with open('src-tauri/tauri.conf.json') as f:
+              conf = json.load(f)
+          macos_section = (conf.get('bundle') or {}).get('macOS') or {}
+          val = macos_section.get('signingIdentity')
+          print('null' if val is None else str(val))
+          PYEOF
+          )"
+          echo "tauri.conf.json bundle.macOS.signingIdentity = ${SIGNING_IDENTITY}"
+          if [[ "${SIGNING_IDENTITY}" != "null" ]]; then
+            echo "tauri.conf.json bundle.macOS.signingIdentity must be null." >&2
+            echo "Maekon uses a manual codesign pipeline; Tauri built-in signer must be disabled." >&2
+            echo "See docs/guides/macos-release-signing-runbook.md and ADR-020 for details." >&2
+            exit 1
+          fi
+          echo "Contract verified: Tauri built-in signer is disabled; manual codesign pipeline is active."
 
       - name: Import macOS signing certificates
         shell: bash
@@ -1002,14 +1061,14 @@ jobs:
           rm -f "$UNSIGNED_PKG_TMP"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-macos-universal-dmg
           path: dist/maekon-macos-universal.dmg
           if-no-files-found: error
 
       - name: Upload PKG artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-macos-universal-pkg
           path: dist/maekon-macos-universal.pkg
@@ -1025,6 +1084,7 @@ jobs:
   release-reliability-smoke:
     name: Release Reliability Smoke (${{ matrix.name }})
     needs: [verify-version, build-release, build-macos-universal]
+    environment: desktop-smoke
     strategy:
       fail-fast: false
       matrix:
@@ -1036,19 +1096,19 @@ jobs:
           - name: macos
             os: macos-latest
             artifact_name: maekon-macos-universal
-            run_updater_tests: false
+            run_updater_tests: true
           - name: windows
             os: windows-latest
             artifact_name: maekon-windows-x64-archive
-            run_updater_tests: false
+            run_updater_tests: true
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@v6
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -1095,16 +1155,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev \
+            libgtk-4-dev \
             libglib2.0-dev \
             libpango1.0-dev \
             libatk1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libnotify-dev \
+            libdbus-1-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
@@ -1117,7 +1179,9 @@ jobs:
             libxcb-xfixes0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo
         uses: ./.github/actions/rust-cache
@@ -1125,20 +1189,25 @@ jobs:
           key: release-reliability-smoke-${{ matrix.name }}
 
       # Tauri externalBin requires `maekon-sandbox-worker-<triple>[.exe]` at
-      # the src-tauri/ root at build time. The smoke script runs
-      # `cargo test -p maekon-app release_reliability_` which triggers the
-      # tauri-build build.rs. This is a TEST build — a stub touch (matching
-      # ci.yml) is sufficient; we do not need the real sandbox-worker binary
-      # because the smoke suite does not exercise sandbox command execution.
-      - name: Create sandbox worker stub for Tauri externalBin
+      # the src-tauri/ root at build time. Build the real sidecar so release
+      # reliability smoke also catches missing/stale sandbox-worker packaging
+      # assumptions instead of relying on a synthetic touch-file.
+      - name: Build sandbox worker sidecar for Tauri externalBin
         shell: bash
         run: |
           TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          ./scripts/cargo-cache.sh build --release -p maekon-sandbox-worker
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            touch "src-tauri/maekon-sandbox-worker-${TRIPLE}.exe"
+            SOURCE="target/release/maekon-sandbox-worker.exe"
+            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}.exe"
+            test -f "$SOURCE"
+            cp "$SOURCE" "$DEST"
           else
-            touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
-            chmod +x "src-tauri/maekon-sandbox-worker-${TRIPLE}"
+            SOURCE="target/release/maekon-sandbox-worker"
+            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}"
+            test -x "$SOURCE"
+            cp "$SOURCE" "$DEST"
+            chmod +x "$DEST"
           fi
 
       - name: Run smoke script (macOS/Linux)
@@ -1172,28 +1241,52 @@ jobs:
           MAEKON_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-installer-smoke" \
             ./.workflow-tools/scripts/release-installer-smoke-macos.sh --assets-dir smoke-installers
 
-      - name: Upload macOS release smoke logs
+      - name: Sanitize macOS release smoke logs
         if: failure() && matrix.name == 'macos'
-        uses: actions/upload-artifact@v7
+        shell: bash
+        run: |
+          set -euo pipefail
+          SANITIZED_DIR="$RUNNER_TEMP/maekon-release-smoke-sanitized"
+          RELEASE_TAG="${RELEASE_TAG_NAME:-${GITHUB_REF_NAME:-v0.0.0-e19-smoke}}"
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            RELEASE_TAG="v0.0.0-e19-smoke"
+          fi
+          ARTIFACT_CHECKSUM="sha256:$(printf '%s' "$GITHUB_SHA" | shasum -a 256 | awk '{print $1}')"
+          python3 .workflow-tools/scripts/sanitize_desktop_evidence.py \
+            --input "$RUNNER_TEMP/maekon-release-smoke/gui-bootstrap-installed-binary.log" \
+            --input-id release-reliability-gui-bootstrap \
+            --input "$RUNNER_TEMP/maekon-installer-smoke/gui-bootstrap-installed-app.log" \
+            --input-id release-installer-gui-bootstrap \
+            --artifact-kind log_excerpt \
+            --output-dir "$SANITIZED_DIR" \
+            --commit-sha "$GITHUB_SHA" \
+            --release-tag "$RELEASE_TAG" \
+            --artifact-checksum "$ARTIFACT_CHECKSUM" \
+            --runner-label release-reliability-smoke-${{ matrix.name }} \
+            --cleanup-status pass
+
+      - name: Upload macOS release smoke sanitized bundle
+        if: failure() && matrix.name == 'macos'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: release-smoke-logs-${{ matrix.name }}
-          path: |
-            ${{ runner.temp }}/maekon-release-smoke
-            ${{ runner.temp }}/maekon-installer-smoke
+          name: release-smoke-sanitized-bundle-${{ matrix.name }}
+          path: ${{ runner.temp }}/maekon-release-smoke-sanitized
           if-no-files-found: ignore
+          retention-days: 7
 
   create-release:
     name: Create GitHub Release
     needs: [verify-version, build-release, build-macos-universal, release-reliability-smoke]
     if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success'
     runs-on: ubuntu-latest
+    environment: release-signing
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@v6
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -1209,13 +1302,13 @@ jobs:
       - name: Flatten nested artifacts
         run: |
           # Move installer files from nested paths to dist/
-          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
+          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
           # Clean up empty nested directories
           find dist -mindepth 1 -type d -empty -delete
 
       - name: Verify installer coverage
         run: |
-          for pattern in "*.msi" "*.deb" "*.dmg" "*.pkg"; do
+          for pattern in "*.msi" "*.exe" "*.deb" "*.dmg" "*.pkg"; do
             if ! compgen -G "dist/${pattern}" > /dev/null; then
               echo "Missing expected installer artifact: ${pattern}" >&2
               exit 1
@@ -1249,6 +1342,21 @@ jobs:
             esac
             shasum -a 256 "$file" > "$file.sha256"
           done
+
+      - name: Generate CycloneDX SBOM (F-SC-09/F-SC-13)
+        # F-SC-13: anchore/sbom-action was tag-pinned (@v0.18.0) despite comment
+        # claiming SHA-pinned. Pinned to commit SHA for v0.18.0.
+        # Resolved via: gh api repos/anchore/sbom-action/git/ref/tags/v0.18.0 --jq .object.sha
+        # 생성된 sbom.cdx.json 은 dist/ 에 추가되어 릴리스 어셋으로 첨부된다.
+        uses: anchore/sbom-action@61119d458adab9a6d1dc5941e49f9e0ddc6a3fdb  # v0.18.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/sbom.cdx.json
+          upload-artifact: false
+
+      - name: Checksum SBOM (F-SC-09)
+        run: shasum -a 256 dist/sbom.cdx.json > dist/sbom.cdx.json.sha256
 
       - name: Install signing dependencies
         run: python3 -m pip install --upgrade pynacl
@@ -1302,7 +1410,7 @@ jobs:
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature
 
       - name: Attest release artifacts provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4
         with:
           subject-path: dist/*
 
@@ -1323,25 +1431,16 @@ jobs:
         id: changelog
         env:
           TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
-          REPO_SLUG: ${{ github.repository }}
         run: |
+          set -euo pipefail
           VERSION="${TAG_REF#v}"
-          # Extract changelog section for this version
-          # Handle both "## [VERSION] - DATE" and "## [VERSION]" formats
-          VERSION_ESCAPED=$(echo "$VERSION" | sed 's/[.]/\\./g')
-          CHANGELOG_SECTION=$(awk "/^## \[${VERSION_ESCAPED}\]/{found=1; next} /^## \[/{found=0} found" CHANGELOG.md)
+          ./scripts/verify-release-notes-policy.sh --public --version "$VERSION" --print-section > changelog_section.md
 
-          if [ -z "$CHANGELOG_SECTION" ]; then
-            echo "⚠️ No changelog section found for [$VERSION], using git-cliff"
-            CHANGELOG_SECTION=$(git cliff --latest --strip header 2>/dev/null || echo "See [CHANGELOG.md](https://github.com/${REPO_SLUG}/blob/main/CHANGELOG.md) for details.")
+          if [ ! -s changelog_section.md ]; then
+            echo "::error::No reviewed CHANGELOG.md section found for [$VERSION]"
+            echo "Fix: Add ## [$VERSION] - $(date +%Y-%m-%d) with curated release notes to CHANGELOG.md"
+            exit 1
           fi
-
-          if [ -z "$CHANGELOG_SECTION" ] || [ ${#CHANGELOG_SECTION} -lt 20 ]; then
-            echo "::warning::Release notes are suspiciously short (${#CHANGELOG_SECTION} chars)"
-          fi
-
-          # Write to file for multi-line output
-          echo "$CHANGELOG_SECTION" > changelog_section.md
 
       - name: Generate release notes
         id: notes
@@ -1359,27 +1458,31 @@ jobs:
           **macOS / Linux:**
           \`\`\`bash
           curl -fsSL -o /tmp/maekon-install.sh \\
-            https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh
-          MAEKON_VERSION=${VERSION} bash /tmp/maekon-install.sh
+            https://raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.sh
+          MAEKON_VERSION=${VERSION} bash /tmp/maekon-install.sh --require-signature
           \`\`\`
 
           **Windows (PowerShell):**
           \`\`\`powershell
           \$tmp = Join-Path \$env:TEMP "maekon-install.ps1"
-          Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1" -OutFile \$tmp
-          powershell -ExecutionPolicy Bypass -File \$tmp -Version ${VERSION}
+          Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.ps1" -OutFile \$tmp
+          powershell -ExecutionPolicy Bypass -File \$tmp -Version ${VERSION} -RequireSignature
           \`\`\`
           QUICK_INSTALL_EOF
           else
             cat > quick_install.md <<QUICK_INSTALL_EOF
           **macOS / Linux:**
           \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+          curl -fsSL -o /tmp/maekon-install.sh \\
+            https://raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.sh
+          MAEKON_VERSION=${VERSION} bash /tmp/maekon-install.sh --require-signature
           \`\`\`
 
           **Windows (PowerShell):**
           \`\`\`powershell
-          irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
+          \$tmp = Join-Path \$env:TEMP "maekon-install.ps1"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/${{ github.repository }}/${VERSION}/scripts/install.ps1" -OutFile \$tmp
+          powershell -ExecutionPolicy Bypass -File \$tmp -Version ${VERSION} -RequireSignature
           \`\`\`
           QUICK_INSTALL_EOF
           fi

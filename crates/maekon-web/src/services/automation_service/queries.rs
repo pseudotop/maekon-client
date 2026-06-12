@@ -41,6 +41,16 @@ impl AutomationQueryService {
             0
         };
 
+        // #5734: read the live per-call LLM health at request time, outside
+        // the config_manager branch, so the value is always visible regardless
+        // of whether a config manager is wired (covers both production and
+        // minimal test/CLI contexts).  `None` when the handle is not wired.
+        let llm_healthy = self
+            .ctx
+            .llm_call_health
+            .as_ref()
+            .and_then(|h| h.as_option_bool());
+
         if let Some(ref config_manager) = self.ctx.config_manager {
             let config = config_manager.get();
             let runtime_status = resolve_ai_runtime_status(
@@ -52,18 +62,24 @@ impl AutomationQueryService {
             Ok(AutomationStatusDto {
                 enabled: config.automation.enabled,
                 sandbox_enabled: config.automation.sandbox.enabled,
-                sandbox_profile: format!("{:?}", config.automation.sandbox.profile),
-                ocr_provider: format!("{:?}", config.ai_provider.ocr_provider),
-                llm_provider: format!("{:?}", config.ai_provider.llm_provider),
+                sandbox_profile: config.automation.sandbox.profile.to_string(),
+                ocr_provider: config.ai_provider.ocr_provider.to_string(),
+                llm_provider: config.ai_provider.llm_provider.to_string(),
                 ocr_source: runtime_status.ocr_source,
                 llm_source: runtime_status.llm_source,
                 ocr_fallback_reason: runtime_status.ocr_fallback_reason,
                 llm_fallback_reason: runtime_status.llm_fallback_reason,
-                external_data_policy: format!("{:?}", config.ai_provider.external_data_policy),
+                external_data_policy: config.ai_provider.external_data_policy.to_string(),
                 pending_audit_entries: pending,
+                llm_healthy,
+                // ConfirmationRequirement의 Display impl이 SCREAMING_SNAKE_CASE 토큰을 반환함
+                // (예: "AUTO" / "CONFIRM" / "BLOCK") — 프론트엔드 캡션 분기에 사용됨.
+                confirmation_policy: config.automation.confirmation_policy.to_string(),
             })
         } else {
-            Ok(default_automation_status(pending))
+            let mut dto = default_automation_status(pending);
+            dto.llm_healthy = llm_healthy;
+            Ok(dto)
         }
     }
 
@@ -111,10 +127,10 @@ impl AutomationQueryService {
             );
             PoliciesDto {
                 automation_enabled: config.automation.enabled,
-                sandbox_profile: format!("{:?}", config.automation.sandbox.profile),
+                sandbox_profile: config.automation.sandbox.profile.to_string(),
                 sandbox_enabled: config.automation.sandbox.enabled,
                 allow_network: config.automation.sandbox.allow_network,
-                external_data_policy: format!("{:?}", config.ai_provider.external_data_policy),
+                external_data_policy: config.ai_provider.external_data_policy.to_string(),
                 scene_action_override_enabled: config.ai_provider.scene_action_override.enabled,
                 scene_action_override_active: override_active,
                 scene_action_override_reason: config
@@ -207,5 +223,115 @@ impl AutomationQueryService {
             presets.extend(config.automation.custom_presets.clone());
         }
         PresetListDto { presets }
+    }
+}
+
+// ── #5734 status assembly tests ───────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_bindings::LlmCallHealth;
+    use crate::services::web_contexts::AutomationWebContext;
+    use crate::storage_port::WebStorage;
+    use maekon_storage::sqlite::SqliteStorage;
+    use std::sync::Arc;
+
+    fn test_ctx(llm_call_health: Option<Arc<LlmCallHealth>>) -> AutomationWebContext {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"))
+            as Arc<dyn WebStorage>;
+        AutomationWebContext {
+            storage,
+            frames_dir: None,
+            config_manager: None,
+            audit_logger: None,
+            automation_controller: None,
+            ai_runtime_status: None,
+            llm_call_health,
+        }
+    }
+
+    /// `automation_status()` returns `confirmation_policy = "AUTO"` when no config manager
+    /// is wired (fast-path fallback via `default_automation_status`).
+    #[tokio::test]
+    async fn automation_status_confirmation_policy_defaults_to_auto_when_no_config() {
+        let svc = AutomationQueryService::new(test_ctx(None));
+        let status = svc.automation_status().await.expect("should succeed");
+        assert_eq!(
+            status.confirmation_policy, "AUTO",
+            "no config manager → confirmation_policy must default to AUTO"
+        );
+    }
+
+    /// When no health handle is wired, `automation_status()` returns `llm_healthy: None`.
+    #[tokio::test]
+    async fn automation_status_llm_healthy_none_when_handle_absent() {
+        let svc = AutomationQueryService::new(test_ctx(None));
+        let status = svc.automation_status().await.expect("should succeed");
+        assert_eq!(
+            status.llm_healthy, None,
+            "no handle wired → llm_healthy must be None"
+        );
+    }
+
+    /// When a handle is wired with UNKNOWN state, `llm_healthy` is `None`.
+    #[tokio::test]
+    async fn automation_status_llm_healthy_none_when_unknown() {
+        let handle = Arc::new(LlmCallHealth::default()); // UNKNOWN
+        let svc = AutomationQueryService::new(test_ctx(Some(handle)));
+        let status = svc.automation_status().await.expect("should succeed");
+        assert_eq!(
+            status.llm_healthy, None,
+            "UNKNOWN handle → llm_healthy must be None"
+        );
+    }
+
+    /// After `record_ok()`, `automation_status()` returns `llm_healthy: Some(true)`.
+    #[tokio::test]
+    async fn automation_status_llm_healthy_some_true_after_record_ok() {
+        let handle = Arc::new(LlmCallHealth::default());
+        handle.record_ok();
+        let svc = AutomationQueryService::new(test_ctx(Some(handle)));
+        let status = svc.automation_status().await.expect("should succeed");
+        assert_eq!(
+            status.llm_healthy,
+            Some(true),
+            "record_ok() → llm_healthy must be Some(true)"
+        );
+    }
+
+    /// After `record_failed()`, `automation_status()` returns `llm_healthy: Some(false)`.
+    #[tokio::test]
+    async fn automation_status_llm_healthy_some_false_after_record_failed() {
+        let handle = Arc::new(LlmCallHealth::default());
+        handle.record_failed();
+        let svc = AutomationQueryService::new(test_ctx(Some(handle)));
+        let status = svc.automation_status().await.expect("should succeed");
+        assert_eq!(
+            status.llm_healthy,
+            Some(false),
+            "record_failed() → llm_healthy must be Some(false)"
+        );
+    }
+
+    /// Live state is read at request time: changing the handle after service
+    /// construction is still reflected in the response.
+    #[tokio::test]
+    async fn automation_status_llm_healthy_reflects_live_state() {
+        let handle = Arc::new(LlmCallHealth::default());
+        let svc = AutomationQueryService::new(test_ctx(Some(Arc::clone(&handle))));
+
+        // Before any call: None.
+        let s1 = svc.automation_status().await.expect("should succeed");
+        assert_eq!(s1.llm_healthy, None, "before call → None");
+
+        // First OK call.
+        handle.record_ok();
+        let s2 = svc.automation_status().await.expect("should succeed");
+        assert_eq!(s2.llm_healthy, Some(true), "after ok → Some(true)");
+
+        // Subsequent failure overwrites.
+        handle.record_failed();
+        let s3 = svc.automation_status().await.expect("should succeed");
+        assert_eq!(s3.llm_healthy, Some(false), "after fail → Some(false)");
     }
 }

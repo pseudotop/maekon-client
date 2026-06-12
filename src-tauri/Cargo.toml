@@ -55,6 +55,8 @@ futures = { workspace = true }
 semver = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+# E20-41 (#4833): OS-CSPRNG source for the per-session local-API auth token.
+rand = { workspace = true }
 ed25519-dalek = { workspace = true }
 directories = { workspace = true }
 parking_lot = { workspace = true }
@@ -81,17 +83,47 @@ time = { workspace = true, optional = true }
 # Linux systemd integration (feature-gated)
 sd-notify = { version = "0.5", optional = true }
 
-# 텔레메트리 (feature-gated, default OFF)
-opentelemetry = { version = "0.31", optional = true, default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.31", optional = true, default-features = false, features = ["rt-tokio", "trace"] }
-opentelemetry-otlp = { version = "0.31", optional = true, default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
-tracing-opentelemetry = { version = "0.32", optional = true }
+# Telemetry (feature-gated, default OFF). `metrics` is enabled alongside
+# `trace` so the OTLP MeterProvider (E20-43 #4835) compiles; both signals stay
+# behind the opt-in `telemetry` feature and are NOT in default features.
+opentelemetry = { version = "0.32", optional = true, default-features = false, features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.32", optional = true, default-features = false, features = ["rt-tokio", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.32", optional = true, default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
+tracing-opentelemetry = { version = "0.33", optional = true }
 
 [features]
-default = ["custom-protocol", "analysis", "native-vision", "linux-atspi"]
+default = [
+    "custom-protocol",
+    "app-tray",
+    "analysis",
+    "native-vision",
+    "native-input",
+    "linux-atspi",
+    "local-suggestions",
+]
 custom-protocol = ["tauri/custom-protocol"]
+app-tray = ["tauri/tray-icon"]
+# C1 (E35): 'analysis' gates BYOK/OAuth *user-provider direct adapter* code
+# (RemoteLlmProvider, RemoteOcrProvider, OAuthClient, TokenRefreshCoordinator,
+# ProviderRuntimeContext, provider_secret_backend, oauth_provider_registry).
+# maekon-network carries all of these; 'analysis' pulls it in.  Default-on.
+# (#5734's LlmCallHealth lives in maekon-core, so no-default builds keep
+# excluding the network transport entirely.)
+# 'server' adds the Oneshim server *integration transport* (HttpTransport, OIDC
+# device flow, integration runtime) on top — it does NOT gate provider adapters.
 analysis = ["dep:maekon-network"]
-server = ["analysis"]
+# E20-24 (#4816): the on-device suggestion pipeline (generate → queue → score →
+# accept/reject/defer → history), learning entirely locally via FeedbackSignalSink
+# with NO server. Default-on so OSS builds are a self-contained "local productivity
+# copilot that learns from you". Relies only on the always-compiled maekon-suggestion
+# / maekon-storage crates plus the in-crate `LocalApiClient` no-op (satisfies the
+# required `Arc<dyn ApiClient>` without maekon-network), so it compiles even under
+# --no-default-features. The `server` feature ADDS the network transport on top
+# (SSE receive of server/team suggestions + feedback POST for cross-user aggregation).
+local-suggestions = []
+# C1 (E35): 'server' = Oneshim server integration transport only.
+# Provider adapters (BYOK/OAuth) are gated under 'analysis', not 'server'.
+server = ["analysis", "local-suggestions"]
 grpc = ["server", "maekon-network/grpc"]
 # D13: Enable the local dashboard gRPC server (tonic-based, uses the
 # 10080-10089 port band alongside Axum REST). Opt-in so default builds pay zero
@@ -111,6 +143,7 @@ cloud-stt = ["audio", "maekon-audio/cloud-stt"]
 download = ["audio", "maekon-audio/download"]
 embedding = ["dep:maekon-embedding"]
 native-vision = ["maekon-vision/native-vision"]
+native-input = ["maekon-automation/enigo"]
 hnsw = ["maekon-analysis/hnsw"]
 linux-atspi = ["maekon-vision/linux-atspi"]
 lan-sync = ["maekon-network/lan-sync"]
@@ -126,6 +159,7 @@ telemetry = [
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies]
+tauri = { workspace = true, features = ["tray-icon"] }
 block2 = "0.6"
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
@@ -133,9 +167,11 @@ objc2-core-foundation = { workspace = true }
 objc2-core-graphics = { workspace = true }
 objc2-app-kit = { workspace = true }
 objc2-quartz-core = { workspace = true }
+objc2-user-notifications = { workspace = true }
 dispatch2 = "0.3"
 
 [target.'cfg(windows)'.dependencies]
+tauri = { workspace = true, features = ["tray-icon"] }
 windows-sys = { workspace = true }
 
 [package.metadata.bundle]
@@ -158,7 +194,7 @@ license-file = ["../LICENSE", "4"]
 extended-description = """
 Maekon is a local-first work agent for AI-assisted work with policy-gated automation.
 """
-depends = "$auto, libgtk-3-0, libglib2.0-0, libwebkit2gtk-4.1-0, libappindicator3-1"
+depends = "$auto, libgtk-4-1, libglib2.0-0, libwebkitgtk-6.0-4"
 section = "utility"
 priority = "optional"
 assets = [
@@ -170,6 +206,9 @@ serde_json = { workspace = true }
 image = { workspace = true }
 base64 = { workspace = true }
 uuid = { workspace = true }
+# #4928: cross-family erasure 통합 테스트의 GuardedConnection funnel 직접 INSERT 용
+# (rusqlite::Error 타입 명시). 이미 maekon-storage 를 통한 transitive 의존이다.
+rusqlite = { workspace = true }
 mockito = { workspace = true }
 tokio-test = { workspace = true }
 axum = { workspace = true }

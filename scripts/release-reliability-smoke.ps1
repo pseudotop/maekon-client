@@ -6,6 +6,7 @@ param(
     [string]$InstallDir = $(if ($env:MAEKON_SMOKE_INSTALL_DIR) { $env:MAEKON_SMOKE_INSTALL_DIR } else { "" }),
     [string]$ListenHost = $(if ($env:MAEKON_SMOKE_HOST) { $env:MAEKON_SMOKE_HOST } else { "127.0.0.1" }),
     [int]$Port = $(if ($env:MAEKON_SMOKE_PORT) { [int]$env:MAEKON_SMOKE_PORT } else { 18091 }),
+    [bool]$RequireSignature = $(if ($env:MAEKON_SMOKE_REQUIRE_SIGNATURE) { $env:MAEKON_SMOKE_REQUIRE_SIGNATURE -ne "0" } else { $false }),
     [switch]$SkipUpdaterTests
 )
 
@@ -44,8 +45,12 @@ Throw-IfMissing -Path $InstallScript -Label "Install script"
 
 $artifactPath = Join-Path $AssetsDir $AssetName
 $checksumPath = "$artifactPath.sha256"
+$signaturePath = "$artifactPath.sig"
 Throw-IfMissing -Path $artifactPath -Label "Artifact"
 Throw-IfMissing -Path $checksumPath -Label "Checksum"
+if ($RequireSignature) {
+    Throw-IfMissing -Path $signaturePath -Label "Signature"
+}
 
 $pythonCommand = Get-Command python3 -ErrorAction SilentlyContinue
 if (-not $pythonCommand) {
@@ -97,11 +102,18 @@ try {
 
     $baseUrl = "http://$ListenHost`:$Port"
     Write-Info "Running installer against local base URL"
-    & powershell `
-        -ExecutionPolicy Bypass `
-        -File $InstallScript `
-        -InstallDir $InstallDir `
-        -BaseUrl $baseUrl
+    $installArgs = @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", $InstallScript,
+        "-InstallDir", $InstallDir,
+        "-BaseUrl", $baseUrl
+    )
+    if ($RequireSignature) {
+        $installArgs += "-RequireSignature"
+    } else {
+        $installArgs += "-AllowUnsigned"
+    }
+    & powershell @installArgs
 
     $target = Join-Path $InstallDir "maekon.exe"
     Throw-IfMissing -Path $target -Label "Installed binary"

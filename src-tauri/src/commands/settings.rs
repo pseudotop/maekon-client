@@ -1,7 +1,7 @@
 use tauri::command;
 
 use crate::ipc_error::IpcError;
-use crate::runtime_state::ConfigRuntimeState;
+use crate::runtime_state::{AppState, ConfigRuntimeState};
 
 use super::deep_merge;
 
@@ -89,10 +89,15 @@ fn redact_sensitive_fields(config: &mut serde_json::Value) {
 ///
 /// 허용: monitoring, capture, notification, web, schedule, telemetry, privacy, update, language, theme
 /// 그 외 모든 키 거부 (sandbox, ai_provider, file_access, server 등)
+///
+/// #5707: patch 에 `coaching` 키가 있으면 config 저장 후 `CoachingPort::apply_config`를
+/// 호출해 세션 내 설정 변경을 즉시 반영한다. `app_state` 가 None 일 때(비Tauri 환경)는
+/// config 저장만 하고 apply_config 는 건너뛴다.
 #[command]
 pub async fn update_setting(
     config_json: String,
     state: tauri::State<'_, ConfigRuntimeState>,
+    app_state: tauri::State<'_, AppState>,
 ) -> Result<(), IpcError> {
     let patch: serde_json::Value =
         serde_json::from_str(&config_json).map_err(|e| validation_error(e.to_string()))?;
@@ -102,17 +107,12 @@ pub async fn update_setting(
         .ok_or_else(|| validation_error("expected JSON object"))?;
 
     // Allowlist check — see module-level ALLOWED_KEYS
-    for key in patch_obj.keys() {
-        if !ALLOWED_KEYS.contains(&key.as_str()) {
-            return Err(validation_error(format!(
-                "modifying '{}' from the WebView is not permitted; allowed: {}",
-                key,
-                ALLOWED_KEYS.join(", "),
-            )));
-        }
-    }
+    reject_forbidden_top_level_keys(patch_obj)?;
 
     reject_forbidden_allowed_subpaths(&patch).map_err(validation_error)?;
+    // #5707: coaching 키 포함 여부를 정규화 전에 저장 (정규화 후 patch 변수가 섀도잉됨).
+    let has_coaching_patch = patch_obj.contains_key("coaching");
+    let patch = normalize_webview_config_patch(patch);
 
     // Deep-merge allowed keys into current config.
     // This preserves existing sub-keys that the patch does not mention,
@@ -134,10 +134,34 @@ pub async fn update_setting(
 
     validate_config_bounds(&new_config).map_err(validation_error)?;
 
+    // Managed (MDM) policy: this WebView IPC is a second interactive write
+    // surface alongside the settings HTTP API. Reject an attempt to change an
+    // admin-locked field with a clear message rather than letting the write
+    // chokepoint silently clamp it (#4832).
+    let violations = state
+        .config_manager()
+        .detect_managed_violations(&new_config);
+    if !violations.is_empty() {
+        return Err(validation_error(format!(
+            "the following settings are locked by your administrator and cannot be changed: {}",
+            violations.join(", ")
+        )));
+    }
+
     state
         .config_manager()
-        .update(new_config)
-        .map_err(IpcError::from)
+        .update(new_config.clone())
+        .map_err(IpcError::from)?;
+
+    // #5707: coaching 키가 패치에 포함된 경우 엔진에 즉시 반영한다.
+    // `update_setting` 은 onboarding 완료 시 `coaching.enabled=true` 를 쓰는 경로이기도 하다.
+    if has_coaching_patch {
+        if let Some(ref engine) = app_state.coaching_engine {
+            engine.apply_config(new_config.coaching.clone()).await;
+        }
+    }
+
+    Ok(())
 }
 
 /// Validate numeric config bounds to prevent tight loops or resource exhaustion
@@ -185,6 +209,26 @@ fn validate_config_bounds(config: &maekon_core::config::AppConfig) -> Result<(),
     Ok(())
 }
 
+/// 패치 오브젝트의 최상위 키를 ALLOWED_KEYS 화이트리스트에 대해 검사한다.
+///
+/// WebView에서 sandbox·server·ai_provider 등 민감 섹션을 직접 덮어쓰는 것을
+/// 막는 1차 게이트. `update_setting` 커맨드 경계에서 호출된다.
+/// `reject_forbidden_allowed_subpaths`와 동형 구조 — 순수 함수, Tauri State 무의존.
+fn reject_forbidden_top_level_keys(
+    patch_obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), IpcError> {
+    for key in patch_obj.keys() {
+        if !ALLOWED_KEYS.contains(&key.as_str()) {
+            return Err(validation_error(format!(
+                "modifying '{}' from the WebView is not permitted; allowed: {}",
+                key,
+                ALLOWED_KEYS.join(", "),
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn reject_forbidden_allowed_subpaths(patch: &serde_json::Value) -> Result<(), String> {
     for &(section, fields) in FORBIDDEN_ALLOWED_SUBPATHS {
         let Some(section_value) = patch.get(section) else {
@@ -215,6 +259,86 @@ fn reject_forbidden_allowed_subpaths(patch: &serde_json::Value) -> Result<(), St
     Ok(())
 }
 
+fn normalize_webview_config_patch(patch: serde_json::Value) -> serde_json::Value {
+    let Some(patch_obj) = patch.as_object() else {
+        return patch;
+    };
+
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in patch_obj {
+        match key.as_str() {
+            "capture" => merge_patch_value(
+                &mut normalized,
+                "vision",
+                normalize_capture_patch(value.clone()),
+            ),
+            "monitoring" => merge_patch_value(
+                &mut normalized,
+                "monitor",
+                normalize_monitoring_patch(value.clone()),
+            ),
+            _ => merge_patch_value(&mut normalized, key, value.clone()),
+        }
+    }
+
+    serde_json::Value::Object(normalized)
+}
+
+fn normalize_capture_patch(value: serde_json::Value) -> serde_json::Value {
+    let Some(source) = value.as_object() else {
+        return value;
+    };
+
+    let mut target = serde_json::Map::new();
+    for (key, value) in source {
+        let target_key = match key.as_str() {
+            "enabled" => "capture_enabled",
+            "throttle_ms" => "capture_throttle_ms",
+            _ => key.as_str(),
+        };
+        target.insert(target_key.to_string(), value.clone());
+    }
+
+    serde_json::Value::Object(target)
+}
+
+fn normalize_monitoring_patch(value: serde_json::Value) -> serde_json::Value {
+    let Some(source) = value.as_object() else {
+        return value;
+    };
+
+    let mut target = serde_json::Map::new();
+    for (key, value) in source {
+        let target_key = match key.as_str() {
+            "interval_seconds" => "poll_interval_ms",
+            _ => key.as_str(),
+        };
+        let target_value = if key == "interval_seconds" {
+            value
+                .as_u64()
+                .map(|seconds| serde_json::Value::from(seconds.saturating_mul(1000)))
+                .unwrap_or_else(|| value.clone())
+        } else {
+            value.clone()
+        };
+        target.insert(target_key.to_string(), target_value);
+    }
+
+    serde_json::Value::Object(target)
+}
+
+fn merge_patch_value(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: serde_json::Value,
+) {
+    if let Some(existing) = target.get_mut(key) {
+        deep_merge(existing, value);
+    } else {
+        target.insert(key.to_string(), value);
+    }
+}
+
 /// 허용된 설정 키 목록 반환 — 프론트엔드 allowlist 검증 및 drift detection용
 #[command]
 pub async fn get_allowed_setting_keys() -> Vec<String> {
@@ -225,6 +349,20 @@ pub async fn get_allowed_setting_keys() -> Vec<String> {
 #[command]
 pub async fn get_web_port(state: tauri::State<'_, ConfigRuntimeState>) -> Result<u16, IpcError> {
     Ok(state.web_port())
+}
+
+/// E20-41 (#4833): 프론트엔드가 `/api` 호출에 붙일 per-session local-auth 토큰 조회.
+/// `window.__MAEKON_LOCAL_AUTH__` 주입이 아직 안 됐을 때의 race-safe fallback.
+/// IPC(Tauri 내부 채널)로만 노출 — HTTP로는 절대 반환하지 않는다.
+fn local_auth_token_from_state(state: &crate::runtime_state::LocalAuthTokenState) -> String {
+    state.0.to_string()
+}
+
+#[command]
+pub async fn get_local_auth_token(
+    state: tauri::State<'_, crate::runtime_state::LocalAuthTokenState>,
+) -> Result<String, IpcError> {
+    Ok(local_auth_token_from_state(state.inner()))
 }
 
 #[cfg(test)]
@@ -267,6 +405,36 @@ mod tests {
         let mut base = json!({"a": {"nested": true}});
         deep_merge(&mut base, json!({"a": "flat"}));
         assert_eq!(base, json!({"a": "flat"}));
+    }
+
+    #[test]
+    fn normalize_webview_config_patch_maps_capture_alias() {
+        let patch = normalize_webview_config_patch(json!({
+            "capture": { "enabled": false, "throttle_ms": 2500 }
+        }));
+
+        assert_eq!(
+            patch,
+            json!({ "vision": { "capture_enabled": false, "capture_throttle_ms": 2500 } })
+        );
+    }
+
+    #[test]
+    fn normalize_webview_config_patch_maps_monitoring_alias() {
+        let patch = normalize_webview_config_patch(json!({
+            "monitoring": { "interval_seconds": 3, "process_monitoring": false }
+        }));
+
+        assert_eq!(
+            patch,
+            json!({ "monitor": { "poll_interval_ms": 3000, "process_monitoring": false } })
+        );
+    }
+
+    #[test]
+    fn local_auth_token_command_returns_managed_token() {
+        let state = crate::runtime_state::LocalAuthTokenState(std::sync::Arc::from("ipc-token"));
+        assert_eq!(local_auth_token_from_state(&state), "ipc-token");
     }
 
     // ── redact_sensitive_fields ───────────────────────────────
@@ -411,8 +579,13 @@ mod tests {
 
     #[test]
     fn validate_config_bounds_accepts_defaults() {
+        // AppConfig::default_config() must produce values that satisfy every
+        // bound in validate_config_bounds (poll>=1000, sync>=1000,
+        // heartbeat>=5000, capture_throttle>=1000, max_suggestions<=200,
+        // throttle_secs>=10, idle_notification_mins>=1).
         let config = maekon_core::config::AppConfig::default_config();
-        assert!(validate_config_bounds(&config).is_ok());
+        validate_config_bounds(&config)
+            .expect("default AppConfig must pass all validate_config_bounds checks");
     }
 
     #[test]
@@ -424,5 +597,99 @@ mod tests {
         });
         let err = reject_forbidden_allowed_subpaths(&patch).expect_err("forbidden subpath");
         assert!(err.contains("web.integration_auth_token"));
+    }
+
+    // F1 (P1): Security gate — forbidden top-level keys must produce IpcError.
+    //
+    // `update_setting` checks every top-level key in the patch against ALLOWED_KEYS
+    // via the production helper `reject_forbidden_top_level_keys` and returns early
+    // with `validation_error(...)` if any key is not permitted. This is the primary
+    // defence against WebView-originated writes to sensitive sections (server URL,
+    // AI provider API keys, sandbox config, etc.).
+    //
+    // These tests call the production helper directly (Tauri State cannot be
+    // constructed in unit tests without a running app), so deleting or weakening
+    // the helper body turns them red immediately. Known residual: unwiring the
+    // helper *call* from `update_setting` is not observable from unit tests —
+    // that single call site is review-guarded.
+    #[test]
+    fn forbidden_top_level_key_gate_produces_validation_ipc_code_server() {
+        // "server" — base_url 덮어쓰기는 API 트래픽 전체를 공격자 서버로 돌리는 가장
+        // 심각한 위협이다.
+        assert!(
+            !ALLOWED_KEYS.contains(&"server"),
+            "pre-condition: 'server' must not be in ALLOWED_KEYS"
+        );
+        let patch = json!({ "server": { "base_url": "http://evil.example.com" } });
+        let err = reject_forbidden_top_level_keys(patch.as_object().unwrap())
+            .expect_err("'server' must be rejected");
+        assert_eq!(
+            err.code, "validation.invalid_arguments",
+            "forbidden top-level key must produce validation.invalid_arguments wire code"
+        );
+        assert!(
+            err.message.contains("server"),
+            "rejection message must identify the forbidden key: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("not permitted"),
+            "rejection message must include 'not permitted': {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn forbidden_top_level_key_gate_produces_validation_ipc_code_ai_provider() {
+        // "ai_provider" — OCR/LLM API 키 노출 경로, WebView에서 절대 쓰기 불가.
+        assert!(
+            !ALLOWED_KEYS.contains(&"ai_provider"),
+            "pre-condition: 'ai_provider' must not be in ALLOWED_KEYS"
+        );
+        let patch = json!({ "ai_provider": { "ocr_api": { "api_key": "stolen-key" } } });
+        let err = reject_forbidden_top_level_keys(patch.as_object().unwrap())
+            .expect_err("'ai_provider' must be rejected");
+        assert_eq!(err.code, "validation.invalid_arguments");
+        assert!(err.message.contains("ai_provider"));
+    }
+
+    #[test]
+    fn forbidden_top_level_key_gate_produces_validation_ipc_code_sandbox() {
+        // "sandbox" — OS 격리 해제는 WebView에서 절대 허용 불가.
+        assert!(
+            !ALLOWED_KEYS.contains(&"sandbox"),
+            "pre-condition: 'sandbox' must not be in ALLOWED_KEYS"
+        );
+        let patch = json!({ "sandbox": { "enabled": false } });
+        let err = reject_forbidden_top_level_keys(patch.as_object().unwrap())
+            .expect_err("'sandbox' must be rejected");
+        assert_eq!(err.code, "validation.invalid_arguments");
+        assert!(err.message.contains("sandbox"));
+    }
+
+    // F1 (P1): Verify that FORBIDDEN_ALLOWED_SUBPATHS gate also returns an IpcError
+    // with the canonical validation wire code when called through `validation_error`.
+    #[test]
+    fn forbidden_subpath_gate_returns_validation_ipc_code() {
+        let patch = json!({
+            "web": {
+                "port": 10090,
+                "integration_auth_token": "should-be-blocked"
+            }
+        });
+        // reject_forbidden_allowed_subpaths returns Err(String) — validation_error
+        // wraps it into IpcError with the canonical wire code.
+        let string_err = reject_forbidden_allowed_subpaths(&patch)
+            .expect_err("web.integration_auth_token must be rejected");
+        let ipc_err = validation_error(string_err);
+        assert_eq!(
+            ipc_err.code, "validation.invalid_arguments",
+            "forbidden subpath rejection must use validation.invalid_arguments wire code"
+        );
+        assert!(
+            ipc_err.message.contains("web.integration_auth_token"),
+            "IpcError message must identify the forbidden subpath: {}",
+            ipc_err.message
+        );
     }
 }

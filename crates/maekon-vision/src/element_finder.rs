@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use tracing::debug;
-use uuid::Uuid;
-
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::{ElementBounds, FinderSource, UiElement};
+use tracing::debug;
 
 use crate::error::VisionError;
 use maekon_core::models::ui_scene::{
@@ -167,7 +165,7 @@ impl OcrElementFinder {
 
         Ok(UiScene {
             schema_version: UI_SCENE_SCHEMA_VERSION.to_string(),
-            scene_id: format!("scene_{}", Uuid::new_v4().simple()),
+            scene_id: maekon_core::generate_id("scene"),
             app_name: app_name.map(str::to_string),
             screen_id: screen_id.map(str::to_string),
             captured_at: Utc::now(),
@@ -438,7 +436,7 @@ fn merge_rectangles(
 
         if max_iou < 0.2 {
             new_elements.push(UiSceneElement {
-                element_id: format!("rect_{}", Uuid::new_v4().simple()),
+                element_id: maekon_core::generate_id("rect"),
                 bbox_abs: rect.bounds.clone(),
                 bbox_norm: NormalizedBounds::new(
                     rect.bounds.x as f32 / w,
@@ -758,7 +756,13 @@ mod tests {
     async fn chained_finder_all_fail_returns_error() {
         let chained = ChainedElementFinder::new(vec![Box::new(FailingFinder)]);
 
-        let result = chained.find_element(Some("none"), None, None).await;
-        assert!(result.is_err());
+        let err = chained
+            .find_element(Some("none"), None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::ElementNotFound { .. }),
+            "all-finders-fail must produce ElementNotFound, got: {err:?}"
+        );
     }
 }

@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use chrono::Utc;
+use maekon_api_contracts::automation::AuditEntryDto;
 use maekon_automation::audit::{AuditLogAdapter, AuditLogger, AuditQuery};
 use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStatus};
 use maekon_core::ports::audit_log::AuditLogPort;
@@ -29,6 +30,9 @@ use maekon_web::app_state::AppState;
 use maekon_web::WebServer;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const LOCAL_AUTH_HEADER: &str = "x-local-auth";
+const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
 
 /// Build an `AuditLogAdapter` wrapping a fresh in-memory `AuditLogger`.
 ///
@@ -64,16 +68,29 @@ async fn seed_entries(adapter: &Arc<AuditLogAdapter>, command_id: &str, n: usize
 /// `/api/audit/export` route.
 fn app_state_with_audit(audit: Arc<dyn AuditLogPort>) -> AppState {
     let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory SQLite"));
-    let (event_tx, _) = broadcast::channel(16);
+    let (event_tx, _) = broadcast::channel(128);
     let mut state = AppState::with_core(storage, event_tx);
     state.automation.audit_logger = Some(audit);
     state
 }
 
 /// Build the full production Axum router (loopback gating included) and attach
-/// a `MockConnectInfo` so `require_loopback_client` middleware passes.
-fn loopback_app(state: AppState) -> axum::Router {
-    WebServer::build_router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+/// a `MockConnectInfo` so `require_loopback_client` middleware passes. The
+/// per-session local-auth gate is also satisfied because the production router
+/// now rejects every `/api` request without a session token.
+fn loopback_app(mut state: AppState) -> axum::Router {
+    state.auth.local_auth_token = Some(Arc::from(TEST_LOCAL_AUTH_TOKEN));
+    WebServer::build_router(state)
+        .layer(axum::middleware::map_request(
+            |mut req: axum::extract::Request| async move {
+                req.headers_mut().insert(
+                    LOCAL_AUTH_HEADER,
+                    HeaderValue::from_static(TEST_LOCAL_AUTH_TOKEN),
+                );
+                req
+            },
+        ))
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
 }
 
 // ── Test 1: AuditLogPort::entries_by_command_id ──────────────────────────────
@@ -202,7 +219,139 @@ async fn audit_export_rest_endpoint_filters_by_command_id() {
     }
 }
 
-// ── Test 3: Storage fall-through ─────────────────────────────────────────────
+// ── Test 3: Settings + automation audit harness endpoints ───────────────────
+
+/// CRT-PRV-HARNESS-AUDIT-001 — reusable endpoint readiness harness.
+///
+/// Verifies the same production Axum router exposes `/api/settings` and
+/// `/api/automation/audit` before and after a native-action-window audit marker.
+/// The native window action itself is covered by OS probes; this guard keeps the
+/// reusable debug/audit endpoints deterministic in CI and local private runs.
+#[tokio::test]
+async fn settings_and_automation_audit_endpoints_survive_native_action_window_probe() {
+    let adapter = fresh_audit_adapter();
+    adapter
+        .log_complete_with_time(
+            AuditLevel::Basic,
+            "cmd-audit-baseline",
+            "session-harness-audit",
+            "baseline endpoint readiness marker",
+            3,
+        )
+        .await;
+
+    let state = app_state_with_audit(adapter.clone() as Arc<dyn AuditLogPort>);
+    let app = loopback_app(state);
+
+    let settings_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/settings")
+                .body(Body::empty())
+                .expect("build settings request"),
+        )
+        .await
+        .expect("settings endpoint");
+
+    assert_eq!(settings_response.status(), StatusCode::OK);
+    let settings_body = axum::body::to_bytes(settings_response.into_body(), usize::MAX)
+        .await
+        .expect("read settings body");
+    let settings: serde_json::Value =
+        serde_json::from_slice(&settings_body).expect("settings endpoint must return JSON");
+    assert_eq!(
+        settings.get("web_port").and_then(serde_json::Value::as_u64),
+        Some(u64::from(maekon_core::config::DEFAULT_WEB_PORT))
+    );
+
+    let baseline_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/automation/audit?limit=50")
+                .body(Body::empty())
+                .expect("build audit baseline request"),
+        )
+        .await
+        .expect("audit baseline endpoint");
+
+    assert_eq!(baseline_response.status(), StatusCode::OK);
+    let baseline_body = axum::body::to_bytes(baseline_response.into_body(), usize::MAX)
+        .await
+        .expect("read audit baseline body");
+    let baseline_entries: Vec<AuditEntryDto> =
+        serde_json::from_slice(&baseline_body).expect("audit baseline must return JSON array");
+    assert!(baseline_entries
+        .iter()
+        .any(|entry| entry.command_id == "cmd-audit-baseline"));
+
+    adapter
+        .log_complete_with_time(
+            AuditLevel::Basic,
+            "cmd-native-action-window",
+            "session-harness-audit",
+            "native action window marker",
+            8,
+        )
+        .await;
+
+    let after_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/automation/audit?limit=50")
+                .body(Body::empty())
+                .expect("build audit after request"),
+        )
+        .await
+        .expect("audit after endpoint");
+
+    assert_eq!(after_response.status(), StatusCode::OK);
+    let after_body = axum::body::to_bytes(after_response.into_body(), usize::MAX)
+        .await
+        .expect("read audit after body");
+    let after_entries: Vec<AuditEntryDto> =
+        serde_json::from_slice(&after_body).expect("audit after must return JSON array");
+    assert!(after_entries
+        .iter()
+        .any(|entry| entry.command_id == "cmd-native-action-window"));
+
+    if let Some(evidence_dir) = std::env::var_os("MAEKON_AUDIT_ENDPOINT_EVIDENCE_DIR") {
+        let evidence_dir = std::path::PathBuf::from(evidence_dir);
+        std::fs::create_dir_all(&evidence_dir).expect("create audit endpoint evidence dir");
+        std::fs::write(
+            evidence_dir.join("settings-endpoint.json"),
+            settings_body.as_ref(),
+        )
+        .expect("write settings endpoint evidence");
+        std::fs::write(
+            evidence_dir.join("audit-baseline.json"),
+            baseline_body.as_ref(),
+        )
+        .expect("write audit baseline evidence");
+        std::fs::write(evidence_dir.join("audit-after.json"), after_body.as_ref())
+            .expect("write audit after evidence");
+        let summary = serde_json::json!({
+            "ok": true,
+            "settings_endpoint_json": true,
+            "audit_baseline_json": true,
+            "audit_after_json": true,
+            "native_action_window_marker_observed": true,
+            "host_mouse_events": false,
+            "host_keyboard_events": false
+        });
+        std::fs::write(
+            evidence_dir.join("summary.json"),
+            serde_json::to_vec_pretty(&summary).expect("serialize evidence summary"),
+        )
+        .expect("write audit endpoint summary");
+    }
+}
+
+// ── Test 4: Storage fall-through ─────────────────────────────────────────────
 
 /// Task 0.3.1 — `entries_by_command_id` falls through to SqliteStorage
 /// when the in-memory buffer doesn't contain matching rows.

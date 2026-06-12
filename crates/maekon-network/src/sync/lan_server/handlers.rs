@@ -215,10 +215,11 @@ async fn handle_verify(
 /// Extract and validate the session token from the Authorization header.
 ///
 /// Expects: `Authorization: Bearer <token_hex>`
+/// Returns the authenticated peer's device_id (#5211) on a valid token, else 401.
 fn extract_session_token(
     headers: &HeaderMap,
     session_store: &SessionStore,
-) -> Result<(), StatusCode> {
+) -> Result<String, StatusCode> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -226,11 +227,42 @@ fn extract_session_token(
 
     let token = auth_header.strip_prefix("Bearer ").unwrap_or("");
 
-    if token.is_empty() || !session_store.validate_token(token) {
-        return Err(StatusCode::UNAUTHORIZED);
+    session_store
+        .authenticated_device_id(token)
+        .ok_or(StatusCode::UNAUTHORIZED)
+}
+
+/// #5174 LAN: whether `cross_device_sync` consent permits the server to exchange data.
+/// `None` consent manager (transport-level tests / unmanaged) is treated as permitted —
+/// production always wires a manager (build_sync_engine), where revoke/expiry returns false.
+fn cross_device_sync_consented(state: &ServerState) -> bool {
+    state
+        .consent_manager
+        .as_ref()
+        .map(|cm| cm.effective_permissions().cross_device_sync)
+        .unwrap_or(true)
+}
+
+fn first_row_origin_mismatch(changeset: &ChangeSet, expected_origin: &str) -> Option<&'static str> {
+    let row_groups: [(&str, &Vec<serde_json::Value>); 7] = [
+        ("activity_segments", &changeset.segments),
+        ("regimes", &changeset.regimes),
+        ("regime_overrides", &changeset.overrides),
+        ("embedding_vectors", &changeset.embeddings),
+        ("suggestions", &changeset.suggestions),
+        ("trigger_params_snapshots", &changeset.param_snapshots),
+        ("sync_preferences", &changeset.preferences),
+    ];
+
+    for (table, rows) in row_groups {
+        for row in rows {
+            if row.get("origin_device_id").and_then(|v| v.as_str()) != Some(expected_origin) {
+                return Some(table);
+            }
+        }
     }
 
-    Ok(())
+    None
 }
 
 /// GET /sync/pull -- return encrypted changesets newer than the given HLC.
@@ -247,6 +279,17 @@ async fn handle_pull(
     if let Err(status) = extract_session_token(&headers, &state.session_store) {
         return (status, "unauthorized").into_response();
     }
+    // #5174 LAN: consent gate. Serving this device's data to a peer is a real egress;
+    // it requires cross_device_sync consent, not just a valid session token. A peer that
+    // still holds a token must not pull data after consent is revoked/expired.
+    if !cross_device_sync_consented(&state) {
+        debug!("LAN pull refused: cross_device_sync consent not granted");
+        return (
+            StatusCode::FORBIDDEN,
+            "cross_device_sync consent not granted",
+        )
+            .into_response();
+    }
 
     let since = Hlc {
         wall_ms: params.since_wall_ms.unwrap_or(0),
@@ -254,22 +297,38 @@ async fn handle_pull(
         device_id: params.device_id.unwrap_or_default(),
     };
 
-    // Filter outbound changesets newer than the given watermark
-    let outbound = state.outbound_changesets.read();
-    let newer: Vec<&ChangeSet> = outbound
-        .iter()
-        .filter(|cs| {
-            cs.watermark.wall_ms > since.wall_ms
-                || (cs.watermark.wall_ms == since.wall_ms && cs.watermark.counter > since.counter)
-        })
-        .collect();
-
-    if newer.is_empty() {
-        return StatusCode::NO_CONTENT.into_response();
-    }
+    // #5174 LAN: storage-backed (production) extracts the device's real changes since the
+    // peer's watermark; the in-memory buffer is the transport-test fallback. The response
+    // is a JSON ARRAY (single element for the extractor path) to keep the wire contract +
+    // the client's composite-merge (incl. the tombstone fix) unchanged.
+    let changesets: Vec<ChangeSet> = if let Some(extractor) = &state.extractor {
+        match extractor.get_changes_since(&since).await {
+            Ok(cs) if cs.is_empty() => return StatusCode::NO_CONTENT.into_response(),
+            Ok(cs) => vec![cs],
+            Err(e) => {
+                warn!(err.code = %e.code(), "LAN pull extract failed: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    } else {
+        let outbound = state.outbound_changesets.read();
+        let newer: Vec<ChangeSet> = outbound
+            .iter()
+            .filter(|cs| {
+                cs.watermark.wall_ms > since.wall_ms
+                    || (cs.watermark.wall_ms == since.wall_ms
+                        && cs.watermark.counter > since.counter)
+            })
+            .cloned()
+            .collect();
+        if newer.is_empty() {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        newer
+    };
 
     // Serialize and encrypt
-    let json = match serde_json::to_vec(&newer) {
+    let json = match serde_json::to_vec(&changesets) {
         Ok(j) => j,
         Err(e) => {
             warn!("failed to serialize changesets: {e}");
@@ -286,7 +345,7 @@ async fn handle_pull(
     };
 
     debug!(
-        count = newer.len(),
+        count = changesets.len(),
         bytes = encrypted.len(),
         "serving pull request"
     );
@@ -309,9 +368,22 @@ async fn handle_push(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    // Authenticate
-    if let Err(status) = extract_session_token(&headers, &state.session_store) {
-        return (status, "unauthorized").into_response();
+    // Authenticate (and capture the peer's proven device_id for the #5211 origin bind).
+    let peer_device_id = match extract_session_token(&headers, &state.session_store) {
+        Ok(id) => id,
+        Err(status) => return (status, "unauthorized").into_response(),
+    };
+    // #5174 LAN: consent gate. Ingesting a peer's changeset into local SQLite is data
+    // processing; it requires cross_device_sync consent. When revoked the device is out
+    // of the mesh — it neither serves nor accepts data (the user's own pending erasure
+    // still propagates OUTBOUND via the consent-bypassing client path, #5170).
+    if !cross_device_sync_consented(&state) {
+        debug!("LAN push refused: cross_device_sync consent not granted");
+        return (
+            StatusCode::FORBIDDEN,
+            "cross_device_sync consent not granted",
+        )
+            .into_response();
     }
 
     if body.len() > MAX_BODY_SIZE {
@@ -344,13 +416,47 @@ async fn handle_push(
         }
     };
 
+    // #5211: a peer may only push rows whose origin matches the identity it authenticated
+    // under (the SyncEngine sets changeset + row origins to self). This is defense-in-depth,
+    // not a cryptographic device-identity guarantee: with only the shared mesh passphrase, a
+    // passphrase holder can still claim a victim's device_id during /sync/challenge. A full
+    // guarantee still needs per-device keys / per-row signatures.
+    if changeset.origin_device_id != peer_device_id {
+        warn!(
+            claimed = %changeset.origin_device_id,
+            authenticated = %peer_device_id,
+            "LAN push rejected: changeset origin does not match the authenticated peer"
+        );
+        return (StatusCode::FORBIDDEN, "changeset origin mismatch").into_response();
+    }
+    // Tombstones keep the erased row's original origin so relay peers can carry
+    // content-free erasures for offline receivers. Data rows remain peer-origin bound.
+    if let Some(table) = first_row_origin_mismatch(&changeset, &peer_device_id) {
+        warn!(
+            table,
+            authenticated = %peer_device_id,
+            "LAN push rejected: row origin does not match the authenticated peer"
+        );
+        return (StatusCode::FORBIDDEN, "row origin mismatch").into_response();
+    }
+
     debug!(
         origin = %changeset.origin_device_id,
         rows = changeset.row_count(),
         "received push from LAN peer"
     );
 
-    state.received_changesets.write().push(changeset);
+    // #5174 LAN: storage-backed (production) applies the push via the merger so the peer's
+    // changes land in this device's SQLite (HLC LWW + tombstone suppression). The in-memory
+    // buffer is the transport-test fallback.
+    if let Some(merger) = &state.merger {
+        if let Err(e) = merger.apply_changes(changeset).await {
+            warn!(err.code = %e.code(), "LAN push merge failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    } else {
+        state.received_changesets.write().push(changeset);
+    }
 
     StatusCode::OK.into_response()
 }

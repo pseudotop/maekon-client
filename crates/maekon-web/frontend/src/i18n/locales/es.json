@@ -42,6 +42,7 @@
     "coaching": "Coaching",
     "recalibration": "Recalibración",
     "dashboardDay": "Vista diaria",
+    "dashboardWeek": "Vista semanal",
     "chat": "Chat",
     "audit": "Registro de auditoría",
     "policies": "Políticas de ejecución",
@@ -468,6 +469,11 @@
     "notifHighUsage": "Alerta de recursos del sistema",
     "notifHighUsageDesc": "Alertar ante uso elevado de CPU/memoria",
     "notifHighUsageThreshold": "Umbral de uso (%)",
+    "notifTestAction": "Enviar notificación de prueba",
+    "notifTestDesc": "Envía ahora una notificación nativa localizada para confirmar el permiso del sistema y la ruta de entrega.",
+    "notifTestTitle": "Notificación de prueba de Maekon",
+    "notifTestBody": "Las notificaciones están listas.",
+    "notifTestSuccess": "Notificación de prueba enviada.",
     "monitorTitle": "Control de monitoreo",
     "permissionSectionTitle": "Acceso del escritorio",
     "permissionSectionTitleMac": "Permisos de macOS",
@@ -490,6 +496,12 @@
     "permissionScreenCaptureDesc": "Necesario para capturar pantallas para la línea de tiempo y los insights.",
     "permissionMacNotificationsDesc": "La entrega de notificaciones se gestiona en la configuración de macOS y todavía no puede verificarse automáticamente.",
     "permissionNotificationsDesc": "Se usa para recordatorios de descanso y avisos de coaching.",
+    "permissionMicrophoneLabel": "Micrófono",
+    "permissionMicrophoneDesc": "Necesario para entrada de voz y captura de voz a texto.",
+    "permissionInputMonitoringLabel": "Supervisión de entrada",
+    "permissionInputMonitoringDesc": "Necesario antes de que Maekon pueda observar atajos de teclado o ejecutar automatización de entrada.",
+    "permissionOpenSystemSettingsAction": "Abrir configuración del sistema",
+    "permissionOpenSystemSettingsFollowUp": "Vuelve a Maekon y actualiza el estado de permisos después de cambiar la Configuración del Sistema de macOS.",
     "permissionLinuxAccessibilityLabel": "Servicio de accesibilidad",
     "permissionLinuxAccessibilityDesc": "En Linux, la disponibilidad de la sesión AT-SPI controla el contexto del elemento enfocado.",
     "permissionLinuxScreenCaptureLabel": "Captura de escritorio",
@@ -638,6 +650,10 @@
     "supportFramesDir": "Directorio de fotogramas",
     "supportAuditCount": "Entradas de auditoría recientes",
     "supportPolicyCount": "Eventos de política recientes",
+    "supportProviderCli": "Diagnóstico de Provider CLI",
+    "supportProviderCliEmpty": "No se informaron superficies de Provider CLI.",
+    "supportProviderCliDependency": "Dependencia",
+    "supportProviderCliRestartRequired": "Reinicia Maekon para actualizar PATH/entorno",
     "supportRecentLogs": "Registros de ejecución recientes (native + web)",
     "supportLogSource": "Fuente de registros",
     "supportNoLogs": "No se encontraron registros de ejecución recientes.",
@@ -682,6 +698,16 @@
     "bugReportNever": "Nunca",
     "bugReportGrpc": "gRPC habilitado",
     "bugReportWebSocket": "WebSocket conectado",
+    "bugReportRuntimeLogs": "Registros de ejecución",
+    "bugReportRuntimeLogsGenerated": "Generado",
+    "bugReportRuntimeLogsFile": "Archivo de registro",
+    "bugReportRuntimeLogsLineCount": "Número de líneas",
+    "bugReportNoRuntimeLogs": "Este informe no incluye registros de ejecución.",
+    "bugReportNoRuntimeLogText": "No se capturó texto de registros de ejecución.",
+    "bugReportProviderCli": "Diagnóstico de Provider CLI",
+    "bugReportNoProviderCli": "Este informe no incluyó diagnósticos de Provider CLI.",
+    "bugReportProviderCliDependency": "Dependencia",
+    "bugReportProviderCliRestartRequired": "Reinicia Maekon para actualizar PATH/entorno",
     "bugReportAuditEntries": "Entradas de auditoría recientes",
     "bugReportPolicyEvents": "Eventos de política recientes",
     "bugReportNoEntries": "Sin entradas",
@@ -786,6 +812,13 @@
     "deleted": "Eliminado correctamente.",
     "deleteFailed": "Error al eliminar",
     "subtitle": "Consulte y elimine los datos recopilados",
+    "capturePauseTitle": "Control de captura",
+    "capturePauseDesc": "Pause o reanude la captura de pantalla desde la superficie de privacidad.",
+    "pauseCapture": "Pausar captura",
+    "resumeCapture": "Reanudar captura",
+    "capturePaused": "Captura pausada",
+    "captureRunning": "Captura en curso",
+    "capturePauseUnavailable": "La pausa de captura está disponible en la aplicación de escritorio.",
     "currentData": "Datos almacenados actualmente",
     "eventsLabel": "Eventos",
     "screenshotsLabel": "Capturas de pantalla",
@@ -812,6 +845,7 @@
     "allDataTypes": "Todos los tipos de datos",
     "confirmDeleteAll": "Eliminar todos los datos",
     "confirmDeleteAllMsg": "¿Está seguro de que desea eliminar todos los datos?\n\nEsta acción no se puede deshacer y todas las capturas de pantalla, registros de eventos y métricas del sistema se eliminarán permanentemente.",
+    "deleteAllExportNote": "Los archivos que ya exportó o respaldó en el disco (informes en JSON/CSV, archivos de copia de seguridad) se guardan fuera de la aplicación y no se eliminan con esta acción. Elimínelos manualmente desde donde los guardó.",
     "close": "Cerrar",
     "cancel": "Cancelar",
     "dataTypes": {
@@ -827,6 +861,80 @@
       "metrics": "Métricas: {{count}} eliminadas",
       "process_snapshots": "Instantáneas de procesos: {{count}} eliminadas",
       "idle_periods": "Registros de inactividad: {{count}} eliminados"
+    },
+    "consent": {
+      "title": "Consentimiento",
+      "subtitle": "Otorga o retira el consentimiento sobre lo que este agente puede recopilar.",
+      "loading": "Cargando el estado del consentimiento...",
+      "unavailable": "Los controles de consentimiento no están disponibles en este modo.",
+      "actionFailed": "No se pudo actualizar el consentimiento",
+      "osNote": "Otorgar el consentimiento aquí no concede el permiso de grabación de pantalla del sistema operativo. Ambas capas son necesarias para que la captura funcione: concede el permiso del sistema operativo por separado en Ajustes → Monitorización.",
+      "status": {
+        "label": "Estado",
+        "valid": "Activo",
+        "notGranted": "No otorgado",
+        "expired": "Caducado",
+        "updateRequired": "Requiere actualización",
+        "expiredTitle": "Consentimiento caducado",
+        "expiredWarning": "Tu consentimiento ha caducado, por lo que la recopilación está detenida. Vuelve a otorgar el consentimiento abajo para reanudarla.",
+        "updateRequiredTitle": "Se requiere actualizar el consentimiento",
+        "updateRequiredWarning": "Las condiciones del consentimiento han cambiado desde tu última aceptación, por lo que la recopilación está detenida. Revisa y vuelve a otorgar el consentimiento abajo para reanudarla."
+      },
+      "monitoring": {
+        "label": "Monitorización de la actividad",
+        "description": "Recopila contexto de tu trabajo en el dispositivo para que el agente pueda ayudarte. Todos los datos permanecen en tu equipo.",
+        "collectedTitle": "Cuando está activado, recopila:",
+        "collected": {
+          "screenFrames": "Fotogramas de pantalla",
+          "windowTitles": "Títulos de ventana",
+          "appUsage": "Uso de aplicaciones",
+          "inputActivity": "Nivel de actividad de entrada",
+          "activeProcesses": "Procesos activos",
+          "systemMetrics": "Métricas del sistema y de la batería",
+          "activitySegments": "Segmentos de actividad",
+          "focusMetrics": "Métricas de concentración y uso",
+          "digests": "Resúmenes diarios y semanales",
+          "memoryGraph": "Afirmaciones del grafo de memoria local",
+          "embeddings": "Incrustaciones en el dispositivo",
+          "guiInteractions": "Interacciones con la interfaz"
+        }
+      },
+      "clipboard": {
+        "label": "Portapapeles y acceso a archivos",
+        "description": "Mayor sensibilidad, desactivado de forma predeterminada. Actívalo solo si quieres incluir la actividad del portapapeles y del acceso a archivos.",
+        "collectedTitle": "Cuando está activado, recopila:",
+        "collected": {
+          "clipboardEvents": "Eventos del portapapeles (con una vista previa censurada)",
+          "fileAccessEvents": "Eventos de acceso a archivos (en carpetas monitorizadas)"
+        }
+      },
+      "microphone": {
+        "label": "Micrófono y voz",
+        "description": "Mayor sensibilidad, desactivado de forma predeterminada. Actívalo solo si quieres incluir la captura de voz (escucha continua por actividad de voz o pulsar para hablar).",
+        "collectedTitle": "Cuando está activado, recopila:",
+        "collected": {
+          "audioCapture": "Audio del micrófono (continuo en modo de actividad de voz, o mientras mantienes pulsado «pulsar para hablar»)",
+          "transcript": "Una transcripción de texto que entra en tu chat (el texto se enmascara para proteger los datos personales)",
+          "cloudEgress": "Si configuras la conversión de voz a texto en la nube, tu audio sin procesar se envía al endpoint que configures (predeterminado: la API de OpenAI, con sede en EE. UU.)"
+        },
+        "disclosure": "El audio de voz se captura (de forma continua en modo de actividad de voz, o mientras mantienes pulsado «pulsar para hablar») y se transcribe a texto que entra en tu chat (el texto se enmascara para proteger los datos personales). Si activas la conversión de voz a texto en la nube (Ajustes → Audio) Y configuras una clave de API, tu audio sin procesar —no solo la transcripción— se envía al endpoint de conversión de voz a texto que configures (predeterminado: la API de OpenAI), sin filtrar. Las transcripciones ya enviadas permanecen en tu historial de chat y se gestionan y borran allí, no con este interruptor.",
+        "osNote": "Otorgar el consentimiento aquí no concede el permiso de micrófono del sistema operativo. Ambas capas son necesarias para que la captura de voz funcione: concede el permiso de micrófono del sistema operativo por separado en Ajustes → Monitorización.",
+        "upgradeNotice": {
+          "title": "El micrófono ahora necesita su propio consentimiento",
+          "body": "La entrada de voz está en pausa. En esta versión el micrófono tiene su propio consentimiento, separado de la captura de pantalla. Concédelo en la página de Privacidad para reanudar la captura de voz.",
+          "cta": "Abrir ajustes de Privacidad",
+          "dismiss": "Descartar"
+        }
+      },
+      "withdraw": {
+        "label": "Retirar el consentimiento",
+        "description": "Retirarlo detiene toda la recopilación y solicita la eliminación de los datos ya recopilados. Es más contundente que simplemente desactivar la monitorización.",
+        "button": "Retirar el consentimiento",
+        "confirmTitle": "¿Retirar el consentimiento?",
+        "confirmMessage": "Esto detiene toda la recopilación y solicita la eliminación de los datos ya recopilados.",
+        "confirmNote": "Los archivos que ya hayas exportado o respaldado en disco se guardan fuera de la aplicación y no se eliminan con esta acción.",
+        "confirmButton": "Retirar y eliminar"
+      }
     }
   },
   "search": {
@@ -926,6 +1034,7 @@
     "idle": "Inactivo",
     "capture": "Captura",
     "noFrames": "No hay fotogramas en este momento",
+    "capturedOcr": "OCR capturado",
     "imageUnavailable": "No se pudo cargar la imagen de la captura de pantalla. Verifique la política de retención o el estado de la ruta del archivo.",
     "sceneElements": "{{count}} elementos detectados",
     "sceneUnavailable": "El análisis de escena no está disponible para este fotograma.",
@@ -1075,7 +1184,21 @@
     "confirmAutoDeny": "Denegación automática en {{seconds}}s",
     "confirmDeny": "Denegar",
     "confirmApprove": "Aprobar",
-    "confirmSubmitError": "No se pudo enviar la confirmación."
+    "confirmSubmitError": "No se pudo enviar la confirmación.",
+    "intentHintTitle": "Comando en lenguaje natural",
+    "intentHintPlaceholder": "p. ej. Haz clic en el botón guardar",
+    "intentHintRun": "Ejecutar",
+    "intentHintRunsImmediately": "Se ejecuta inmediatamente en un sandbox estricto.",
+    "intentHintRequiresConfirmation": "Requiere tu confirmación antes de ejecutar.",
+    "intentHintBlockedByPolicy": "La ejecución de la automatización está deshabilitada por política.",
+    "intentHintDisabledHint": "Habilita la automatización en Configuración para usar esta función.",
+    "intentHintSetupLlm": "Proveedor LLM no configurado para planificación de intenciones",
+    "intentHintBlockedConsent": "El acceso al LLM externo está bloqueado por la configuración de privacidad",
+    "intentHintSuccess": "Comando completado",
+    "intentHintFailed": "Error en el comando",
+    "intentHintPlannedIntent": "Intención planificada",
+    "intentHintViewHistory": "Ver en historial de ejecución",
+    "intentHintErrorCheckHistory": "Es posible que la solicitud se haya ejecutado — revisa el historial de ejecución."
   },
   "settingsAutomation": {
     "title": "Automatización",
@@ -1192,6 +1315,8 @@
     "accessModeCliDescription": "Preferido para productos con suscripción. Maekon guiará a los usuarios a través de los flujos de CLI del proveedor instalado.",
     "accessModeOAuthLabel": "OAuth directo (experimental)",
     "accessModeOAuthDescription": "Ruta OAuth gestionada experimental para superficies de proveedores compatibles. Prefiera los CLIs del proveedor instalados cuando estén disponibles.",
+    "accessModeLocalLabel": "Modelo local",
+    "accessModeLocalDescription": "Solo en el dispositivo — la planificación de intenciones se ejecuta contra un servidor Ollama local en esta máquina (retroceso basado en reglas cuando Ollama no está en ejecución). Nada sale de tu dispositivo.",
     "pathSummaryTitle": "Ruta operativa",
     "pathSummarySurface": "Superficie seleccionada: {{surface}}",
     "pathExecutionLabel": "Ruta de ejecución",
@@ -1272,10 +1397,10 @@
       "patternDetected": "Patrón detectado: {description}",
       "excessiveCommunication": "El tiempo de comunicación es alto. Asegure tiempo de concentración",
       "default": "Tiene una nueva sugerencia",
-      "act": "Actuar",
+      "act": "Marcar como hecho",
       "loadFailed": "No se pudieron cargar las sugerencias de concentración.",
       "dismissFailed": "No se pudo descartar la sugerencia.",
-      "actFailed": "No se pudo aplicar la sugerencia."
+      "actFailed": "No se pudo marcar la sugerencia como hecha."
     },
     "pomodoro": {
       "title": "Pomodoro",
@@ -1562,6 +1687,27 @@
       "unavailable": "No disponible",
       "partially_available": "Parcialmente disponible"
     },
+    "cliReadiness": {
+      "not_detected": "CLI not detected",
+      "auth_required": "Sign-in required",
+      "auth_unsupported": "Plan unsupported",
+      "auth_stale": "Session refresh required",
+      "interactive_required": "Interactive sign-in required",
+      "auth_unverified": "Auth not verified",
+      "auth_ready": "Signed in; invocation unavailable",
+      "invocation_ready": "Ready to invoke",
+      "runtime_unsupported": "Runtime unsupported"
+    },
+    "cliDependency": {
+      "ready": "Dependency ready",
+      "missing": "Dependency missing",
+      "stale_process_env": "Restart required",
+      "not_required": "No extra dependency"
+    },
+    "cliDiscovery": {
+      "executablePath": "{{candidate}} at {{path}}",
+      "restartRequired": "Restart Maekon after updating PATH or user environment variables so the running app can see the new CLI settings."
+    },
     "maturity": {
       "stable": "Estable",
       "beta": "Beta",
@@ -1601,6 +1747,12 @@
             "auth_required": "Gemini CLI está instalado pero aún no autenticado. Ejecute primero el flujo de inicio de sesión del CLI.",
             "partially_available": "Se detectó Gemini CLI. Maekon puede preferir la ruta CLI del proveedor cuando el CLI esté autenticado.",
             "unavailable": "Gemini CLI no está instalado o no está disponible en PATH."
+          },
+          "antigravity_cli": {
+            "available": "Antigravity CLI is installed and authenticated. Maekon can hand off to this provider-owned CLI surface where supported.",
+            "auth_required": "Antigravity CLI is installed but not authenticated yet. Run the provider-owned CLI sign-in flow first, then return to this panel.",
+            "partially_available": "Antigravity CLI was detected, but this surface is manual GUI-only. Maekon cannot invoke it through the headless subprocess adapter yet.",
+            "unavailable": "Antigravity CLI is not installed or not available on PATH."
           }
         },
         "ollama": {
@@ -1735,7 +1887,12 @@
       "noData": "Sin datos"
     },
     "noEventsHint": "Coaching nudges will appear here as you work.",
-    "noGoalsHint": "Goals will appear here once regime tracking is active."
+    "noGoalsHint": "Goals will appear here once regime tracking is active.",
+    "disabledBannerTitle": "El coaching está desactivado",
+    "disabledBannerDesc": "Activa el coaching para recibir sugerencias proactivas y hacer seguimiento de tus hábitos.",
+    "disabledBannerButton": "Activar coaching",
+    "enableMasterToggle": "Activar coaching",
+    "enableMasterToggleDesc": "Interruptor principal — activa o desactiva todos los avisos y notificaciones de coaching."
   },
   "onboarding": {
     "step1Title": "Bienvenido a Maekon",
@@ -1763,7 +1920,7 @@
     "back": "Atras",
     "skip": "Omitir",
     "complete": "Comenzar",
-    "step2DescMac": "macOS requiere acceso a Accesibilidad, Grabación de pantalla y notificaciones para la experiencia completa de Maekon.",
+    "step2DescMac": "Accesibilidad y Grabación de pantalla son necesarias para capturar contexto de forma fiable. Las notificaciones se recomiendan para recordatorios y coaching, pero no bloquean la configuración.",
     "step2AccessibilityAction": "Permitir acceso de accesibilidad",
     "step2ScreenCaptureAction": "Permitir grabación de pantalla",
     "step2PermissionEnabled": "Habilitado",
@@ -1773,6 +1930,8 @@
     "step2ReadyTitle": "Los permisos requeridos están listos",
     "step2ReadyDesc": "Accesibilidad y Grabación de pantalla están habilitados. Puede continuar.",
     "step2ReadyInline": "Accesibilidad y Grabación de pantalla están habilitados.",
+    "step2ScreenCaptureRestartTitle": "Reinicie Maekon después de habilitar Grabación de pantalla",
+    "step2ScreenCaptureRestartDesc": "macOS puede no aplicar el nuevo acceso de Grabación de pantalla a la app en ejecución hasta que Maekon se reinicie.",
     "step2PermissionCheckFailed": "No se pudo leer el estado actual de los permisos de escritorio.",
     "step2SystemSettingsOpenFailed": "No se pudo abrir la Configuración del sistema de macOS.",
     "step2NotificationRequestFailed": "No se pudo solicitar el permiso de notificaciones.",
@@ -1782,6 +1941,33 @@
       "enable_button": "Enable",
       "not_now_button": "Not now",
       "dismiss_button": "Don't ask again"
+    },
+    "consent": {
+      "title": "Iniciar la monitorización",
+      "description": "Otorga tu consentimiento para que Maekon recopile contexto en el dispositivo y pueda ayudarte. Todo permanece en tu ordenador y puedes retirar el consentimiento en cualquier momento en los ajustes de Privacidad.",
+      "collectedTitle": "Cuando inicies la monitorización, Maekon recopilará:",
+      "grantButton": "Iniciar la monitorización (otorgar consentimiento)",
+      "granting": "Otorgando…",
+      "granted": "Consentimiento de monitorización otorgado",
+      "grantedNote": "Maekon empezará a recopilar contexto en el dispositivo. Gestiona o retira el consentimiento en cualquier momento en los ajustes de Privacidad.",
+      "osNote": "Otorgar el consentimiento es independiente del permiso de grabación de pantalla del sistema operativo de arriba: Maekon necesita ambos para capturar tu pantalla.",
+      "error": "No se pudo otorgar el consentimiento: {{error}}"
+    },
+    "coaching": {
+      "title": "Coaching proactivo",
+      "description": "Maekon puede analizar tus patrones de actividad y enviar sugerencias — avisos superpuestos y notificaciones de escritorio — para ayudarte a mantenerte enfocado. Todo se procesa únicamente en tu dispositivo.",
+      "enablesList": {
+        "item1": "Avisos superpuestos según el contexto (solo local)",
+        "item2": "Notificaciones de escritorio para enfoque y objetivos",
+        "item3": "Aprendizaje de patrones de actividad (consentimiento Tier-4)",
+        "item4": "Horas de silencio y perfiles configurables"
+      },
+      "enableButton": "Activar coaching",
+      "enabling": "Activando…",
+      "enabled": "Coaching activado",
+      "activeNote": "Los cambios surten efecto de inmediato — no es necesario reiniciar.",
+      "monitoringMissingWarning": "El consentimiento de monitorización aún no se ha otorgado. Otórgalo en el paso anterior para que el coaching funcione.",
+      "error": "No se pudo activar el coaching: {{error}}"
     }
   },
   "chat": {
@@ -1834,8 +2020,10 @@
     "mic_vad_stop": "Click to stop listening",
     "mic_vad_tooltip": "Click to toggle listening",
     "model_needed": "Download model in Settings",
+    "request_suggestions": "Obtener sugerencias de IA",
     "read_only_notice": "This session has ended. History is read-only.",
-    "stt_error": "Transcription failed"
+    "stt_error": "Transcription failed",
+    "mic_privacy_stopped": "Micrófono detenido — barrera de privacidad activa"
   },
   "policies": {
     "title": "Políticas de ejecución",
@@ -1886,6 +2074,15 @@
     "sourceLocal": "Local",
     "sourceRules": "Reglas",
     "suggestionLabel": "Sugerencia: {{title}}",
+    "targetBadgeLabel": "nuevas sugerencias para {{target}}",
+    "currentTarget": "Objetivo actual",
+    "noAutoAction": "Sin acción automática",
+    "replayTargetLocked": "Objetivo fijado",
+    "replayProposalShown": "Propuesta mostrada",
+    "replayConsentGate": "Puerta de consentimiento",
+    "replayAuditReady": "Auditoría lista",
+    "replayTrailLabel": "Ruta de reproducción de sugerencias",
+    "replayTrailTitle": "Ruta de reproducción",
     "accept": "Aceptar",
     "reject": "Rechazar",
     "later": "Luego",
@@ -1893,6 +2090,9 @@
     "noHistory": "Aun no hay historial",
     "noSuggestions": "Aun no hay sugerencias",
     "loadError": "No se pudieron cargar las sugerencias.",
+    "refreshing": "Actualizando sugerencias...",
+    "retryLoad": "Reintentar",
+    "retryPending": "Actualizando...",
     "openingInChat": "Abriendo en chat...",
     "toastAccepted": "Sugerencia aceptada",
     "toastRejected": "Sugerencia rechazada",
@@ -1964,7 +2164,74 @@
     "openSettings": "Abrir ajustes",
     "comingSoon": "Próximamente",
     "ocr": "OCR",
-    "focus": "Enfoque"
+    "focus": "Enfoque",
+    "floatingMenu": "Menu flotante de comandos",
+    "running": "En ejecucion",
+    "pinned": "Fijado",
+    "recent": "Reciente",
+    "usage": "Uso",
+    "screenContextReady": "Contexto de pantalla listo",
+    "screenContextPaused": "Contexto de pantalla pausado",
+    "localMode": "Modo local",
+    "captureServicesReady": "Servicios de captura listos",
+    "extractTasks": "Extraer tareas de la app actual",
+    "extractTasksMeta": "Usar el contexto GUI visible para sugerencias",
+    "captureCurrentContextMeta": "Guardar el contexto de pantalla actual",
+    "reviewCurrentWindow": "Revisar ventana actual",
+    "reviewCurrentWindowMeta": "Analizar GUI, OCR y accesibilidad",
+    "aiSuggestionsMeta": "Abrir sugerencias contextuales",
+    "focusModeMeta": "Iniciar o detener un bloque de enfoque de 25 minutos",
+    "captureUsage": "{{count}} capturas en esta sesion",
+    "serviceLanesConnected": "{{count}}/{{total}} canales de servicio conectados",
+    "newChat": "Nuevo chat",
+    "openMaekon": "Abrir Maekon",
+    "quitMaekon": "Salir de Maekon",
+    "chatOpened": "Chat abierto",
+    "quitRequested": "Salida solicitada",
+    "quitUnavailable": "Salida no disponible"
+  },
+  "trayDashboard": {
+    "regionLabel": "Panel de bandeja",
+    "title": "Maekon",
+    "captureCount": "{{count}} capturas",
+    "unreadSuggestions": "{{count}} sugerencia sin leer",
+    "providerCount": "{{count}}/{{total}} proveedores",
+    "currentContext": "Contexto GUI actual",
+    "suggestionQueue": "Cola de sugerencias",
+    "privacyProvider": "Privacidad y proveedores",
+    "reviewSuggestion": "Revisar sugerencia {{title}}",
+    "consentRequired": "Consentimiento requerido",
+    "auditReady": "Auditoría lista",
+    "auditPending": "Auditoría pendiente",
+    "providersReady": "{{count}} proveedores listos",
+    "captureNow": "Capturar ahora",
+    "openTimeline": "Abrir línea de tiempo",
+    "openAudit": "Abrir auditoría",
+    "openSettings": "Abrir ajustes",
+    "captureState": {
+      "active": "Activo",
+      "paused": "Pausado",
+      "local": "Modo local"
+    },
+    "placement": {
+      "adjacent-popover": "Marcador de ventana",
+      "window-side-panel": "Panel lateral",
+      "bottom-dock": "Dock inferior"
+    },
+    "redaction": {
+      "clean": "Sin texto sensible",
+      "redacted": "Redactado antes del proveedor",
+      "blocked": "Superficie sensible bloqueada"
+    },
+    "egress": {
+      "allowed": "Salida externa permitida",
+      "blocked": "Salida externa bloqueada"
+    },
+    "providerStatus": {
+      "connected": "conectado",
+      "unavailable": "no disponible",
+      "blocked": "bloqueado"
+    }
   },
   "syncTab": {
     "loading": "Cargando estado de sincronización...",
@@ -2039,5 +2306,37 @@
   },
   "stats": {
     "guiInteractions": "GUI Interactions"
+  },
+  "week": {
+    "title": "Resumen semanal",
+    "empty": "Aún no hay resumen semanal. Se genera automáticamente cada semana cuando se acumulan segmentos de actividad.",
+    "stale": "Última semana disponible",
+    "totalTracked": "Registrado",
+    "deepWork": "Trabajo profundo",
+    "communication": "Comunicación",
+    "contextSwitches": "Cambios de contexto",
+    "longestSegment": "Mayor enfoque",
+    "comparison": "vs. semana anterior",
+    "regimes": "Regímenes (horas)",
+    "categories": "Categorías (horas)",
+    "topContent": "Contenido principal",
+    "narrative": "Narrativa semanal",
+    "narrativeUnavailable": "Narrativa no disponible."
+  },
+  "codex": {
+    "approvalTitle": "Codex Approval",
+    "approvalSubmitError": "Could not submit the approval.",
+    "process": "Process",
+    "args": "Args",
+    "fileChange": "{{count}} diff lines",
+    "networkHost": "Network: {{host}}",
+    "autoDecline": "Auto-decline in {{seconds}}s",
+    "accept": "Accept",
+    "decline": "Decline",
+    "cancel": "Cancel",
+    "turnControl": "Turn control",
+    "interrupt": "Interrupt",
+    "steerPlaceholder": "Steer the turn…",
+    "steerSend": "Send"
   }
 }

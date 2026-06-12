@@ -1,6 +1,7 @@
 use maekon_core::error::CoreError;
 use maekon_core::ports::llm_provider::{InterpretedAction, ScreenContext, SkillContext};
 use maekon_core::ports::ocr_provider::OcrResult;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -141,10 +142,8 @@ pub(super) fn parse_ocr_output(raw: &str) -> Result<Vec<OcrResult>, CoreError> {
 
     Err(CoreError::OcrError {
         code: maekon_core::error_codes::ProviderCode::OcrFailed,
-        message: format!(
-            "Subprocess CLI returned non-JSON OCR output: {}",
-            truncate_for_error(normalized)
-        ),
+        message: "Subprocess CLI returned non-JSON OCR output; response body omitted for privacy."
+            .to_string(),
     })
 }
 
@@ -155,7 +154,14 @@ fn parse_ocr_value(value: &serde_json::Value) -> Option<Vec<OcrResult>> {
 
     match value {
         serde_json::Value::Object(map) => {
-            for key in ["result", "response", "content", "message", "data"] {
+            for key in [
+                "structured_output",
+                "result",
+                "response",
+                "content",
+                "message",
+                "data",
+            ] {
                 if let Some(nested) = map.get(key) {
                     if let Some(results) = parse_ocr_value(nested) {
                         return Some(results);
@@ -183,10 +189,17 @@ fn normalize_ocr_results(results: Vec<OcrResult>) -> Vec<OcrResult> {
     results
         .into_iter()
         .filter_map(|mut result| {
-            if result.text.trim().is_empty() {
+            result.text = result.text.trim().to_string();
+            if result.text.is_empty() {
                 return None;
             }
-            result.confidence = result.confidence.clamp(0.0, 1.0);
+            result.x = result.x.max(0);
+            result.y = result.y.max(0);
+            result.confidence = if result.confidence.is_finite() {
+                result.confidence.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             Some(result)
         })
         .collect()
@@ -237,7 +250,13 @@ fn parse_interpreted_action_value(value: &serde_json::Value) -> Option<Interpret
 
     match value {
         serde_json::Value::Object(map) => {
-            for key in ["result", "response", "content", "message"] {
+            for key in [
+                "structured_output",
+                "result",
+                "response",
+                "content",
+                "message",
+            ] {
                 if let Some(nested) = map.get(key) {
                     if let Some(action) = parse_interpreted_action_value(nested) {
                         return Some(action);
@@ -289,13 +308,24 @@ pub(crate) enum SubprocessKind {
     Ocr,
 }
 
+#[cfg(test)]
 pub(crate) fn classify_subprocess_error(
     kind: SubprocessKind,
     surface_id: &str,
     stderr: &str,
 ) -> CoreError {
-    let normalized = stderr.trim();
+    classify_subprocess_error_with_redactions(kind, surface_id, stderr, &[])
+}
+
+pub(crate) fn classify_subprocess_error_with_redactions(
+    kind: SubprocessKind,
+    surface_id: &str,
+    stderr: &str,
+    sensitive_values: &[&str],
+) -> CoreError {
+    let normalized = redact_exact_sensitive_values(stderr.trim(), sensitive_values);
     let lowered = normalized.to_ascii_lowercase();
+    let sanitized = sanitize_subprocess_error_output(&normalized);
     let cli_id =
         super::cli_id_for_surface_id(surface_id).unwrap_or_else(|_| surface_id.to_string());
     if lowered.contains("login")
@@ -308,7 +338,82 @@ pub(crate) fn classify_subprocess_error(
             message: format!(
                 "{} CLI authentication is required: {}",
                 cli_id,
-                truncate_for_error(normalized)
+                truncate_for_error(&sanitized)
+            ),
+        };
+    }
+
+    if lowered.contains("rate limit")
+        || lowered.contains("ratelimit")
+        || lowered.contains("quota exceeded")
+        || lowered.contains("too many requests")
+    {
+        return CoreError::RateLimit {
+            code: maekon_core::error_codes::NetworkCode::RateLimit,
+            retry_after_secs: 0,
+        };
+    }
+
+    if lowered.contains("dns")
+        || lowered.contains("proxy")
+        || lowered.contains("network unavailable")
+        || lowered.contains("connection refused")
+        || lowered.contains("connection reset")
+        || lowered.contains("could not resolve")
+    {
+        return CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: format!(
+                "{} CLI network failure: {}",
+                cli_id,
+                truncate_for_error(&sanitized)
+            ),
+        };
+    }
+
+    if lowered.contains("permission denied")
+        || lowered.contains("access denied")
+        || lowered.contains("operation not permitted")
+    {
+        return CoreError::PermissionDenied {
+            code: maekon_core::error_codes::PermissionCode::PermissionDenied,
+            message: format!(
+                "{} CLI permission denied: {}",
+                cli_id,
+                truncate_for_error(&sanitized)
+            ),
+        };
+    }
+
+    if lowered.contains("unknown option")
+        || lowered.contains("unknown argument")
+        || lowered.contains("unrecognized option")
+        || lowered.contains("unsupported flag")
+        || lowered.contains("schema validation")
+    {
+        return CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "{} CLI invocation flags are not supported: {}",
+                cli_id,
+                truncate_for_error(&sanitized)
+            ),
+        };
+    }
+
+    if matches!(kind, SubprocessKind::Ocr)
+        && (lowered.contains("does not support image")
+            || lowered.contains("image input")
+            || lowered.contains("vision input")
+            || lowered.contains("unsupported image")
+            || lowered.contains("unsupported media"))
+    {
+        return CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "{} CLI model does not support OCR image input: {}",
+                cli_id,
+                truncate_for_error(&sanitized)
             ),
         };
     }
@@ -316,7 +421,7 @@ pub(crate) fn classify_subprocess_error(
     let message = format!(
         "{} CLI invocation failed: {}",
         cli_id,
-        truncate_for_error(normalized)
+        truncate_for_error(&sanitized)
     );
     match kind {
         SubprocessKind::Llm => CoreError::Analysis {
@@ -328,6 +433,57 @@ pub(crate) fn classify_subprocess_error(
             message,
         },
     }
+}
+
+fn redact_exact_sensitive_values(raw: &str, sensitive_values: &[&str]) -> String {
+    sensitive_values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .fold(raw.to_string(), |output, value| {
+            output.replace(value, "<redacted-payload>")
+        })
+}
+
+pub(crate) fn sanitize_subprocess_error_output(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(redact_subprocess_error_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_subprocess_error_token(token: &str) -> String {
+    let sensitive = token.trim_matches(|value: char| {
+        matches!(
+            value,
+            ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''
+        )
+    });
+    let lowered = sensitive.to_ascii_lowercase();
+    let replacement = if looks_like_error_email(sensitive) {
+        Some("<redacted-email>")
+    } else if lowered.starts_with("org_") || lowered.starts_with("organization_") {
+        Some("<redacted-org>")
+    } else if lowered.starts_with("gho_")
+        || lowered.starts_with("ghp_")
+        || lowered.starts_with("sk-")
+        || lowered.starts_with("sk_")
+    {
+        Some("<redacted-token>")
+    } else {
+        None
+    };
+
+    replacement
+        .map(|value| token.replace(sensitive, value))
+        .unwrap_or_else(|| token.to_string())
+}
+
+fn looks_like_error_email(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 pub(super) fn is_gemini_json_flag_error(error: &CoreError) -> bool {
@@ -389,16 +545,24 @@ pub(crate) fn append_oneshot_flags(command: &mut Command, surface_id: &str) {
 }
 
 pub(super) fn find_executable(name: &str) -> Option<PathBuf> {
+    find_executable_in_path(name, std::env::var_os("PATH"), std::env::var_os("PATHEXT"))
+}
+
+pub(super) fn find_executable_in_path(
+    name: &str,
+    path_var: Option<OsString>,
+    pathext: Option<OsString>,
+) -> Option<PathBuf> {
     if name.contains(std::path::MAIN_SEPARATOR) {
         let path = PathBuf::from(name);
         return is_executable(&path).then_some(path);
     }
 
-    let path_var = std::env::var_os("PATH")?;
+    let path_var = path_var?;
     #[cfg(windows)]
-    let exts: Vec<String> = std::env::var_os("PATHEXT")
+    let exts: Vec<String> = pathext
         .map(|value| {
-            std::env::split_paths(&PathBuf::from(value))
+            std::env::split_paths(&value)
                 .map(|path| path.to_string_lossy().to_string())
                 .collect()
         })
@@ -410,6 +574,8 @@ pub(super) fn find_executable(name: &str) -> Option<PathBuf> {
                 ".CMD".to_string(),
             ]
         });
+    #[cfg(not(windows))]
+    let _ = pathext;
 
     for dir in std::env::split_paths(&path_var) {
         let base = dir.join(name);
@@ -482,6 +648,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_claude_structured_output_action_envelope() {
+        let raw = json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "Output provided.",
+            "structured_output": {
+                "target_text": "Save",
+                "target_role": "button",
+                "action_type": "click",
+                "confidence": 0.91
+            }
+        })
+        .to_string();
+        let action = parse_interpreted_action_output(&raw).unwrap();
+        assert_eq!(action.target_text.as_deref(), Some("Save"));
+        assert_eq!(action.target_role.as_deref(), Some("button"));
+        assert_eq!(action.action_type, "click");
+        assert_eq!(action.confidence, 0.91);
+    }
+
+    #[test]
+    fn parses_claude_result_string_action_envelope() {
+        let raw = json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "{\"target_text\":null,\"target_role\":null,\"action_type\":\"noop\",\"confidence\":1}"
+        })
+        .to_string();
+        let action = parse_interpreted_action_output(&raw).unwrap();
+        assert_eq!(action.target_text, None);
+        assert_eq!(action.target_role, None);
+        assert_eq!(action.action_type, "noop");
+        assert_eq!(action.confidence, 1.0);
+    }
+
+    #[test]
     fn parses_nested_ocr_json_payload() {
         let raw = json!({
             "response": {
@@ -502,6 +704,64 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].text, "Save");
         assert_eq!(results[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn normalizes_ocr_geometry_and_confidence() {
+        let raw = json!({
+            "results": [
+                {
+                    "text": "  Save  ",
+                    "x": -15,
+                    "y": -4,
+                    "width": 80,
+                    "height": 24,
+                    "confidence": -0.2
+                },
+                {
+                    "text": "Open",
+                    "x": 30,
+                    "y": 40,
+                    "width": 100,
+                    "height": 20,
+                    "confidence": 1.4
+                }
+            ]
+        })
+        .to_string();
+        let results = parse_ocr_output(&raw).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].text, "Save");
+        assert_eq!(results[0].x, 0);
+        assert_eq!(results[0].y, 0);
+        assert_eq!(results[0].confidence, 0.0);
+        assert_eq!(results[1].confidence, 1.0);
+    }
+
+    #[test]
+    fn parses_claude_structured_output_ocr_envelope() {
+        let raw = json!({
+            "type": "result",
+            "subtype": "success",
+            "structured_output": {
+                "results": [
+                    {
+                        "text": "Preferences",
+                        "x": 12,
+                        "y": 34,
+                        "width": 96,
+                        "height": 22,
+                        "confidence": 0.88
+                    }
+                ]
+            }
+        })
+        .to_string();
+        let results = parse_ocr_output(&raw).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Preferences");
+        assert_eq!(results[0].confidence, 0.88);
     }
 
     #[test]
@@ -550,6 +810,16 @@ mod tests {
     fn non_json_ocr_output_maps_to_ocr_error() {
         let err = parse_ocr_output("this is definitely not json").unwrap_err();
         assert_eq!(err.code(), "provider.ocr_failed");
+    }
+
+    #[test]
+    fn non_json_ocr_output_omits_raw_provider_text() {
+        let err =
+            parse_ocr_output("visible OCR text: alice@example.com account balance").unwrap_err();
+        let message = err.to_string();
+        assert!(!message.contains("alice@example.com"));
+        assert!(!message.contains("account balance"));
+        assert!(message.contains("omitted for privacy"));
     }
 
     /// Iter-93 regression guard: empty LLM intent output is an analysis
@@ -634,5 +904,87 @@ mod tests {
             "not authenticated: run gcloud auth login",
         );
         assert_eq!(err.code(), "auth.failed");
+    }
+
+    #[test]
+    fn rate_limit_keyword_maps_to_rate_limit() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Llm,
+            "codex_llm",
+            "rate limit exceeded, retry later",
+        );
+        assert_eq!(err.code(), "network.rate_limit");
+    }
+
+    #[test]
+    fn network_keyword_maps_to_network_error() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Llm,
+            "codex_llm",
+            "DNS lookup failed while connecting to provider",
+        );
+        assert_eq!(err.code(), "network.generic");
+    }
+
+    #[test]
+    fn permission_keyword_maps_to_permission_denied() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Ocr,
+            "claude_ocr",
+            "permission denied reading image file",
+        );
+        assert_eq!(err.code(), "permission.permission_denied");
+    }
+
+    #[test]
+    fn unsupported_flag_keyword_maps_to_config_invalid() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Llm,
+            "gemini_llm",
+            "unknown option --json-schema",
+        );
+        assert_eq!(err.code(), "config.invalid");
+    }
+
+    #[test]
+    fn ocr_model_capability_keyword_maps_to_config_invalid() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Ocr,
+            "claude_ocr",
+            "selected model does not support image input",
+        );
+        assert_eq!(err.code(), "config.invalid");
+        assert!(err.to_string().contains("image input"));
+    }
+
+    #[test]
+    fn subprocess_error_message_redacts_pii() {
+        let err = classify_subprocess_error(
+            SubprocessKind::Llm,
+            "codex_llm",
+            "model unavailable for alice@example.com in org org_123",
+        );
+        let message = err.to_string();
+        assert!(!message.contains("alice@example.com"));
+        assert!(!message.contains("org_123"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_executable_in_path_handles_pathext_spaces_and_non_ascii_dirs() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("사용자 Name").join("Claude Code");
+        std::fs::create_dir_all(&bin_dir).expect("fake cli dir");
+        let executable_path = bin_dir.join("claude.EXE");
+        std::fs::write(&executable_path, b"fake").expect("fake exe");
+
+        let resolved = find_executable_in_path(
+            "claude",
+            Some(std::env::join_paths([bin_dir.as_path()]).expect("path")),
+            Some(".CMD;.EXE".into()),
+        )
+        .expect("PATHEXT lookup should resolve fake exe");
+
+        assert_eq!(resolved, executable_path);
     }
 }

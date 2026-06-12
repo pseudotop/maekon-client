@@ -6,6 +6,11 @@ use tracing::{debug, info, warn};
 use super::super::config::PlatformEgressPolicy;
 use super::super::Scheduler;
 
+/// Fixed, code-defined upload-channel authority label for the batch-upload
+/// metrics (E20-43 #4835). Cardinality = 1 and contains NO user-identifying
+/// data; it names the upload channel, never a user/host derived from input.
+const BATCH_UPLOAD_AUTHORITY: &str = "batch-sink";
+
 impl Scheduler {
     #[tracing::instrument(skip_all)]
     pub(in crate::scheduler) fn spawn_sync_loop(
@@ -20,7 +25,7 @@ impl Scheduler {
         let egress4 = egress_policy;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(sync_interval);
+            let mut interval = super::intervals::coalescing_interval(sync_interval);
 
             loop {
                 tokio::select! {
@@ -31,12 +36,23 @@ impl Scheduler {
                                     Ok(count) => {
                                         if count > 0 {
                                             debug!("batch: {count}items sent");
+                                            // E20-43 #4835: NON-PII upload outcome. Label is the
+                                            // bounded, code-defined upload-channel authority only —
+                                            // no per-user/per-event data. The `BatchSink` port does
+                                            // not surface the concrete server host, so we record the
+                                            // fixed channel authority (cardinality = 1) here.
+                                            crate::telemetry::metrics::record_batch_upload_success(
+                                                BATCH_UPLOAD_AUTHORITY,
+                                            );
                                             if let Err(e) = storage4.mark_unsent_as_sent_before(Utc::now()).await {
                                                 warn!(err.code = %e.code(), "mark sent failure: {e}");
                                             }
                                         }
                                     }
                                     Err(e) => {
+                                        crate::telemetry::metrics::record_batch_upload_failure(
+                                            BATCH_UPLOAD_AUTHORITY,
+                                        );
                                         warn!(err.code = %e.code(), "batch failure: {e}");
                                     }
                                 }
@@ -115,11 +131,17 @@ impl Scheduler {
                 return;
             }
 
-            let mut interval = tokio::time::interval(heartbeat_interval);
+            let mut interval = super::intervals::coalescing_interval(heartbeat_interval);
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        // E20-43 #4835: NON-PII liveness signal. `record_*` is a
+                        // no-op when the telemetry feature is off and a noop-meter
+                        // drop when telemetry.enabled is false at runtime, so this
+                        // is always safe to call unconditionally here.
+                        crate::telemetry::metrics::record_heartbeat();
+                        crate::telemetry::metrics::record_loop_iteration("heartbeat");
                         if let Err(e) = api.send_heartbeat(&sid).await {
                             warn!(err.code = %e.code(), "heartbeat failure: {e}");
                         }

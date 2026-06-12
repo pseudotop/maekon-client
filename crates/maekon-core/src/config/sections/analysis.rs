@@ -1,3 +1,4 @@
+// OOS-TBD: ADR-013 file split (cycle 37+) — LOC: 542
 use serde::{Deserialize, Serialize};
 
 use crate::config::enums::Weekday;
@@ -34,6 +35,15 @@ pub struct AnalysisConfig {
     pub gui_intelligence: GuiIntelligenceConfig,
     #[serde(default)]
     pub text_intelligence: TextIntelligenceConfig,
+    /// ADR-023 Phase-2: enable LLM belief revision (D1 relation extraction + D2
+    /// contradiction → supersede). Gated additionally by a LOCAL-only egress
+    /// check and the `memory_graph_enrichment` consent. Default false (opt-in).
+    #[serde(default)]
+    pub belief_revision_enabled: bool,
+    /// Minimum LLM confidence to supersede an Active claim (D2). Deliberately
+    /// HIGH — a wrong supersede destroys a durable user belief. Default 0.9.
+    #[serde(default = "default_supersede_confidence_threshold")]
+    pub supersede_confidence_threshold: f64,
 }
 
 impl Default for AnalysisConfig {
@@ -51,8 +61,17 @@ impl Default for AnalysisConfig {
             embedding: EmbeddingConfig::default(),
             gui_intelligence: GuiIntelligenceConfig::default(),
             text_intelligence: TextIntelligenceConfig::default(),
+            belief_revision_enabled: false,
+            supersede_confidence_threshold: default_supersede_confidence_threshold(),
         }
     }
+}
+
+/// Default D2 supersede confidence threshold — conservatively HIGH (0.9): a wrong
+/// supersede destroys a durable user belief, so only very confident contradictions
+/// auto-supersede.
+fn default_supersede_confidence_threshold() -> f64 {
+    0.9
 }
 
 /// Clustering algorithm selection for regime detection.
@@ -66,6 +85,16 @@ pub enum ClusteringAlgorithm {
     Kmeans,
     /// Gaussian Mixture Model: probabilistic soft clustering with BIC-based K selection.
     Gmm,
+}
+
+impl std::fmt::Display for ClusteringAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hdbscan => f.write_str("HDBSCAN"),
+            Self::Kmeans => f.write_str("KMEANS"),
+            Self::Gmm => f.write_str("GMM"),
+        }
+    }
 }
 
 /// Configuration for the auto-tuning subsystem (EMA stats + drift detection).
@@ -232,6 +261,15 @@ pub enum EmbeddingProviderType {
     Remote,
 }
 
+impl std::fmt::Display for EmbeddingProviderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => f.write_str("LOCAL"),
+            Self::Remote => f.write_str("REMOTE"),
+        }
+    }
+}
+
 /// Configuration for the embedding and vector RAG subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
@@ -312,6 +350,42 @@ pub struct EmbeddingConfig {
     /// Default 10.
     #[serde(default = "default_oversample_factor")]
     pub binary_oversample_factor: usize,
+
+    /// Override model name for the remote embedding provider.
+    ///
+    /// When `None`, the model is derived from the endpoint:
+    /// - loopback endpoint (localhost / 127.x / ::1): `"embeddinggemma"` (Ollama default)
+    /// - external endpoint: `"text-embedding-3-small"` (OpenAI default)
+    ///
+    /// Set explicitly when using a non-default model with the configured endpoint.
+    #[serde(default)]
+    pub remote_model: Option<String>,
+
+    /// Override output dimension for the remote embedding provider.
+    ///
+    /// When `None`, the dimension is derived from the endpoint:
+    /// - loopback endpoint: 768 (embeddinggemma)
+    /// - external endpoint: 384 (text-embedding-3-small)
+    ///
+    /// Matryoshka models (e.g. nomic-embed-text) support truncation: setting a
+    /// lower value here enables MRL truncation + L2 re-normalisation inside
+    /// `RemoteEmbeddingProvider`. Setting a *higher* value than the model output
+    /// is not supported — the provider will warn and use the actual response length.
+    #[serde(default)]
+    pub remote_dimensions: Option<usize>,
+
+    /// Keychain / secret-backend credential binding for the remote embedding endpoint.
+    ///
+    /// When `Some`, an external (non-loopback) remote endpoint resolves its API
+    /// key from the declared secret store backend instead of the inline
+    /// `llm_api.api_key` field.  On loopback endpoints this field is ignored
+    /// (loopback always uses `NoAuth` regardless of this binding — secrets must
+    /// not be sent to a local unauthenticated socket).
+    ///
+    /// When `None` (default), the existing coupling to `llm_api.api_key` is
+    /// preserved for backward compatibility.
+    #[serde(default)]
+    pub remote_credential: Option<crate::config::CredentialBinding>,
 }
 
 impl Default for EmbeddingConfig {
@@ -332,6 +406,9 @@ impl Default for EmbeddingConfig {
             index_strategy: default_index_strategy(),
             ivf_nprobe: 0,
             binary_oversample_factor: default_oversample_factor(),
+            remote_model: None,
+            remote_dimensions: None,
+            remote_credential: None,
         }
     }
 }
@@ -506,5 +583,97 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.input_pattern_detail);
         assert!(!config.accessibility_extraction);
+    }
+
+    #[test]
+    fn clustering_algorithm_display_matches_serde_token() {
+        assert_eq!(ClusteringAlgorithm::Hdbscan.to_string(), "HDBSCAN");
+        assert_eq!(ClusteringAlgorithm::Kmeans.to_string(), "KMEANS");
+        assert_eq!(ClusteringAlgorithm::Gmm.to_string(), "GMM");
+    }
+
+    #[test]
+    fn embedding_provider_type_display_matches_serde_token() {
+        assert_eq!(EmbeddingProviderType::Local.to_string(), "LOCAL");
+        assert_eq!(EmbeddingProviderType::Remote.to_string(), "REMOTE");
+    }
+
+    #[test]
+    fn embedding_config_remote_fields_default_to_none() {
+        let config = EmbeddingConfig::default();
+        assert!(config.remote_model.is_none());
+        assert!(config.remote_dimensions.is_none());
+    }
+
+    #[test]
+    fn embedding_config_remote_fields_deserialize_from_json() {
+        let json = r#"{
+            "enabled": true,
+            "provider": "REMOTE",
+            "remote_endpoint": "http://localhost:11434/v1/embeddings",
+            "remote_model": "nomic-embed-text",
+            "remote_dimensions": 512
+        }"#;
+        let config: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.remote_model.as_deref(), Some("nomic-embed-text"));
+        assert_eq!(config.remote_dimensions, Some(512));
+    }
+
+    #[test]
+    fn embedding_config_remote_fields_absent_deserializes_to_none() {
+        // Fields with #[serde(default)] must not fail when absent from JSON.
+        let json = r#"{"enabled": true, "provider": "REMOTE"}"#;
+        let config: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        assert!(config.remote_model.is_none());
+        assert!(config.remote_dimensions.is_none());
+    }
+
+    // ── remote_credential field tests ────────────────────────────────────────
+
+    /// Backward compatibility: remote_credential defaults to None when absent.
+    #[test]
+    fn remote_credential_defaults_to_none() {
+        let config = EmbeddingConfig::default();
+        assert!(config.remote_credential.is_none());
+    }
+
+    /// Field absent from JSON must deserialize to None (serde default).
+    #[test]
+    fn remote_credential_absent_in_json_is_none() {
+        let json = r#"{"enabled": true, "provider": "REMOTE"}"#;
+        let config: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        assert!(config.remote_credential.is_none());
+    }
+
+    /// Round-trip: Some(CredentialBinding) serialises and re-deserialises intact.
+    #[test]
+    fn remote_credential_some_roundtrips() {
+        use crate::config::{CredentialAuthMode, CredentialBackendKind, CredentialBinding};
+        let binding = CredentialBinding {
+            auth_mode: CredentialAuthMode::ApiKey,
+            backend_kind: CredentialBackendKind::OsSecretStore,
+            secret_ref: Some(crate::config::SecretRef {
+                namespace: "provider/openai/embedding".to_string(),
+                key: "api_key".to_string(),
+            }),
+            projection_enabled: false,
+        };
+        let cfg = EmbeddingConfig {
+            remote_credential: Some(binding.clone()),
+            ..Default::default()
+        };
+
+        let serialised = serde_json::to_string(&cfg).expect("serialise");
+        let restored: EmbeddingConfig = serde_json::from_str(&serialised).expect("deserialise");
+        let restored_binding = restored.remote_credential.expect("binding round-tripped");
+        assert_eq!(restored_binding.auth_mode, binding.auth_mode);
+        assert_eq!(restored_binding.backend_kind, binding.backend_kind);
+        assert_eq!(
+            restored_binding
+                .secret_ref
+                .as_ref()
+                .map(|r| r.namespace.as_str()),
+            Some("provider/openai/embedding")
+        );
     }
 }

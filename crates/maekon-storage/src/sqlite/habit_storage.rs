@@ -1,11 +1,27 @@
 use crate::error::StorageError;
 use maekon_core::models::coaching::HabitStreakRow;
+use rusqlite::Connection;
 
 use super::SqliteStorage;
+
+/// Owned parameters for an `upsert_habit_streak` write, moved into the
+/// `Send + 'static` `with_conn` closure (ADR-026 PR-8).
+struct OwnedHabitStreak {
+    regime_label: String,
+    date: String,
+    minutes_logged: u32,
+    target_minutes: u32,
+    met: bool,
+}
 
 impl SqliteStorage {
     /// Upsert a daily habit record for a regime (INSERT OR REPLACE by unique
     /// `(regime_label, date)` constraint).
+    ///
+    /// Synchronous inherent twin — retained for the in-crate `#[cfg(test)]`
+    /// suite and the web handler `#[cfg(test)]` seed path. The async
+    /// `HabitStorage` trait method (ADR-026 PR-8) routes through
+    /// [`Self::upsert_habit_streak_async`].
     pub fn upsert_habit_streak(
         &self,
         regime_label: &str,
@@ -14,31 +30,89 @@ impl SqliteStorage {
         target_minutes: u32,
         met: bool,
     ) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, habit_streaks ∈ ALL_TABLES).
+        let params = OwnedHabitStreak {
+            regime_label: regime_label.to_owned(),
+            date: date.to_owned(),
+            minutes_logged,
+            target_minutes,
+            met,
+        };
+        self.conn
+            .write_lock()
+            .run((), |conn| Self::upsert_habit_streak_inner(conn, &params))
+    }
 
+    /// Async funnel for the `HabitStorage` trait method: offloads the SQLite
+    /// write onto `spawn_blocking` via `with_conn` (`deletion_flag || erasing`
+    /// re-checked) so the `parking_lot` guard is never held across an `.await`
+    /// (ADR-026 PR-8).
+    pub(crate) async fn upsert_habit_streak_async(
+        &self,
+        regime_label: String,
+        date: String,
+        minutes_logged: u32,
+        target_minutes: u32,
+        met: bool,
+    ) -> Result<(), StorageError> {
+        let params = OwnedHabitStreak {
+            regime_label,
+            date,
+            minutes_logged,
+            target_minutes,
+            met,
+        };
+        self.with_conn(move |conn| Self::upsert_habit_streak_inner(conn, &params))
+            .await
+    }
+
+    /// Shared SQL body for both the sync twin and the async funnel.
+    fn upsert_habit_streak_inner(
+        conn: &Connection,
+        params: &OwnedHabitStreak,
+    ) -> Result<(), StorageError> {
         conn.execute(
             "INSERT INTO habit_streaks (regime_label, date, minutes_logged, target_minutes, met)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(regime_label, date)
              DO UPDATE SET minutes_logged = ?3, target_minutes = ?4, met = ?5",
-            rusqlite::params![regime_label, date, minutes_logged, target_minutes, met],
+            rusqlite::params![
+                params.regime_label,
+                params.date,
+                params.minutes_logged,
+                params.target_minutes,
+                params.met
+            ],
         )
         .map_err(|e| StorageError::Internal(format!("upsert_habit_streak: {e}")))?;
-
         Ok(())
     }
 
     /// Query habit streak rows for all regimes within the last `days` days,
     /// ordered by date descending then regime_label ascending.
+    ///
+    /// Synchronous inherent twin — see [`Self::upsert_habit_streak`]. The async
+    /// trait method routes through [`Self::query_habit_streaks_async`].
     pub fn query_habit_streaks(&self, days: u32) -> Result<Vec<HabitStreakRow>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::query_habit_streaks_inner(read.conn(), days)
+    }
 
+    /// Async funnel for the `HabitStorage` trait method (ADR-026 PR-8).
+    pub(crate) async fn query_habit_streaks_async(
+        &self,
+        days: u32,
+    ) -> Result<Vec<HabitStreakRow>, StorageError> {
+        self.with_conn_read(move |conn| Self::query_habit_streaks_inner(conn, days))
+            .await
+    }
+
+    /// Shared SQL body for both the sync twin and the async funnel.
+    fn query_habit_streaks_inner(
+        conn: &Connection,
+        days: u32,
+    ) -> Result<Vec<HabitStreakRow>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT regime_label, date, minutes_logged, target_minutes, met

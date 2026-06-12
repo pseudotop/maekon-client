@@ -128,6 +128,10 @@ pub fn api_routes() -> Router<AppState> {
             "/suggestions/{id}/dismiss",
             post(handlers::suggestions::dismiss_suggestion),
         )
+        .route(
+            "/suggestions/{id}/feedback",
+            post(handlers::suggestions::submit_suggestion_feedback),
+        )
         .route("/focus/metrics", get(handlers::focus::get_focus_metrics))
         .route("/focus/sessions", get(handlers::focus::get_work_sessions))
         .route(
@@ -370,7 +374,7 @@ mod tests {
     #[test]
     fn routes_compile() {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
+        let (event_tx, _) = broadcast::channel(128);
         let state = AppState::with_core(storage, event_tx);
         let _app: Router<()> = api_routes().with_state(state);
     }
@@ -378,7 +382,7 @@ mod tests {
     #[test]
     fn integration_routes_compile() {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
+        let (event_tx, _) = broadcast::channel(128);
         let state = AppState::with_core(storage, event_tx);
         let _app: Router<()> = integration_routes().with_state(state);
     }

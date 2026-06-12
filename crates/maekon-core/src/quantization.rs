@@ -3,7 +3,7 @@
 //! Converts f32 embedding vectors to i8 using per-vector min-max scaling.
 //! ~4x storage reduction with ~99% recall preservation for 384-dim embeddings.
 //!
-//! See: docs/superpowers/specs/2026-03-19-p3-vector-compression-embedding-optimization-design.md
+//! Public architecture context: docs/architecture/ADR-013-llm-summary-vector-rag.md.
 
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
@@ -185,8 +185,11 @@ mod tests {
 
     #[test]
     fn quantize_empty_vector() {
-        let result = ScalarQuantizer::quantize(&[]);
-        assert!(result.is_err());
+        let err = ScalarQuantizer::quantize(&[]).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "empty vector must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
@@ -203,15 +206,21 @@ mod tests {
     #[test]
     fn quantize_nan_rejected() {
         let v = vec![1.0, f32::NAN, 0.5];
-        let result = ScalarQuantizer::quantize(&v);
-        assert!(result.is_err());
+        let err = ScalarQuantizer::quantize(&v).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "NaN vector must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
     fn quantize_inf_rejected() {
         let v = vec![1.0, f32::INFINITY, 0.5];
-        let result = ScalarQuantizer::quantize(&v);
-        assert!(result.is_err());
+        let err = ScalarQuantizer::quantize(&v).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "Inf vector must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
@@ -245,9 +254,12 @@ mod tests {
     fn cosine_similarity_dimension_mismatch_returns_error() {
         let a = ScalarQuantizer::quantize(&[1.0, 0.0, 0.0]).unwrap();
         let b = ScalarQuantizer::quantize(&[1.0, 0.0, 0.0, 0.5, 0.5]).unwrap();
-        let result = ScalarQuantizer::cosine_similarity_int8(&a, &b);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err = ScalarQuantizer::cosine_similarity_int8(&a, &b).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "dimension mismatch must produce InvalidArguments, got: {err:?}"
+        );
+        let err_msg = format!("{err}");
         assert!(
             err_msg.contains("Dimension mismatch"),
             "error should mention dimension mismatch, got: {err_msg}"
@@ -270,8 +282,11 @@ mod tests {
             scale: 1.0,
             offset: 0.0,
         };
-        let result = ScalarQuantizer::cosine_similarity_int8(&a, &b);
-        assert!(result.is_err());
+        let err = ScalarQuantizer::cosine_similarity_int8(&a, &b).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "empty vector cosine similarity must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
@@ -289,17 +304,27 @@ mod tests {
     #[test]
     fn quantize_with_expected_dim_accepts_correct() {
         let v = vec![0.1; 384];
-        let qv = ScalarQuantizer::quantize_with_expected_dim(&v, 384);
-        assert!(qv.is_ok());
-        assert_eq!(qv.unwrap().data.len(), 384);
+        let qv = ScalarQuantizer::quantize_with_expected_dim(&v, 384).expect(
+            "quantize_with_expected_dim must accept a vector whose length matches expected_dim",
+        );
+        // Contract: the quantized data must have the same dimension as the input.
+        assert_eq!(
+            qv.data.len(),
+            384,
+            "quantized data must preserve the 384-dim length"
+        );
     }
 
     #[test]
     fn quantize_with_expected_dim_rejects_wrong_size() {
         let v = vec![0.1; 100];
         let result = ScalarQuantizer::quantize_with_expected_dim(&v, 384);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "dimension mismatch must produce InvalidArguments, got: {err:?}"
+        );
+        let err_msg = format!("{err}");
         assert!(
             err_msg.contains("384") && err_msg.contains("100"),
             "error should mention expected and actual dims, got: {err_msg}"

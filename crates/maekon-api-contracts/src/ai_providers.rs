@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderTransportSpec {
     pub method: String,
     pub url: String,
@@ -9,6 +10,7 @@ pub struct ProviderTransportSpec {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderModelCatalogTransportSpec {
     pub method: String,
     pub url: String,
@@ -23,6 +25,7 @@ pub struct ProviderModelCatalogTransportSpec {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderHealthTransportSpec {
     pub method: String,
     pub url: String,
@@ -30,6 +33,7 @@ pub struct ProviderHealthTransportSpec {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModelSupportStatus {
     Supported,
@@ -38,6 +42,7 @@ pub enum ProviderModelSupportStatus {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderModelCapabilityRules {
     #[serde(default)]
     pub llm: ProviderModelCapabilityProfile,
@@ -50,6 +55,7 @@ pub struct ProviderModelCapabilityRules {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderModelCapabilityProfile {
     #[serde(default)]
     pub default_support: String,
@@ -60,12 +66,14 @@ pub struct ProviderModelCapabilityProfile {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderParameterSet {
     pub llm: ProviderParameterProfile,
     pub ocr: ProviderParameterProfile,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderParameterProfile {
     #[serde(default)]
     pub supported: Vec<String>,
@@ -79,7 +87,11 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+// NOTE: Debug is hand-written (not derived) to mask `api_key` (#5639). This is
+// a BYOK secret; a derived Debug would emit it verbatim under any `{:?}`, so a
+// single error-path `?req` would leak the key to the file/OTel log sink.
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderModelsRequest {
     pub provider_type: String,
     pub api_key: String,
@@ -92,7 +104,21 @@ pub struct ProviderModelsRequest {
     pub use_saved_secret: bool,
 }
 
+impl std::fmt::Debug for ProviderModelsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderModelsRequest")
+            .field("provider_type", &self.provider_type)
+            .field("api_key", &"[REDACTED]")
+            .field("endpoint", &self.endpoint)
+            .field("surface", &self.surface)
+            .field("surface_id", &self.surface_id)
+            .field("use_saved_secret", &self.use_saved_secret)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderDiscoveredModel {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +138,7 @@ pub struct ProviderDiscoveredModel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderModelsResponse {
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -123,6 +150,29 @@ pub struct ProviderModelsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_models_request_debug_redacts_api_key() {
+        let req = ProviderModelsRequest {
+            provider_type: "openai".to_string(),
+            api_key: "sk-secret-byok-key-value".to_string(),
+            endpoint: None,
+            surface: None,
+            surface_id: None,
+            use_saved_secret: false,
+        };
+        let rendered = format!("{req:?}");
+        assert!(
+            !rendered.contains("sk-secret-byok-key-value"),
+            "Debug must not leak the BYOK api_key: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "api_key must render as [REDACTED]: {rendered}"
+        );
+        // Non-secret fields must still be visible for diagnostics.
+        assert!(rendered.contains("openai"));
+    }
 
     #[test]
     fn round_trip_provider_model_support_status() {

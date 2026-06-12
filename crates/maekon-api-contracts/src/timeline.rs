@@ -3,6 +3,7 @@ use maekon_core::types::{TimeWindow, TimeWindowError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SessionInfo {
     pub start: String,
     pub end: String,
@@ -13,6 +14,7 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type")]
 pub enum TimelineItem {
     Event {
@@ -31,6 +33,8 @@ pub enum TimelineItem {
         window_title: String,
         importance: f32,
         image_url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ocr_text: Option<String>,
     },
     IdlePeriod {
         start: String,
@@ -40,6 +44,7 @@ pub enum TimelineItem {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppSegment {
     pub app_name: String,
     pub start: String,
@@ -48,6 +53,7 @@ pub struct AppSegment {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TimelineResponse {
     pub session: SessionInfo,
     pub items: Vec<TimelineItem>,
@@ -55,6 +61,7 @@ pub struct TimelineResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TimelineQuery {
     pub from: Option<String>,
     pub to: Option<String>,

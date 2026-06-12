@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-03-29T12:00:00Z",
+  "updated_at": "2026-06-02T06:38:42Z",
   "vendors": [
     {
       "vendor_id": "anthropic",
@@ -832,7 +832,8 @@
         "request_shape": "openai_responses"
       },
       "references": [
-        "https://developers.openai.com/codex/auth/"
+        "https://developers.openai.com/codex/auth/",
+        "https://openai.com/policies/row-terms-of-use/"
       ]
     },
     {
@@ -845,6 +846,20 @@
       "credential_kind": "cli_subscription",
       "stability": "preview",
       "preferred_for_product_auth": true,
+      "usage_attribution": {
+        "mechanism": "cli_account",
+        "value": "user's own ChatGPT account via 'codex login'",
+        "target": "OpenAI Compliance Logs Platform",
+        "evidence": "codex exec invocation carries no distinct JSON-RPC clientInfo; usage attributes to the user's own 'codex login' account"
+      },
+      "host_injects_token": false,
+      "tos_notes": [
+        "cli_subscription drives the user's OWN 'codex login' (OpenAI 'ChatGPT managed' mode); maekon does NOT read/persist/relay/inject the ChatGPT token (host_injects_token=false).",
+        "Subscription auth is for interactive/trusted-private use per OpenAI docs (developers.openai.com/codex/auth); unattended/scheduled autonomous consumption is the disfavored grey zone — prefer API-key (Platform) surfaces for unattended turns.",
+        "On 429/rate-limit/quota: back off and surface to the user; do NOT re-route to keep consuming (no rate-limit circumvention).",
+        "Consumer ChatGPT plans train on conversations by default (opt-out); prefer API-key (no-train-by-default) for flows carrying captured screen content.",
+        "Governed by ADR-025 (docs/architecture/ADR-025-codex-chatgpt-subscription-tos-gate.md). Same ToS footing as provider_surface.openai.codex_app_server (transport-only difference)."
+      ],
       "catalog_strategy": "subprocess_probe",
       "supports": {
         "llm": true,
@@ -972,8 +987,223 @@
         ],
         "session_flags": []
       },
+      "compatibility": {
+        "matrix_version": "2026-06-02.e18-12",
+        "supported_oses": [
+          "windows",
+          "macos",
+          "linux"
+        ],
+        "minimum_supported_version": "latest stable Codex CLI with 'codex exec', '--output-schema', '--output-last-message', and 'login status' support",
+        "known_bad_versions": [
+          "unknown versions that omit --output-last-message or rewrite login status text"
+        ],
+        "version_probe_command": [
+          "--version"
+        ],
+        "auth_probe_command": [
+          "login",
+          "status"
+        ],
+        "invocation_mode": "codex_exec_json",
+        "output_envelope": "file_or_stdout_json",
+        "ocr_support": "supported",
+        "session_support": "stateless_oneshot",
+        "ci_fake_cli_contracts": [
+          "codex_llm_invocation_uses_stdin_and_output_file_contract",
+          "codex_ocr_invocation_uses_stdin_and_output_file_contract",
+          "provider_specs::tests::subprocess_output_contracts_match_e18_matrix"
+        ],
+        "manual_live_smoke_required": true,
+        "notes": [
+          "Manual release smoke records only CLI version, auth status class, command shape, and output shape."
+        ]
+      },
       "references": [
-        "https://developers.openai.com/codex/auth/"
+        "https://developers.openai.com/codex/auth/",
+        "https://openai.com/policies/row-terms-of-use/"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.openai.codex_app_server",
+      "vendor_id": "openai",
+      "provider_type": "OpenAi",
+      "display_name": "Codex CLI (app-server)",
+      "execution_kind": "subprocess_cli",
+      "placement_kind": "installed_cli",
+      "credential_kind": "cli_subscription",
+      "stability": "experimental",
+      "preferred_for_product_auth": false,
+      "usage_attribution": {
+        "mechanism": "client_info_name",
+        "value": "maekon",
+        "target": "OpenAI Compliance Logs Platform",
+        "evidence": "JSON-RPC initialize clientInfo.name (src-tauri/.../session_manager/factory.rs:316; contract-tested by crates/maekon-network/tests/codex_app_server_integration.rs::initialize_request_contract_snapshot)"
+      },
+      "host_injects_token": false,
+      "tos_notes": [
+        "cli_subscription drives the user's OWN 'codex login' (OpenAI 'ChatGPT managed' mode); maekon does NOT read/persist/relay/inject the ChatGPT token (host_injects_token=false).",
+        "Subscription auth is for interactive/trusted-private use per OpenAI docs (developers.openai.com/codex/auth); unattended/scheduled autonomous consumption is the disfavored grey zone — prefer API-key (Platform) surfaces for unattended turns.",
+        "On 429/rate-limit/quota: back off and surface to the user; do NOT re-route to keep consuming (no rate-limit circumvention).",
+        "Consumer ChatGPT plans train on conversations by default (opt-out); prefer API-key (no-train-by-default) for flows carrying captured screen content.",
+        "Governed by ADR-025 (docs/architecture/ADR-025-codex-chatgpt-subscription-tos-gate.md). host_injects_token MUST remain false outside a future #4868-gated host-injection surface (CI-lint follow-up)."
+      ],
+      "catalog_strategy": "subprocess_probe",
+      "supports": {
+        "llm": true,
+        "ocr": false,
+        "model_catalog": false,
+        "context_bridge": true
+      },
+      "llm_capabilities": {
+        "structured_output": true
+      },
+      "ocr_capabilities": {
+        "strategy": "none",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": false
+      },
+      "default_models": {
+        "llm_models": [
+          "gpt-5.4",
+          "gpt-5.2-codex",
+          "gpt-5.2"
+        ],
+        "ocr_models": []
+      },
+      "unknown_model_policy": {
+        "llm": "allow",
+        "ocr": "warn"
+      },
+      "known_models": [
+        {
+          "id": "gpt-5.4",
+          "display_name": "GPT-5.4",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2-codex",
+          "display_name": "GPT-5.2 Codex",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        },
+        {
+          "id": "gpt-5.2",
+          "display_name": "GPT-5.2",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Codex CLI surface supports multimodal OCR in Maekon."
+          ]
+        }
+      ],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "model",
+            "prompt",
+            "json_schema",
+            "cwd",
+            "sandbox",
+            "approval_policy"
+          ],
+          "unsupported": [
+            "response_format"
+          ],
+          "notes": [
+            "CLI surface support is constrained by Codex CLI flags and stdout contract."
+          ]
+        },
+        "ocr": {
+          "supported": [
+            "model",
+            "image",
+            "json_schema"
+          ],
+          "unsupported": [],
+          "notes": [
+            "Codex CLI OCR uses image attachments plus structured JSON output."
+          ]
+        }
+      },
+      "subprocess_transport": {
+        "tool_id": "codex",
+        "executable_candidates": [
+          "codex"
+        ],
+        "auth_probe_command": [
+          "login",
+          "status"
+        ],
+        "auth_probe_mode": "codex_account_read_json",
+        "invocation_mode": "codex_app_server",
+        "model_flag": "--model",
+        "json_output_supported": true,
+        "oneshot_flags": [],
+        "session_flags": [],
+        "app_server_args": [
+          "app-server"
+        ]
+      },
+      "compatibility": {
+        "matrix_version": "2026-06-02.e18-12+appsrv",
+        "supported_oses": [
+          "macos",
+          "linux"
+        ],
+        "minimum_supported_version": "Codex CLI with 'codex app-server' JSON-RPC 2.0 (initialize/thread.start/turn.start)",
+        "known_bad_versions": [
+          "versions without 'codex app-server' or that change the initialize/thread/turn JSON-RPC shape"
+        ],
+        "version_probe_command": [
+          "--version"
+        ],
+        "auth_probe_command": [
+          "login",
+          "status"
+        ],
+        "invocation_mode": "codex_app_server",
+        "output_envelope": "json_envelope",
+        "ocr_support": "unsupported",
+        "session_support": "app_server_thread",
+        "ci_fake_cli_contracts": [
+          "codex_app_server::tests::app_server_process_connects_handshakes_and_reaps_on_drop",
+          "codex_app_server_session::tests::send_message_starts_turn_and_streams_to_result"
+        ],
+        "manual_live_smoke_required": true,
+        "notes": [
+          "app-server is experimental/preview; conversation-only (no OCR). Unix process-group reap; Windows Job Object pending."
+        ]
+      },
+      "references": [
+        "https://developers.openai.com/codex/auth/",
+        "https://openai.com/policies/row-terms-of-use/"
+      ],
+      "related_surface_ids": [
+        "provider_surface.openai.subprocess_cli"
       ]
     },
     {
@@ -1105,6 +1335,39 @@
         "session_flags": [
           "--output-format",
           "stream-json"
+        ]
+      },
+      "compatibility": {
+        "matrix_version": "2026-06-02.e18-12",
+        "supported_oses": [
+          "windows",
+          "macos",
+          "linux"
+        ],
+        "minimum_supported_version": "latest stable Claude Code CLI with '-p', '--output-format json', '--json-schema', and 'auth status --json' support",
+        "known_bad_versions": [
+          "unknown versions that omit structured_output in json output or rewrite auth status JSON"
+        ],
+        "version_probe_command": [
+          "--version"
+        ],
+        "auth_probe_command": [
+          "auth",
+          "status",
+          "--json"
+        ],
+        "invocation_mode": "claude_print_json",
+        "output_envelope": "json_envelope",
+        "ocr_support": "supported",
+        "session_support": "stateless_oneshot_with_stream_events",
+        "ci_fake_cli_contracts": [
+          "claude_llm_invocation_uses_json_output_envelope",
+          "claude_ocr_invocation_uses_json_output_envelope",
+          "provider_specs::tests::subprocess_output_contracts_match_e18_matrix"
+        ],
+        "manual_live_smoke_required": true,
+        "notes": [
+          "Manual release smoke records only CLI version, auth status class, command shape, output shape, and stream-json availability."
         ]
       },
       "references": [
@@ -1753,8 +2016,146 @@
         "oneshot_flags": [],
         "session_flags": []
       },
+      "compatibility": {
+        "matrix_version": "2026-06-02.e18-12",
+        "supported_oses": [
+          "windows",
+          "macos",
+          "linux"
+        ],
+        "minimum_supported_version": "latest stable Gemini CLI with '-p', '--model', and JSON output flag support; older installs must still tolerate flag fallback",
+        "known_bad_versions": [
+          "unknown versions that emit non-JSON OCR output after accepting --output-format json"
+        ],
+        "version_probe_command": [
+          "--version"
+        ],
+        "auth_probe_command": [],
+        "invocation_mode": "gemini_cli_prompt",
+        "output_envelope": "raw_json_stdout_with_flag_fallback",
+        "ocr_support": "supported",
+        "session_support": "stateless_oneshot",
+        "ci_fake_cli_contracts": [
+          "gemini_llm_invocation_preserves_prompt_argv_and_raw_json_stdout",
+          "gemini_ocr_invocation_retries_without_json_flag_when_rejected",
+          "provider_specs::tests::subprocess_output_contracts_match_e18_matrix"
+        ],
+        "manual_live_smoke_required": true,
+        "notes": [
+          "Manual release smoke records whether JSON flag succeeded or fallback was used; stdout/stderr bodies stay omitted for privacy."
+        ]
+      },
       "references": [
         "https://developers.google.com/gemini-code-assist/docs/gemini-cli"
+      ]
+    },
+    {
+      "surface_id": "provider_surface.google.antigravity_cli",
+      "vendor_id": "google",
+      "provider_type": "Google",
+      "display_name": "Antigravity CLI",
+      "execution_kind": "subprocess_cli",
+      "placement_kind": "installed_cli",
+      "credential_kind": "cli_subscription",
+      "stability": "experimental",
+      "preferred_for_product_auth": false,
+      "catalog_strategy": "subprocess_probe",
+      "supports": {
+        "llm": false,
+        "ocr": false,
+        "model_catalog": false,
+        "context_bridge": true
+      },
+      "llm_capabilities": {
+        "structured_output": false
+      },
+      "ocr_capabilities": {
+        "strategy": "none",
+        "supports_geometry": false,
+        "supports_confidence": false,
+        "requires_image_input_model": false
+      },
+      "default_models": {
+        "llm_models": [],
+        "ocr_models": []
+      },
+      "unknown_model_policy": {
+        "llm": "warn",
+        "ocr": "warn"
+      },
+      "known_models": [],
+      "parameter_profiles": {
+        "llm": {
+          "supported": [
+            "prompt",
+            "workspace"
+          ],
+          "unsupported": [
+            "response_format",
+            "json_schema"
+          ],
+          "notes": [
+            "Antigravity CLI is tracked for manual GUI/chat exploration only until a stable headless stdout contract is available."
+          ]
+        },
+        "ocr": {
+          "supported": [],
+          "unsupported": [
+            "image",
+            "json_schema"
+          ],
+          "notes": [
+            "No OCR subprocess runtime is selected for Antigravity CLI."
+          ]
+        }
+      },
+      "subprocess_transport": {
+        "tool_id": "antigravity",
+        "executable_candidates": [
+          "antigravity"
+        ],
+        "auth_probe_command": [],
+        "auth_probe_mode": "none",
+        "invocation_mode": "manual_chat_gui",
+        "model_flag": null,
+        "json_output_supported": false,
+        "oneshot_flags": [
+          "chat",
+          "--mode",
+          "ask"
+        ],
+        "session_flags": []
+      },
+      "compatibility": {
+        "matrix_version": "2026-06-02.e18-12",
+        "supported_oses": [
+          "windows",
+          "macos",
+          "linux"
+        ],
+        "minimum_supported_version": "manual GUI-only Antigravity CLI builds; no headless Maekon runtime is supported",
+        "known_bad_versions": [
+          "any version without a stable headless stdout or JSON contract"
+        ],
+        "version_probe_command": [
+          "--version"
+        ],
+        "auth_probe_command": [],
+        "invocation_mode": "manual_chat_gui",
+        "output_envelope": "manual_gui_unstructured",
+        "ocr_support": "unsupported",
+        "session_support": "manual_gui_only",
+        "ci_fake_cli_contracts": [
+          "manual_gui_surface_is_not_runtime_supported",
+          "provider_specs::tests::records_antigravity_as_manual_gui_cli_not_default_llm_runtime"
+        ],
+        "manual_live_smoke_required": false,
+        "notes": [
+          "Tracked for matrix visibility only; it must not be marked preferred for headless LLM or OCR until a stable output contract exists."
+        ]
+      },
+      "references": [
+        "https://antigravity.google/product/antigravity-cli?app=antigravity-ide"
       ]
     },
     {

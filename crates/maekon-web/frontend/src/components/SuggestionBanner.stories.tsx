@@ -11,7 +11,7 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 /**
- * SuggestionBanner fetches data internally via fetchLocalSuggestions.
+ * SuggestionBanner fetches data internally via fetchUnifiedSuggestions.
  * In Storybook (no backend), it will render nothing (returns null when
  * loading completes with no pending suggestions).
  */

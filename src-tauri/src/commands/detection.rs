@@ -5,6 +5,21 @@ use tracing::{info, warn};
 use crate::ipc_error::IpcError;
 use crate::runtime_state::DetectionRuntimeState;
 
+#[derive(Debug, PartialEq, Eq)]
+enum DetectionAnalysisOverlayAction {
+    ShowScene,
+    ClearAndClickThrough,
+}
+
+fn detection_overlay_action_for_result<T, E>(
+    result: &Result<T, E>,
+) -> DetectionAnalysisOverlayAction {
+    match result {
+        Ok(_) => DetectionAnalysisOverlayAction::ShowScene,
+        Err(_) => DetectionAnalysisOverlayAction::ClearAndClickThrough,
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ToggleDetectionResponse {
     pub active: bool,
@@ -19,9 +34,6 @@ pub async fn toggle_detection_overlay(
 
     if active {
         info!("detection overlay activated — running scene analysis");
-        if let Some(overlay) = state.overlay() {
-            overlay.set_interactive(true);
-        }
         spawn_detection_analysis_from_state(&state);
     } else {
         info!("detection overlay deactivated");
@@ -73,13 +85,35 @@ pub fn spawn_detection_analysis_from_state(state: &DetectionRuntimeState) {
     };
 
     tokio::spawn(async move {
-        match finder.analyze_scene(None, None).await {
-            Ok(scene) => {
-                overlay.emit_detection_scene(&scene).await;
+        let result = finder.analyze_scene(None, None).await;
+        match detection_overlay_action_for_result(&result) {
+            DetectionAnalysisOverlayAction::ShowScene => {
+                if let Ok(scene) = result {
+                    overlay.emit_detection_scene(&scene).await;
+                }
             }
-            Err(e) => {
-                warn!("detection scene analysis failed: {e}");
+            DetectionAnalysisOverlayAction::ClearAndClickThrough => {
+                if let Err(e) = result {
+                    warn!("detection scene analysis failed: {e}");
+                }
+                overlay.clear_detection_scene().await;
+                overlay.set_interactive(false);
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detection_overlay_action_for_result, DetectionAnalysisOverlayAction};
+
+    #[test]
+    fn detection_analysis_failure_clears_interactive_overlay() {
+        let result: Result<(), &str> = Err("scene analysis failed");
+
+        assert_eq!(
+            detection_overlay_action_for_result(&result),
+            DetectionAnalysisOverlayAction::ClearAndClickThrough
+        );
+    }
 }

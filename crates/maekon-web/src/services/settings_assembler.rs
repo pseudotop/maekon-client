@@ -43,7 +43,7 @@ pub(crate) fn config_to_settings(
         update: UpdateSettings {
             enabled: config.update.enabled,
             check_interval_hours: config.update.check_interval_hours,
-            channel: format!("{:?}", config.update.effective_channel()).to_lowercase(),
+            channel: format!("{}", config.update.effective_channel()),
             include_prerelease: config.update.include_prerelease,
             auto_install: config.update.auto_install,
         },
@@ -63,7 +63,7 @@ pub(crate) fn config_to_settings(
             excluded_app_patterns: config.privacy.excluded_app_patterns.clone(),
             excluded_title_patterns: config.privacy.excluded_title_patterns.clone(),
             auto_exclude_sensitive: config.privacy.auto_exclude_sensitive,
-            pii_filter_level: format!("{:?}", config.privacy.pii_filter_level),
+            pii_filter_level: format!("{}", config.privacy.pii_filter_level),
         },
         schedule: ScheduleSettings {
             active_hours_enabled: config.schedule.active_hours_enabled,
@@ -73,7 +73,7 @@ pub(crate) fn config_to_settings(
                 .schedule
                 .active_days
                 .iter()
-                .map(|d| format!("{:?}", d))
+                .map(|d| format!("{}", d))
                 .collect(),
             pause_on_screen_lock: config.schedule.pause_on_screen_lock,
             pause_on_battery_saver: config.schedule.pause_on_battery_saver,
@@ -83,7 +83,7 @@ pub(crate) fn config_to_settings(
         },
         sandbox: SandboxSettings {
             enabled: config.automation.sandbox.enabled,
-            profile: format!("{:?}", config.automation.sandbox.profile),
+            profile: format!("{}", config.automation.sandbox.profile),
             allowed_read_paths: config.automation.sandbox.allowed_read_paths.clone(),
             allowed_write_paths: config.automation.sandbox.allowed_write_paths.clone(),
             allow_network: config.automation.sandbox.allow_network,
@@ -131,19 +131,19 @@ pub(crate) fn config_to_settings(
         },
         coaching: CoachingSettings {
             enabled: config.coaching.enabled,
-            tone: format!("{:?}", config.coaching.tone),
+            tone: format!("{}", config.coaching.tone),
             locale: config.coaching.locale.clone(),
-            overlay_mode: format!("{:?}", config.coaching.overlay_mode),
+            overlay_mode: format!("{}", config.coaching.overlay_mode),
         },
         integration: IntegrationSettings {
             enabled: config.integration.enabled,
-            auth_profile_kind: format!("{:?}", config.integration.auth_profile_kind),
+            auth_profile_kind: format!("{}", config.integration.auth_profile_kind),
             request_timeout_secs: config.integration.request_timeout_secs,
             sync_interval_secs: config.integration.sync_interval_secs,
         },
         sync: SyncSettings {
             enabled: config.sync.enabled,
-            transport: format!("{:?}", config.sync.transport),
+            transport: format!("{}", config.sync.transport),
             interval_secs: config.sync.interval_secs,
             device_name: config.sync.device_name.clone(),
             lan_advertise: config.sync.lan_advertise,
@@ -206,7 +206,7 @@ fn endpoint_to_api_settings(
         endpoint: endpoint.endpoint.clone(),
         api_key_masked: masked_plaintext_secret.clone().unwrap_or_default(),
         model: endpoint.model.clone(),
-        provider_type: format!("{:?}", endpoint.provider_type),
+        provider_type: format!("{}", endpoint.provider_type),
         surface_id: endpoint.surface_id.clone().or_else(|| {
             default_surface_id_for_endpoint(endpoint.provider_type, access_mode, endpoint_kind)
                 .map(str::to_string)
@@ -291,12 +291,12 @@ fn ai_provider_profile_settings_from_config(
 ) -> ApiAiProviderProfileConfig {
     ApiAiProviderProfileConfig {
         access_mode: format!(
-            "{:?}",
+            "{}",
             normalize_ai_access_mode_for_settings(config.access_mode)
         ),
-        ocr_provider: format!("{:?}", config.ocr_provider),
-        llm_provider: format!("{:?}", config.llm_provider),
-        external_data_policy: format!("{:?}", config.external_data_policy),
+        ocr_provider: format!("{}", config.ocr_provider),
+        llm_provider: format!("{}", config.llm_provider),
+        external_data_policy: format!("{}", config.external_data_policy),
         allow_unredacted_external_ocr: config.allow_unredacted_external_ocr,
         ocr_validation: OcrValidationSettings {
             enabled: config.ocr_validation.enabled,

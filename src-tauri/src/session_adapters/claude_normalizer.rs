@@ -15,6 +15,43 @@ pub(crate) struct ClaudeNormalizedEvent {
     pub message: OutboundMessage,
 }
 
+#[derive(Default)]
+pub(crate) struct ClaudeStreamState {
+    saw_text_chunk: bool,
+    saw_terminal_result: bool,
+}
+
+impl ClaudeStreamState {
+    pub(crate) fn normalize_line(&mut self, line: &str) -> Option<OutboundMessage> {
+        let mut normalized = normalize_claude_stream_event(line)?;
+
+        if matches!(normalized.kind, ClaudeEventKind::AssistantSummary) && self.saw_text_chunk {
+            return None;
+        }
+
+        if matches!(normalized.kind, ClaudeEventKind::Result) {
+            if let OutboundMessage::Result { content, done, .. } = &mut normalized.message {
+                if *done && self.saw_terminal_result {
+                    return None;
+                }
+                if self.saw_text_chunk {
+                    content.clear();
+                }
+                if *done {
+                    self.saw_terminal_result = true;
+                }
+            }
+        }
+
+        if matches!(&normalized.message, OutboundMessage::Text { content, .. } if !content.is_empty())
+        {
+            self.saw_text_chunk = true;
+        }
+
+        Some(normalized.message)
+    }
+}
+
 /// Parse a single line of Claude `--output-format stream-json` output into an
 /// [`OutboundMessage`].  Returns `None` for unrecognised event types or
 /// malformed JSON so callers can silently skip non-content lines.
@@ -269,5 +306,46 @@ mod tests {
             OutboundMessage::Result { usage, .. } => assert!(usage.is_none()),
             _ => panic!("expected Result variant"),
         }
+    }
+
+    #[test]
+    fn claude_stream_state_suppresses_duplicate_summary_and_result() {
+        let mut state = ClaudeStreamState::default();
+
+        let chunk = state
+            .normalize_line(
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}"#,
+            )
+            .expect("partial text should be emitted");
+        assert!(matches!(chunk, OutboundMessage::Text { .. }));
+
+        assert!(
+            state
+                .normalize_line(r#"{"type":"assistant","text":"partial"}"#)
+                .is_none(),
+            "assistant summary should not duplicate streamed text"
+        );
+
+        let result = state
+            .normalize_line(
+                r#"{"type":"result","subtype":"success","result":"partial","usage":{"input_tokens":5,"output_tokens":6},"provider_debug":{"prompt":"secret"}}"#,
+            )
+            .expect("first result should be emitted");
+        match result {
+            OutboundMessage::Result { content, usage, .. } => {
+                assert!(content.is_empty());
+                let usage = usage.expect("usage should be preserved");
+                assert_eq!(usage.input_tokens, 5);
+                assert_eq!(usage.output_tokens, 6);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        assert!(
+            state
+                .normalize_line(r#"{"type":"result","subtype":"success","result":"duplicate"}"#)
+                .is_none(),
+            "duplicate terminal result should not reach the UI"
+        );
     }
 }

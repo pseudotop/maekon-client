@@ -139,7 +139,7 @@ Sub-files are organized by functional responsibility:
 - Each sub-file is under 300 lines, improving navigation and code review
 - `cargo test/clippy/fmt` continue to pass without any logic changes
 - External API paths are fully preserved — zero downstream breakage
-- Consistent with the server-side ADR-013 folder pattern, reducing cognitive overhead across the monorepo
+- Consistent with the directory-module convention used across related Maekon code, reducing cognitive overhead for contributors
 
 ### Tradeoffs
 
@@ -155,6 +155,5 @@ Sub-files are organized by functional responsibility:
 
 ## Related Docs
 
-- Server ADR-013: `server/docs/architecture/ADR-013-domain-service-folder-pattern.md`
 - `docs/architecture/ADR-001-rust-client-architecture-patterns.md`
 - Repository guardrails — crate summaries document each directory module structure

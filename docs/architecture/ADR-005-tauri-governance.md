@@ -3,7 +3,7 @@
 **Date**: 2026-03-08
 **Status**: Accepted
 **Deciders**: Maekon maintainers
-**Related**: [ADR-004: Tauri v2 Migration](ADR-004-tauri-v2-migration.md) | [ADR-006: IPC Command Contract](ADR-006-ipc-command-contract.md)
+**Related**: [ADR-004: Tauri v2 Migration](ADR-004-tauri-v2-migration.md) | [ADR-006: IPC Command Contract](ADR-006-ipc-command-contract.md) | [ADR-020: macOS Private API Policy](ADR-020-macos-private-api-policy.md)
 
 ---
 

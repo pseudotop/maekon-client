@@ -1,7 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 /// DTO for a suggestion from the unified V8 `suggestions` table.
+///
+/// # Wire-format constraint (F-RC-02 / F-RC-06)
+/// `suggestion_type`, `source`, and `priority` are stored as plain `String` rather than
+/// typed enums because the V8 schema pre-dates the enum definitions and SQLite rows may
+/// contain provider-specific values not yet in any enum variant.  Callers should treat
+/// these fields as open-coded strings and validate at the application boundary.
+/// Migration to typed enums requires a schema migration — tracked in issue #3399.
+// F-RC-06: String 유지 의도적 결정 — 스키마 마이그레이션 선행 필요 (#3399)
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SuggestionDto {
     pub id: i64,
     pub suggestion_id: String,
@@ -23,4 +32,10 @@ pub struct SuggestionDto {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SuggestionFeedbackRequest {
+    pub action: String,
 }

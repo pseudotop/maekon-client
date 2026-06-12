@@ -14,22 +14,38 @@ use crate::runtime_state::ConfigRuntimeState;
 
 #[command]
 pub async fn enable_autostart() -> Result<(), IpcError> {
-    autostart::enable_autostart().map_err(|e| {
-        IpcError::new(
-            AutostartCode::EnableFailed.as_str(),
-            format!("autostart enable failed: {e}"),
-        )
-    })
+    tokio::task::spawn_blocking(autostart::enable_autostart)
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                AutostartCode::EnableFailed.as_str(),
+                format!("spawn_blocking panicked: {e}"),
+            )
+        })?
+        .map_err(|e| {
+            IpcError::new(
+                AutostartCode::EnableFailed.as_str(),
+                format!("autostart enable failed: {e}"),
+            )
+        })
 }
 
 #[command]
 pub async fn disable_autostart() -> Result<(), IpcError> {
-    autostart::disable_autostart().map_err(|e| {
-        IpcError::new(
-            AutostartCode::DisableFailed.as_str(),
-            format!("autostart disable failed: {e}"),
-        )
-    })
+    tokio::task::spawn_blocking(autostart::disable_autostart)
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                AutostartCode::DisableFailed.as_str(),
+                format!("spawn_blocking panicked: {e}"),
+            )
+        })?
+        .map_err(|e| {
+            IpcError::new(
+                AutostartCode::DisableFailed.as_str(),
+                format!("autostart disable failed: {e}"),
+            )
+        })
 }
 
 #[command]
@@ -77,11 +93,14 @@ mod tests {
     #[tokio::test]
     async fn is_autostart_enabled_returns_bool() {
         let result = is_autostart_enabled().await;
-        assert!(
-            result.is_ok(),
-            "is_autostart_enabled should not error: {:?}",
-            result
-        );
+        // is_autostart_enabled reads OS state (LaunchAgent / Registry / systemd).
+        // The bool direction is env-dependent; we can only assert the call
+        // succeeds and the returned value is a plain bool (#5594).
+        let enabled: bool =
+            result.expect("is_autostart_enabled must not error on any supported platform");
+        // The signature already guarantees a bool — pin the type, no runtime
+        // tautology needed.
+        let _typed: bool = enabled;
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

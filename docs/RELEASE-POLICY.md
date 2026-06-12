@@ -55,6 +55,34 @@ CHANGELOG entries use [Conventional Commits](https://www.conventionalcommits.org
 - **Stable promotion**: via `promote-stable.yml` to create a promotion PR, followed by a maintainer-local signed stable tag after merge
 - No fixed weekly/monthly cadence — driven by feature/fix readiness, not the calendar
 
+## Protected environments
+
+Public release automation uses three GitHub environments with required reviewers:
+
+- `release-signing`: release App token creation, macOS signing certificates,
+  update signing private key, release creation, final notarized asset
+  publication, and provenance publishing.
+- `macos-notarization`: Apple notarization credentials, notary logs, and
+  stapled DMG/PKG final-byte artifact creation. This environment must not hold
+  the update signing private key.
+- `desktop-smoke`: live AI smoke and GUI/desktop smoke runners. This
+  environment must not contain release signing, update signing, release App, or
+  Apple notarization secrets.
+
+Environment secrets are the expected control. Do not duplicate
+`UPDATE_SIGNING_PRIVATE_KEY_B64`, `MAEKON_RELEASE_APP_PRIVATE_KEY`,
+`MACOS_APP_CERT_P12_B64`, `MACOS_INSTALLER_CERT_P12_B64`, or
+`MACOS_NOTARY_APP_PASSWORD` as broad repository-level secrets for desktop smoke.
+Desktop smoke jobs keep read-only repository permissions and upload only
+sanitized log bundles with short retention.
+
+Admin bypass is reserved for incident recovery when required reviewers are
+unavailable. Record the admin bypass reason, approver, affected run, and
+follow-up rotation decision in the release notes or release-decision manifest
+before publishing assets. An emergency rerun may reuse the same protected
+environment only when the source SHA, release tag, and artifact checksums are
+unchanged; any secret exposure suspicion requires key rotation before rerun.
+
 ## Source trust
 
 - Release tags must be annotated signed tags; lightweight tags are not accepted.

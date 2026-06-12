@@ -21,8 +21,10 @@ use maekon_core::ports::integration::{
     IntegrationAuditPort, IntegrationAuthPort, IntegrationInboxPort, IntegrationInboxStorePort,
     IntegrationOutboxPort, IntegrationRuntimeTelemetryPort, IntegrationSessionPort,
 };
+use maekon_core::ports::memory_graph_port::MemoryGraphPort;
 use maekon_core::ports::override_store::OverrideStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
@@ -30,6 +32,7 @@ use maekon_core::ports::text_search::TextSearchProvider;
 use maekon_core::ports::vector_store::VectorStore;
 use tokio::sync::broadcast;
 
+use crate::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider;
 use crate::update_control::UpdateControl;
 use crate::{AiRuntimeStatus, RealtimeEvent, WebStorage};
 
@@ -47,6 +50,25 @@ pub struct CoreState {
     pub frame_storage: Option<Arc<dyn FrameStoragePort>>,
     pub config_manager: Option<ConfigManager>,
     pub update_control: Option<UpdateControl>,
+    /// ADR-023: local memory-graph store (the same `SqliteStorage` as `storage`,
+    /// as a `MemoryGraphPort`). Lets the digest export render accumulated claims.
+    pub memory_graph: Option<Arc<dyn MemoryGraphPort>>,
+    /// #4478 G3: one-shot erasure-propagation signal shared with the SyncEngine;
+    /// the "Delete all data" endpoint sets it so a local erasure reaches LAN peers.
+    pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// Per-session local-API authentication (E20-41 #4833).
+///
+/// `local_auth_token` is an ephemeral, process-lifetime random token generated
+/// at app launch (NEVER persisted to config.json, NEVER exposed over HTTP). The
+/// `require_local_auth` middleware requires it on every `/api` request so that on
+/// a multi-user host (RDP/Citrix) a different local user — who reaches the same
+/// loopback port but never transited the legit Tauri WebView — cannot read this
+/// user's settings or audit export. `None` ⇒ the gate fails closed (401).
+#[derive(Clone, Default)]
+pub struct AuthState {
+    pub local_auth_token: Option<Arc<str>>,
 }
 
 /// Secret management — credential backends and stores.
@@ -73,6 +95,11 @@ pub struct AutomationState {
     pub audit_logger: Option<Arc<dyn AuditLogPort>>,
     pub controller: Option<Arc<dyn AutomationPort>>,
     pub ai_runtime_status: Option<AiRuntimeStatus>,
+    /// #5734: per-call LLM health handle. `None` in tests / standalone web-server
+    /// builds where no Ollama provider is wired. Surfaced as
+    /// `AutomationStatusDto.llm_healthy` by reading `as_option_bool()` at request
+    /// time (live value, not the build-time SSE snapshot).
+    pub llm_call_health: Option<Arc<maekon_core::ports::llm_provider::LlmCallHealth>>,
 }
 
 /// External system integration — 8 port fields.
@@ -95,6 +122,7 @@ pub struct AnalysisState {
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub text_search: Option<Arc<dyn TextSearchProvider>>,
     pub adaptive_search: Option<Arc<dyn AdaptiveSearchPort>>,
+    pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
     pub override_store: Option<Arc<dyn OverrideStore>>,
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub coaching_engine: Option<Arc<dyn CoachingPort>>,
@@ -123,6 +151,7 @@ pub struct DiagnosticsState {
     pub latest_bug_report: Arc<parking_lot::RwLock<Option<BugReportBundleDto>>>,
     pub runtime_log_provider: Option<Arc<dyn RuntimeLogProvider>>,
     pub system_info_provider: Option<Arc<dyn SystemInfoProvider>>,
+    pub provider_cli_diagnostics: Option<Arc<dyn ProviderCliDiagnosticsProvider>>,
 
     // Task 7.1 — live-config REST endpoint (GET /api/external-grpc/live-config).
     // Populated from build_external_spawn_config return value when external gRPC is enabled.
@@ -139,6 +168,7 @@ impl Default for DiagnosticsState {
             latest_bug_report: Arc::new(parking_lot::RwLock::new(None)),
             runtime_log_provider: None,
             system_info_provider: None,
+            provider_cli_diagnostics: None,
             #[cfg(feature = "grpc-dashboard-external")]
             external_grpc_live: None,
             #[cfg(feature = "grpc-dashboard-external")]
@@ -155,6 +185,7 @@ impl Default for DiagnosticsState {
 #[derive(Clone)]
 pub struct AppState {
     pub core: CoreState,
+    pub auth: AuthState,
     pub secrets: SecretState,
     pub automation: AutomationState,
     pub integration: IntegrationState,
@@ -177,7 +208,10 @@ impl AppState {
                 frame_storage: None,
                 config_manager: None,
                 update_control: None,
+                memory_graph: None,
+                erasure_requested: None,
             },
+            auth: Default::default(),
             secrets: Default::default(),
             automation: Default::default(),
             integration: Default::default(),

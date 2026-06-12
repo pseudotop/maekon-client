@@ -280,7 +280,25 @@ mod tests {
             min_free_mem_gb: 1.0,
         };
         let result = LoadPolicy::try_new(t);
-        assert!(result.is_ok(), "valid thresholds must succeed");
+        // Strengthen: pin the loaded field values so a silent mismatch (e.g., threshold
+        // struct reordering or default substitution) is caught at construction time. (#5594)
+        let policy = result.expect("valid thresholds must produce Ok(LoadPolicy)");
+        let loaded = policy.thresholds();
+        assert!(
+            (loaded.cpu_low_pct - 30.0).abs() < f32::EPSILON,
+            "cpu_low_pct must be stored as 30.0; got {}",
+            loaded.cpu_low_pct
+        );
+        assert!(
+            (loaded.cpu_medium_pct - 60.0).abs() < f32::EPSILON,
+            "cpu_medium_pct must be stored as 60.0; got {}",
+            loaded.cpu_medium_pct
+        );
+        assert!(
+            (loaded.cpu_high_pct - 85.0).abs() < f32::EPSILON,
+            "cpu_high_pct must be stored as 85.0; got {}",
+            loaded.cpu_high_pct
+        );
     }
 
     #[test]
@@ -340,6 +358,7 @@ mod tests {
             min_free_mem_gb: 1.0,
         };
         let result = std::panic::catch_unwind(|| LoadPolicy::new(t));
+        // lint:allow-is-err-hedge — catch_unwind Err payload is Box<dyn Any>, no typed variant to match
         assert!(
             result.is_err(),
             "new() must panic on invalid thresholds (backward compat)"
@@ -373,9 +392,16 @@ mod tests {
             cpu_high_pct: 100.0,
             min_free_mem_gb: 1.0,
         };
+        // Strengthen: pin the boundary value to confirm the inclusive check
+        // `<= 100.0` is honoured (not `< 100.0`, which would regress at the
+        // boundary). Load-policy threshold enforcement is security-relevant:
+        // an incorrect rejection here would cause the boot-path `new()` to panic. (#5594)
+        let policy =
+            LoadPolicy::try_new(t).expect("high==100.0 must be accepted (inclusive upper bound)");
         assert!(
-            LoadPolicy::try_new(t).is_ok(),
-            "high==100.0 must be accepted (inclusive upper bound)"
+            (policy.thresholds().cpu_high_pct - 100.0).abs() < f32::EPSILON,
+            "cpu_high_pct must be stored as 100.0 at the boundary; got {}",
+            policy.thresholds().cpu_high_pct
         );
     }
 }

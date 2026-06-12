@@ -127,10 +127,22 @@ export function useTauriEventBridge() {
           eventName: string,
           handler: (event: TauriEventPayload) => void,
         ): Promise<boolean> => {
-          // Fall back to the global listen if the webview API is unavailable
-          // (still functional, just without per-webview filtering).
-          const listenFn = currentWebview?.listen ?? listen
-          const unlisten = await listenFn(eventName, handler)
+          // Call currentWebview.listen through the receiver. Tauri's Webview
+          // method reads instance internals, so extracting the function first
+          // loses `this` and can throw before registration completes.
+          let unlisten: () => void
+          if (currentWebview) {
+            try {
+              unlisten = await currentWebview.listen(eventName, handler)
+            } catch (e) {
+              console.warn('[useTauriEventBridge] webview-scoped listen failed, falling back to global listen:', e)
+              unlisten = await listen(eventName, handler)
+            }
+          } else {
+            // Fall back to the global listen if the webview API is unavailable
+            // (still functional, just without per-webview filtering).
+            unlisten = await listen(eventName, handler)
+          }
           if (disposed) {
             unlisten()
             throw new DisposedDuringRegistration()

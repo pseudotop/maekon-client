@@ -6,8 +6,9 @@
 //! are latest-state and served directly from the RealtimeEvent payload
 //! at the grpc handler — never reach this impl).
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 use maekon_core::error::CoreError;
 use maekon_core::error_codes::{InternalCode, NotFoundCode, StorageCode};
@@ -16,18 +17,63 @@ use maekon_core::models::dashboard_streaming::{
 };
 
 use super::SqliteStorage;
+use crate::error::StorageError;
 
+/// Map a `with_conn_read` join failure (`spawn_blocking` panic/cancel) into a
+/// `CoreError`. The funnel only surfaces `StorageError` for a join failure
+/// because every closure here returns `Ok(<inner CoreError result>)`.
+fn join_failure_to_core(e: StorageError) -> CoreError {
+    CoreError::Storage {
+        code: StorageCode::Failed,
+        message: format!("dashboard streaming read funnel join failure: {e}"),
+    }
+}
+
+#[async_trait]
 impl maekon_core::ports::web_storage::DashboardStreamingStorage for SqliteStorage {
-    fn aggregate_metrics_window(
+    async fn aggregate_metrics_window(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<MetricBucketRecord, CoreError> {
-        let conn = self.conn.lock().map_err(|_| CoreError::Internal {
-            code: InternalCode::Generic,
-            message: "metrics mutex poisoned".to_string(),
-        })?;
+        // 읽기 — with_conn_read 의 read_lock(deletion_flag 무관)을 spawn_blocking 위에서
+        // 획득하므로 parking_lot 가드는 `.await` 를 가로질러 보유되지 않는다 (ADR-026 PR-9).
+        self.with_conn_read(move |conn| Ok(Self::aggregate_metrics_window_inner(conn, from, to)))
+            .await
+            .map_err(join_failure_to_core)?
+    }
 
+    async fn fetch_dashboard_event_source(
+        &self,
+        signal: &DashboardEventSignal,
+    ) -> Result<DashboardEventRecord, CoreError> {
+        match signal {
+            DashboardEventSignal::Frame(id) => {
+                let frame_id = *id;
+                self.with_conn_read(move |conn| Ok(Self::fetch_frame_event_inner(conn, frame_id)))
+                    .await
+                    .map_err(join_failure_to_core)?
+            }
+            DashboardEventSignal::Idle | DashboardEventSignal::AiRuntimeStatus => {
+                Err(CoreError::Internal {
+                    code: InternalCode::Generic,
+                    message: "fetch_dashboard_event_source invoked with non-Frame signal \
+                              (Idle / AiRuntimeStatus must be served from event payload)"
+                        .to_string(),
+                })
+            }
+        }
+    }
+}
+
+impl SqliteStorage {
+    /// Shared SQL body for `aggregate_metrics_window`, run inside the
+    /// `with_conn_read` blocking closure.
+    fn aggregate_metrics_window_inner(
+        conn: &Connection,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<MetricBucketRecord, CoreError> {
         let from_s = from.to_rfc3339();
         let to_s = to.to_rfc3339();
 
@@ -63,31 +109,12 @@ impl maekon_core::ports::web_storage::DashboardStreamingStorage for SqliteStorag
         })
     }
 
-    fn fetch_dashboard_event_source(
-        &self,
-        signal: &DashboardEventSignal,
+    /// Shared SQL body for the Frame branch of `fetch_dashboard_event_source`,
+    /// run inside the `with_conn_read` blocking closure.
+    fn fetch_frame_event_inner(
+        conn: &Connection,
+        frame_id: i64,
     ) -> Result<DashboardEventRecord, CoreError> {
-        match signal {
-            DashboardEventSignal::Frame(id) => self.fetch_frame_event(*id),
-            DashboardEventSignal::Idle | DashboardEventSignal::AiRuntimeStatus => {
-                Err(CoreError::Internal {
-                    code: InternalCode::Generic,
-                    message: "fetch_dashboard_event_source invoked with non-Frame signal \
-                              (Idle / AiRuntimeStatus must be served from event payload)"
-                        .to_string(),
-                })
-            }
-        }
-    }
-}
-
-impl SqliteStorage {
-    fn fetch_frame_event(&self, frame_id: i64) -> Result<DashboardEventRecord, CoreError> {
-        let conn = self.conn.lock().map_err(|_| CoreError::Internal {
-            code: InternalCode::Generic,
-            message: "frames mutex poisoned".to_string(),
-        })?;
-
         // frames table uses `timestamp` (not `captured_at`) — confirmed in migration v01.
         let row = conn
             .query_row(
@@ -155,6 +182,7 @@ mod tests {
         let now = Utc::now();
         let bucket = storage
             .aggregate_metrics_window(now - Duration::seconds(60), now)
+            .await
             .expect("aggregate returns Ok");
 
         assert_eq!(bucket.cpu_avg_pct, 0.0);
@@ -193,6 +221,7 @@ mod tests {
 
         let bucket = storage
             .aggregate_metrics_window(now - Duration::seconds(60), now)
+            .await
             .expect("aggregate ok");
 
         assert!((bucket.cpu_avg_pct - 50.0).abs() < 0.5);
@@ -204,6 +233,7 @@ mod tests {
         let storage = in_memory();
         let err = storage
             .fetch_dashboard_event_source(&DashboardEventSignal::Frame(999999))
+            .await
             .expect_err("should be NotFound");
         assert!(
             matches!(err, CoreError::NotFound { .. }),
@@ -211,11 +241,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_idle_returns_internal_error() {
+    #[tokio::test]
+    async fn fetch_idle_returns_internal_error() {
         let storage = in_memory();
         let err = storage
             .fetch_dashboard_event_source(&DashboardEventSignal::Idle)
+            .await
             .expect_err("Idle signal must error — served from payload");
         assert!(
             matches!(err, CoreError::Internal { .. }),
@@ -223,11 +254,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_ai_runtime_status_returns_internal_error() {
+    #[tokio::test]
+    async fn fetch_ai_runtime_status_returns_internal_error() {
         let storage = in_memory();
         let err = storage
             .fetch_dashboard_event_source(&DashboardEventSignal::AiRuntimeStatus)
+            .await
             .expect_err("AiRuntimeStatus signal must error — served from payload");
         assert!(
             matches!(err, CoreError::Internal { .. }),

@@ -26,6 +26,7 @@ use std::sync::atomic::AtomicBool;
 use crate::capture_services::SharedCaptureServices;
 use crate::focus_analyzer::{FocusAnalyzer, FocusStorage};
 use crate::notification_manager::NotificationManager;
+use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use crate::scheduler::SchedulerConfig;
 
 #[allow(dead_code)] // suggestion_receiver is read only with feature = "server"
@@ -40,6 +41,10 @@ pub(crate) struct AgentSupportContext {
     pub(crate) scheduler_config: SchedulerConfig,
     pub(crate) batch_sink_opt: Option<Arc<dyn maekon_core::ports::batch_sink::BatchSink>>,
     pub(crate) api_client_opt: Option<Arc<dyn maekon_core::ports::api_client::ApiClient>>,
+    /// Dedicated REST sink for the #5069 feature-performance emitter (None in
+    /// non-`server` builds — nothing to flush to). Shares the same `TokenManager`
+    /// as the main api client so it reuses the bearer JWT.
+    pub(crate) feature_perf_sink_opt: Option<FeaturePerfSinkPort>,
     pub(crate) notification_manager: Arc<NotificationManager>,
     pub(crate) focus_analyzer: Arc<FocusAnalyzer>,
     pub(crate) context_analyzer: Option<Arc<maekon_analysis::ContextAnalyzer>>,
@@ -48,6 +53,7 @@ pub(crate) struct AgentSupportContext {
 
 type BatchSinkPort = Arc<dyn maekon_core::ports::batch_sink::BatchSink>;
 type ApiClientPort = Arc<dyn maekon_core::ports::api_client::ApiClient>;
+type FeaturePerfSinkPort = Arc<dyn maekon_core::ports::feature_perf::FeaturePerfSink>;
 #[cfg(feature = "server")]
 type SseClientPort = Arc<dyn maekon_core::ports::api_client::SseClient>;
 #[cfg(feature = "server")]
@@ -55,9 +61,14 @@ type ServerTransportPorts = (
     Option<BatchSinkPort>,
     Option<ApiClientPort>,
     Option<SseClientPort>,
+    Option<FeaturePerfSinkPort>,
 );
 #[cfg(not(feature = "server"))]
-type ServerTransportPorts = (Option<BatchSinkPort>, Option<ApiClientPort>);
+type ServerTransportPorts = (
+    Option<BatchSinkPort>,
+    Option<ApiClientPort>,
+    Option<FeaturePerfSinkPort>,
+);
 
 pub(crate) struct AgentSupportContextBuilder<'a> {
     data_dir: &'a Path,
@@ -79,6 +90,17 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// ConfigManager shared with the composition root. When set, the BatchUploader
     /// suppression predicate uses `snapshot()` to gate uploads during mute windows.
     config_manager: Option<ConfigManager>,
+    /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    /// registry from the composition root, used by the `ContextAnalyzer` analysis
+    /// provider. Defaults to a fresh registry for standalone use; the composition
+    /// root overrides it with the shared Arc via `with_breaker_registry`.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// Provider secret stores for BYOK credential resolution.  Threaded from the
+    /// composition root (ProviderRuntimeContext) so that OS-keychain-backed keys
+    /// are resolved at request time via `CredentialSource::StoredSecret`.
+    /// Only meaningful in `analysis` builds; ignored otherwise.
+    #[cfg(feature = "analysis")]
+    provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
 }
 
 impl<'a> AgentSupportContextBuilder<'a> {
@@ -99,7 +121,21 @@ impl<'a> AgentSupportContextBuilder<'a> {
             few_shot_storage: None,
             analysis_health_flag: None,
             config_manager: None,
+            breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            #[cfg(feature = "analysis")]
+            provider_secret_stores: None,
         }
+    }
+
+    /// Inject the single shared workspace-wide circuit-breaker registry from the
+    /// composition root (D7 #4812 / E20-20). The `ContextAnalyzer` analysis
+    /// provider built in `build_context_analyzer` clones this one Arc.
+    pub(crate) fn with_breaker_registry(
+        mut self,
+        registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    ) -> Self {
+        self.breaker_registry = registry;
+        self
     }
 
     pub(crate) fn with_storage(
@@ -160,8 +196,23 @@ impl<'a> AgentSupportContextBuilder<'a> {
         self
     }
 
+    /// Wire the provider secret stores from `ProviderRuntimeContext` so the
+    /// `ContextAnalyzer` LLM provider resolves OS-keychain-backed BYOK keys at
+    /// request time.  No-op in non-`analysis` builds.
     #[cfg(feature = "analysis")]
-    fn build_context_analyzer(&self) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
+    pub(crate) fn with_provider_secret_stores(
+        mut self,
+        stores: maekon_core::ports::secret_store::SecretStoreSet,
+    ) -> Self {
+        self.provider_secret_stores = Some(stores);
+        self
+    }
+
+    #[cfg(feature = "analysis")]
+    fn build_context_analyzer(
+        &self,
+        process_monitor: Arc<dyn ProcessMonitor>,
+    ) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
         if !self.config.analysis.enabled {
             return None;
         }
@@ -178,7 +229,18 @@ impl<'a> AgentSupportContextBuilder<'a> {
             if let Some((provider, _health)) =
                 crate::agent_runtime::analysis_helpers::build_analysis_provider_with_flag(
                     &self.config.ai_provider,
+                    self.config.privacy.pii_filter_level,
+                    Some(ExternalOcrPrivacyGuard::new(
+                        self.data_dir.join("consent.json"),
+                        self.config.privacy.pii_filter_level,
+                        self.config.ai_provider.external_data_policy,
+                        self.config.privacy.clone(),
+                        process_monitor,
+                        None,
+                    )),
+                    self.provider_secret_stores.as_ref(),
                     self.analysis_health_flag.clone(),
+                    self.breaker_registry.clone(),
                 )
             {
                 provider
@@ -208,7 +270,10 @@ impl<'a> AgentSupportContextBuilder<'a> {
     }
 
     #[cfg(not(feature = "analysis"))]
-    fn build_context_analyzer(&self) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
+    fn build_context_analyzer(
+        &self,
+        _process_monitor: Arc<dyn ProcessMonitor>,
+    ) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
         None
     }
 
@@ -267,10 +332,10 @@ impl<'a> AgentSupportContextBuilder<'a> {
         // partial-move conflicts (build_context_analyzer borrows self below).
         let config_manager = self.config_manager.take();
         #[cfg(feature = "server")]
-        let (batch_sink_opt, api_client_opt, sse_client_opt) =
+        let (batch_sink_opt, api_client_opt, sse_client_opt, feature_perf_sink_opt) =
             build_server_transports(self.config, &session_id, config_manager)?;
         #[cfg(not(feature = "server"))]
-        let (batch_sink_opt, api_client_opt) =
+        let (batch_sink_opt, api_client_opt, feature_perf_sink_opt) =
             build_server_transports(self.config, &session_id, config_manager)?;
 
         let notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
@@ -288,7 +353,7 @@ impl<'a> AgentSupportContextBuilder<'a> {
             notifier.clone(),
         ));
 
-        let context_analyzer = self.build_context_analyzer();
+        let context_analyzer = self.build_context_analyzer(process_monitor.clone());
 
         // Wire few-shot storage into the analyzer for personalized prompts.
         if let (Some(ref analyzer), Some(ref fs_storage)) =
@@ -361,6 +426,7 @@ impl<'a> AgentSupportContextBuilder<'a> {
             scheduler_config,
             batch_sink_opt,
             api_client_opt,
+            feature_perf_sink_opt,
             notification_manager,
             focus_analyzer,
             context_analyzer,
@@ -383,6 +449,11 @@ fn build_server_transports(
         )
         .map_err(|e| anyhow::anyhow!("failed to build TLS-aware TokenManager: {e}"))?,
     );
+
+    // #5069: clone the shared TokenManager for the feature-perf sink BEFORE the
+    // transport branches consume it (the non-grpc branch moves it into the SSE
+    // client). Same `TokenManager` ⇒ same bearer JWT.
+    let token_manager_for_perf = token_manager.clone();
 
     #[cfg(feature = "grpc")]
     let (api_client, sse_client): (ApiClientPort, SseClientPort) = {
@@ -430,7 +501,23 @@ fn build_server_transports(
     }
     let batch_uploader = Arc::new(uploader);
 
-    Ok((Some(batch_uploader), Some(api_client), Some(sse_client)))
+    // #5069: a dedicated REST `HttpApiClient` for the feature-performance emitter.
+    // Built regardless of the gRPC switch (the perf contract is REST-only) and
+    // sharing `token_manager` so it reuses the same bearer JWT. Coerced to
+    // `FeaturePerfSink` (POST /api/v1/system/features/{key}/performance).
+    let feature_perf_sink: FeaturePerfSinkPort = Arc::new(HttpApiClient::new_with_tls(
+        &config.server.base_url,
+        token_manager_for_perf,
+        config.request_timeout(),
+        &config.tls,
+    )?);
+
+    Ok((
+        Some(batch_uploader),
+        Some(api_client),
+        Some(sse_client),
+        Some(feature_perf_sink),
+    ))
 }
 
 #[cfg(not(feature = "server"))]
@@ -439,7 +526,7 @@ fn build_server_transports(
     _session_id: &str,
     _config_manager: Option<ConfigManager>,
 ) -> Result<ServerTransportPorts> {
-    Ok((None, None))
+    Ok((None, None, None))
 }
 
 pub(crate) fn generate_session_id() -> String {

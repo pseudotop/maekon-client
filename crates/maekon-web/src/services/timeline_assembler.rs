@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use maekon_api_contracts::timeline::{AppSegment, SessionInfo, TimelineItem, TimelineResponse};
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::activity::IdlePeriod;
 use maekon_core::models::event::Event;
 use maekon_core::models::storage_records::FrameRecord;
@@ -25,42 +26,42 @@ pub(crate) fn assemble_event_timeline_item(event: &Event) -> TimelineItem {
             None,
         ),
         Event::Context(value) => (
-            format!("ctx_{}", uuid::Uuid::new_v4()),
+            generate_id("ctx"),
             "ContextChange".to_string(),
             value.timestamp.to_rfc3339(),
             Some(value.app_name.clone()),
             Some(value.window_title.clone()),
         ),
         Event::Input(value) => (
-            format!("input_{}", uuid::Uuid::new_v4()),
+            generate_id("input"),
             "InputActivity".to_string(),
             value.timestamp.to_rfc3339(),
             Some(value.app_name.clone()),
             None,
         ),
         Event::Process(value) => (
-            format!("proc_{}", uuid::Uuid::new_v4()),
+            generate_id("proc"),
             "ProcessSnapshot".to_string(),
             value.timestamp.to_rfc3339(),
             None,
             None,
         ),
         Event::Window(value) => (
-            format!("win_{}", uuid::Uuid::new_v4()),
+            generate_id("win"),
             format!("{:?}", value.event_type),
             value.timestamp.to_rfc3339(),
             Some(value.window.app_name.clone()),
             Some(value.window.window_title.clone()),
         ),
         Event::Clipboard(value) => (
-            format!("clip_{}", uuid::Uuid::new_v4()),
+            generate_id("clip"),
             "ClipboardChange".to_string(),
             value.timestamp.to_rfc3339(),
             None,
             None,
         ),
         Event::FileAccess(value) => (
-            format!("fa_{}", uuid::Uuid::new_v4()),
+            generate_id("fa"),
             format!("FileAccess_{:?}", value.event_type),
             value.timestamp.to_rfc3339(),
             None,
@@ -85,6 +86,7 @@ pub(crate) fn assemble_frame_timeline_item(frame: &FrameRecord) -> TimelineItem 
         window_title: frame.window_title.clone(),
         importance: frame.importance,
         image_url: format!("/api/frames/{}/image", frame.id),
+        ocr_text: frame.ocr_text.clone(),
     }
 }
 
@@ -176,5 +178,35 @@ pub(crate) fn timeline_item_timestamp(item: &TimelineItem) -> &str {
         TimelineItem::Event { timestamp, .. } => timestamp,
         TimelineItem::Frame { timestamp, .. } => timestamp,
         TimelineItem::IdlePeriod { start, .. } => start,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crt_prv_cap_014_frame_timeline_item_includes_ocr_text() {
+        let frame = FrameRecord {
+            id: 42,
+            timestamp: "2026-05-16T04:00:00Z".to_string(),
+            trigger_type: "manual".to_string(),
+            app_name: "Notes".to_string(),
+            window_title: "meeting notes".to_string(),
+            importance: 0.9,
+            resolution_w: 1280,
+            resolution_h: 720,
+            file_path: Some("frames/42.webp".to_string()),
+            ocr_text: Some("follow up with Alex at 3pm".to_string()),
+        };
+
+        let item = assemble_frame_timeline_item(&frame);
+
+        match item {
+            TimelineItem::Frame { ocr_text, .. } => {
+                assert_eq!(ocr_text.as_deref(), Some("follow up with Alex at 3pm"));
+            }
+            _ => panic!("expected frame timeline item"),
+        }
     }
 }

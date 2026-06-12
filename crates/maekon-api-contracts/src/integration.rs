@@ -8,6 +8,7 @@ use maekon_core::models::integration::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationStatus {
     pub schema_version: String,
     pub external_access_enabled: bool,
@@ -17,6 +18,7 @@ pub struct IntegrationStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationOutboundRuntimeStatus {
     pub enabled: bool,
     pub bootstrap_configured: bool,
@@ -24,11 +26,25 @@ pub struct IntegrationOutboundRuntimeStatus {
     pub auth_material_available: bool,
     pub runtime_configured: bool,
     pub resource_indicator_configured: bool,
+    // Cross-crate `maekon-core` string enum — contained as an opaque string.
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub auth_profile_kind: IntegrationAuthProfileKind,
+    // Cross-crate `maekon-core` string enums — contained as opaque string arrays.
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub preferred_transports: Vec<IntegrationTransportKind>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub supported_auth_schemes: Vec<IntegrationAuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbox_pending_count: Option<usize>,
@@ -38,30 +54,64 @@ pub struct IntegrationOutboundRuntimeStatus {
     pub outbox_ack_cursor: Option<IntegrationAckCursorSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbox_ack_cursor: Option<IntegrationAckCursorSummary>,
+    // Cross-crate `maekon-core` types — contained as opaque objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub auth_status: Option<IntegrationAuthStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_session: Option<IntegrationSessionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub runtime_telemetry: Option<IntegrationRuntimeTelemetry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationDeviceAuthorizationCommandResult {
+    // Cross-crate `maekon-core` types — contained as opaque objects.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub auth_status: IntegrationAuthStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub flow: Option<IntegrationDeviceAuthorizationFlow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationDeviceAuthorizationFlowRequest {
     pub flow_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSessionSummary {
+    // Cross-crate `maekon-core` string enums — contained as opaque strings.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub status: IntegrationSessionStatus,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub transport_kind: IntegrationTransportKind,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub auth_scheme: IntegrationAuthScheme,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connected_at: Option<DateTime<Utc>>,
@@ -74,6 +124,7 @@ pub struct IntegrationSessionSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationAckCursorSummary {
     pub stream_id: String,
     pub cursor: String,
@@ -81,6 +132,7 @@ pub struct IntegrationAckCursorSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationAuditRecordSummary {
     pub record_id: String,
     pub envelope_id: String,
@@ -94,6 +146,7 @@ pub struct IntegrationAuditRecordSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationAuditLogResponse {
     pub schema_version: String,
     #[serde(default)]
@@ -101,6 +154,7 @@ pub struct IntegrationAuditLogResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationInboxPromptSummary {
     pub prompt_id: String,
     pub category: String,
@@ -124,6 +178,7 @@ pub struct IntegrationInboxPromptSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationInboxResponse {
     pub schema_version: String,
     #[serde(default)]
@@ -132,12 +187,14 @@ pub struct IntegrationInboxResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationInboxRefreshResponse {
     pub schema_version: String,
     pub fetched_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationInboxActionResponse {
     pub schema_version: String,
     pub prompt_id: String,
@@ -145,12 +202,14 @@ pub struct IntegrationInboxActionResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationInboxDismissRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationBootstrapRequest {
     pub client_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,15 +219,25 @@ pub struct IntegrationBootstrapRequest {
     pub nonce: String,
     #[serde(default)]
     pub requested_scopes: Vec<String>,
+    // Cross-crate `maekon-core` string enums — contained as opaque string arrays.
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub preferred_transports: Vec<IntegrationTransportKind>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub supported_auth_schemes: Vec<IntegrationAuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_indicator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationBootstrapSessionBinding {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,14 +253,21 @@ pub struct IntegrationBootstrapSessionBinding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSessionHeartbeatPayload {
     pub session_id: String,
     pub occurred_at: DateTime<Utc>,
+    // Cross-crate `maekon-core` type — contained as an opaque object array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object_array")
+    )]
     pub cursor_snapshot: Vec<maekon_core::models::integration::IntegrationAckCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSessionDisconnectPayload {
     pub session_id: String,
     pub occurred_at: DateTime<Utc>,
@@ -200,28 +276,52 @@ pub struct IntegrationSessionDisconnectPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationAckPayload {
     pub session_id: String,
     #[serde(default)]
     pub acknowledged_ids: Vec<String>,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub ack_cursor: Option<maekon_core::models::integration::IntegrationAckCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationBootstrapResponse {
     pub schema_version: String,
     #[serde(default)]
     pub supported_scopes: Vec<String>,
     #[serde(default)]
     pub granted_scopes: Vec<String>,
+    // Cross-crate `maekon-core` string enums — contained as opaque strings/arrays.
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub supported_transports: Vec<IntegrationTransportKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub selected_transport: Option<IntegrationTransportKind>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_array")
+    )]
     pub supported_auth_schemes: Vec<IntegrationAuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_string_enum")
+    )]
     pub selected_auth_scheme: Option<IntegrationAuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_indicator: Option<String>,

@@ -174,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("\n=== 4. suggestion test ===");
+            #[allow(deprecated)] // intentional: example exercises the test-only no-token path
             match client.subscribe_suggestions(&response.session_id).await {
                 Ok(mut stream) => {
                     println!("{} suggestion stream subscribe success", out.ok());

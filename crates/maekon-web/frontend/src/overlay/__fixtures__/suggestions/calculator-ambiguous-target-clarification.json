@@ -1,0 +1,47 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-QUALITY-002", "CRT-PRV-SUG-NATIVE-005"],
+  "recorded_at": "2026-05-22T03:10:00Z",
+  "scenario": "calculator-visible-but-note-instruction-target-mismatch",
+  "instruction": "summarize this note",
+  "native_context": {
+    "active_app": "Calculator",
+    "bundle_id": "com.apple.calculator",
+    "window_title": "Calculator",
+    "display_value": "46",
+    "expression": "23 x 2",
+    "target_entity": {
+      "kind": "calculator-display",
+      "label": "result",
+      "value": "46",
+      "confidence": 0.97,
+      "sources": ["ax", "ocr", "screenshot"]
+    }
+  },
+  "suggestions": [
+    {
+      "id": "calculator-note-target-clarification",
+      "title": "Which note should I summarize?",
+      "body": "I can see Calculator showing result 46, but your instruction refers to a note. Choose or show the note before I propose an action.",
+      "priority": "low",
+      "category": "clarification-required",
+      "source": "server",
+      "confidence_score": 0.36,
+      "created_at": "2026-05-22T03:10:00Z",
+      "is_read": false,
+      "reasoning": "The visible target is Calculator, while the user instruction points to a note. The next step must be clarification, not a GUI mutation."
+    }
+  ],
+  "expected": {
+    "clarification_title": "Which note should I summarize?",
+    "visible_target_app": "Calculator",
+    "forbidden_action_labels": ["Accept", "Later"],
+    "allowed_labels": ["Reject", "Explain"],
+    "forbidden_preconsent_commands": [
+      "execute_automation_action",
+      "run_suggestion_action",
+      "open_notes_for_suggestion",
+      "write_note_from_suggestion",
+      "type_into_calculator"
+    ]
+  }
+}

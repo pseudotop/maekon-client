@@ -67,7 +67,7 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - Standalone整合性ベースライン: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 整合性運用ランブック: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - ドキュメントインデックス: [docs/README.md](./docs/README.md)
-- パブリックローンチプレイブック: [docs/guides/public-repo-launch-playbook.md](./docs/guides/public-repo-launch-playbook.md)
+- リリースチェックリスト: [docs/release-checklist.md](./docs/release-checklist.md)
 - 自動化プレイブックテンプレート: [docs/guides/automation-playbook-templates.md](./docs/guides/automation-playbook-templates.md)
 - Standalone導入ランブック: [docs/guides/standalone-adoption-runbook.md](./docs/guides/standalone-adoption-runbook.md)
 - 最初の5分ガイド: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
@@ -101,7 +101,7 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 
 ## 動作要件
 
-- Rust 1.77.1以降
+- Rust 1.88.0以降
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## 開発者向けクイックスタート（ソースからビルド）

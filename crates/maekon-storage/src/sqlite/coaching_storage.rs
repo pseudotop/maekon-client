@@ -1,21 +1,45 @@
 use crate::error::StorageError;
 use maekon_core::models::coaching::CoachingEventRow;
+use rusqlite::Connection;
 use std::collections::HashMap;
 
 use super::SqliteStorage;
 
 impl SqliteStorage {
     /// Query coaching events, newest first, with pagination.
+    ///
+    /// Synchronous inherent twin — retained for the src-tauri `get_coaching_history`
+    /// IPC command (consumes `Arc<SqliteStorage>` directly) and the in-crate
+    /// `#[cfg(test)]` suite. The async `CoachingQueryStorage` trait method
+    /// (ADR-026 PR-8) routes through [`Self::query_coaching_events_async`].
     pub fn query_coaching_events(
         &self,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<CoachingEventRow>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::query_coaching_events_inner(read.conn(), limit, offset)
+    }
 
+    /// Async funnel for the `CoachingQueryStorage` trait method: offloads the
+    /// SQLite read onto `spawn_blocking` via `with_conn_read` so the
+    /// `parking_lot` guard is never held across an `.await` (ADR-026 PR-8).
+    pub(crate) async fn query_coaching_events_async(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<CoachingEventRow>, StorageError> {
+        self.with_conn_read(move |conn| Self::query_coaching_events_inner(conn, limit, offset))
+            .await
+    }
+
+    /// Shared SQL body for both the sync twin and the async funnel.
+    fn query_coaching_events_inner(
+        conn: &Connection,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<CoachingEventRow>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT event_id, trigger_type, profile_name, regime_id,
@@ -53,15 +77,32 @@ impl SqliteStorage {
     }
 
     /// Query coaching events shown on or after a given date (YYYY-MM-DD).
+    ///
+    /// Synchronous inherent twin — see [`Self::query_coaching_events`]. The async
+    /// trait method routes through [`Self::query_coaching_events_since_async`].
     pub fn query_coaching_events_since(
         &self,
         since_date: &str,
     ) -> Result<Vec<CoachingEventRow>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::query_coaching_events_since_inner(read.conn(), since_date)
+    }
 
+    /// Async funnel for the `CoachingQueryStorage` trait method (ADR-026 PR-8).
+    pub(crate) async fn query_coaching_events_since_async(
+        &self,
+        since_date: String,
+    ) -> Result<Vec<CoachingEventRow>, StorageError> {
+        self.with_conn_read(move |conn| Self::query_coaching_events_since_inner(conn, &since_date))
+            .await
+    }
+
+    /// Shared SQL body for both the sync twin and the async funnel.
+    fn query_coaching_events_since_inner(
+        conn: &Connection,
+        since_date: &str,
+    ) -> Result<Vec<CoachingEventRow>, StorageError> {
         let mut stmt = conn
             .prepare(
                 "SELECT event_id, trigger_type, profile_name, regime_id,
@@ -102,34 +143,32 @@ impl SqliteStorage {
 
     /// Insert a coaching event record.
     pub fn insert_coaching_event(&self, event: &CoachingEventRow) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
-
-        conn.execute(
-            "INSERT INTO coaching_events
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, coaching_events ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "INSERT INTO coaching_events
                 (event_id, trigger_type, profile_name, regime_id,
                  message_template, personalized_message, shown_at,
                  dismissed_at, dismiss_action, feedback_type, feedback_score)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                event.event_id,
-                event.trigger_type,
-                event.profile_name,
-                event.regime_id,
-                event.message_template,
-                event.personalized_message,
-                event.shown_at,
-                event.dismissed_at,
-                event.dismiss_action,
-                event.feedback_type,
-                event.feedback_score,
-            ],
-        )
-        .map_err(|e| StorageError::Internal(format!("insert_coaching_event: {e}")))?;
+                rusqlite::params![
+                    event.event_id,
+                    event.trigger_type,
+                    event.profile_name,
+                    event.regime_id,
+                    event.message_template,
+                    event.personalized_message,
+                    event.shown_at,
+                    event.dismissed_at,
+                    event.dismiss_action,
+                    event.feedback_type,
+                    event.feedback_score,
+                ],
+            )
+            .map_err(|e| StorageError::Internal(format!("insert_coaching_event: {e}")))?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Update coaching event with dismiss/feedback data.
@@ -141,29 +180,27 @@ impl SqliteStorage {
         feedback_type: Option<&str>,
         feedback_score: Option<f64>,
     ) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
-
-        conn.execute(
-            "UPDATE coaching_events
+        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "UPDATE coaching_events
              SET dismiss_action = COALESCE(?2, dismiss_action),
                  dismissed_at = COALESCE(?3, dismissed_at),
                  feedback_type = COALESCE(?4, feedback_type),
                  feedback_score = COALESCE(?5, feedback_score)
              WHERE event_id = ?1",
-            rusqlite::params![
-                event_id,
-                dismiss_action,
-                dismissed_at,
-                feedback_type,
-                feedback_score
-            ],
-        )
-        .map_err(|e| StorageError::Internal(format!("update_coaching_event_feedback: {e}")))?;
+                rusqlite::params![
+                    event_id,
+                    dismiss_action,
+                    dismissed_at,
+                    feedback_type,
+                    feedback_score
+                ],
+            )
+            .map_err(|e| StorageError::Internal(format!("update_coaching_event_feedback: {e}")))?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Update the personalized message text for a coaching event.
@@ -172,26 +209,25 @@ impl SqliteStorage {
         event_id: &str,
         personalized_text: &str,
     ) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "UPDATE coaching_events SET personalized_message = ?2 WHERE event_id = ?1",
+                rusqlite::params![event_id, personalized_text],
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!("update_coaching_event_personalized: {e}"))
+            })?;
 
-        conn.execute(
-            "UPDATE coaching_events SET personalized_message = ?2 WHERE event_id = ?1",
-            rusqlite::params![event_id, personalized_text],
-        )
-        .map_err(|e| StorageError::Internal(format!("update_coaching_event_personalized: {e}")))?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Get all regime goals from the regime_goals table.
     pub fn get_regime_goals(&self) -> Result<HashMap<String, u32>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         let mut stmt = conn
             .prepare("SELECT regime_label, daily_target_minutes FROM regime_goals")
@@ -220,37 +256,33 @@ impl SqliteStorage {
         regime_label: &str,
         target_minutes: u32,
     ) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
-
-        conn.execute(
-            "INSERT INTO regime_goals (regime_label, daily_target_minutes, updated_at)
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, regime_goals ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "INSERT INTO regime_goals (regime_label, daily_target_minutes, updated_at)
              VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(regime_label)
              DO UPDATE SET daily_target_minutes = ?2, updated_at = datetime('now')",
-            rusqlite::params![regime_label, target_minutes],
-        )
-        .map_err(|e| StorageError::Internal(format!("set_regime_goal: {e}")))?;
+                rusqlite::params![regime_label, target_minutes],
+            )
+            .map_err(|e| StorageError::Internal(format!("set_regime_goal: {e}")))?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Delete a regime goal by label.
     pub fn delete_regime_goal(&self, regime_label: &str) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("lock poisoned: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "DELETE FROM regime_goals WHERE regime_label = ?1",
+                rusqlite::params![regime_label],
+            )
+            .map_err(|e| StorageError::Internal(format!("delete_regime_goal: {e}")))?;
 
-        conn.execute(
-            "DELETE FROM regime_goals WHERE regime_label = ?1",
-            rusqlite::params![regime_label],
-        )
-        .map_err(|e| StorageError::Internal(format!("delete_regime_goal: {e}")))?;
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 

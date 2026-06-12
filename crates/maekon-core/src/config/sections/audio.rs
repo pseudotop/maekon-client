@@ -1,4 +1,6 @@
 // 오디오 캡처 및 음성-텍스트 변환 설정
+use super::super::enums::CloudSttBuild;
+use super::super::enums::CloudSttPolicy;
 use super::super::enums::MicInputMode;
 use super::super::enums::SttLanguage;
 use super::super::enums::SttProviderKind;
@@ -59,6 +61,11 @@ pub struct AudioConfig {
     /// Timeout in seconds for cloud STT requests.
     #[serde(default = "default_cloud_timeout_secs")]
     pub cloud_timeout_secs: u32,
+    /// Enterprise managed policy gating cloud STT egress, independent of whether
+    /// a user supplied an API key. Default `Allow` preserves current behavior;
+    /// `Disabled`/`RequireAdminApproval` block raw-audio egress (fail-safe).
+    #[serde(default)]
+    pub cloud_stt_policy: CloudSttPolicy,
     /// Mic input mode — Push-to-Talk (default) or Voice Activity Detection.
     #[serde(default)]
     pub mic_input_mode: MicInputMode,
@@ -85,10 +92,27 @@ impl Default for AudioConfig {
             cloud_api_key: String::new(),
             cloud_stt_endpoint: default_cloud_stt_endpoint(),
             cloud_timeout_secs: default_cloud_timeout_secs(),
+            cloud_stt_policy: CloudSttPolicy::default(),
             mic_input_mode: MicInputMode::default(),
             vad_threshold: default_vad_threshold(),
             vad_silence_ms: default_vad_silence_ms(),
             vad_min_speech_ms: default_vad_min_speech_ms(),
+        }
+    }
+}
+
+impl AudioConfig {
+    /// Decide whether the cloud STT provider should be constructed at a wiring
+    /// site, applying the enterprise managed-policy gate (fail-safe) before the
+    /// user-API-key check. Both the startup and live-reload wiring paths call this
+    /// so the egress decision is single-sourced and unit-tested.
+    pub fn cloud_stt_build_decision(&self) -> CloudSttBuild {
+        if !self.cloud_stt_policy.permits_cloud_egress() {
+            CloudSttBuild::SkipPolicyBlocked
+        } else if self.cloud_api_key.is_empty() {
+            CloudSttBuild::SkipNoKey
+        } else {
+            CloudSttBuild::Build
         }
     }
 }
@@ -143,6 +167,77 @@ mod tests {
         assert!(config.cloud_api_key.is_empty());
         assert!(config.cloud_stt_endpoint.contains("openai.com"));
         assert_eq!(config.cloud_timeout_secs, 10);
+    }
+
+    #[test]
+    fn cloud_stt_policy_defaults_to_allow_preserving_behavior() {
+        // Missing field → Allow (no behavior change for existing/consumer configs).
+        let json = r#"{"enabled": true}"#;
+        let config: AudioConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.cloud_stt_policy, CloudSttPolicy::Allow);
+        assert!(config.cloud_stt_policy.permits_cloud_egress());
+        assert_eq!(
+            AudioConfig::default().cloud_stt_policy,
+            CloudSttPolicy::Allow
+        );
+    }
+
+    #[test]
+    fn cloud_stt_policy_non_allow_blocks_egress_fail_safe() {
+        assert!(!CloudSttPolicy::Disabled.permits_cloud_egress());
+        assert!(!CloudSttPolicy::RequireAdminApproval.permits_cloud_egress());
+        assert!(CloudSttPolicy::Allow.permits_cloud_egress());
+    }
+
+    #[test]
+    fn cloud_stt_build_decision_enforces_policy_then_key() {
+        // Allow + key present → build cloud provider (preserves prior behavior).
+        let mut cfg = AudioConfig {
+            cloud_stt_policy: CloudSttPolicy::Allow,
+            cloud_api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.cloud_stt_build_decision(), CloudSttBuild::Build);
+
+        // Allow + no key → skip (no key), not a policy block.
+        cfg.cloud_api_key = String::new();
+        assert_eq!(cfg.cloud_stt_build_decision(), CloudSttBuild::SkipNoKey);
+
+        // Disabled blocks regardless of whether a key is present (fail-safe).
+        cfg.cloud_stt_policy = CloudSttPolicy::Disabled;
+        cfg.cloud_api_key = "sk-test".into();
+        assert_eq!(
+            cfg.cloud_stt_build_decision(),
+            CloudSttBuild::SkipPolicyBlocked
+        );
+        cfg.cloud_api_key = String::new();
+        assert_eq!(
+            cfg.cloud_stt_build_decision(),
+            CloudSttBuild::SkipPolicyBlocked
+        );
+
+        // RequireAdminApproval also blocks until an approval channel exists.
+        cfg.cloud_stt_policy = CloudSttPolicy::RequireAdminApproval;
+        cfg.cloud_api_key = "sk-test".into();
+        assert_eq!(
+            cfg.cloud_stt_build_decision(),
+            CloudSttBuild::SkipPolicyBlocked
+        );
+    }
+
+    #[test]
+    fn cloud_stt_policy_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&CloudSttPolicy::RequireAdminApproval).unwrap(),
+            "\"require_admin_approval\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CloudSttPolicy::Disabled).unwrap(),
+            "\"disabled\""
+        );
+        let restored: AudioConfig =
+            serde_json::from_str(r#"{"enabled": true, "cloud_stt_policy": "disabled"}"#).unwrap();
+        assert_eq!(restored.cloud_stt_policy, CloudSttPolicy::Disabled);
     }
 
     #[test]

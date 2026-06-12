@@ -60,6 +60,16 @@ impl FileSecretRegistry {
             )?;
         }
 
+        // Windows equivalent of 0o600 — apply an owner-only DACL so the secrets
+        // file is not readable via inherited parent-directory ACLs. Reuses the
+        // shared helper in `encryption.rs`; non-fatal (warn and continue).
+        #[cfg(windows)]
+        {
+            if let Err(e) = crate::encryption::set_owner_only_dacl(&temp_path) {
+                tracing::warn!("file secret store: failed to set owner-only DACL: {e}");
+            }
+        }
+
         std::fs::rename(&temp_path, path)?;
         Ok(())
     }
@@ -273,6 +283,30 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("b")
+        );
+    }
+
+    /// Net-5: on Unix the persisted secrets file must be owner-only (0o600).
+    /// (The Windows owner-only DACL path is applied via the shared
+    /// `encryption::set_owner_only_dacl` helper and exercised on Windows.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_secret_store_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("secrets.json");
+        let store = FileSecretStore::new(path.clone()).unwrap();
+        store
+            .store("provider/openai/default", "api_key", "sk-test")
+            .await
+            .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        // Only the owner rw bits may be set; group/other must be clear.
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "secrets file must be 0o600, got {:o}",
+            mode & 0o777
         );
     }
 }

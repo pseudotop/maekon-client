@@ -14,6 +14,7 @@ name = "maekon-sandbox-worker"
 path = "src/main.rs"
 
 [dependencies]
+enigo = { workspace = true }
 maekon-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -550,6 +550,7 @@ mod tests {
             audit_logger: None,
             automation_controller: None,
             ai_runtime_status: None,
+            llm_call_health: None, // not tracked in tests
         }
     }
 

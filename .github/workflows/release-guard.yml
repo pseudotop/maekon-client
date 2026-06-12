@@ -3,17 +3,23 @@ name: Release Guard
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to validate (e.g. v0.0.10)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   guard:
-    if: startsWith(github.event.release.tag_name, 'v')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG_NAME: ${{ github.event.release.tag_name }}
+      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
       RELEASE_ID: ${{ github.event.release.id }}
     steps:
       - name: Fetch release state
@@ -21,7 +27,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if [[ -n "${RELEASE_ID:-}" ]]; then
+            release_endpoint="repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          else
+            release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}"
+          fi
+          export RELEASE_JSON="$(gh api "$release_endpoint")"
 
           python3 - <<'PY' > release_guard.out
           import json
@@ -31,6 +42,7 @@ jobs:
           tag = os.environ["TAG_NAME"]
           author = (release.get("author") or {}).get("login")
           expected_prerelease = "-" in tag
+          asset_names = {asset.get("name") for asset in release.get("assets", [])}
 
           is_valid = True
           reasons = []
@@ -51,22 +63,118 @@ jobs:
               reasons.append(f"release {tag} has no assets")
 
           print(f"valid={str(is_valid).lower()}")
+          print(f"release_id={release.get('id')}")
           print(f"asset_count={asset_count}")
+          print(
+              "has_final_byte_manifest="
+              f"{str('notarization-final-byte-manifest.json' in asset_names).lower()}"
+          )
           for reason in reasons:
               print(reason)
           PY
 
           cat release_guard.out
           awk -F= '/^valid=/{print "valid="$2}' release_guard.out >> "$GITHUB_OUTPUT"
+          awk -F= '/^release_id=/{print "release_id="$2}' release_guard.out >> "$GITHUB_OUTPUT"
           awk -F= '/^asset_count=/{print "asset_count="$2}' release_guard.out >> "$GITHUB_OUTPUT"
+          awk -F= '/^has_final_byte_manifest=/{print "has_final_byte_manifest="$2}' release_guard.out >> "$GITHUB_OUTPUT"
 
       - name: Delete invalid manual release
         if: steps.release.outputs.valid != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${{ steps.release.outputs.release_id }}"
           echo "::error::Deleted invalid release for ${TAG_NAME}. Only workflow-created releases with assets are allowed."
+          exit 1
+
+      - name: Verify macOS installer sidecars
+        if: steps.release.outputs.valid == 'true' && (github.event_name == 'workflow_dispatch' || steps.release.outputs.has_final_byte_manifest == 'true')
+        shell: bash
+        env:
+          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MAEKON_UPDATE_PUBLIC_KEY:-}" ]]; then
+            echo "Missing required secret: MAEKON_UPDATE_PUBLIC_KEY" >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          gh release download "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets \
+            --pattern 'maekon-macos-universal.dmg*' \
+            --pattern 'maekon-macos-universal.pkg*' \
+            --pattern 'notarization-final-byte-manifest.json*'
+
+          python3 -m pip install --upgrade pynacl
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from nacl.exceptions import BadSignatureError
+          from nacl.signing import VerifyKey
+
+          root = Path("release-assets")
+          public_key_bytes = base64.b64decode(os.environ["MAEKON_UPDATE_PUBLIC_KEY"])
+          verify_key = VerifyKey(public_key_bytes)
+
+          manifest_path = root / "notarization-final-byte-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest_sha_by_name = {
+              asset["name"]: asset["sha256"]
+              for asset in manifest.get("macos_assets", [])
+          }
+
+          required_assets = [
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+              "notarization-final-byte-manifest.json",
+          ]
+
+          for asset_name in required_assets:
+              asset = root / asset_name
+              sha_path = root / f"{asset_name}.sha256"
+              sig_path = root / f"{asset_name}.sig"
+
+              if not asset.is_file():
+                  raise SystemExit(f"missing release asset: {asset_name}")
+              if not sha_path.is_file():
+                  raise SystemExit(f"missing checksum sidecar: {sha_path.name}")
+              if not sig_path.is_file():
+                  raise SystemExit(f"missing signature sidecar: {sig_path.name}")
+
+              data = asset.read_bytes()
+              actual_sha = hashlib.sha256(data).hexdigest()
+              expected_sha = sha_path.read_text(encoding="utf-8").split()[0]
+              if actual_sha != expected_sha:
+                  raise SystemExit(
+                      f"stale checksum sidecar for {asset_name}: expected {actual_sha}, got {expected_sha}"
+                  )
+
+              if asset_name in manifest_sha_by_name and manifest_sha_by_name[asset_name] != actual_sha:
+                  raise SystemExit(
+                      f"notarization manifest checksum mismatch for {asset_name}"
+                  )
+
+              signature = base64.b64decode(sig_path.read_text(encoding="utf-8").strip())
+              try:
+                  verify_key.verify(data, signature)
+              except BadSignatureError as exc:
+                  raise SystemExit(f"stale signature sidecar for {asset_name}") from exc
+          PY
+
+      - name: Delete release with invalid macOS sidecars
+        if: failure() && steps.release.outputs.valid == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${{ steps.release.outputs.release_id }}"
+          echo "::error::Deleted invalid release for ${TAG_NAME}: final byte sidecar validation failed."
           exit 1
 
       - name: Confirm valid release

@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessEntryResponse {
     pub pid: u32,
     pub name: String,
@@ -9,6 +10,7 @@ pub struct ProcessEntryResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessSnapshotResponse {
     pub timestamp: String,
     pub processes: Vec<ProcessEntryResponse>,

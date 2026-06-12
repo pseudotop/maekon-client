@@ -143,15 +143,17 @@ impl SttProvider for WhisperSttProvider {
                     message: format!("transcription failed: {e}"),
                 })?;
 
-            let n_segments = state
-                .full_n_segments()
-                .map_err(|e| CoreError::SpeechToText {
-                    code: maekon_core::error_codes::AudioCode::SttFailed,
-                    message: format!("get segments: {e}"),
-                })?;
+            // whisper-rs 0.16: full_n_segments returns c_int directly (no Result),
+            // and per-segment text moved to get_segment(i) -> Option<WhisperSegment>
+            // + WhisperSegment::to_str().
+            let n_segments = state.full_n_segments();
 
             let raw_text: String = (0..n_segments)
-                .filter_map(|i| state.full_get_segment_text(i).ok())
+                .filter_map(|i| {
+                    state
+                        .get_segment(i)
+                        .and_then(|seg| seg.to_str().ok().map(|s| s.to_string()))
+                })
                 .collect::<Vec<_>>()
                 .join(" ")
                 .split_whitespace()
@@ -164,10 +166,10 @@ impl SttProvider for WhisperSttProvider {
                 .map(|s| s.sanitize_text(&raw_text, pii_level))
                 .unwrap_or(raw_text);
 
-            let detected_lang = state
-                .full_lang_id()
-                .ok()
-                .and_then(|id| whisper_rs::get_lang_str(id).map(|s| s.to_string()));
+            // whisper-rs 0.16: full_lang_id_from_state returns c_int directly;
+            // get_lang_str returns None for out-of-range ids.
+            let detected_lang =
+                whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(|s| s.to_string());
 
             let processing_secs = start.elapsed().as_secs_f32();
             debug!(

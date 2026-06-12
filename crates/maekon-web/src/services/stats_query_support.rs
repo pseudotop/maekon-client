@@ -72,14 +72,18 @@ pub(crate) fn build_activity_counts(
     app_stats
 }
 
-pub(crate) fn app_durations_for_range(
+pub(crate) async fn app_durations_for_range(
     ctx: &StorageWebContext,
     from: chrono::DateTime<Utc>,
     to: chrono::DateTime<Utc>,
 ) -> HashMap<String, i64> {
     let from_rfc = from.to_rfc3339();
     let to_rfc = to.to_rfc3339();
-    match ctx.storage.get_app_durations_by_date(&from_rfc, &to_rfc) {
+    match ctx
+        .storage
+        .get_app_durations_by_date(&from_rfc, &to_rfc)
+        .await
+    {
         Ok(durations) => durations.into_iter().collect(),
         Err(_) => HashMap::new(),
     }
@@ -101,7 +105,7 @@ pub(crate) fn build_app_usage_entries(
         .collect()
 }
 
-pub(crate) fn total_active_secs_for_range(
+pub(crate) async fn total_active_secs_for_range(
     ctx: &StorageWebContext,
     from: chrono::DateTime<Utc>,
     to: chrono::DateTime<Utc>,
@@ -110,7 +114,7 @@ pub(crate) fn total_active_secs_for_range(
     let Ok(window) = maekon_core::types::TimeWindow::new(from, to) else {
         return fallback_events_logged * 5;
     };
-    match ctx.storage.get_daily_active_secs(&window) {
+    match ctx.storage.get_daily_active_secs(&window).await {
         Ok(daily) if !daily.is_empty() => daily.iter().map(|(_, seconds)| *seconds as u64).sum(),
         _ => fallback_events_logged * 5,
     }

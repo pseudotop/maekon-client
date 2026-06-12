@@ -655,10 +655,10 @@ mod tests {
         assert_eq!(surface, SecretSurface::Llm);
         assert_eq!(command, &["codex".to_string()]);
 
-        assert!(parse_exec_args(&["llm".to_string()]).is_err());
-        assert!(parse_exec_args(&["llm".to_string(), "codex".to_string()]).is_err());
+        assert!(parse_exec_args(&["llm".to_string()]).is_err()); // lint:allow-is-err-hedge — Err(()) has no payload; unit error type, is_err() is the only possible assertion
+        assert!(parse_exec_args(&["llm".to_string(), "codex".to_string()]).is_err()); // lint:allow-is-err-hedge — Err(()) has no payload; unit error type
         assert!(
-            parse_exec_args(&["other".to_string(), "--".to_string(), "codex".to_string()]).is_err()
+            parse_exec_args(&["other".to_string(), "--".to_string(), "codex".to_string()]).is_err() // lint:allow-is-err-hedge — Err(()) has no payload; unit error type
         );
     }
 
@@ -725,7 +725,8 @@ mod tests {
             }),
         };
 
-        assert!(ensure_projection_allowed(&endpoint, SecretSurface::Llm).is_ok());
+        ensure_projection_allowed(&endpoint, SecretSurface::Llm)
+            .expect("FileSecretStore + projection_enabled=true must be allowed");
     }
 
     #[test]
@@ -779,6 +780,9 @@ mod tests {
             credential: None,
         };
 
-        assert!(ensure_projection_allowed(&endpoint, SecretSurface::Llm).is_ok());
+        // credential = None means there is no binding at all — the function
+        // returns early with Ok(()) before inspecting any binding fields.
+        ensure_projection_allowed(&endpoint, SecretSurface::Llm)
+            .expect("no credential binding (plaintext api_key) must always allow projection");
     }
 }

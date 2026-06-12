@@ -9,7 +9,7 @@ allow = [
   "CC0-1.0",
   "CDLA-Permissive-2.0",
   "MIT",
-  "MPL-2.0",
+  "MPL-2.0",          # webpki-roots@0.26.x (TLS root CA bundle); file-level copyleft — permissible unmodified
   "NCSA",
   "BSD-2-Clause",
   "BSD-3-Clause",
@@ -19,8 +19,8 @@ allow = [
   "bzip2-1.0.6",    # libbz2-rs-sys (zip crate transitive dep)
   "Unlicense",      # whisper-rs / whisper-rs-sys (오디오 STT, OSI approved + FSF Free)
   # --- Tauri v2 (iced → Tauri 마이그레이션) ---
-  "LGPL-2.1-only",  # webkit2gtk (Linux only, 동적 링크)
-  "OpenSSL",        # openssl-sys (일부 플랫폼)
+  # E31 retired the old webkit2gtk/glib 0.18 line. The active WebKitGTK 6 Rust
+  # bindings (`webkit6`, `webkit6-sys`, `javascriptcore6*`) are MIT-licensed crates.
 ]
 private = { ignore = true }
 
@@ -28,18 +28,110 @@ private = { ignore = true }
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 # "workspace" scope — guard our own (workspace) crates only; skip transitive
-# upstream Tauri/Wry advisories (e.g. GTK3 RUSTSEC-2024-0411..0418 / 2025-0057
-# / 2024-0429 / 2026-0097) we cannot resolve directly.
+# upstream Tauri/Wry advisories we cannot resolve directly.
+# E31 removed the previous webkit2gtk/glib 0.18 advisory exception path. Any future
+# unsound advisory must be triaged from current `cargo audit` / `cargo deny` output,
+# not from the retired RUSTSEC-2024-0429 suppression.
+# Review-by: 2026-10-01 — re-evaluate upstream resolution for all advisory policy.
+# F-SC-C41-05: deny.toml 의 5개 Review-by 약속은 config.toml(cargo-vet) 의 분산(stagger)
+# 창(2026-10-01..2026-12-31)에 맞춰 5개 서로 다른 날짜로 분산했다(이전: 전부 2026-09-01 단일
+# cliff). 이 advisories 검토는 분산 스케줄의 첫 버킷(2026-10-01)에 배정한다.
+# 추적 격차(보고됨): verify_exemption_expiry.py 는 config.toml 만 스캔하므로 이 5개 날짜는
+# 어떤 게이트도 검사하지 않는다. 검증기에 --deny-file 옵션을 추가하는 정식 해소는
+# 본 번들 범위(deny.toml/config.toml/Dockerfile/workflow) 밖이라 needs-design 으로 보고한다.
 unmaintained = "workspace"
-unsound = "workspace"
 yanked = "deny"
-# Review-by: 2026-08-01 — re-evaluate any future entries for upstream
+# F-SC-C31-01: `unsound` is intentionally left at the cargo-deny default ("warn")
+# rather than "deny" or "workspace". Rationale:
+#
+# 1. DETECTION COVERAGE: "warn" surfaces ALL unsound advisories in the dep tree,
+#    including transitive dependencies we cannot directly patch. Raising to "deny"
+#    would block CI on advisories in Tauri/WebKit/wry that we do not control and
+#    cannot resolve without waiting for upstream releases.
+#
+# 2. TRIAGE PROCESS: Any new unsound advisory that appears in `cargo deny check`
+#    output MUST be triaged within one sprint:
+#    a. If the crate is a direct dependency and a patched version exists → upgrade.
+#    b. If transitive and unresolvable → open OOS-TBD issue with `actor:pseudotop`
+#       label and reference the RUSTSEC advisory ID.
+#    c. Document the triage decision in this file as an inline comment on the entry.
+#
+# 3. CYCLE 30 REFERENCE: PR #3886 removed the previous `unsound = "workspace"` line
+#    during a deny.toml cleanup pass. That removal was correct because "workspace"
+#    only guards first-party crates — it does NOT catch transitive upstream unsound
+#    advisories, which is the primary risk surface here.
+#    E31 removed the prior glib 0.18 / webkit2gtk path from the active lockfile.
+#    Governance for future transitive unsound advisories remains:
+#    unsound="warn" + sprint triage.
+#
+# 4. REVIEW SCHEDULE: Re-evaluate this policy on 2026-10-16 (F-SC-C41-05 분산 스케줄;
+#    이전 2026-09-01 단일 cliff 에서 분산). If the number of outstanding unsound
+#    advisories reaches zero, consider tightening to "workspace".
+#
+# Review-by: 2026-10-16 — re-evaluate any future entries for upstream
 # resolution status. Replace inline ignores with fixes when possible.
+# F-SC-C41-05: unsound 정책 검토 — 분산 스케줄(2026-10-01..2026-12-31) 두 번째 버킷.
+#
+# F-SC-C37-03: RUSTSEC-2026-0097 ignore entry removed. OOS #4114 was closed
+# (2026-05-28). Governance transferred to `unsound = "warn"` + cargo-audit
+# warning channel. The build-only exposure (phf_codegen 0.8 -> selectors -> rand 0.7.3)
+# is documented in supply-chain/config.toml exemption notes.
+#
+# F-SC-C38-02 / #5431: transitive informational advisory triage.
+#
+# Current `cargo audit` baseline after E31 and #5431:
+#   vulnerabilities: 0
+#   informational warnings: 8
+#
+# #5431 resolved two avoidable warning sources:
+#   - `number_prefix` removed by moving fastembed 5.13.2 -> 5.16.0, which moves
+#     hf-hub 0.4.3 -> 0.5.0 and indicatif 0.17.11 -> 0.18.4.
+#   - `rav1e` / AVIF encoder surface removed by making `image` features explicit
+#     and disabling fastembed image-model defaults; Maekon only needs PNG/JPEG
+#     image decoding plus PNG/WebP encoding.
+#
+# Remaining warnings are tracked by #5431 and are upstream-bound as of
+# 2026-06-08:
+#
+# (A) Tauri / tauri-utils 2.9.2 transitive (latest published tauri-utils is
+#     still 2.9.2):
+#   RUSTSEC-2025-0057  fxhash            selectors -> kuchikiki -> tauri-utils
+#   RUSTSEC-2025-0081  unic-char-property urlpattern -> tauri-utils
+#   RUSTSEC-2025-0075  unic-char-range    urlpattern -> tauri-utils
+#   RUSTSEC-2025-0080  unic-common        urlpattern -> tauri-utils
+#   RUSTSEC-2025-0100  unic-ucd-ident     urlpattern -> tauri-utils
+#   RUSTSEC-2025-0098  unic-ucd-version   urlpattern -> tauri-utils
+#   RUSTSEC-2026-0097  rand 0.7.3         phf_codegen/selectors build path
+#
+# (B) fastembed/tokenizers transitive:
+#   RUSTSEC-2024-0436  paste             tokenizers 0.22.2 -> fastembed 5.16.0
+#     tokenizers 0.23.1 exists, but fastembed 5.16.0 requires ^0.22.2, so forcing
+#     it would be a semver override rather than a normal lockfile update.
+#
+# RETIRED by E31: gtk-rs GTK3 binding advisories (RUSTSEC-2024-0411..0420) and
+# RUSTSEC-2024-0429 glib are no longer in the active lockfile after the
+# GTK4/WebKitGTK 6 migration. macOS/Windows builds never carried the old GTK3
+# Linux cluster.
+#
+# Review-by: 2026-11-16 — 상류 Tauri/urlpattern/tokenizers 해소 상태 재평가.
+# F-SC-C41-05: 분산 스케줄 네 번째 버킷.
+#
+# 정책 의도: ignore[] 는 비워 둔다. `unmaintained = "workspace"` 하에서 transitive
+#   advisory 는 surface 되지 않으므로 ignore 항목은 무효이며, 비워야 의도가 명확하다.
+#   신규 workspace(첫 party) crate 의 unmaintained 만 CI 를 차단한다.
 ignore = []
 
 [bans]
 multiple-versions = "allow"
 wildcards = "allow"
+# F-SC-C35-02 / OOS-TBD #4044: bans deny= list activation pending.
+# Candidates (not yet added — Tauri/WebKit transitive conflicts unresolved):
+#   - openssl  → prefer rustls; blocked by Tauri/WebKit transitive dep
+#   - md5/sha1 → cryptographic deprecation; safe to add once Tauri 2.x audit clears
+# When adding entries, use the format:
+#   deny = [{ name = "openssl", version = "*", wrappers = [] }]
+# Review-by: 2026-12-01  # F-SC-C41-05: 분산 스케줄 다섯 번째 버킷 (이전 2026-09-01 단일 cliff;
+# advisory/unsound 정책 검토와 동일 날짜였으나 분산을 위해 별도 버킷으로 이동)
 
 [sources]
 unknown-registry = "deny"

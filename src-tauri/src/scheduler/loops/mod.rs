@@ -6,9 +6,14 @@ mod focus_auto_helper;
 pub(crate) mod health;
 mod helpers;
 mod intelligence;
+mod intervals;
 mod monitor;
+mod monitor_phases;
 mod network;
-#[cfg(feature = "server")]
+// E20-24 (#4816): houses both the server-only SSE loop and the local maintenance
+// loop (deferred resurface). Gated on `local-suggestions` (default-on); the SSE
+// fn inside stays `#[cfg(feature = "server")]`.
+#[cfg(feature = "local-suggestions")]
 pub(crate) mod suggestions;
 mod sync;
 mod system;

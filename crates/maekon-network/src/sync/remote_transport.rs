@@ -144,7 +144,7 @@ impl RemoteSyncTransport {
 
 #[async_trait]
 impl SyncTransport for RemoteSyncTransport {
-    async fn push(&self, changes: &ChangeSet) -> Result<(), CoreError> {
+    async fn push(&self, changes: &ChangeSet) -> Result<usize, CoreError> {
         let json = serde_json::to_vec(changes).map_err(|e| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("serialize changeset: {e}"),
@@ -174,11 +174,14 @@ impl SyncTransport for RemoteSyncTransport {
                     match status.as_u16() {
                         200 | 204 => {
                             debug!(bytes = encrypted.len(), "remote push succeeded");
-                            return Ok(());
+                            // #5143: single remote endpoint → 1 confirmed delivery.
+                            return Ok(1);
                         }
                         409 => {
                             debug!("remote push conflict (409), re-pull needed");
-                            return Ok(()); // SyncEngine handles re-pull
+                            // The body was transmitted before the conflict, so the
+                            // bytes left the device — 1 egress. SyncEngine re-pulls.
+                            return Ok(1);
                         }
                         429 => {
                             last_error = CoreError::RateLimit {
@@ -400,8 +403,12 @@ mod tests {
             .await;
 
         let transport = test_transport(&server.url());
-        let result = transport.push(&test_changeset()).await;
-        assert!(result.is_ok());
+        // 200 must count as 1 confirmed delivery to the egress ledger.
+        let delivered = transport
+            .push(&test_changeset())
+            .await
+            .expect("push must succeed on 200");
+        assert_eq!(delivered, 1, "200 response must yield 1 confirmed delivery");
         mock.assert_async().await;
     }
 
@@ -415,8 +422,16 @@ mod tests {
             .await;
 
         let transport = test_transport(&server.url());
-        let result = transport.push(&test_changeset()).await;
-        assert!(result.is_ok()); // 409 is not an error -- triggers re-pull
+        // 409 = conflict: bytes were transmitted before the server detected it,
+        // so the egress ledger counts 1 delivery. SyncEngine triggers re-pull.
+        let delivered = transport
+            .push(&test_changeset())
+            .await
+            .expect("409 conflict must return Ok rather than Err");
+        assert_eq!(
+            delivered, 1,
+            "409 conflict must still count as 1 egress delivery"
+        );
         mock.assert_async().await;
     }
 
@@ -597,7 +612,13 @@ mod tests {
             .await;
 
         let transport = test_transport(&server.url());
-        assert!(transport.forget_peer("unknown").await.is_ok());
+        // 404 means the peer is already absent; forget_peer treats this as an
+        // idempotent success and returns Ok(()). The whole contract is Ok because
+        // the return type is () — there is no further value to pin (#5594).
+        transport
+            .forget_peer("unknown")
+            .await
+            .expect("404 must be treated as idempotent success by forget_peer");
     }
 
     #[tokio::test]

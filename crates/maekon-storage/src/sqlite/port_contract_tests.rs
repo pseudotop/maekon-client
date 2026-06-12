@@ -64,7 +64,6 @@ async fn vs_store_empty_vector_returns_invalid_args() {
 
     let result = store.store(vec![], make_metadata("empty")).await;
 
-    assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
         matches!(err, CoreError::InvalidArguments { .. }),
@@ -120,7 +119,6 @@ async fn vs_store_quantized_empty_int8_rejected() {
         .store_quantized(vec![1.0, 2.0], &empty_qv, make_metadata("empty-q"), false)
         .await;
 
-    assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
         CoreError::InvalidArguments { .. }
@@ -137,7 +135,6 @@ async fn vs_store_quantized_dimension_mismatch_rejected() {
         .store_quantized(vec![0.1, 0.2, 0.3], &qv, make_metadata("dim-mm"), false)
         .await;
 
-    assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
         CoreError::InvalidArguments { .. }
@@ -175,13 +172,20 @@ async fn ss_get_pending_limit_respected() {
 async fn ss_mark_as_sent_nonexistent_is_ok() {
     let s = storage();
 
-    let result = s
-        .mark_as_sent(&[
-            "nonexistent-id-1".to_string(),
-            "nonexistent-id-2".to_string(),
-        ])
-        .await;
-    assert!(result.is_ok());
+    // Contract: UPDATE on 0 matching rows must succeed (SQLite semantics).
+    // No events were inserted, so pending must stay empty after the call.
+    s.mark_as_sent(&[
+        "nonexistent-id-1".to_string(),
+        "nonexistent-id-2".to_string(),
+    ])
+    .await
+    .expect("mark_as_sent with nonexistent IDs must not error (#5594)");
+
+    let pending = s.get_pending_events(10).await.unwrap();
+    assert!(
+        pending.is_empty(),
+        "no events were inserted, so pending queue must remain empty after mark_as_sent"
+    );
 }
 
 #[tokio::test]
@@ -270,8 +274,13 @@ async fn vi_build_ivf_index_on_empty_store_returns_error() {
     let s = storage();
     let index = SqliteVectorIndex::new(s.connection_arc());
 
-    let result = index.build_ivf_index(4, 10).await;
-    assert!(result.is_err(), "empty store should reject IVF build");
+    assert!(
+        matches!(
+            index.build_ivf_index(4, 10).await.unwrap_err(),
+            CoreError::NotFound { .. }
+        ),
+        "empty store IVF build must yield CoreError::NotFound"
+    );
 }
 
 #[tokio::test]

@@ -5,10 +5,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -24,7 +24,7 @@
 // or undesirable (mutate-then-save sequences rely on the lock as the
 // atomicity guard; see FileIntegrationStateInner). The nursery lint's
 // signal-to-noise ratio on this crate is too low to enforce.
-// See docs/reviews/2026-04-21-p2-significant-drop-tightening-spec.md §Category B.
+// Rationale is embedded here so public source remains self-contained.
 #![allow(clippy::significant_drop_tightening)]
 
 //! # maekon-storage
@@ -32,6 +32,7 @@
 pub mod error;
 pub use error::StorageError;
 
+pub mod audit_chain;
 pub mod encryption;
 pub mod env_secret_store;
 pub mod file_secret_store;
@@ -39,6 +40,7 @@ pub mod file_transport;
 pub mod frame_storage;
 pub mod integration_state_store;
 pub mod keychain;
+pub mod lan_pin_store_adapter;
 pub mod migration;
 pub mod process_env_projection;
 pub mod regime_manager_state_store;

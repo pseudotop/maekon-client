@@ -3,6 +3,8 @@ import type {
   FeatureCapability,
   FeatureCapabilitySnapshot,
   FeatureMaturity,
+  ProviderCliDiscoveryReport,
+  ProviderCliReadiness,
   ProviderSurfaceSpec,
 } from '../api/contracts'
 
@@ -84,4 +86,26 @@ export function providerSurfaceStatusCopyKey(
   }
 
   return findFeatureCapability(snapshot, surface.surface_id)?.status_copy_key ?? null
+}
+
+export function providerSurfaceCliReadiness(
+  surface: ProviderSurfaceSpec | null | undefined,
+  snapshot: FeatureCapabilitySnapshot | null | undefined,
+): ProviderCliReadiness | null {
+  if (!surface) {
+    return null
+  }
+
+  return findFeatureCapability(snapshot, surface.surface_id)?.provider_cli_readiness ?? null
+}
+
+export function providerSurfaceCliDiscovery(
+  surface: ProviderSurfaceSpec | null | undefined,
+  snapshot: FeatureCapabilitySnapshot | null | undefined,
+): ProviderCliDiscoveryReport | null {
+  if (!surface) {
+    return null
+  }
+
+  return findFeatureCapability(snapshot, surface.surface_id)?.provider_cli_discovery ?? null
 }

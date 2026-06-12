@@ -23,7 +23,7 @@ PROTO_ROOT="$ROOT_DIR/api/proto"
 OUT_DIR="$ROOT_DIR/crates/maekon-web/src/proto/generated"
 
 PROTOS=(
-  "$PROTO_ROOT/maekon/dashboard/v1/dashboard.proto"
+  "$PROTO_ROOT/oneshim/dashboard/v1/dashboard.proto"
 )
 
 for proto in "${PROTOS[@]}"; do
@@ -37,8 +37,15 @@ mkdir -p "$OUT_DIR"
 
 echo "Compiling Dashboard gRPC protos (server-side)..."
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-dashboard-proto-gen.XXXXXX")"
+touch "$TEMP_DIR/.maekon-tmp-owned"
+printf '%s\n' "$$" > "$TEMP_DIR/.maekon-tmp-owner-pid"
+cleanup_temp_dir() {
+  rm -rf "$TEMP_DIR"
+}
+trap cleanup_temp_dir EXIT
+trap 'cleanup_temp_dir; exit 130' INT
+trap 'cleanup_temp_dir; exit 143' TERM
 
 cat > "$TEMP_DIR/Cargo.toml" <<'CARGO'
 [package]
@@ -77,7 +84,7 @@ BUILDRS
 echo "Running code generation..."
 "$CARGO_CMD" build --manifest-path "$TEMP_DIR/Cargo.toml" --quiet 2>&1
 
-echo "Generated: $OUT_DIR/maekon.dashboard.v1.rs"
+echo "Generated: $OUT_DIR/oneshim.dashboard.v1.rs"
 echo ""
 echo "Don't forget to commit the updated generated file:"
 echo "  git add crates/maekon-web/src/proto/generated/"

@@ -1,5 +1,18 @@
 // Dynamic imports for @tauri-apps/* — graceful degradation outside Tauri (ADR-004)
-import { Brain, Camera, Crosshair, LayoutDashboard, Lightbulb, Settings, WifiOff } from 'lucide-react'
+import {
+  Activity,
+  Brain,
+  Camera,
+  ChevronRight,
+  Crosshair,
+  LayoutDashboard,
+  Lightbulb,
+  Pin,
+  Plus,
+  Power,
+  Settings,
+  WifiOff,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -37,7 +50,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 const COLLAPSED_WIDTH = 260
 const COLLAPSED_HEIGHT = 36
 const EXPANDED_WIDTH = 320
-const EXPANDED_HEIGHT = 310
+const EXPANDED_HEIGHT = 430
 
 export function App() {
   const { t } = useTranslation()
@@ -46,6 +59,7 @@ export function App() {
   const [expanded, setExpanded] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [sceneResult, setSceneResult] = useState<SceneAnalysisResult | null>(null)
+  const [captureCount, setCaptureCount] = useState(0)
   const positionSaveTimer = useRef<number | null>(null)
   const feedbackTimer = useRef<number | null>(null)
 
@@ -196,6 +210,7 @@ export function App() {
   const handleManualCapture = useCallback(async () => {
     try {
       await invoke('trigger_manual_capture')
+      setCaptureCount((count) => count + 1)
       showFeedback(t('trackingPanel.captured'))
     } catch (e) {
       console.warn('trigger_manual_capture failed:', e)
@@ -231,13 +246,42 @@ export function App() {
   const handleSuggestions = useCallback(async () => {
     try {
       const { emit } = await import('@tauri-apps/api/event')
-      // Emit toggle event — the overlay's useEffect handles window resize
-      // via toggle_suggestions_panel IPC (compact panel mode).
-      await emit('overlay:toggle-suggestions')
+      await emit('overlay:set-suggestions-panel', { open: true })
+      try {
+        await invoke('toggle_suggestions_panel', { open: true })
+      } catch (e) {
+        console.debug('toggle_suggestions_panel fallback failed:', e)
+      }
       showFeedback(t('trackingPanel.suggestionsOpened'))
     } catch (e) {
-      console.warn('overlay:toggle-suggestions failed:', e)
+      console.warn('open suggestions panel failed:', e)
       showFeedback(t('trackingPanel.suggestionsUnavailable'))
+    }
+  }, [showFeedback, t])
+
+  const handleOpenMaekon = useCallback(async () => {
+    await invoke('show_main_window')
+  }, [])
+
+  const handleOpenChat = useCallback(async () => {
+    try {
+      const { emit } = await import('@tauri-apps/api/event')
+      await invoke('show_main_window')
+      await emit('navigate:chat', {})
+      showFeedback(t('trackingPanel.chatOpened'))
+    } catch (e) {
+      console.warn('open chat failed:', e)
+      showFeedback(t('trackingPanel.connectionUnavailable'))
+    }
+  }, [showFeedback, t])
+
+  const handleQuit = useCallback(async () => {
+    try {
+      await invoke('simulate_tray_action', { action: 'quit' })
+      showFeedback(t('trackingPanel.quitRequested'))
+    } catch (e) {
+      console.warn('quit request failed:', e)
+      showFeedback(t('trackingPanel.quitUnavailable'))
     }
   }, [showFeedback, t])
 
@@ -247,10 +291,13 @@ export function App() {
   const allConnected = connCount === 3
   const isLocalMode = connCount === 0
   const expandedStatusMessage = feedback ?? (isLocalMode ? t('trackingPanel.offlineMessage') : null)
+  const runningLabel = state.paused ? t('trackingPanel.screenContextPaused') : t('trackingPanel.screenContextReady')
+  const pendingSuggestionCount = sceneResult ? 1 : 0
 
   return (
     <div
       data-tauri-drag-region
+      data-visual-region="floating-bar-anchor"
       className={`flex select-none flex-col overflow-hidden rounded-xl bg-black/80 text-white text-xs backdrop-blur-md ${state.paused ? '' : 'animate-panel-glow'}`}
       style={
         state.paused
@@ -274,10 +321,21 @@ export function App() {
         {!allConnected && (
           <span className="h-2 w-2 shrink-0 rounded-full bg-status-error" title={`${connCount}/3 connected`} />
         )}
-        <span data-tauri-drag-region className="flex-1 truncate">
+        <span data-tauri-drag-region data-visual-region="screen-context-status" className="flex-1 truncate">
           {state.paused ? t('trackingPanel.paused') : (feedback ?? t('trackingPanel.capturing'))}
         </span>
 
+        <button
+          type="button"
+          onClick={handleSuggestions}
+          aria-label={`${pendingSuggestionCount} ${t('trackingPanel.aiSuggestions')}`}
+          data-visual-region="collapsed-suggestion-count"
+          className="inline-flex min-w-7 items-center justify-center gap-1 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-white/20"
+          title={t('trackingPanel.aiSuggestions')}
+        >
+          <Lightbulb size={10} />
+          <span>{pendingSuggestionCount}</span>
+        </button>
         <button
           type="button"
           onClick={() => invoke('toggle_capture_pause')}
@@ -306,42 +364,70 @@ export function App() {
 
       {/* Expanded panel */}
       {expanded && (
-        <div data-tauri-drag-region className="flex cursor-move flex-col gap-1 border-white/10 border-t px-3 pt-1 pb-3">
-          <ActionButton
-            icon={<LayoutDashboard size={14} />}
-            label={t('trackingPanel.openDashboard')}
-            onClick={() => invoke('show_main_window')}
-          />
-          <ActionButton
-            icon={<Camera size={14} />}
-            label={t('trackingPanel.manualCapture')}
-            onClick={handleManualCapture}
-          />
-          <ActionButton
-            icon={<Brain size={14} />}
-            label={t('trackingPanel.sceneAnalysis')}
-            onClick={handleSceneAnalysis}
-          />
-          <ActionButton
-            icon={<Lightbulb size={14} />}
-            label={t('trackingPanel.aiSuggestions')}
-            onClick={handleSuggestions}
-          />
-          <ActionButton
-            icon={<Crosshair size={14} />}
-            label={t('trackingPanel.focusMode')}
-            onClick={handleToggleFocus}
-          />
-
-          {/* Connection status + local service lane indicator */}
-          <div data-tauri-drag-region className="mt-2 border-white/10 border-t pt-2">
+        <section
+          data-tauri-drag-region
+          aria-label={t('trackingPanel.floatingMenu')}
+          data-visual-region="keyboard-a11y-action"
+          className="flex cursor-move flex-col gap-2 border-white/10 border-t px-3 pt-2 pb-3"
+        >
+          <MenuSection title={t('trackingPanel.running')}>
+            <CommandMenuItem
+              icon={<Activity size={14} />}
+              label={runningLabel}
+              meta={isLocalMode ? t('trackingPanel.localMode') : t('trackingPanel.captureServicesReady')}
+            />
             {expandedStatusMessage && (
-              <output aria-live="polite" className="mb-1.5 flex items-center gap-1.5 text-[10px] text-semantic-warning">
+              <output aria-live="polite" className="flex items-center gap-1.5 px-2 text-[10px] text-semantic-warning">
                 {isLocalMode && !feedback && <WifiOff size={10} />}
                 <span>{expandedStatusMessage}</span>
               </output>
             )}
-            <div data-tauri-drag-region className="flex items-center justify-between text-[10px] text-white/60">
+          </MenuSection>
+
+          <MenuSection title={t('trackingPanel.pinned')}>
+            <CommandMenuItem
+              icon={<Pin size={14} />}
+              label={t('trackingPanel.extractTasks')}
+              meta={t('trackingPanel.extractTasksMeta')}
+              onClick={handleSuggestions}
+            />
+            <CommandMenuItem
+              icon={<Camera size={14} />}
+              label={t('trackingPanel.manualCapture')}
+              meta={t('trackingPanel.captureCurrentContextMeta')}
+              onClick={handleManualCapture}
+            />
+          </MenuSection>
+
+          <MenuSection title={t('trackingPanel.recent')}>
+            <CommandMenuItem
+              icon={<Brain size={14} />}
+              label={t('trackingPanel.reviewCurrentWindow')}
+              meta={t('trackingPanel.reviewCurrentWindowMeta')}
+              onClick={handleSceneAnalysis}
+            />
+            <CommandMenuItem
+              icon={<Lightbulb size={14} />}
+              label={t('trackingPanel.aiSuggestions')}
+              meta={t('trackingPanel.aiSuggestionsMeta')}
+              onClick={handleSuggestions}
+            />
+            <CommandMenuItem
+              icon={<Crosshair size={14} />}
+              label={t('trackingPanel.focusMode')}
+              meta={t('trackingPanel.focusModeMeta')}
+              onClick={handleToggleFocus}
+            />
+          </MenuSection>
+
+          <MenuSection title={t('trackingPanel.usage')}>
+            <UsageRow label={t('trackingPanel.captureUsage', { count: captureCount })} />
+            <UsageRow label={t('trackingPanel.serviceLanesConnected', { count: connCount, total: 3 })} />
+            <div
+              data-tauri-drag-region
+              data-visual-region="provider-health-dots"
+              className="flex items-center justify-between px-2 text-[10px] text-white/60"
+            >
               <div className="flex items-center gap-3">
                 <StatusDot connected={conn.server} label={t('trackingPanel.server')} />
                 <StatusDot connected={conn.llm} label="LLM" />
@@ -349,14 +435,14 @@ export function App() {
               </div>
               <button
                 type="button"
-                onClick={() => invoke('show_main_window')}
+                onClick={handleOpenMaekon}
                 className="rounded p-0.5 transition-colors hover:bg-white/10"
                 title={t('trackingPanel.openSettings')}
               >
                 <Settings size={10} />
               </button>
             </div>
-          </div>
+          </MenuSection>
 
           {/* Scene analysis result (auto-dismisses after 10s) */}
           {sceneResult && (
@@ -389,37 +475,105 @@ export function App() {
               )}
             </div>
           )}
-        </div>
+
+          <div
+            data-tauri-drag-region
+            data-visual-region="quick-actions"
+            className="mt-0.5 border-white/10 border-t pt-1"
+          >
+            <CommandMenuItem icon={<Plus size={14} />} label={t('trackingPanel.newChat')} onClick={handleOpenChat} />
+            <CommandMenuItem
+              icon={<LayoutDashboard size={14} />}
+              label={t('trackingPanel.openMaekon')}
+              onClick={handleOpenMaekon}
+            />
+            <CommandMenuItem
+              icon={<Power size={14} />}
+              label={t('trackingPanel.quitMaekon')}
+              onClick={handleQuit}
+              danger
+            />
+          </div>
+        </section>
       )}
     </div>
   )
 }
 
-function ActionButton({
+function MenuSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section data-tauri-drag-region className="border-white/10 border-b pb-1 last:border-b-0">
+      <h2 data-tauri-drag-region className="px-2 pb-0.5 font-medium text-[10px] text-white/45">
+        {title}
+      </h2>
+      <div data-tauri-drag-region className="flex flex-col gap-0.5">
+        {children}
+      </div>
+    </section>
+  )
+}
+
+function CommandMenuItem({
   icon,
   label,
+  meta,
   onClick,
   disabled,
+  danger,
+  visualRegion,
 }: {
   icon: React.ReactNode
   label: string
+  meta?: string
   onClick?: () => void
   disabled?: boolean
+  danger?: boolean
+  visualRegion?: string
 }) {
   const { t } = useTranslation()
+  if (!onClick) {
+    return (
+      <div
+        data-tauri-drag-region
+        data-visual-region={visualRegion}
+        className="flex items-start gap-2 rounded-md px-2 py-1 text-left text-white/80"
+      >
+        <span className="mt-0.5 flex w-5 items-center justify-center text-white/70">{icon}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{label}</span>
+          {meta && <span className="block truncate text-[10px] text-white/45">{meta}</span>}
+        </span>
+      </div>
+    )
+  }
+
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-white/80 transition-colors ${
+      aria-label={label}
+      data-visual-region={visualRegion}
+      className={`flex items-start gap-2 rounded-md px-2 py-1 text-left transition-colors ${
         disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-white/10 active:bg-white/20'
-      }`}
+      } ${danger ? 'text-semantic-error' : 'text-white/80'}`}
       title={disabled ? t('trackingPanel.comingSoon') : label}
     >
-      <span className="flex w-5 items-center justify-center">{icon}</span>
-      <span>{label}</span>
+      <span className="mt-0.5 flex w-5 items-center justify-center">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{label}</span>
+        {meta && <span className="block truncate text-[10px] text-white/45">{meta}</span>}
+      </span>
+      <ChevronRight size={12} className="mt-1 text-white/35" />
     </button>
+  )
+}
+
+function UsageRow({ label }: { label: string }) {
+  return (
+    <div data-tauri-drag-region className="px-2 py-0.5 text-[10px] text-white/60">
+      {label}
+    </div>
   )
 }
 

@@ -466,9 +466,13 @@ Subscribe to SSE event stream for a session.
 
 ```bash
 curl -s -N http://localhost:10090/api/automation/gui/sessions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/events \
-  -H "x-gui-session-token: b7f3a1d9c8e2f4a6b0d1e3f5a7c9d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4" \
+  --cookie "maekon_gui_session_token=b7f3a1d9c8e2f4a6b0d1e3f5a7c9d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4" \
   -H "Accept: text/event-stream"
 ```
+
+Browser `EventSource` clients use the same path-scoped cookie and MUST NOT put
+the capability token in the query string. Non-browser clients may still use the
+`x-gui-session-token` header for local diagnostics.
 
 ### SSE Event Stream
 
@@ -510,7 +514,7 @@ Keep-alive pings are sent every 15 seconds as SSE comments (`: keep-alive`).
 | HTTP | ApiError Variant | Domain Error | When |
 |------|-----------------|-------------|------|
 | 400 | `BadRequest` | `BadRequest(msg)` | Invalid input, unknown candidate, no targets |
-| 401 | `Unauthorized` | `Unauthorized` | Missing or invalid `x-gui-session-token` |
+| 401 | `Unauthorized` | `Unauthorized` | Missing or invalid GUI session token |
 | 403 | `Forbidden` | `Forbidden(msg)` | OS denied accessibility access |
 | 404 | `NotFound` | `NotFound(msg)` | Session ID not found |
 | 409 | `Conflict` | `FocusDrift(msg)` | Window focus changed since session creation |

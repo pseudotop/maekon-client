@@ -10,7 +10,12 @@ use thiserror::Error;
 use maekon_core::config::JwtAlgorithm;
 
 /// Claims expected on every JWT. `sub` is logged; `jti` is optional
-/// (correlation hint only — no replay store).
+/// (correlation hint only — no replay store here on the desktop agent).
+///
+/// JWT signature + expiry only; replay and revocation checks are owned by the
+/// upstream issuer. The desktop agent has no shared blacklist access and runs
+/// in a separate trust boundary, so it fails closed on signature, issuer,
+/// audience, expiry, nbf, and iat freshness instead.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Claims {
     pub sub: String,
@@ -123,53 +128,41 @@ impl JwtVerifier {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use aws_lc_rs::{
+        encoding::{AsDer, Pkcs8V1Der, PublicKeyX509Der},
+        rsa::{KeyPair, KeySize},
+        signature::KeyPair as _,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use jsonwebtoken::{encode, EncodingKey, Header};
 
-    /// Returns (priv_pem_pkcs8, pub_pem_spki) for an RSA-2048 test key pair.
-    ///
-    /// Uses a pre-generated test key instead of runtime generation because the
-    /// `ring` backend (default rcgen feature) does not support RSA key generation.
-    /// This key is TEST-ONLY and MUST NOT be used in production.
-    /// `pub(crate)` so Task 10 auth_layer tests can reuse without duplicating.
+    fn pem_block(label: &str, der: &[u8]) -> Vec<u8> {
+        let encoded = STANDARD.encode(der);
+        let mut pem = format!("-----BEGIN {label}-----\n");
+        for chunk in encoded.as_bytes().chunks(64) {
+            pem.push_str(std::str::from_utf8(chunk).expect("base64 is ASCII"));
+            pem.push('\n');
+        }
+        pem.push_str(&format!("-----END {label}-----\n"));
+        pem.into_bytes()
+    }
+
+    /// Returns (priv_pem_pkcs8, pub_pem_spki) for a generated RSA-2048 test key pair.
+    /// `pub(crate)` so auth_layer tests can reuse the same runtime fixture.
     pub(crate) fn rsa_keypair_pem() -> (Vec<u8>, Vec<u8>) {
-        let priv_pem = b"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDBZMG5h9Kz66YM
-IxS1W6e2BXA/CH4tzMEcnasPGXD/dHHIvSIFgWM7Gf+617FE8UA8V9BHzifRGOWW
-V+Ikw2hX2gDa47sjWaHVc7so5MlrNSXkBx6lAo3GOs1qbbNWdXt0I7orCxXShSG3
-ymElMb9jjjTPxVOr0B2d/jv9BPU+Y4rhw2HDfY/P7ZL7NmOK8dMeH9xLCRdX+/oH
-I/2A3G0EOoDaRpoJE15J28d7HekZVdlektwSy2Ox/lT4V9/8kAhrAQhtr59dFf41
-1ENN4gyrTVpglGFNIOqGBdFxaLKjjwUiCQHWTMuGvmYlKO2HJIqwkyfOrn3penHY
-0ff1K8szAgMBAAECggEASWJ24nSIPy6x1RQwxPrRIpBgvgJ2guGZ+8ZWhUXFq6Hf
-lWkzcjxdT613bUpwoXUcR2mZBs5TLJSSdiDGFuYxf3ihb24P8oOOFeWzBPr/9Vb3
-GFadScc0zh49GWAkN7Af1vvBppivwLE1EL1SbJ86fUgWgSrjK6SuwGebEtFhUDki
-9dAHsox0UPJGOrmqlolMC/CepRk8k3FGquD02Hg2S8uNQh15OH7xHiE2ERYMR6Wt
-Ht0HrLrzsGDxm1j1xKNsUYG34JA2dE5mVez3OeZWRn9+P3eAwiTD4e6e7zediynq
-jQvx8+iqTgl4J6qhKXCFUBcd4IB3tfZ3RVjjpG5qZQKBgQD0v2WTI48whgW0+RuK
-J9M0dt1KB//ihPoe9N2ex5ufuA/ESsmQc6HgsjT/FnAhLaAfOq/pS55w+gwQX2uH
-nByW/Xj1aqz2gpY00ghDW6QyFduNvD0uqyzO06qqp+aqDe26zUeRyGT4roG0o6qU
-8Td/j7yAvTkRCAxwvWj0xYH5DwKBgQDKSPBO5OZ+UkjDo8fawmX1E0+TvfGz+HbK
-fbav6ME/5FOIHtJeCDitECgTQ8MZ+9IXAif8VAy3zT5bd8vEqO4ZKVJ3+/FJvEL4
-+J8UaEIagHeqHaTuhRf6ViQcLkGZizZ4jqz5E3k19wYofUUfZVNNjNR4eHQHPKTy
-agJvwAcjnQKBgB2k+SajTfqwoQxUh/Np83kNVKxc36+OL8WEHzvWLZFg9/fsnxFy
-EA9pRmYHT7mVDyn5L8lwMVa50rBA/oNEc2oOdZI0Q5LwKkVnkzylYvP2FcvLGxYG
-Ab1jge59u8CpQzw3FQ4hWamNaYR5tnWn6fL3c/ub78eSU/9r0cSkD6QdAoGAPH/+
-J4p8iZFwo9rLPllgByGEbmqj7LDGTp+00P3rNoHCnfah8m/BC7nGUqS0qIPRfQIv
-FV/KAfsHyHGW5zWjKLFcMfiPXP9KhI5PfdoE00pS//UnzBLQbhXvbOJEyniBjSMX
-BtPVL9e25ss4rkAu3wXc0j8sbLGtn7cnDWdAe10CgYEAmug51NKEhlLy3VbEzxQ2
-hTSqxYlFMnnUW3/nzisK1ftY1ugjhbSnCo1KJVDPQ9FeUP+2GQrTLMoV65N9RvN8
-rc39jJXz8eCZDpHnTFC4/VFAGyRrPRPgK7+9N3wi9r/ElHvdFGXDJqWeci/7HKwi
-2+PrIkT3I7Oqk+2rPeT9/8g=
------END PRIVATE KEY-----";
-        let pub_pem = b"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwWTBuYfSs+umDCMUtVun
-tgVwPwh+LczBHJ2rDxlw/3RxyL0iBYFjOxn/utexRPFAPFfQR84n0RjlllfiJMNo
-V9oA2uO7I1mh1XO7KOTJazUl5AcepQKNxjrNam2zVnV7dCO6KwsV0oUht8phJTG/
-Y440z8VTq9Adnf47/QT1PmOK4cNhw32Pz+2S+zZjivHTHh/cSwkXV/v6ByP9gNxt
-BDqA2kaaCRNeSdvHex3pGVXZXpLcEstjsf5U+Fff/JAIawEIba+fXRX+NdRDTeIM
-q01aYJRhTSDqhgXRcWiyo48FIgkB1kzLhr5mJSjthySKsJMnzq596Xpx2NH39SvL
-MwIDAQAB
------END PUBLIC KEY-----";
-        (priv_pem.to_vec(), pub_pem.to_vec())
+        let keypair = KeyPair::generate(KeySize::Rsa2048).expect("generate RSA test key");
+        let priv_der = AsDer::<Pkcs8V1Der>::as_der(&keypair)
+            .expect("encode RSA private test key")
+            .as_ref()
+            .to_vec();
+        let pub_der = AsDer::<PublicKeyX509Der>::as_der(keypair.public_key())
+            .expect("encode RSA public test key")
+            .as_ref()
+            .to_vec();
+        (
+            pem_block("PRIVATE KEY", &priv_der),
+            pem_block("PUBLIC KEY", &pub_der),
+        )
     }
 
     fn ec_keypair_pem() -> (Vec<u8>, Vec<u8>) {
@@ -221,7 +214,14 @@ MwIDAQAB
         let token = encode(&Header::new(Algorithm::ES256), &claims, &enc).unwrap();
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Es256, &pub_pem, "central-auth", "agent-1").unwrap();
-        assert!(verifier.verify(&token).is_ok());
+        // Pin the same claim fields as the RS256 parallel test: sub must round-trip
+        // and the algorithm field on the verifier must reflect ES256 (#5594).
+        let c = verifier
+            .verify(&token)
+            .expect("valid ES256 token must be accepted");
+        assert_eq!(c.sub, "user-1");
+        assert_eq!(c.iss, "central-auth");
+        assert_eq!(c.aud, "agent-1");
     }
 
     #[test]
@@ -233,8 +233,11 @@ MwIDAQAB
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
         assert!(
-            verifier.verify(&token).is_err(),
-            "HS256 must be rejected under RS256 config"
+            matches!(
+                verifier.verify(&token).unwrap_err(),
+                JwtVerifyError::Decode(_)
+            ),
+            "HS256 must be rejected with JwtVerifyError::Decode under RS256 config"
         );
     }
 
@@ -246,7 +249,11 @@ MwIDAQAB
         let token = encode(&Header::new(Algorithm::RS256), &claims, &enc).unwrap();
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
-        assert!(verifier.verify(&token).is_err());
+        let err = verifier.verify(&token).unwrap_err();
+        assert!(
+            matches!(err, JwtVerifyError::Decode(_)),
+            "expired token must return JwtVerifyError::Decode, got: {err:?}"
+        );
     }
 
     #[test]
@@ -258,7 +265,11 @@ MwIDAQAB
         let token = encode(&Header::new(Algorithm::RS256), &claims, &enc).unwrap();
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
-        assert!(verifier.verify(&token).is_err());
+        let err = verifier.verify(&token).unwrap_err();
+        assert!(
+            matches!(err, JwtVerifyError::Decode(_)),
+            "wrong issuer must return JwtVerifyError::Decode, got: {err:?}"
+        );
     }
 
     #[test]
@@ -270,7 +281,11 @@ MwIDAQAB
         let token = encode(&Header::new(Algorithm::RS256), &claims, &enc).unwrap();
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
-        assert!(verifier.verify(&token).is_err());
+        let err = verifier.verify(&token).unwrap_err();
+        assert!(
+            matches!(err, JwtVerifyError::Decode(_)),
+            "wrong audience must return JwtVerifyError::Decode, got: {err:?}"
+        );
     }
 
     #[test]
@@ -309,8 +324,7 @@ MwIDAQAB
 
     #[test]
     fn verify_rejects_alg_none_header() {
-        let (priv_pem, pub_pem) = rsa_keypair_pem();
-        let _enc = EncodingKey::from_rsa_pem(&priv_pem).unwrap();
+        let (_, pub_pem) = rsa_keypair_pem();
         // Construct an `alg: none` token manually: header.claims.<empty signature>
         let header = r#"{"alg":"none","typ":"JWT"}"#;
         let header_b64 = base64_url(header.as_bytes());
@@ -320,8 +334,11 @@ MwIDAQAB
         let verifier =
             JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
         assert!(
-            verifier.verify(&forged).is_err(),
-            "alg:none must be rejected"
+            matches!(
+                verifier.verify(&forged).unwrap_err(),
+                JwtVerifyError::Decode(_)
+            ),
+            "alg:none must be rejected with JwtVerifyError::Decode"
         );
     }
 

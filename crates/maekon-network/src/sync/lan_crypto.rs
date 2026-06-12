@@ -82,7 +82,7 @@ mod tests {
     }
 
     fn fixture_passphrase(seed: char) -> String {
-        std::iter::repeat(seed).take(16).collect()
+        std::iter::repeat_n(seed, 16).collect()
     }
 
     #[test]

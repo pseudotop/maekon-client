@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. 무결성 preflight 실행, AI 접근 모드 평가
     // 3. 저장소/모니터/네트워크/비전/자동화 컴포넌트 DI 구성
     // 4. 제공자 어댑터 해석 + 필요 시 CLI 브리지 동기화
-    // 5. 스케줄러(9-루프) 시작
+    // 5. 스케줄러(16-루프) 시작
     // 6. 웹 서버 + 선택적 업데이트 코디네이터 시작
     // 7. 종료 신호 대기 후 세션 종료 기록
     Ok(())
@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Scheduler (`scheduler/`)
 
-현재 스케줄러는 3-루프가 아니라 **9-루프 오케스트레이터**다 (`Scheduler::run()` → `run_scheduler_loops()`).
+현재 스케줄러는 3-루프가 아니라 **16-루프 오케스트레이터**다 (`Scheduler::run()` → `run_scheduler_loops()`).
 
 | 루프 | 주기 | 책임 |
 |------|------|------|
@@ -127,6 +127,13 @@ async fn main() -> anyhow::Result<()> {
 | Notification | 1분 | 장시간 작업 알림 점검 |
 | Focus | 1분 | `FocusAnalyzer::analyze_periodic()` + 제안 생성 |
 | Event Snapshot | 30초 | 상세 프로세스 + `InputActivityCollector` 스냅샷 이벤트 수집 |
+| OAuth Refresh | 120초 | provider token refresh 및 만료 전 갱신 |
+| Analysis | 설정값 기반 (기본 5분 / full 30분) | 분석 파이프라인 실행 및 결과 반영 |
+| Cross-device Sync | 5분 | LAN/cloud sync adapter와 local merge 경계 실행 |
+| Coaching | 30초 | 코칭 후보 생성 및 상태 반영 |
+| Health Check | 조건부, 5초 | 연결 모드 health probe |
+| Suggestion SSE | 조건부, stream reconnect | suggestion streaming 유지 |
+| Suggestion Maintenance | 조건부, 30초 | 지연/재시도 suggestion maintenance |
 
 핵심 경계:
 
