@@ -13,6 +13,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { colors, typography } from '../../styles/tokens'
 import type { BadgeColor } from '../../styles/variants'
 import { cn } from '../../utils/cn'
+// #5705: natural-language automation entry point visible on all 3 tabs
+import IntentHintBar from './IntentHintBar'
 
 const sourceLabelByValue: Record<string, string> = {
   local: 'automation.sourceLocal',
@@ -113,6 +115,9 @@ export default function AutomationLayout() {
   return (
     <div className="min-h-full space-y-6 p-6">
       <h1 className={cn(typography.h1, colors.text.pageTitle)}>{t('automation.title')}</h1>
+
+      {/* #5705: Intent hint bar — visible above status cards on all 3 tabs */}
+      <IntentHintBar status={status} />
 
       {/* Status cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">

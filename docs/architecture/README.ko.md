@@ -4,6 +4,16 @@
 
 Architecture Decision Records 는 `client-rust` 워크스페이스의 단일 아키텍처 결정을 기록합니다. *무엇* 을 결정했고 *왜* 했는지의 authoritative 레코드입니다. 구현 상세는 companion implementation record 에 두며 ADR 자체에는 두지 않습니다.
 
+## 레지스트리 범위
+
+이 공개 ADR 레지스트리는 Maekon 데스크톱 클라이언트만 다룹니다: Tauri,
+IPC, Rust 런타임 crate, privacy/policy gate, local-first integration surface.
+ADR 번호는 이 레지스트리 안에서만 의미가 있으며 전역 ONESHIM 아키텍처
+번호로 해석하지 않습니다.
+
+신규 ADR 은 공개 Maekon 클라이언트 워크스페이스의 결정을 바꿀 때만 이
+레지스트리에 추가합니다.
+
 ## 새 ADR 작성
 
 1. [`ADR-TEMPLATE.md`](./ADR-TEMPLATE.md) (또는 한국어 companion `ADR-TEMPLATE.ko.md`) 읽기.
@@ -36,8 +46,15 @@ Architecture Decision Records 는 `client-rust` 워크스페이스의 단일 아
 | [017](./ADR-017-feedback-signal-sink.md) | FeedbackSignalSink | Accepted | core 포트, suggestion, analysis |
 | [018](./ADR-018-regime-manager-persistence.md) | RegimeManager Persistence | Accepted | core 포트, storage, analysis |
 | [019](./ADR-019-error-code-infrastructure.md) | Error Code Infrastructure + AWS Bedrock Intentional Non-Support | Accepted | 전체 crate — wire-format error code |
+| [020](./ADR-020-macos-private-api-policy.md) | macOS Private API 정책 (`macOSPrivateApi: true`) | Accepted | `src-tauri/tauri.conf.json`, `src-tauri/src/magic_overlay.rs` |
+| [021](./ADR-021-config-consent-core-placement.md) | Config 및 Consent Core 배치 | Accepted | `ConfigManager`, `ConsentManager`, runtime wiring |
+| [022](./ADR-022-client-id-generation-ulid.md) | 클라이언트 ID 생성 — prefix+ULID 규칙 | Accepted | 전체 crate — 엔티티 ID 생성 |
+| [023](./ADR-023-local-symbolic-memory-graph.md) | Standalone 클라이언트용 로컬 심볼릭 메모리-그래프 레이어 | Accepted | `maekon-storage` (v34), `maekon-core` ports/models (substrate landed) |
+| [024](./ADR-024-conversation-content-guard-port.md) | 대화 콘텐츠 가드 포트 | Accepted | `provider_adapters/guarded_conversation.rs`, `session_manager/factory.rs`, `ConversationSession` 포트 |
+| [025](./ADR-025-codex-chatgpt-subscription-tos-gate.md) | OpenAI Codex / ChatGPT 구독 ToS 게이트 (App-Server 경로) | Accepted | `provider-surface-catalog.json`, `session_manager/factory.rs`, `provider_adapters/llm_resolver.rs` |
+| [026](./ADR-026-async-storage-convergence-consent-port.md) | 비동기 스토리지 수렴 + 객체 안전 ConsentManagerPort | Accepted | `maekon-core` 스토리지 포트 + `consent.rs`, `maekon-storage/src/sqlite`, `maekon-web`, `focus_analyzer` |
 
-**다음 가용 ID**: `ADR-020`.
+**다음 가용 ID**: `ADR-027`.
 
 ## 컨벤션 요약
 

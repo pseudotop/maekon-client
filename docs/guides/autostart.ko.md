@@ -258,8 +258,6 @@ Maekon은 동시에 하나의 인스턴스만 실행됩니다.
 
 ## 참고
 
-- **PR-B1 spec**: `docs/superpowers/specs/2026-04-25-phase9-pr-b-autostart-ipc-foundation-design.md`
-- **PR-B2 spec**: `docs/superpowers/specs/2026-04-25-phase9-pr-b2-autostart-linux-deep-design.md`
 - **ADR-019**: 와이어 코드 인프라 (`crates/maekon-core/src/error_codes/autostart.rs`)
 - **단일 인스턴스 플러그인**: tauri-plugin-single-instance v2
-- **설치 가이드**: [`docs/install.ko.md`](./install.ko.md) — 바이너리 설치 방법 (파일명 / 환경 변수 레거시 이름 안내 포함)
+- **설치 가이드**: [`docs/install.ko.md`](../install.ko.md) — 바이너리 설치 방법 (파일명 / 환경 변수 레거시 이름 안내 포함)

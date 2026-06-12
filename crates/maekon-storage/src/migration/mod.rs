@@ -16,6 +16,27 @@
 //!   RegimeManager persistence across restart (Phase 3 C3c/X6)
 //! - `v32_audit_log_command_id_index.rs` — partial index on audit_log.command_id
 //!   for O(log n) entries_by_command_id lookups (D25)
+//! - `v33_suggestion_context_scope.rs` — context scope columns on suggestions
+//!   for app/window/target-aware suggestion restore and dedupe
+//! - `v34_memory_graph.rs` — memory_claims + memory_edges tables for the
+//!   ADR-023 local symbolic memory-graph substrate
+//! - `v35_memory_edge_unique.rs` — UNIQUE(src_id, dst_id, edge_type) on
+//!   memory_edges so the `INSERT OR IGNORE` in add_edge/supersede_claim actually
+//!   dedupes (ADR-023 belief-revision hygiene; collapses prior duplicates first)
+//! - `v36_egress_ledger.rs` — egress_ledger table recording what left the device
+//!   (or was policy-blocked) for compliance evidence (#4803, E20)
+//! - `v37_audit_log_hash_chain.rs` — SHA-256 hash chain columns (seq/prev_hash/
+//!   entry_hash) on audit_log making it tamper-evident (ADR-072 client mirror,
+//!   #4834, E20)
+//! - `v38_sync_tombstones.rs` — retained `sync_tombstones` outbox (id+HLC skeletons,
+//!   no PII) carrying cross-device GDPR Art.17 erasure to offline-then-reconnecting
+//!   peers; retained across erase like egress_ledger (#5174/#5178, E20)
+//! - `v39_hlc_clock.rs` — `hlc_clock` singleton: persistent monotonic HLC clock floor
+//!   for stamping local synced-table writes so sync actually propagates (F0/#5186, E20)
+//! - `v41_cjk_bigram_shadow.rs` — rebuild `search_fts` with CJK bigram shadow column;
+//!   switches tokenizer from `porter unicode61` to `unicode61` and adds an FTS-indexed
+//!   `shadow` column containing CJK bigram expansions. Improves ja R@3 0→0.611,
+//!   ko 0.286→0.611 (Option F, #5758).
 
 #[cfg(test)]
 mod tests;
@@ -32,11 +53,20 @@ mod v29;
 mod v30;
 mod v31_regime_manager_state;
 mod v32_audit_log_command_id_index;
+mod v33_suggestion_context_scope;
+mod v34_memory_graph;
+mod v35_memory_edge_unique;
+mod v36_egress_ledger;
+mod v37_audit_log_hash_chain;
+mod v38_sync_tombstones;
+mod v39_hlc_clock;
+mod v40_egress_recipient_count;
+mod v41_cjk_bigram_shadow;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub(crate) const CURRENT_VERSION: u32 = 32;
+pub(crate) const CURRENT_VERSION: u32 = 41;
 
 /// Back up the database file before running schema migrations.
 fn backup_if_needed(conn: &Connection, current_version: u32) -> Option<std::path::PathBuf> {
@@ -224,6 +254,33 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     if current < 32 {
         run_migration_step(conn, 32, v32_audit_log_command_id_index::migrate_v32)?;
+    }
+    if current < 33 {
+        run_migration_step(conn, 33, v33_suggestion_context_scope::migrate_v33)?;
+    }
+    if current < 34 {
+        run_migration_step(conn, 34, v34_memory_graph::migrate_v34)?;
+    }
+    if current < 35 {
+        run_migration_step(conn, 35, v35_memory_edge_unique::migrate_v35)?;
+    }
+    if current < 36 {
+        run_migration_step(conn, 36, v36_egress_ledger::migrate_v36)?;
+    }
+    if current < 37 {
+        run_migration_step(conn, 37, v37_audit_log_hash_chain::migrate_v37)?;
+    }
+    if current < 38 {
+        run_migration_step(conn, 38, v38_sync_tombstones::migrate_v38)?;
+    }
+    if current < 39 {
+        run_migration_step(conn, 39, v39_hlc_clock::migrate_v39)?;
+    }
+    if current < 40 {
+        run_migration_step(conn, 40, v40_egress_recipient_count::migrate_v40)?;
+    }
+    if current < 41 {
+        run_migration_step(conn, 41, v41_cjk_bigram_shadow::migrate_v41)?;
     }
 
     Ok(())

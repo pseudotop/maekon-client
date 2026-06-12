@@ -1,4 +1,4 @@
-import { resolveApiUrl } from '../utils/api-base'
+import { resolveApiUrl, withLocalAuthHeaders } from '../utils/api-base'
 import type {
   AppSettings,
   AppUsage,
@@ -10,6 +10,8 @@ import type {
   BackupParams,
   CoachingStatsToday,
   CoachingTemplateListDto,
+  ConsentPermissions,
+  ConsentSnapshot,
   CreateOverrideRequest,
   CreateTagRequest,
   DailyDigestResponse,
@@ -79,6 +81,7 @@ import type {
   Session,
   StartPomodoroRequest,
   StorageStats,
+  SuggestionDto,
   SuggestionFeedbackAction,
   SystemMetrics,
   Tag,
@@ -119,8 +122,9 @@ async function fetchWithRetry(url: string, options?: RequestInit, retries = MAX_
   const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
 
   try {
+    // E20-41 (#4833): attach the X-Local-Auth header at the single fetch chokepoint.
     const response = await fetch(resolvedUrl, {
-      ...options,
+      ...withLocalAuthHeaders(options),
       signal: controller.signal,
     })
     if (response.status >= 500) {
@@ -686,6 +690,12 @@ export async function fetchLocalSuggestions(): Promise<LocalSuggestion[]> {
   return res.json()
 }
 
+export async function fetchUnifiedSuggestions(): Promise<SuggestionDto[]> {
+  const res = await fetchWithRetry(`${BASE_URL}/suggestions`)
+  if (!res.ok) throw new Error('Suggestion query failed')
+  return res.json()
+}
+
 export async function submitSuggestionFeedback(id: number, action: SuggestionFeedbackAction): Promise<void> {
   const res = await fetchWithRetry(`${BASE_URL}/focus/suggestions/${id}/feedback`, {
     method: 'POST',
@@ -695,6 +705,21 @@ export async function submitSuggestionFeedback(id: number, action: SuggestionFee
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Feedback submission failed' }))
     throw new Error(err.error || 'Feedback submission failed')
+  }
+}
+
+export async function submitUnifiedSuggestionFeedback(
+  suggestionId: string,
+  action: SuggestionFeedbackAction,
+): Promise<void> {
+  const res = await fetchWithRetry(`${BASE_URL}/suggestions/${encodeURIComponent(suggestionId)}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Suggestion feedback submission failed' }))
+    throw new Error(err.error || 'Suggestion feedback submission failed')
   }
 }
 
@@ -784,17 +809,59 @@ export async function runPreset(id: string): Promise<PresetRunResult> {
   return res.json()
 }
 
+// #5705 Amendment A: executeIntentHint uses a dedicated fetch path to prevent
+// the fetchWithRetry 5xx/error fallback from silently flipping the whole app
+// into demo/standalone mode on a non-idempotent automation execution.
+// - 30 s timeout (LLM planning via CLI subprocess can exceed the default 10 s)
+// - Zero retries (non-idempotent: retry risk outweighs resilience benefit)
+// - No standalone fallback on error/timeout (real error surfaces to the UI)
+// - When the app is already in standalone/demo mode, routes to the demo handler
+//   directly so the demo build continues to work correctly.
 export async function executeIntentHint(payload: ExecuteIntentHintRequest): Promise<ExecuteIntentHintResponse> {
-  const res = await fetchWithRetry(`${BASE_URL}/automation/execute-hint`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Natural language intent execution failed' }))
-    throw new Error(err.error || 'Natural language intent execution failed')
+  const INTENT_TIMEOUT_MS = 30_000
+
+  // Explicit standalone routing: when the app is already in demo/standalone
+  // mode, serve the canned demo response instead of attempting a live fetch.
+  if (isStandaloneModeEnabled()) {
+    const resolvedUrl = await resolveApiUrl(`${BASE_URL}/automation/execute-hint`)
+    const init: RequestInit = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+    const standaloneResponse = await handleStandaloneRequest(resolvedUrl, init)
+    if (standaloneResponse) {
+      if (!standaloneResponse.ok) {
+        const err = await standaloneResponse.json().catch(() => ({ error: 'Intent execution failed (demo)' }))
+        throw new Error(err.error || 'Intent execution failed (demo)')
+      }
+      return standaloneResponse.json()
+    }
   }
-  return res.json()
+
+  // Live path: plain fetch with its own AbortController — bypasses fetchWithRetry
+  // entirely so no retry loop and no standalone-mode flip can occur.
+  const resolvedUrl = await resolveApiUrl(`${BASE_URL}/automation/execute-hint`)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), INTENT_TIMEOUT_MS)
+
+  try {
+    const res = await fetch(resolvedUrl, {
+      ...withLocalAuthHeaders({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Natural language intent execution failed' }))
+      throw new Error(err.error || 'Natural language intent execution failed')
+    }
+    return res.json()
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 export async function executeSceneAction(payload: ExecuteSceneActionRequest): Promise<ExecuteSceneActionResponse> {
@@ -988,15 +1055,62 @@ export async function requestDesktopNotificationPermission(): Promise<DesktopPer
   return tauriInvoke<DesktopPermissionSnapshot>('request_desktop_notification_permission')
 }
 
+export async function requestDesktopScreenCapturePermission(): Promise<DesktopPermissionSnapshot> {
+  return tauriInvoke<DesktopPermissionSnapshot>('request_desktop_screen_capture_permission')
+}
+
+export interface TestNotificationPayload {
+  title: string
+  body: string
+}
+
+export interface TestNotificationResult {
+  delivered: boolean
+}
+
+export async function sendTestNotification(payload: TestNotificationPayload): Promise<TestNotificationResult> {
+  return tauriInvoke<TestNotificationResult>('send_test_notification', {
+    title: payload.title,
+    body: payload.body,
+  })
+}
+
+export type DesktopPermissionSettingsKind = 'accessibility' | 'screen_capture' | 'microphone' | 'input_monitoring'
+
+export async function openDesktopPermissionSettings(permissionKind: DesktopPermissionSettingsKind): Promise<void> {
+  return tauriInvoke<void>('open_desktop_permission_settings', { permissionKind })
+}
+
+// ── Consent (GDPR) IPC (Tauri invoke) ────────────────────────
+// 프로덕션 동의 읽기/쓰기 (src-tauri/src/commands/consent.rs). 다른 IPC 래퍼와
+// 동일하게 thin 래퍼로 두고, 에러는 호출자가 isIpcError/errorMessageFromInvoke 로 처리한다.
+
+/** 현재 동의 스냅샷(상태 + 원본 부여 권한)을 읽어 반환한다. */
+export async function getConsent(): Promise<ConsentSnapshot> {
+  return tauriInvoke<ConsentSnapshot>('get_consent')
+}
+
+/** 지정한 권한 집합으로 동의를 부여하고 결과 스냅샷을 반환한다. */
+export async function setConsent(permissions: ConsentPermissions): Promise<ConsentSnapshot> {
+  return tauriInvoke<ConsentSnapshot>('set_consent', { permissions })
+}
+
+/** 동의를 철회하고(NotGranted) 결과 스냅샷을 반환한다. */
+export async function withdrawConsent(): Promise<ConsentSnapshot> {
+  return tauriInvoke<ConsentSnapshot>('withdraw_consent')
+}
+
 export async function probeProviderSurfaceEndpoint(args: {
   surface_id: string
   endpoint_kind: 'ocr_api' | 'llm_api'
   endpoint: string
+  allow_external_egress?: boolean
 }): Promise<ProviderEndpointProbeResult> {
   return tauriInvoke<ProviderEndpointProbeResult>('probe_provider_surface_endpoint', {
     surfaceId: args.surface_id,
     endpointKind: args.endpoint_kind,
     endpoint: args.endpoint,
+    allowExternalEgress: args.allow_external_egress ?? false,
   })
 }
 
@@ -1042,6 +1156,7 @@ export async function completePomodoro(): Promise<PomodoroSession> {
 // ── GUI V2 Session API ──────────────────────────────────────────
 
 const GUI_SESSION_HEADER = 'X-Gui-Session-Token'
+export const GUI_SESSION_STREAM_COOKIE = 'maekon_gui_session_token'
 
 export async function createGuiSession(req: GuiCreateSessionRequest): Promise<GuiCreateSessionResponse> {
   const res = await fetchWithRetry(`${BASE_URL}/automation/gui/sessions`, {
@@ -1139,8 +1254,29 @@ export async function deleteGuiSession(id: string, token: string): Promise<GuiSe
   return res.json()
 }
 
+export function buildGuiSessionStreamCookie(id: string, token: string): string {
+  const streamPath = `${BASE_URL}/automation/gui/sessions/${encodeURIComponent(id)}/events`
+  const attributes = [
+    `${GUI_SESSION_STREAM_COOKIE}=${encodeURIComponent(token.trim())}`,
+    `Path=${streamPath}`,
+    'SameSite=Strict',
+  ]
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    attributes.push('Secure')
+  }
+  return attributes.join('; ')
+}
+
 export function guiSessionEventsUrl(id: string, token: string): string {
-  return `${BASE_URL}/automation/gui/sessions/${encodeURIComponent(id)}/events?token=${encodeURIComponent(token)}`
+  if (typeof document !== 'undefined' && token.trim().length > 0) {
+    // biome-ignore lint/suspicious/noDocumentCookie: EventSource cannot attach custom headers.
+    document.cookie = buildGuiSessionStreamCookie(id, token)
+  }
+  return `${BASE_URL}/automation/gui/sessions/${encodeURIComponent(id)}/events`
+}
+
+export function createGuiSessionEventSource(id: string, token: string): EventSource {
+  return new EventSource(guiSessionEventsUrl(id, token), { withCredentials: true })
 }
 
 // ── Semantic Search API ─────────────────────────────────────────

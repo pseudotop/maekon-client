@@ -106,6 +106,7 @@ mod tests {
             reasoning: None,
             created_at: Utc::now(),
             expires_at: None,
+            context_scope: None,
         }
     }
 

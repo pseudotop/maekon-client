@@ -1,6 +1,9 @@
 use std::time::Duration;
 
 use maekon_api_contracts::ai_providers::{ProviderModelsRequest, ProviderModelsResponse};
+use maekon_core::ports::provider_model_catalog::{
+    ProviderModelCatalogError, ProviderModelCatalogHeader, ProviderModelCatalogRequest,
+};
 
 use crate::error::ApiError;
 use crate::services::ai_model_catalog_assembler::{build_model_details, parse_models};
@@ -13,6 +16,7 @@ use crate::services::ai_provider_spec_service::{self, ProviderAuthScheme};
 use crate::services::web_contexts::AiModelCatalogWebContext;
 
 const MODEL_DISCOVERY_TIMEOUT_SECS: u64 = 20;
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 #[derive(Clone)]
 pub struct AiModelCatalogQueryService {
@@ -69,46 +73,21 @@ impl AiModelCatalogQueryService {
             });
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(MODEL_DISCOVERY_TIMEOUT_SECS))
-            .build()
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to create model discovery client: {error}"))
-            })?;
-
-        let mut builder = client.get(&endpoint);
-        match auth_scheme {
-            ProviderAuthScheme::None => {}
-            ProviderAuthScheme::Bearer => {
-                let api_key = api_key.as_deref().unwrap_or_default();
-                builder = builder.header("Authorization", format!("Bearer {api_key}"));
-            }
-            ProviderAuthScheme::XApiKey => {
-                let api_key = api_key.as_deref().unwrap_or_default();
-                builder = builder
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01");
-            }
-            ProviderAuthScheme::XGoogApiKey => {
-                let api_key = api_key.as_deref().unwrap_or_default();
-                builder = builder.header("x-goog-api-key", api_key);
-            }
-            ProviderAuthScheme::AwsSignatureV4 => {
-                unreachable!("AWS Signature V4 discovery exits early with an explicit notice.")
-            }
-        }
-
-        let response = builder.send().await.map_err(|error| {
-            ApiError::ServiceUnavailable(format!("Model discovery request failed: {error}"))
+        let transport = self.ctx.model_catalog_client.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable("Model discovery transport is not configured.".to_string())
         })?;
+        let response = transport
+            .fetch_models(ProviderModelCatalogRequest {
+                endpoint: endpoint.clone(),
+                headers: model_catalog_headers(auth_scheme, api_key.as_deref()),
+                timeout: Duration::from_secs(MODEL_DISCOVERY_TIMEOUT_SECS),
+            })
+            .await
+            .map_err(model_catalog_error_to_api)?;
 
-        let status = response.status();
-        let body = response.text().await.map_err(|error| {
-            ApiError::ServiceUnavailable(format!(
-                "Failed to read model discovery response: {error}"
-            ))
-        })?;
-        if !status.is_success() {
+        let status = response.status;
+        let body = response.body;
+        if !(200..300).contains(&status) {
             let message = format!(
                 "Model discovery failed ({}): {}",
                 status,
@@ -116,7 +95,7 @@ impl AiModelCatalogQueryService {
             );
             // Semantic ApiError mapping per iter-54..59 pattern (ApiError
             // variants are web-layer HTTP status equivalents).
-            return Err(match status.as_u16() {
+            return Err(match status {
                 400 => ApiError::BadRequest(message),
                 401 => ApiError::Unauthorized(message),
                 403 => ApiError::Forbidden(message),
@@ -171,5 +150,68 @@ impl AiModelCatalogQueryService {
         }
 
         self.discover_provider_models(request).await
+    }
+}
+
+fn model_catalog_headers(
+    auth_scheme: ProviderAuthScheme,
+    api_key: Option<&str>,
+) -> Vec<ProviderModelCatalogHeader> {
+    let api_key = api_key.unwrap_or_default();
+    match auth_scheme {
+        ProviderAuthScheme::None => Vec::new(),
+        ProviderAuthScheme::Bearer => {
+            vec![ProviderModelCatalogHeader::new(
+                "Authorization",
+                format!("Bearer {api_key}"),
+            )]
+        }
+        ProviderAuthScheme::XApiKey => vec![
+            ProviderModelCatalogHeader::new("x-api-key", api_key),
+            ProviderModelCatalogHeader::new("anthropic-version", ANTHROPIC_API_VERSION),
+        ],
+        ProviderAuthScheme::XGoogApiKey => {
+            vec![ProviderModelCatalogHeader::new("x-goog-api-key", api_key)]
+        }
+        ProviderAuthScheme::AwsSignatureV4 => {
+            unreachable!("AWS Signature V4 discovery exits early with an explicit notice.")
+        }
+    }
+}
+
+fn model_catalog_error_to_api(error: ProviderModelCatalogError) -> ApiError {
+    match error {
+        ProviderModelCatalogError::ClientBuild(message) => ApiError::Internal(format!(
+            "Failed to create model discovery client: {message}"
+        )),
+        ProviderModelCatalogError::InvalidHeader(message) => ApiError::Internal(format!(
+            "Failed to prepare model discovery request: {message}"
+        )),
+        ProviderModelCatalogError::Request(message) => {
+            ApiError::ServiceUnavailable(format!("Model discovery request failed: {message}"))
+        }
+        ProviderModelCatalogError::ResponseBody(message) => ApiError::ServiceUnavailable(format!(
+            "Failed to read model discovery response: {message}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn model_discovery_service_does_not_own_reqwest_transport() {
+        let source = include_str!("ai_model_catalog_web_service.rs");
+
+        let client_builder_pattern = ["reqwest::", "Client::builder"].concat();
+        let send_pattern = [".send", "().await"].concat();
+
+        assert!(
+            !source.contains(&client_builder_pattern),
+            "model discovery HTTP transport belongs in maekon-network behind a core port"
+        );
+        assert!(
+            !source.contains(&send_pattern),
+            "model discovery service should call an injected transport port, not send HTTP directly"
+        );
     }
 }

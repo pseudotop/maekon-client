@@ -1,0 +1,101 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-QUALITY-001", "CRT-PRV-SUG-SAFETY-002", "CRT-PRV-SUG-FEEDBACK-002", "CRT-PRV-SUG-NATIVE-001"],
+  "recorded_at": "2026-05-22T00:00:00Z",
+  "scenario": "calculator-gui-context-to-policy-gated-suggestion",
+  "native_context": {
+    "active_app": "Calculator",
+    "bundle_id": "com.apple.calculator",
+    "window_title": "Calculator",
+    "active_process": {
+      "process_name": "Calculator",
+      "bundle_id": "com.apple.calculator",
+      "pid": null,
+      "screen_id": "main",
+      "window_title": "Calculator",
+      "window_bounds": { "x": 200, "y": 120, "width": 260, "height": 360 }
+    },
+    "display_value": "46",
+    "expression": "23 x 2",
+    "target_entity": {
+      "entity_id": "display-result",
+      "kind": "calculator-display",
+      "label": "result",
+      "value": "46",
+      "bounds": { "x": 228, "y": 174, "width": 184, "height": 52 },
+      "center": { "x": 320, "y": 200 },
+      "confidence": 0.97,
+      "sources": ["ax", "ocr", "screenshot"]
+    },
+    "highlight": {
+      "target_entity_id": "display-result",
+      "bounds": { "x": 228, "y": 174, "width": 184, "height": 52 }
+    },
+    "evidence_contract": [
+      "calculator_window_bounds",
+      "calculator_screenshot_crop",
+      "calculator_ax_buttons",
+      "calculator_ocr_display"
+    ]
+  },
+  "suggestions": [
+    {
+      "id": "calculator-result-explain-proposal",
+      "title": "Explain the Calculator result",
+      "body": "Calculator shows result 46 for 23 x 2. Offer an explanation or copy proposal only after explicit confirmation.",
+      "priority": "high",
+      "category": "calculator-context",
+      "source": "server",
+      "confidence_score": 0.93,
+      "created_at": "2026-05-22T00:00:00Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is Calculator's result display. The proposal is relevant to the visible result and must not type, copy, or open another app before consent."
+    },
+    {
+      "id": "calculator-result-save-to-note-proposal",
+      "title": "Save this result to a note",
+      "body": "Prepare a note-writing proposal for Calculator result 46, but require confirmation before opening Notes or writing text.",
+      "priority": "medium",
+      "category": "cross-app-proposal",
+      "source": "server",
+      "confidence_score": 0.84,
+      "created_at": "2026-05-22T00:00:01Z",
+      "is_read": false,
+      "reasoning": "The visible Calculator result can be useful as a note, but cross-app mutation needs policy and audit gating."
+    }
+  ],
+  "expected": {
+    "visible_proposal_titles": ["Explain the Calculator result", "Save this result to a note"],
+    "target_app": "Calculator",
+    "target_entity_label": "result",
+    "target_display_value": "46",
+    "policy_gate_action_labels": ["Accept", "Reject", "Later", "Explain"],
+    "forbidden_preconsent_commands": [
+      "execute_automation_action",
+      "run_suggestion_action",
+      "type_into_calculator",
+      "open_notes_for_suggestion",
+      "write_note_from_suggestion"
+    ],
+    "feedback_payload_fields": ["action", "snoozeMinutes", "suggestionId"]
+  },
+  "privacy": {
+    "action_not_auto_executed": true,
+    "host_input_used": false,
+    "raw_gui_context_not_in_feedback": [
+      "active_app",
+      "bundle_id",
+      "window_title",
+      "display_value",
+      "expression",
+      "target_entity",
+      "native_context",
+      "body",
+      "category",
+      "confidence_score",
+      "created_at",
+      "reasoning",
+      "source",
+      "title"
+    ]
+  }
+}

@@ -4,10 +4,10 @@
 //! - `VadDetector`: energy-based voice activity detection
 //! - `WhisperSttProvider`: local Whisper STT (feature-gated behind `whisper`)
 
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -15,7 +15,7 @@
 )]
 // P2 PR-A nursery-hardening: mutex guards must not be held across I/O or
 // long-running work unless intentionally kept (use function-level #[allow]
-// with reason). See docs/reviews/2026-04-21-p2-significant-drop-tightening-spec.md.
+// with reason).
 #![deny(clippy::significant_drop_tightening)]
 #![cfg_attr(test, allow(clippy::significant_drop_tightening))]
 

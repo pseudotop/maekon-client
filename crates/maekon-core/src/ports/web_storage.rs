@@ -1,8 +1,20 @@
-//! Synchronous storage port for the local web dashboard (events, frames, metrics, tags, exports).
+//! Fully-async storage port for the local web dashboard (events, frames, metrics, tags, exports).
 //!
 //! The [`WebStorage`] supertrait composes focused sub-traits, each covering a
 //! single storage concern.  Consumers that only need a subset of capabilities
 //! can accept the narrow sub-trait instead of the full `WebStorage`.
+//!
+//! # Async (ADR-026)
+//! Every sub-trait below is `#[async_trait]` and every method is `async fn`,
+//! matching the already-async [`StorageService`]/[`MetricsStorage`] base ports.
+//! `WebStorage` is therefore a **uniformly-async** composition (ADR-001 §2),
+//! no longer the mixed sync/async surface it was before the ADR-026 PR-1..PR-9
+//! convergence. Each impl routes its SQLite work through the storage
+//! `with_conn`/`with_conn_mut`/`with_conn_read` funnel (`spawn_blocking`), so
+//! the single-connection `parking_lot` guard is acquired on a blocking-pool
+//! thread and never held across an `.await` — preserving the #4928 erase
+//! barrier (writes re-check `deletion_flag || erasing`; reads are never
+//! skipped).
 //!
 //! # Errors (applies to all sub-traits)
 //! `CoreError::Storage` (wire: `storage.failed`) for every SQLite operation
@@ -21,6 +33,7 @@
 //!   no-op/`Ok(vec![])` defaults for stores without those tables; only
 //!   override implementations can surface Storage errors.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::CoreError;
@@ -44,19 +57,24 @@ use crate::ports::storage::{MetricsStorage, StorageService};
 // ---------------------------------------------------------------------------
 
 /// CRUD operations for user-defined tags and frame-tag associations.
+///
+/// Async per ADR-026 PR-5: every method routes through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait TagStorage: Send + Sync {
-    fn get_all_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
-    fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, CoreError>;
-    fn get_tag_ids_for_frames(
+    async fn get_all_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
+    async fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, CoreError>;
+    async fn get_tag_ids_for_frames(
         &self,
         frame_ids: &[i64],
     ) -> Result<std::collections::HashMap<i64, Vec<i64>>, CoreError>;
-    fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, CoreError>;
-    fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, CoreError>;
-    fn delete_tag(&self, tag_id: i64) -> Result<bool, CoreError>;
-    fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, CoreError>;
-    fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), CoreError>;
-    fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, CoreError>;
+    async fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, CoreError>;
+    async fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, CoreError>;
+    async fn delete_tag(&self, tag_id: i64) -> Result<bool, CoreError>;
+    async fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, CoreError>;
+    async fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), CoreError>;
+    async fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,22 +82,32 @@ pub trait TagStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Read-only frame queries, counts, and full-text search.
+///
+/// Async per ADR-026 PR-4: every method routes through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait FrameQueryStorage: Send + Sync {
-    fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError>;
-    fn get_frames(
+    async fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError>;
+    async fn get_frames(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, CoreError>;
-    fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, CoreError>;
-    fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError>;
-    fn list_frame_file_paths_in_range(&self, window: &TimeWindow)
-        -> Result<Vec<String>, CoreError>;
+    async fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, CoreError>;
+    async fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError>;
+    async fn list_frame_file_paths_in_range(
+        &self,
+        window: &TimeWindow,
+    ) -> Result<Vec<String>, CoreError>;
 
-    fn count_search_frames(&self, count_sql: &str, pattern: Option<&str>)
-        -> Result<u64, CoreError>;
-    fn search_frames_with_sql(
+    async fn count_search_frames(
+        &self,
+        count_sql: &str,
+        pattern: Option<&str>,
+    ) -> Result<u64, CoreError>;
+    async fn search_frames_with_sql(
         &self,
         select_sql: &str,
         pattern: Option<&str>,
@@ -93,10 +121,15 @@ pub trait FrameQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Read-only event queries, counts, and full-text search.
+///
+/// Async per ADR-026 PR-4: every method routes through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait EventQueryStorage: Send + Sync {
-    fn count_events_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError>;
-    fn count_search_events(&self, pattern: &str) -> Result<u64, CoreError>;
-    fn search_events(
+    async fn count_events_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError>;
+    async fn count_search_events(&self, pattern: &str) -> Result<u64, CoreError>;
+    async fn search_events(
         &self,
         pattern: &str,
         limit: usize,
@@ -109,11 +142,20 @@ pub trait EventQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Storage statistics, range deletion, and full data wipe.
+///
+/// Async per ADR-026 PR-4. Reads + range deletion route through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`). `delete_all_data`
+/// is the GDPR erase body itself: its impl offloads the synchronous
+/// `lock_for_erase` transaction onto `spawn_blocking` directly (it must NOT go
+/// through `write_lock`, which would skip the wipe once `deletion_flag` is
+/// set). In every case the `parking_lot` guard is acquired on a blocking-pool
+/// thread and never held across an `.await`.
+#[async_trait]
 pub trait StorageMaintenanceStorage: Send + Sync {
-    fn get_storage_stats_summary(&self) -> Result<StorageStatsSummaryRecord, CoreError>;
+    async fn get_storage_stats_summary(&self) -> Result<StorageStatsSummaryRecord, CoreError>;
 
     #[allow(clippy::too_many_arguments)]
-    fn delete_data_in_range(
+    async fn delete_data_in_range(
         &self,
         window: &TimeWindow,
         delete_events: bool,
@@ -123,7 +165,7 @@ pub trait StorageMaintenanceStorage: Send + Sync {
         delete_idle: bool,
     ) -> Result<DeletedRangeCounts, CoreError>;
 
-    fn delete_all_data(&self) -> Result<(), CoreError>;
+    async fn delete_all_data(&self) -> Result<(), CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,14 +173,22 @@ pub trait StorageMaintenanceStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Aggregated activity statistics (app durations, active time, session stats).
+///
+/// Async per ADR-026 PR-5: every method routes through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait ActivityStatsStorage: Send + Sync {
-    fn get_app_durations_by_date(
+    async fn get_app_durations_by_date(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<(String, i64)>, CoreError>;
-    fn get_daily_active_secs(&self, window: &TimeWindow) -> Result<Vec<(String, i64)>, CoreError>;
-    fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, CoreError>;
+    async fn get_daily_active_secs(
+        &self,
+        window: &TimeWindow,
+    ) -> Result<Vec<(String, i64)>, CoreError>;
+    async fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,32 +196,37 @@ pub trait ActivityStatsStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Focus metrics, work sessions, interruptions, and local suggestions.
+///
+/// Async per ADR-026 PR-5: every method routes through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait FocusQueryStorage: Send + Sync {
-    fn get_or_create_focus_metrics(&self, date: &str) -> Result<FocusMetrics, CoreError>;
-    fn get_recent_focus_metrics(
+    async fn get_or_create_focus_metrics(&self, date: &str) -> Result<FocusMetrics, CoreError>;
+    async fn get_recent_focus_metrics(
         &self,
         days: usize,
     ) -> Result<Vec<(String, FocusMetrics)>, CoreError>;
-    fn list_work_sessions(
+    async fn list_work_sessions(
         &self,
         from: &str,
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusWorkSessionRecord>, CoreError>;
-    fn list_interruptions(
+    async fn list_interruptions(
         &self,
         from: &str,
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusInterruptionRecord>, CoreError>;
-    fn list_recent_local_suggestions(
+    async fn list_recent_local_suggestions(
         &self,
         cutoff: &str,
         limit: usize,
     ) -> Result<Vec<LocalSuggestionRecord>, CoreError>;
-    fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), CoreError>;
-    fn mark_suggestion_dismissed(&self, suggestion_id: i64) -> Result<(), CoreError>;
-    fn mark_suggestion_acted(&self, suggestion_id: i64) -> Result<(), CoreError>;
+    async fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), CoreError>;
+    async fn mark_suggestion_dismissed(&self, suggestion_id: i64) -> Result<(), CoreError>;
+    async fn mark_suggestion_acted(&self, suggestion_id: i64) -> Result<(), CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,17 +234,28 @@ pub trait FocusQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Unified suggestion queries (V8 `suggestions` table).
+///
+/// Async per ADR-026 PR-6: every method routes through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait SuggestionQueryStorage: Send + Sync {
     /// List unified suggestions from the V8 `suggestions` table, newest first.
     /// Only returns non-dismissed suggestions.
-    fn list_suggestions(&self, limit: usize) -> Result<Vec<SuggestionRecord>, CoreError>;
+    async fn list_suggestions(&self, limit: usize) -> Result<Vec<SuggestionRecord>, CoreError>;
 
     /// Dismiss a unified suggestion by its string `suggestion_id`.
-    fn dismiss_unified_suggestion(&self, suggestion_id: &str) -> Result<bool, CoreError>;
+    async fn dismiss_unified_suggestion(&self, suggestion_id: &str) -> Result<bool, CoreError>;
+
+    /// Mark a unified suggestion as shown by its string `suggestion_id`.
+    async fn mark_unified_suggestion_shown(&self, suggestion_id: &str) -> Result<bool, CoreError>;
+
+    /// Mark a unified suggestion as acted on by its string `suggestion_id`.
+    async fn mark_unified_suggestion_acted(&self, suggestion_id: &str) -> Result<bool, CoreError>;
 
     /// Check whether server-sourced (LLM_SERVER) suggestions exist within the
     /// given lookback window (in seconds). Used for server coexistence gating.
-    fn has_recent_server_suggestions(&self, lookback_secs: u64) -> Result<bool, CoreError>;
+    async fn has_recent_server_suggestions(&self, lookback_secs: u64) -> Result<bool, CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,41 +263,49 @@ pub trait SuggestionQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Daily and weekly digest persistence and retrieval.
+///
+/// Async per ADR-026 PR-6: every method routes through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait DigestStorage: Send + Sync {
     /// Save a daily digest. Upserts by date.
-    fn save_daily_digest(&self, _digest: &DailyDigest) -> Result<(), CoreError> {
+    async fn save_daily_digest(&self, _digest: &DailyDigest) -> Result<(), CoreError> {
         Ok(()) // No-op default — storage adapters override
     }
 
     /// Get the daily digest for a specific date (YYYY-MM-DD).
-    fn get_daily_digest(&self, _date: &str) -> Result<Option<DailyDigest>, CoreError> {
+    async fn get_daily_digest(&self, _date: &str) -> Result<Option<DailyDigest>, CoreError> {
         Ok(None)
     }
 
     /// List recent daily digests, newest first.
-    fn list_daily_digests(&self, _limit: usize) -> Result<Vec<DailyDigest>, CoreError> {
+    async fn list_daily_digests(&self, _limit: usize) -> Result<Vec<DailyDigest>, CoreError> {
         Ok(vec![])
     }
 
     /// Get activity segment summaries for a given date (YYYY-MM-DD).
     /// Used as input for daily digest generation.
-    fn get_segments_for_date(&self, _date: &str) -> Result<Vec<SegmentSummaryRecord>, CoreError> {
+    async fn get_segments_for_date(
+        &self,
+        _date: &str,
+    ) -> Result<Vec<SegmentSummaryRecord>, CoreError> {
         Ok(vec![])
     }
 
     /// List recent weekly digests, newest first.
-    fn list_weekly_digests(
+    async fn list_weekly_digests(
         &self,
         limit: usize,
     ) -> Result<Vec<crate::models::weekly_digest::WeeklyDigest>, CoreError>;
 
     /// Get the digest for the current week (if exists).
-    fn get_current_week_digest(
+    async fn get_current_week_digest(
         &self,
     ) -> Result<Option<crate::models::weekly_digest::WeeklyDigest>, CoreError>;
 
     /// Save a weekly digest. Upserts by week_start.
-    fn save_weekly_digest(
+    async fn save_weekly_digest(
         &self,
         digest: &crate::models::weekly_digest::WeeklyDigest,
     ) -> Result<(), CoreError>;
@@ -242,33 +316,47 @@ pub trait DigestStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Backup export/import operations (tags, frame-tags, events, frames, metrics).
+///
+/// Async per ADR-026 PR-7: every method routes through the storage
+/// `with_conn_read`/`with_conn` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait BackupStorage: Send + Sync {
-    fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
-    fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError>;
-    fn list_event_exports(&self, from: &str, to: &str)
-        -> Result<Vec<EventExportRecord>, CoreError>;
-    fn list_metric_exports(
+    async fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
+    async fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError>;
+    async fn list_event_exports(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<EventExportRecord>, CoreError>;
+    async fn list_metric_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<MetricExportRecord>, CoreError>;
-    fn list_frame_exports(&self, from: &str, to: &str)
-        -> Result<Vec<FrameExportRecord>, CoreError>;
-    fn list_hourly_metrics_since(&self, from: &str) -> Result<Vec<HourlyMetricsRecord>, CoreError>;
-    fn upsert_backup_tag(
+    async fn list_frame_exports(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<FrameExportRecord>, CoreError>;
+    async fn list_hourly_metrics_since(
+        &self,
+        from: &str,
+    ) -> Result<Vec<HourlyMetricsRecord>, CoreError>;
+    async fn upsert_backup_tag(
         &self,
         id: i64,
         name: &str,
         color: &str,
         created_at: &str,
     ) -> Result<(), CoreError>;
-    fn upsert_backup_frame_tag(
+    async fn upsert_backup_frame_tag(
         &self,
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
     ) -> Result<(), CoreError>;
-    fn upsert_backup_event(
+    async fn upsert_backup_event(
         &self,
         event_id: &str,
         event_type: &str,
@@ -277,7 +365,7 @@ pub trait BackupStorage: Send + Sync {
         window_title: Option<&str>,
     ) -> Result<(), CoreError>;
     #[allow(clippy::too_many_arguments)]
-    fn upsert_backup_frame(
+    async fn upsert_backup_frame(
         &self,
         id: i64,
         timestamp: &str,
@@ -296,6 +384,11 @@ pub trait BackupStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// GUI interaction event persistence and queries.
+///
+/// Async per ADR-026 PR-7: override implementations route through the storage
+/// `with_conn`/`with_conn_read` funnel (`spawn_blocking`), so the
+/// single-connection `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait GuiInteractionStorage: Send + Sync {
     /// Save a GUI interaction event to the gui_interactions table (V13).
     ///
@@ -303,12 +396,12 @@ pub trait GuiInteractionStorage: Send + Sync {
     /// before calling this method. The storage adapter applies a basic email/phone
     /// scrub as defense-in-depth, but upstream filtering via `sanitize_title_with_level()`
     /// is the primary safeguard.
-    fn save_gui_interaction(&self, _input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
+    async fn save_gui_interaction(&self, _input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
         Ok(()) // No-op default — storage adapters override
     }
 
     /// List GUI interaction events for a given segment.
-    fn list_gui_interactions_for_segment(
+    async fn list_gui_interactions_for_segment(
         &self,
         _segment_id: &str,
     ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
@@ -317,7 +410,7 @@ pub trait GuiInteractionStorage: Send + Sync {
 
     /// Count GUI interactions per hour within a date range.
     /// Returns `(hour_string, count)` pairs sorted chronologically.
-    fn query_gui_interaction_density(
+    async fn query_gui_interaction_density(
         &self,
         _start: &str,
         _end: &str,
@@ -331,11 +424,16 @@ pub trait GuiInteractionStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Segment detail retrieval (enriches vector search results).
+///
+/// Async per ADR-026 PR-7: override implementations route through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is never held across an `.await`.
+#[async_trait]
 pub trait SegmentQueryStorage: Send + Sync {
     /// Retrieve segment details for the given segment IDs.
     /// Used to enrich vector search results with segment metadata.
     /// Default implementation returns an empty map (for stores without segment support).
-    fn get_segment_details(
+    async fn get_segment_details(
         &self,
         _segment_ids: &[String],
     ) -> Result<std::collections::HashMap<String, SegmentDetailRecord>, CoreError> {
@@ -348,10 +446,16 @@ pub trait SegmentQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Coaching event queries.
+///
+/// Async per ADR-026 PR-8: every method routes through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is never held across an `.await`. Reads use the
+/// `read_lock` path (never skipped by the #4928 erase barrier).
+#[async_trait]
 pub trait CoachingQueryStorage: Send + Sync {
     /// Query coaching events, newest first, with pagination.
     /// Default returns empty — storage adapters that support coaching tables override.
-    fn query_coaching_events(
+    async fn query_coaching_events(
         &self,
         _limit: u32,
         _offset: u32,
@@ -360,7 +464,7 @@ pub trait CoachingQueryStorage: Send + Sync {
     }
 
     /// Query coaching events shown on or after `since_date` (YYYY-MM-DD format).
-    fn query_coaching_events_since(
+    async fn query_coaching_events_since(
         &self,
         _since_date: &str,
     ) -> Result<Vec<crate::models::coaching::CoachingEventRow>, CoreError> {
@@ -373,9 +477,15 @@ pub trait CoachingQueryStorage: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Habit streak persistence and queries for daily regime tracking.
+///
+/// Async per ADR-026 PR-8: writes route through the storage `with_conn`
+/// write funnel (`spawn_blocking`, `deletion_flag || erasing` re-checked) and
+/// reads through `with_conn_read`, so the single-connection `parking_lot`
+/// guard is never held across an `.await`.
+#[async_trait]
 pub trait HabitStorage: Send + Sync {
     /// Upsert a daily habit record for a regime.
-    fn upsert_habit_streak(
+    async fn upsert_habit_streak(
         &self,
         _regime_label: &str,
         _date: &str,
@@ -387,7 +497,7 @@ pub trait HabitStorage: Send + Sync {
     }
 
     /// Query habit streak rows for all regimes within the last `days` days.
-    fn query_habit_streaks(
+    async fn query_habit_streaks(
         &self,
         _days: u32,
     ) -> Result<Vec<crate::models::coaching::HabitStreakRow>, CoreError> {
@@ -403,6 +513,13 @@ pub trait HabitStorage: Send + Sync {
 /// AiRuntimeStatus have no DB persistence so `fetch_dashboard_event_source`
 /// is a Frame-only entry point — Idle / AiRuntimeStatus are served from
 /// the RealtimeEvent payload carried on event_tx (see design §4 data flow).
+///
+/// Async per ADR-026 PR-9: every method routes through the storage
+/// `with_conn_read` funnel (`spawn_blocking`), so the single-connection
+/// `parking_lot` guard is acquired on a blocking-pool thread and never held
+/// across an `.await`. Both methods are pure reads (`read_lock` path, never
+/// skipped by the #4928 erase barrier).
+#[async_trait]
 pub trait DashboardStreamingStorage: Send + Sync {
     /// Aggregate a single MetricBucket from raw `system_metrics` rows in
     /// the half-open `[from, to)` window. Returns a zero-initialised
@@ -412,7 +529,7 @@ pub trait DashboardStreamingStorage: Send + Sync {
     /// # Errors
     /// Returns `CoreError::Storage` on SQL / IO failure;
     /// `CoreError::Internal` on mutex-lock poisoning.
-    fn aggregate_metrics_window(
+    async fn aggregate_metrics_window(
         &self,
         from: chrono::DateTime<chrono::Utc>,
         to: chrono::DateTime<chrono::Utc>,
@@ -428,7 +545,7 @@ pub trait DashboardStreamingStorage: Send + Sync {
     ///   see design §5 event↔DB race).
     /// - `CoreError::Storage` on SQL / IO failure.
     /// - `CoreError::Internal` when called with a non-Frame signal.
-    fn fetch_dashboard_event_source(
+    async fn fetch_dashboard_event_source(
         &self,
         signal: &crate::models::dashboard_streaming::DashboardEventSignal,
     ) -> Result<crate::models::dashboard_streaming::DashboardEventRecord, CoreError>;

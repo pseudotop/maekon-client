@@ -1,14 +1,31 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AiRuntimeStatus {
     pub ocr_source: String,
     pub llm_source: String,
     pub ocr_fallback_reason: Option<String>,
     pub llm_fallback_reason: Option<String>,
+    /// Per-call LLM health observable for the automation intent path.
+    ///
+    /// - `None` — no LLM call has been made yet since startup, or the health
+    ///   handle was not wired (non-LocalModel arms).
+    /// - `Some(true)` — the most recent intent LLM call succeeded.
+    /// - `Some(false)` — the most recent intent LLM call failed; the
+    ///   rule-matcher fallback is currently active.
+    ///
+    /// **Important**: this field in the SSE `ai_runtime_status` event reflects
+    /// the state at the time the SSE snapshot was emitted (build time), not the
+    /// live current state.  For the live value use `GET /api/automation/status`
+    /// which reads `as_option_bool()` at request time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub llm_healthy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "data")]
 pub enum RealtimeEvent {
     #[serde(rename = "metrics")]
@@ -24,6 +41,7 @@ pub enum RealtimeEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricsUpdate {
     pub timestamp: String,
     pub cpu_usage: f32,
@@ -33,6 +51,7 @@ pub struct MetricsUpdate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrameUpdate {
     pub id: i64,
     pub timestamp: String,
@@ -43,6 +62,7 @@ pub struct FrameUpdate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IdleUpdate {
     pub is_idle: bool,
     pub idle_secs: u64,
@@ -66,5 +86,50 @@ mod tests {
         assert!(j.contains("\"trigger_type\":\"timer\""));
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(v["data"]["trigger_type"], "timer");
+    }
+
+    // ── #5734 serde tests for AiRuntimeStatus.llm_healthy ────────────────
+
+    fn base_status(llm_healthy: Option<bool>) -> AiRuntimeStatus {
+        AiRuntimeStatus {
+            ocr_source: "local".to_string(),
+            llm_source: "local".to_string(),
+            ocr_fallback_reason: None,
+            llm_fallback_reason: None,
+            llm_healthy,
+        }
+    }
+
+    /// `llm_healthy: None` must be absent from the serialized JSON.
+    #[test]
+    fn ai_runtime_status_llm_healthy_none_is_omitted() {
+        let status = base_status(None);
+        let json = serde_json::to_string(&status).expect("serialize");
+        assert!(
+            !json.contains("llm_healthy"),
+            "llm_healthy=None should be absent, got: {json}"
+        );
+    }
+
+    /// `llm_healthy: Some(true)` must serialize as `"llm_healthy":true`.
+    #[test]
+    fn ai_runtime_status_llm_healthy_some_true_serializes() {
+        let status = base_status(Some(true));
+        let json = serde_json::to_string(&status).expect("serialize");
+        assert!(
+            json.contains("\"llm_healthy\":true"),
+            "expected llm_healthy:true, got: {json}"
+        );
+    }
+
+    /// `llm_healthy: Some(false)` must serialize as `"llm_healthy":false`.
+    #[test]
+    fn ai_runtime_status_llm_healthy_some_false_serializes() {
+        let status = base_status(Some(false));
+        let json = serde_json::to_string(&status).expect("serialize");
+        assert!(
+            json.contains("\"llm_healthy\":false"),
+            "expected llm_healthy:false, got: {json}"
+        );
     }
 }

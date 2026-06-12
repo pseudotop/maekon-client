@@ -15,6 +15,9 @@ impl Scheduler {
     pub(in crate::scheduler) fn spawn_analysis_loop(
         &self,
         config: maekon_core::config::AnalysisConfig,
+        // E20-26 (#4818): shared regime state (monitor loop writes it). Read here to
+        // make the local-suggestion enqueue path regime/context-aware.
+        shared_regime: Arc<SharedRegimeState>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
         let analyzer = self.context_analyzer.clone();
@@ -24,6 +27,40 @@ impl Scheduler {
         // D13: 4-term privacy gate DI.
         let consent_mgr_a = self.consent_manager.clone();
         let capture_paused_a = self.capture_paused.clone();
+        // #5069: feature-perf recorder (None ⇒ pass-through). Wraps the real
+        // analyze() wall-clock as the `local-suggestions` feature execution time.
+        #[cfg(feature = "analysis")]
+        let perf_recorder: Option<
+            Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>,
+        > = self
+            .feature_perf
+            .clone()
+            .map(|u| u as Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>);
+        #[cfg(not(feature = "analysis"))]
+        let perf_recorder: Option<
+            Arc<dyn maekon_core::ports::feature_perf::FeaturePerfRecorder>,
+        > = None;
+        // E20-24 (#4816): producer wire — the live suggestion queue (the SAME Arc
+        // the IPC `get_pending_suggestions` reads via the manager). Pushing here is
+        // what lets the OSS local pipeline surface/score/accept its own suggestions;
+        // previously they were only persisted to SQLite and never reached the queue.
+        #[cfg(feature = "local-suggestions")]
+        let suggestion_queue = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        // E20-26 (#4818): keep the shared regime handle alive in the spawned task only
+        // when the local-suggestion filter actually consumes it.
+        #[cfg(feature = "local-suggestions")]
+        let shared_regime_for_filter = shared_regime.clone();
+        // #5694: surfacing handles — overlay auto-refresh + desktop toast for
+        // locally produced suggestions (previously SQLite/queue-only and thus
+        // invisible until a manual panel open).
+        #[cfg(feature = "local-suggestions")]
+        let notif_a = self.notification_manager.clone();
+        #[cfg(feature = "local-suggestions")]
+        let overlay_a = self.magic_overlay.clone();
+        #[cfg(feature = "local-suggestions")]
+        let focus_a = self.focus_mode.clone();
+        // Drop the unused binding in builds without the local-suggestion pipeline.
+        let _ = &shared_regime;
 
         tokio::spawn(async move {
             let analyzer = match analyzer {
@@ -39,7 +76,8 @@ impl Scheduler {
             // are read dynamically from ConfigManager on each tick so that
             // changes via the Tauri `update_analysis_config` command propagate
             // immediately without an agent restart.
-            let mut interval = tokio::time::interval(Duration::from_secs(config.interval_secs));
+            let mut interval =
+                super::intervals::coalescing_interval(Duration::from_secs(config.interval_secs));
             let full_interval = Duration::from_secs(config.full_interval_secs);
             let mut last_full = std::time::Instant::now();
 
@@ -47,8 +85,10 @@ impl Scheduler {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
+                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
+                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
                         let consent = consent_mgr_a.as_ref()
-                            .and_then(|cm| cm.current_consent().map(|r| r.permissions.clone()))
+                            .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_a.load(Ordering::Relaxed);
                         let permitted = config_manager.as_ref()
@@ -92,11 +132,26 @@ impl Scheduler {
 
                         let force_full = last_full.elapsed() >= full_interval;
 
+                        // Wrap the actual analyze() call in a wall-clock span so the
+                        // sample reflects real feature execution time (§4 anti-theater),
+                        // not the gate checks above.
+                        use maekon_core::models::feature_performance::feature_keys::LOCAL_SUGGESTIONS;
+                        use maekon_core::ports::feature_perf::time_feature;
                         let result = if force_full {
                             last_full = std::time::Instant::now();
-                            analyzer.analyze().await
+                            time_feature(
+                                perf_recorder.as_ref(),
+                                LOCAL_SUGGESTIONS,
+                                analyzer.analyze(),
+                            )
+                            .await
                         } else {
-                            analyzer.analyze_if_changed().await
+                            time_feature(
+                                perf_recorder.as_ref(),
+                                LOCAL_SUGGESTIONS,
+                                analyzer.analyze_if_changed(),
+                            )
+                            .await
                         };
 
                         match result {
@@ -117,6 +172,39 @@ impl Scheduler {
                                     if let Err(e) = storage_ref.save_suggestion(suggestion).await {
                                         warn!(err.code = %e.code(), "suggestion save failure: {e}");
                                     }
+                                }
+                                // E20-24 (#4816): enqueue for live review (dedup via
+                                // queue fingerprint; push returns false on duplicate).
+                                #[cfg(feature = "local-suggestions")]
+                                if let Some(ref q) = suggestion_queue {
+                                    // E20-26 (#4818): regime/context-aware gating. In a
+                                    // focused regime (e.g. "Deep Focus") low/medium-priority
+                                    // suggestions are dropped BEFORE they reach the queue so
+                                    // the user is not interrupted. `regime: None` => pass-through.
+                                    let mut to_enqueue = suggestions.clone();
+                                    let regime = shared_regime_for_filter.snapshot().regime;
+                                    maekon_analysis::filter_by_regime(
+                                        &mut to_enqueue,
+                                        regime.as_ref(),
+                                    );
+                                    // #5694: shared surfacing funnel — enqueue (dedup) +
+                                    // overlay auto-refresh + High+ toast (focus-gated).
+                                    let on_changed = overlay_a.as_ref().map(|o| {
+                                        let o = o.clone();
+                                        move |c: usize| o.emit_suggestions_changed(c)
+                                    });
+                                    let on_changed_ref: Option<&(dyn Fn(usize) + Send + Sync)> =
+                                        on_changed
+                                            .as_ref()
+                                            .map(|f| f as &(dyn Fn(usize) + Send + Sync));
+                                    super::helpers::enqueue_and_surface(
+                                        q,
+                                        to_enqueue,
+                                        on_changed_ref,
+                                        notif_a.as_ref(),
+                                        focus_a.is_active(),
+                                    )
+                                    .await;
                                 }
                             }
                             Err(e) => {
@@ -140,6 +228,9 @@ impl Scheduler {
     #[tracing::instrument(skip_all)]
     pub(in crate::scheduler) fn spawn_focus_loop(
         &self,
+        // E20-26 (#4818)/#5696: shared regime state for context-aware gating of
+        // the rule-suggestion enqueue path (monitor loop writes it each tick).
+        shared_regime: Arc<SharedRegimeState>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
         let focus8 = self.focus_analyzer.clone();
@@ -147,6 +238,20 @@ impl Scheduler {
         let config_mgr_f = self.config_manager.clone();
         let consent_mgr_f = self.consent_manager.clone();
         let capture_paused_f = self.capture_paused.clone();
+        // #5696: rule-suggestion live-queue bridge — the FocusAnalyzer rules
+        // already save to SQLite and toast, but never reached the live queue,
+        // so the overlay panel stayed empty all session (until a restart's
+        // pending-restore). notifier stays None here: the rules send their own
+        // one-shot OS notification; a funnel toast would double-notify.
+        #[cfg(feature = "local-suggestions")]
+        let focus_queue = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        #[cfg(feature = "local-suggestions")]
+        let sqlite_f = self.sqlite_storage.clone();
+        #[cfg(feature = "local-suggestions")]
+        let overlay_f = self.magic_overlay.clone();
+        #[cfg(feature = "local-suggestions")]
+        let shared_regime_f = shared_regime.clone();
+        let _ = &shared_regime;
 
         tokio::spawn(async move {
             let focus = match focus8 {
@@ -157,13 +262,15 @@ impl Scheduler {
                 }
             };
 
-            let mut interval = tokio::time::interval(Duration::from_secs(60)); // 1min
+            let mut interval = super::intervals::coalescing_interval(Duration::from_secs(60)); // 1min
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
+                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
+                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
                         let consent = consent_mgr_f.as_ref()
-                            .and_then(|cm| cm.current_consent().map(|r| r.permissions.clone()))
+                            .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_f.load(Ordering::Relaxed);
                         let permitted = config_mgr_f.as_ref()
@@ -173,7 +280,53 @@ impl Scheduler {
                             debug!("focus loop: capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
                         }
-                        focus.analyze_periodic().await;
+                        let rule_suggestions = focus.analyze_periodic().await;
+                        let _ = &rule_suggestions;
+                        // #5696: bridge produced rule suggestions into the live
+                        // review queue (save + OS toast already happened inside
+                        // the analyzer). Mirrors the analysis loop: server
+                        // coexistence → regime filter → shared funnel.
+                        #[cfg(feature = "local-suggestions")]
+                        if let Some(ref q) = focus_queue {
+                            if !rule_suggestions.is_empty() {
+                                let coexist = sqlite_f
+                                    .has_recent_server_suggestions(
+                                        config_mgr_f
+                                            .as_ref()
+                                            .map(|cm| {
+                                                cm.get()
+                                                    .analysis
+                                                    .server_coexistence_lookback_secs
+                                            })
+                                            .unwrap_or(300),
+                                    )
+                                    .unwrap_or(false);
+                                if !coexist {
+                                    let mut to_enqueue = rule_suggestions;
+                                    let regime = shared_regime_f.snapshot().regime;
+                                    maekon_analysis::filter_by_regime(
+                                        &mut to_enqueue,
+                                        regime.as_ref(),
+                                    );
+                                    let on_changed = overlay_f.as_ref().map(|o| {
+                                        let o = o.clone();
+                                        move |c: usize| o.emit_suggestions_changed(c)
+                                    });
+                                    let on_changed_ref: Option<&(dyn Fn(usize) + Send + Sync)> =
+                                        on_changed
+                                            .as_ref()
+                                            .map(|f| f as &(dyn Fn(usize) + Send + Sync));
+                                    super::helpers::enqueue_and_surface(
+                                        q,
+                                        to_enqueue,
+                                        on_changed_ref,
+                                        None, // rules already sent their own toast
+                                        false,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
                     }
                     _ = shutdown_rx.changed() => {
                         info!("in progress min ended");
@@ -211,7 +364,7 @@ impl Scheduler {
                 }
             };
 
-            let mut interval = tokio::time::interval(Duration::from_secs(
+            let mut interval = super::intervals::coalescing_interval(Duration::from_secs(
                 super::super::config::COACHING_INTERVAL_SECS,
             ));
 
@@ -220,8 +373,10 @@ impl Scheduler {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
                         // Coaching during an opt-out window is invasive (R3.I4).
+                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
+                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
                         let consent = consent_mgr_c.as_ref()
-                            .and_then(|cm| cm.current_consent().map(|r| r.permissions.clone()))
+                            .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_c.load(Ordering::Relaxed);
                         let permitted = config_mgr_c.as_ref()

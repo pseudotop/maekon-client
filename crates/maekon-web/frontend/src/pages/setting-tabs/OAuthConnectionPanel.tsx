@@ -12,6 +12,7 @@ import { Alert, Badge, Button, Card } from '../../components/ui'
 import {
   findFeatureCapability,
   maturityBadgeColor,
+  providerSurfaceCliReadiness,
   providerSurfaceMaturity,
   providerSurfaceStatusCopyKey,
 } from '../../features/featureCapabilities'
@@ -151,6 +152,7 @@ export default function OAuthConnectionPanel({
   const maturityLabel = t(`featureCapability.maturity.${providerSurfaceMaturity(oauthSurface, featureSnapshot)}`)
   const preferredCliMessage =
     preferredCliFeature?.status_copy_key != null ? t(preferredCliFeature.status_copy_key) : null
+  const preferredCliReadiness = providerSurfaceCliReadiness(preferredCliSurface, featureSnapshot)
   const setupMessage = oauthFeature?.setup_copy_key ? t(oauthFeature.setup_copy_key) : null
 
   useEffect(() => {
@@ -246,7 +248,9 @@ export default function OAuthConnectionPanel({
               {t('featureCapability.preferredPath')}
             </Badge>
             <span className="text-content-secondary text-xs">
-              {t(`featureCapability.availability.${preferredCliFeature.availability}`)}
+              {preferredCliReadiness
+                ? t(`featureCapability.cliReadiness.${preferredCliReadiness}`)
+                : t(`featureCapability.availability.${preferredCliFeature.availability}`)}
             </span>
           </div>
           <p className="mt-1 text-content-secondary text-xs">{preferredCliMessage}</p>

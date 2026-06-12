@@ -23,20 +23,30 @@ impl SettingsQueryService {
         }
     }
 
-    pub fn get_storage_stats(&self) -> Result<StorageStats, ApiError> {
-        let stats = self
-            .ctx
-            .storage
+    /// Returns storage stats.
+    ///
+    /// ADR-026 PR-4: `get_storage_stats_summary` is now async and routes the
+    /// SQLite aggregation through the storage `with_conn_read` funnel, so it is
+    /// awaited directly. The recursive `std::fs::read_dir` over the frames
+    /// directory is still genuinely-blocking I/O, so it keeps its own
+    /// `spawn_blocking` (runtime checklist §1).
+    pub async fn get_storage_stats(&self) -> Result<StorageStats, ApiError> {
+        let storage = self.ctx.storage.clone();
+        let frames_dir = self.ctx.frames_dir.clone();
+
+        let stats = storage
             .get_storage_stats_summary()
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
+        let frames_size_bytes = match frames_dir {
+            Some(dir) => tokio::task::spawn_blocking(move || calculate_dir_size(&dir))
+                .await
+                .map_err(|e| ApiError::Internal(format!("spawn_blocking join error: {e}")))?,
+            None => 0,
+        };
+
         let db_size_bytes = stats.page_count * stats.page_size;
-        let frames_size_bytes = self
-            .ctx
-            .frames_dir
-            .as_deref()
-            .map(calculate_dir_size)
-            .unwrap_or(0);
 
         Ok(StorageStats {
             db_size_bytes,

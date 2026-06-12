@@ -11,6 +11,8 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::bootstrap_preflight::BootstrapPreflightCoordinator;
+#[cfg(feature = "analysis")]
+use crate::provider_runtime_context::ProviderRuntimeContext;
 #[cfg(feature = "server")]
 use crate::server_runtime_context::ServerBootstrapContext;
 
@@ -58,6 +60,10 @@ pub(crate) struct BootstrapRuntimeBundle {
     pub(crate) runtime_handle: Handle,
     pub(crate) background_runtime: Arc<ManagedBackgroundRuntime>,
     pub(crate) web_port: Arc<AtomicU16>,
+    // C1: provider context (BYOK/OAuth adapters) now lives under 'analysis' so
+    // it is available in default builds without the 'server' feature.
+    #[cfg(feature = "analysis")]
+    pub(crate) provider: ProviderRuntimeContext,
     #[cfg(feature = "server")]
     pub(crate) server: ServerBootstrapContext,
     #[cfg(not(feature = "server"))]
@@ -129,6 +135,12 @@ impl BootstrapRuntimeBuilder {
         let web_port = Arc::new(AtomicU16::new(config.web.port));
         BootstrapPreflightCoordinator::run(&config, &data_dir_path, self.offline_mode);
 
+        // C1: Build provider context unconditionally under 'analysis' so BYOK/OAuth
+        // adapters are available in default (analysis-only) builds.
+        #[cfg(feature = "analysis")]
+        let provider = ProviderRuntimeContext::build(&config, &data_dir_path)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+
         #[cfg(feature = "server")]
         {
             let server = ServerBootstrapContext::build(&config, &data_dir_path)
@@ -142,6 +154,8 @@ impl BootstrapRuntimeBuilder {
                 runtime_handle,
                 background_runtime,
                 web_port,
+                #[cfg(feature = "analysis")]
+                provider,
                 server,
             })
         }
@@ -156,6 +170,8 @@ impl BootstrapRuntimeBuilder {
                 runtime_handle,
                 background_runtime,
                 web_port,
+                #[cfg(feature = "analysis")]
+                provider,
                 integration_runtime_status: IntegrationOutboundRuntimeStatus::default(),
             })
         }
@@ -271,6 +287,51 @@ mod tests {
     #[test]
     fn managed_background_runtime_shuts_down_cleanly() {
         let runtime = spawn_background_runtime().expect("background runtime");
+        runtime.shutdown_blocking();
+    }
+
+    /// #4345 회귀 방지: `RunEvent::Exit` 콜백은 동기 메인 스레드(진입된 tokio
+    /// 런타임 없음)에서 실행되므로 `Handle::try_current()` 가 `Err` 를 반환해
+    /// AI 세션 `shutdown_all()` 정리가 dead code 였다. 수정된 exit 핸들러는
+    /// 대신 `background_runtime.handle().block_on(...)` 를 사용한다.
+    ///
+    /// 이 테스트는 그 핵심 불변식을 검증한다:
+    ///   1. 런타임이 진입되지 않은 (메인 스레드와 동등한) 스레드에서
+    ///      `Handle::try_current()` 는 `Err` 다 (원래 dead-code 조건).
+    ///   2. 동일 스레드에서 `ManagedBackgroundRuntime::handle().block_on(..)`
+    ///      는 async future 를 panic 없이 정상 구동한다 (수정된 경로).
+    #[test]
+    fn background_runtime_handle_block_on_runs_from_non_runtime_thread() {
+        let runtime = spawn_background_runtime().expect("background runtime");
+
+        // 별도 std 스레드(진입된 tokio 런타임 없음 — exit 콜백과 동등한 환경)
+        // 에서 검증한다.
+        let handle = runtime.handle();
+        let outcome = std::thread::spawn(move || {
+            // (1) 원래 dead-code 가드 재현: 런타임 미진입 → Err.
+            let no_current = Handle::try_current().is_err();
+
+            // (2) 수정된 경로: 별도 멀티스레드 런타임 핸들에서 block_on.
+            //     block_in_place/Handle::current panic 없이 future 가 완료된다.
+            let value = handle.block_on(async {
+                tokio::task::yield_now().await;
+                42_u8
+            });
+
+            (no_current, value)
+        })
+        .join()
+        .expect("worker thread should not panic");
+
+        assert!(
+            outcome.0,
+            "non-runtime thread must have no current Handle (the original dead-code condition)"
+        );
+        assert_eq!(
+            outcome.1, 42,
+            "block_on via background runtime handle must drive the future to completion"
+        );
+
         runtime.shutdown_blocking();
     }
 }

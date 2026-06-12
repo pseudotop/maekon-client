@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -31,6 +31,11 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // 접근성: dialog 의 제목/설명을 연결하기 위한 안정적인 id (a11y — aria-labelledby/aria-describedby)
+  const titleId = useId()
+  const descId = useId()
+  // 가장 안전한 동작인 Deny 버튼에 초기 포커스를 주기 위한 ref
+  const denyButtonRef = useRef<HTMLButtonElement | null>(null)
 
   // Countdown timer — resets when a new confirmation arrives (keyed by command_id)
   const commandId = confirmation.command_id
@@ -81,6 +86,24 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
     }
   }, [remaining, handleSubmit, submitting])
 
+  // 접근성: 모달이 새 confirmation 으로 열릴 때 가장 안전한 동작인 Deny 버튼에 포커스
+  useEffect(() => {
+    void commandId
+    denyButtonRef.current?.focus()
+  }, [commandId])
+
+  // 접근성: Escape 키는 명시적 거부(Deny)로 처리 — 보안상 가장 안전한 동작 (full focus-trap 은 단일 윈도우라 보류)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        void handleSubmit(false)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [handleSubmit])
+
   const progressPct = (remaining / AUTO_DENY_SECS) * 100
   const badgeColor = auditBadgeColors[confirmation.audit_level] ?? 'bg-content-inverse/10 text-content-secondary'
 
@@ -90,10 +113,16 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
       <div className="absolute inset-0 bg-content-inverse/30 backdrop-blur-sm" />
 
       {/* Modal */}
-      <div className="relative w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-content-inverse/10 bg-surface-sunken/95 p-6 shadow-2xl backdrop-blur-md">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+        className="relative w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-content-inverse/10 bg-surface-sunken/95 p-6 shadow-2xl backdrop-blur-md"
+      >
         {/* Header */}
         <div className="mb-3 flex items-center justify-between">
-          <h3 className={cn(typography.h4, 'text-content')}>
+          <h3 id={titleId} className={cn(typography.h4, 'text-content')}>
             {t('automation.confirmTitle', 'Automation Confirmation')}
           </h3>
           <span className={cn('rounded-full px-2 py-0.5 text-[10px]', typography.weight.semibold, badgeColor)}>
@@ -102,7 +131,7 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
         </div>
 
         {/* Process info */}
-        <div className="mb-3 rounded-lg bg-content-inverse/5 p-3">
+        <div id={descId} className="mb-3 rounded-lg bg-content-inverse/5 p-3">
           <div className="mb-1.5 flex items-center gap-2">
             <span className={cn(typography.caption, 'text-content-tertiary')}>
               {t('automation.confirmProcess', 'Process')}
@@ -139,6 +168,7 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
           </span>
           <div className="flex gap-2">
             <button
+              ref={denyButtonRef}
               type="button"
               disabled={submitting}
               onClick={() => void handleSubmit(false)}

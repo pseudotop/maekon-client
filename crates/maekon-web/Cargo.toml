@@ -68,7 +68,10 @@ async-trait = { workspace = true, optional = true }
 # D13-v2b: server-streaming generators (SubscribeMetrics realtime path).
 async-stream = { workspace = true, optional = true }
 # D13-v2b: constant-time token compare in auth_gate (RFC 7235 + timing side-channel).
-subtle = { workspace = true, optional = true }
+# E20-41 (#4833): also used by the always-on require_local_auth gate, so it is an
+# unconditional dependency (not feature-gated) — the local-API auth gate ships in
+# every build, including non-grpc default builds.
+subtle = { workspace = true }
 
 # D13-v2c: External gRPC binding optional deps (enabled via grpc-dashboard-external feature).
 arc-swap = { workspace = true, optional = true }
@@ -101,7 +104,6 @@ grpc-dashboard = [
   "dep:prost-types",
   "dep:async-trait",
   "dep:async-stream",
-  "dep:subtle",
 ]
 
 # D13-v2c: External gRPC binding with TLS + JWT/mTLS auth + hot-reload.
@@ -150,6 +152,7 @@ mockito = { workspace = true }
 rcgen = { workspace = true }
 time = { workspace = true }
 base64 = { workspace = true }
+aws-lc-rs = { workspace = true }
 # Task 1.3: trailer_body tests
 bytes = { workspace = true }
 http-body-util = { workspace = true }

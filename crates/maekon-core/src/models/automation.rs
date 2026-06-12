@@ -125,7 +125,9 @@ fn default_max_exec_time() -> u64 {
     5000
 }
 fn default_confirmation() -> String {
-    "Confirm".to_string()
+    // Must match the SCREAMING_SNAKE_CASE token produced by ConfirmationRequirement::Display.
+    // PR #4073 migrated all tokens; "Confirm" was a stale PascalCase survivor.
+    "CONFIRM".to_string()
 }
 
 #[cfg(test)]
@@ -156,5 +158,38 @@ mod tests {
         let json = serde_json::to_string(&btn).unwrap();
         let deser: MouseButton = serde_json::from_str(&json).unwrap();
         assert_eq!(deser, MouseButton::Left);
+    }
+
+    /// F-RC-C35-02: default_confirmation must produce the canonical SCREAMING_SNAKE_CASE
+    /// token "CONFIRM", not the stale PascalCase "Confirm" that survived PR #4073.
+    #[test]
+    fn default_confirmation_matches_canonical_token() {
+        assert_eq!(
+            default_confirmation(),
+            "CONFIRM",
+            "default_confirmation must return SCREAMING_SNAKE_CASE token"
+        );
+    }
+
+    /// The default-populated ExecutionPolicyDto must survive a JSON round-trip with
+    /// the canonical token intact so that dto_to_policy maps it to
+    /// ConfirmationRequirement::Confirm without falling through to the catch-all.
+    #[test]
+    fn execution_policy_dto_default_confirmation_roundtrip() {
+        // Build a minimal DTO using serde defaults (simulates missing field in JSON).
+        let json = r#"{
+            "policy_id": "test",
+            "process_name": "ls"
+        }"#;
+        let dto: ExecutionPolicyDto = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            dto.confirmation, "CONFIRM",
+            "serde default must produce SCREAMING_SNAKE_CASE CONFIRM"
+        );
+
+        // Re-serialise and verify the token is preserved.
+        let re_json = serde_json::to_string(&dto).unwrap();
+        let re_dto: ExecutionPolicyDto = serde_json::from_str(&re_json).unwrap();
+        assert_eq!(re_dto.confirmation, "CONFIRM");
     }
 }

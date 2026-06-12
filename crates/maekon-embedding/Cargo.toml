@@ -13,9 +13,14 @@ authors.workspace = true
 maekon-core = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
-fastembed = { version = "5", optional = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
+
+[dependencies.fastembed]
+version = "5"
+optional = true
+default-features = false
+features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"]
 
 [features]
 default = ["fastembed-local"]

@@ -20,7 +20,7 @@ use crate::auth::TokenManager;
 use crate::http_client::HttpApiClient;
 
 pub use crate::proto::client_v1::{
-    FeedbackAction, SuggestionEvent, UploadBatchRequest, UploadBatchResponse,
+    FeedbackAction, SuggestionEvent, SuggestionType, UploadBatchRequest, UploadBatchResponse,
 };
 pub use tonic::Streaming;
 
@@ -254,6 +254,9 @@ impl UnifiedClient {
     }
 
     async fn heartbeat_grpc(&self, session_id: &str) -> Result<bool, CoreError> {
+        // F-RC-C22-04: heartbeat is an authenticated RPC — inject the Bearer token
+        // like subscribe does (the server's AuthenticatedServiceWrapper requires it).
+        let access_token = self.token_manager.get_token().await?;
         self.ensure_grpc_session().await?;
 
         let mut guard = self.grpc_session.lock().await;
@@ -263,11 +266,15 @@ impl UnifiedClient {
         })?;
 
         // Heartbeat now returns Empty — success means the server acknowledged.
-        client.heartbeat(session_id).await?;
+        client.heartbeat(session_id, &access_token).await?;
         Ok(true)
     }
 
     /// Subscribe to server-streamed suggestions.
+    ///
+    /// F-RC-C22-04: TokenManager 에서 액세스 토큰을 읽어 tonic Request 메타데이터에
+    /// `authorization: Bearer <token>` 헤더를 주입한다. 서버 측 AuthenticatedServiceWrapper
+    /// 가 이 헤더를 요구하므로, 주입 없이 호출하면 UNAUTHENTICATED 로 거부된다.
     ///
     /// # Example
     /// ```ignore
@@ -289,6 +296,10 @@ impl UnifiedClient {
             "gRPC suggestion stream subscribe started: session_id={}",
             session_id,
         );
+
+        // F-RC-C22-04: 액세스 토큰 조회 — 만료 시 TokenManager 가 자동 갱신 시도.
+        let access_token = self.token_manager.get_token().await?;
+
         self.ensure_grpc_context().await?;
 
         let mut guard = self.grpc_context.lock().await;
@@ -297,7 +308,9 @@ impl UnifiedClient {
             message: "gRPC context client initialize failure".to_string(),
         })?;
 
-        let stream = client.subscribe_suggestions(session_id).await?;
+        let stream = client
+            .subscribe_suggestions_with_token(session_id, &access_token)
+            .await?;
         info!("gRPC suggestion stream subscribe success");
 
         Ok(stream)
@@ -325,9 +338,11 @@ impl UnifiedClient {
                 request.events.len(),
                 request.frames.len()
             );
+            // F-RC-C22-04: inject the Bearer token (server auth wrapper requires it).
+            let access_token = self.token_manager.get_token().await?;
             let response = self
                 .with_grpc_context_client("upload_batch", |client| {
-                    Box::pin(async move { client.upload_batch(request).await })
+                    Box::pin(async move { client.upload_batch(request, &access_token).await })
                 })
                 .await?;
             info!(
@@ -374,14 +389,17 @@ impl UnifiedClient {
                 "gRPC feedback sent: suggestion_id={}, action={:?}",
                 suggestion_id, action
             );
+            // F-RC-C22-04: inject the Bearer token (server auth wrapper requires it).
+            let access_token = self.token_manager.get_token().await?;
             let suggestion_id_owned = suggestion_id.to_string();
             let comment_owned = comment.map(String::from);
             self.with_grpc_context_client("send_feedback", |client| {
                 let suggestion_id = suggestion_id_owned;
                 let comment = comment_owned;
+                let token = access_token;
                 Box::pin(async move {
                     client
-                        .send_feedback(&suggestion_id, action, comment.as_deref())
+                        .send_feedback(&suggestion_id, action, comment.as_deref(), &token)
                         .await
                 })
             })

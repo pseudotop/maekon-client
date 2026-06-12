@@ -1,7 +1,7 @@
 //! Claude subprocess session -- serial `-p` calls with `--session-id`/`--continue`.
 
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,22 +10,24 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use maekon_core::config::AiSessionConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{
-    ConversationSessionInfo, OutboundMessage, SessionConfig, SessionMessage, SessionState,
-    SessionTransport, ToolDefinition,
+    ControlAction, ConversationSessionInfo, OutboundMessage, SessionConfig, SessionMessage,
+    SessionState, SessionTransport, ToolDefinition,
 };
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 
-use crate::session_adapters::claude_normalizer::normalize_claude_stream_event;
+use crate::session_adapters::claude_normalizer::ClaudeStreamState;
 use crate::session_adapters::prompt_payload::{
     extract_native_response_schema, render_message_payload,
 };
+use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
-    classify_subprocess_error, DetectedSubprocessCli, SubprocessKind,
+    classify_subprocess_error_with_redactions, DetectedSubprocessCli, SubprocessKind,
 };
 use tracing::debug;
 
@@ -41,6 +43,8 @@ pub struct ClaudeSubprocessSession {
     created_at: chrono::DateTime<chrono::Utc>,
     last_active: Mutex<Instant>,
     config: Arc<AiSessionConfig>,
+    cancel_requested: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
 }
 
 impl ClaudeSubprocessSession {
@@ -62,6 +66,8 @@ impl ClaudeSubprocessSession {
             turn_count: AtomicU32::new(0),
             last_active: Mutex::new(Instant::now()),
             config: session_config,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -129,41 +135,50 @@ impl ConversationSession for ClaudeSubprocessSession {
         let timeout_secs = self.config.session_timeout_secs;
         let surface_id = self.surface.surface_id.clone();
         let reader = tokio::io::BufReader::new(stdout);
+        let cancel_requested = self.cancel_requested.clone();
+        let cancel_notify = self.cancel_notify.clone();
+        let prompt_redaction = prompt.clone();
 
         let stream = async_stream::try_stream! {
             let mut lines = reader.lines();
             let deadline = tokio::time::Instant::now()
                 + tokio::time::Duration::from_secs(timeout_secs);
-            let mut saw_text_chunk = false;
             let mut force_kill = false;
             let mut emitted_terminal_error = false;
-            let stderr_task = tokio::spawn(async move {
+            let stderr_task = AbortOnDropJoin::new(tokio::spawn(async move {
                 let mut stderr_buf = String::new();
                 if let Err(e) = stderr.read_to_string(&mut stderr_buf).await {
                     debug!("read_to_string failed: {e}");
                 }
                 stderr_buf
-            });
+            }));
+            let mut stream_state = ClaudeStreamState::default();
 
             loop {
-                let line_result = tokio::time::timeout_at(deadline, lines.next_line()).await;
+                if cancel_requested.load(Ordering::Acquire) {
+                    yield OutboundMessage::Control {
+                        action: ControlAction::Cancel,
+                    };
+                    force_kill = true;
+                    emitted_terminal_error = true;
+                    break;
+                }
+
+                let line_result = tokio::select! {
+                    line_result = tokio::time::timeout_at(deadline, lines.next_line()) => line_result,
+                    _ = cancel_notify.notified() => {
+                        yield OutboundMessage::Control {
+                            action: ControlAction::Cancel,
+                        };
+                        force_kill = true;
+                        emitted_terminal_error = true;
+                        break;
+                    }
+                };
                 match line_result {
                     Ok(Ok(Some(line))) => {
-                        if let Some(mut normalized) = normalize_claude_stream_event(&line) {
-                            if matches!(normalized.kind, crate::session_adapters::claude_normalizer::ClaudeEventKind::AssistantSummary) && saw_text_chunk {
-                                continue;
-                            }
-                            if matches!(normalized.kind, crate::session_adapters::claude_normalizer::ClaudeEventKind::Result)
-                                && saw_text_chunk
-                            {
-                                if let OutboundMessage::Result { content, .. } = &mut normalized.message {
-                                    content.clear();
-                                }
-                            }
-                            if matches!(&normalized.message, OutboundMessage::Text { content, .. } if !content.is_empty()) {
-                                saw_text_chunk = true;
-                            }
-                            yield normalized.message;
+                        if let Some(message) = stream_state.normalize_line(&line) {
+                            yield message;
                         }
                     }
                     Ok(Ok(None)) => break, // EOF
@@ -197,11 +212,16 @@ impl ConversationSession for ClaudeSubprocessSession {
             }
 
             let status = child.wait().await.map_err(CoreError::Io)?;
-            let stderr_output = stderr_task.await.unwrap_or_default();
+            let stderr_output = stderr_task.join().await.unwrap_or_default();
 
             if !status.success() && !emitted_terminal_error {
                 let classified =
-                    classify_subprocess_error(SubprocessKind::Llm, &surface_id, &stderr_output);
+                    classify_subprocess_error_with_redactions(
+                        SubprocessKind::Llm,
+                        &surface_id,
+                        &stderr_output,
+                        &[prompt_redaction.as_str()],
+                    );
                 yield OutboundMessage::Error {
                     code: "subprocess_error".to_string(),
                     message: classified.to_string(),
@@ -235,5 +255,75 @@ impl ConversationSession for ClaudeSubprocessSession {
 
     fn provider_name(&self) -> &str {
         "claude"
+    }
+
+    fn is_external(&self) -> bool {
+        // Claude Code CLI subprocess transmits chat content off-device.
+        true
+    }
+
+    async fn terminate(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        self.cancel_notify.notify_waiters();
+        *self.state.lock() = SessionState::Terminated;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn claude_terminate_requests_stream_cancel() {
+        let config = SessionConfig {
+            transport: SessionTransport::Subprocess,
+            surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
+            model: Some("sonnet".to_string()),
+            system_prompt: None,
+            tools_enabled: false,
+            cwd: None,
+            sandbox_policy: None,
+            approval_policy: None,
+        };
+        let session = ClaudeSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("/usr/bin/false"),
+            },
+            &config,
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+
+        session.terminate().await;
+
+        assert!(session.cancel_requested.load(Ordering::Acquire));
+        assert_eq!(*session.state.lock(), SessionState::Terminated);
+    }
+
+    #[test]
+    fn claude_session_is_external() {
+        // Claude Code CLI transmits chat content off-device → must be guarded.
+        let config = SessionConfig {
+            transport: SessionTransport::Subprocess,
+            surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
+            model: Some("sonnet".to_string()),
+            system_prompt: None,
+            tools_enabled: false,
+            cwd: None,
+            sandbox_policy: None,
+            approval_policy: None,
+        };
+        let session = ClaudeSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("/usr/bin/false"),
+            },
+            &config,
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+        assert!(session.is_external());
     }
 }

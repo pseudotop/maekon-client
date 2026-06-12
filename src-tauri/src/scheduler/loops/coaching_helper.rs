@@ -35,6 +35,11 @@ pub(super) fn resolve_pii_level(
 pub(super) struct CoachingTickState {
     pub(super) regime_entered_at: Option<std::time::Instant>,
     pub(super) prev_coaching_regime_id: Option<String>,
+    /// Sub-minute seconds carried between ticks for goal-minute accounting
+    /// (#5669). The default monitor poll is 1s, so the old per-tick
+    /// `poll_secs / 60` always truncated to 0 and `record_minutes` never
+    /// fired in production — goal progress and habit streaks stayed at zero.
+    pub(super) minute_carry_secs: u64,
 }
 
 impl CoachingTickState {
@@ -42,8 +47,19 @@ impl CoachingTickState {
         Self {
             regime_entered_at: None,
             prev_coaching_regime_id: None,
+            minute_carry_secs: 0,
         }
     }
+}
+
+/// Accumulate `poll_secs` into the carry and return the whole minutes that
+/// flushed out (remainder stays in the carry). Pure so the truncation bug
+/// class (#5669) stays pinned by unit tests.
+pub(super) fn flush_whole_minutes(carry_secs: &mut u64, poll_secs: u64) -> u32 {
+    *carry_secs += poll_secs;
+    let minutes = (*carry_secs / 60) as u32;
+    *carry_secs %= 60;
+    minutes
 }
 
 /// Parameters needed to evaluate and deliver a coaching message within a
@@ -53,6 +69,8 @@ pub(super) struct CoachingEvalContext<'a> {
     pub(super) overlay: &'a Option<MagicOverlayHandle>,
     pub(super) notifier: &'a Option<Arc<crate::notification_manager::NotificationManager>>,
     pub(super) coaching_storage: &'a Option<Arc<dyn CoachingStoragePort>>,
+    /// Habit-streak persistence seam (#5669) — the scheduler's SQLite handle.
+    pub(super) scheduler_storage: &'a Arc<dyn crate::scheduler::config::SchedulerStorage>,
     pub(super) analysis_provider:
         &'a Option<Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider>>,
     pub(super) regime_id: Option<&'a str>,
@@ -96,12 +114,41 @@ pub(super) async fn evaluate_and_deliver(
         .map(|t| t.elapsed().as_secs())
         .unwrap_or(0);
 
-    // Record elapsed minutes for goal tracking
-    let elapsed_minutes = (ctx.poll_secs as f32 / 60.0).max(0.0) as u32;
+    // Record elapsed minutes for goal tracking. Seconds are carried across
+    // ticks (#5669): the old per-tick `poll_secs / 60` truncated to 0 at the
+    // default 1s poll, so record_minutes never fired in production.
+    let elapsed_minutes = flush_whole_minutes(&mut tick_state.minute_carry_secs, ctx.poll_secs);
     if elapsed_minutes > 0 {
         ctx.coaching_engine
             .record_minutes(regime_label, elapsed_minutes)
             .await;
+
+        // Persist today's habit-streak row for the current regime (#5669) —
+        // the HabitTracker widget's local producer (previously writer-less, so
+        // it rendered "No data" forever on standalone). Only regimes with a
+        // user-configured goal appear in all_goal_progress; others skip.
+        let goals = ctx.coaching_engine.all_goal_progress().await;
+        if let Some(goal) = goals.iter().find(|g| g.regime_label == regime_label) {
+            // Local date — must match get_coaching_stats_today and the
+            // widget's (local) day columns; a UTC key would land the row in
+            // the wrong column for non-UTC users.
+            let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let storage = ctx.scheduler_storage.clone();
+            let label = goal.regime_label.clone();
+            let (minutes, target) = (goal.current_minutes, goal.target_minutes);
+            let met = goal.current_minutes >= goal.target_minutes;
+            // Sync SQLite write (write_lock) — offload off the monitor loop,
+            // mirroring the GUI-interaction write path.
+            let joined = tokio::task::spawn_blocking(move || {
+                storage.upsert_habit_streak(&label, &date, minutes, target, met)
+            })
+            .await;
+            match joined {
+                Ok(Err(e)) => warn!("habit streak persist failure: {e}"),
+                Err(e) => warn!("habit streak persist task failure: {e}"),
+                Ok(Ok(())) => {}
+            }
+        }
     }
 
     // Evaluate coaching triggers
@@ -219,5 +266,54 @@ pub(super) async fn evaluate_and_deliver(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flush_whole_minutes;
+
+    /// The production default poll is 1s — the exact shape that silently
+    /// truncated to 0 minutes forever before #5669.
+    #[test]
+    fn one_second_polls_accumulate_into_minutes() {
+        let mut carry = 0u64;
+        for tick in 1..=59 {
+            assert_eq!(
+                flush_whole_minutes(&mut carry, 1),
+                0,
+                "no flush before 60s (tick {tick})"
+            );
+        }
+        assert_eq!(
+            flush_whole_minutes(&mut carry, 1),
+            1,
+            "60th second flushes 1 minute"
+        );
+        assert_eq!(carry, 0);
+    }
+
+    #[test]
+    fn remainder_stays_in_carry() {
+        let mut carry = 0u64;
+        assert_eq!(flush_whole_minutes(&mut carry, 90), 1);
+        assert_eq!(carry, 30, "30s remainder carried");
+        assert_eq!(
+            flush_whole_minutes(&mut carry, 30),
+            1,
+            "carry + 30s flushes again"
+        );
+        assert_eq!(carry, 0);
+    }
+
+    #[test]
+    fn long_poll_flushes_multiple_minutes() {
+        let mut carry = 5u64;
+        assert_eq!(
+            flush_whole_minutes(&mut carry, 130),
+            2,
+            "5+130=135s → 2 min"
+        );
+        assert_eq!(carry, 15);
     }
 }

@@ -120,13 +120,13 @@ pub async fn oauth_flow_status(
 
     // Reset coordinator backoff after successful re-authentication so the
     // background refresh loop resumes normal operation immediately.
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     if matches!(status, OAuthFlowStatus::Completed) {
         if let Some(ref coord) = coordinator.0 {
             coord.reset().await;
         }
     }
-    let _ = &coordinator; // suppress unused-variable warning when server feature is off
+    let _ = &coordinator; // suppress unused-variable warning when analysis feature is off
 
     Ok(status)
 }

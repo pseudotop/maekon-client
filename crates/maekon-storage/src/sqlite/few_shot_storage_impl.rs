@@ -13,17 +13,44 @@ impl FewShotStorage for SqliteStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<SuggestionHistoryEntry>, CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         let mut stmt = conn
             .prepare(
                 "SELECT suggestion_id, suggestion_type, content, confidence,
                         feedback_type, regime_label, context_app, context_window, created_at
-                 FROM local_suggestions
-                 WHERE feedback_type IS NOT NULL
+                 FROM (
+                     SELECT suggestion_id, suggestion_type, content, confidence,
+                            feedback_type, regime_label, context_app, context_window, created_at
+                     FROM local_suggestions
+                     WHERE feedback_type IS NOT NULL
+                     UNION ALL
+                     SELECT s.suggestion_id,
+                            s.suggestion_type,
+                            s.content,
+                            s.confidence_score AS confidence,
+                            CASE
+                                WHEN s.acted_at IS NOT NULL THEN 'ACCEPTED'
+                                WHEN s.dismissed_at IS NOT NULL THEN 'REJECTED'
+                                WHEN s.state = 'deferred' THEN 'DEFERRED'
+                            END AS feedback_type,
+                            NULL AS regime_label,
+                            '' AS context_app,
+                            '' AS context_window,
+                            s.created_at
+                     FROM suggestions s
+                     WHERE (s.acted_at IS NOT NULL
+                            OR s.dismissed_at IS NOT NULL
+                            OR s.state = 'deferred')
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM local_suggestions l
+                           WHERE l.suggestion_id = s.suggestion_id
+                             AND l.feedback_type IS NOT NULL
+                       )
+                 )
                  ORDER BY created_at DESC
                  LIMIT ?1",
             )
@@ -77,34 +104,32 @@ impl FewShotStorage for SqliteStorage {
         context_window: &str,
         regime_label: Option<&str>,
     ) -> Result<(), CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, local_suggestions ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "UPDATE local_suggestions
+                 SET feedback_type  = ?1,
+                     feedback_at    = ?2,
+                     context_app    = ?3,
+                     context_window = ?4,
+                     regime_label   = ?5
+                 WHERE suggestion_id = ?6",
+                rusqlite::params![
+                    feedback_type,
+                    chrono::Utc::now().to_rfc3339(),
+                    context_app,
+                    context_window,
+                    regime_label,
+                    suggestion_id,
+                ],
+            )
+            .map_err(|e| CoreError::Storage {
+                code: maekon_core::error_codes::StorageCode::Failed,
+                message: format!("update: {e}"),
+            })?;
 
-        conn.execute(
-            "UPDATE local_suggestions
-             SET feedback_type  = ?1,
-                 feedback_at    = ?2,
-                 context_app    = ?3,
-                 context_window = ?4,
-                 regime_label   = ?5
-             WHERE suggestion_id = ?6",
-            rusqlite::params![
-                feedback_type,
-                chrono::Utc::now().to_rfc3339(),
-                context_app,
-                context_window,
-                regime_label,
-                suggestion_id,
-            ],
-        )
-        .map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("update: {e}"),
-        })?;
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -128,7 +153,7 @@ mod tests {
 
         // local_suggestions에 직접 삽입 (V28 이후 컬럼 포함, payload는 NOT NULL이므로 빈 JSON 사용)
         {
-            let conn = storage.conn.lock().unwrap();
+            let conn = storage.conn.test_lock();
             conn.execute(
                 "INSERT INTO local_suggestions
                  (suggestion_id, suggestion_type, content, confidence, payload, created_at)
@@ -171,7 +196,7 @@ mod tests {
 
         // 3개의 suggestion 삽입 (payload NOT NULL 요건 충족을 위해 빈 JSON 사용)
         {
-            let conn = storage.conn.lock().unwrap();
+            let conn = storage.conn.test_lock();
             for i in 1..=3u32 {
                 conn.execute(
                     "INSERT INTO local_suggestions
@@ -211,7 +236,7 @@ mod tests {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
         {
-            let conn = storage.conn.lock().unwrap();
+            let conn = storage.conn.test_lock();
             // 피드백 있는 항목 (payload NOT NULL 요건 충족)
             conn.execute(
                 "INSERT INTO local_suggestions
@@ -236,5 +261,63 @@ mod tests {
         let entries = FewShotStorage::get_suggestions_with_feedback(&storage, 10).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].suggestion_id, "with-feedback");
+    }
+
+    #[test]
+    fn few_shot_storage_reads_unified_accept_reject_and_deferred_feedback() {
+        use maekon_core::models::suggestion::{
+            Priority, Suggestion, SuggestionSource, SuggestionType,
+        };
+
+        fn suggestion(id: &str, content: &str) -> Suggestion {
+            Suggestion {
+                suggestion_id: id.to_string(),
+                suggestion_type: SuggestionType::WorkGuidance,
+                content: content.to_string(),
+                priority: Priority::Medium,
+                confidence_score: 0.8,
+                relevance_score: 0.9,
+                is_actionable: true,
+                created_at: chrono::Utc::now(),
+                expires_at: None,
+                source: SuggestionSource::LlmLocal,
+                reasoning: None,
+                context_scope: None,
+            }
+        }
+
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage
+            .save_rule_suggestion_sync(&suggestion("unified-accepted", "Accepted example"))
+            .unwrap();
+        storage
+            .save_rule_suggestion_sync(&suggestion("unified-rejected", "Rejected example"))
+            .unwrap();
+        let deferred = suggestion("unified-deferred", "Deferred example");
+        storage.save_rule_suggestion_sync(&deferred).unwrap();
+
+        storage
+            .mark_unified_suggestion_acted("unified-accepted")
+            .unwrap();
+        storage
+            .dismiss_unified_suggestion("unified-rejected")
+            .unwrap();
+        storage
+            .save_suggestion_with_state(
+                &deferred,
+                "deferred",
+                Some(&(chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
+            )
+            .unwrap();
+
+        let entries = FewShotStorage::get_suggestions_with_feedback(&storage, 10).unwrap();
+        let feedback_by_id = entries
+            .iter()
+            .map(|entry| (entry.suggestion_id.as_str(), entry.feedback_type.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(feedback_by_id.get("unified-accepted"), Some(&"ACCEPTED"));
+        assert_eq!(feedback_by_id.get("unified-rejected"), Some(&"REJECTED"));
+        assert_eq!(feedback_by_id.get("unified-deferred"), Some(&"DEFERRED"));
     }
 }

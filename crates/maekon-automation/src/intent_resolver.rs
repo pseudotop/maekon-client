@@ -375,8 +375,11 @@ mod tests {
             app_name: None,
             button: "left".to_string(),
         };
-        let result = resolver.resolve_and_execute(&intent).await;
-        assert!(result.is_err());
+        let err = resolver.resolve_and_execute(&intent).await.unwrap_err();
+        assert!(
+            matches!(err, AutomationError::ElementNotFound(_)),
+            "low-confidence element must produce ElementNotFound, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -505,12 +508,11 @@ mod tests {
             text: "존재하지않는텍스트".to_string(),
             timeout_ms: 50,
         };
-        let result = resolver.resolve_and_execute(&intent).await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            AutomationError::ExecutionTimeout { .. }
-        ));
+        let err = resolver.resolve_and_execute(&intent).await.unwrap_err();
+        assert!(
+            matches!(err, AutomationError::ExecutionTimeout { .. }),
+            "wait-for-text timeout must produce ExecutionTimeout, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -538,12 +540,11 @@ mod tests {
             app_name: None,
             button: "left".to_string(),
         };
-        let result = resolver.resolve_and_execute(&intent).await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            AutomationError::ElementNotFound(_)
-        ));
+        let err = resolver.resolve_and_execute(&intent).await.unwrap_err();
+        assert!(
+            matches!(err, AutomationError::ElementNotFound(_)),
+            "element not found must produce ElementNotFound, got: {err:?}"
+        );
     }
 
     #[tokio::test]

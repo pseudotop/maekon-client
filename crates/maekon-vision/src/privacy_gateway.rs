@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel, PrivacyConfig};
-use maekon_core::consent::ConsentManager;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 
 use crate::privacy::{is_sensitive_app, sanitize_title_with_level, should_exclude};
 
@@ -10,6 +10,7 @@ pub enum PrivacyDenied {
     NoConsent,
     SensitiveApp(String),
     ExcludedByPolicy,
+    SanitizationFailed(String),
 }
 
 impl std::fmt::Display for PrivacyDenied {
@@ -18,6 +19,7 @@ impl std::fmt::Display for PrivacyDenied {
             Self::NoConsent => write!(f, "OCR consent is required"),
             Self::SensitiveApp(app) => write!(f, "Blocked sensitive app: {}", app),
             Self::ExcludedByPolicy => write!(f, "Excluded by policy"),
+            Self::SanitizationFailed(reason) => write!(f, "Image sanitization failed: {reason}"),
         }
     }
 }
@@ -41,7 +43,7 @@ struct SensitiveRegion {
 // PrivacyGateway
 
 pub struct PrivacyGateway {
-    consent_manager: Arc<ConsentManager>,
+    consent_manager: Arc<dyn ConsentManagerPort>,
     pii_filter_level: PiiFilterLevel,
     external_data_policy: ExternalDataPolicy,
     privacy_config: PrivacyConfig,
@@ -49,7 +51,7 @@ pub struct PrivacyGateway {
 
 impl PrivacyGateway {
     pub fn new(
-        consent_manager: Arc<ConsentManager>,
+        consent_manager: Arc<dyn ConsentManagerPort>,
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
         privacy_config: PrivacyConfig,
@@ -67,7 +69,7 @@ impl PrivacyGateway {
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
         allow_unredacted_external_ocr: bool,
-    ) -> SanitizedImage {
+    ) -> Result<SanitizedImage, PrivacyDenied> {
         let filter_level = Self::resolve_filter_level(
             pii_filter_level,
             external_data_policy,
@@ -76,14 +78,14 @@ impl PrivacyGateway {
         let (sanitized_data, redacted_regions) = if filter_level == PiiFilterLevel::Off {
             (image_data.to_vec(), 0)
         } else {
-            Self::blur_pii_regions(image_data, filter_level).await
+            Self::blur_pii_regions(image_data, filter_level).await?
         };
 
-        SanitizedImage {
+        Ok(SanitizedImage {
             image_data: sanitized_data,
             metadata_stripped: true,
             redacted_regions,
-        }
+        })
     }
 
     pub async fn prepare_image_for_external(
@@ -103,7 +105,7 @@ impl PrivacyGateway {
         window_title: &str,
         allow_unredacted_external_ocr: bool,
     ) -> Result<SanitizedImage, PrivacyDenied> {
-        if !self.consent_manager.is_permitted(|p| p.ocr_processing) {
+        if !self.consent_manager.effective_permissions().ocr_processing {
             return Err(PrivacyDenied::NoConsent);
         }
 
@@ -130,7 +132,7 @@ impl PrivacyGateway {
         let (sanitized_data, redacted_regions) = if filter_level == PiiFilterLevel::Off {
             (image_data.to_vec(), 0)
         } else {
-            Self::blur_pii_regions(image_data, filter_level).await
+            Self::blur_pii_regions(image_data, filter_level).await?
         };
 
         Ok(SanitizedImage {
@@ -144,7 +146,7 @@ impl PrivacyGateway {
         &self,
         texts: &[String],
     ) -> Result<Vec<String>, PrivacyDenied> {
-        if !self.consent_manager.is_permitted(|p| p.ocr_processing) {
+        if !self.consent_manager.effective_permissions().ocr_processing {
             return Err(PrivacyDenied::NoConsent);
         }
 
@@ -156,7 +158,10 @@ impl PrivacyGateway {
     }
 
     #[allow(clippy::unused_async)] // await used only with `ocr` feature
-    async fn blur_pii_regions(image_data: &[u8], filter_level: PiiFilterLevel) -> (Vec<u8>, usize) {
+    async fn blur_pii_regions(
+        image_data: &[u8],
+        filter_level: PiiFilterLevel,
+    ) -> Result<(Vec<u8>, usize), PrivacyDenied> {
         #[cfg(feature = "ocr")]
         {
             use crate::ocr::OcrExtractor;
@@ -168,7 +173,9 @@ impl PrivacyGateway {
                 Ok(img) => img,
                 Err(e) => {
                     warn!("PII: image decoding failure: {e}");
-                    return (image_data.to_vec(), 0);
+                    return Err(PrivacyDenied::SanitizationFailed(
+                        "image decoding failed before external OCR".to_string(),
+                    ));
                 }
             };
 
@@ -176,19 +183,23 @@ impl PrivacyGateway {
             let word_boxes = match extractor.extract_words_with_boxes(&img).await {
                 Ok(boxes) => boxes,
                 Err(e) => {
-                    debug!("PII: OCR failure: {e}, returning original image");
-                    return (image_data.to_vec(), 0);
+                    debug!("PII: OCR failure: {e}, blocking external image");
+                    return Err(PrivacyDenied::SanitizationFailed(
+                        "local OCR failed before external OCR".to_string(),
+                    ));
                 }
             };
 
             if word_boxes.is_empty() {
-                return (image_data.to_vec(), 0);
+                return Err(PrivacyDenied::SanitizationFailed(
+                    "local OCR found no verifiable text before external OCR".to_string(),
+                ));
             }
 
             let pii_regions = Self::detect_sensitive_regions(&word_boxes, filter_level);
 
             if pii_regions.is_empty() {
-                return (image_data.to_vec(), 0);
+                return Ok((image_data.to_vec(), 0));
             }
 
             debug!(
@@ -230,16 +241,21 @@ impl PrivacyGateway {
                 .write_to(&mut output, image::ImageFormat::Png)
             {
                 warn!("PII: image encoding failure: {e}");
-                return (image_data.to_vec(), 0);
+                return Err(PrivacyDenied::SanitizationFailed(
+                    "image encoding failed after PII redaction".to_string(),
+                ));
             }
 
-            (output.into_inner(), pii_regions.len())
+            Ok((output.into_inner(), pii_regions.len()))
         }
 
         #[cfg(not(feature = "ocr"))]
         {
+            let _ = image_data;
             let _ = filter_level;
-            (image_data.to_vec(), 0)
+            Err(PrivacyDenied::SanitizationFailed(
+                "local OCR feature is unavailable for external image sanitization".to_string(),
+            ))
         }
     }
 
@@ -390,12 +406,12 @@ impl PrivacyGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maekon_core::consent::ConsentPermissions;
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
 
     fn make_consent_manager(ocr_permitted: bool) -> Arc<ConsentManager> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("consent.json");
-        let mut manager = ConsentManager::new(path);
+        let manager = ConsentManager::new(path);
 
         if ocr_permitted {
             let perms = ConsentPermissions {
@@ -423,43 +439,70 @@ mod tests {
     #[tokio::test]
     async fn deny_without_consent() {
         let gw = make_gateway(false, ExternalDataPolicy::PiiFilterStrict);
-        let result = gw
+        let err = gw
             .prepare_image_for_external(b"img", "VSCode", "main.rs")
-            .await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PrivacyDenied::NoConsent));
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PrivacyDenied::NoConsent),
+            "no-consent must produce NoConsent, got: {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn deny_sensitive_app() {
         let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStrict);
-        let result = gw
+        let err = gw
             .prepare_image_for_external(b"img", "1Password", "Vault")
-            .await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            PrivacyDenied::SensitiveApp(_)
-        ));
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PrivacyDenied::SensitiveApp(_)),
+            "sensitive app must produce SensitiveApp, got: {err:?}"
+        );
     }
 
     #[tokio::test]
-    async fn allow_normal_app() {
-        let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStrict);
+    async fn allow_normal_app_when_unredacted_mode_is_explicit() {
+        let consent = make_consent_manager(true);
+        let gw = PrivacyGateway::new(
+            consent,
+            PiiFilterLevel::Off,
+            ExternalDataPolicy::AllowFiltered,
+            PrivacyConfig::default(),
+        );
         let result = gw
             .prepare_image_for_external(b"img", "VSCode", "main.rs")
             .await;
-        assert!(result.is_ok());
-        let sanitized = result.unwrap();
+        let sanitized = result
+            .expect("prepare_image_for_external must succeed with consent + PiiFilterLevel::Off");
         assert!(sanitized.metadata_stripped);
         assert_eq!(sanitized.redacted_regions, 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_image_fails_closed_when_filtering_cannot_sanitize_image() {
+        let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStrict);
+        let err = gw
+            .prepare_image_for_external(b"not-an-image", "VSCode", "main.rs")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PrivacyDenied::SanitizationFailed(_)),
+            "strict filtering with invalid image bytes must produce SanitizationFailed, got: {err:?}"
+        );
     }
 
     #[test]
     fn text_filter_no_consent() {
         let gw = make_gateway(false, ExternalDataPolicy::PiiFilterStrict);
-        let result = gw.prepare_text_for_external(&["hello".to_string()]);
-        assert!(result.is_err());
+        let err = gw
+            .prepare_text_for_external(&["hello".to_string()])
+            .unwrap_err();
+        assert!(
+            matches!(err, PrivacyDenied::NoConsent),
+            "no-consent text filter must produce NoConsent, got: {err:?}"
+        );
     }
 
     #[test]
@@ -467,10 +510,17 @@ mod tests {
         let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStandard);
         let texts = vec!["user@example.com".to_string(), "hello world".to_string()];
         let result = gw.prepare_text_for_external(&texts);
-        assert!(result.is_ok());
-        let filtered = result.unwrap();
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered[0].contains("[EMAIL]") || filtered[0] == "user@example.com");
+        let filtered =
+            result.expect("prepare_text_for_external must succeed when OCR consent is granted");
+        assert_eq!(
+            filtered.len(),
+            2,
+            "output must contain one entry per input string"
+        );
+        assert!(
+            filtered[0].contains("[EMAIL]") || filtered[0] == "user@example.com",
+            "PiiFilterStandard must either mask the email as [EMAIL] or pass it through unchanged"
+        );
     }
 
     #[test]
@@ -492,19 +542,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blur_pii_regions_returns_data_for_empty_image() {
+    async fn blur_pii_regions_rejects_invalid_image() {
         let data = b"not-an-image";
         let result = PrivacyGateway::blur_pii_regions(data, PiiFilterLevel::Standard).await;
-        assert_eq!(result.0, data.to_vec());
-        assert_eq!(result.1, 0);
-    }
-
-    #[tokio::test]
-    async fn blur_pii_regions_off_returns_original() {
-        let data = b"test-data";
-        let result = PrivacyGateway::blur_pii_regions(data, PiiFilterLevel::Off).await;
-        assert!(!result.0.is_empty());
-        assert_eq!(result.1, 0);
+        assert!(matches!(result, Err(PrivacyDenied::SanitizationFailed(_))));
     }
 
     #[tokio::test]
@@ -519,8 +560,10 @@ mod tests {
         let result = gw
             .prepare_image_for_external(b"img", "VSCode", "main.rs")
             .await;
-        assert!(result.is_ok());
-        let sanitized = result.unwrap();
+        let sanitized = result.expect(
+            "PiiFilterLevel::Off must not invoke blur pipeline; even invalid bytes succeed",
+        );
+        // Off-level contract: image bytes are passed through unmodified, no regions redacted.
         assert_eq!(sanitized.image_data, b"img".to_vec());
         assert_eq!(sanitized.redacted_regions, 0);
     }
@@ -534,25 +577,24 @@ mod tests {
             ExternalDataPolicy::PiiFilterStrict,
             true,
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(sanitized.image_data, raw.to_vec());
         assert_eq!(sanitized.redacted_regions, 0);
         assert!(sanitized.metadata_stripped);
     }
 
     #[tokio::test]
-    async fn sanitize_image_for_external_policy_without_opt_out_runs_pipeline() {
+    async fn sanitize_image_for_external_policy_without_opt_out_fails_closed_when_pipeline_fails() {
         let raw = b"not-an-image";
-        let sanitized = PrivacyGateway::sanitize_image_for_external_policy(
+        let result = PrivacyGateway::sanitize_image_for_external_policy(
             raw,
             PiiFilterLevel::Standard,
             ExternalDataPolicy::PiiFilterStandard,
             false,
         )
         .await;
-        assert_eq!(sanitized.image_data, raw.to_vec());
-        assert_eq!(sanitized.redacted_regions, 0);
-        assert!(sanitized.metadata_stripped);
+        assert!(matches!(result, Err(PrivacyDenied::SanitizationFailed(_))));
     }
 
     #[test]
@@ -563,5 +605,7 @@ mod tests {
         assert!(d2.to_string().contains("Bank"));
         let d3 = PrivacyDenied::ExcludedByPolicy;
         assert!(d3.to_string().contains("policy"));
+        let d4 = PrivacyDenied::SanitizationFailed("decode".to_string());
+        assert!(d4.to_string().contains("decode"));
     }
 }

@@ -1,0 +1,37 @@
+{
+  "schema_version": "automation.gui.real_input_execution.v1",
+  "sandbox_worker_contracts": [
+    {
+      "worker_id": "dry-run-logger",
+      "execution_kind": "dry_run_logging",
+      "input_execution_mode": "dry_run_worker",
+      "verification_mode": "command_accepted",
+      "requires_policy_approval": true,
+      "emits_audit": true
+    },
+    {
+      "worker_id": "sandboxed-native-input",
+      "execution_kind": "executes_real_input",
+      "input_execution_mode": "sandboxed_real_input",
+      "verification_mode": "observable_state_change",
+      "requires_policy_approval": true,
+      "emits_audit": true
+    },
+    {
+      "worker_id": "delegated-native-injector",
+      "execution_kind": "delegates_to_native_injector",
+      "input_execution_mode": "sandboxed_real_input",
+      "verification_mode": "observable_state_change",
+      "requires_policy_approval": true,
+      "emits_audit": true
+    },
+    {
+      "worker_id": "unsupported-platform",
+      "execution_kind": "unsupported",
+      "input_execution_mode": "unsupported",
+      "verification_mode": "none",
+      "requires_policy_approval": false,
+      "emits_audit": true
+    }
+  ]
+}

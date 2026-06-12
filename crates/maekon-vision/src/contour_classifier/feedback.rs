@@ -180,8 +180,11 @@ Hope this helps!"#;
 
     #[test]
     fn parse_invalid_json_returns_error() {
-        let result = parse_feedback_response("not json at all");
-        assert!(result.is_err());
+        let err = parse_feedback_response("not json at all").unwrap_err();
+        assert!(
+            err.contains("JSON parse error"),
+            "invalid JSON must produce 'JSON parse error' message, got: {err:?}"
+        );
     }
 
     #[test]

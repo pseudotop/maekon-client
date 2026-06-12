@@ -7,20 +7,25 @@ vi.mock('../../api/standalone', () => ({
 
 vi.mock('../../utils/api-base', () => ({
   resolveApiUrl: vi.fn(async (url: string) => url),
+  resolveLocalAuthToken: vi.fn(async () => ''),
+  setLocalAuthCookie: vi.fn(),
+  withLocalAuthQuery: vi.fn((url: string) => url),
 }))
 
 import { isStandaloneModeEnabled } from '../../api/standalone'
-import { resolveApiUrl } from '../../utils/api-base'
+import { resolveApiUrl, resolveLocalAuthToken } from '../../utils/api-base'
 import { useSSE } from '../useSSE'
 
 const mockIsStandaloneModeEnabled = vi.mocked(isStandaloneModeEnabled)
 const mockResolveApiUrl = vi.mocked(resolveApiUrl)
+const mockResolveLocalAuthToken = vi.mocked(resolveLocalAuthToken)
 
 describe('useSSE', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsStandaloneModeEnabled.mockReturnValue(true)
     mockResolveApiUrl.mockImplementation(async (url: string) => url)
+    mockResolveLocalAuthToken.mockResolvedValue('')
   })
 
   it('returns expected shape', () => {

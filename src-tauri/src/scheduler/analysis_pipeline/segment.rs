@@ -5,7 +5,17 @@ use maekon_analysis::TriggerDecision;
 use maekon_core::models::tiered_memory::{TriggerInput, TriggerReason};
 use maekon_core::ports::storage::StorageService;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tokio::sync::Semaphore;
+use tracing::{debug, info, warn};
+
+/// Caps concurrent Phase-2 LLM summarization + embedding tasks.
+///
+/// Rapid `CloseSegment`/`ForceCloseSegment` triggers (pathological application
+/// switching) would otherwise cause unbounded task accumulation. A cap of 4
+/// allows burst tolerance while keeping memory bounded at ~100 MB budget.
+/// When all permits are held the current segment is skipped without blocking
+/// the scheduler's 1-second hot path.
+pub(super) static LLM_SUMMARY_SEMAPHORE: Semaphore = Semaphore::const_new(4);
 
 use super::super::AdaptiveTriggerState;
 
@@ -77,6 +87,17 @@ async fn handle_segment_close(
             summary.dominant_category
         );
 
+        // Phase 0: Persist the closed segment locally (#5662). This MUST run
+        // before the LLM-summary spawn below, whose update_segment_llm_summary
+        // is an UPDATE WHERE id — without a prior INSERT it silently affects 0
+        // rows. It is the data root for Daily/Weekly Digest, Timeline, Dashboard
+        // timetable, regime distribution and Recalibration, all of which were
+        // empty on standalone (no local producer existed). with_conn offloads to
+        // spawn_blocking so this does not block the scheduler hot path.
+        if let Err(e) = storage.save_activity_segment(&summary).await {
+            warn!("activity segment persist failure: {e}");
+        }
+
         // Phase 1: Embed content activities immediately
         if let Some(ref pipeline) = ts.embedding_pipeline {
             if let Err(e) = pipeline.process_content_activities(&summary).await {
@@ -84,33 +105,52 @@ async fn handle_segment_close(
             }
         }
 
-        // Phase 2: Async LLM summary + embed (non-blocking)
+        // Phase 2: Async LLM summary + embed (non-blocking, concurrency-capped)
+        //
+        // `LLM_SUMMARY_SEMAPHORE` holds at most 4 concurrent tasks so that
+        // rapid segment close bursts do not accumulate unbounded work items.
+        // The permit is transferred into the spawned task and released on drop
+        // (RAII). When the semaphore is exhausted the segment is skipped rather
+        // than blocking the scheduler hot path.
         if let Some(ref summarizer) = ts.llm_summarizer {
-            let summarizer = summarizer.clone();
-            let storage_clone = storage.clone();
-            let pipeline = ts.embedding_pipeline.clone();
-            let segment_id = summary.segment_id.clone();
-            let end_time = summary.end_time;
-            let summary_clone = summary.clone();
+            match LLM_SUMMARY_SEMAPHORE.try_acquire() {
+                Ok(permit) => {
+                    let summarizer = summarizer.clone();
+                    let storage_clone = storage.clone();
+                    let pipeline = ts.embedding_pipeline.clone();
+                    let segment_id = summary.segment_id.clone();
+                    let end_time = summary.end_time;
+                    let summary_clone = summary.clone();
 
-            tokio::spawn(async move {
-                if let Some(text) = summarizer.summarize(&summary_clone).await {
-                    if let Err(e) = storage_clone
-                        .update_segment_llm_summary(&segment_id, &text)
-                        .await
-                    {
-                        warn!("LLM summary storage failure: {e}");
-                    }
-                    if let Some(pipeline) = pipeline {
-                        if let Err(e) = pipeline
-                            .process_llm_summary(&segment_id, &text, end_time)
-                            .await
-                        {
-                            warn!("LLM summary embedding failure: {e}");
+                    tokio::spawn(async move {
+                        // Permit is held for the duration of the task and
+                        // released automatically when this closure returns.
+                        let _permit = permit;
+                        if let Some(text) = summarizer.summarize(&summary_clone).await {
+                            if let Err(e) = storage_clone
+                                .update_segment_llm_summary(&segment_id, &text)
+                                .await
+                            {
+                                warn!("LLM summary storage failure: {e}");
+                            }
+                            if let Some(pipeline) = pipeline {
+                                if let Err(e) = pipeline
+                                    .process_llm_summary(&segment_id, &text, end_time)
+                                    .await
+                                {
+                                    warn!("LLM summary embedding failure: {e}");
+                                }
+                            }
                         }
-                    }
+                    });
                 }
-            });
+                Err(_) => {
+                    debug!(
+                        segment_id = %summary.segment_id,
+                        "LLM summary semaphore exhausted — skipping segment summarization"
+                    );
+                }
+            }
         }
     }
 

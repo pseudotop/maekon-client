@@ -91,5 +91,11 @@ async fn storage_adapter_implements_port() {
     let storage: Arc<dyn StorageService> = Arc::new(storage);
 
     let result = storage.enforce_retention().await;
-    assert!(result.is_ok());
+    // enforce_retention returns Ok(usize) — the count of rows deleted.
+    // On a freshly created in-memory DB with no events, zero rows are deleted.
+    let deleted = result.expect("enforce_retention on an empty DB must succeed");
+    assert_eq!(
+        deleted, 0,
+        "no events to purge in a freshly opened in-memory DB"
+    );
 }

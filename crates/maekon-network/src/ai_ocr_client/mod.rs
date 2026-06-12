@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use crate::provider_error_body::provider_error_message;
 use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
 
 mod ollama;
@@ -486,11 +487,7 @@ impl OcrProvider for RemoteOcrProvider {
         })?;
         if !status.is_success() {
             warn!(status = %status, "OCR API error response");
-            let message = format!(
-                "OCR API error ({}): {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            );
+            let message = provider_error_message("OCR API", status, Some(&body));
             // Semantic HTTP status mapping per iter-54/55/56/58 — even OCR
             // domain errors benefit from differentiating auth/timeout/rate-limit
             // from generic OCR failures.

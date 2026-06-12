@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pseudotop/maekon-client/blob/main/docs/contracts/managed.schema.json",
+  "title": "Maekon managed.json (MDM policy overlay)",
+  "description": "Enterprise MDM policy overlay for the Maekon desktop client (E20-40 #4832; schema published in E20-45 #4837). Deploy this file read-only to the system-wide, admin-writable managed-config location; any field present LOCKS the corresponding AppConfig path (the local user cannot override it). The struct in crates/maekon-core/src/config/managed.rs IS the lockable allowlist — only the fields below can be locked. Unknown extra keys are tolerated (forward-compat: a file authored for a newer schema_version must not brick an older client), which is why every object permits additionalProperties; a schema_version newer than the client supports is rejected fail-closed at load. A present-but-malformed file (bad type / bad enum token) is also fail-closed (the app refuses to start unmanaged). This schema mirrors that runtime contract: known fields are strictly typed and enum-constrained; unknown keys pass.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "managed.json schema version. The current client supports version 1 (ManagedConfig::SUPPORTED_SCHEMA_VERSION). A file authored for a newer version is rejected fail-closed."
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Locked privacy policy.",
+      "properties": {
+        "pii_filter_level": {
+          "type": "string",
+          "enum": ["Off", "Basic", "Standard", "Strict"],
+          "description": "Locks privacy.pii_filter_level. Higher levels mask more PII on-device before any upload."
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Locked telemetry policy.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Locks telemetry.enabled. Locking false hard-disables OTLP telemetry egress fleet-wide."
+        },
+        "crash_reports": {
+          "type": "boolean",
+          "description": "Locks telemetry.crash_reports."
+        }
+      }
+    },
+    "vision": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Locked screen-capture policy.",
+      "properties": {
+        "capture_enabled": {
+          "type": "boolean",
+          "description": "Locks vision.capture_enabled. Locking false hard-disables screen capture fleet-wide."
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Locked audio policy.",
+      "properties": {
+        "cloud_stt_policy": {
+          "type": "string",
+          "enum": ["allow", "require_admin_approval", "disabled"],
+          "description": "Locks audio.cloud_stt_policy — the fleet gate for cloud speech-to-text raw-audio egress, independent of whether any individual user enters an API key. 'disabled' means raw audio never leaves the device."
+        }
+      }
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Locked update policy.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Locks update.enabled. Locking false is an immediate fleet update kill-switch: the update loop never spawns and the coordinator stays Idle."
+        },
+        "min_allowed_version": {
+          "type": "string",
+          "description": "Locks update.min_allowed_version (semver). Pins the oldest release the auto-updater may install — a downgrade/rollback guard below a security baseline. A release below this floor is rejected (#4836)."
+        },
+        "max_allowed_version": {
+          "type": "string",
+          "description": "Locks update.max_allowed_version (semver). Freezes the fleet at/below a known-good version — a soft update kill-switch that, unlike enabled=false, still permits updates up to the cap. A release above this ceiling is held (reported up-to-date), not installed (#4836). Must be >= min_allowed_version when both are set."
+        }
+      }
+    }
+  }
+}

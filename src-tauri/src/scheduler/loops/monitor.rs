@@ -1,6 +1,5 @@
 use chrono::Utc;
 use maekon_core::models::event::Event;
-use maekon_core::models::focused_element::AccessibilityElement;
 use maekon_core::models::frame::OcrRegion;
 use maekon_monitor::idle::IdleTracker;
 use maekon_monitor::input_activity::InputActivityCollector;
@@ -8,6 +7,7 @@ use maekon_monitor::window_layout::WindowLayoutTracker;
 use maekon_vision::ring_buffer::{CaptureRingBuffer, RingFrame};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tauri::Manager;
 use tracing::{debug, info, warn};
 
 use super::super::config::PlatformEgressPolicy;
@@ -17,7 +17,11 @@ use super::super::Scheduler;
 use super::coaching_helper::{CoachingEvalContext, CoachingTickState};
 use super::helpers::{
     audit_consent_and_pii_changes, build_segment_stats_snapshot, emit_heatmap_and_goals,
-    handle_event_analysis, handle_frame_capture, handle_idle_tick,
+    emit_pointer_context_highlight, handle_event_analysis, handle_frame_capture, handle_idle_tick,
+    redact_window_title, PointerContextEmitterState,
+};
+use super::monitor_phases::{
+    capture_ring_thumbnail_if_due, ActiveWindowSnapshot, RingThumbnailCadence,
 };
 use crate::focus_mode::FocusModeState;
 
@@ -49,6 +53,13 @@ impl Scheduler {
         let notif1 = self.notification_manager.clone();
         let focus1 = self.focus_analyzer.clone();
         let context_analyzer1 = self.context_analyzer.clone();
+        // E20-24 (#4816): live suggestion queue for the event-driven analysis producer.
+        #[cfg(feature = "local-suggestions")]
+        let event_suggestion_queue1 = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        #[cfg(not(feature = "local-suggestions"))]
+        let event_suggestion_queue1: Option<
+            std::sync::Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
+        > = None;
         let input_collector1 = input_collector;
         let accessibility_extractor1 = self.accessibility_extractor.clone();
         let config_manager1 = self.config_manager.clone();
@@ -69,13 +80,14 @@ impl Scheduler {
             let mut prev_app: Option<String> = None;
             let mut prev_window_title: Option<String> = None;
             let mut prev_idle_secs: u64 = 0;
-            let mut interval = tokio::time::interval(poll);
+            let mut interval = super::intervals::coalescing_interval(poll);
             let mut focus_block = super::autostart_helper::FocusBlockState::default();
             let mut idle_tracker = IdleTracker::new(Some(idle_threshold));
             let mut adaptive_trigger_state = adaptive_trigger_state;
             let window_tracker = WindowLayoutTracker::new();
             let input_collector = input_collector1;
             let ring_buffer = CaptureRingBuffer::new(6, 2, 0.5); // dashcam: 6 slots, 2 post-event, 0.5 threshold
+            let mut thumbnail_cadence = RingThumbnailCadence::default();
 
             // GUI Activity Intelligence state (carried across ticks)
             use maekon_core::models::focused_element::FocusedElementInfo;
@@ -86,6 +98,7 @@ impl Scheduler {
             let mut last_frame_rgba: Option<(Vec<u8>, u32, u32)> = None;
             let mut focus_hl = super::detection_helper::FocusHighlightState::new();
             let mut coaching_tick_state = CoachingTickState::new();
+            let mut pointer_context_state = PointerContextEmitterState::default();
             let mut last_retention_check = Instant::now();
             let mut prev_full_text_consent = false;
             let mut prev_pii_level = config_manager1
@@ -93,10 +106,23 @@ impl Scheduler {
                 .map(|cm| cm.get().analysis.text_intelligence.pii_extraction_level)
                 .unwrap_or_default();
             let mut ts_notify_state = (false, None::<Instant>); // A.18: (prev_active, last_notified)
+                                                                // #4795/#4798: 전력 인지 cadence 카운터 (1s 틱마다 1씩 증가).
+                                                                // idle backoff + 배터리 절약 throttle 위상 결정에 사용 — idle/TS 알림 틱은
+                                                                // 영향받지 않고, 비싼 collect_context/AX/분석 블록만 게이팅한다.
+            let mut power_tick_counter: u64 = 0;
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        // E20-4 (#4796): take ONE cheap Arc<AppConfig> snapshot per tick
+                        // and read all sub-trees off it, instead of calling
+                        // `config_manager1.get()` (a FULL deep clone of AppConfig)
+                        // multiple times per 1s tick. The snapshot is the same value
+                        // every per-call `get()` would have observed at tick start
+                        // (both read `sender.borrow()`), so semantics + the ≤1s
+                        // propagation window are unchanged — only the per-second
+                        // deep-clone heap churn on the idle hot path is removed.
+                        let config_snapshot = config_manager1.as_ref().map(|cm| cm.snapshot());
                         // A4: Focus mode auto-expiry check
                         if focus_mode.check_expiry() {
                             if let Some(ref overlay) = overlay_ref {
@@ -119,33 +145,86 @@ impl Scheduler {
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
                         focus_block.tick(&mut prev_idle_secs, new_idle_secs, idle_threshold, app_handle.as_ref(), config_manager1.as_ref());
+                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
+                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        let consent = consent_manager1.as_ref()
+                            .map(|cm| cm.effective_permissions())
+                            .unwrap_or_default();
+                        let paused = capture_paused.load(std::sync::atomic::Ordering::Relaxed);
+                        let capture_permitted_for_tick = config_manager1.as_ref()
+                            .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
+                            .unwrap_or(!paused);
+                        if !capture_permitted_for_tick {
+                            debug!("monitor loop: capture gate closed - skipping context, accessibility, capture, and analysis tick");
+                            continue;
+                        }
+
+                        // ── #4795 idle adaptive backoff + #4798 battery-saver throttle ──
+                        // idle(무입력 ≥ MONITOR_IDLE_BACKOFF_SECS) 또는 배터리 절약 시
+                        // 비싼 osascript(collect_context) + AX + 분석 cadence 를 늘린다.
+                        // idle/TS 알림 + focus_block 틱은 위에서 이미 매 틱 실행되었으므로
+                        // 엣지 검출은 지연되지 않는다. 입력 엣지(active 복귀) 시 idle_secs 가
+                        // 임계 미만이 되어 즉시 1s cadence 가 복원된다.
+                        let battery_saver = crate::scheduler::schedule::BATTERY_SAVER_ACTIVE
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        let tick_decision = super::tracking_schedule_helper::decide_monitor_tick(
+                            power_tick_counter,
+                            new_idle_secs,
+                            battery_saver,
+                        );
+                        power_tick_counter = power_tick_counter.wrapping_add(1);
+                        if !tick_decision.process {
+                            debug!(
+                                idle_secs = new_idle_secs,
+                                battery_saver,
+                                "monitor loop: power backoff - skipping expensive context tick"
+                            );
+                            continue;
+                        }
+                        // 배터리 절약 시 가장 비싼 선택 블록(AX 추출 / GUI-LLM 피드백)을 생략.
+                        let skip_expensive = tick_decision.skip_expensive;
+
                         match act_mon.collect_context().await {
                             Ok(ctx) => {
-                                let app_name = ctx.active_window.as_ref()
-                                    .map(|w| w.app_name.clone())
-                                    .unwrap_or_default();
-                                let window_title = ctx.active_window.as_ref()
-                                    .map(|w| w.title.clone())
-                                    .unwrap_or_default();
+                                let active_window = ActiveWindowSnapshot::from_context(&ctx);
+                                let app_name = active_window.app_name;
+                                // Own-field gate: 윈도우 제목 수집은 window_title_collection 동의가 있어야 한다.
+                                // 복합 게이트(screen_capture)만 부여돼도 window_title_collection 은 기본 false
+                                // 이므로 제목은 빈 문자열로 redact 된다. CRITICAL: ConsentPermissions 의
+                                // window_title_collection (effective_permissions() 의 Valid-only 값)이지,
+                                // config 토글이 아니다. 빈 문자열로 통일해 모든 다운스트림 소비자
+                                // (ContextEvent / window_tracker / capture_req / focus / analysis)가
+                                // redact 된 값을 보게 한다.
+                                let window_title = redact_window_title(
+                                    active_window.window_title,
+                                    consent.window_title_collection,
+                                );
                                 let focus_window_title = window_title.clone();
-                                let window_bounds = ctx.active_window.as_ref()
-                                    .and_then(|w| w.bounds);
+                                let window_bounds = active_window.window_bounds;
+                                let app_bundle_id = active_window.app_bundle_id;
                                 let mut focus_ocr_hint: Option<String> = None;
 
                                 input_collector.set_current_app(&app_name);
-                                if let Some(ref cm) = config_manager1 { super::focus_auto_helper::evaluate_focus_auto(&cm.get().focus_auto, &focus_mode, &app_name, overlay_ref.as_ref()); }
+                                if let Some(ref cfg) = config_snapshot { super::focus_auto_helper::evaluate_focus_auto(&cfg.focus_auto, &focus_mode, &app_name, overlay_ref.as_ref()); }
 
                                 // ── Accessibility API extraction (Phase 2) ──
                                 // Extract focused element info per tick when enabled.
                                 // Result is stored for the GUI pipeline to consume.
-                                if let Some(ref ax) = accessibility_extractor1 {
-                                    let text_config = config_manager1
+                                // #4798: 배터리 절약 시 AX 추출(가장 비싼 선택 블록)을 생략하고
+                                // 하이라이트를 정리한다 (collect_context 의 실패 분기와 동일 처리).
+                                if skip_expensive {
+                                    super::detection_helper::clear_focus_highlight(
+                                        &mut focus_hl, &overlay_driver_ref,
+                                    ).await;
+                                    last_focused_element = None;
+                                } else if let Some(ref ax) = accessibility_extractor1 {
+                                    let text_config = config_snapshot
                                         .as_ref()
-                                        .map(|cm| cm.get().analysis.text_intelligence.clone())
+                                        .map(|cfg| cfg.analysis.text_intelligence.clone())
                                         .unwrap_or_default();
                                     let full_text_consent = consent_manager1
                                         .as_ref()
-                                        .map(|cm| cm.is_permitted(|p| p.full_text_extraction))
+                                        .map(|cm| cm.effective_permissions().full_text_extraction)
                                         .unwrap_or(false);
 
                                     // Audit: log consent / PII level changes
@@ -194,8 +273,20 @@ impl Scheduler {
                                         warn!(err.code = %e.code(), "window event save failure: {e}");
                                     }
                                     if let Some(ref sink) = uploader1 {
+                                        // #4803: egress 감사 — 소비 전에 유형/크기를 계산하고
+                                        // uploaded/blocked disposition 을 원장에 기록한다.
+                                        let etype = super::super::config::egress_event_type(&win_event);
+                                        let bytes = super::super::config::egress_byte_count(&win_event);
+                                        let consent_state = egress1.consent_state_snapshot();
                                         if let Some(upload_event) = egress1.prepare_event_for_upload(win_event) {
                                             sink.enqueue(upload_event);
+                                            super::super::config::record_event_egress(
+                                                &sqlite1, etype, bytes, "uploaded", &consent_state,
+                                            );
+                                        } else {
+                                            super::super::config::record_event_egress(
+                                                &sqlite1, etype, bytes, "blocked", &consent_state,
+                                            );
                                         }
                                     }
                                 }
@@ -208,35 +299,20 @@ impl Scheduler {
                                     input_activity_level: input_collector.peek_activity_level(),
                                 };
 
-                                // Gate: consent · active_hours · tracking-schedule · tray-pause (A.7)
-                                let consent = consent_manager1.as_ref()
-                                    .and_then(|cm| cm.current_consent().map(|r| r.permissions.clone()))
-                                    .unwrap_or_default();
-                                let paused = capture_paused.load(std::sync::atomic::Ordering::Relaxed);
-                                let permitted = config_manager1.as_ref()
-                                    .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                                    .unwrap_or(!paused);
-                                if permitted {
-                                // --- Ring buffer: capture thumbnail every cycle ---
-                                if let Ok(thumb_data) = processor.capture_thumbnail().await {
-                                    ring_buffer.push(RingFrame {
-                                        timestamp: Utc::now(),
-                                        thumbnail_data: thumb_data,
-                                        app_name: app_name.clone(),
-                                        window_title: event.window_title.clone(),
-                                        accessibility_elements: last_focused_element
-                                            .as_ref()
-                                            .map(|f| {
-                                                vec![AccessibilityElement {
-                                                    role: f.role.clone(),
-                                                    label: f.label.clone().unwrap_or_default(),
-                                                    bounds: f.position,
-                                                }]
-                                            })
-                                            .unwrap_or_default(),
-                                    });
-                                }
+                                let thumbnail_throttle = config_snapshot
+                                    .as_ref()
+                                    .map(|cfg| Duration::from_millis(cfg.vision.capture_throttle_ms))
+                                    .unwrap_or(Duration::from_secs(5));
 
+                                capture_ring_thumbnail_if_due(
+                                    &mut thumbnail_cadence,
+                                    processor.as_ref(),
+                                    &ring_buffer,
+                                    &app_name,
+                                    &event.window_title,
+                                    last_focused_element.as_ref(),
+                                    thumbnail_throttle,
+                                ).await;
                                 {
                                     let capture_req = trigger.should_capture(&event);
 
@@ -251,6 +327,7 @@ impl Scheduler {
                                         // Inject active window bounds so the frame processor
                                         // captures the correct monitor in multi-monitor setups.
                                         capture_req.window_bounds = window_bounds;
+                                        capture_req.app_bundle_id = app_bundle_id.clone();
 
                                         // --- Ring buffer: flush pre-event frames on significant capture ---
                                         if let Some(ref fs) = frame_storage1 {
@@ -280,8 +357,11 @@ impl Scheduler {
                                         }
 
                                         // D5 iter-3: pii_level for OCR sanitization at storage boundary.
-                                        let capture_pii = config_manager1.as_ref().map(|cm| cm.get().privacy.pii_filter_level).unwrap_or_default();
-                                        let (ocr_hint, regions, frame_rgba) = handle_frame_capture(&capture_req, &processor, &frame_storage1, &sqlite1, &session1, capture_pii, &event_tx_mon).await;
+                                        let capture_pii = config_snapshot.as_ref().map(|cfg| cfg.privacy.pii_filter_level).unwrap_or_default();
+                                        // Own-field gate: OCR 텍스트 추출은 ocr_processing 동의가 있어야 한다.
+                                        // 복합 게이트(screen_capture)만 부여돼도 ocr_processing 은 기본 false 이므로
+                                        // 프레임은 캡처되나 OCR 텍스트/영역은 폐기된다 (ConsentPermissions 의 ocr_processing).
+                                        let (ocr_hint, regions, frame_rgba) = handle_frame_capture(&capture_req, &processor, &frame_storage1, &sqlite1, &session1, capture_pii, consent.ocr_processing, &event_tx_mon).await;
                                         focus_ocr_hint = ocr_hint;
                                         if !regions.is_empty() {
                                             last_ocr_regions = regions;
@@ -309,31 +389,126 @@ impl Scheduler {
                                     debug!("increment_session_counters failed: {e}");
                                 }
                                 if let Some(ref sink) = uploader1 {
+                                    // #4803: egress 감사 (uploaded/blocked).
+                                    let etype = super::super::config::egress_event_type(&ctx_event);
+                                    let bytes = super::super::config::egress_byte_count(&ctx_event);
+                                    let consent_state = egress1.consent_state_snapshot();
                                     if let Some(upload_event) = egress1.prepare_event_for_upload(ctx_event) {
                                         sink.enqueue(upload_event);
+                                        super::super::config::record_event_egress(
+                                            &sqlite1, etype, bytes, "uploaded", &consent_state,
+                                        );
+                                    } else {
+                                        super::super::config::record_event_egress(
+                                            &sqlite1, etype, bytes, "blocked", &consent_state,
+                                        );
                                     }
                                 }
-                                } // end capture gate
-
                                 let app_changed = prev_app.as_ref() != Some(&app_name);
                                 if app_changed {
                                     if let Some(ref focus) = focus1 {
-                                        focus
+                                        // Own-field gate: 앱-사용 집계는 app_usage_analytics 동의가 있어야 한다.
+                                        // 포커스 세션 추적은 복합 게이트로 이미 보호되고, 여기서는 사용 집계
+                                        // 경로만 own-field 로 게이트한다 (ConsentPermissions 의 app_usage_analytics).
+                                        let rule_suggestions = focus
                                             .on_app_switch_with_context(
                                                 &app_name,
                                                 &focus_window_title,
                                                 focus_ocr_hint.as_deref(),
+                                                consent.app_usage_analytics,
                                             )
                                             .await;
+                                        // #5696: bridge rule suggestions (restore-context /
+                                        // playbook) into the live queue so the overlay shows
+                                        // them this session. notifier=None — the rules send
+                                        // their own one-shot OS notification already.
+                                        if !rule_suggestions.is_empty() {
+                                            if let Some(q) = event_suggestion_queue1.as_ref() {
+                                                let mut to_enqueue = rule_suggestions;
+                                                let rs_regime =
+                                                    shared_regime.snapshot().regime;
+                                                maekon_analysis::filter_by_regime(
+                                                    &mut to_enqueue,
+                                                    rs_regime.as_ref(),
+                                                );
+                                                let rs_on_changed =
+                                                    overlay_ref.as_ref().map(|o| {
+                                                        let o = o.clone();
+                                                        move |c: usize| {
+                                                            o.emit_suggestions_changed(c)
+                                                        }
+                                                    });
+                                                let rs_on_changed_ref: Option<
+                                                    &(dyn Fn(usize) + Send + Sync),
+                                                > = rs_on_changed
+                                                    .as_ref()
+                                                    .map(|f| f as &(dyn Fn(usize) + Send + Sync));
+                                                super::helpers::enqueue_and_surface(
+                                                    q,
+                                                    to_enqueue,
+                                                    rs_on_changed_ref,
+                                                    None,
+                                                    false,
+                                                )
+                                                .await;
+                                            }
+                                        }
                                     }
 
-                                    // Event-driven LLM analysis on significant app switches
+                                    // Event-driven LLM analysis on significant app switches.
+                                    // E20-24 (#4816): mirror the periodic analysis loop's
+                                    // server-coexistence guard (intelligence.rs) — suppress the
+                                    // local queue push when the server has recently delivered SSE
+                                    // suggestions, so server builds never inject competing local
+                                    // suggestions into the SSE-fed queue. In OSS this is always a
+                                    // no-op (no server ⇒ has_recent_server_suggestions == false).
+                                    #[cfg(feature = "local-suggestions")]
+                                    let event_queue_for_push = {
+                                        let server_recent = config_snapshot
+                                            .as_ref()
+                                            .map(|cfg| {
+                                                let lookback = cfg
+                                                    .analysis
+                                                    .server_coexistence_lookback_secs;
+                                                sqlite1
+                                                    .has_recent_server_suggestions(lookback)
+                                                    .unwrap_or(false)
+                                            })
+                                            .unwrap_or(false);
+                                        if server_recent {
+                                            None
+                                        } else {
+                                            event_suggestion_queue1.as_ref()
+                                        }
+                                    };
+                                    #[cfg(not(feature = "local-suggestions"))]
+                                    let event_queue_for_push = event_suggestion_queue1.as_ref();
+                                    // E20-26 (#4818): current regime for context-aware gating
+                                    // of event-driven suggestions. Read from the shared state
+                                    // (written at the end of the previous tick); `None` =>
+                                    // pass-through. The owned clone keeps the borrow short.
+                                    let event_regime = shared_regime.snapshot().regime;
+                                    // #5694: surface accepted suggestions — overlay
+                                    // auto-refresh + High+ toast (focus-gated inside).
+                                    let event_on_changed = overlay_ref.as_ref().map(|o| {
+                                        let o = o.clone();
+                                        move |c: usize| o.emit_suggestions_changed(c)
+                                    });
+                                    let event_on_changed_ref: Option<&(dyn Fn(usize) + Send + Sync)> =
+                                        event_on_changed
+                                            .as_ref()
+                                            .map(|f| f as &(dyn Fn(usize) + Send + Sync));
                                     handle_event_analysis(
                                         &context_analyzer1,
                                         &storage1,
                                         &app_name,
                                         &focus_window_title,
                                         focus_ocr_hint.as_deref(),
+                                        event_queue_for_push,
+                                        event_regime.as_ref(),
+                                        event_on_changed_ref,
+                                        notif1.as_ref(),
+                                        focus_mode.is_active(),
                                     ).await;
                                 }
 
@@ -369,13 +544,22 @@ impl Scheduler {
                                     analyzer.set_accessibility_text(a11y_text).await;
                                 }
 
-                                // Write current regime state for cross-loop sharing (C1)
-                                shared_regime.update(
-                                    adaptive_trigger_state.as_ref()
-                                        .and_then(|ts| ts.current_regime_id.as_deref()),
-                                    None, // regime_label populated by regime_manager if available
-                                    &app_name,
-                                );
+                                // Write current regime state for cross-loop sharing (C1).
+                                // E20-26 (#4818): resolve the full owned `Regime` from the
+                                // regime manager so regime-aware consumers (local-suggestion
+                                // filter, coaching) can read name/auto_label. `None` when no
+                                // regime is classified — consumers pass suggestions through.
+                                let current_regime_owned = adaptive_trigger_state.as_ref().and_then(|ts| {
+                                    ts.current_regime_id.as_deref().and_then(|id| {
+                                        ts.regime_manager
+                                            .lock()
+                                            .all_regimes()
+                                            .iter()
+                                            .find(|r| r.regime_id == id)
+                                            .cloned()
+                                    })
+                                });
+                                shared_regime.update(current_regime_owned.as_ref(), &app_name);
 
                                 // Consume the GUI summary after feeding it to the analysis pipeline
                                 last_gui_summary = None;
@@ -404,29 +588,36 @@ impl Scheduler {
 
                                         // Persist GUI interaction to SQLite (V13 table)
                                         if input_snap.mouse.click_count > 0 {
+                                            // F-PF-19: save_gui_interaction 은 sync SQLite 쓰기이므로
+                                            // tokio worker thread 를 블로킹하지 않도록 spawn_blocking 으로 분리.
+                                            // NewGuiInteraction 의 라이프타임 필드를 owned String 으로 캡처.
                                             let event_id = uuid::Uuid::new_v4().to_string();
                                             let timestamp_str = chrono::Utc::now().to_rfc3339();
+                                            let app_name_owned = app_name.clone();
+                                            let sqlite_gui = sqlite1.clone();
 
-                                            let input = maekon_core::models::storage_records::NewGuiInteraction {
-                                                event_id: &event_id,
-                                                segment_id: None,
-                                                timestamp: &timestamp_str,
-                                                element_text: None,
-                                                element_type: Some("Click"),
-                                                interaction_type: "Click",
-                                                bbox_json: None,
-                                                app_name: &app_name,
-                                                type_confidence: 1.0,
-                                            };
-
-                                            if let Err(e) = sqlite1.save_gui_interaction(&input) {
-                                                warn!("GUI interaction save failure: {e}");
-                                            }
+                                            tokio::task::spawn_blocking(move || {
+                                                let input = maekon_core::models::storage_records::NewGuiInteraction {
+                                                    event_id: &event_id,
+                                                    segment_id: None,
+                                                    timestamp: &timestamp_str,
+                                                    element_text: None,
+                                                    element_type: Some("Click"),
+                                                    interaction_type: "Click",
+                                                    bbox_json: None,
+                                                    app_name: &app_name_owned,
+                                                    type_confidence: 1.0,
+                                                };
+                                                if let Err(e) = sqlite_gui.save_gui_interaction(&input) {
+                                                    tracing::warn!("GUI interaction save failure: {e}");
+                                                }
+                                            });
                                         }
 
                                         // LLM feedback: process uncertain GUI elements periodically
+                                        // #4798: 배터리 절약 시 GUI-LLM 피드백(원격 LLM 호출)을 생략.
                                         gui_state.feedback_tick_counter += 1;
-                                        if gui_state.feedback_tick_counter >= 30 && !gui_state.uncertain_queue.is_empty() {
+                                        if !skip_expensive && gui_state.feedback_tick_counter >= 30 && !gui_state.uncertain_queue.is_empty() {
                                             gui_state.feedback_tick_counter = 0;
                                             if let Some(ref p) = coaching_analysis_provider {
                                                 super::super::gui_pipeline::process_gui_feedback(gui_state, p.as_ref(), gui_feedback_pii_san.as_ref(), gui_feedback_pii_level(&config_manager1)).await;
@@ -442,6 +633,24 @@ impl Scheduler {
                                     &overlay_ref,
                                     &coaching_engine_ref,
                                 ).await;
+                                let indicator_visible_for_tick = app_handle
+                                    .as_ref()
+                                    .and_then(|app| {
+                                        app.try_state::<crate::runtime_state::AppState>()
+                                    })
+                                    .map(|state| {
+                                        state.indicator_visible.load(
+                                            std::sync::atomic::Ordering::Relaxed,
+                                        )
+                                    })
+                                    .unwrap_or(true);
+                                emit_pointer_context_highlight(
+                                    &mut pointer_context_state,
+                                    &input_snap,
+                                    &overlay_ref,
+                                    paused,
+                                    indicator_visible_for_tick,
+                                );
 
                                 // ── Coaching evaluation (Phase 1) ──
                                 // A4: Skip coaching when focus mode active
@@ -461,6 +670,7 @@ impl Scheduler {
                                         overlay: &overlay_ref,
                                         notifier: &notif1,
                                         coaching_storage: &coaching_storage_ref,
+                                        scheduler_storage: &sqlite1,
                                         analysis_provider: &coaching_analysis_provider,
                                         regime_id: regime_id_for_coaching,
                                         prev_app: prev_app.as_deref(),

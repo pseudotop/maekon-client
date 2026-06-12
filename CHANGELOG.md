@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.6] - 2026-06-12
+
+### Added
+
+- Local symbolic memory-graph layer (ADR-023): SQLite claim substrate with
+  digest-to-claim promotion, belief-revision orchestration, rule-seeded
+  app-sequence edges, and accumulated claims in the digest export, all behind
+  the egress-gated safety foundation.
+- Standalone local LLM support: `llm_provider=Local` routes to a real Ollama
+  instance in every access mode, with host/model configuration respected,
+  installed-model negotiation at chat session create, loopback embedding
+  delegation in release builds, BYOK/OAuth direct adapters available outside
+  the `server` feature, and a LocalModel access-mode selector in settings.
+- Codex/ChatGPT provider integration: app-server JSON-RPC invocation mode
+  with initialize handshake, request timeout and idle policies, process-group
+  reap, native thread continuity and resume, streaming event mapping,
+  structured auth probes, a fail-closed approval loop with in-app approval
+  UI, turn steer/interrupt, token-usage reporting, and graceful fallback to
+  `codex exec` behind a rollout flag.
+- LAN sync activation: storage-backed sync server with client-side TLS and
+  TOFU certificate-fingerprint pinning, persistent HLC clock infrastructure
+  with HLC-stamped writes, and cross-device GDPR Art.17 erasure through a
+  retained tombstone outbox with garbage collection and convergence coverage.
+- Consent foundation (GDPR): production consent IPC gating every collector,
+  in-app consent UI with onboarding and withdraw-first delete-all, a separate
+  microphone consent tier with push-to-talk re-gating, consent revoke → full
+  local erasure with a structural drain barrier and restart-durable fire-once
+  deletion events, an egress audit ledger with per-field gates and audit
+  export, and explicit disclosure that exported/backup files survive erasure.
+- Keyword-first hybrid search: union RRF with an exact-phrase tier and
+  keyword fallback when embeddings are unavailable, plus CJK bigram-shadow
+  FTS so Japanese/Korean keyword search lights up.
+- Local suggestion surfacing funnel: desktop toast with overlay auto-refresh,
+  a rule-suggestion live-queue bridge for zero-config first-session value,
+  and SQLite fallbacks for the history/stats/daily/deferred IPCs.
+- Automation runtime revival: natural-language intent hint bar, seven
+  previously dead IPCs rewired including the human-in-the-loop confirm modal,
+  and a confirmation-policy knob wired into intent-hint execution.
+- Weekly Digest UI at `/week`, coaching habit streaks with an onboarding
+  opt-in step, and a local `activity_segments` producer lighting six
+  previously empty standalone surfaces.
+- Enterprise managed configuration: an enforced managed-config layer that
+  blocks MDM user overrides, an update version window (min/max kill-switch),
+  and a managed cloud-STT policy with data-residency controls and a consent
+  audit sentinel.
+- Tamper-evident audit log: SHA-256 hash chain with `verify_audit_chain`.
+- CI coverage: the test suite now also runs on macOS and Windows
+  (platform-gated), with dedicated cells for cloud-STT, local Whisper,
+  Windows sandbox, and macOS keychain integration tests.
+
+### Changed
+
+- Storage ports converged on async end-to-end (ADR-026), including an
+  object-safe `ConsentManagerPort` consumed as `Arc<dyn>`.
+- Native macOS active-window capture replaces the osascript path, with
+  monitor throttling and opt-in OTLP metrics.
+- Supply-chain posture: cargo-vet exemptions retired in bulk through imported
+  registries, self-audits, and publisher trust; GitHub Actions and container
+  references SHA-pinned; cargo-deny gates and SBOM generation hardened.
+- Test rigor: value-blind `assert!(..is_ok())` / `assert!(..is_err())` hedges
+  across the workspace strengthened to `.expect()` / `.unwrap_err()` with
+  value and variant assertions, enforced by new workspace lint gates.
+- Identifiers moved to the prefix+ULID convention (ADR-022).
+- Dependency baselines updated, including jsonwebtoken 10.4 (MSRV 1.88),
+  xcap 0.9, mdns-sd 0.20, and lockfile refreshes.
+
+### Fixed
+
+- Async-safety sweep: blocking SQLite, filesystem, and TLS I/O moved to
+  `spawn_blocking` across IPC commands, scheduler loops, screen capture, and
+  OCR; scheduler maintenance handles are awaited so panics surface; task
+  handles gained Drop/cancellation lifecycles.
+- Scheduler durability: regime state now checkpoints every 30 minutes,
+  bounding crash-window learning loss.
+- Vector search at scale: queries route through the IVF index with
+  brute-force fallback and an unindexed-delta supplement, the dimension cache
+  rehydrates after restart, and `nprobe` scales with cluster count.
+- Korean content no longer panics the suggestion enqueue path
+  (char-boundary-safe fingerprint truncation), and local-date queries use UTC
+  half-open windows so non-UTC midnight segments are no longer dropped.
+- Local Whisper STT compiles and runs against whisper-rs 0.16 again (segment
+  and language-id API drift), with the model hash gate corrected.
+- Windows: Tauri live dashboard connectivity restored, installer branding and
+  NSIS setup publication fixed, a suggestions shortcut collision fallback
+  added, and pnpm frontend installs stabilized.
+- Linux: GTK4 compile ports for the capture path, tray icon PNG dependency,
+  and quieter no-GTK menu fallbacks.
+- gRPC: Bearer auth on all unary RPCs (not just subscribe),
+  `SubscribeSuggestions` exempted from the 30-second channel timeout,
+  single-flight token auto-refresh, and TLS configuration errors surfaced
+  instead of being silently swallowed.
+- OAuth refresh works across multiple providers without phantom reauth
+  alerts; the sandbox permissive-noop no longer silently drops automation
+  actions.
+- Vision hot path avoids full-frame RGBA copies in delta encoding and
+  thumbnailing; the onboarding dashboard URL is never the `0.0.0.0` bind
+  address.
+
+### Security
+
+- CodeQL baseline driven to zero (path-injection canonicalization guards at
+  filesystem sinks, hard-coded crypto fixtures removed, cleartext findings
+  cleared) and the release-alert acceptance records emptied.
+- Window titles masked in tracing logs with a content-free digest on macOS
+  and Windows, AX scene text masked before storage, and a field-access blind
+  spot in the masking guard closed.
+- PII sanitizer wired at all four STT provider construction sites, and chat
+  egress guarded with fail-closed PII sanitization including attachments.
+- Platform egress and the telemetry exporter are bound to consent
+  (fail-closed), with deterministic egress record ids for crash-retry dedup.
+- LAN sync rejects row-origin spoofing, the file secret store gains Windows
+  ACL hardening, and the sync passphrase enforces a minimum length.
+- Constant-time comparison for integration auth tokens; BYOK API keys
+  redacted from `Debug` output.
+- Production Tauri CSP tightened and sandbox worker lookup restricted.
+
 ## [0.0.1-rc.5] - 2026-05-11
 
 ### Security
@@ -94,30 +210,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Brand reset: oneshim → maekon across 14 client crates, bundle ID
   `com.oneshim.client` → `com.maekon.app`, env vars `ONESHIM_*` → `MAEKON_*`,
-  artifact filenames `oneshim-*.{dmg,pkg,zip,msi,tar.gz}` → `maekon-*.*`
-  ([parent #1329](https://github.com/pseudotop/oneshim/pull/1329)).
+  artifact filenames `oneshim-*.{dmg,pkg,zip,msi,tar.gz}` → `maekon-*.*`.
 - Migrate critical legacy fixes from archived oneshim-client v0.4.41 line:
-  bug-report frontend test, `lru` 0.17→0.18, `sd-notify` 0.4→0.5
-  ([parent #1330](https://github.com/pseudotop/oneshim/pull/1330)).
+  bug-report frontend test, `lru` 0.17→0.18, `sd-notify` 0.4→0.5.
 - Documentation cleanup: rebranded `Maekon.app` references in updater runbook,
   restored `RUSTSEC-2026-0097` advisory comment, Tauri tooling drift realignment
-  (tauri-build 2.5.6→2.6.0, tauri-utils 2.8.3→2.9.0, ctor 0.2.9→0.8.0)
-  ([parent #1331](https://github.com/pseudotop/oneshim/pull/1331)).
+  (tauri-build 2.5.6→2.6.0, tauri-utils 2.8.3→2.9.0, ctor 0.2.9→0.8.0).
 - Add English autostart guide (`docs/guides/autostart.md`) per documentation policy;
   drop pre-rebrand ONESHIM-branded systemd-unit migration entry from
-  `migration_hashes.rs` (no active install base on the maekon-client line)
-  ([parent #1332](https://github.com/pseudotop/oneshim/pull/1332)).
+  `migration_hashes.rs` (no active install base on the maekon-client line).
 - README/test private bundle CI status callout: workflow files referenced by
   README were never authored; clarify run-on-demand status until v0.0.1-rc.1
-  release-readiness pass ([parent #1335](https://github.com/pseudotop/oneshim/pull/1335)).
+  release-readiness pass.
 
 ### Fixed
 
 - Repoint stale `pseudotop/oneshim-client` URLs in user-facing surfaces (web/landing
   download CTA + GitHub releases API call, docs-site footer, console admin diagnostics
   tab, ADR-070 plan, PRD doc-policy ADR location reference, gRPC troubleshooting
-  shell snippet) to `pseudotop/maekon-client`
-  ([parent #1333](https://github.com/pseudotop/oneshim/pull/1333)).
+  shell snippet) to `pseudotop/maekon-client`.
 
 ## [0.4.41-rc.4] - 2026-05-05
 
@@ -508,7 +619,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **D13 gRPC dashboard server (v1)** (spec: `docs/superpowers/specs/2026-04-21-d13-grpc-web-exposure-design.md`). `maekon-web` gains an optional gRPC server exposing `DashboardService` for external CLI/integration tools.
+- **D13 gRPC dashboard server (v1)**. `maekon-web` gains an optional gRPC server exposing `DashboardService` for external CLI/integration tools.
   - **Proto**: `api/proto/maekon/dashboard/v1/dashboard.proto` defines `DashboardService` with `GetAgentInfo` + `HealthCheck` RPCs. Placement under `maekon/dashboard/v1/` parallels the existing consumer contract under `maekon/client/v1/`.
   - **Implementation**: `crates/maekon-web/src/grpc/` hosts `DashboardServiceImpl`. Runs via `tonic::transport::Server` on localhost port 10091 (configurable via `MAEKON_DASHBOARD_GRPC_PORT` env var). REST continues on 10090 unchanged.
   - **Feature-gated**: new `grpc-dashboard` Cargo feature in both `maekon-web` and `src-tauri`. Default builds compile without tonic, paying zero dep cost.
@@ -518,7 +629,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **🔥 D5 PII filter audit — CRITICAL clipboard fix + 10 gap closures** (spec: [`docs/superpowers/specs/2026-04-20-d5-pii-filter-audit-design.md`](docs/superpowers/specs/2026-04-20-d5-pii-filter-audit-design.md), audit matrix: [`docs/reviews/2026-04-20-d5-pii-audit-matrix.md`](docs/reviews/2026-04-20-d5-pii-audit-matrix.md)).
+- **🔥 D5 PII filter audit — CRITICAL clipboard fix + 10 gap closures** (internal design and audit-matrix notes).
   - **🔥 Critical fix** (iter-2): `ClipboardEvent.preview` logic inversion bug. Prior code gated preview generation on `pii_filter_level != Off` but only truncated without sanitizing. Effect: first 50 chars of any clipboard content (passwords, credit cards, addresses) leaked raw into SQLite + server upload. Fix applies PII sanitizer via injected `PiiSanitizer` port before truncation.
   - **PII sanitization contract** (iter-1): [`docs/guides/pii-sanitization-contract.md`](docs/guides/pii-sanitization-contract.md) + Korean companion. Defines the "every text value crossing persistence/transmission boundary MUST be sanitized" rule; distinguishes adapter-crate (port-injected) from src-tauri (direct) usage patterns; codifies exemption process.
   - **44-path audit matrix** (iter-1): 11-round deep review inventory covering OCR, accessibility, LLM responses, clipboard, coaching, daily insights, file access, integration egress, chat history, Tauri commands, and more.
@@ -545,7 +656,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **D7 Circuit breaker broadening** (spec: [`docs/superpowers/specs/2026-04-20-d7-circuit-breaker-broadening-design.md`](docs/superpowers/specs/2026-04-20-d7-circuit-breaker-broadening-design.md)). Extends the existing `BatchUploader`-only circuit breaker to 5 additional adapters so a persistently unreachable AI endpoint fast-fails in microseconds instead of blocking every scheduler tick behind a 30–60 s timeout wall.
+- **D7 Circuit breaker broadening**. Extends the existing `BatchUploader`-only circuit breaker to 5 additional adapters so a persistently unreachable AI endpoint fast-fails in microseconds instead of blocking every scheduler tick behind a 30–60 s timeout wall.
   - **New infrastructure**: `CircuitBreakerRegistry` (shared per-endpoint `Arc<CircuitBreaker>` keyed by `scheme://host:port`), `resilience::classify_for_breaker` (centralized outcome classification), `resilience::endpoint_authority` (canonical registry key derivation with default-port normalization), `BreakerSignal` enum (`Success`/`Failure`/`Neutral`).
   - **Adapter coverage** (5 new consumers): `RemoteEmbeddingProvider`, `AnalysisClient`, `RemoteOcrProvider`, `RemoteLlmProvider`, `HttpApiSession`.
   - **New wire code**: `service.circuit_open` (ADR-019 catalog bumped 41 → 42). Distinguishes local-side breaker fast-fail from server-side 503 (`service.unavailable`) for observability and i18n.
@@ -571,7 +682,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Doc sync** (iter 173~214) — grouped themes; per-iter detail in the git log:
       - **ADR content**: ADR-019 EN+KO synced through iter-165 YAGNI; ADR-001 `NetworkError` example updated to current 13-variant enum; ADR-007/008 carry pre-ADR-019 syntax notes; ADR-011 `CoreError::Analysis(String)` inlined to struct variant; ADR-002/009 scope corrected to reflect ADR-004 Tauri migration (`maekon-ui` removed, composition root now `src-tauri/` with `maekon-app` package).
       - **Status & history metadata**: `STATUS.{md,ko.md}` synced (EN 3,455 → 3,641; KO 2,995 → 3,641 + v0.4.21 → v0.4.39-rc.1 + schema V25 → V31); `docs/PHASE-HISTORY.md` backfilled with 5 missing phases (Phase 2 Config Telemetry, Phase 3 Regime Feedback Learning, Phase 4 Updater Hardening, Phase 5-D8 Storage Test Backfill, ADR-019); 10+ historical phase plan/spec docs stamped `Status: SHIPPED` + pre-ADR-019 syntax banners.
-      - **Canonical-convention enforcement**: duplicate `docs/plans/` converged into canonical `docs/plan/` (6 files via `git mv`); `docs/README.{md,ko.md}` + `docs/DOCUMENTATION_POLICY.{md,ko.md}` picked up 5 missing dir entries (`reviews/`, `roadmap/`, `specs/`, `testing/`, `superpowers/`); `release-checklist.md` dropped stale "Nightly suite" + swapped `git tag -s` for mandatory `./scripts/release.sh` flow; first-ever `docs/architecture/ADR-TEMPLATE.md` + `docs/architecture/README.md` registry (all 19 ADRs, next ID); ADR status unification (6 Approved → Accepted per Nygard) + 3 Proposed → Accepted promotions with implementation-evidence notes (ADR-002 OS GUI M3, ADR-007 Async Runtime, ADR-008 Network Resilience). Cross-ADR audit found zero consolidation candidates — 19 ADRs have distinct scopes.
+      - **Canonical-convention enforcement**: duplicate planning-doc directories converged into the canonical planning archive (6 files via `git mv`); `docs/README.{md,ko.md}` + `docs/DOCUMENTATION_POLICY.{md,ko.md}` picked up 5 missing dir entries (`reviews/`, `roadmap/`, `specs/`, `testing/`, `superpowers/`); `release-checklist.md` dropped stale "Nightly suite" + swapped `git tag -s` for mandatory `./scripts/release.sh` flow; first-ever `docs/architecture/ADR-TEMPLATE.md` + `docs/architecture/README.md` registry (all 19 ADRs, next ID); ADR status unification (6 Approved → Accepted per Nygard) + 3 Proposed → Accepted promotions with implementation-evidence notes (ADR-002 OS GUI M3, ADR-007 Async Runtime, ADR-008 Network Resilience). Cross-ADR audit found zero consolidation candidates — 19 ADRs have distinct scopes.
       - **Code-tree drift**: CLAUDE.md / AGENTS.md / crates/README.md / README.{md,zh-CN.md,es.md} picked up missing `maekon-sandbox-worker` crate + 15-package count, 16-loop scheduler (was 9), 16 HTTP dispatchers (was 14), ~30 REST endpoints (was 29), ADR-001~ADR-019 range (was ~ADR-004), `crates/maekon-app/` removed from workspace structure, `scripts/generate-app-icons.sh` OUTPUT_DIR `src-tauri/icons`. `CONTRIBUTING.md` mock ApiClient example updated to current `CoreError` struct-variant syntax.
       - **Known Follow-up execution** (iter-192~214):
         - **Design phase**: 4 design docs + aggregating roadmap authored for #1 Tauri IPC, #2 Grafana, #3 Frontend i18n, #5 LAN transport (#4 Internal granularity flagged evergreen). ADR-019 §Known follow-ups wired to each design doc; #1 callsite count + effort corrected against real scan.
@@ -580,7 +691,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
         - **#3 Frontend i18n (SHIPPED)**: `wire-errors.{en,ko}.json` cover all 41 codes from the Rust snapshot; `translateError.ts` graceful fallback chain (known code → locale template → English → raw message → plain string → `Error.message` → `String()`); 18 Vitest tests including snapshot-driven coverage parity; `scripts/check-wire-error-i18n-coverage.sh` ~3ms fast-fail guard (wired into `lefthook.yml` pre-commit, iter-214); 2 UI integration demos — `GeneralTab::SupportToolsCard` (translateError-as-primary) + `BugReportWizard::handleExport` (translateError-as-detail-suffix).
         - **#2 Grafana Rust-side (SHIPPED; ops-side external)**: **18 scheduler-loop tracing emission sites** carry `err.code = %e.code()` structured field (intelligence 3 / events 4 / monitor 2 / network 7 / sync 2) — tracing-opentelemetry bridges into OTel span attributes automatically. CLAUDE.md §Coding Conventions documents the canonical pattern + adapter-error conversion recipe (`let core: CoreError = e.into();`). Ops-side Loki pipeline + panel migration + alert audit lives external.
         - **Three-way source-of-truth parity** (final holistic review): Rust snapshot = EN keys = KO keys = 41, sets identical.
-- Phase 4 Updater Hardening (D9 + D10 + D11) — bundled single-PR initiative closing three paths for bad-release propagation. See [design doc](docs/reviews/2026-04-18-phase4-updater-hardening-design.md) + [plan](docs/reviews/2026-04-18-phase4-updater-hardening-plan.md).
+- Phase 4 Updater Hardening (D9 + D10 + D11) — bundled single-PR initiative closing three paths for bad-release propagation.
   - **D9** Multi-key Ed25519 trust array (`TRUSTED_PUBLIC_KEYS` in `src-tauri/src/updater/trusted_keys.rs`) — built-in key list is the authoritative trust source, walked before any user-configured override. Enables day-1 scheduled rotation (overlap window) and compromise response (immediate removal) via `docs/guides/updater-key-rotation.md`.
   - **D10** Defensive rollout handling — `check_for_updates_from` now treats missing `installation_id` as rollout-EXCLUDED rather than always-eligible; `tracing::error!` + `debug_assert!` guard in `update_coordinator` surfaces the invariant violation in production. Release-author convention for `<!-- rollout:N -->` documented in `docs/guides/updater-rollout.md`.
   - **D11** Post-install self-healthy probe with automatic rollback — new `HealthProbe` tracks `.install_pending_{VERSION}` / `.boot_count_{VERSION}` / `.self_healthy_{VERSION}` state files; 2 consecutive failed boots trigger automatic restoration of the previous binary via `execute_rollback`. 24h staleness rule prevents phantom rollback after same-version manual reinstalls. **Rollback swap ships on macOS and Linux only**; on Windows the detection path still fires but the swap is a documented no-op (`tracing::warn!` emitted, user remains on failing binary until manual reinstall) per `docs/guides/updater-rollback-windows.md`.
@@ -600,7 +711,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Infrastructure
 
-- Spec + plan: `docs/reviews/2026-04-18-phase4-updater-hardening-{design,plan}.md`.
+- Internal spec + plan record for Phase 4 updater hardening.
 - New guides: `docs/guides/{updater-rollout,updater-key-rotation,updater-rollback-windows}.md`.
 - Test baseline evolution across the unreleased section:
   - Pre-Phase 4 baseline: **3,418**
@@ -613,7 +724,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - FeedbackSignalSink + regime_id vector filter + RegimeManager persistence
-  Closes three gaps from docs/reviews/2026-04-16-feature-gaps-analysis.md:
+  Closes three previously tracked feature-gap items:
 
   - **X3 FeedbackSignalSink** (ADR-017) — new port, CompositeFeedbackSink fans accept/reject into CoachingEngine + RegimeClassifier via Arc<Mutex<_>>, fires BEFORE the server call so local learning adapts even when offline.
   - **C3a regime_id vector filter** — search_filtered/search_quantized honour SearchFilters.regime_id via correlated subquery over activity_segments.regime_id (existing idx_segments_regime, no migration).
@@ -692,11 +803,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Archive pending analysis plans to docs/reviews/ ([#424](https://github.com/pseudotop/oneshim-client/pull/424))
+- Archive pending analysis plans into the internal review archive ([#424](https://github.com/pseudotop/oneshim-client/pull/424))
   feature-gaps-analysis (5 Critical + 13 Degraded + 6 Cross-domain disconnects,
   12–14 week phased roadmap) and p2-tech-debt brief/spec/plan (nursery lints,
   windows-sys, large-file triage) carry unprocessed planning context; moved
-  from local scratch to docs/reviews/ for durable reference.
+  from local scratch into the internal review archive for durable reference.
 
 
 ### Fixed
@@ -720,7 +831,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TRUNCATE fully drains and zeroes the WAL once all writers have stopped,
   so the next startup opens a clean database without recovery work.
 
-  Addresses X4 in docs/reviews/2026-04-16-feature-gaps-analysis.md.
+  Addresses X4 from the feature-gaps analysis.
 
 - Build oneshim-sandbox-worker for Tauri externalBin in release ([#430](https://github.com/pseudotop/oneshim-client/pull/430))
   Release builds v0.4.37, v0.4.37-rc.3, and v0.4.38-rc.1 all failed on
@@ -775,11 +886,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Archive pending analysis plans to docs/reviews/ ([#424](https://github.com/pseudotop/oneshim-client/pull/424))
+- Archive pending analysis plans into the internal review archive ([#424](https://github.com/pseudotop/oneshim-client/pull/424))
   feature-gaps-analysis (5 Critical + 13 Degraded + 6 Cross-domain disconnects,
   12–14 week phased roadmap) and p2-tech-debt brief/spec/plan (nursery lints,
   windows-sys, large-file triage) carry unprocessed planning context; moved
-  from local scratch to docs/reviews/ for durable reference.
+  from local scratch into the internal review archive for durable reference.
 
 
 ### Fixed
@@ -803,7 +914,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TRUNCATE fully drains and zeroes the WAL once all writers have stopped,
   so the next startup opens a clean database without recovery work.
 
-  Addresses X4 in docs/reviews/2026-04-16-feature-gaps-analysis.md.
+  Addresses X4 from the feature-gaps analysis.
 
 ## [0.4.37] - 2026-04-12
 
@@ -5351,7 +5462,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Extract confirm/prepare/complete execution methods (349 lines)
     from service.rs into service_execution.rs
     service.rs: 796 → 438 lines, service_execution.rs: 374 lines
-  - Add docs/superpowers/README.md with spec lifecycle conventions
+  - Add internal design-lifecycle conventions
   - integration.rs (798 lines) found to be 134 handler + 663 test —
     no split needed (Rust convention)
 
@@ -5986,7 +6097,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - SessionContextAssembler: system prompt builder from local data
   - SessionManagerImpl: session lifecycle with idle reaping
   - One-shot CLI optimization: oneshot_flags/session_flags in catalog
-  - Spec: docs/specs/AI-SESSION-MANAGER-SPEC.md v1.3
+  - Spec: internal AI Session Manager spec v1.3
 
   Phase 2 (deferred): SubprocessSession, HttpApiSession, LocalLlmSession
   adapters pending CLI interactive mode verification.
@@ -6025,7 +6136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (POST/GET /ai/sessions, GET/DELETE /ai/sessions/{id},
      POST /ai/sessions/{id}/messages → SSE events)
   - Web AppState threading: SessionManager → WebServerRuntimeBindings → AppState
-  - Spec: docs/specs/AI-SESSION-MANAGER-PHASE2B-SPEC.md v1.1
+  - Spec: internal AI Session Manager Phase 2B spec v1.1
 
 - State machine, shared regime, auto mode, dead_code cleanup (Phase 3)
   Phase 3 of AI Session Manager:

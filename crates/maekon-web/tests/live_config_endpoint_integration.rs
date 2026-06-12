@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use maekon_api_contracts::error::ErrorResponse;
 use maekon_api_contracts::external_grpc::LiveConfigResponse;
 use maekon_core::config::LoadThresholds;
@@ -51,6 +51,9 @@ use maekon_web::WebServer;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const LOCAL_AUTH_HEADER: &str = "x-local-auth";
+const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
+
 /// Build a fresh `AppState` backed by in-memory SQLite + a fresh broadcast
 /// channel. `DiagnosticsState.external_grpc_live` and
 /// `DiagnosticsState.external_grpc_metrics` are `None` by default — the
@@ -66,8 +69,19 @@ fn fresh_state() -> AppState {
 ///
 /// Mirrors `audit_query_surface_integration.rs::loopback_app` so the two
 /// integration test files use identical router setup.
-fn loopback_app(state: AppState) -> axum::Router {
-    WebServer::build_router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+fn loopback_app(mut state: AppState) -> axum::Router {
+    state.auth.local_auth_token = Some(Arc::from(TEST_LOCAL_AUTH_TOKEN));
+    WebServer::build_router(state)
+        .layer(axum::middleware::map_request(
+            |mut req: axum::extract::Request| async move {
+                req.headers_mut().insert(
+                    LOCAL_AUTH_HEADER,
+                    HeaderValue::from_static(TEST_LOCAL_AUTH_TOKEN),
+                );
+                req
+            },
+        ))
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
 }
 
 /// `LoadThresholds` with deliberately distinct (non-default) values so Test 1's

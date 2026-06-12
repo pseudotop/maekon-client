@@ -25,7 +25,7 @@ impl VectorIndex for SqliteVectorIndex {
     ) -> Result<usize, CoreError> {
         // Load all non-stale INT8 vectors
         let vectors = self
-            .with_conn(move |conn| {
+            .with_conn_read(move |conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT id, vector_int8, quant_scale, quant_offset
@@ -75,29 +75,38 @@ impl VectorIndex for SqliteVectorIndex {
 
         let actual_clusters = n_clusters.min(vectors.len());
 
-        // Build IVF index in memory (outside of SQLite lock)
+        // F-PF-20: IvfIndex::build 는 k-means 반복 연산으로 CPU 집약적이다.
+        // tokio::task::spawn_blocking 으로 async executor 를 블로킹하지 않도록 분리.
+        // vectors 와 config 를 클로저로 move 하고, 결과를 centroids_data + assignments 로 추출.
         let config = IvfBuildConfig {
             n_clusters: actual_clusters,
             n_iterations,
             seed: 42,
         };
-        let index = IvfIndex::build(&vectors, &config)?;
-
-        // Persist to SQLite
-        let centroids_data: Vec<(usize, Vec<u8>, f32, f32, usize)> = index
-            .centroids()
-            .iter()
-            .map(|c| {
-                let blob: Vec<u8> = c.vector.data.iter().map(|&b| b as u8).collect();
-                (c.id, blob, c.vector.scale, c.vector.offset, c.member_count)
-            })
-            .collect();
-
-        let assignments: Vec<(i64, usize)> = index
-            .assignments()
-            .iter()
-            .map(|(&vid, &cid)| (vid, cid))
-            .collect();
+        let (centroids_data, assignments) = tokio::task::spawn_blocking(move || {
+            let index = IvfIndex::build(&vectors, &config)
+                .map_err(|e| StorageError::Internal(format!("IVF k-means build failed: {e}")))?;
+            let centroids_data: Vec<(usize, Vec<u8>, f32, f32, usize)> = index
+                .centroids()
+                .iter()
+                .map(|c| {
+                    let blob: Vec<u8> = c.vector.data.iter().map(|&b| b as u8).collect();
+                    (c.id, blob, c.vector.scale, c.vector.offset, c.member_count)
+                })
+                .collect();
+            let assignments: Vec<(i64, usize)> = index
+                .assignments()
+                .iter()
+                .map(|(&vid, &cid)| (vid, cid))
+                .collect();
+            Ok::<_, StorageError>((centroids_data, assignments))
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e: StorageError| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: e.to_string(),
+        })?;
 
         let n_clusters_result = centroids_data.len();
         let n_vectors = assignments.len();
@@ -207,7 +216,7 @@ impl VectorIndex for SqliteVectorIndex {
     async fn build_binary_codes(&self) -> Result<u64, CoreError> {
         // Load all non-stale vectors and dequantize to f32
         let vectors_data = self
-            .with_conn(move |conn| {
+            .with_conn_read(move |conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT id, vector_int8, quant_scale, quant_offset
@@ -244,29 +253,34 @@ impl VectorIndex for SqliteVectorIndex {
         }
 
         let dims = vectors_data[0].1.len();
-        let f32_vecs: Vec<Vec<f32>> = vectors_data.iter().map(|(_, v)| v.clone()).collect();
 
-        // Compute thresholds
-        let thresholds = BinaryQuantizer::compute_thresholds(&f32_vecs, dims)?;
-
-        // Encode each vector
-        let codes: Vec<(i64, Vec<u8>)> = vectors_data
-            .iter()
-            .map(|(id, v)| {
-                let code =
-                    BinaryQuantizer::encode(v, &thresholds).unwrap_or(BinaryCode { data: vec![] });
-                (*id, code.data)
-            })
-            .collect();
+        // F-PF-20: BinaryQuantizer::compute_thresholds + 인코딩 루프는 CPU 집약적.
+        // spawn_blocking 으로 오프로드해 async executor 블로킹 방지.
+        let (codes, thresholds_json) = tokio::task::spawn_blocking(move || {
+            let f32_vecs: Vec<Vec<f32>> = vectors_data.iter().map(|(_, v)| v.clone()).collect();
+            let thresholds = BinaryQuantizer::compute_thresholds(&f32_vecs, dims)
+                .map_err(|e| StorageError::Internal(format!("compute_thresholds failed: {e}")))?;
+            let codes: Vec<(i64, Vec<u8>)> = vectors_data
+                .iter()
+                .map(|(id, v)| {
+                    let code = BinaryQuantizer::encode(v, &thresholds)
+                        .unwrap_or(BinaryCode { data: vec![] });
+                    (*id, code.data)
+                })
+                .collect();
+            let thresholds_json = serde_json::to_string(&thresholds).map_err(|e| {
+                StorageError::Internal(format!("Failed to serialize thresholds: {e}"))
+            })?;
+            Ok::<_, StorageError>((codes, thresholds_json))
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e: StorageError| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: e.to_string(),
+        })?;
 
         let count = codes.len() as u64;
-
-        // Store thresholds as JSON
-        let thresholds_json =
-            serde_json::to_string(&thresholds).map_err(|e| CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!("Failed to serialize thresholds: {e}"),
-            })?;
 
         // Persist to SQLite in chunks
         self.with_conn(move |conn| {

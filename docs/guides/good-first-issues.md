@@ -8,32 +8,57 @@ See also: [CONTRIBUTING.md](../../CONTRIBUTING.md) | [CODE_OF_CONDUCT.md](../../
 
 ## Prerequisites
 
-- **Rust 1.77.1 or later** — install via [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Rust 1.88.0 or later** — install via [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **cargo** — included with Rust
+- **Node.js LTS + pnpm** — required for frontend lint/build checks under `crates/maekon-web/frontend`
 - **Platform toolchain**:
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Windows: MSVC Build Tools (Visual Studio Installer, "Desktop development with C++")
-  - Linux (Ubuntu/Debian): `sudo apt-get install build-essential libwebkit2gtk-4.1-dev libclang-dev`
+  - Linux (Ubuntu/Debian): `sudo apt-get install build-essential libwebkitgtk-6.0-dev libgtk-4-dev libclang-dev`
+
+On Windows, run the bootstrap diagnostic before claiming local verification:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-windows-dev-bootstrap.ps1
+```
+
+If the diagnostic reports blockers, the local session is static scan-only until
+`cargo`/`rustc`, real `node`, and `pnpm` are available. A `node.exe` path under
+`WindowsApps` usually means the Microsoft Store App Execution Alias is shadowing
+the real Node.js installation.
+
+If the diagnostic warns about non-ASCII Windows paths, run native Cargo TC
+through the wrapper so Visual Studio and Cargo are prepared consistently:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-windows-cargo-tc.ps1
+```
 
 ---
 
-## Local Dev Setup (5 Steps)
+## Local Dev Setup (6 Steps)
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
 
-# 2. Verify the workspace compiles
+# 2. Windows only: verify the required local toolchain is executable
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-windows-dev-bootstrap.ps1
+
+# 3. Verify the workspace compiles
 cargo check --workspace
 
-# 3. Run the test suite (excludes the Tauri GUI binary)
+# 4. Run the test suite (excludes the Tauri GUI binary)
 cargo test --workspace --exclude maekon-app
 
-# 4. Pick an issue from GitHub and create a branch
+# Windows native full compile check, including maekon-app and native deps
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-windows-cargo-tc.ps1
+
+# 5. Pick an issue from GitHub and create a branch
 git checkout -b fix/your-issue-title
 
-# 5. Open a PR when ready
+# 6. Open a PR when ready
 # (See the PR checklist below before pushing)
 ```
 

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { typography } from '../../styles/tokens'
+import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { SuggestionHistoryDto } from '../types'
 
@@ -20,27 +21,52 @@ export function SuggestionHistory() {
   const { t } = useTranslation()
   const [entries, setEntries] = useState<SuggestionHistoryDto[]>([])
   const [loading, setLoading] = useState(true)
+  // IPC 실패를 빈 상태로 숨기지 않고 명시적 에러 상태로 노출 (#4823)
+  const [error, setError] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const result = await invoke<SuggestionHistoryDto[]>('get_suggestion_history', { limit: 50 })
-        if (!cancelled) setEntries(result)
-      } catch (e) {
-        console.warn('Failed to load history:', e)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
+  // 히스토리 로드 — 재시도 버튼에서도 재사용하기 위해 useCallback 으로 분리
+  const loadHistory = useCallback(async () => {
+    setLoading(true)
+    setError(false)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const result = await invoke<SuggestionHistoryDto[]>('get_suggestion_history', { limit: 50 })
+      setEntries(result)
+    } catch (e) {
+      console.warn('Failed to load history:', e)
+      setError(true)
+    } finally {
+      setLoading(false)
     }
   }, [])
 
+  useEffect(() => {
+    void loadHistory()
+  }, [loadHistory])
+
   if (loading) {
     return <p className="p-4 text-content-secondary text-xs">{t('common.loading', 'Loading...')}</p>
+  }
+
+  // 에러 시 SuggestionsPanel 과 동일한 에러/재시도 배너 패턴 사용
+  if (error) {
+    return (
+      <div className="flex items-center justify-between gap-3 p-4 text-xs">
+        <span className="text-semantic-error">{t('suggestions.historyLoadError', 'Could not load history.')}</span>
+        <button
+          type="button"
+          aria-label={t('suggestions.retryLoad', 'Retry')}
+          onClick={() => void loadHistory()}
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 rounded-md bg-brand/10 px-2 py-1 text-brand hover:bg-brand/20',
+            motion.colors,
+          )}
+        >
+          <RefreshCw className={iconSize.xs} />
+          <span>{t('suggestions.retryLoad', 'Retry')}</span>
+        </button>
+      </div>
+    )
   }
 
   if (entries.length === 0) {

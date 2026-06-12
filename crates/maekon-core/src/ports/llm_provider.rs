@@ -4,9 +4,62 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 use crate::error::CoreError;
 use crate::models::skill::SkillMeta;
+
+// Tri-state constants for LlmCallHealth.
+const LLM_HEALTH_UNKNOWN: u8 = 0;
+const LLM_HEALTH_OK: u8 = 1;
+const LLM_HEALTH_FAILED: u8 = 2;
+
+/// Per-call LLM health observable for the automation intent path.
+///
+/// Lives in `maekon-core` so that adapter crates (`maekon-network` as writer,
+/// `maekon-web` as reader) do not need an adapter-to-adapter dependency, which
+/// is forbidden by the Hexagonal Architecture rules of this workspace.
+///
+/// Tri-state semantics via `AtomicU8`:
+/// - UNKNOWN (0): default; no call attempted yet, or handle not wired.
+/// - OK      (1): last LLM call completed with a successful response.
+/// - FAILED  (2): last LLM call returned a network/status/parse error.
+///
+/// Exposed as `Option<bool>` via `as_option_bool()`:
+/// - `None`        — UNKNOWN
+/// - `Some(true)`  — OK
+/// - `Some(false)` — FAILED
+pub struct LlmCallHealth(AtomicU8);
+
+impl Default for LlmCallHealth {
+    fn default() -> Self {
+        Self(AtomicU8::new(LLM_HEALTH_UNKNOWN))
+    }
+}
+
+impl LlmCallHealth {
+    /// Mark the last call as successful.
+    pub fn record_ok(&self) {
+        self.0.store(LLM_HEALTH_OK, AtomicOrdering::Relaxed);
+    }
+
+    /// Mark the last call as failed.
+    pub fn record_failed(&self) {
+        self.0.store(LLM_HEALTH_FAILED, AtomicOrdering::Relaxed);
+    }
+
+    /// Convert to `Option<bool>`:
+    /// - `None`         — UNKNOWN (no call yet / not wired)
+    /// - `Some(true)`   — last call succeeded
+    /// - `Some(false)`  — last call failed
+    pub fn as_option_bool(&self) -> Option<bool> {
+        match self.0.load(AtomicOrdering::Relaxed) {
+            LLM_HEALTH_OK => Some(true),
+            LLM_HEALTH_FAILED => Some(false),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenContext {
@@ -75,6 +128,64 @@ pub trait LlmProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    // ── LlmCallHealth unit tests (#5734) ─────────────────────────────────
+
+    /// Default state is UNKNOWN — `as_option_bool()` returns `None`.
+    #[test]
+    fn llm_call_health_default_is_unknown() {
+        let h = LlmCallHealth::default();
+        assert_eq!(h.as_option_bool(), None);
+    }
+
+    /// UNKNOWN → OK transition: `as_option_bool()` returns `Some(true)`.
+    #[test]
+    fn llm_call_health_record_ok_transitions_to_some_true() {
+        let h = LlmCallHealth::default();
+        h.record_ok();
+        assert_eq!(h.as_option_bool(), Some(true));
+    }
+
+    /// UNKNOWN → FAILED transition: `as_option_bool()` returns `Some(false)`.
+    #[test]
+    fn llm_call_health_record_failed_transitions_to_some_false() {
+        let h = LlmCallHealth::default();
+        h.record_failed();
+        assert_eq!(h.as_option_bool(), Some(false));
+    }
+
+    /// OK → FAILED transition: subsequent failure overwrites prior success.
+    #[test]
+    fn llm_call_health_ok_then_failed_returns_some_false() {
+        let h = LlmCallHealth::default();
+        h.record_ok();
+        h.record_failed();
+        assert_eq!(h.as_option_bool(), Some(false));
+    }
+
+    /// FAILED → OK transition: recovery after a failure is observable.
+    #[test]
+    fn llm_call_health_failed_then_ok_returns_some_true() {
+        let h = LlmCallHealth::default();
+        h.record_failed();
+        h.record_ok();
+        assert_eq!(h.as_option_bool(), Some(true));
+    }
+
+    /// Arc-shared handle: both writer and reader see the same state.
+    #[test]
+    fn llm_call_health_arc_shared_write_visible_from_clone() {
+        let writer = Arc::new(LlmCallHealth::default());
+        let reader = Arc::clone(&writer);
+        assert_eq!(reader.as_option_bool(), None);
+        writer.record_ok();
+        assert_eq!(reader.as_option_bool(), Some(true));
+        writer.record_failed();
+        assert_eq!(reader.as_option_bool(), Some(false));
+    }
+
+    // ── Original LlmProvider port tests ──────────────────────────────────
 
     #[test]
     fn screen_context_serde() {

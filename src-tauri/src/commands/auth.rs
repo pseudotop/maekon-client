@@ -79,8 +79,61 @@ mod tests {
         assert!(state.0.is_none());
     }
 
-    // OOS-TBD-N15-UI-EXPOSURE: Integration tests with a real TokenManager and
-    // mockito server belong in a follow-up because Tauri State injection needs
-    // a fuller fixture. TokenManager.logout_all_sessions has direct coverage in
-    // maekon-network/src/auth.rs.
+    // F1 (P1): Security IPC test — `Some(tm)` path in `logout_all_sessions`.
+    //
+    // The Tauri command takes `State<'_, TokenManagerState>` so it cannot be
+    // called directly in a unit test without a running Tauri app. Instead we
+    // exercise the *identical* logic by calling `TokenManager::logout_all_sessions`
+    // directly and asserting the `IpcError` mapping:
+    //
+    //   Some(tm) => tm.logout_all_sessions().await.map_err(IpcError::from)
+    //
+    // This is the security-critical path: a live `TokenManager` invokes
+    // `DELETE /api/v1/auth/tokens/all`, then unconditionally clears local state.
+    // The server call is fire-and-forget; `logout_all_sessions` always returns
+    // `Ok(())` regardless of server reachability (same semantics as `logout`).
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    #[allow(deprecated)] // TokenManager::new used intentionally in tests
+    async fn logout_all_sessions_some_tm_path_always_succeeds() {
+        // Construct a TokenManager pointing to a deliberately unreachable URL.
+        // The server call will fail silently (warn-logged); local state is cleared.
+        let tm = maekon_network::auth::TokenManager::new("http://127.0.0.1:19999");
+        let tm_arc = Arc::new(tm);
+
+        // This mirrors the `Some(tm) => tm.logout_all_sessions().await.map_err(IpcError::from)`
+        // branch in the Tauri command, exercising the security-critical code path.
+        let result: Result<(), IpcError> =
+            tm_arc.logout_all_sessions().await.map_err(IpcError::from);
+
+        // logout_all_sessions unconditionally returns Ok(()) — server failures are
+        // warn-logged and ignored; local token state is cleared in all cases.
+        result.expect(
+            "logout_all_sessions Some(tm) path must succeed regardless of server reachability",
+        );
+    }
+
+    // F1 (P1): IpcError wire-code propagation from CoreError through the TokenManager.
+    //
+    // Verifies that CoreError → IpcError conversion preserves the wire code so the
+    // frontend receives a structured `{"code": "...", "message": "..."}` payload
+    // instead of a raw string. This is the conversion that `map_err(IpcError::from)`
+    // inside the Some(tm) branch would perform if logout_all_sessions could fail.
+    #[cfg(feature = "server")]
+    #[test]
+    fn logout_all_sessions_ipc_error_conversion_preserves_wire_code() {
+        let core = maekon_core::error::CoreError::Auth {
+            code: maekon_core::error_codes::AuthCode::Failed,
+            message: "forced test error for IpcError mapping verification".into(),
+        };
+        let ipc: IpcError = IpcError::from(core);
+        assert_eq!(
+            ipc.code, "auth.failed",
+            "CoreError::Auth → IpcError must preserve 'auth.failed' wire code"
+        );
+        assert!(
+            ipc.message.contains("auth.failed"),
+            "IpcError message must embed the wire code per ADR-019 Display convention"
+        );
+    }
 }

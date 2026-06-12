@@ -7,6 +7,8 @@ define_code_enum! {
         CaptureFailed => "audio.capture_failed",
         /// 음성→텍스트 변환 실패.
         SttFailed => "audio.stt_failed",
+        /// 다운로드 파일 무결성 검사 실패 (SHA-256 불일치). F-RC-C22-03.
+        IntegrityCheckFailed => "audio.integrity_check_failed",
     }
 }
 

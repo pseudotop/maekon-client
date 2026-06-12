@@ -1,3 +1,4 @@
+// OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 847
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::error::NetworkError;
 use crossbeam::queue::SegQueue;
@@ -431,12 +432,6 @@ mod tests {
                 Ok(())
             }
         }
-        async fn upload_context(
-            &self,
-            _upload: &maekon_core::models::frame::ContextUpload,
-        ) -> Result<(), CoreError> {
-            Ok(())
-        }
         async fn send_feedback(
             &self,
             _feedback: &maekon_core::models::suggestion::SuggestionFeedback,
@@ -556,12 +551,6 @@ mod tests {
                 Ok(())
             }
         }
-        async fn upload_context(
-            &self,
-            _upload: &maekon_core::models::frame::ContextUpload,
-        ) -> Result<(), CoreError> {
-            Ok(())
-        }
         async fn send_feedback(
             &self,
             _feedback: &maekon_core::models::suggestion::SuggestionFeedback,
@@ -582,9 +571,11 @@ mod tests {
         let uploader = BatchUploader::new(client, "sess_retry".to_string(), 100, 3);
 
         uploader.enqueue(make_test_event());
-        let result = uploader.flush().await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1);
+        let flushed = uploader
+            .flush()
+            .await
+            .expect("flush must succeed after transient failure clears on attempt 2");
+        assert_eq!(flushed, 1, "exactly 1 event must be confirmed uploaded");
     }
 
     #[tokio::test]
@@ -593,8 +584,11 @@ mod tests {
         let uploader = BatchUploader::new(client, "sess_fail".to_string(), 100, 0); // 0 retries
 
         uploader.enqueue(make_test_event());
-        let result = uploader.flush().await;
-        assert!(result.is_err());
+        let err = uploader.flush().await.unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Core(CoreError::Internal { .. })),
+            "mock failure must be NetworkError::Core(CoreError::Internal), got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -606,8 +600,11 @@ mod tests {
         uploader.enqueue(make_test_event());
         assert_eq!(uploader.queue_size(), 2);
 
-        let result = uploader.flush().await;
-        assert!(result.is_err());
+        let err = uploader.flush().await.unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Core(CoreError::Internal { .. })),
+            "mock failure must be NetworkError::Core(CoreError::Internal), got: {err:?}"
+        );
         assert_eq!(uploader.queue_size(), 2);
     }
 
@@ -628,10 +625,13 @@ mod tests {
         assert_eq!(uploader.failed_batches(), 0);
 
         // First flush — all 3 events are drained, upload fails, they are requeued.
-        let result = uploader.flush().await;
+        let flush_err = uploader.flush().await.unwrap_err();
         assert!(
-            result.is_err(),
-            "flush() must return Err when the API client always fails"
+            matches!(
+                flush_err,
+                crate::NetworkError::Core(maekon_core::error::CoreError::Internal { .. })
+            ),
+            "flush() failure must be NetworkError::Core(CoreError::Internal); got: {flush_err:?}"
         );
         assert_eq!(
             uploader.queue_size(),
@@ -645,8 +645,11 @@ mod tests {
         );
 
         // Second flush — same failure, counter must be 2.
-        let result2 = uploader.flush().await;
-        assert!(result2.is_err());
+        let err2 = uploader.flush().await.unwrap_err();
+        assert!(
+            matches!(err2, NetworkError::Core(CoreError::Internal { .. })),
+            "second flush mock failure must be NetworkError::Core(CoreError::Internal), got: {err2:?}"
+        );
         assert_eq!(uploader.queue_size(), 3);
         assert_eq!(
             uploader.stats().failed_batches,

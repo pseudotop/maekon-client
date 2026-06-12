@@ -1,8 +1,27 @@
 use super::*;
-use maekon_core::models::sync::ChangeSetKind;
+use maekon_core::models::sync::{ChangeSetKind, Tombstone};
+use maekon_core::ports::sync_transport::SyncTransport;
 use maekon_core::sync::Hlc;
 
 use super::super::lan_discovery::LanPeerInfo;
+
+fn test_pin_store() -> std::sync::Arc<dyn maekon_core::ports::lan_pin_store::LanPinStorePort> {
+    std::sync::Arc::new(
+        maekon_storage::lan_pin_store_adapter::LanPinStoreAdapter::new(std::sync::Arc::new(
+            maekon_storage::sqlite::SqliteStorage::open_in_memory(30).unwrap(),
+        )),
+    )
+}
+
+/// Generate a real self-signed cert + matching SHA-256 fingerprint for a
+/// transport whose server is actually connected to over TLS in a roundtrip
+/// test. The fingerprint must be re-used as the injected peer's advertised
+/// fingerprint so the client's first-contact TOFU cross-check passes.
+fn real_tls(device_id: &str) -> (Vec<u8>, Vec<u8>, String) {
+    let (cert_pem, key_pem) = crate::sync::lan_tls::generate_self_signed_cert(device_id).unwrap();
+    let fingerprint = crate::sync::lan_tls::compute_cert_fingerprint(&cert_pem).unwrap();
+    (cert_pem, key_pem, fingerprint)
+}
 
 fn test_changeset() -> ChangeSet {
     ChangeSet {
@@ -14,7 +33,7 @@ fn test_changeset() -> ChangeSet {
             counter: 1,
             device_id: "dev-a".to_string(),
         },
-        segments: vec![serde_json::json!({"id": "seg-1"})],
+        segments: vec![serde_json::json!({"id": "seg-1", "origin_device_id": "dev-a"})],
         ..Default::default()
     }
 }
@@ -30,6 +49,10 @@ async fn transport_start_and_discover_empty() {
         "fp123".to_string(),
         0,
         false, // don't advertise in test
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -53,13 +76,24 @@ async fn push_to_no_peers_is_noop() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
 
     let cs = ChangeSet::default();
-    let result = transport.push(&cs).await;
-    assert!(result.is_ok());
+    // No peers → best-effort fanout returns Ok(0): no bytes left the device.
+    let delivered = transport
+        .push(&cs)
+        .await
+        .expect("push with no peers must return Ok, not Err");
+    assert_eq!(
+        delivered, 0,
+        "push to no peers must report 0 confirmed deliveries"
+    );
 
     transport.stop();
 }
@@ -75,6 +109,10 @@ async fn pull_from_no_peers_returns_none() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -90,16 +128,21 @@ async fn push_to_local_server_roundtrip() {
     // Start two transports: "sender" pushes to "receiver"'s server.
     let passphrase = "shared-secret-123";
 
-    // Start receiver
+    // Start receiver with a real TLS cert (sender connects to it over https)
+    let (recv_cert, recv_key, recv_fp) = real_tls("receiver");
     let receiver = LanSyncTransport::start(
         "receiver".to_string(),
         "Receiver".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-recv".to_string(),
+        recv_cert,
+        recv_key,
+        recv_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -116,11 +159,16 @@ async fn push_to_local_server_roundtrip() {
         "fp-send".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
 
-    // Inject receiver as a known peer
+    // Inject receiver as a known peer (advertised fingerprint == real cert fp
+    // so the first-contact TOFU cross-check passes)
     sender.verified_peers.write().insert(
         "receiver".to_string(),
         LanPeerInfo {
@@ -128,7 +176,7 @@ async fn push_to_local_server_roundtrip() {
             device_name: "Receiver".to_string(),
             host: "127.0.0.1".to_string(),
             port: receiver_port,
-            fingerprint: "fp-recv".to_string(),
+            fingerprint: recv_fp.clone(),
             version: "1".to_string(),
         },
     );
@@ -136,14 +184,15 @@ async fn push_to_local_server_roundtrip() {
     // Yield to let the server task start accepting connections
     tokio::task::yield_now().await;
 
-    // Push a changeset (sender will auto-authenticate with receiver)
-    let cs = test_changeset();
+    // Push a changeset (sender will auto-authenticate with receiver). #5211: origin must
+    // be the pushing device ("sender"), bound to the authenticated peer.
+    let cs = changeset_with_watermark("sender", 100, 1);
     sender.push(&cs).await.unwrap();
 
     // Verify receiver got it
     let received = receiver.drain_received();
     assert_eq!(received.len(), 1);
-    assert_eq!(received[0].origin_device_id, "dev-a");
+    assert_eq!(received[0].origin_device_id, "sender");
 
     sender.stop();
     receiver.stop();
@@ -153,16 +202,21 @@ async fn push_to_local_server_roundtrip() {
 async fn pull_from_peer_server() {
     let passphrase = "pull-test-pass";
 
-    // Start a server with an outbound changeset
+    // Start a server with an outbound changeset (consumer connects to it over https)
+    let (prov_cert, prov_key, prov_fp) = real_tls("provider");
     let provider = LanSyncTransport::start(
         "provider".to_string(),
         "Provider".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-prov".to_string(),
+        prov_cert,
+        prov_key,
+        prov_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -180,6 +234,10 @@ async fn pull_from_peer_server() {
         "fp-cons".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -191,7 +249,7 @@ async fn pull_from_peer_server() {
             device_name: "Provider".to_string(),
             host: "127.0.0.1".to_string(),
             port: provider_port,
-            fingerprint: "fp-prov".to_string(),
+            fingerprint: prov_fp.clone(),
             version: "1".to_string(),
         },
     );
@@ -223,6 +281,10 @@ async fn pull_wrong_passphrase_returns_none() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -239,6 +301,10 @@ async fn pull_wrong_passphrase_returns_none() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -273,15 +339,21 @@ async fn pull_wrong_passphrase_returns_none() {
 async fn token_cache_is_used() {
     let passphrase = "cache-test";
 
+    // Receiver gets a real TLS cert (sender connects to it over https)
+    let (recv_cert, recv_key, recv_fp) = real_tls("receiver");
     let receiver = LanSyncTransport::start(
         "receiver".to_string(),
         "Receiver".to_string(),
         passphrase.to_string(),
-        b"".to_vec(),
-        b"".to_vec(),
-        "fp".to_string(),
+        recv_cert,
+        recv_key,
+        recv_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -297,6 +369,10 @@ async fn token_cache_is_used() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -308,15 +384,15 @@ async fn token_cache_is_used() {
             device_name: "Receiver".to_string(),
             host: "127.0.0.1".to_string(),
             port: receiver_port,
-            fingerprint: "fp".to_string(),
+            fingerprint: recv_fp.clone(),
             version: "1".to_string(),
         },
     );
 
     tokio::task::yield_now().await;
 
-    // First push: authenticates fresh
-    let cs1 = test_changeset();
+    // First push: authenticates fresh. #5211: origin = the pushing device ("sender").
+    let cs1 = changeset_with_watermark("sender", 100, 1);
     sender.push(&cs1).await.unwrap();
     assert_eq!(receiver.drain_received().len(), 1);
 
@@ -324,7 +400,7 @@ async fn token_cache_is_used() {
     assert!(sender.token_cache.get("receiver").is_some());
 
     // Second push: uses cached token (no re-auth)
-    let cs2 = test_changeset();
+    let cs2 = changeset_with_watermark("sender", 101, 1);
     sender.push(&cs2).await.unwrap();
     assert_eq!(receiver.drain_received().len(), 1);
 
@@ -343,6 +419,10 @@ async fn push_to_offline_peer_is_graceful() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -360,10 +440,18 @@ async fn push_to_offline_peer_is_graceful() {
         },
     );
 
-    // Push should succeed (best-effort fanout, does not fail overall)
+    // Best-effort fanout: connection to ghost peer fails but the overall push
+    // returns Ok. The failed peer increments fail_count, not the overall result,
+    // so delivered count is 0 (nothing actually left the device).
     let cs = test_changeset();
-    let result = transport.push(&cs).await;
-    assert!(result.is_ok());
+    let delivered = transport
+        .push(&cs)
+        .await
+        .expect("push must return Ok even when all peers are unreachable");
+    assert_eq!(
+        delivered, 0,
+        "no bytes reached any peer — delivered count must be 0"
+    );
 
     transport.stop();
 }
@@ -379,6 +467,10 @@ async fn pull_from_offline_peer_returns_none() {
         "fp".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -422,26 +514,40 @@ fn changeset_with_watermark(origin: &str, wall_ms: u64, counter: u32) -> ChangeS
             counter,
             device_id: origin.to_string(),
         },
-        segments: vec![serde_json::json!({"id": format!("seg-{origin}")})],
+        segments: vec![serde_json::json!({
+            "id": format!("seg-{origin}"),
+            "origin_device_id": origin
+        })],
         ..Default::default()
     }
 }
 
 /// Helper to create a transport and inject a peer, returning (transport, peer_port).
+///
+/// Both transports get real TLS certs and the injected peer fingerprints are
+/// set to the matching real values, because bidirectional/concurrent tests
+/// connect in BOTH directions (each transport's server is connected to).
 async fn start_pair(
     id_a: &str,
     id_b: &str,
     passphrase: &str,
 ) -> (LanSyncTransport, LanSyncTransport) {
+    let (a_cert, a_key, a_fp) = real_tls(id_a);
+    let (b_cert, b_key, b_fp) = real_tls(id_b);
+
     let a = LanSyncTransport::start(
         id_a.to_string(),
         format!("Peer {id_a}"),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        format!("fp-{id_a}"),
+        a_cert,
+        a_key,
+        a_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -450,11 +556,15 @@ async fn start_pair(
         id_b.to_string(),
         format!("Peer {id_b}"),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        format!("fp-{id_b}"),
+        b_cert,
+        b_key,
+        b_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -462,7 +572,7 @@ async fn start_pair(
     let a_port = a.server_port();
     let b_port = b.server_port();
 
-    // A knows about B
+    // A knows about B (advertised fingerprint == B's real cert fp)
     a.verified_peers.write().insert(
         id_b.to_string(),
         LanPeerInfo {
@@ -470,12 +580,12 @@ async fn start_pair(
             device_name: format!("Peer {id_b}"),
             host: "127.0.0.1".to_string(),
             port: b_port,
-            fingerprint: format!("fp-{id_b}"),
+            fingerprint: b_fp.clone(),
             version: "1".to_string(),
         },
     );
 
-    // B knows about A
+    // B knows about A (advertised fingerprint == A's real cert fp)
     b.verified_peers.write().insert(
         id_a.to_string(),
         LanPeerInfo {
@@ -483,7 +593,7 @@ async fn start_pair(
             device_name: format!("Peer {id_a}"),
             host: "127.0.0.1".to_string(),
             port: a_port,
-            fingerprint: format!("fp-{id_a}"),
+            fingerprint: a_fp.clone(),
             version: "1".to_string(),
         },
     );
@@ -532,16 +642,21 @@ async fn bidirectional_sync_roundtrip() {
 async fn watermark_filtering_skips_old_data() {
     let passphrase = "watermark-test-pass";
 
-    // Provider enqueues a changeset at T=1000
+    // Provider enqueues a changeset at T=1000 (consumer connects over https)
+    let (prov_cert, prov_key, prov_fp) = real_tls("wm-provider");
     let provider = LanSyncTransport::start(
         "wm-provider".to_string(),
         "Provider".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-prov".to_string(),
+        prov_cert,
+        prov_key,
+        prov_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -560,6 +675,10 @@ async fn watermark_filtering_skips_old_data() {
         "fp-cons".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -571,7 +690,7 @@ async fn watermark_filtering_skips_old_data() {
             device_name: "Provider".to_string(),
             host: "127.0.0.1".to_string(),
             port: provider_port,
-            fingerprint: "fp-prov".to_string(),
+            fingerprint: prov_fp.clone(),
             version: "1".to_string(),
         },
     );
@@ -670,6 +789,7 @@ fn changeset_with_record(
             "value": value,
             "hlc_wall_ms": wall_ms,
             "hlc_counter": counter,
+            "origin_device_id": origin,
         })],
         ..Default::default()
     }
@@ -693,16 +813,21 @@ fn changeset_with_record(
 async fn conflict_resolution_higher_hlc_wins_on_pull() {
     let passphrase = "conflict-test-pass";
 
-    // Start a hub server that both devices will push to
+    // Start a hub server that both devices will push to (clients connect over https)
+    let (hub_cert, hub_key, hub_fp) = real_tls("hub");
     let hub = LanSyncTransport::start(
         "hub".to_string(),
         "Hub".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-hub".to_string(),
+        hub_cert,
+        hub_key,
+        hub_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -713,7 +838,7 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         device_name: "Hub".to_string(),
         host: "127.0.0.1".to_string(),
         port: hub_port,
-        fingerprint: "fp-hub".to_string(),
+        fingerprint: hub_fp.clone(),
         version: "1".to_string(),
     };
 
@@ -727,6 +852,10 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "fp-a".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -745,6 +874,10 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "fp-b".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -794,6 +927,10 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "fp-cons".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -868,15 +1005,20 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
 async fn conflict_resolution_counter_tiebreaker() {
     let passphrase = "counter-tie-pass";
 
+    let (hub_cert, hub_key, hub_fp) = real_tls("hub-ctr");
     let hub = LanSyncTransport::start(
         "hub-ctr".to_string(),
         "Hub".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-hub-ctr".to_string(),
+        hub_cert,
+        hub_key,
+        hub_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -887,7 +1029,7 @@ async fn conflict_resolution_counter_tiebreaker() {
         device_name: "Hub".to_string(),
         host: "127.0.0.1".to_string(),
         port: hub_port,
-        fingerprint: "fp-hub-ctr".to_string(),
+        fingerprint: hub_fp.clone(),
         version: "1".to_string(),
     };
 
@@ -901,6 +1043,10 @@ async fn conflict_resolution_counter_tiebreaker() {
         "fp-ctr-a".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -919,6 +1065,10 @@ async fn conflict_resolution_counter_tiebreaker() {
         "fp-ctr-b".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -958,6 +1108,10 @@ async fn conflict_resolution_counter_tiebreaker() {
         "fp-cons-ctr".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -1011,15 +1165,20 @@ async fn conflict_resolution_counter_tiebreaker() {
 async fn conflict_resolution_device_id_tiebreaker() {
     let passphrase = "devid-tie-pass";
 
+    let (hub_cert, hub_key, hub_fp) = real_tls("hub-did");
     let hub = LanSyncTransport::start(
         "hub-did".to_string(),
         "Hub".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
-        "fp-hub-did".to_string(),
+        hub_cert,
+        hub_key,
+        hub_fp.clone(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -1030,7 +1189,7 @@ async fn conflict_resolution_device_id_tiebreaker() {
         device_name: "Hub".to_string(),
         host: "127.0.0.1".to_string(),
         port: hub_port,
-        fingerprint: "fp-hub-did".to_string(),
+        fingerprint: hub_fp.clone(),
         version: "1".to_string(),
     };
 
@@ -1044,6 +1203,10 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "fp-aaa".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -1062,6 +1225,10 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "fp-zzz".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -1094,6 +1261,10 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "fp-cons-did".to_string(),
         0,
         false,
+        test_pin_store(),
+        None, // extractor: buffer-mode (transport-level test)
+        None, // merger
+        None, // consent_manager
     )
     .await
     .unwrap();
@@ -1171,4 +1342,391 @@ async fn forget_peer_unknown_device_is_idempotent() {
     assert_eq!(before, after, "verified_peers unchanged on unknown forget");
     a.stop();
     _b.stop();
+}
+
+#[tokio::test]
+async fn forget_peer_clears_pin() {
+    let pin_store = test_pin_store();
+    pin_store.upsert_pin("peer-x", "fp-x").await.unwrap();
+    let transport = LanSyncTransport::start(
+        "dev-self".into(),
+        "self".into(),
+        "passphrase-1234".into(),
+        Vec::new(),
+        Vec::new(),
+        "fp-self".into(),
+        0,
+        false,
+        pin_store.clone(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    transport.forget_peer("peer-x").await.unwrap();
+    assert_eq!(pin_store.get_pin("peer-x").await.unwrap(), None);
+}
+
+// ── #5174 LAN storage-backed convergence (production path) ────────────────
+// These exercise the REAL storage-backed server (Some(extractor)/Some(merger)) over
+// the full TLS + auth + HTTP path between two SqliteStorage-backed transports — the
+// path build_sync_engine wires in production. mDNS is off (manual peer injection), so
+// they are deterministic and CI-safe; mDNS discovery + real multi-device stay QA-only.
+
+fn full_segment_changeset(origin: &str, seg_id: &str, wall: u64, counter: u32) -> ChangeSet {
+    ChangeSet {
+        origin_device_id: origin.to_string(),
+        origin_device_name: format!("Device {origin}"),
+        watermark: Hlc {
+            wall_ms: wall,
+            counter,
+            device_id: origin.to_string(),
+        },
+        segments: vec![serde_json::json!({
+            "id": seg_id, "start_time": "2026-01-01", "end_time": "2026-01-01",
+            "duration_secs": 3600, "trigger_reason": "timer", "dominant_category": "Dev",
+            "hlc_wall_ms": wall, "hlc_counter": counter, "origin_device_id": origin
+        })],
+        ..Default::default()
+    }
+}
+
+#[allow(clippy::type_complexity)]
+async fn start_storage_pair(
+    id_a: &str,
+    id_b: &str,
+    passphrase: &str,
+    consent_b: Option<Arc<dyn ConsentManagerPort>>,
+) -> (
+    LanSyncTransport,
+    LanSyncTransport,
+    Arc<maekon_storage::sqlite::SqliteStorage>,
+    Arc<maekon_storage::sqlite::SqliteStorage>,
+) {
+    use maekon_storage::sqlite::SqliteStorage;
+    use maekon_storage::sync_extractor::SqliteSyncExtractor;
+    use maekon_storage::sync_merger::SqliteSyncMerger;
+
+    let storage_a = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+    let storage_b = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+
+    let ex_a: Arc<dyn ChangeExtractor> = Arc::new(SqliteSyncExtractor::new(
+        storage_a.connection_arc(),
+        id_a.to_string(),
+        format!("Peer {id_a}"),
+        maekon_core::config::SyncConfig::default(),
+    ));
+    let mg_a: Arc<dyn ChangeMerger> = Arc::new(SqliteSyncMerger::new(
+        storage_a.connection_arc(),
+        id_a.to_string(),
+    ));
+    let ex_b: Arc<dyn ChangeExtractor> = Arc::new(SqliteSyncExtractor::new(
+        storage_b.connection_arc(),
+        id_b.to_string(),
+        format!("Peer {id_b}"),
+        maekon_core::config::SyncConfig::default(),
+    ));
+    let mg_b: Arc<dyn ChangeMerger> = Arc::new(SqliteSyncMerger::new(
+        storage_b.connection_arc(),
+        id_b.to_string(),
+    ));
+
+    let (a_cert, a_key, a_fp) = real_tls(id_a);
+    let (b_cert, b_key, b_fp) = real_tls(id_b);
+
+    let a = LanSyncTransport::start(
+        id_a.to_string(),
+        format!("Peer {id_a}"),
+        passphrase.to_string(),
+        a_cert,
+        a_key,
+        a_fp.clone(),
+        0,
+        false,
+        test_pin_store(),
+        Some(ex_a),
+        Some(mg_a),
+        None, // consent_manager: unmanaged in the convergence test (consent gate tested separately)
+    )
+    .await
+    .unwrap();
+    let b = LanSyncTransport::start(
+        id_b.to_string(),
+        format!("Peer {id_b}"),
+        passphrase.to_string(),
+        b_cert,
+        b_key,
+        b_fp.clone(),
+        0,
+        false,
+        test_pin_store(),
+        Some(ex_b),
+        Some(mg_b),
+        consent_b, // B's server consent gate (None = unmanaged/permitted)
+    )
+    .await
+    .unwrap();
+
+    let a_port = a.server_port();
+    let b_port = b.server_port();
+    a.verified_peers.write().insert(
+        id_b.to_string(),
+        LanPeerInfo {
+            device_id: id_b.to_string(),
+            device_name: format!("Peer {id_b}"),
+            host: "127.0.0.1".to_string(),
+            port: b_port,
+            fingerprint: b_fp.clone(),
+            version: "1".to_string(),
+        },
+    );
+    b.verified_peers.write().insert(
+        id_a.to_string(),
+        LanPeerInfo {
+            device_id: id_a.to_string(),
+            device_name: format!("Peer {id_a}"),
+            host: "127.0.0.1".to_string(),
+            port: a_port,
+            fingerprint: a_fp.clone(),
+            version: "1".to_string(),
+        },
+    );
+    tokio::task::yield_now().await;
+    (a, b, storage_a, storage_b)
+}
+
+#[tokio::test]
+async fn storage_backed_push_then_pull_use_real_db() {
+    // The full production loop over real storage:
+    //  (1) PUSH: A pushes a changeset → B's server applies it via B's MERGER → the row
+    //      lands in B's SQLite. push() awaits B's 200, sent only after the merge commits,
+    //      so the assert is race-free.
+    //  (2) PULL: A pulls from B → B's EXTRACTOR serves that same row from B's SQLite
+    //      (not an in-memory buffer).
+    let (a, _b, _sa, sb) = start_storage_pair("conv-a", "conv-b", "conv-pass", None).await;
+
+    // (1) push → merger → B's DB
+    // #5211: a push's origin = the pushing device (conv-a), bound to the authenticated peer.
+    let cs = full_segment_changeset("conv-a", "seg-x", 100, 1);
+    assert_eq!(a.push(&cs).await.unwrap(), 1, "delivered to the one peer");
+    let count: i64 = {
+        let conn = sb.connection_arc();
+        let read = conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count, 1, "B's storage converged via the merger (push path)");
+
+    // (2) pull → extractor serves B's real row
+    let pulled = a
+        .pull(&Hlc::default())
+        .await
+        .unwrap()
+        .expect("B served its real extractor data");
+    assert_eq!(
+        pulled.segments.len(),
+        1,
+        "B's extractor served the row (pull path)"
+    );
+    assert_eq!(pulled.segments[0]["id"], "seg-x");
+}
+
+/// A consent manager that denies everything (GDPR default — nothing granted).
+struct DenyingConsent;
+impl maekon_core::ports::consent_manager::ConsentManagerPort for DenyingConsent {
+    fn check_consent(&self) -> maekon_core::consent::ConsentStatus {
+        maekon_core::consent::ConsentStatus::NotGranted
+    }
+    fn current_consent(&self) -> Option<maekon_core::consent::ConsentRecord> {
+        None
+    }
+    fn effective_permissions(&self) -> maekon_core::consent::ConsentPermissions {
+        maekon_core::consent::ConsentPermissions::default() // all false
+    }
+    fn status_and_permissions(
+        &self,
+    ) -> (
+        maekon_core::consent::ConsentStatus,
+        maekon_core::consent::ConsentPermissions,
+    ) {
+        (
+            maekon_core::consent::ConsentStatus::NotGranted,
+            maekon_core::consent::ConsentPermissions::default(),
+        )
+    }
+    fn grant_consent(
+        &self,
+        _: maekon_core::consent::ConsentPermissions,
+        _: u32,
+    ) -> Result<(), maekon_core::error::CoreError> {
+        Ok(())
+    }
+    fn revoke_consent(&self) -> Result<(), maekon_core::error::CoreError> {
+        Ok(())
+    }
+    fn has_pending_deletion(&self) -> bool {
+        false
+    }
+    fn pending_erasure_id(&self) -> Option<String> {
+        None
+    }
+    fn clear_pending_deletion(&self) {}
+    fn deletion_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
+    fn erasing(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
+}
+
+#[tokio::test]
+async fn server_refuses_push_without_cross_device_sync_consent() {
+    // #5174 consent gate: B's server has NO cross_device_sync consent → it refuses an
+    // authenticated peer's push (403). Nothing lands in B's SQLite. (The storage-backed
+    // server is a real data channel, so auth alone must NOT be sufficient.)
+    let deny: Arc<dyn ConsentManagerPort> = Arc::new(DenyingConsent);
+    let (a, _b, _sa, sb) = start_storage_pair("deny-a", "deny-b", "deny-pass", Some(deny)).await;
+
+    let cs = full_segment_changeset("deny-a", "seg-deny", 100, 1);
+    let delivered = a.push(&cs).await.unwrap();
+    assert_eq!(
+        delivered, 0,
+        "B refused the push without consent (no delivery)"
+    );
+
+    let count: i64 = {
+        let conn = sb.connection_arc();
+        let read = conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-deny'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count, 0, "nothing landed in B's storage without consent");
+
+    // And a pull from B is refused too (403 → no data).
+    assert!(
+        a.pull(&Hlc::default()).await.unwrap().is_none(),
+        "B refused to serve its data without cross_device_sync consent"
+    );
+}
+
+#[tokio::test]
+async fn server_rejects_push_with_spoofed_origin() {
+    // #5211: an authenticated peer may only push ITS OWN changeset. A changeset claiming a
+    // THIRD device's origin (e.g. a spoofed device-wide DeletionEvent) is rejected — auth
+    // proves who is pushing, and a peer cannot forge another device's origin_device_id.
+    let (a, _b, _sa, sb) = start_storage_pair("spoof-a", "spoof-b", "spoof-pass", None).await;
+    // origin = "victim-c", NOT the pushing device (spoof-a) → must be rejected.
+    let cs = full_segment_changeset("victim-c", "seg-spoof", 100, 1);
+    let delivered = a.push(&cs).await.unwrap();
+    assert_eq!(delivered, 0, "B rejected the spoofed-origin push");
+
+    let count: i64 = {
+        let conn = sb.connection_arc();
+        let read = conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-spoof'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count, 0, "nothing landed under a forged origin");
+}
+
+#[tokio::test]
+async fn server_rejects_push_with_spoofed_row_origin() {
+    // #5211: top-level origin binding is not enough. A peer that authenticates as itself
+    // must not smuggle rows attributed to a third device inside an otherwise valid push.
+    let (a, _b, _sa, sb) =
+        start_storage_pair("row-spoof-a", "row-spoof-b", "row-spoof-pass", None).await;
+
+    let mut cs = full_segment_changeset("row-spoof-a", "seg-row-spoof", 100, 1);
+    cs.segments[0]["origin_device_id"] = serde_json::json!("victim-c");
+
+    let delivered = a.push(&cs).await.unwrap();
+    assert_eq!(delivered, 0, "B rejected the spoofed row-origin push");
+
+    let count: i64 = {
+        let conn = sb.connection_arc();
+        let read = conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-row-spoof'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count, 0, "nothing landed under a forged row origin");
+}
+
+#[tokio::test]
+async fn server_accepts_relayed_tombstone_for_original_row_origin() {
+    // #5174/#5211: tombstones are content-free erasure carriers. They keep the erased
+    // row's original origin so a relay peer can help an offline receiver converge.
+    let (relay, _receiver, _sa, sb) =
+        start_storage_pair("relay-a", "relay-b", "relay-pass", None).await;
+
+    {
+        let conn = sb.connection_arc();
+        let inserted = conn
+            .write_lock()
+            .run(0, |conn| {
+                conn.execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-relayed-delete', '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', 100, 1, 'origin-a')",
+                    [],
+                )
+            })
+            .unwrap();
+        assert_eq!(inserted, 1, "receiver fixture row inserted");
+    }
+
+    let cs = ChangeSet {
+        origin_device_id: "relay-a".to_string(),
+        origin_device_name: "Peer relay-a".to_string(),
+        watermark: Hlc {
+            wall_ms: 200,
+            counter: 0,
+            device_id: "relay-a".to_string(),
+        },
+        tombstones: vec![Tombstone {
+            table_name: "activity_segments".to_string(),
+            row_id: "seg-relayed-delete".to_string(),
+            origin_device_id: "origin-a".to_string(),
+            hlc_wall_ms: 200,
+            hlc_counter: 0,
+            deleted_at: "2026-06-07T00:00:00Z".to_string(),
+        }],
+        ..Default::default()
+    };
+
+    let delivered = relay.push(&cs).await.unwrap();
+    assert_eq!(delivered, 1, "relay tombstone reached the receiver");
+
+    let count: i64 = {
+        let conn = sb.connection_arc();
+        let read = conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-relayed-delete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count, 0, "receiver converged to the relayed erasure");
 }

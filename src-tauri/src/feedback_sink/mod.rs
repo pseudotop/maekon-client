@@ -182,10 +182,15 @@ mod tests {
     #[tokio::test]
     async fn composite_sink_ok_with_no_consumers() {
         let sink = CompositeFeedbackSink::new(None, None);
-        let result = sink
-            .record_user_reaction(&sample_feedback(FeedbackType::Accepted))
-            .await;
-        assert!(result.is_ok());
+        // Both Option fields are None, so record_user_reaction skips both
+        // if-let branches and reaches the unconditional `Ok(())`.
+        // The spec requires that a missing sink never fails send_feedback
+        // (ADR-017).  There is no value to inspect beyond the Ok — the
+        // result is always the unit type.
+        // (#5594: ok-only IS the full contract — no consumer means pure no-op)
+        sink.record_user_reaction(&sample_feedback(FeedbackType::Accepted))
+            .await
+            .expect("CompositeFeedbackSink with no consumers must be a no-op Ok");
     }
 
     // T-X3-3 — no sink configured on FeedbackSender still works.

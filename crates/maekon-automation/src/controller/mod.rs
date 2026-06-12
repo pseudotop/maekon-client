@@ -12,6 +12,7 @@ pub use types::{
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 
 use crate::action_dispatcher::{AutomationActionDispatcher, SandboxActionDispatcher};
@@ -22,10 +23,11 @@ use crate::intent_planner::IntentPlanner;
 use crate::intent_resolver::IntentExecutor;
 use crate::policy::PolicyClient;
 use gate::CommandExecutionGate;
-use maekon_core::config::SandboxConfig;
+use maekon_core::config::{ConfirmationRequirement, SandboxConfig};
 use maekon_core::models::automation::PendingConfirmation;
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::focus_probe::FocusProbe;
+use maekon_core::ports::input_driver::InputDriver;
 use maekon_core::ports::overlay_driver::OverlayDriver;
 use maekon_core::ports::sandbox::Sandbox;
 
@@ -38,6 +40,9 @@ pub struct AutomationController {
     pub(super) policy_client: Arc<PolicyClient>,
     pub(super) audit_logger: Arc<RwLock<AuditLogger>>,
     pub(super) action_dispatcher: Arc<dyn AutomationActionDispatcher>,
+    /// 샌드박스 핸들을 보관해 두어 인라인 InputDriver 배선 시
+    /// 디스패처를 `with_inline_driver`로 재구성할 수 있게 한다(#4539).
+    pub(super) sandbox: Arc<dyn Sandbox>,
     pub(super) base_sandbox_config: SandboxConfig,
     pub(super) enabled: bool,
     pub(super) intent_executor: Option<Arc<IntentExecutor>>,
@@ -59,6 +64,11 @@ pub struct AutomationController {
     /// The frontend (e.g., Tauri overlay) registers this to display a modal.
     #[allow(clippy::type_complexity)]
     pub(super) on_confirmation_needed: Option<Arc<dyn Fn(PendingConfirmation) + Send + Sync>>,
+    /// Gate applied to `execute_intent_hint` before running the planned action.
+    /// Sourced from `AutomationConfig.confirmation_policy` at build time.
+    /// Default Auto = D2-② product sign-off (immediate-run); users opt into
+    /// Confirm or Block via config.
+    pub(super) confirmation_policy: ConfirmationRequirement,
 }
 
 impl AutomationController {
@@ -76,7 +86,8 @@ impl AutomationController {
         Self {
             policy_client,
             audit_logger,
-            action_dispatcher: Arc::new(SandboxActionDispatcher::new(sandbox)),
+            action_dispatcher: Arc::new(SandboxActionDispatcher::new(sandbox.clone())),
+            sandbox,
             base_sandbox_config: sandbox_config,
             enabled: false, // disabled by default
             intent_executor: None,
@@ -86,6 +97,9 @@ impl AutomationController {
             last_command_ok: None,
             pending_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             on_confirmation_needed: None,
+            // Default Auto = D2-② product sign-off; overridden from
+            // AutomationConfig.confirmation_policy at build time.
+            confirmation_policy: ConfirmationRequirement::Auto,
         }
     }
 
@@ -105,6 +119,13 @@ impl AutomationController {
     ) -> Self {
         self.on_confirmation_needed = Some(cb);
         self
+    }
+
+    /// Override the intent-hint confirmation gate.  Called by
+    /// `build_controller_from_runtime` with the value from
+    /// `AutomationConfig.confirmation_policy`.
+    pub fn set_confirmation_policy(&mut self, policy: ConfirmationRequirement) {
+        self.confirmation_policy = policy;
     }
 
     /// Create a pending confirmation for a command and wait for the user to
@@ -170,11 +191,26 @@ impl AutomationController {
         self.action_dispatcher = dispatcher;
     }
 
+    /// Permissive-noop 경로(#4539)에서 액션을 인-프로세스로 실행할 InputDriver를
+    /// 배선한다. 보관해 둔 샌드박스 핸들과 함께 디스패처를
+    /// `SandboxActionDispatcher::with_inline_driver`로 재구성한다.
+    ///
+    /// 미배선(레거시) 상태에서는 permissive-noop 경로가 실행 없이 Success를
+    /// 반환하던 기존 동작을 유지한다. 실제 컨트롤러는 src-tauri 배선에서 이
+    /// 세터를 호출해 액션 누락(거짓 성공)을 방지한다.
+    pub fn set_inline_action_executor(&mut self, driver: Arc<dyn InputDriver>) {
+        self.action_dispatcher = Arc::new(SandboxActionDispatcher::with_inline_driver(
+            self.sandbox.clone(),
+            driver,
+        ));
+    }
+
     pub fn configure_gui_interaction(
         &mut self,
         focus_probe: Arc<dyn FocusProbe>,
         overlay_driver: Arc<dyn OverlayDriver>,
         hmac_secret: Option<String>,
+        runtime_handle: &Handle,
     ) -> Result<(), AutomationError> {
         let scene_finder = self
             .scene_finder
@@ -196,7 +232,7 @@ impl AutomationController {
             overlay_driver,
             hmac_secret,
         ));
-        service.ensure_cleanup_task();
+        service.ensure_cleanup_task(runtime_handle);
         self.gui_service = Some(service);
         Ok(())
     }

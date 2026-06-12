@@ -92,7 +92,7 @@ impl IntegrationInboxCoordinator {
     ) -> Result<IntegrationEnvelope, CoreError> {
         let current_session = self.session_port.current_session().await?;
         Ok(IntegrationEnvelope {
-            envelope_id: format!("integration-envelope-{}", Uuid::new_v4()),
+            envelope_id: maekon_core::generate_id("env"),
             schema_version: "integration.prompt_receipt.v1".to_string(),
             message_type: IntegrationMessageType::PromptReceipt,
             timestamp: Utc::now(),
@@ -123,7 +123,7 @@ impl IntegrationInboxCoordinator {
     ) -> Result<(), CoreError> {
         let envelope = self.build_receipt_envelope(action.clone()).await?;
         let receipt = IntegrationPromptReceipt {
-            receipt_id: format!("integration-prompt-receipt-{}", Uuid::new_v4()),
+            receipt_id: maekon_core::generate_id("rcpt"),
             prompt_id: prompt_id.to_string(),
             action,
             occurred_at: Utc::now(),

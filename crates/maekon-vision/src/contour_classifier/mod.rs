@@ -56,11 +56,19 @@ mod tests {
     #[tokio::test]
     async fn classify_crop_returns_result() {
         let classifier = ContourGuiClassifier::new();
-        // 20x10 gray crop
+        // 20x10 gray crop (uniform mid-gray, no strong border — expect a classification)
         let rgba = vec![128u8; 20 * 10 * 4];
         let result = classifier.classify_crop(&rgba, 20, 10).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
+        let classification =
+            result.expect("ContourGuiClassifier::classify_crop must not fail on valid RGBA input");
+        let (element_type, confidence) =
+            classification.expect("a uniform 20x10 gray crop must produce a classification result");
+        // Confidence must be in (0, 1] and element_type must be a valid variant.
+        assert!(
+            confidence > 0.0 && confidence <= 1.0,
+            "confidence {confidence} is outside the (0, 1] range"
+        );
+        let _ = element_type; // variant is signature-dependent; existence is the contract
     }
 
     #[test]
@@ -96,6 +104,16 @@ mod tests {
         let classifier = ContourGuiClassifier::new();
         let rgba = vec![128u8; 3 * 3 * 4];
         let result = classifier.classify_crop(&rgba, 3, 3).await;
-        assert!(result.is_ok());
+        // Contract: tiny crops must never cause a panic or an Err — graceful Ok is required.
+        // The Unknown catch-all signature covers all feature ranges so a 3x3 crop always
+        // yields Ok(Some(..)) rather than Ok(None) in the current signature table.
+        let classification = result.expect("classify_crop must return Ok even for a 3x3 crop");
+        // If a classification is returned, confidence must be in the valid range.
+        if let Some((_element_type, confidence)) = classification {
+            assert!(
+                confidence > 0.0 && confidence <= 1.0,
+                "confidence {confidence} out of (0, 1] for tiny crop"
+            );
+        }
     }
 }

@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 uuid = { workspace = true }
+ulid = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

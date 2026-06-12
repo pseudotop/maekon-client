@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrameResponse {
     pub id: i64,
     pub timestamp: String,

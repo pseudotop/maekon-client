@@ -121,10 +121,11 @@ mod tests {
     fn preflight_skips_when_policy_paths_not_configured() {
         let mut config = config_for_test();
         config.integrity.require_signed_policy_bundle = true;
-        // policy_file_path and policy_signature_path are None by default
-        // should gracefully skip, not error
-        let result = run_preflight(&config, false);
-        assert!(result.is_ok());
+        // policy_file_path and policy_signature_path are None by default.
+        // verify_signed_policy_bundle logs a warning and returns Ok(()) — the
+        // preflight must not treat a missing-but-not-configured path as an error.
+        run_preflight(&config, false)
+            .expect("preflight must silently skip when policy paths are not configured");
     }
 
     #[test]
@@ -148,8 +149,8 @@ mod tests {
         config.integrity.policy_signature_path = Some(signature_path.to_string_lossy().to_string());
         config.integrity.policy_public_key = Some(BASE64.encode(verifying_key.as_bytes()));
 
-        let result = run_preflight(&config, false);
-        assert!(result.is_ok());
+        run_preflight(&config, false)
+            .expect("valid signed policy bundle must pass preflight without error");
     }
 
     #[test]
@@ -174,8 +175,12 @@ mod tests {
         config.integrity.policy_signature_path = Some(signature_path.to_string_lossy().to_string());
         config.integrity.policy_public_key = Some(BASE64.encode(verifying_key.as_bytes()));
 
-        let result = run_preflight(&config, false);
-        assert!(result.is_err());
+        let err = run_preflight(&config, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Policy signature verification failed"),
+            "tampered bundle must fail signature verification; got: {err}"
+        );
     }
 
     #[test]
@@ -191,7 +196,11 @@ mod tests {
         config.integrity.policy_file_path = Some(policy_path.to_string_lossy().to_string());
         config.integrity.policy_signature_path = Some(signature_path.to_string_lossy().to_string());
 
-        let result = run_preflight(&config, false);
-        assert!(result.is_err());
+        let err = run_preflight(&config, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to decode policy signature base64"),
+            "non-base64 signature file must fail base64 decode; got: {err}"
+        );
     }
 }

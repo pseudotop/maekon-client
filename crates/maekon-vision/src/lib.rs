@@ -5,10 +5,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -37,6 +37,7 @@ pub use gui_detector as input_correlator;
 pub mod local_ocr_provider;
 #[cfg(feature = "ocr")]
 pub mod ocr;
+pub mod pointer_context;
 pub mod privacy;
 pub mod privacy_gateway;
 pub mod processor;
@@ -51,6 +52,8 @@ pub mod native_ocr;
 
 #[cfg(feature = "native-vision")]
 pub mod native_detect;
+
+pub mod ocr_geometry;
 
 #[cfg(feature = "ml-detect")]
 pub mod ml_classifier;

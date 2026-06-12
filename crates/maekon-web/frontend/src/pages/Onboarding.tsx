@@ -1,20 +1,26 @@
 /**
- * First-run onboarding page — 4-step guide shown before the main shell.
+ * First-run onboarding page — 6-step guide shown before the main shell
+ * (Intro → Permissions → Consent → Features → Coaching → Ready).
+ * #5707: StepCoaching inserted at index 4 (opt-in only; skipping leaves coaching off).
  */
 
 import {
   Bell,
+  BrainCircuit,
   Camera,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   CircleCheckBig,
   Cpu,
+  Keyboard,
   Lightbulb,
+  Mic,
   Monitor,
   Rocket,
   RotateCcw,
   Shield,
+  ShieldCheck,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -22,8 +28,15 @@ import {
   type DesktopPermissionSnapshot,
   type DesktopPermissionState,
   fetchDesktopPermissionStatus,
+  fetchSettings,
+  getConsent,
   requestDesktopNotificationPermission,
+  requestDesktopScreenCapturePermission,
+  setConsent,
+  updateSettings,
 } from '../api/client'
+import type { ConsentPermissions } from '../api/contracts'
+import { errorMessageFromInvoke } from '../api/desktop'
 import { Alert, Badge, Button } from '../components/ui'
 import { colors, iconSize, motion, radius, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
@@ -33,7 +46,44 @@ interface OnboardingProps {
   onComplete: () => void
 }
 
-const TOTAL_STEPS = 4
+// Intro → Permissions → Consent → Features → Coaching → Ready.
+// #5707: TOTAL_STEPS 5→6 (StepCoaching inserted between Features and Ready).
+const TOTAL_STEPS = 6
+
+// 모니터링 동의 번들을 구성하는 6개 마스터 필드(ConsentToggleSection 의 MONITORING_FIELDS 와 동일).
+// 부여 시 이 6개는 true, 나머지 7개(고감도/추가 opt-in)는 false 인 fresh grant 를 전송한다.
+const MONITORING_FIELDS = [
+  'screen_capture',
+  'window_title_collection',
+  'app_usage_analytics',
+  'process_monitoring',
+  'input_activity',
+  'telemetry',
+] as const satisfies readonly (keyof ConsentPermissions)[]
+
+/** 14개 권한 전부 false 로 시작해 6개 마스터 필드만 true 로 켠 fresh grant 권한 집합을 만든다. */
+function buildMonitoringGrant(): ConsentPermissions {
+  const permissions: ConsentPermissions = {
+    screen_capture: false,
+    ocr_processing: false,
+    telemetry: false,
+    process_monitoring: false,
+    input_activity: false,
+    window_title_collection: false,
+    app_usage_analytics: false,
+    clipboard_monitoring: false,
+    file_access_monitoring: false,
+    activity_pattern_learning: false,
+    cross_device_sync: false,
+    full_text_extraction: false,
+    memory_graph_enrichment: false,
+    microphone: false,
+  }
+  for (const field of MONITORING_FIELDS) {
+    permissions[field] = true
+  }
+  return permissions
+}
 
 async function invokeCommand(cmd: string) {
   try {
@@ -44,7 +94,9 @@ async function invokeCommand(cmd: string) {
   }
 }
 
-async function openPermissionSettings(permissionKind: 'accessibility' | 'screen_capture') {
+async function openPermissionSettings(
+  permissionKind: 'accessibility' | 'screen_capture' | 'microphone' | 'input_monitoring',
+) {
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('open_desktop_permission_settings', { permissionKind })
 }
@@ -86,7 +138,7 @@ function badgeColorForPermission(state: DesktopPermissionState): 'success' | 'wa
 }
 
 interface OnboardingPermissionRowAction {
-  id: 'accessibility' | 'screen_capture' | 'notifications'
+  id: 'accessibility' | 'screen_capture' | 'microphone' | 'input_monitoring' | 'notifications'
   label: string
   onClick: () => void
 }
@@ -172,8 +224,9 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
   const [permissionStatus, setPermissionStatus] = useState<DesktopPermissionSnapshot | null>(null)
   const [loading, setLoading] = useState(IS_TAURI)
   const [error, setError] = useState<string | null>(null)
+  const [screenCaptureRestartHint, setScreenCaptureRestartHint] = useState(false)
   const [actionLoading, setActionLoading] = useState<
-    'accessibility' | 'screen_capture' | 'notifications' | 'refresh' | null
+    'accessibility' | 'screen_capture' | 'microphone' | 'input_monitoring' | 'notifications' | 'refresh' | null
   >(null)
   const iconCls = cn(iconSize.base, 'text-brand-text')
 
@@ -221,7 +274,7 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
   }, [onReadyChange, requiredReady])
 
   const handleOpenPermissionSettings = useCallback(
-    async (kind: 'accessibility' | 'screen_capture') => {
+    async (kind: 'accessibility' | 'screen_capture' | 'microphone' | 'input_monitoring') => {
       setActionLoading(kind)
       setError(null)
       try {
@@ -235,6 +288,24 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
     },
     [t],
   )
+
+  const handleRequestScreenCapturePermission = useCallback(async () => {
+    setActionLoading('screen_capture')
+    setError(null)
+    try {
+      const snapshot = await requestDesktopScreenCapturePermission()
+      setPermissionStatus(snapshot)
+      setScreenCaptureRestartHint(snapshot.screen_capture.state === 'granted')
+      if (snapshot.screen_capture.state !== 'granted') {
+        await openPermissionSettings('screen_capture')
+      }
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : t('onboarding.step2SystemSettingsOpenFailed')
+      setError(message)
+    } finally {
+      setActionLoading(null)
+    }
+  }, [t])
 
   const handleRequestNotificationPermission = useCallback(async () => {
     setActionLoading('notifications')
@@ -273,7 +344,7 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
           action: {
             id: 'screen_capture',
             label: t('onboarding.step2ScreenCaptureAction'),
-            onClick: () => void handleOpenPermissionSettings('screen_capture'),
+            onClick: () => void handleRequestScreenCapturePermission(),
           },
         },
         {
@@ -290,6 +361,30 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
                   onClick: () => void handleRequestNotificationPermission(),
                 }
               : undefined,
+        },
+        {
+          id: 'microphone',
+          icon: <Mic className={iconCls} />,
+          label: t('settings.permissionMicrophoneLabel'),
+          description: t('settings.permissionMicrophoneDesc'),
+          state: permissionStatus?.microphone?.state ?? 'needs_attention',
+          action: {
+            id: 'microphone',
+            label: t('settings.permissionOpenSystemSettingsAction'),
+            onClick: () => void handleOpenPermissionSettings('microphone'),
+          },
+        },
+        {
+          id: 'input-monitoring',
+          icon: <Keyboard className={iconCls} />,
+          label: t('settings.permissionInputMonitoringLabel'),
+          description: t('settings.permissionInputMonitoringDesc'),
+          state: permissionStatus?.input_monitoring?.state ?? 'needs_attention',
+          action: {
+            id: 'input_monitoring',
+            label: t('settings.permissionOpenSystemSettingsAction'),
+            onClick: () => void handleOpenPermissionSettings('input_monitoring'),
+          },
         },
       ]
     : IS_WINDOWS
@@ -424,6 +519,14 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
         </div>
       )}
 
+      {IS_MAC && screenCaptureRestartHint && permissionStatus?.screen_capture.state === 'granted' && (
+        <div className="mt-4 w-full max-w-2xl">
+          <Alert variant="info" title={t('onboarding.step2ScreenCaptureRestartTitle')}>
+            <p>{t('onboarding.step2ScreenCaptureRestartDesc')}</p>
+          </Alert>
+        </div>
+      )}
+
       {!IS_MAC && permissionRows.length > 0 && (
         <div className="mt-4 w-full max-w-2xl">
           <Alert variant="info" title={t('settings.permissionManualCheckTitle')}>
@@ -462,6 +565,99 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
   )
 }
 
+/* ── Consent step (#4629 A.2 task 4) ── */
+
+// 모니터링 ON 시 수집되는 항목 전체를 열거한다(privacy.consent.monitoring.collected.* 재사용).
+// 온보딩 완료가 OS 권한 + GDPR 동의를 모두 프로비저닝하도록, 정보 제공 후 명시적 클릭으로만 부여한다.
+const CONSENT_COLLECTED_KEYS = [
+  'screenFrames',
+  'windowTitles',
+  'appUsage',
+  'inputActivity',
+  'activeProcesses',
+  'systemMetrics',
+  'activitySegments',
+  'focusMetrics',
+  'digests',
+  'memoryGraph',
+  'embeddings',
+  'guiInteractions',
+] as const
+
+function StepConsent() {
+  const { t } = useTranslation()
+  const [granting, setGranting] = useState(false)
+  const [granted, setGranted] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // 명시적·정보 제공형 부여: 클릭 시점에만 set_consent 를 호출한다(자동 부여 금지).
+  const handleGrant = useCallback(async () => {
+    setGranting(true)
+    setError(null)
+    try {
+      await setConsent(buildMonitoringGrant())
+      setGranted(true)
+    } catch (nextError) {
+      setError(errorMessageFromInvoke(nextError))
+    } finally {
+      setGranting(false)
+    }
+  }, [])
+
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className={cn('mb-6 flex items-center justify-center rounded-full bg-brand-signal/15 p-4', motion.opacity)}>
+        <ShieldCheck className={cn(iconSize.hero, 'text-brand-text')} />
+      </div>
+      <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>{t('onboarding.consent.title')}</h2>
+      <p className={cn(typography.body, colors.text.secondary, 'mb-6 max-w-sm')}>
+        {t('onboarding.consent.description')}
+      </p>
+
+      {/* 부여 전: 수집 항목 전체 열거 (정보 제공). 부여 후: 확정 상태로 대체. */}
+      {granted ? (
+        <div className="w-full max-w-md" data-testid="onboarding-consent-granted">
+          <Alert variant="success" title={t('onboarding.consent.granted')}>
+            <p>{t('onboarding.consent.grantedNote')}</p>
+          </Alert>
+        </div>
+      ) : (
+        <div className="w-full max-w-md text-left">
+          <p className={cn(typography.small, colors.text.secondary, 'mb-2')}>
+            {t('onboarding.consent.collectedTitle')}
+          </p>
+          <ul className="mb-4 grid list-inside list-disc grid-cols-1 gap-x-4 text-content-tertiary text-xs sm:grid-cols-2">
+            {CONSENT_COLLECTED_KEYS.map((key) => (
+              <li key={key}>{t(`privacy.consent.monitoring.collected.${key}`)}</li>
+            ))}
+          </ul>
+
+          {error && (
+            <Alert variant="error" className="mb-4" title={t('onboarding.consent.error', { error })}>
+              <p>{error}</p>
+            </Alert>
+          )}
+
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            className="w-full"
+            isLoading={granting}
+            onClick={() => void handleGrant()}
+            data-testid="onboarding-consent-grant"
+          >
+            <ShieldCheck className={cn(iconSize.base, 'mr-2')} />
+            {granting ? t('onboarding.consent.granting') : t('onboarding.consent.grantButton')}
+          </Button>
+
+          <p className="mt-4 text-content-tertiary text-xs">{t('onboarding.consent.osNote')}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function FeatureItem({ icon, label }: { icon: ReactNode; label: string }) {
   return (
     <div className={cn('flex items-center gap-3 rounded-lg bg-surface-muted px-4 py-3', motion.colors)}>
@@ -486,6 +682,95 @@ function StepFeatures() {
         <FeatureItem icon={<Cpu className={iconCls} />} label={t('onboarding.step3Analysis')} />
         <FeatureItem icon={<Lightbulb className={iconCls} />} label={t('onboarding.step3Suggestions')} />
       </div>
+    </div>
+  )
+}
+
+/**
+ * StepCoaching — #5707 Tier-4 opt-in step (index 4 of 6).
+ *
+ * Mirrors the StepConsent explicit-click pattern (#4629): user must click
+ * "Enable coaching" to activate. Skipping the step leaves coaching.enabled=false.
+ * On enable: merge-grants Tier-4 consent (activity_pattern_learning) +
+ * sets coaching.enabled=true via the REST settings API.
+ */
+function StepCoaching() {
+  const { t } = useTranslation()
+  const [enabling, setEnabling] = useState(false)
+  const [enabled, setEnabled] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const ENABLES_LIST_KEYS = ['item1', 'item2', 'item3', 'item4'] as const
+
+  const iconCls = cn(iconSize.base, 'text-brand-text')
+
+  // Merge-grant Tier-4 consent (activity_pattern_learning) + set coaching.enabled=true.
+  // Fetches current consent first so only activity_pattern_learning is added;
+  // other consent fields are preserved (#5707).
+  const handleEnable = useCallback(async () => {
+    setEnabling(true)
+    setError(null)
+    try {
+      // Fetch current consent snapshot, merge Tier-4 field, then re-grant.
+      const snapshot = await getConsent()
+      await setConsent({ ...snapshot.permissions, activity_pattern_learning: true })
+      // Set coaching.enabled=true via REST settings write.
+      const current = await fetchSettings()
+      await updateSettings({ ...current, coaching: { ...current.coaching, enabled: true } })
+      setEnabled(true)
+    } catch (nextError) {
+      setError(errorMessageFromInvoke(nextError))
+    } finally {
+      setEnabling(false)
+    }
+  }, [])
+
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className={cn('mb-6 flex items-center justify-center rounded-full bg-brand-signal/15 p-4', motion.opacity)}>
+        <BrainCircuit className={cn(iconSize.hero, 'text-brand-text')} />
+      </div>
+      <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>{t('onboarding.coaching.title')}</h2>
+      <p className={cn(typography.body, colors.text.secondary, 'mb-6 max-w-sm')}>
+        {t('onboarding.coaching.description')}
+      </p>
+
+      {enabled ? (
+        <div className="w-full max-w-md" data-testid="onboarding-coaching-enabled">
+          <Alert variant="success" title={t('onboarding.coaching.enabled')}>
+            <p>{t('onboarding.coaching.activeNote')}</p>
+          </Alert>
+        </div>
+      ) : (
+        <div className="w-full max-w-md text-left">
+          <ul className="mb-4 grid list-inside list-disc grid-cols-1 gap-x-4 text-content-tertiary text-xs sm:grid-cols-2">
+            {ENABLES_LIST_KEYS.map((key) => (
+              <li key={key}>{t(`onboarding.coaching.enablesList.${key}`)}</li>
+            ))}
+          </ul>
+
+          {error && (
+            <Alert variant="error" className="mb-4" title={t('onboarding.coaching.error', { error })}>
+              <p>{error}</p>
+            </Alert>
+          )}
+
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            className="w-full"
+            isLoading={enabling}
+            onClick={() => void handleEnable()}
+            data-testid="onboarding-coaching-enable"
+          >
+            <BrainCircuit className={cn(iconCls, 'mr-2')} />
+            {enabling ? t('onboarding.coaching.enabling') : t('onboarding.coaching.enableButton')}
+          </Button>
+
+          <p className="mt-4 text-content-tertiary text-xs">{t('onboarding.coaching.activeNote')}</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -548,7 +833,8 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
     onComplete()
   }, [onComplete])
 
-  const handleSkip = useCallback(() => {
+  const handleSkip = useCallback(async () => {
+    await invokeCommand('complete_onboarding')
     onComplete()
   }, [onComplete])
 
@@ -569,8 +855,11 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
         <div className="mb-8 w-full">
           {step === 0 && <StepIntro />}
           {step === 1 && <StepPermissions onReadyChange={setPermissionStepReady} />}
-          {step === 2 && <StepFeatures />}
-          {step === 3 && <StepReady />}
+          {step === 2 && <StepConsent />}
+          {step === 3 && <StepFeatures />}
+          {/* #5707: StepCoaching at index 4 — opt-in only, skipping leaves default-off intact */}
+          {step === 4 && <StepCoaching />}
+          {step === 5 && <StepReady />}
         </div>
 
         {/* Navigation buttons */}
@@ -585,7 +874,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
           </div>
 
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="md" onClick={handleSkip}>
+            <Button variant="ghost" size="md" data-testid="onboarding-skip" onClick={handleSkip}>
               {t('onboarding.skip')}
             </Button>
 

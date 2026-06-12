@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use maekon_analysis::focus_shared::make_rule_suggestion;
-use maekon_core::models::suggestion::{Priority, SuggestionType};
+use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionType};
 use maekon_core::models::work_session::FocusMetrics;
 use tracing::{debug, info, warn};
 
@@ -24,20 +24,22 @@ impl FocusAnalyzer {
             .clamp(0.0, 1.0)
     }
 
-    pub(super) async fn maybe_suggest_break(&self) {
+    pub(super) async fn maybe_suggest_break(&self) -> Option<Suggestion> {
         let tracker = self.tracker.read().await;
         let continuous_mins = (tracker.continuous_deep_work_secs / 60) as u32;
 
         if continuous_mins < self.config.break_suggestion_mins {
-            return;
+            return None;
         }
 
         if !self.check_cooldown(CooldownType::Break).await {
-            return;
+            return None;
         }
 
         let suggestion = make_rule_suggestion(
-            SuggestionType::ProductivityTip,
+            // #5696: dedicated type (was ProductivityTip) — break/focus_time
+            // previously collided in the dashboard read-dedupe and shared one icon.
+            SuggestionType::TakeBreak,
             format!(
                 "You've been working for {} minutes continuously. Consider taking a short break.",
                 continuous_mins
@@ -46,11 +48,11 @@ impl FocusAnalyzer {
             Priority::High,
         );
 
-        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion) {
+        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion).await {
             Ok(id) => id,
             Err(e) => {
                 warn!("suggestion save failure: {e}");
-                return;
+                return None;
             }
         };
 
@@ -63,30 +65,39 @@ impl FocusAnalyzer {
         if let Err(e) = self.notifier.show_notification(title, &body).await {
             warn!("notification failure: {e}");
         } else {
-            if let Err(e) = self.storage.mark_suggestion_shown_by_id(&suggestion_id) {
+            if let Err(e) = self
+                .storage
+                .mark_suggestion_shown_by_id(&suggestion_id)
+                .await
+            {
                 debug!("mark_suggestion_shown_by_id (break) failed: {e}");
             }
             info!("suggestion sent: {}min consecutive", continuous_mins);
         }
 
         self.update_cooldown(CooldownType::Break).await;
+        Some(suggestion)
     }
 
-    pub(super) async fn maybe_suggest_focus_time(&self, metrics: &FocusMetrics) {
+    pub(super) async fn maybe_suggest_focus_time(
+        &self,
+        metrics: &FocusMetrics,
+    ) -> Option<Suggestion> {
         let comm_ratio = metrics.communication_ratio();
 
         if comm_ratio < self.config.excessive_communication_threshold {
-            return;
+            return None;
         }
 
         if !self.check_cooldown(CooldownType::FocusTime).await {
-            return;
+            return None;
         }
 
         let suggested_focus_mins = (metrics.communication_secs / 60).max(30) as u32;
 
         let suggestion = make_rule_suggestion(
-            SuggestionType::ProductivityTip,
+            // #5696: dedicated type (was ProductivityTip) — see maybe_suggest_break.
+            SuggestionType::NeedFocusTime,
             format!(
                 "Communication ratio is {:.0}%. Consider blocking {} minutes of focus time.",
                 comm_ratio * 100.0,
@@ -96,11 +107,11 @@ impl FocusAnalyzer {
             Priority::Medium,
         );
 
-        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion) {
+        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion).await {
             Ok(id) => id,
             Err(e) => {
                 warn!("in progress hour suggestion save failure: {e}");
-                return;
+                return None;
             }
         };
 
@@ -114,7 +125,11 @@ impl FocusAnalyzer {
         if let Err(e) = self.notifier.show_notification(title, &body).await {
             warn!("in progress hour notification failure: {e}");
         } else {
-            if let Err(e) = self.storage.mark_suggestion_shown_by_id(&suggestion_id) {
+            if let Err(e) = self
+                .storage
+                .mark_suggestion_shown_by_id(&suggestion_id)
+                .await
+            {
                 debug!("mark_suggestion_shown_by_id (focus_time) failed: {e}");
             }
             info!(
@@ -124,26 +139,32 @@ impl FocusAnalyzer {
         }
 
         self.update_cooldown(CooldownType::FocusTime).await;
+        Some(suggestion)
     }
 
-    pub(super) async fn maybe_suggest_restore_context(&self, app: &str, now: DateTime<Utc>) {
+    pub(super) async fn maybe_suggest_restore_context(
+        &self,
+        app: &str,
+        now: DateTime<Utc>,
+    ) -> Option<Suggestion> {
         if !self.check_cooldown(CooldownType::RestoreContext).await {
-            return;
+            return None;
         }
 
-        let interruption = match self.storage.get_pending_interruption() {
+        let interruption = match self.storage.get_pending_interruption().await {
             Ok(Some(int)) => int,
-            _ => return,
+            _ => return None,
         };
 
         if (now - interruption.interrupted_at).num_minutes() > 30 {
-            return;
+            return None;
         }
 
         let duration_mins = (now - interruption.interrupted_at).num_minutes();
 
         let suggestion = make_rule_suggestion(
-            SuggestionType::ContextBased,
+            // #5696: dedicated type (was ContextBased).
+            SuggestionType::RestoreContext,
             format!(
                 "You were interrupted from {} about {} minutes ago. Consider restoring your previous context.",
                 app, duration_mins
@@ -152,11 +173,11 @@ impl FocusAnalyzer {
             Priority::High,
         );
 
-        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion) {
+        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion).await {
             Ok(id) => id,
             Err(e) => {
                 warn!("context restore suggestion save failure: {e}");
-                return;
+                return None;
             }
         };
 
@@ -169,7 +190,11 @@ impl FocusAnalyzer {
         if let Err(e) = self.notifier.show_notification(title, &body).await {
             warn!("context restore notification failure: {e}");
         } else {
-            if let Err(e) = self.storage.mark_suggestion_shown_by_id(&suggestion_id) {
+            if let Err(e) = self
+                .storage
+                .mark_suggestion_shown_by_id(&suggestion_id)
+                .await
+            {
                 debug!("mark_suggestion_shown_by_id (restore_context) failed: {e}");
             }
             info!(
@@ -179,11 +204,15 @@ impl FocusAnalyzer {
         }
 
         self.update_cooldown(CooldownType::RestoreContext).await;
+        Some(suggestion)
     }
 
-    pub(super) async fn maybe_suggest_pattern_detected(&self, signal: PlaybookSignal) {
+    pub(super) async fn maybe_suggest_pattern_detected(
+        &self,
+        signal: PlaybookSignal,
+    ) -> Option<Suggestion> {
         if !self.check_cooldown(CooldownType::PatternDetected).await {
-            return;
+            return None;
         }
 
         let suggestion = make_rule_suggestion(
@@ -197,11 +226,11 @@ impl FocusAnalyzer {
             Priority::Medium,
         );
 
-        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion) {
+        let suggestion_id = match self.storage.save_rule_suggestion(&suggestion).await {
             Ok(id) => id,
             Err(e) => {
                 warn!("suggestion save failure: {e}");
-                return;
+                return None;
             }
         };
 
@@ -214,10 +243,16 @@ impl FocusAnalyzer {
 
         if let Err(e) = self.notifier.show_notification(title, &body).await {
             warn!("suggestion notification failure: {e}");
-            return;
+            // Saved already — report it to the live-queue bridge (#5696); the
+            // cooldown stays un-bumped so the OS toast retries next tick.
+            return Some(suggestion);
         }
 
-        if let Err(e) = self.storage.mark_suggestion_shown_by_id(&suggestion_id) {
+        if let Err(e) = self
+            .storage
+            .mark_suggestion_shown_by_id(&suggestion_id)
+            .await
+        {
             debug!("mark_suggestion_shown_by_id (pattern_detected) failed: {e}");
         }
         info!(
@@ -226,6 +261,7 @@ impl FocusAnalyzer {
             "플레이북 패턴 suggestion 발송"
         );
         self.update_cooldown(CooldownType::PatternDetected).await;
+        Some(suggestion)
     }
 
     pub(super) async fn check_cooldown(&self, cooldown_type: CooldownType) -> bool {

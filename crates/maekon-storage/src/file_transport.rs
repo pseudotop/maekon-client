@@ -22,7 +22,7 @@ const NONCE_SIZE: usize = 12; // AES-256-GCM nonce
 const SALT_SIZE: usize = 16; // Argon2 salt
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], StorageError> {
-    let mut bytes = [0u8; N];
+    let mut bytes: [u8; N] = std::array::from_fn(|_| u8::default());
     getrandom::fill(&mut bytes)
         .map_err(|e| StorageError::Internal(format!("random bytes generation failed: {e}")))?;
     Ok(bytes)
@@ -138,7 +138,7 @@ impl FileSyncTransport {
 
 #[async_trait]
 impl SyncTransport for FileSyncTransport {
-    async fn push(&self, changes: &ChangeSet) -> Result<(), CoreError> {
+    async fn push(&self, changes: &ChangeSet) -> Result<usize, CoreError> {
         let folder = self.sync_folder.clone();
         let device_id = self.local_device_id.clone();
         let passphrase = self.passphrase.clone();
@@ -161,11 +161,15 @@ impl SyncTransport for FileSyncTransport {
                 message: format!("write tmp file: {e}"),
             })?;
 
-            // fsync the file
-            let file = std::fs::File::open(&tmp_path).map_err(|e| CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!("open tmp for fsync: {e}"),
-            })?;
+            // Windows requires a writable handle for FlushFileBuffers/sync_all.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&tmp_path)
+                .map_err(|e| CoreError::Internal {
+                    code: maekon_core::error_codes::InternalCode::Generic,
+                    message: format!("open tmp for fsync: {e}"),
+                })?;
             file.sync_all().map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("fsync: {e}"),
@@ -177,7 +181,8 @@ impl SyncTransport for FileSyncTransport {
             })?;
 
             debug!(filename = %filename, bytes = encrypted.len(), "changeset pushed to file");
-            Ok(())
+            // #5143: the shared-folder file is the single destination → 1 egress.
+            Ok(1)
         })
         .await
         .map_err(|e| CoreError::Internal {
@@ -387,8 +392,13 @@ mod tests {
         let plaintext = b"secret data";
         let encrypted = FileSyncTransport::encrypt("correct-pass", plaintext).unwrap();
 
-        let result = FileSyncTransport::decrypt("wrong-pass", &encrypted);
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                FileSyncTransport::decrypt("wrong-pass", &encrypted).unwrap_err(),
+                StorageError::Internal(_)
+            ),
+            "wrong passphrase must yield StorageError::Internal (AES-GCM auth failure)"
+        );
     }
 
     #[test]

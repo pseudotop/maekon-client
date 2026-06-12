@@ -19,6 +19,16 @@ pub enum SyncTransportKind {
     Lan,
 }
 
+impl std::fmt::Display for SyncTransportKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remote => f.write_str("remote"),
+            Self::File => f.write_str("file"),
+            Self::Lan => f.write_str("lan"),
+        }
+    }
+}
+
 /// Authentication mode for remote sync transport.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +38,15 @@ pub enum RemoteSyncAuth {
     BearerToken,
     /// Static API key (self-hosted scenarios).
     ApiKey,
+}
+
+impl std::fmt::Display for RemoteSyncAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BearerToken => f.write_str("bearer_token"),
+            Self::ApiKey => f.write_str("api_key"),
+        }
+    }
 }
 
 /// Cross-device sync configuration.
@@ -51,13 +70,47 @@ pub struct SyncConfig {
     pub interval_secs: u64,
 
     /// Include raw `content_activities_json` in synced segments.
-    /// Default: false (only dominant_category, duration, app_breakdown,
-    /// llm_summary are synced).
+    /// Default: false (only dominant_category, duration, app_breakdown sync).
+    ///
+    /// ⚠️ PRIVACY: `content_activities_json` is screen-content-derived personal data;
+    /// a user-facing toggle / consent disclosure SHOULD say so. The `cross_device_sync`
+    /// consent gate still applies on top of this flag. (`llm_summary` has its own
+    /// `include_llm_summary` gate below.)
     #[serde(default)]
     pub include_content_activities: bool,
 
+    /// Include the LLM `llm_summary` narrative in synced segments.
+    /// Default: false (segments sync without the LLM summary).
+    ///
+    /// ⚠️ PRIVACY: `llm_summary` is an LLM narrative of the user's screen activity —
+    /// e.g. "reviewed the Q2 headcount spreadsheet" — i.e. screen-derived personal data.
+    /// Before #5174 it was in the baseline payload and propagated unconditionally; it is
+    /// now gated here (parity with `include_content_activities` / `include_embedding_text`),
+    /// default false so the LLM summary is NOT sent to peers unless explicitly opted in.
+    /// Any user-facing toggle MUST disclose that enabling it sends an LLM narrative of
+    /// screen activity to other devices. The `cross_device_sync` consent gate still applies.
+    /// The flag is FORWARD-ONLY: disabling it stops future sends but does NOT retract an
+    /// `llm_summary` already propagated to a peer — only a GDPR Art.17 erasure (#5174)
+    /// hard-deletes those. (Note: a SegmentSummary embedding's `original_text` carries the
+    /// same narrative and syncs under `include_embedding_text` — see that flag.)
+    #[serde(default)]
+    pub include_llm_summary: bool,
+
     /// Include `original_text` in synced embedding vectors.
     /// Default: false (only vector blobs sync).
+    ///
+    /// ⚠️ PRIVACY: `original_text` is **user-content-derived personal data** — the raw
+    /// text an embedding was built from (document/screen content, window titles, typed
+    /// text). Enabling this propagates that content to every synced peer. Since F0/#5186
+    /// began HLC-stamping embedding writes these rows now propagate continuously (not just
+    /// once), so this flag's exposure is material: any user-facing toggle MUST disclose
+    /// that enabling it sends derived screen/document content to other devices. The
+    /// `cross_device_sync` consent gate still applies on top of this flag.
+    ///
+    /// #5210 cross-gate composition: a `SEGMENT_SUMMARY` embedding's text/vector ARE the
+    /// `llm_summary` narrative, so when `include_llm_summary` is OFF those embedding rows
+    /// are excluded from sync entirely even if THIS flag is on — enabling embedding-text
+    /// sync is not a backdoor that re-exposes the gated LLM screen-activity narrative.
     #[serde(default)]
     pub include_embedding_text: bool,
 
@@ -131,6 +184,7 @@ impl Default for SyncConfig {
             transport: SyncTransportKind::default(),
             interval_secs: default_sync_interval_secs(),
             include_content_activities: false,
+            include_llm_summary: false,
             include_embedding_text: false,
             device_name: default_device_name(),
             sync_folder: None,
@@ -284,5 +338,11 @@ mod tests {
         let minimal = r#"{ "server": { "base_url": "http://localhost:8000", "request_timeout_ms": 5000, "sse_max_retry_secs": 30 }, "monitor": { "poll_interval_ms": 1000, "sync_interval_ms": 10000, "heartbeat_interval_ms": 60000, "idle_threshold_secs": 300, "process_interval_secs": 10, "process_monitoring": true, "input_activity": true, "upload_enabled": false }, "storage": { "retention_days": 30, "max_storage_mb": 500 }, "vision": { "capture_enabled": false, "capture_throttle_ms": 5000, "thumbnail_width": 480, "thumbnail_height": 270, "ocr_enabled": false, "privacy_mode": false } }"#;
         let config: crate::config::AppConfig = serde_json::from_str(minimal).unwrap();
         assert!(!config.sync.enabled);
+    }
+
+    #[test]
+    fn remote_sync_auth_display_matches_serde_token() {
+        assert_eq!(RemoteSyncAuth::BearerToken.to_string(), "bearer_token");
+        assert_eq!(RemoteSyncAuth::ApiKey.to_string(), "api_key");
     }
 }

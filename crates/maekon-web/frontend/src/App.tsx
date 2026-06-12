@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useSt
 import { useTranslation } from 'react-i18next'
 import { DevToolbar } from './components/DevToolbar'
 import ErrorBoundary from './components/ErrorBoundary'
+import { MicrophoneUpgradeNotice } from './components/MicrophoneUpgradeNotice'
 import { ActivityBar, CommandPalette, ShortcutsHelp, SidePanel, StatusBar, TitleBar } from './components/shell'
 import { ToastContainer } from './components/ui'
 import { ShellLayoutProvider } from './contexts/ShellLayoutContext'
@@ -87,6 +88,7 @@ function AppShell() {
           className={cn('min-w-0 overflow-y-auto', layout.mainContent.bg)}
           aria-label="Main content"
         >
+          <MicrophoneUpgradeNotice />
           <ErrorBoundary>
             <RouteRenderer />
           </ErrorBoundary>

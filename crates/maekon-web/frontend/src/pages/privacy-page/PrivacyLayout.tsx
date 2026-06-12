@@ -4,6 +4,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Pause, Play } from 'lucide-react'
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet } from 'react-router-dom'
@@ -20,13 +21,25 @@ import {
   type RestoreResult,
   restoreBackup,
   type StorageStats,
+  withdrawConsent,
 } from '../../api/client'
 import { Alert, Button, Card, CardTitle, Spinner } from '../../components/ui'
 import { addToast } from '../../hooks/useToast'
 import { colors, elevation, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import ConsentToggleSection from './ConsentToggleSection'
 
 type DataType = 'events' | 'frames' | 'metrics' | 'processes' | 'idle'
+
+interface CaptureStatus {
+  paused: boolean
+  indicator_visible: boolean
+}
+
+async function invokeCaptureStatus(command: 'get_capture_status' | 'toggle_capture_pause'): Promise<CaptureStatus> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<CaptureStatus>(command)
+}
 
 interface ConfirmModalProps {
   isOpen: boolean
@@ -36,9 +49,20 @@ interface ConfirmModalProps {
   isDangerous: boolean
   onConfirm: () => void
   onCancel: () => void
+  /** Optional disclosure rendered as a distinct warning callout below the message. */
+  note?: string
 }
 
-function ConfirmModal({ isOpen, title, message, confirmText, isDangerous, onConfirm, onCancel }: ConfirmModalProps) {
+export function ConfirmModal({
+  isOpen,
+  title,
+  message,
+  confirmText,
+  isDangerous,
+  onConfirm,
+  onCancel,
+  note,
+}: ConfirmModalProps) {
   const { t } = useTranslation()
   const dialogRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<Element | null>(null)
@@ -102,6 +126,11 @@ function ConfirmModal({ isOpen, title, message, confirmText, isDangerous, onConf
           <p id={descriptionId} className="mb-6 whitespace-pre-line text-content-secondary">
             {message}
           </p>
+          {note && (
+            <Alert variant="warning" className="mb-6">
+              {note}
+            </Alert>
+          )}
           <div className="flex justify-end space-x-3">
             <Button variant="secondary" onClick={onCancel}>
               {t('privacy.cancel')}
@@ -167,6 +196,9 @@ export default function PrivacyLayout() {
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [selectedDataTypes, setSelectedDataTypes] = useState<DataType[]>([])
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null)
+  const [captureStatusUnavailable, setCaptureStatusUnavailable] = useState(false)
+  const [captureStatusBusy, setCaptureStatusBusy] = useState(false)
 
   const [backupOptions, setBackupOptions] = useState<BackupParams>({
     include_settings: true,
@@ -181,6 +213,23 @@ export default function PrivacyLayout() {
     queryKey: ['storage-stats'],
     queryFn: fetchStorageStats,
   })
+
+  useEffect(() => {
+    let disposed = false
+    invokeCaptureStatus('get_capture_status')
+      .then((status) => {
+        if (disposed) return
+        setCaptureStatus(status)
+        setCaptureStatusUnavailable(false)
+      })
+      .catch(() => {
+        if (disposed) return
+        setCaptureStatusUnavailable(true)
+      })
+    return () => {
+      disposed = true
+    }
+  }, [])
 
   const deleteRangeMutation = useMutation({
     mutationFn: deleteDataRange,
@@ -201,7 +250,17 @@ export default function PrivacyLayout() {
   })
 
   const deleteAllMutation = useMutation({
-    mutationFn: deleteAllData,
+    // 우-소거(revoke-first): "모든 데이터 삭제"는 먼저 동의를 철회한다. withdrawConsent 는
+    // 인메모리 current_consent 를 동기적으로 null 화하므로(fail-closed), 삭제(purge) 동안
+    // 백그라운드 틱이 끼어들어도 수집을 시도하지 않는다(design.md §2 / §0.1.d, race-free).
+    // 철회가 실패하면 throw 가 그대로 전파되어 deleteAllData 로 진행하지 않고 onError 로 떨어진다
+    // (철회 없이 조용히 지우지 않는다). 형제 ConsentToggleSection 의 철회와 동일하게 IPC 를
+    // 무조건 호출한다 — Tauri 부재(standalone 데모) 시 삭제를 우회하는 별도 경로는 두지 않는다
+    // (그 우회는 design 이 금지한 silent-delete/race 를 되살린다).
+    mutationFn: async () => {
+      await withdrawConsent()
+      return deleteAllData()
+    },
     onSuccess: (result) => {
       setDeleteResult(result)
       addToast('success', result.message)
@@ -258,6 +317,20 @@ export default function PrivacyLayout() {
 
   const handleDeleteAll = () => {
     deleteAllMutation.mutate()
+  }
+
+  const handleToggleCapturePause = async () => {
+    setCaptureStatusBusy(true)
+    try {
+      const status = await invokeCaptureStatus('toggle_capture_pause')
+      setCaptureStatus(status)
+      setCaptureStatusUnavailable(false)
+    } catch (error) {
+      setCaptureStatusUnavailable(true)
+      addToast('error', error instanceof Error ? error.message : t('privacy.capturePauseUnavailable'))
+    } finally {
+      setCaptureStatusBusy(false)
+    }
   }
 
   const handleBackup = () => {
@@ -346,6 +419,36 @@ export default function PrivacyLayout() {
         <p className={cn('mt-1', colors.text.pageSubtitle)}>{t('privacy.subtitle')}</p>
       </div>
 
+      <Card variant="default" padding="lg">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>{t('privacy.capturePauseTitle')}</CardTitle>
+            <p className={cn('mt-1 text-sm', colors.text.secondary)}>{t('privacy.capturePauseDesc')}</p>
+            <p
+              className={cn('mt-2 text-sm', captureStatus?.paused ? 'text-status-connecting' : 'text-status-connected')}
+            >
+              {captureStatus?.paused ? t('privacy.capturePaused') : t('privacy.captureRunning')}
+            </p>
+            {captureStatusUnavailable && (
+              <p className={cn('mt-2 text-sm', colors.text.tertiary)}>{t('privacy.capturePauseUnavailable')}</p>
+            )}
+          </div>
+          <Button
+            type="button"
+            role="switch"
+            aria-checked={captureStatus?.paused ?? false}
+            variant={captureStatus?.paused ? 'secondary' : 'primary'}
+            isLoading={captureStatusBusy}
+            disabled={captureStatusBusy || captureStatusUnavailable}
+            onClick={handleToggleCapturePause}
+            className="w-full gap-2 sm:w-auto"
+          >
+            {captureStatus?.paused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
+            {captureStatus?.paused ? t('privacy.resumeCapture') : t('privacy.pauseCapture')}
+          </Button>
+        </div>
+      </Card>
+
       {/* Delete result alert */}
       {deleteResult && (
         <Alert variant="success" title={deleteResult.message}>
@@ -377,6 +480,9 @@ export default function PrivacyLayout() {
           </button>
         </Alert>
       )}
+
+      {/* GDPR 동의 부여/철회 컨트롤 — 삭제(우-소거) ConsentSection 위에 배치 */}
+      <ConsentToggleSection />
 
       <Outlet context={ctx} />
 
@@ -427,6 +533,7 @@ export default function PrivacyLayout() {
         isOpen={showDeleteAllModal}
         title={t('privacy.confirmDeleteAll')}
         message={t('privacy.confirmDeleteAllMsg')}
+        note={t('privacy.deleteAllExportNote')}
         confirmText={t('privacy.deleteAllButton')}
         isDangerous={true}
         onConfirm={handleDeleteAll}

@@ -7,7 +7,7 @@
 
 ## Context
 
-The Maekon client-rust workspace (14 crates, ~1,150 `CoreError` construction sites) had no error-code convention. Telemetry (Grafana), i18n (frontend ko/en), and audit logs all benefit from stable machine-readable error identifiers. Separately, AWS Bedrock was listed as a supported provider surface but implementation was incomplete (no Signature V4 auth), producing a security bug in OCR (no-auth fallthrough on `ProviderAuthScheme::AwsSignatureV4`).
+The Maekon client-rust workspace (then 14 crates; current workspace is 15 packages including `src-tauri`, ~1,150 `CoreError` construction sites) had no error-code convention. Telemetry (Grafana), i18n (frontend ko/en), and audit logs all benefit from stable machine-readable error identifiers. Separately, AWS Bedrock was listed as a supported provider surface but implementation was incomplete (no Signature V4 auth), producing a security bug in OCR (no-auth fallthrough on `ProviderAuthScheme::AwsSignatureV4`).
 
 Two needs converged: introduce error-code infrastructure AND ship Bedrock as the first "intentionally unsupported" first-class citizen.
 
@@ -64,7 +64,7 @@ If a future use case requires Bedrock support:
 2. AWS credential loader (`access_key` / `secret_key` / optional `session_token`).
 3. Settings UI field for AWS credentials.
 4. Re-add Bedrock vendor + surface to `provider-surface-catalog.json`.
-5. Replace the 7 Bedrock match arms (currently returning `ConfigCode::UnsupportedProviderBedrock`) with working Bedrock handlers.
+5. Replace the 8 Bedrock match arms (currently returning `ConfigCode::UnsupportedProviderBedrock`) with working Bedrock handlers.
 6. Live smoke test for Bedrock path (`--ignored`).
 7. Update the wire-format snapshot fixture if new codes are added.
 8. Remove `ConfigCode::UnsupportedProviderBedrock` from `ConfigCode` (follows wire-immutability deletion procedure — RFC PR required).
@@ -74,7 +74,7 @@ If a future use case requires Bedrock support:
 `CoreError` and `GuiInteractionError` are **NOT** marked `#[non_exhaustive]`.
 
 Rationale:
-1. Both are internal to this workspace (14-member); all consumers are first-party.
+1. Both are internal to this workspace (15-package); all consumers are first-party.
 2. Exhaustive matching catches forgotten variants during refactors — a feature, not a bug.
 3. `err.code()` provides a forward-compat channel that does not require pattern matching.
 4. If this library is ever extracted / published, this decision is reversible with a one-line change + downstream `match` site review.

@@ -1,0 +1,33 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-SAFETY-003"],
+  "provider_failure": {
+    "code": "provider_unavailable",
+    "message": "provider_unavailable: raw_screen_context=Calculator display 46; selected target calculator-display/result; retry later",
+    "raw_screen_context_fragments": ["Calculator display 46", "calculator-display/result"]
+  },
+  "local_fallback_suggestions": [
+    {
+      "id": "local-fallback-calculator-explain",
+      "title": "Explain the current Calculator result",
+      "body": "Local fallback can explain the visible Calculator result after provider recovery.",
+      "priority": "low",
+      "category": "fallback",
+      "source": "local",
+      "confidence_score": 0.62,
+      "created_at": "2026-05-22T00:00:00Z",
+      "is_read": false,
+      "reasoning": "Provider is unavailable, so the proposal stays local and non-mutating."
+    }
+  ],
+  "expected": {
+    "generic_error_message": "Could not load suggestions.",
+    "retry_label": "Retry",
+    "retry_pending_label": "Refreshing...",
+    "fallback_title": "Explain the current Calculator result",
+    "forbidden_provider_commands": [
+      "request_live_llm_suggestion",
+      "send_screen_context_to_provider",
+      "execute_automation_action"
+    ]
+  }
+}

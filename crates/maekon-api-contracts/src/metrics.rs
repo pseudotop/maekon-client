@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricsResponse {
     pub timestamp: String,
     pub cpu_usage: f64,
@@ -14,11 +15,13 @@ pub struct MetricsResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HourlyQuery {
     pub hours: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HourlyMetricsResponse {
     pub hour: String,
     pub cpu_avg: f64,

@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Loader2, Lock, RefreshCw } from 'lucide-react'
+import type { CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { motion, typography } from '../../styles/tokens'
+import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
-import type { SuggestionViewDto } from '../types'
+import { buildSuggestionReplayEvent, recordSuggestionReplayEvent } from '../suggestionReplay'
+import type { SuggestionGuiAnchorPayload, SuggestionSurfacePlacement, SuggestionViewDto } from '../types'
 import { SuggestionHistory } from './SuggestionHistory'
 import { SuggestionItem } from './SuggestionItem'
+import { SuggestionReplayTrail } from './SuggestionReplayTrail'
 import { SuggestionStats } from './SuggestionStats'
 import { showToast } from './Toast'
 
-function errorMessage(e: unknown): string {
-  if (e instanceof Error && e.message.trim()) return e.message
-  if (typeof e === 'string' && e.trim()) return e
-  return 'Unknown error'
+// ADR-019 Follow-up #3: IpcError 의 wire code 를 보존·현지화하기 위해 translateError 로 라우팅한다.
+// 기존 errorMessage 헬퍼는 code 를 버리고 raw 영문 메시지만 노출했었다.
+function errorMessage(e: unknown, locale: WireErrorLocale): string {
+  return translateError(e, locale)
 }
 
 interface SuggestionsPanelProps {
@@ -19,6 +24,78 @@ interface SuggestionsPanelProps {
   suggestions: SuggestionViewDto[]
   onClose: () => void
   onRefresh: () => Promise<void> | void
+  placement?: SuggestionSurfacePlacement
+  anchor?: SuggestionGuiAnchorPayload | null
+}
+
+const SURFACE_MARGIN = 12
+const PANEL_WIDTH = 320
+const PANEL_MIN_HEIGHT = 260
+
+function viewportWidth() {
+  return typeof window === 'undefined' ? 1024 : window.innerWidth
+}
+
+function viewportHeight() {
+  return typeof window === 'undefined' ? 768 : window.innerHeight
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), Math.max(min, max))
+}
+
+function sideAwareLeft(preferredRight: number, sourceLeft: number) {
+  const maxLeft = viewportWidth() - PANEL_WIDTH - SURFACE_MARGIN
+  if (preferredRight <= maxLeft) {
+    return clamp(preferredRight, SURFACE_MARGIN, maxLeft)
+  }
+  return clamp(sourceLeft - PANEL_WIDTH - SURFACE_MARGIN, SURFACE_MARGIN, maxLeft)
+}
+
+function targetBreadcrumb(anchor?: SuggestionGuiAnchorPayload | null) {
+  if (!anchor) return null
+  return `${anchor.active_app} > ${anchor.target_entity.label} ${anchor.target_entity.value}`.trim()
+}
+
+function suggestionMatchesAnchor(item: SuggestionViewDto, anchor?: SuggestionGuiAnchorPayload | null) {
+  const scope = item.context_scope
+  if (!anchor || !scope) return true
+
+  if (scope.target_id && scope.target_id !== anchor.target_entity.entity_id) return false
+  if (scope.app_name && scope.app_name !== anchor.active_app) return false
+  if (scope.window_title && scope.window_title !== anchor.active_process.window_title) return false
+
+  return true
+}
+
+function hasSuggestionScope(item: SuggestionViewDto) {
+  const scope = item.context_scope
+  return Boolean(scope?.target_id || scope?.app_name || scope?.window_title)
+}
+
+function placementStyle(
+  placement: SuggestionSurfacePlacement,
+  anchor?: SuggestionGuiAnchorPayload | null,
+): CSSProperties | undefined {
+  if (!anchor) return undefined
+  if (placement === 'adjacent-popover') {
+    const bounds = anchor.highlight.bounds
+    const top = clamp(bounds.y - 8, SURFACE_MARGIN, viewportHeight() - PANEL_MIN_HEIGHT - SURFACE_MARGIN)
+    return {
+      left: sideAwareLeft(bounds.x + bounds.width + SURFACE_MARGIN, bounds.x),
+      top,
+    }
+  }
+  if (placement === 'window-side-panel') {
+    const bounds = anchor.active_process.window_bounds
+    const maxHeight = Math.min(Math.max(PANEL_MIN_HEIGHT, bounds.height), viewportHeight() - SURFACE_MARGIN * 2)
+    return {
+      left: sideAwareLeft(bounds.x + bounds.width + SURFACE_MARGIN, bounds.x),
+      top: clamp(bounds.y, SURFACE_MARGIN, viewportHeight() - maxHeight - SURFACE_MARGIN),
+      maxHeight,
+    }
+  }
+  return undefined
 }
 
 /**
@@ -27,9 +104,21 @@ interface SuggestionsPanelProps {
  * - No focus trap needed — the panel IS the entire window content.
  * - Interactive elements use standard tab order within the panel.
  */
-export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: SuggestionsPanelProps) {
-  const { t } = useTranslation()
+export function SuggestionsPanel({
+  open,
+  suggestions,
+  onClose,
+  onRefresh,
+  placement = 'window-side-panel',
+  anchor,
+}: SuggestionsPanelProps) {
+  const { t, i18n } = useTranslation()
+  // ADR-019 Follow-up #3: 현재 UI 로케일을 wire-error 로케일로 매핑 (BugReportWizard 와 동일 패턴).
+  const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
   const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshingRef = useRef(false)
+  const recordedProposalKeyRef = useRef<string | null>(null)
   const [activeTab, setActiveTab] = useState<'active' | 'history' | 'stats'>('active')
 
   // Source filter with localStorage persistence
@@ -51,10 +140,19 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
     }
   })
 
-  const filteredSuggestions = useMemo(
-    () => suggestions.filter((s) => sourceFilter.has(s.source)),
-    [suggestions, sourceFilter],
-  )
+  const filteredSuggestions = useMemo(() => {
+    const sourceFiltered = suggestions.filter((s) => sourceFilter.has(s.source))
+    if (!anchor) return sourceFiltered
+
+    const scopedAnchorMatches = sourceFiltered.filter(
+      (s) => hasSuggestionScope(s) && suggestionMatchesAnchor(s, anchor),
+    )
+    if (scopedAnchorMatches.length > 0) return scopedAnchorMatches
+
+    return sourceFiltered.filter((s) => suggestionMatchesAnchor(s, anchor))
+  }, [suggestions, sourceFilter, anchor])
+
+  const primarySuggestion = filteredSuggestions[0]
 
   const toggleSource = (source: string) => {
     setSourceFilter((prev) => {
@@ -66,15 +164,26 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
     })
   }
 
+  const refreshSuggestions = useCallback(async () => {
+    if (refreshingRef.current) return
+    refreshingRef.current = true
+    setRefreshing(true)
+    try {
+      await Promise.resolve(onRefresh())
+      setError(null)
+    } catch (_e) {
+      console.warn('SuggestionsPanel refresh failed')
+      setError(t('suggestions.loadError', 'Could not load suggestions.'))
+    } finally {
+      refreshingRef.current = false
+      setRefreshing(false)
+    }
+  }, [onRefresh, t])
+
   useEffect(() => {
     if (!open) return
-
-    setError(null)
-    void Promise.resolve(onRefresh()).catch((e) => {
-      console.warn('SuggestionsPanel refresh failed:', e)
-      setError(t('suggestions.loadError', 'Could not load suggestions.'))
-    })
-  }, [open, onRefresh, t])
+    void refreshSuggestions()
+  }, [open, refreshSuggestions])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -84,14 +193,30 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
+  useEffect(() => {
+    if (!open || !anchor || !primarySuggestion) return
+    const key = `${placement}:${anchor.target_entity.entity_id}:${primarySuggestion.id}`
+    if (recordedProposalKeyRef.current === key) return
+    recordedProposalKeyRef.current = key
+    void recordSuggestionReplayEvent(
+      buildSuggestionReplayEvent({
+        phase: 'proposal_visible',
+        placement,
+        anchor,
+        suggestion: primarySuggestion,
+      }),
+    )
+  }, [anchor, open, placement, primarySuggestion])
+
   async function handleAction(id: string, action: 'accept' | 'reject' | 'defer' | 'explain', snoozeMinutes?: number) {
+    const actedSuggestion = filteredSuggestions.find((item) => item.id === id)
     if (action === 'explain') {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
         await invoke('explain_suggestion_in_chat', { suggestionId: id })
         showToast(t('suggestions.openingInChat', 'Opening in chat...'), 'info')
       } catch (e) {
-        showToast(errorMessage(e), 'error')
+        showToast(errorMessage(e, errorLocale), 'error')
       }
       return
     }
@@ -99,6 +224,15 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
       const { invoke } = await import('@tauri-apps/api/core')
       // Tauri v2 auto-converts camelCase JS -> snake_case Rust params
       await invoke('submit_suggestion_feedback', { suggestionId: id, action, snoozeMinutes })
+      await recordSuggestionReplayEvent(
+        buildSuggestionReplayEvent({
+          phase: 'feedback_submitted',
+          placement,
+          anchor,
+          suggestion: actedSuggestion ?? null,
+          action,
+        }),
+      )
       setError(null)
       await Promise.resolve(onRefresh())
       showToast(
@@ -112,23 +246,92 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
     } catch (e) {
       console.warn('Feedback failed:', e)
       setError(null)
-      showToast(`${t('suggestions.feedbackFailed', 'Feedback failed:')} ${errorMessage(e)}`, 'error')
+      showToast(`${t('suggestions.feedbackFailed', 'Feedback failed:')} ${errorMessage(e, errorLocale)}`, 'error')
     }
+  }
+
+  const breadcrumb = targetBreadcrumb(anchor)
+
+  if (placement === 'bottom-dock') {
+    const primary = primarySuggestion
+    return (
+      <aside
+        aria-label={t('suggestions.panelLabel', 'Suggestions panel')}
+        data-placement={placement}
+        data-testid="suggestion-bottom-dock"
+        className={cn(
+          'fixed bottom-5 left-1/2 z-panel w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 rounded-xl border border-DEFAULT bg-surface-overlay px-3 py-2 text-content shadow-2xl',
+          motion.transform,
+          open ? 'translate-y-0 opacity-100' : 'translate-y-[calc(100%+2rem)] opacity-0',
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <span className="shrink-0 rounded-full bg-brand/10 px-2 py-1 text-brand text-xs">
+            {breadcrumb ?? t('suggestions.currentTarget', 'Current target')}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className={cn('truncate text-content text-sm', typography.weight.medium)}>
+              {primary?.title ?? t('suggestions.noSuggestions', 'No suggestions yet')}
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-content-tertiary">
+              <Lock className={iconSize.xs} />
+              <span>{t('suggestions.noAutoAction', 'No auto action')}</span>
+            </div>
+          </div>
+          {primary && (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleAction(primary.id, 'accept')}
+                className={cn(
+                  'rounded-md bg-semantic-success/15 px-2 py-1 text-semantic-success text-xs',
+                  motion.colors,
+                )}
+              >
+                {t('suggestions.accept')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleAction(primary.id, 'explain')}
+                className={cn('rounded-md bg-brand/10 px-2 py-1 text-brand text-xs', motion.colors)}
+              >
+                {t('suggestions.explain')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleAction(primary.id, 'defer', 30)}
+                className={cn('rounded-md bg-surface-muted px-2 py-1 text-content-secondary text-xs', motion.colors)}
+              >
+                {t('suggestions.later')}
+              </button>
+            </div>
+          )}
+        </div>
+        <SuggestionReplayTrail compact anchor={anchor} suggestion={primary} />
+      </aside>
+    )
   }
 
   return (
     <aside
       aria-label={t('suggestions.panelLabel', 'Suggestions panel')}
+      data-placement={placement}
+      style={placementStyle(placement, anchor)}
       className={cn(
-        'fixed top-20 right-4 z-panel max-h-[calc(100vh-6rem)] w-80 max-w-[calc(100vw-2rem)] transform rounded-xl border border-content-inverse/10 bg-surface-sunken/90 shadow-2xl backdrop-blur-md',
+        'fixed z-panel max-h-[calc(100vh-6rem)] w-80 max-w-[calc(100vw-2rem)] transform rounded-xl border border-DEFAULT bg-surface-overlay text-content shadow-2xl',
+        placement === 'window-side-panel' && anchor
+          ? 'rounded-l-none border-l-brand/50'
+          : placement === 'adjacent-popover' && anchor
+            ? ''
+            : 'top-20 right-4',
         motion.transform,
         open ? 'translate-x-0' : 'translate-x-[calc(100%+1rem)]',
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-content-inverse/5 border-b px-4 py-3">
+      <div className="flex items-center justify-between border-muted border-b px-4 py-3">
         <span className={cn('text-content-secondary text-xs uppercase tracking-wider', typography.weight.semibold)}>
-          {t('suggestions.panelTitle', 'Suggestions ({{count}})', { count: suggestions.length })}
+          {t('suggestions.panelTitle', 'Suggestions ({{count}})', { count: filteredSuggestions.length })}
         </span>
         <button
           type="button"
@@ -140,8 +343,16 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
         </button>
       </div>
 
+      {breadcrumb && (
+        <div className="border-muted border-b px-4 py-2">
+          <span className="rounded-full bg-brand/10 px-2 py-1 text-brand text-xs">{breadcrumb}</span>
+        </div>
+      )}
+
+      <SuggestionReplayTrail anchor={anchor} suggestion={primarySuggestion} />
+
       {/* Tab bar */}
-      <div className="flex border-content-inverse/5 border-b">
+      <div className="flex border-muted border-b">
         <button
           type="button"
           className={cn(
@@ -154,7 +365,7 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
           )}
           onClick={() => setActiveTab('active')}
         >
-          {t('suggestions.tabActive', 'Active ({{count}})', { count: suggestions.length })}
+          {t('suggestions.tabActive', 'Active ({{count}})', { count: filteredSuggestions.length })}
         </button>
         <button
           type="button"
@@ -189,7 +400,36 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
       {/* Content */}
       <div className="max-h-[calc(100vh-14rem)] overflow-y-auto">
         {error && (
-          <div className="border-content-inverse/5 border-b px-4 py-2 text-semantic-error text-xs">{error}</div>
+          <div className="flex items-center justify-between gap-3 border-muted border-b px-4 py-2 text-xs">
+            <span className="text-semantic-error">{error}</span>
+            <button
+              type="button"
+              aria-label={
+                refreshing ? t('suggestions.retryPending', 'Refreshing...') : t('suggestions.retryLoad', 'Retry')
+              }
+              disabled={refreshing}
+              onClick={() => void refreshSuggestions()}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 rounded-md bg-brand/10 px-2 py-1 text-brand hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-60',
+                motion.colors,
+              )}
+            >
+              {refreshing ? (
+                <Loader2 className={cn(iconSize.xs, 'animate-spin')} />
+              ) : (
+                <RefreshCw className={iconSize.xs} />
+              )}
+              <span>
+                {refreshing ? t('suggestions.retryPending', 'Refreshing...') : t('suggestions.retryLoad', 'Retry')}
+              </span>
+            </button>
+          </div>
+        )}
+        {refreshing && !error && (
+          <div className="flex items-center gap-2 border-muted border-b px-4 py-2 text-content-secondary text-xs">
+            <Loader2 className={cn(iconSize.xs, 'animate-spin')} />
+            <span>{t('suggestions.refreshing', 'Refreshing suggestions...')}</span>
+          </div>
         )}
         {activeTab === 'active' ? (
           <>
@@ -203,7 +443,7 @@ export function SuggestionsPanel({ open, suggestions, onClose, onRefresh }: Sugg
                     'rounded-full px-2 py-0.5 text-[10px]',
                     typography.weight.medium,
                     motion.colors,
-                    sourceFilter.has(src) ? 'bg-brand/20 text-brand' : 'bg-content-inverse/5 text-content-tertiary',
+                    sourceFilter.has(src) ? 'bg-brand/20 text-brand' : 'bg-surface-muted text-content-tertiary',
                   )}
                   aria-pressed={sourceFilter.has(src)}
                   onClick={() => toggleSource(src)}

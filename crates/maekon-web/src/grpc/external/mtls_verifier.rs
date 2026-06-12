@@ -108,7 +108,7 @@ impl MtlsVerifier {
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(format!("odd hex length: {}", hex.len()));
     }
     (0..hex.len())
@@ -159,7 +159,13 @@ pub(crate) mod tests {
         let fp: [u8; 32] = hasher.finalize().into();
         let hex = fp.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let verifier = MtlsVerifier::new(48, &[hex]).unwrap();
-        assert!(verifier.verify(&der).is_ok());
+        // Pin the extracted CN: fingerprint-in-allowlist acceptance must also
+        // return the correct VerifiedPeer, not just an arbitrary Ok (#5594).
+        let peer = verifier
+            .verify(&der)
+            .expect("cert whose fingerprint is in allowlist must be accepted");
+        assert_eq!(peer.subject_cn, "client-2");
+        assert_eq!(peer.fingerprint, fp);
     }
 
     #[test]
@@ -212,7 +218,11 @@ pub(crate) mod tests {
     #[test]
     fn parse_fails_on_non_der_input() {
         let verifier = MtlsVerifier::new(48, &[]).unwrap();
-        assert!(verifier.verify(b"not a cert").is_err());
+        let err = verifier.verify(b"not a cert").unwrap_err();
+        assert!(
+            matches!(err, MtlsVerifyError::Parse(_)),
+            "non-DER input must return MtlsVerifyError::Parse, got: {err:?}"
+        );
     }
 
     #[test]
@@ -227,6 +237,12 @@ pub(crate) mod tests {
             .collect::<Vec<_>>()
             .join(":");
         let verifier = MtlsVerifier::new(48, &[colon_hex]).unwrap();
-        assert!(verifier.verify(&der).is_ok());
+        // Pin CN and fingerprint length: colon-separated format must normalise
+        // correctly and produce a valid VerifiedPeer, not just pass the type check (#5594).
+        let peer = verifier
+            .verify(&der)
+            .expect("cert with colon-separated fingerprint in allowlist must be accepted");
+        assert_eq!(peer.subject_cn, "client-7");
+        assert_eq!(peer.fingerprint, fp);
     }
 }

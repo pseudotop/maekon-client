@@ -45,4 +45,15 @@ pub trait FrameStoragePort: Send + Sync {
     /// Delete oldest frames to stay within storage size limits.
     /// Returns the number of deleted files.
     async fn enforce_storage_limit(&self) -> Result<usize, CoreError>;
+
+    /// GDPR Art. 17 로컬 데이터 삭제: 모든 프레임 이미지 파일을 삭제한다.
+    ///
+    /// `<base>/frames/` 하위 모든 날짜 디렉터리를 삭제한다.
+    /// 삭제된 파일 수를 반환한다. 삭제할 항목이 없으면 0을 반환한다.
+    ///
+    /// # Errors
+    /// - `CoreError::Storage` — 디렉터리 열거 실패 시 반환한다.
+    ///   개별 날짜 디렉터리 삭제 실패는 best-effort (로그만 남기고 계속 진행)이지만,
+    ///   반환된 카운트는 실제로 삭제된 파일만 포함한다.
+    async fn delete_all_frames(&self) -> Result<usize, CoreError>;
 }

@@ -6,10 +6,49 @@
 //!   toggles (`telemetry.enabled`) can attach and detach the layer without
 //!   restarting the process.
 //!
-//! See `docs/guides/telemetry.md` (ships with Task 12) and
-//! `docs/reviews/2026-04-17-phase2-config-telemetry-spec.md` §3 for design.
+//! See `docs/guides/telemetry.md` and client ADR-016 for the public runtime
+//! toggle design.
 
 use maekon_core::config::TelemetryConfig;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
+
+/// Consent-gated effective telemetry config (#5056 — consent→exporter bridge).
+///
+/// The OTLP exporter must be active ONLY when BOTH conditions hold:
+///   1. the user opted telemetry in (`config.telemetry.enabled == true`), AND
+///   2. the GDPR consent record grants the `telemetry` permission.
+///
+/// This is the single fail-closed chokepoint that both the config-change
+/// reconcile task (`setup::spawn_telemetry_toggle_task`) and the consent-change
+/// IPC commands (`commands::consent::{set_consent, withdraw_consent}`) call, so
+/// the two activation paths can never diverge.
+///
+/// Fail-closed by construction: the consent term is read through
+/// [`ConsentManagerPort::effective_permissions`], which returns an all-false
+/// permission set whenever the consent status is anything other than `Valid`
+/// (absent / revoked / expired / update-required). Any ambiguity therefore
+/// collapses to `telemetry = false` ⇒ exporter OFF, regardless of config.
+///
+/// The returned config is a clone of `config` with ONLY the `enabled` field
+/// overridden to the AND of the two terms; every other field (endpoint,
+/// sample_rate, service_name, …) is preserved verbatim so a later re-enable
+/// reuses the user's settings.
+pub fn consent_gated_telemetry_config(
+    config: &TelemetryConfig,
+    consent: &dyn ConsentManagerPort,
+) -> TelemetryConfig {
+    // effective_permissions() is the fail-closed accessor: zeroed unless Valid.
+    let consent_grants_telemetry = consent.effective_permissions().telemetry;
+    TelemetryConfig {
+        enabled: config.enabled && consent_grants_telemetry,
+        ..config.clone()
+    }
+}
+
+/// Metric instruments (E20-43 #4835). Declared under BOTH feature states: the
+/// module's own no-op shim handles feature-off, so scheduler/upload call sites
+/// can record metrics without their own `#[cfg]`.
+pub mod metrics;
 
 #[cfg(feature = "telemetry")]
 mod instance_id;
@@ -88,6 +127,148 @@ impl Handle {
     }
 }
 
+/// Consent→exporter bridge helper tests (#5056). Feature-agnostic: the gated
+/// helper is pure logic over `TelemetryConfig` + `ConsentManager` and does not
+/// touch the OTLP pipeline, so these run under BOTH feature states (they prove
+/// the bridge compiles and is fail-closed even under the no-op telemetry shim).
+#[cfg(test)]
+mod consent_gate_tests {
+    use super::*;
+    use maekon_core::consent::{ConsentManager, ConsentPermissions, ConsentStatus};
+
+    /// Build a `ConsentManager` over a temp consent file with the given
+    /// telemetry-permission bit (other permissions left default-false).
+    fn consent_with_telemetry(telemetry: bool) -> (ConsentManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let cm = ConsentManager::new(dir.path().join("consent.json"));
+        cm.grant_consent(
+            ConsentPermissions {
+                telemetry,
+                ..Default::default()
+            },
+            30,
+        )
+        .expect("grant_consent must succeed in a writable temp dir");
+        assert_eq!(cm.check_consent(), ConsentStatus::Valid);
+        (cm, dir)
+    }
+
+    /// config.enabled=true + consent.telemetry=false ⇒ effective enabled=false.
+    /// The decorative-consent gap this issue closes: telemetry must NOT emit
+    /// when the user toggled config on but never granted the telemetry consent.
+    #[test]
+    fn config_on_consent_off_yields_disabled() {
+        let (cm, _dir) = consent_with_telemetry(false);
+        let cfg = TelemetryConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let gated = consent_gated_telemetry_config(&cfg, &cm);
+        assert!(
+            !gated.enabled,
+            "config on + consent off MUST gate the exporter OFF"
+        );
+    }
+
+    /// config.enabled=true + consent.telemetry=true ⇒ effective enabled=true.
+    /// The default intent may be on, but export still requires consent.
+    #[test]
+    fn config_on_consent_on_yields_enabled() {
+        let (cm, _dir) = consent_with_telemetry(true);
+        let cfg = TelemetryConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let gated = consent_gated_telemetry_config(&cfg, &cm);
+        assert!(
+            gated.enabled,
+            "config on + consent on must permit the exporter"
+        );
+    }
+
+    /// config.enabled=false ⇒ effective enabled=false regardless of consent.
+    /// An explicit opt-out keeps telemetry off even when consent happens to
+    /// grant the permission.
+    #[test]
+    fn config_off_yields_disabled_regardless_of_consent() {
+        for consent_bit in [false, true] {
+            let (cm, _dir) = consent_with_telemetry(consent_bit);
+            let cfg = TelemetryConfig {
+                enabled: false,
+                ..Default::default()
+            };
+            let gated = consent_gated_telemetry_config(&cfg, &cm);
+            assert!(
+                !gated.enabled,
+                "config off must keep the exporter OFF (consent.telemetry={consent_bit})"
+            );
+        }
+    }
+
+    /// Fail-closed: absent consent record (NotGranted) ⇒ effective enabled=false
+    /// even if config.enabled=true. No consent ever recorded.
+    #[test]
+    fn absent_consent_yields_disabled_even_when_config_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let cm = ConsentManager::new(dir.path().join("consent.json"));
+        assert_eq!(cm.check_consent(), ConsentStatus::NotGranted);
+        let cfg = TelemetryConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let gated = consent_gated_telemetry_config(&cfg, &cm);
+        assert!(
+            !gated.enabled,
+            "absent consent (NotGranted) MUST gate the exporter OFF (fail-closed)"
+        );
+    }
+
+    /// Fail-closed: revoked consent ⇒ effective enabled=false even if config
+    /// granted telemetry AND config.enabled=true. Revocation must shut it down.
+    #[test]
+    fn revoked_consent_yields_disabled_even_when_config_on() {
+        let (cm, _dir) = consent_with_telemetry(true);
+        // Sanity: before revoke the gate is open under config-on.
+        let cfg = TelemetryConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(consent_gated_telemetry_config(&cfg, &cm).enabled);
+
+        cm.revoke_consent().expect("revoke must succeed");
+        assert_eq!(cm.check_consent(), ConsentStatus::NotGranted);
+        let gated = consent_gated_telemetry_config(&cfg, &cm);
+        assert!(
+            !gated.enabled,
+            "revoked consent MUST gate the exporter OFF (fail-closed)"
+        );
+    }
+
+    /// Non-`enabled` fields are preserved verbatim through the gate, so a later
+    /// re-enable reuses the user's endpoint / sample_rate / service_name.
+    #[test]
+    fn non_enabled_fields_are_preserved() {
+        let (cm, _dir) = consent_with_telemetry(false);
+        let cfg = TelemetryConfig {
+            enabled: true,
+            otlp_endpoint: Some("http://collector.example:4318".into()),
+            sample_rate: 0.25,
+            service_name: "maekon-client-custom".into(),
+            crash_reports: true,
+            usage_analytics: true,
+            performance_metrics: true,
+        };
+        let gated = consent_gated_telemetry_config(&cfg, &cm);
+        assert!(!gated.enabled, "gated off by consent");
+        assert_eq!(gated.otlp_endpoint, cfg.otlp_endpoint);
+        assert_eq!(gated.sample_rate, cfg.sample_rate);
+        assert_eq!(gated.service_name, cfg.service_name);
+        assert_eq!(gated.crash_reports, cfg.crash_reports);
+        assert_eq!(gated.usage_analytics, cfg.usage_analytics);
+        assert_eq!(gated.performance_metrics, cfg.performance_metrics);
+    }
+}
+
 #[cfg(all(test, not(feature = "telemetry")))]
 mod tests {
     use super::*;
@@ -112,6 +293,7 @@ mod tests {
 mod tests_feature_on {
     use super::*;
     use crate::telemetry::mock_otlp;
+    use serial_test::serial;
 
     /// T-X2-2 — feature-on + cfg.enabled=false installs a `None`-valued
     /// `reload::Layer` and builds no exporter (no network activity).
@@ -137,6 +319,7 @@ mod tests_feature_on {
     /// via `Inner::apply`. Task 10 adds a 4 s shutdown watchdog so the
     /// production path is bounded as well.
     #[tokio::test]
+    #[serial]
     async fn feature_on_config_on_builds_pipeline() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = mock_otlp::start().await;
@@ -167,6 +350,7 @@ mod tests_feature_on {
     /// T-X2-4 — toggle off, then back on. Both transitions must succeed live;
     /// no restart required. Ends in the OFF state to avoid the drop-hang.
     #[tokio::test]
+    #[serial]
     async fn apply_disables_and_reenables_live() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = mock_otlp::start().await;
@@ -195,6 +379,7 @@ mod tests_feature_on {
     /// spawned task forwards the update to `Handle::apply` within one async
     /// tick (bounded by a 1 s budget).
     #[tokio::test]
+    #[serial]
     async fn config_bus_delivers_telemetry_toggle() {
         use maekon_core::config_manager::ConfigManager;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -203,9 +388,14 @@ mod tests_feature_on {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.json");
         let mgr = StdArc::new(ConfigManager::with_path(cfg_path).unwrap());
+        mgr.update_with(|c| {
+            c.telemetry = TelemetryConfig::disabled();
+            Ok(())
+        })
+        .expect("test must seed telemetry off before the toggle");
 
-        // Build the handle seeded with defaults — matches main.rs wiring.
-        let (_layer, handle) = Handle::new_with_layer(&TelemetryConfig::default(), tmp.path())
+        // Build the handle seeded off — matches main.rs wiring.
+        let (_layer, handle) = Handle::new_with_layer(&TelemetryConfig::disabled(), tmp.path())
             .expect("feature-on disabled construction is infallible");
         let handle = StdArc::new(handle);
 
@@ -217,7 +407,7 @@ mod tests_feature_on {
         let endpoint = mock.endpoint.clone();
 
         tokio::spawn(async move {
-            let mut prev = TelemetryConfig::default();
+            let mut prev = TelemetryConfig::disabled();
             let initial = rx.borrow_and_update().telemetry.clone();
             if initial != prev {
                 // Store observed FIRST — the test's property is "task saw the
@@ -290,6 +480,7 @@ mod tests_feature_on {
     /// after that is a short post-shutdown grace for the exporter's HTTP
     /// request to complete against the mock.
     #[tokio::test]
+    #[serial]
     async fn mock_collector_receives_span() {
         use tracing_subscriber::layer::SubscriberExt;
 
@@ -328,16 +519,20 @@ mod tests_feature_on {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut seen = false;
         while std::time::Instant::now() < deadline {
-            if let Ok(Some(_body)) =
+            if let Ok(Some((signal, _body))) =
                 tokio::time::timeout(std::time::Duration::from_millis(250), mock.rx.recv()).await
             {
-                seen = true;
-                break;
+                // Only a TRACES POST satisfies this span-spine test; a metrics
+                // POST (the meter also flushes on shutdown) must not pass it.
+                if signal == mock_otlp::Signal::Traces {
+                    seen = true;
+                    break;
+                }
             }
         }
         assert!(
             seen,
-            "no OTLP POST reached the mock collector within 5s after shutdown"
+            "no OTLP traces POST reached the mock collector within 5s after shutdown"
         );
     }
 
@@ -346,6 +541,7 @@ mod tests_feature_on {
     /// Must complete within 5 s (watchdog is 4 s + 1 s overhead budget) and
     /// never panic.
     #[tokio::test]
+    #[serial]
     async fn shutdown_completes_when_collector_unreachable() {
         let tmp = tempfile::tempdir().unwrap();
         // Port 1 is reliably unreachable for TCP; the OTLP exporter queue
@@ -427,5 +623,185 @@ mod tests_feature_on {
         if let Some(value) = prev {
             unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value) };
         }
+    }
+
+    /// T-metrics-1 (E20-43 #4835) — a recorded counter reaches the mock OTLP
+    /// collector as a `/v1/metrics` POST after a shutdown-driven flush.
+    ///
+    /// This test drives the meter provider *directly* rather than through
+    /// `global::set_meter_provider`. Rationale: the global meter provider is a
+    /// single piece of process-wide state, and the other `#[tokio::test]`
+    /// telemetry tests run concurrently and each swap/reset it — so recording
+    /// through `global::meter()` here would race those swaps and flake. Building
+    /// the provider inline exercises the SAME production path
+    /// (`MetricExporter::builder().with_http()` + `with_periodic_exporter` +
+    /// shared Resource) that `otlp::build_pipeline` constructs, and the shutdown
+    /// flush mirrors the production toggle-off behaviour, without depending on
+    /// global state.
+    #[tokio::test]
+    #[serial]
+    async fn mock_collector_receives_metric() {
+        use opentelemetry::metrics::MeterProvider as _;
+        use opentelemetry::KeyValue;
+        use opentelemetry_otlp::WithExportConfig;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+        use opentelemetry_sdk::Resource;
+
+        let mut mock = mock_otlp::start().await;
+        // The mock's `endpoint` field is the traces path; swap the suffix to the
+        // metrics signal path the production resolver would use.
+        let metrics_endpoint = mock.endpoint.replace("/v1/traces", "/v1/metrics");
+
+        let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .with_endpoint(metrics_endpoint)
+            .build()
+            .expect("metric exporter must build against the mock");
+        let resource = Resource::builder()
+            .with_service_name("maekon-client-test")
+            .with_attribute(KeyValue::new("service.instance.id", "t-metrics-1"))
+            .build();
+        let meter = SdkMeterProvider::builder()
+            .with_periodic_exporter(metric_exporter)
+            .with_resource(resource)
+            .build();
+
+        // Record a bounded, NON-PII counter via the provider's own meter.
+        let counter = meter
+            .meter("maekon.client")
+            .u64_counter("maekon.client.heartbeat")
+            .build();
+        counter.add(1, &[]);
+
+        // Shutdown performs a final export of buffered counters on a dedicated
+        // thread bounded by the 4 s watchdog (production toggle-off path).
+        let meter_for_shutdown = meter.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = meter_for_shutdown.shutdown();
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(4));
+
+        // After shutdown returns, give the exporter's in-flight HTTP request a
+        // brief window to land. Filter for METRICS so a stray POST cannot
+        // satisfy the assertion.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut seen_metric = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some((signal, _body))) =
+                tokio::time::timeout(std::time::Duration::from_millis(250), mock.rx.recv()).await
+            {
+                if signal == mock_otlp::Signal::Metrics {
+                    seen_metric = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            seen_metric,
+            "no OTLP metrics POST reached the mock collector within 5s after shutdown"
+        );
+    }
+
+    /// T-metrics-2 (E20-43 #4835) — toggle-off shuts the meter provider within
+    /// the 5 s watchdog budget (4 s watchdog + 1 s overhead), even against an
+    /// unreachable collector, and never panics. Mirrors the tracer's T-X2-8.
+    #[tokio::test]
+    #[serial]
+    async fn meter_shutdown_completes_within_watchdog_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Port 1 is reliably unreachable for TCP; the metrics exporter can never
+        // flush but the meter shutdown watchdog must still let `apply` return.
+        let cfg_on = TelemetryConfig {
+            enabled: true,
+            otlp_endpoint: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        let (_layer, handle) = Handle::new_with_layer(&cfg_on, tmp.path())
+            .expect("metrics exporter builds even with an unreachable endpoint");
+
+        // Push a few increments so the periodic reader has buffered data.
+        for _ in 0..5 {
+            crate::telemetry::metrics::record_heartbeat();
+        }
+
+        let cfg_off = TelemetryConfig {
+            enabled: false,
+            ..cfg_on
+        };
+        let start = std::time::Instant::now();
+        handle
+            .apply(&cfg_off)
+            .expect("toggle off must not hang even against a dead metrics collector");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "meter shutdown watchdog exceeded 5s (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
+    /// T-metrics-3 (E20-43 #4835 review) — GLOBAL fresh-resolve guard. After an
+    /// OFF→ON toggle installs a NEW meter provider, a record via the GLOBAL path
+    /// (`record_heartbeat`) must reach the NEW collector. Guards against a future
+    /// regression that caches the instrument (e.g. `OnceLock`) and pins it to the
+    /// stale/shut-down provider — the exact failure metrics.rs documents. `#[serial]`
+    /// with the other global-meter tests so a concurrent `set_meter_provider`
+    /// cannot swap the provider mid-record.
+    #[tokio::test]
+    #[serial]
+    async fn metric_delivery_survives_off_on_toggle_via_global_path() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Boot ON against mock A (installs the global meter provider = A).
+        let _mock_a = mock_otlp::start().await;
+        let cfg_on_a = TelemetryConfig {
+            enabled: true,
+            otlp_endpoint: Some(_mock_a.endpoint.replace("/v1/traces", "")),
+            ..Default::default()
+        };
+        let (_layer, handle) =
+            Handle::new_with_layer(&cfg_on_a, tmp.path()).expect("boot pipeline A");
+
+        let cfg_off = TelemetryConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        handle.apply(&cfg_off).expect("toggle off A");
+
+        // Toggle ON against mock B — apply's (off→on) arm builds a NEW meter
+        // provider and calls set_meter_provider(B).
+        let mut mock_b = mock_otlp::start().await;
+        let cfg_on_b = TelemetryConfig {
+            enabled: true,
+            otlp_endpoint: Some(mock_b.endpoint.replace("/v1/traces", "")),
+            ..Default::default()
+        };
+        handle.apply(&cfg_on_b).expect("toggle on B");
+
+        // Record via the GLOBAL path (the production call site). A cached instrument
+        // pinned to A's shut-down provider would silently drop this.
+        crate::telemetry::metrics::record_heartbeat();
+
+        // Toggle off to flush B's final export on the watchdog thread.
+        handle.apply(&cfg_off).expect("toggle off B (flush)");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut seen_on_b = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some((signal, _body))) =
+                tokio::time::timeout(std::time::Duration::from_millis(250), mock_b.rx.recv()).await
+            {
+                if signal == mock_otlp::Signal::Metrics {
+                    seen_on_b = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            seen_on_b,
+            "post-toggle metric did not reach the NEW provider's collector (mock B) — \
+             instrument fresh-resolve regressed (likely cached to the stale provider)"
+        );
     }
 }

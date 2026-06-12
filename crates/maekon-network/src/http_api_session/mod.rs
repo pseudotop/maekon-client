@@ -38,6 +38,8 @@ use maekon_core::models::ai_session::{
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 use maekon_core::ports::credential_source::CredentialSource;
 
+use crate::provider_error_body::provider_error_message;
+
 /// Direct HTTP API session adapter for Anthropic and OpenAI providers.
 ///
 /// Manages conversation history locally and streams responses via SSE.
@@ -94,7 +96,7 @@ struct PartialToolCall {
 impl HttpApiSession {
     /// Create a new HTTP API session.
     pub fn new(init: HttpApiSessionInit) -> Self {
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = maekon_core::generate_id("ses");
         let http_client = reqwest::Client::new();
         let mut initial_history = Vec::new();
 
@@ -410,15 +412,9 @@ impl ConversationSession for HttpApiSession {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "failed to read error body".to_string());
+            let body = response.text().await.ok();
             *self.state.lock() = SessionState::Failed;
-            let message = format!(
-                "HTTP API error ({status}): {}",
-                body.chars().take(300).collect::<String>()
-            );
+            let message = provider_error_message("HTTP API", status, body.as_deref());
             // Semantic HTTP status mapping per iter-54..59 pattern.
             return Err(match status.as_u16() {
                 401 | 403 => CoreError::Auth {
@@ -582,5 +578,12 @@ impl ConversationSession for HttpApiSession {
             AiProviderType::Copilot => "copilot",
             AiProviderType::Generic => "generic",
         }
+    }
+
+    fn is_external(&self) -> bool {
+        // Cloud HTTP APIs egress chat content off-device and must be guarded.
+        // Ollama is a localhost endpoint (on-device) — kept unguarded, matching
+        // `LocalLlmSession`'s default. See E21 review B1.
+        !matches!(self.provider_type, AiProviderType::Ollama)
     }
 }

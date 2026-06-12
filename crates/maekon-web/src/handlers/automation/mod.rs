@@ -43,6 +43,8 @@ mod tests {
             llm_fallback_reason: Some("llm endpoint timeout".to_string()),
             external_data_policy: "PiiFilterStrict".to_string(),
             pending_audit_entries: 5,
+            llm_healthy: None, // no health tracking in test
+            confirmation_policy: "AUTO".to_string(),
         };
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("sandbox_profile"));

@@ -39,6 +39,11 @@ pub struct AiProviderConfig {
     pub scene_intelligence: SceneIntelligenceConfig,
     #[serde(default = "default_true")]
     pub fallback_to_local: bool,
+    /// Rollout stage for the Codex `app-server` JSON-RPC transport (E21 #4871).
+    /// `Off` (default) keeps the `codex exec` path; opt-in/default attempt
+    /// app-server with graceful fallback to exec on failure.
+    #[serde(default)]
+    pub codex_app_server_rollout: CodexAppServerRollout,
     #[serde(default)]
     pub active_profile_id: Option<String>,
     #[serde(default)]
@@ -96,6 +101,7 @@ impl Default for AiProviderConfig {
             scene_action_override: SceneActionOverrideConfig::default(),
             scene_intelligence: SceneIntelligenceConfig::default(),
             fallback_to_local: true,
+            codex_app_server_rollout: CodexAppServerRollout::default(),
             active_profile_id: None,
             saved_profiles: Vec::new(),
         }

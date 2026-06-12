@@ -4,7 +4,7 @@
 //! dependencies — uses the OS-shipped language packs from the user profile.
 //!
 //! WinRT async operations (`IAsyncOperation`) are resolved synchronously
-//! via `.GetResults()` inside a `spawn_blocking` context. The `windows` crate
+//! via `.join()` inside a `spawn_blocking` context. The `windows` crate
 //! auto-initializes COM MTA on first WinRT factory activation.
 
 use async_trait::async_trait;
@@ -54,7 +54,7 @@ impl WindowsNativeOcr {
                     code: maekon_core::error_codes::ProviderCode::OcrFailed,
                     message: format!("StoreAsync failed: {e}"),
                 })?
-                .GetResults()
+                .join()
                 .map_err(|e| CoreError::OcrError {
                     code: maekon_core::error_codes::ProviderCode::OcrFailed,
                     message: format!("StoreAsync get failed: {e}"),
@@ -65,7 +65,7 @@ impl WindowsNativeOcr {
                     code: maekon_core::error_codes::ProviderCode::OcrFailed,
                     message: format!("FlushAsync failed: {e}"),
                 })?
-                .GetResults()
+                .join()
                 .map_err(|e| CoreError::OcrError {
                     code: maekon_core::error_codes::ProviderCode::OcrFailed,
                     message: format!("FlushAsync get failed: {e}"),
@@ -87,7 +87,7 @@ impl WindowsNativeOcr {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("BitmapDecoder failed: {e}"),
             })?
-            .GetResults()
+            .join()
             .map_err(|e| CoreError::OcrError {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("BitmapDecoder get failed: {e}"),
@@ -99,7 +99,7 @@ impl WindowsNativeOcr {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("GetSoftwareBitmap failed: {e}"),
             })?
-            .GetResults()
+            .join()
             .map_err(|e| CoreError::OcrError {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("GetSoftwareBitmap get failed: {e}"),
@@ -112,7 +112,7 @@ impl WindowsNativeOcr {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("RecognizeAsync failed: {e}"),
             })?
-            .GetResults()
+            .join()
             .map_err(|e| CoreError::OcrError {
                 code: maekon_core::error_codes::ProviderCode::OcrFailed,
                 message: format!("RecognizeAsync get failed: {e}"),

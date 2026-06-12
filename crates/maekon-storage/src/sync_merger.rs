@@ -7,24 +7,32 @@
 //! - DeletionEvent: hard-delete all rows from originating device (GDPR Art. 17)
 
 use async_trait::async_trait;
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use rusqlite::{Connection, OptionalExtension};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::StorageError;
+use crate::sqlite::GuardedConnection;
 use maekon_core::error::CoreError;
-use maekon_core::models::sync::{ChangeSet, ChangeSetKind, SyncResult};
+use maekon_core::models::sync::{ChangeSet, ChangeSetKind, SyncResult, Tombstone};
+
+/// Unit-separator joining `embedding_vectors`' cross-device-stable composite tombstone key
+/// `segment_id || US || model_id` (its `id` is a per-device autoincrement, not stable).
+const EMB_KEY_SEP: char = '\u{1f}';
 use maekon_core::ports::change_merger::ChangeMerger;
 use maekon_core::sync::Hlc;
 
 /// SQLite-backed ChangeMerger adapter.
+///
+/// 공유 [`GuardedConnection`] 을 통해서만 커넥션에 접근한다 — barrier-free 핸들을
+/// 얻을 수 없다(#4928).
 pub struct SqliteSyncMerger {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<GuardedConnection>,
     local_device_id: String,
 }
 
 impl SqliteSyncMerger {
-    pub fn new(conn: Arc<Mutex<Connection>>, local_device_id: String) -> Self {
+    pub fn new(conn: Arc<GuardedConnection>, local_device_id: String) -> Self {
         Self {
             conn,
             local_device_id,
@@ -45,11 +53,18 @@ impl SqliteSyncMerger {
         }
     }
 
-    /// Handle GDPR Article 17 deletion event: hard-delete all synced data
-    /// from the originating device.
+    /// Apply a device-wide GDPR Art.17 `DeletionEvent` from `origin_device_id`.
+    ///
+    /// `bound` is the erasure HLC carried in the DeletionEvent watermark (#5181). When
+    /// `Some((wall, counter))` the delete is BOUNDED to rows authored at-or-before the
+    /// erasure moment, so a row re-created/re-synced AFTER the erasure (HLC > anchor —
+    /// e.g. a post-re-grant capture) SURVIVES. When `None` (a pre-#5181 sender that
+    /// stamped only `Hlc::now`, or an unstamped/ZERO watermark) the delete is unbounded
+    /// — the conservative pre-#5181 behavior (R3 compat: over-erase, never under-erase).
     fn handle_deletion_event(
         conn: &Connection,
         origin_device_id: &str,
+        bound: Option<(u64, u32)>,
     ) -> Result<usize, StorageError> {
         let tables = [
             "activity_segments",
@@ -61,15 +76,27 @@ impl SqliteSyncMerger {
         ];
         let mut total_deleted = 0usize;
         for table in &tables {
-            let sql = format!("DELETE FROM {table} WHERE origin_device_id = ?1");
-            let deleted = conn
-                .execute(&sql, rusqlite::params![origin_device_id])
-                .map_err(|e| StorageError::Internal(format!("GDPR deletion on {table}: {e}")))?;
+            let deleted = match bound {
+                Some((bw, bc)) => {
+                    // hlc <= (bw, bc), lexicographically — spares HLC strictly above the anchor.
+                    let sql = format!(
+                        "DELETE FROM {table} WHERE origin_device_id = ?1 \
+                         AND (hlc_wall_ms < ?2 OR (hlc_wall_ms = ?2 AND hlc_counter <= ?3))"
+                    );
+                    conn.execute(&sql, rusqlite::params![origin_device_id, bw, bc])
+                }
+                None => {
+                    let sql = format!("DELETE FROM {table} WHERE origin_device_id = ?1");
+                    conn.execute(&sql, rusqlite::params![origin_device_id])
+                }
+            }
+            .map_err(|e| StorageError::Internal(format!("GDPR deletion on {table}: {e}")))?;
             total_deleted += deleted;
         }
         info!(
             origin_device_id = origin_device_id,
             total_deleted = total_deleted,
+            bounded = bound.is_some(),
             "GDPR Article 17 deletion event processed"
         );
         Ok(total_deleted)
@@ -83,65 +110,85 @@ impl ChangeMerger for SqliteSyncMerger {
         let local_device_id = self.local_device_id.clone();
 
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().map_err(|e| CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!("SQLite lock poisoned: {e}"),
-            })?;
+            // consent revoke 후(deletion_flag set)에는 모든 동기 merge 쓰기를 스킵한다.
+            // 스킵 시에도 watermark 는 전진시켜 동기 진행을 막지 않는다.
+            let skipped = SyncResult {
+                new_watermark: changes.watermark.clone(),
+                ..Default::default()
+            };
+            conn.write_lock().run_mut(skipped, move |guard| {
+                // Handle GDPR deletion event
+                if changes.kind == ChangeSetKind::DeletionEvent {
+                    // #5181: the watermark carries the sender's erasure HLC anchor; bound
+                    // the delete by it. An unstamped/ZERO watermark = pre-#5181 sender →
+                    // unbounded delete (R3 compat). Post-F0 all real rows have HLC > 0, so
+                    // a ZERO bound would match nothing (under-erase) — hence the None guard.
+                    let wm = &changes.watermark;
+                    let bound = if (wm.wall_ms, wm.counter) == (0, 0) {
+                        None
+                    } else {
+                        Some((wm.wall_ms, wm.counter))
+                    };
+                    let deleted =
+                        Self::handle_deletion_event(guard, &changes.origin_device_id, bound)?;
+                    return Ok(SyncResult {
+                        tombstoned: deleted,
+                        new_watermark: changes.watermark,
+                        ..Default::default()
+                    });
+                }
 
-            // Handle GDPR deletion event
-            if changes.kind == ChangeSetKind::DeletionEvent {
-                let deleted = Self::handle_deletion_event(&guard, &changes.origin_device_id)?;
-                return Ok(SyncResult {
-                    tombstoned: deleted,
-                    new_watermark: changes.watermark,
-                    ..Default::default()
-                });
-            }
+                // Skip self-originated changesets
+                if changes.origin_device_id == local_device_id {
+                    debug!("skipping self-originated changeset");
+                    return Ok(SyncResult {
+                        new_watermark: changes.watermark,
+                        ..Default::default()
+                    });
+                }
 
-            // Skip self-originated changesets
-            if changes.origin_device_id == local_device_id {
-                debug!("skipping self-originated changeset");
-                return Ok(SyncResult {
-                    new_watermark: changes.watermark,
-                    ..Default::default()
-                });
-            }
+                let mut result = SyncResult::default();
 
-            let mut result = SyncResult::default();
+                // All merge operations run inside a single transaction
+                let tx = guard.transaction().map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("begin transaction: {e}"),
+                })?;
 
-            // All merge operations run inside a single transaction
-            let tx = guard.transaction().map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("begin transaction: {e}"),
-            })?;
+                // --- Row-level erasure tombstones (#5174 S3) ---
+                // Applied FIRST so the local suppression set is populated before any merge
+                // below attempts an insert (anti-resurrection within the same changeset).
+                for t in &changes.tombstones {
+                    apply_tombstone(&tx, t, &mut result)?;
+                }
 
-            // --- Append-only tables ---
-            for row in &changes.segments {
-                merge_segment(&tx, row, &mut result)?;
-            }
-            for row in &changes.overrides {
-                merge_override(&tx, row, &mut result)?;
-            }
-            for row in &changes.param_snapshots {
-                merge_param_snapshot(&tx, row, &mut result)?;
-            }
+                // --- Append-only tables ---
+                for row in &changes.segments {
+                    merge_segment(&tx, row, &mut result)?;
+                }
+                for row in &changes.overrides {
+                    merge_override(&tx, row, &mut result)?;
+                }
+                for row in &changes.param_snapshots {
+                    merge_param_snapshot(&tx, row, &mut result)?;
+                }
 
-            // --- LWW tables ---
-            for row in &changes.regimes {
-                merge_regime(&tx, row, &mut result)?;
-            }
-            for row in &changes.embeddings {
-                merge_embedding(&tx, row, &mut result)?;
-            }
+                // --- LWW tables ---
+                for row in &changes.regimes {
+                    merge_regime(&tx, row, &mut result)?;
+                }
+                for row in &changes.embeddings {
+                    merge_embedding(&tx, row, &mut result)?;
+                }
 
-            // --- Monotonic status merge (suggestions) ---
-            for row in &changes.suggestions {
-                merge_suggestion(&tx, row, &mut result)?;
-            }
+                // --- Monotonic status merge (suggestions) ---
+                for row in &changes.suggestions {
+                    merge_suggestion(&tx, row, &mut result)?;
+                }
 
-            // Update sync_peers watermark
-            tx.execute(
-                "INSERT INTO sync_peers (device_id, device_name, last_sync_at, \
+                // Update sync_peers watermark
+                tx.execute(
+                    "INSERT INTO sync_peers (device_id, device_name, last_sync_at, \
                  watermark_wall_ms, watermark_counter) \
                  VALUES (?1, ?2, datetime('now'), ?3, ?4) \
                  ON CONFLICT(device_id) DO UPDATE SET \
@@ -149,40 +196,166 @@ impl ChangeMerger for SqliteSyncMerger {
                    last_sync_at = excluded.last_sync_at, \
                    watermark_wall_ms = excluded.watermark_wall_ms, \
                    watermark_counter = excluded.watermark_counter",
-                rusqlite::params![
-                    changes.origin_device_id,
-                    changes.origin_device_name,
-                    changes.watermark.wall_ms,
-                    changes.watermark.counter,
-                ],
-            )
-            .map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("update sync_peers: {e}"),
-            })?;
+                    rusqlite::params![
+                        changes.origin_device_id,
+                        changes.origin_device_name,
+                        changes.watermark.wall_ms,
+                        changes.watermark.counter,
+                    ],
+                )
+                .map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("update sync_peers: {e}"),
+                })?;
 
-            tx.commit().map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("commit transaction: {e}"),
-            })?;
+                tx.commit().map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("commit transaction: {e}"),
+                })?;
 
-            result.new_watermark = changes.watermark;
+                result.new_watermark = changes.watermark;
 
-            debug!(
-                applied = result.applied,
-                skipped_lww = result.skipped_lww,
-                skipped_dup = result.skipped_dup,
-                tombstoned = result.tombstoned,
-                "changeset merge completed"
-            );
+                debug!(
+                    applied = result.applied,
+                    skipped_lww = result.skipped_lww,
+                    skipped_dup = result.skipped_dup,
+                    tombstoned = result.tombstoned,
+                    "changeset merge completed"
+                );
 
-            Ok(result)
+                Ok(result)
+            })
         })
         .await
         .map_err(|e| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("spawn_blocking join error: {e}"),
         })?
+    }
+}
+
+// ── Row-level erasure tombstone application + suppression (#5174 S3) ──
+
+/// Map a synced `table_name` to its primary-key column (for the hard-DELETE). Returns
+/// `None` for an unknown table — never format an unvalidated wire-supplied name into SQL.
+/// (`embedding_vectors` is handled separately by its composite key, not via this.)
+fn tombstone_pk_col(table_name: &str) -> Option<&'static str> {
+    match table_name {
+        "activity_segments" | "regimes" | "trigger_params_snapshots" => Some("id"),
+        "regime_overrides" => Some("override_id"),
+        "suggestions" => Some("suggestion_id"),
+        _ => None,
+    }
+}
+
+/// Apply one incoming tombstone: hard-DELETE the row (content gone on this peer, GDPR-
+/// complete) and record it into the local `sync_tombstones` suppression set (keep-higher-HLC).
+/// Origin-scoped so it only erases the erasing device's rows.
+fn apply_tombstone(
+    conn: &Connection,
+    t: &Tombstone,
+    result: &mut SyncResult,
+) -> Result<(), StorageError> {
+    let deleted = if t.table_name == "embedding_vectors" {
+        // embeddings: row_id is the cross-device-stable composite `segment_id US model_id`
+        // (its `id` is a per-device autoincrement, so it can't be matched across peers).
+        let (segment_id, model_id) = match t.row_id.split_once(EMB_KEY_SEP) {
+            Some(parts) => parts,
+            None => {
+                // A malformed key would DELETE with an empty model_id and silently match
+                // nothing — a GDPR erasure that quietly fails. Make it observable.
+                warn!(
+                    row_id = %t.row_id,
+                    "embedding tombstone missing composite separator; erasure may not match"
+                );
+                (t.row_id.as_str(), "")
+            }
+        };
+        conn.execute(
+            "DELETE FROM embedding_vectors \
+             WHERE segment_id = ?1 AND model_id = ?2 AND origin_device_id = ?3",
+            rusqlite::params![segment_id, model_id, t.origin_device_id],
+        )
+        .map_err(|e| StorageError::Internal(format!("tombstone delete embedding: {e}")))?
+    } else {
+        let Some(pk) = tombstone_pk_col(&t.table_name) else {
+            warn!(table = %t.table_name, "ignoring tombstone for unknown table");
+            return Ok(());
+        };
+        conn.execute(
+            &format!(
+                "DELETE FROM {} WHERE {} = ?1 AND origin_device_id = ?2",
+                t.table_name, pk
+            ),
+            rusqlite::params![t.row_id, t.origin_device_id],
+        )
+        .map_err(|e| StorageError::Internal(format!("tombstone delete {}: {e}", t.table_name)))?
+    };
+    result.tombstoned += deleted;
+
+    // Record into the local suppression set, keeping the higher HLC (out-of-order safe, P3).
+    conn.execute(
+        "INSERT INTO sync_tombstones \
+         (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(table_name, row_id) DO UPDATE SET \
+           origin_device_id = excluded.origin_device_id, \
+           hlc_wall_ms = excluded.hlc_wall_ms, \
+           hlc_counter = excluded.hlc_counter, \
+           deleted_at  = excluded.deleted_at \
+         WHERE excluded.hlc_wall_ms > sync_tombstones.hlc_wall_ms \
+            OR (excluded.hlc_wall_ms = sync_tombstones.hlc_wall_ms \
+                AND excluded.hlc_counter > sync_tombstones.hlc_counter)",
+        rusqlite::params![
+            t.table_name,
+            t.row_id,
+            t.origin_device_id,
+            t.hlc_wall_ms,
+            t.hlc_counter,
+            t.deleted_at
+        ],
+    )
+    .map_err(|e| StorageError::Internal(format!("record suppression tombstone: {e}")))?;
+    Ok(())
+}
+
+/// Suppression gate run at the top of every merge fn. Returns `true` if an incoming row
+/// `(table_name, row_id)` with HLC `(iw, ic)` must be SUPPRESSED because a tombstone with
+/// HLC >= it exists (anti-resurrection; idempotent on exact `==` replay). When the incoming
+/// HLC is strictly higher (post-re-grant), the superseded tombstone is cleared and `false`
+/// is returned so the row applies normally (P1). Compares the `(wall, counter)` pair only —
+/// NOT via `Hlc::is_after`, which would tiebreak on `device_id`.
+fn tombstone_suppresses(
+    conn: &Connection,
+    table_name: &str,
+    row_id: &str,
+    iw: u64,
+    ic: u32,
+) -> Result<bool, StorageError> {
+    let existing: Option<(u64, u32)> = conn
+        .query_row(
+            "SELECT hlc_wall_ms, hlc_counter FROM sync_tombstones \
+             WHERE table_name = ?1 AND row_id = ?2",
+            rusqlite::params![table_name, row_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| StorageError::Internal(format!("suppression lookup: {e}")))?;
+    match existing {
+        None => Ok(false),
+        Some((tw, tc)) => {
+            if (iw, ic) <= (tw, tc) {
+                Ok(true) // incoming <= tombstone → suppress (idempotent on ==)
+            } else {
+                // Post-re-grant: strictly-higher HLC wins → clear the stale tombstone, apply.
+                conn.execute(
+                    "DELETE FROM sync_tombstones WHERE table_name = ?1 AND row_id = ?2",
+                    rusqlite::params![table_name, row_id],
+                )
+                .map_err(|e| StorageError::Internal(format!("clear superseded tombstone: {e}")))?;
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -194,6 +367,17 @@ fn merge_segment(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
+    // #5174 S3: suppress if a tombstone with HLC >= this row exists (anti-resurrection).
+    if tombstone_suppresses(
+        conn,
+        "activity_segments",
+        id,
+        json_u64(row, "hlc_wall_ms")?,
+        json_u32(row, "hlc_counter")?,
+    )? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
     let exists: bool = conn
         .query_row(
             "SELECT COUNT(*) > 0 FROM activity_segments WHERE id = ?1",
@@ -209,15 +393,19 @@ fn merge_segment(
 
     conn.execute(
         "INSERT INTO activity_segments \
-         (id, start_time, end_time, duration_secs, regime_id, dominant_category, \
-          app_breakdown, llm_summary, content_activities_json, \
+         (id, start_time, end_time, duration_secs, trigger_reason, regime_id, \
+          dominant_category, app_breakdown, llm_summary, content_activities_json, \
           hlc_wall_ms, hlc_counter, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             id,
             json_str(row, "start_time")?,
             json_str(row, "end_time")?,
             json_i64(row, "duration_secs")?,
+            // #5202: trigger_reason is `TEXT NOT NULL` (no default). The extractor now
+            // emits it; default for a pre-#5202 peer's changeset (which omits it) so the
+            // insert never hits the NOT NULL constraint and silently rolls back the merge.
+            json_str_or_default(row, "trigger_reason", "sync"),
             json_str_opt(row, "regime_id"),
             json_str(row, "dominant_category")?,
             json_str_or_default(row, "app_breakdown", "{}"),
@@ -241,6 +429,11 @@ fn merge_regime(
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
     let remote_hlc = extract_hlc(row)?;
+    // #5174 S3: anti-resurrection suppression (gates BOTH the insert and the LWW update).
+    if tombstone_suppresses(conn, "regimes", id, remote_hlc.wall_ms, remote_hlc.counter)? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
 
     let local: Option<(u64, u32, String)> = conn
         .query_row(
@@ -348,6 +541,17 @@ fn merge_override(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "override_id")?;
+    // #5174 S3: anti-resurrection suppression.
+    if tombstone_suppresses(
+        conn,
+        "regime_overrides",
+        id,
+        json_u64(row, "hlc_wall_ms")?,
+        json_u32(row, "hlc_counter")?,
+    )? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
     let exists: bool = conn
         .query_row(
             "SELECT COUNT(*) > 0 FROM regime_overrides WHERE override_id = ?1",
@@ -391,6 +595,19 @@ fn merge_embedding(
     let segment_id = json_str(row, "segment_id")?;
     let model_id = json_str(row, "model_id")?;
     let remote_hlc = extract_hlc(row)?;
+    // #5174 S3: anti-resurrection suppression by the cross-device-stable composite key
+    // (`id` is a per-device autoincrement; the tombstone keys on segment_id+model_id).
+    let emb_key = format!("{segment_id}{EMB_KEY_SEP}{model_id}");
+    if tombstone_suppresses(
+        conn,
+        "embedding_vectors",
+        &emb_key,
+        remote_hlc.wall_ms,
+        remote_hlc.counter,
+    )? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
 
     let local: Option<(i64, u64, u32, String)> = conn
         .query_row(
@@ -497,6 +714,21 @@ fn merge_suggestion(
 ) -> Result<(), StorageError> {
     let suggestion_id = json_str(row, "suggestion_id")?;
     let remote_hlc = extract_hlc(row)?;
+    // #5174 S3 (the IMPORTANT-2 fix): run the suppression gate BEFORE the status-monotonic
+    // merge below. A tombstone is a hard delete already applied; once one exists with HLC >=
+    // this row, we return here so a re-synced lower-HLC `acted` row can NEVER resurrect an
+    // erased suggestion by winning on status ordinal. Only a strictly-higher-HLC (post-
+    // re-grant) suggestion passes, and for that the status-monotonic logic stays correct.
+    if tombstone_suppresses(
+        conn,
+        "suggestions",
+        suggestion_id,
+        remote_hlc.wall_ms,
+        remote_hlc.counter,
+    )? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
     let remote_status = SqliteSyncMerger::suggestion_status_ordinal(row);
 
     let local: Option<(
@@ -531,10 +763,11 @@ fn merge_suggestion(
                 "INSERT INTO suggestions \
                  (suggestion_id, suggestion_type, source, content, priority, \
                   confidence_score, relevance_score, is_actionable, reasoning, \
+                  context_app, context_window, context_target_id, \
                   shown_at, dismissed_at, acted_at, created_at, expires_at, \
                   is_deleted, deleted_at, \
                   hlc_wall_ms, hlc_counter, origin_device_id) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                 rusqlite::params![
                     suggestion_id,
                     json_str(row, "suggestion_type")?,
@@ -545,6 +778,9 @@ fn merge_suggestion(
                     json_f64(row, "relevance_score")?,
                     json_i64(row, "is_actionable")?,
                     json_str_opt(row, "reasoning"),
+                    json_str_opt(row, "context_app"),
+                    json_str_opt(row, "context_window"),
+                    json_str_opt(row, "context_target_id"),
                     json_str_opt(row, "shown_at"),
                     json_str_opt(row, "dismissed_at"),
                     json_str_opt(row, "acted_at"),
@@ -590,9 +826,10 @@ fn merge_suggestion(
                     "UPDATE suggestions SET \
                      suggestion_type=?2, source=?3, content=?4, priority=?5, \
                      confidence_score=?6, relevance_score=?7, is_actionable=?8, \
-                     reasoning=?9, shown_at=?10, dismissed_at=?11, acted_at=?12, \
-                     expires_at=?13, is_deleted=?14, deleted_at=?15, \
-                     hlc_wall_ms=?16, hlc_counter=?17, origin_device_id=?18 \
+                     reasoning=?9, context_app=?10, context_window=?11, \
+                     context_target_id=?12, shown_at=?13, dismissed_at=?14, acted_at=?15, \
+                     expires_at=?16, is_deleted=?17, deleted_at=?18, \
+                     hlc_wall_ms=?19, hlc_counter=?20, origin_device_id=?21 \
                      WHERE suggestion_id = ?1",
                     rusqlite::params![
                         suggestion_id,
@@ -604,6 +841,9 @@ fn merge_suggestion(
                         json_f64(row, "relevance_score")?,
                         json_i64(row, "is_actionable")?,
                         json_str_opt(row, "reasoning"),
+                        json_str_opt(row, "context_app"),
+                        json_str_opt(row, "context_window"),
+                        json_str_opt(row, "context_target_id"),
                         json_str_opt(row, "shown_at"),
                         json_str_opt(row, "dismissed_at"),
                         json_str_opt(row, "acted_at"),
@@ -631,6 +871,17 @@ fn merge_param_snapshot(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
+    // #5174 S3: anti-resurrection suppression.
+    if tombstone_suppresses(
+        conn,
+        "trigger_params_snapshots",
+        id,
+        json_u64(row, "hlc_wall_ms")?,
+        json_u32(row, "hlc_counter")?,
+    )? {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
     let exists: bool = conn
         .query_row(
             "SELECT COUNT(*) > 0 FROM trigger_params_snapshots WHERE id = ?1",
@@ -761,7 +1012,7 @@ mod tests {
         // Insert a segment from the remote device
         {
             let conn = storage.connection_arc();
-            let guard = conn.lock().unwrap();
+            let guard = conn.test_lock();
             guard
                 .execute(
                     "INSERT INTO activity_segments \
@@ -786,7 +1037,7 @@ mod tests {
 
         // Verify row is gone
         let conn = storage.connection_arc();
-        let guard = conn.lock().unwrap();
+        let guard = conn.test_lock();
         let count: i64 = guard
             .query_row(
                 "SELECT COUNT(*) FROM activity_segments WHERE id = 'seg-r1'",
@@ -798,13 +1049,422 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_event_bounded_spares_post_anchor_rows() {
+        // #5181: a DeletionEvent stamped with the erasure HLC anchor must delete the
+        // erasing device's pre-erasure rows but SPARE a post-re-grant row (HLC > anchor).
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            // pre-erasure row (HLC 100,1 < anchor) and post-re-grant row (HLC 200,0 > anchor).
+            for (id, w, c) in [("seg-old", 100, 1), ("seg-new", 200, 0)] {
+                guard
+                    .execute(
+                        "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                         trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                         VALUES (?1, '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', ?2, ?3, ?4)",
+                        rusqlite::params![id, w, c, remote_id],
+                    )
+                    .unwrap();
+            }
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let cs = ChangeSet {
+            kind: ChangeSetKind::DeletionEvent,
+            origin_device_id: remote_id.to_string(),
+            // anchor = (150, 0): seg-old (100,1) <= it, seg-new (200,0) is above it.
+            watermark: Hlc {
+                wall_ms: 150,
+                counter: 0,
+                device_id: remote_id.to_string(),
+            },
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.tombstoned, 1, "only the pre-anchor row is deleted");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-old'"
+            ),
+            0,
+            "pre-erasure row erased"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-new'"
+            ),
+            1,
+            "post-re-grant row (HLC > anchor) survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_segment_inserts_with_trigger_reason() {
+        // #5202 regression: a peer segment must INSERT cleanly — trigger_reason is
+        // `TEXT NOT NULL`, and before the fix neither the extractor emitted it nor the
+        // merge INSERT set it, so every real peer segment failed the NOT NULL constraint.
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![seg_json("seg-tr", 100, 0, "remote-dev")],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.applied, 1, "peer segment inserts (no NOT NULL failure)");
+        let tr: String = count_str(
+            &storage,
+            "SELECT trigger_reason FROM activity_segments WHERE id='seg-tr'",
+        );
+        assert_eq!(tr, "timer", "trigger_reason synced through");
+    }
+
+    #[tokio::test]
+    async fn merge_segment_defaults_trigger_reason_for_pre_fix_peer() {
+        // #5202 compat: a pre-fix peer's changeset omits trigger_reason → default 'sync',
+        // not a constraint crash that rolls back the whole merge.
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let row = serde_json::json!({
+            "id": "seg-old", "start_time": "2026-01-01", "end_time": "2026-01-01",
+            "duration_secs": 1, "dominant_category": "Dev",
+            "hlc_wall_ms": 100, "hlc_counter": 0, "origin_device_id": "remote-dev"
+        });
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![row],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.applied, 1, "inserts with default trigger_reason");
+        let tr: String = count_str(
+            &storage,
+            "SELECT trigger_reason FROM activity_segments WHERE id='seg-old'",
+        );
+        assert_eq!(tr, "sync", "pre-fix peer row defaults to 'sync'");
+    }
+
+    #[tokio::test]
+    async fn embedding_tombstone_hard_deletes_by_composite_key() {
+        // #5174: embeddings key on the cross-device-stable composite (segment_id, model_id),
+        // NOT the per-device autoincrement `id`. A tombstone for "<seg>\x1f<model>" must
+        // hard-delete the row and suppress a lower-HLC re-insert (the most failure-prone
+        // tombstone path — a malformed key silently matches nothing).
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            g.execute(
+                "INSERT INTO embedding_vectors (segment_id, content_type, original_text, vector, \
+                 model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES ('seg-e', 'screen', 'secret text', x'0102', 'm1', '2026-01-01', 100, 1, ?1)",
+                rusqlite::params![remote_id],
+            )
+            .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let key = format!("seg-e{EMB_KEY_SEP}m1");
+        let cs = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            tombstones: vec![Tombstone {
+                table_name: "embedding_vectors".to_string(),
+                row_id: key,
+                origin_device_id: remote_id.to_string(),
+                hlc_wall_ms: 200,
+                hlc_counter: 0,
+                deleted_at: "2026-01-02T00:00:00Z".to_string(),
+            }],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert!(r.tombstoned > 0, "embedding hard-deleted by composite key");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM embedding_vectors WHERE segment_id='seg-e'"
+            ),
+            0,
+            "embedding erased"
+        );
+
+        // A re-synced embedding at HLC <= the tombstone is suppressed (no resurrection).
+        let cs2 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            embeddings: vec![serde_json::json!({
+                "segment_id": "seg-e", "model_id": "m1", "content_type": "screen",
+                "original_text": "secret text", "vector": [1, 2], "timestamp": "2026-01-01",
+                "hlc_wall_ms": 150, "hlc_counter": 0, "origin_device_id": remote_id
+            })],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(r2.applied, 0, "lower-HLC embedding re-sync suppressed");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM embedding_vectors WHERE segment_id='seg-e'"
+            ),
+            0,
+            "embedding stays erased"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_device_erasure_converges_on_offline_peer() {
+        // S5 convergence E2E: A erases → extract a changeset carrying the retained
+        // tombstone → an OFFLINE peer B (that already holds A's row) reconnects, applies
+        // it, and converges to erasure; a later still-circulating stale insert is
+        // suppressed (no re-hydration). Wires the real producer→extractor→merger chain
+        // across two independent storage instances.
+        use crate::sync_extractor::SqliteSyncExtractor;
+        use maekon_core::config::SyncConfig;
+        use maekon_core::ports::change_extractor::ChangeExtractor;
+
+        let insert_a_row = |storage: &SqliteStorage, origin: &str| {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            g.execute(
+                "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                 trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES ('seg-x', '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', 100, 1, ?1)",
+                rusqlite::params![origin],
+            )
+            .unwrap();
+        };
+
+        // Device A authors a row, then erases (GDPR Art.17).
+        let (storage_a, dev_a) = setup();
+        insert_a_row(&storage_a, &dev_a);
+        storage_a.delete_all_data().unwrap();
+
+        // A extracts the post-erase changeset — it carries the tombstone skeleton.
+        let extractor_a = SqliteSyncExtractor::new(
+            storage_a.connection_arc(),
+            dev_a.clone(),
+            "A".to_string(),
+            SyncConfig::default(),
+        );
+        let cs = extractor_a
+            .get_changes_since(&Hlc::default())
+            .await
+            .unwrap();
+        assert!(!cs.tombstones.is_empty(), "A emits the erasure tombstone");
+
+        // Device B (offline at erasure) already holds A's row (origin = A).
+        let (storage_b, dev_b) = setup();
+        insert_a_row(&storage_b, &dev_a);
+
+        // B reconnects and applies A's changeset → converges (row hard-deleted).
+        let merger_b = SqliteSyncMerger::new(storage_b.connection_arc(), dev_b);
+        let r = merger_b.apply_changes(cs).await.unwrap();
+        assert!(r.tombstoned > 0, "B hard-deletes A's erased row");
+        assert_eq!(
+            count(
+                &storage_b,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-x'"
+            ),
+            0,
+            "B converged to erasure"
+        );
+
+        // A still-circulating stale insert of the same row (relayed by a third peer) is
+        // suppressed by B's recorded tombstone — no re-hydration.
+        let stale = ChangeSet {
+            origin_device_id: dev_a.clone(),
+            segments: vec![seg_json("seg-x", 100, 1, &dev_a)],
+            ..Default::default()
+        };
+        let r2 = merger_b.apply_changes(stale).await.unwrap();
+        assert_eq!(r2.applied, 0, "stale re-insert suppressed");
+        assert_eq!(
+            count(
+                &storage_b,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-x'"
+            ),
+            0,
+            "B stays erased (no re-hydration)"
+        );
+    }
+
+    fn seg_json(id: &str, wall: u64, counter: u32, origin: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "start_time": "2026-01-01", "end_time": "2026-01-01",
+            "duration_secs": 3600, "trigger_reason": "timer", "dominant_category": "Dev",
+            "hlc_wall_ms": wall, "hlc_counter": counter, "origin_device_id": origin
+        })
+    }
+
+    fn tombstone(table: &str, row_id: &str, wall: u64, counter: u32, origin: &str) -> Tombstone {
+        Tombstone {
+            table_name: table.to_string(),
+            row_id: row_id.to_string(),
+            origin_device_id: origin.to_string(),
+            hlc_wall_ms: wall,
+            hlc_counter: counter,
+            deleted_at: "2026-01-02T00:00:00Z".to_string(),
+        }
+    }
+
+    fn count(storage: &SqliteStorage, sql: &str) -> i64 {
+        let conn = storage.connection_arc();
+        let g = conn.test_lock();
+        g.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn count_str(storage: &SqliteStorage, sql: &str) -> String {
+        let conn = storage.connection_arc();
+        let g = conn.test_lock();
+        g.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn tombstone_hard_deletes_and_suppresses_resurrection() {
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-t', '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', 100, 1, ?1)",
+                    rusqlite::params![remote_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+
+        // Apply a tombstone (HLC 200) → row hard-deleted + suppression recorded.
+        let cs = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            tombstones: vec![tombstone("activity_segments", "seg-t", 200, 0, remote_id)],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert!(r.tombstoned > 0, "row hard-deleted");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-t'"
+            ),
+            0
+        );
+
+        // A re-synced copy at HLC 150 (<= tombstone) is SUPPRESSED — not resurrected.
+        let cs2 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            segments: vec![seg_json("seg-t", 150, 0, remote_id)],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(r2.applied, 0, "lower-HLC re-sync suppressed");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-t'"
+            ),
+            0,
+            "row stays erased"
+        );
+    }
+
+    #[tokio::test]
+    async fn regrant_higher_hlc_beats_tombstone() {
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+
+        let cs1 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            tombstones: vec![tombstone("regime_overrides", "ov-rg", 100, 0, remote_id)],
+            ..Default::default()
+        };
+        merger.apply_changes(cs1).await.unwrap();
+
+        // Post-re-grant row at HLC 200 (> tombstone) → applies, tombstone cleared (P1).
+        let cs2 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            overrides: vec![serde_json::json!({
+                "override_id": "ov-rg", "segment_id": "seg-1", "action_type": "reassign",
+                "created_at": "2026-01-01", "hlc_wall_ms": 200, "hlc_counter": 0,
+                "origin_device_id": remote_id
+            })],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(r.applied, 1, "higher-HLC post-re-grant row applies");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM regime_overrides WHERE override_id='ov-rg'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones WHERE row_id='ov-rg'"
+            ),
+            0,
+            "superseded tombstone cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn suggestion_tombstone_beats_acted_status() {
+        // The merge_suggestion fix: a re-synced `acted` suggestion at a LOWER HLC must not
+        // resurrect an erased one by winning on status ordinal — the suppression gate
+        // short-circuits before the status-monotonic merge.
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+
+        let cs1 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            tombstones: vec![tombstone("suggestions", "sug-x", 100, 0, remote_id)],
+            ..Default::default()
+        };
+        merger.apply_changes(cs1).await.unwrap();
+
+        let cs2 = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            suggestions: vec![serde_json::json!({
+                "suggestion_id": "sug-x", "suggestion_type": "WORK_GUIDANCE",
+                "source": "RULE_BASED", "content": "c", "priority": "MEDIUM",
+                "confidence_score": 0.5, "relevance_score": 0.5, "is_actionable": 1,
+                "acted_at": "2026-01-01T00:00:00Z", "created_at": "2026-01-01",
+                "hlc_wall_ms": 50, "hlc_counter": 0, "origin_device_id": remote_id
+            })],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(
+            r.applied, 0,
+            "acted suggestion must not resurrect an erased one"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM suggestions WHERE suggestion_id='sug-x'"
+            ),
+            0,
+            "erased suggestion stays erased"
+        );
+    }
+
+    #[tokio::test]
     async fn suggestion_monotonic_merge_acted_wins() {
         let (storage, local_id) = setup();
 
         // Insert a local suggestion at status "dismissed"
         {
             let conn = storage.connection_arc();
-            let guard = conn.lock().unwrap();
+            let guard = conn.test_lock();
             guard
                 .execute(
                     "INSERT INTO suggestions \

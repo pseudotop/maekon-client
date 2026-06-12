@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateStatus } from '../api/client'
 import { isStandaloneModeEnabled } from '../api/standalone'
-import { resolveApiUrl } from '../utils/api-base'
+import { resolveApiUrl, resolveLocalAuthToken, setLocalAuthCookie, withLocalAuthQuery } from '../utils/api-base'
 
 export type UpdateStreamStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 
@@ -34,12 +34,17 @@ export function useUpdateStream() {
       }
       setStatus('connecting')
       setLastError(null)
-      const streamUrl = await resolveApiUrl('/api/update/stream')
+      const baseStreamUrl = await resolveApiUrl('/api/update/stream')
+      // E20-41 (#4833): EventSource sets no headers — auth via ?local_auth= query
+      // (cross-origin Tauri) + cookie (same-origin browser). Query redacted in logs.
+      await resolveLocalAuthToken()
+      setLocalAuthCookie()
+      const streamUrl = withLocalAuthQuery(baseStreamUrl)
       if (disposed || currentToken !== connectToken) {
         return
       }
 
-      const es = new EventSource(streamUrl)
+      const es = new EventSource(streamUrl, { withCredentials: true })
       if (disposed || currentToken !== connectToken) {
         es.close()
         return

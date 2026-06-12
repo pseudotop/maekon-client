@@ -6,10 +6,8 @@
 //! this process terminates. On any error, logs and returns `None` — the
 //! current (failing) binary keeps running; the next boot retries.
 //!
-//! Extracted from `app_runtime_launch.rs` per
-//! `docs/reviews/2026-04-21-split-app-runtime-launch-spec.md`. The original
-//! was ~160 lines of inline nested matches; the extracted form is easier to
-//! test and keeps the orchestrator under 900 LOC.
+//! Extracted from `app_runtime_launch.rs` to keep the runtime orchestrator
+//! small and testable under the client ADR-002 GUI/runtime boundary.
 
 use std::path::PathBuf;
 
@@ -108,13 +106,22 @@ fn spawn_rolled_back_scan(
     update_control: UpdateControl,
 ) {
     handle.spawn(async move {
-        let entries = match std::fs::read_dir(&install_dir) {
-            Ok(it) => it,
-            Err(e) => {
+        let entries = match tokio::task::spawn_blocking({
+            let install_dir = install_dir.clone();
+            move || std::fs::read_dir(&install_dir)
+        })
+        .await
+        {
+            Ok(Ok(it)) => it,
+            Ok(Err(e)) => {
                 tracing::warn!(
                     "rolled_back_notification scan failed ({:?}): {e}",
                     install_dir
                 );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("rolled_back_notification scan task failed: {e}");
                 return;
             }
         };
@@ -126,7 +133,7 @@ fn spawn_rolled_back_scan(
                 continue;
             }
             let path = entry.path();
-            match std::fs::read(&path) {
+            match tokio::fs::read(&path).await {
                 Ok(bytes) => {
                     match serde_json::from_slice::<maekon_api_contracts::update::RollbackInfo>(
                         &bytes,
@@ -152,7 +159,7 @@ fn spawn_rolled_back_scan(
                 }
                 Err(e) => tracing::warn!("rolled_back_notification read failed: {e}"),
             }
-            let _ = std::fs::remove_file(&path);
+            let _ = tokio::fs::remove_file(&path).await;
         }
     });
 }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::error::StorageError;
 use chrono::Utc;
 use maekon_core::models::integration::{
     IntegrationAckCursor, IntegrationEnvelope, IntegrationInboxItemStatus,
@@ -7,9 +8,6 @@ use maekon_core::models::integration::{
     IntegrationPromptReceiptAction, IntegrationSessionState, QueuedIntegrationEgressMessage,
     StoredProactivePrompt,
 };
-use uuid::Uuid;
-
-use crate::error::StorageError;
 
 use super::{FileIntegrationStateRegistry, IntegrationStateStorePolicy, MAX_AUDIT_RECORDS};
 
@@ -25,8 +23,7 @@ pub(super) struct FileIntegrationStateInner {
 // in-memory state + write file to disk" — tightening it would allow
 // in-memory state and on-disk state to diverge under concurrent writers.
 // parking_lot::Mutex keeps contention cost low (I/O window is tens of ms).
-// See `docs/reviews/2026-04-21-p2-significant-drop-tightening-spec.md`
-// §Category B for the full rationale.
+// The rationale is embedded here so public source remains self-contained.
 #[allow(clippy::significant_drop_tightening)]
 impl FileIntegrationStateInner {
     pub(super) fn new(
@@ -110,7 +107,7 @@ impl FileIntegrationStateInner {
         payload: IntegrationOutboundPayload,
     ) -> Result<String, StorageError> {
         let mut registry = self.registry.lock();
-        let queue_id = format!("integration_queue_{}", Uuid::new_v4());
+        let queue_id = maekon_core::generate_id("q");
         registry.outbox.push(QueuedIntegrationEgressMessage {
             queue_id: queue_id.clone(),
             envelope,
@@ -276,7 +273,7 @@ impl FileIntegrationStateInner {
         };
         self.redact_prompt_body_if_needed(prompt, prompt.status.clone());
 
-        let queue_id = format!("integration_queue_{}", Uuid::new_v4());
+        let queue_id = maekon_core::generate_id("q");
         registry.outbox.push(QueuedIntegrationEgressMessage {
             queue_id: queue_id.clone(),
             envelope,

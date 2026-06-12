@@ -42,10 +42,14 @@ The goal is to keep the standalone trust model strict today, while making future
 - SBOM: `cargo cyclonedx --workspace`
 - Provenance attestation: GitHub artifact attestation on release artifacts
 
-Documented exception:
+Current exception policy:
 
-- `RUSTSEC-2024-0429` (`glib 0.18.5`) is currently accepted only because it is a Linux-only GTK3 / `webkit2gtk` / `wry` / Tauri transitive dependency outside direct project control.
-- This exception must remain explicit in repository policy (`deny.toml`, integrity workflow/script) and must be removed once the upstream stack ships patched `glib` / `gtk-rs-core`.
+- No RustSec advisory is ignored by the local integrity script.
+- The previous `RUSTSEC-2024-0429` (`glib 0.18.5`) exception was retired by the E31 GTK4/WebKitGTK 6 migration.
+- `cargo audit` must report zero vulnerabilities. Informational transitive
+  warnings are tracked in repository policy and issue #5431 until upstream
+  Tauri/urlpattern/tokenizers releases remove them.
+- Any new advisory must be fixed, or explicitly triaged in repository policy with an owner, expiry, and issue reference.
 
 ### 3) Runtime Boundary Rules
 

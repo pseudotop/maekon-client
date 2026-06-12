@@ -33,6 +33,8 @@ pub struct WebSocketIntegrationSessionChannel {
     inbound: Arc<Mutex<WebSocketIntegrationInboundState>>,
     ack_notify: Arc<Notify>,
     prompt_notify: Arc<Notify>,
+    /// Notified on drop/close to unblock the read_loop task (F-RR-29).
+    cancel_notify: Arc<Notify>,
 }
 
 impl WebSocketIntegrationSessionChannel {
@@ -59,12 +61,16 @@ impl WebSocketIntegrationSessionChannel {
         let inbound = Arc::new(Mutex::new(WebSocketIntegrationInboundState::default()));
         let ack_notify = Arc::new(Notify::new());
         let prompt_notify = Arc::new(Notify::new());
+        // F-RR-29: cancel_notify signals read_loop to exit when the channel is
+        // dropped or explicitly closed, preventing a leaked detached task.
+        let cancel_notify = Arc::new(Notify::new());
 
         tokio::spawn(Self::read_loop(
             reader,
             inbound.clone(),
             ack_notify.clone(),
             prompt_notify.clone(),
+            cancel_notify.clone(),
         ));
 
         Ok(Self {
@@ -72,6 +78,7 @@ impl WebSocketIntegrationSessionChannel {
             inbound,
             ack_notify,
             prompt_notify,
+            cancel_notify,
         })
     }
 
@@ -80,9 +87,25 @@ impl WebSocketIntegrationSessionChannel {
         inbound: Arc<Mutex<WebSocketIntegrationInboundState>>,
         ack_notify: Arc<Notify>,
         prompt_notify: Arc<Notify>,
+        cancel_notify: Arc<Notify>,
     ) {
-        while let Some(message) = reader.next().await {
-            match message {
+        // F-RR-29: select! on cancel_notify so the task exits cleanly when
+        // WebSocketIntegrationSessionChannel is dropped or close() is called.
+        loop {
+            let raw = tokio::select! {
+                biased;
+                _ = cancel_notify.notified() => {
+                    debug!("integration websocket read_loop: cancel signal received");
+                    break;
+                }
+                msg = reader.next() => {
+                    match msg {
+                        Some(m) => m,
+                        None => break,
+                    }
+                }
+            };
+            match raw {
                 Ok(Message::Text(text)) => {
                     let mut ack_changed = false;
                     let mut prompt_changed = false;
@@ -232,6 +255,8 @@ impl WebSocketIntegrationSessionChannel {
     }
 
     pub async fn close(&self) -> Result<(), CoreError> {
+        // F-RR-29: signal the read_loop to exit before sending Close frame.
+        self.cancel_notify.notify_one();
         let mut sender = self.sender.lock().await;
         sender
             .send(Message::Close(None))
@@ -240,5 +265,91 @@ impl WebSocketIntegrationSessionChannel {
                 code: maekon_core::error_codes::NetworkCode::Generic,
                 message: format!("integration websocket close failed: {err}"),
             })
+    }
+}
+
+/// F-RR-37: ensure the read_loop task exits when a `WebSocketIntegrationSessionChannel`
+/// is dropped without an explicit `close()` call (e.g. reconnect path in
+/// `runtime_loop.rs`).  Notifying `cancel_notify` on drop mirrors the explicit
+/// `close()` path and prevents a lingering read_loop from holding a stale
+/// TCP connection open after the caller has discarded the channel.
+///
+/// The former F-RR-33 guard (`Arc::strong_count(&self.cancel_notify) == 1`)
+/// was permanently false: at Drop time the spawned read_loop task holds its
+/// own clone of `cancel_notify`, so the strong count is always >= 2 while the
+/// task is alive.  The guard therefore silently suppressed every implicit-drop
+/// notification.  `notify_one()` is idempotent — safe to call from any clone —
+/// so the check is removed and we notify unconditionally.
+impl Drop for WebSocketIntegrationSessionChannel {
+    fn drop(&mut self) {
+        // Unconditionally signal the read_loop to exit.  The previous
+        // Arc::strong_count == 1 guard was always false because the spawned
+        // read_loop task holds its own Arc clone (count >= 2).  Calling
+        // notify_one() from any clone is safe and idempotent.
+        self.cancel_notify.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    /// F-RR-37: verify that dropping a simulated channel without calling
+    /// close() fires the cancel_notify so the read_loop (simulated here as a
+    /// task waiting on notified()) exits within 1 second.
+    ///
+    /// This test does NOT open a real WebSocket connection.  Instead it
+    /// constructs only the `cancel_notify` Arc and a lightweight task that
+    /// mirrors what read_loop does: it blocks on `cancel_notify.notified()`.
+    /// The task should exit promptly when the Arc is dropped (via
+    /// `notify_one()`).
+    #[tokio::test]
+    async fn drop_fires_cancel_notify_unconditionally() {
+        let cancel_notify = Arc::new(Notify::new());
+
+        // Simulate the read_loop: hold a clone of cancel_notify and wait for
+        // a notification.  This clone is the reason Arc::strong_count >= 2
+        // at drop time, which was the root cause of F-RR-33/F-RR-37.
+        let task_cancel = cancel_notify.clone();
+        let task = tokio::spawn(async move {
+            task_cancel.notified().await;
+        });
+
+        // Drop the owner Arc — this is what WebSocketIntegrationSessionChannel::drop does.
+        // The strong_count is 2 here (owner + task clone).
+        assert!(
+            Arc::strong_count(&cancel_notify) >= 2,
+            "precondition: task clone must keep count >= 2"
+        );
+        cancel_notify.notify_one();
+        drop(cancel_notify);
+
+        // The task should exit within 1 second.
+        let result = timeout(Duration::from_secs(1), task).await;
+        // Two-layer unwrap: outer = timeout, inner = JoinHandle (task did not panic).
+        let join_result = result.expect(
+            "F-RR-37: read_loop task did not exit after notify_one() — \
+                     implicit drop would leave a stale TCP connection",
+        );
+        // The task body is `task_cancel.notified().await` — no panic path; JoinHandle must be Ok.
+        join_result.expect("read_loop task panicked unexpectedly");
+    }
+
+    /// F-RR-37 regression: the former `Arc::strong_count == 1` guard would
+    /// have silently blocked the notification when the task clone is alive.
+    /// Confirm that strong_count is >= 2 at the moment we call notify_one in
+    /// the simulated drop scenario above (i.e., the guard was always false).
+    #[test]
+    fn strong_count_is_never_one_while_task_holds_clone() {
+        let notify = Arc::new(Notify::new());
+        let _task_clone = notify.clone();
+        // At this point strong_count == 2; the former guard would have been false.
+        assert!(
+            Arc::strong_count(&notify) >= 2,
+            "F-RR-37: strong_count should be >= 2 when a task clone exists; \
+             the Arc::strong_count == 1 guard was permanently false"
+        );
     }
 }

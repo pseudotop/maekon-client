@@ -10,7 +10,7 @@ fn worker_binary_discoverable() {
 }
 
 #[test]
-fn worker_stdin_stdout_roundtrip() {
+fn worker_stdin_stdout_roundtrip_fails_closed_for_unimplemented_action() {
     let worker = match resolve_worker_path() {
         Ok(p) => p,
         Err(_) => {
@@ -36,7 +36,11 @@ fn worker_stdin_stdout_roundtrip() {
     let output = child.wait_with_output().expect("wait failed");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""success":true"#), "got: {stdout}");
+    assert!(stdout.contains(r#""success":false"#), "got: {stdout}");
+    assert!(
+        stdout.contains("not implemented") && stdout.contains("refusing to report success"),
+        "got: {stdout}"
+    );
 }
 
 #[test]

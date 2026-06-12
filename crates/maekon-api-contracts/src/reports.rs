@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ReportPeriod {
     #[default]
@@ -10,6 +11,7 @@ pub enum ReportPeriod {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReportQuery {
     #[serde(default)]
     pub period: ReportPeriod,
@@ -18,6 +20,7 @@ pub struct ReportQuery {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DailyStat {
     pub date: String,
     pub active_secs: u64,
@@ -29,6 +32,7 @@ pub struct DailyStat {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppStat {
     pub name: String,
     pub duration_secs: u64,
@@ -38,12 +42,14 @@ pub struct AppStat {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HourlyActivity {
     pub hour: u8,
     pub activity: u64,
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProductivityMetrics {
     pub score: f64,
     pub active_ratio: f64,
@@ -53,6 +59,7 @@ pub struct ProductivityMetrics {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReportResponse {
     pub title: String,
     pub from_date: String,

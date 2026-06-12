@@ -1,3 +1,4 @@
+// OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 771
 mod models;
 mod token;
 
@@ -5,6 +6,7 @@ mod token;
 pub use models::{AuditLevel, ExecutionPolicy, PolicyCache, ProcessOutput};
 
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
@@ -75,11 +77,17 @@ impl PolicyClient {
         }
 
         let Some(parsed_token) = parse_policy_token(token) else {
-            tracing::warn!(policy_token = token, "policy token error");
+            tracing::warn!(
+                policy_token_fingerprint = %policy_token_fingerprint(token),
+                "policy token error"
+            );
             return Ok(false);
         };
         if !is_valid_nonce(parsed_token.nonce) {
-            tracing::warn!(policy_token = token, "policy token nonce error");
+            tracing::warn!(
+                policy_token_fingerprint = %policy_token_fingerprint(token),
+                "policy token nonce error"
+            );
             return Ok(false);
         }
 
@@ -153,7 +161,10 @@ impl PolicyClient {
             now.signed_duration_since(*validated_at).num_seconds() < ttl_seconds as i64
         });
         if validated.contains_key(token) {
-            tracing::warn!(policy_token = token, "policy token detection");
+            tracing::warn!(
+                policy_token_fingerprint = %policy_token_fingerprint(token),
+                "policy token detection"
+            );
             return Ok(false);
         }
         validated.insert(token.to_string(), now);
@@ -287,6 +298,15 @@ impl Default for PolicyClient {
     }
 }
 
+fn policy_token_fingerprint(token: &str) -> String {
+    let digest = Sha256::digest(token.trim().as_bytes());
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +388,25 @@ mod tests {
             &["status".to_string()]
         ));
         assert!(!PolicyClient::validate_args(&policy, &["push".to_string()]));
+    }
+
+    #[test]
+    fn policy_token_fingerprint_is_stable_and_non_reversible() {
+        let token = "pol-1:nonce_1234";
+        let fingerprint = policy_token_fingerprint(token);
+
+        assert_eq!(fingerprint, policy_token_fingerprint(token));
+        assert_ne!(fingerprint, token);
+        assert_eq!(fingerprint.len(), 16);
+    }
+
+    #[test]
+    fn policy_logging_source_never_uses_raw_policy_token_field() {
+        let source = include_str!("mod.rs");
+        let forbidden = ["policy_token", " = ", "token", ","].concat();
+
+        assert!(!source.contains(&forbidden));
+        assert!(source.contains("policy_token_fingerprint"));
     }
 
     #[tokio::test]

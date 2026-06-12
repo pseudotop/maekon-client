@@ -5,6 +5,8 @@ import {
   findFeatureCapability,
   maturityBadgeColor,
   providerSurfaceAvailability,
+  providerSurfaceCliDiscovery,
+  providerSurfaceCliReadiness,
   providerSurfaceMaturity,
   providerSurfaceStatusCopyKey,
 } from '../../../features/featureCapabilities'
@@ -215,6 +217,13 @@ export default function AiAutomationTab() {
       maturity: 'experimental' as const,
       preferred: false,
     },
+    {
+      value: 'LocalModel',
+      label: t('settingsAutomation.accessModeLocalLabel'),
+      description: t('settingsAutomation.accessModeLocalDescription'),
+      maturity: 'beta' as const,
+      preferred: false,
+    },
   ]
 
   const currentAccessModeOption =
@@ -249,13 +258,19 @@ export default function AiAutomationTab() {
     const customSelfHostedEndpoint = usesCustomSelfHostedEndpoint(surface, endpointKind)
     const endpointProbe = endpointProbeResult[endpointKind]
     const availability = surfaceAvailabilityForEndpoint(surface, endpointKind)
+    const cliReadiness = endpointProbe ? null : providerSurfaceCliReadiness(surface, featureCapabilities)
+    const cliDiscovery = endpointProbe ? null : providerSurfaceCliDiscovery(surface, featureCapabilities)
     const statusCopyKey = surfaceStatusCopyKeyForEndpoint(surface, endpointKind)
     const setupCopyKey = endpointProbe ? null : (feature?.setup_copy_key ?? null)
     const setupDocsUrl = endpointProbe ? null : (feature?.setup_docs_url ?? null)
     const setupEnvVars = endpointProbe ? [] : (feature?.configuration_env_vars ?? [])
 
     return (
-      <div className="space-y-2 rounded-lg border border-muted bg-surface-muted/80 p-3">
+      <div
+        className="space-y-2 rounded-lg border border-muted bg-surface-muted/80 p-3"
+        data-testid={`settings-provider-surface-status-${endpointKind}`}
+        data-surface-id={surface.surface_id}
+      >
         <div className="flex flex-wrap items-center gap-2">
           <Badge color="default" size="sm">
             {placementKindLabel(t, surface.placement_kind)}
@@ -268,8 +283,41 @@ export default function AiAutomationTab() {
               {t('featureCapability.preferredPath')}
             </Badge>
           )}
+          {cliReadiness && (
+            <Badge
+              color={cliReadiness === 'invocation_ready' ? 'success' : 'warning'}
+              size="sm"
+              data-testid={`settings-provider-cli-readiness-${endpointKind}`}
+            >
+              {t(`featureCapability.cliReadiness.${cliReadiness}`)}
+            </Badge>
+          )}
+          {cliDiscovery && (
+            <Badge
+              color={
+                cliDiscovery.dependency_status === 'missing' || cliDiscovery.dependency_status === 'stale_process_env'
+                  ? 'warning'
+                  : 'default'
+              }
+              size="sm"
+              data-testid={`settings-provider-cli-discovery-${endpointKind}`}
+            >
+              {t(`featureCapability.cliDependency.${cliDiscovery.dependency_status}`)}
+            </Badge>
+          )}
           <span className="text-content-secondary text-xs">{t(`featureCapability.availability.${availability}`)}</span>
         </div>
+        {cliDiscovery && (
+          <p className="text-content-secondary text-xs">
+            {t('featureCapability.cliDiscovery.executablePath', {
+              candidate: cliDiscovery.candidate_name,
+              path: cliDiscovery.executable_path,
+            })}
+          </p>
+        )}
+        {cliDiscovery?.env_refresh_required && (
+          <p className="text-content-secondary text-xs">{t('featureCapability.cliDiscovery.restartRequired')}</p>
+        )}
         {statusCopyKey && <p className="text-content-secondary text-xs">{t(statusCopyKey)}</p>}
         {customSelfHostedEndpoint && !endpointProbe && !endpointProbeLoading[endpointKind] && (
           <p className="text-content-secondary text-xs">{t('settingsAutomation.selfHostedCustomEndpointStatus')}</p>
@@ -326,7 +374,7 @@ export default function AiAutomationTab() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="settings-ai-automation-tab">
       <ProviderWizard onSelect={handleProviderWizardSelect} />
 
       <GuidancePanel
@@ -373,6 +421,7 @@ export default function AiAutomationTab() {
               </label>
               <Select
                 id="settings-ai-access-mode"
+                data-testid="settings-ai-access-mode"
                 value={formData.ai_provider.access_mode}
                 onChange={(e) => settingsForm.handleAiProviderChange('access_mode', e.target.value)}
               >
@@ -424,6 +473,7 @@ export default function AiAutomationTab() {
                 </label>
                 <Select
                   id="settings-ocr-provider-surface"
+                  data-testid="settings-ocr-provider-surface"
                   value={
                     formData.ai_provider.ocr_api?.surface_id ??
                     settingsForm.resolveEndpointSurface('ocr_api')?.surface_id ??
@@ -489,6 +539,7 @@ export default function AiAutomationTab() {
                 </label>
                 <Select
                   id="settings-llm-provider-surface"
+                  data-testid="settings-llm-provider-surface"
                   value={
                     formData.ai_provider.llm_api?.surface_id ??
                     settingsForm.resolveEndpointSurface('llm_api')?.surface_id ??
@@ -509,6 +560,8 @@ export default function AiAutomationTab() {
                 </Select>
                 <FieldHint>{t('settingsAutomation.providerSurfaceHint')}</FieldHint>
               </div>
+
+              {renderSurfaceStatus(currentLlmSurface, 'llm_api')}
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div className="space-y-1">
@@ -602,7 +655,10 @@ export default function AiAutomationTab() {
                 </div>
                 <p className="text-content-secondary text-sm">{activeOcrPathSummary}</p>
               </div>
-              <div className="space-y-2 rounded-md border border-muted/70 bg-surface-elevated/70 p-3">
+              <div
+                className="space-y-2 rounded-md border border-muted/70 bg-surface-elevated/70 p-3"
+                data-testid="settings-ai-provider-active-routing-llm"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className={`${typography.weight.medium} text-content text-sm`}>

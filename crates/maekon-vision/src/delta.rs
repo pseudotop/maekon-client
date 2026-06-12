@@ -1,5 +1,6 @@
 use image::{DynamicImage, GenericImageView};
 use maekon_core::models::frame::Rect;
+use std::borrow::Cow;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -32,8 +33,17 @@ pub fn compute_delta(prev: &DynamicImage, curr: &DynamicImage) -> Option<DeltaRe
         });
     }
 
-    let prev_rgba = prev.to_rgba8();
-    let curr_rgba = curr.to_rgba8();
+    // Borrow the existing RgbaImage when the input is already ImageRgba8 (the
+    // common hot-path from ScreenCapture); only allocate via to_rgba8() when
+    // the format differs.
+    let prev_rgba: Cow<'_, image::RgbaImage> = match prev.as_rgba8() {
+        Some(r) => Cow::Borrowed(r),
+        None => Cow::Owned(prev.to_rgba8()),
+    };
+    let curr_rgba: Cow<'_, image::RgbaImage> = match curr.as_rgba8() {
+        Some(r) => Cow::Borrowed(r),
+        None => Cow::Owned(curr.to_rgba8()),
+    };
 
     let prev_raw = prev_rgba.as_raw();
     let curr_raw = curr_rgba.as_raw();
@@ -163,8 +173,15 @@ pub fn compute_delta_adaptive(
         });
     }
 
-    let prev_rgba = prev.to_rgba8();
-    let curr_rgba = curr.to_rgba8();
+    // Same zero-copy borrow pattern as compute_delta above.
+    let prev_rgba: Cow<'_, image::RgbaImage> = match prev.as_rgba8() {
+        Some(r) => Cow::Borrowed(r),
+        None => Cow::Owned(prev.to_rgba8()),
+    };
+    let curr_rgba: Cow<'_, image::RgbaImage> = match curr.as_rgba8() {
+        Some(r) => Cow::Borrowed(r),
+        None => Cow::Owned(curr.to_rgba8()),
+    };
     let prev_raw = prev_rgba.as_raw();
     let curr_raw = curr_rgba.as_raw();
     let stride = pw as usize * 4;
@@ -330,6 +347,31 @@ mod tests {
     }
 
     #[test]
+    fn crt_prv_cap_002_delta_region_matches_changed_tile_patch() {
+        let prev = RgbaImage::from_pixel(64, 64, image::Rgba([100, 100, 100, 255]));
+        let mut curr = prev.clone();
+
+        for y in 32..48 {
+            for x in 16..32 {
+                curr.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+
+        let delta = compute_delta(
+            &DynamicImage::ImageRgba8(prev),
+            &DynamicImage::ImageRgba8(curr),
+        )
+        .expect("one tile should change");
+
+        assert_eq!(delta.region.x, 16);
+        assert_eq!(delta.region.y, 32);
+        assert_eq!(delta.region.w, 16);
+        assert_eq!(delta.region.h, 16);
+        assert_eq!(delta.changed_tiles, 1);
+        assert_eq!(delta.total_tiles, 16);
+    }
+
+    #[test]
     fn adaptive_delta_high_sensitivity() {
         let prev = RgbaImage::from_pixel(64, 64, image::Rgba([100, 100, 100, 255]));
         let mut curr = prev.clone();
@@ -423,5 +465,65 @@ mod tests {
         let delta = result.unwrap();
         assert!(delta.changed_tiles >= 1);
         assert!(delta.region.w > 0 && delta.region.h > 0);
+    }
+
+    // Verify that the Cow borrow path (ImageRgba8 input) and the owned path
+    // (non-Rgba8 input converted via to_rgba8()) produce identical results.
+
+    #[test]
+    fn borrow_path_and_owned_path_compute_delta_same_result() {
+        // Build two clearly different images.
+        let prev_rgba = RgbaImage::from_pixel(64, 64, image::Rgba([0, 0, 0, 255]));
+        let curr_rgba = RgbaImage::from_pixel(64, 64, image::Rgba([200, 200, 200, 255]));
+
+        // Borrow path: already ImageRgba8 — as_rgba8() returns Some.
+        let prev_rgb8 = DynamicImage::ImageRgba8(prev_rgba.clone());
+        let curr_rgb8 = DynamicImage::ImageRgba8(curr_rgba.clone());
+        let result_borrow = compute_delta(&prev_rgb8, &curr_rgb8);
+
+        // Owned path: Luma8 input forces to_rgba8() conversion.
+        // Convert via DynamicImage::ImageLuma8 → compute_delta calls to_rgba8()
+        // internally, producing the same pixel values (gray 0 → RGBA 0,0,0,255 and
+        // gray 200 → RGBA 200,200,200,255).
+        let prev_luma =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(64, 64, image::Luma([0])));
+        let curr_luma =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(64, 64, image::Luma([200])));
+        let result_owned = compute_delta(&prev_luma, &curr_luma);
+
+        // Both paths must agree on whether a delta was detected.
+        assert_eq!(
+            result_borrow.is_some(),
+            result_owned.is_some(),
+            "borrow and owned paths must agree on delta presence"
+        );
+        if let (Some(b), Some(o)) = (result_borrow, result_owned) {
+            assert_eq!(
+                b.changed_tiles, o.changed_tiles,
+                "changed_tiles must match between borrow and owned paths"
+            );
+        }
+    }
+
+    #[test]
+    fn borrow_path_and_owned_path_compute_delta_adaptive_same_result() {
+        let prev_rgba = RgbaImage::from_pixel(32, 32, image::Rgba([50, 50, 50, 255]));
+        let curr_rgba = RgbaImage::from_pixel(32, 32, image::Rgba([220, 220, 220, 255]));
+
+        let prev_rgb8 = DynamicImage::ImageRgba8(prev_rgba);
+        let curr_rgb8 = DynamicImage::ImageRgba8(curr_rgba);
+        let result_borrow = compute_delta_adaptive(&prev_rgb8, &curr_rgb8, 1.0);
+
+        let prev_luma =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([50])));
+        let curr_luma =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([220])));
+        let result_owned = compute_delta_adaptive(&prev_luma, &curr_luma, 1.0);
+
+        assert_eq!(
+            result_borrow.is_some(),
+            result_owned.is_some(),
+            "adaptive: borrow and owned paths must agree on delta presence"
+        );
     }
 }

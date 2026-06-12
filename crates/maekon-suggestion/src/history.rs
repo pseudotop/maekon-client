@@ -149,6 +149,7 @@ mod tests {
             expires_at: None,
             source: Default::default(),
             reasoning: None,
+            context_scope: None,
         }
     }
 

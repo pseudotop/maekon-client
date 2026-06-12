@@ -1,6 +1,7 @@
+import { Lock } from 'lucide-react'
 import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { motion, typography } from '../../styles/tokens'
+import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { SuggestionViewDto } from '../types'
 import { SnoozePopover } from './SnoozePopover'
@@ -21,6 +22,7 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction }: S
   const { t } = useTranslation()
   const [showSnooze, setShowSnooze] = useState(false)
   const badgeClass = priorityClasses[item.priority] ?? priorityClasses.low
+  const requiresClarification = item.category === 'clarification-required'
 
   return (
     <li
@@ -40,17 +42,23 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction }: S
         </span>
       </div>
       <p className="mt-1 line-clamp-2 text-content-secondary text-xs">{item.body}</p>
+      <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-content-inverse/5 px-2 py-0.5 text-[10px] text-content-tertiary">
+        <Lock className={iconSize.xs} />
+        <span>{t('suggestions.noAutoAction', 'No auto action')}</span>
+      </div>
       <div className="mt-2 flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => onAction(item.id, 'accept')}
-          className={cn(
-            'rounded-md bg-semantic-success/15 px-2 py-1 text-semantic-success text-xs hover:bg-semantic-success/25',
-            motion.colors,
-          )}
-        >
-          {t('suggestions.accept')}
-        </button>
+        {!requiresClarification && (
+          <button
+            type="button"
+            onClick={() => onAction(item.id, 'accept')}
+            className={cn(
+              'rounded-md bg-semantic-success/15 px-2 py-1 text-semantic-success text-xs hover:bg-semantic-success/25',
+              motion.colors,
+            )}
+          >
+            {t('suggestions.accept')}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onAction(item.id, 'reject')}
@@ -61,27 +69,29 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction }: S
         >
           {t('suggestions.reject')}
         </button>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setShowSnooze(!showSnooze)}
-            className={cn(
-              'rounded-md bg-content-inverse/10 px-2 py-1 text-content-secondary text-xs hover:bg-content-inverse/15',
-              motion.colors,
+        {!requiresClarification && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowSnooze(!showSnooze)}
+              className={cn(
+                'rounded-md bg-content-inverse/10 px-2 py-1 text-content-secondary text-xs hover:bg-content-inverse/15',
+                motion.colors,
+              )}
+            >
+              {t('suggestions.later')}
+            </button>
+            {showSnooze && (
+              <SnoozePopover
+                onSelect={(minutes) => {
+                  onAction(item.id, 'defer', minutes)
+                  setShowSnooze(false)
+                }}
+                onCancel={() => setShowSnooze(false)}
+              />
             )}
-          >
-            {t('suggestions.later')}
-          </button>
-          {showSnooze && (
-            <SnoozePopover
-              onSelect={(minutes) => {
-                onAction(item.id, 'defer', minutes)
-                setShowSnooze(false)
-              }}
-              onCancel={() => setShowSnooze(false)}
-            />
-          )}
-        </div>
+          </div>
+        )}
         <button
           type="button"
           onClick={() => onAction(item.id, 'explain')}

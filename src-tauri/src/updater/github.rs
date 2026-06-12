@@ -22,23 +22,94 @@ pub(super) fn find_patch_asset(
 }
 
 impl Updater {
-    /// Returns `(download_url, asset_size)` for the first matching platform asset.
+    /// Returns `(download_url, asset_size)` for the first exact platform asset match.
     pub(super) fn find_platform_asset(
         &self,
         release: &ReleaseInfo,
     ) -> Result<(String, u64), UpdateError> {
-        let platform_patterns = Self::get_platform_patterns()?;
+        let platform_assets = Self::get_platform_asset_names()?;
 
-        for asset in &release.assets {
-            let name_lower = asset.name.to_lowercase();
-            for pattern in &platform_patterns {
-                if name_lower.contains(pattern) {
-                    return Ok((asset.browser_download_url.clone(), asset.size));
-                }
+        for expected_name in platform_assets {
+            if let Some(asset) = release
+                .assets
+                .iter()
+                .find(|asset| asset.name.eq_ignore_ascii_case(expected_name))
+            {
+                return Ok((asset.browser_download_url.clone(), asset.size));
             }
         }
 
         Err(UpdateError::NoSuitableAsset)
+    }
+
+    pub(super) fn get_platform_asset_names() -> Result<Vec<&'static str>, UpdateError> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            Ok(vec![
+                "maekon-macos-arm64.tar.gz",
+                "maekon-macos-aarch64.tar.gz",
+                "maekon-darwin-arm64.tar.gz",
+                "maekon-darwin-aarch64.tar.gz",
+                "maekon-macos-universal.tar.gz",
+            ])
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            Ok(vec![
+                "maekon-macos-x64.tar.gz",
+                "maekon-macos-x86_64.tar.gz",
+                "maekon-darwin-x64.tar.gz",
+                "maekon-darwin-x86_64.tar.gz",
+                "maekon-macos-universal.tar.gz",
+            ])
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            Ok(vec![
+                "maekon-windows-x64.zip",
+                "maekon-windows-x86_64.zip",
+                "maekon-win64.zip",
+                "maekon-win-x64.zip",
+            ])
+        }
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        {
+            Ok(vec![
+                "maekon-windows-arm64.zip",
+                "maekon-windows-aarch64.zip",
+                "maekon-win-arm64.zip",
+            ])
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            Ok(vec![
+                "maekon-linux-x64.tar.gz",
+                "maekon-linux-x86_64.tar.gz",
+                "maekon-linux-amd64.tar.gz",
+            ])
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Ok(vec![
+                "maekon-linux-arm64.tar.gz",
+                "maekon-linux-aarch64.tar.gz",
+            ])
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+        )))]
+        {
+            Err(UpdateError::UnsupportedPlatform(format!(
+                "{}-{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )))
+        }
     }
 
     pub(super) fn get_platform_patterns() -> Result<Vec<&'static str>, UpdateError> {
@@ -49,6 +120,7 @@ impl Updater {
                 "darwin-arm64",
                 "macos-aarch64",
                 "darwin-aarch64",
+                "macos-universal",
             ])
         }
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
@@ -58,6 +130,7 @@ impl Updater {
                 "darwin-x64",
                 "macos-x86_64",
                 "darwin-x86_64",
+                "macos-universal",
             ])
         }
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -117,5 +190,43 @@ impl Updater {
         }
 
         Ok(())
+    }
+
+    /// #4836: whether `latest` is within the configured update **ceiling**.
+    ///
+    /// Returns `true` (offer the update) when no ceiling is set or
+    /// `latest <= max_allowed_version`; returns `false` (hold at the current
+    /// version) when the candidate is above the ceiling. This is the
+    /// managed-config / MDM update kill-switch: an admin pins
+    /// `update.max_allowed_version` (lockable via `managed.json`) to freeze a
+    /// fleet at a known-good version while still permitting updates *up to* it.
+    ///
+    /// Unlike the floor (which `Err`s — a sub-floor release is a
+    /// downgrade/supply-chain signal), an over-ceiling release is the *normal,
+    /// expected* state when a fleet is pinned, so it is a silent hold, not an
+    /// error. A ceiling string that fails to parse is treated as a hold
+    /// (fail-closed): `validate_integrity_policy` rejects a malformed ceiling at
+    /// config load, so this only guards a bypassed validation, and a broken
+    /// freeze policy should hold rather than release.
+    pub(super) fn update_ceiling_permits(&self, latest: &semver::Version) -> bool {
+        let Some(max_raw) = self
+            .config
+            .max_allowed_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return true;
+        };
+
+        match semver::Version::parse(max_raw) {
+            Ok(max_allowed) => latest <= &max_allowed,
+            Err(e) => {
+                tracing::warn!(
+                    "update.max_allowed_version is not valid semver ({max_raw:?}: {e}); \
+                     holding updates (fail-closed)"
+                );
+                false
+            }
+        }
     }
 }

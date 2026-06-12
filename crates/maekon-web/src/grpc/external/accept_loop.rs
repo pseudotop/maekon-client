@@ -342,8 +342,11 @@ mod tests {
 
         // No connection should appear on the conn_tx channel.
         assert!(
-            conn_rx.try_recv().is_err(),
-            "banned IP connection must be dropped before TLS"
+            matches!(
+                conn_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "banned IP connection must be dropped before TLS — channel must be empty"
         );
         // Metric must record the block.
         assert!(
@@ -386,8 +389,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
 
         assert!(
-            conn_rx.try_recv().is_err(),
-            "connection over cap must be dropped"
+            matches!(
+                conn_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "connection over cap must be dropped — channel must be empty"
         );
 
         let _ = shutdown_tx.send(true);
@@ -422,9 +428,11 @@ mod tests {
 
         // Accept loop task should complete quickly.
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        assert!(
-            result.is_ok(),
-            "accept loop should exit within 2s of shutdown signal"
-        );
+        // Security-relevant: the accept loop must not hang or panic after a shutdown signal.
+        // A hung loop would block TLS connection teardown (active sessions held open).
+        // Pin both the timeout-Ok (liveness) and the inner JoinHandle Ok (no panic). (#5594)
+        result
+            .expect("accept loop should exit within 2s of shutdown signal")
+            .expect("run_accept_loop must not panic on clean shutdown");
     }
 }

@@ -20,10 +20,17 @@ pub struct CaptureRequest {
     pub importance: f32,
     pub app_name: String,
     pub window_title: String,
+    pub monitor_id: Option<usize>,
+    pub app_bundle_id: Option<String>,
     /// Active window bounds for multi-monitor capture targeting.
     /// When set, the frame processor captures the monitor containing
     /// the window instead of always using the primary monitor.
     pub window_bounds: Option<WindowBounds>,
+    /// Physical-to-logical scale for the capture source.
+    ///
+    /// `None` or `Some(1.0)` keeps OCR boxes in source pixels. HiDPI callers can
+    /// inject `Some(2.0)` so OCR boxes align with logical window coordinates.
+    pub screen_scale_factor: Option<f64>,
 }
 
 /// Captures and processes screen frames based on importance level.

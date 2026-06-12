@@ -50,12 +50,15 @@ jobs:
   smoke:
     name: AI Provider Live Smoke
     runs-on: ubuntu-latest
+    environment: desktop-smoke
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
@@ -117,4 +120,4 @@ jobs:
           MAEKON_AI_SMOKE_OCR_ENDPOINT: ${{ secrets.MAEKON_AI_SMOKE_OCR_ENDPOINT }}
           MAEKON_AI_SMOKE_OCR_API_KEY: ${{ secrets.MAEKON_AI_SMOKE_OCR_API_KEY }}
           MAEKON_AI_SMOKE_OCR_MODEL: ${{ secrets.MAEKON_AI_SMOKE_OCR_MODEL }}
-        run: ./scripts/cargo-cache.sh test -p maekon-network --test ai_provider_live_smoke -- --nocapture --test-threads=1
+        run: ./scripts/cargo-cache.sh test --locked -p maekon-network --test ai_provider_live_smoke -- --nocapture --test-threads=1

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 /// Coaching profile — maps to a behavioral coaching personality.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum CoachingProfile {
     /// Guards focus sessions from context-switch drift.
     FocusGuard,
@@ -153,6 +154,20 @@ pub struct HabitStreakRow {
     pub met: bool,
 }
 
+// F-RC-C37-03: Display returns PascalCase, matching serde wire contract and
+// the string values expected by playbooks handler DTO serialisation.
+impl std::fmt::Display for CoachingProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FocusGuard => f.write_str("FocusGuard"),
+            Self::TimeAware => f.write_str("TimeAware"),
+            Self::DeepWorkCoach => f.write_str("DeepWorkCoach"),
+            Self::ContextRestore => f.write_str("ContextRestore"),
+            Self::GoalTracker => f.write_str("GoalTracker"),
+        }
+    }
+}
+
 /// Extract the variant name of a `TriggerType` for template matching and storage keys.
 pub fn trigger_type_name(trigger: &TriggerType) -> String {
     match trigger {
@@ -237,6 +252,28 @@ mod tests {
         };
 
         assert_eq!(msg.display_text(), "template fallback text");
+    }
+
+    /// F-RC-C36-05: CoachingProfile serde PascalCase 라운드트립 검증.
+    #[test]
+    fn coaching_profile_serde_pascal_case_roundtrip() {
+        let cases = [
+            (CoachingProfile::FocusGuard, "\"FocusGuard\""),
+            (CoachingProfile::TimeAware, "\"TimeAware\""),
+            (CoachingProfile::DeepWorkCoach, "\"DeepWorkCoach\""),
+            (CoachingProfile::ContextRestore, "\"ContextRestore\""),
+            (CoachingProfile::GoalTracker, "\"GoalTracker\""),
+        ];
+        for (variant, expected_json) in &cases {
+            let json = serde_json::to_string(variant).expect("직렬화 실패");
+            assert_eq!(
+                json, *expected_json,
+                "PascalCase JSON 불일치: {:?}",
+                variant
+            );
+            let restored: CoachingProfile = serde_json::from_str(&json).expect("역직렬화 실패");
+            assert_eq!(restored, *variant, "역직렬화 후 값 불일치: {:?}", variant);
+        }
     }
 
     #[test]

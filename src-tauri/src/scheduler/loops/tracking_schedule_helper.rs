@@ -1,3 +1,4 @@
+// OOS-TBD: ADR-013 file split (cycle 37+) — LOC: 880
 //! Tracking-schedule scheduler helpers — Phase 9 PR-A.
 //!
 //! This module exposes two pure functions consumed by the scheduler:
@@ -5,8 +6,11 @@
 //! * [`tracking_schedule_active`] — returns `true` when the current instant
 //!   falls inside any configured tracking-schedule window.
 //!
-//! * [`capture_permitted_now`] — composes all four privacy gates per spec §3.4:
-//!   `consent_granted AND active_hours AND !tracking_schedule_active AND !capture_paused`.
+//! * [`capture_permitted_now`] — composes the capture privacy gates:
+//!   `capture_enabled AND consent_granted AND active_hours AND !tracking_schedule_active AND !capture_paused`.
+//!
+//! * [`audio_capture_permitted_now`] — identical gate for microphone capture;
+//!   uses `cfg.audio.enabled` instead of `cfg.vision.capture_enabled` (ADR-075 P-3).
 //!
 //! * [`evaluate_and_notify_transitions`] — fires a desktop notification when the
 //!   tracking-schedule window is entered or exited, with a 60-second debounce guard
@@ -54,19 +58,43 @@ pub(crate) fn tracking_schedule_active(cfg: &AppConfig, now: DateTime<Local>) ->
     ts.windows.iter().any(|w| w.window_is_active(now))
 }
 
-/// Returns `true` when capture is permitted right now.
+/// Shared composite-gate body, parameterized over the per-mode enable flag AND
+/// the per-mode consent term.
 ///
-/// Composes all 4 privacy gates per spec §3.4 (CONS-PC02):
+/// `enabled` is `cfg.vision.capture_enabled` for screen/vision capture or
+/// `cfg.audio.enabled` for microphone capture. `consent_granted` is
+/// `consent.screen_capture` for the screen gate or `consent.microphone` for the
+/// audio gate (#4568: the mic has its own consent — screen consent must never
+/// silently authorize it). These two terms are the ONLY ones that differ between
+/// the gates (ADR-075 P-3: parameterize, don't duplicate).
+fn capture_permitted_now_inner(
+    cfg: &AppConfig,
+    enabled: bool,
+    consent_granted: bool,
+    capture_paused: bool,
+    now: DateTime<Local>,
+) -> bool {
+    enabled
+        && consent_granted
+        && crate::scheduler::should_run_now_with_time(cfg, now)
+        && !tracking_schedule_active(cfg, now)
+        && !capture_paused
+}
+
+/// Screen/vision capture privacy gate (enable term = `cfg.vision.capture_enabled`).
+///
+/// Composes the capture privacy gates per spec §3.4 (CONS-PC02):
 ///
 /// ```text
 /// capture_permitted_now =
-///     consent.screen_capture                     // consent top-authority gate
+///     cfg.vision.capture_enabled                 // user-visible capture toggle
+///     AND consent.screen_capture                 // consent top-authority gate
 ///     AND should_run_now_with_time(cfg, now)     // active_hours gate
 ///     AND !tracking_schedule_active(cfg, now)    // tracking-schedule negative gate
 ///     AND !capture_paused                         // user tray-toggle veto
 /// ```
 ///
-/// All four gates must be true for capture to be permitted. Any single `false`
+/// All gates must be true for capture to be permitted. Any single `false`
 /// short-circuits and returns `false` regardless of the other gate values.
 ///
 /// # Plan deviation note
@@ -80,10 +108,64 @@ pub(crate) fn capture_permitted_now(
     capture_paused: bool,
     now: DateTime<Local>,
 ) -> bool {
-    consent.screen_capture
-        && crate::scheduler::should_run_now_with_time(cfg, now)
-        && !tracking_schedule_active(cfg, now)
-        && !capture_paused
+    capture_permitted_now_inner(
+        cfg,
+        cfg.vision.capture_enabled,
+        consent.screen_capture,
+        capture_paused,
+        now,
+    )
+}
+
+/// Microphone capture privacy gate (enable term = `cfg.audio.enabled`).
+///
+/// Identical to [`capture_permitted_now`] except for the enable flag: audio is
+/// opt-in (`audio.enabled` defaults false) and decoupled from the vision toggle.
+pub(crate) fn audio_capture_permitted_now(
+    cfg: &AppConfig,
+    consent: &ConsentPermissions,
+    capture_paused: bool,
+    now: DateTime<Local>,
+) -> bool {
+    capture_permitted_now_inner(
+        cfg,
+        cfg.audio.enabled,
+        consent.microphone,
+        capture_paused,
+        now,
+    )
+}
+
+/// Returns `true` when screen/vision capture is permitted after the optional
+/// battery-saver gate.
+///
+/// This preserves the existing four-gate behavior unless
+/// `schedule.pause_on_battery_saver` is enabled and the platform reports an
+/// active battery-saver / low-battery state.
+pub(crate) fn capture_permitted_now_with_power(
+    cfg: &AppConfig,
+    consent: &ConsentPermissions,
+    capture_paused: bool,
+    battery_saver_active: bool,
+    now: DateTime<Local>,
+) -> bool {
+    capture_permitted_now(cfg, consent, capture_paused, now)
+        && !(cfg.schedule.pause_on_battery_saver && battery_saver_active)
+}
+
+/// Returns `true` when microphone capture is permitted after the optional
+/// battery-saver gate.
+///
+/// Mirrors [`capture_permitted_now_with_power`] for microphone capture.
+pub(crate) fn audio_capture_permitted_now_with_power(
+    cfg: &AppConfig,
+    consent: &ConsentPermissions,
+    capture_paused: bool,
+    battery_saver_active: bool,
+    now: DateTime<Local>,
+) -> bool {
+    audio_capture_permitted_now(cfg, consent, capture_paused, now)
+        && !(cfg.schedule.pause_on_battery_saver && battery_saver_active)
 }
 
 // ── evaluate_and_notify_transitions ─────────────────────────────────────────
@@ -175,6 +257,81 @@ pub(super) async fn tick_ts_notifications(
     *prev_ts_active = now_active;
 }
 
+// ── Monitor power-cadence (idle backoff + battery throttle) ──────────────────
+//
+// #4795 (idle adaptive backoff) + #4798 (battery-saver throttle).
+//
+// 모니터 루프는 ~1s 고정 cadence 로 매 틱 osascript(`collect_context`) +
+// 접근성(AX) 추출을 수행한다. 사용자가 idle 이거나 배터리 절약 모드일 때조차
+// 풀 cadence 로 동작하므로 전력을 낭비한다.
+//
+// 이 결정 함수는 *순수*(상태 없음) 하다 — 호출자(monitor 루프)가 1초마다 증가하는
+// `tick_counter` 를 보유하고, 매 틱 이 함수로 "이번 틱에 비싼 작업을 실행할지" 를
+// 묻는다. 16개 루프 전체에 적용 가능한 adaptive-interval 프레임워크를 만들지 않는다
+// (YAGNI — osascript 를 1s 로 돌리는 루프는 monitor 하나뿐).
+
+/// idle 로 판정하기 시작하는 무입력 임계 (초). IdleTracker 의 5분 idle 임계와는
+/// 별개로, 전력 backoff 는 훨씬 짧은 무활동에서도 cadence 를 늘려야 하므로
+/// 전용 임계를 사용한다.
+pub(super) const MONITOR_IDLE_BACKOFF_SECS: u64 = 30;
+
+/// idle 상태에서 비싼 모니터 틱을 처리하는 주기 (초). 즉, idle 동안에는
+/// 5초에 한 번만 osascript/AX 작업을 수행한다.
+pub(super) const MONITOR_IDLE_CADENCE_SECS: u64 = 5;
+
+/// 배터리 절약 모드에서 비싼 모니터 틱을 처리하는 주기 (초). idle backoff 보다
+/// 보수적으로 — <3% 배터리 예산이 미측정 상태이므로 과도하게 늘리지 않는다.
+pub(super) const MONITOR_BATTERY_CADENCE_SECS: u64 = 3;
+
+/// 한 모니터 틱의 전력 인지 cadence 결정.
+///
+/// - `process`: 이번 틱에서 `collect_context`(osascript) + 컨텍스트/캡처/분석
+///   파이프라인 전체를 실행할지 여부. `false` 면 호출자는 틱을 건너뛴다.
+/// - `skip_expensive`: 처리하더라도 가장 비싼 선택적 블록(AX 추출 / GUI-LLM
+///   피드백)을 생략할지 여부. 배터리 절약 시 `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MonitorTickDecision {
+    pub process: bool,
+    pub skip_expensive: bool,
+}
+
+/// `tick_counter` (1초마다 1씩 증가), 현재 `idle_secs`, 배터리 절약 플래그로부터
+/// 이번 모니터 틱의 처리 여부를 결정한다.
+///
+/// # Edge-restore (latency)
+/// 입력 엣지(idle → active) 발생 시 `idle_secs` 가 backoff 임계 미만으로 떨어지면
+/// 즉시 풀 1s cadence 가 복원된다 (별도 상태 없이 `idle_secs` 만으로 판정하므로
+/// 엣지 직후 첫 틱에서 바로 `process=true`). cadence 위상(phase)은 `tick_counter`
+/// 모듈러로 결정되므로, backoff 중에도 활성 복귀를 1틱 이상 지연시키지 않는다.
+///
+/// 배터리 절약과 idle 이 동시일 때는 더 긴 cadence(둘 중 큰 주기)를 적용하되,
+/// `skip_expensive` 는 배터리 절약일 때 항상 `true`.
+pub(super) fn decide_monitor_tick(
+    tick_counter: u64,
+    idle_secs: u64,
+    battery_saver: bool,
+) -> MonitorTickDecision {
+    // 활성 상태(무입력 임계 미만) + AC 전원 → 풀 cadence, 비싼 작업 포함.
+    let idle = idle_secs >= MONITOR_IDLE_BACKOFF_SECS;
+
+    // 적용할 cadence 주기 선택 (둘 다일 땐 더 긴 쪽).
+    let cadence = match (idle, battery_saver) {
+        (false, false) => 1,
+        (true, false) => MONITOR_IDLE_CADENCE_SECS,
+        (false, true) => MONITOR_BATTERY_CADENCE_SECS,
+        (true, true) => MONITOR_IDLE_CADENCE_SECS.max(MONITOR_BATTERY_CADENCE_SECS),
+    };
+
+    // cadence == 1 이면 매 틱 처리 (위상 무관).
+    let process = cadence <= 1 || tick_counter.is_multiple_of(cadence);
+
+    MonitorTickDecision {
+        process,
+        // 배터리 절약 시 가장 비싼 선택 블록(AX/GUI-LLM)을 생략한다.
+        skip_expensive: battery_saver,
+    }
+}
+
 // ── TsNotifier impl for NotificationManager ──────────────────────────────────
 
 // `NotificationManager` 가 `TsNotifier` 를 구현하므로 monitor 루프에서 직접 전달된다.
@@ -254,10 +411,15 @@ mod tests {
         cfg
     }
 
-    /// Build consent with `screen_capture` set to `granted`.
-    fn consent(screen_capture: bool) -> ConsentPermissions {
+    /// Build consent with `screen_capture` and `microphone` set independently.
+    ///
+    /// The screen gate (`capture_permitted_now`) reads `screen_capture`; the audio
+    /// gate (`audio_capture_permitted_now`) reads `microphone` — the two are
+    /// independent consent terms (#4568), so tests must drive them separately.
+    fn consent(screen_capture: bool, microphone: bool) -> ConsentPermissions {
         ConsentPermissions {
             screen_capture,
+            microphone,
             ..Default::default()
         }
     }
@@ -375,7 +537,7 @@ mod tests {
 
     // ── 16-row truth table (Test 8) ────────────────────────────────────────
 
-    /// Test 8: All 2⁴ combinations of the four gates.
+    /// Test 8: All 2⁴ combinations of the legacy schedule/consent gates.
     ///
     /// Each combination is constructed by building an `AppConfig` that puts
     /// each gate into the desired state, then asserting that
@@ -402,7 +564,8 @@ mod tests {
                 for ts_inactive_val in [true, false] {
                     for paused_val in [true, false] {
                         let cfg = build_scenario_cfg(active_hours_val, ts_inactive_val, now);
-                        let c = consent(consent_val);
+                        // Screen gate reads screen_capture; mic mirrors it here (irrelevant to this gate).
+                        let c = consent(consent_val, consent_val);
                         let expected =
                             consent_val && active_hours_val && ts_inactive_val && !paused_val;
 
@@ -418,6 +581,135 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn capture_permitted_respects_capture_enabled_setting() {
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.vision.capture_enabled = false;
+
+        assert!(
+            !capture_permitted_now(&cfg, &consent(true, true), false, now),
+            "capture_enabled=false must veto capture even when consent, active hours, tracking schedule, and pause gates allow it"
+        );
+    }
+
+    // ── audio_capture_permitted_now tests ───────────────────────────────────
+
+    #[test]
+    fn audio_capture_permitted_respects_audio_enabled_setting() {
+        // The audio gate's veto term is audio.enabled — NOT vision.capture_enabled.
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now); // active hours cover now; TS inactive
+        cfg.audio.enabled = false;
+        assert!(
+            !audio_capture_permitted_now(&cfg, &consent(true, true), false, now),
+            "audio.enabled=false must veto audio capture even when all other gates allow"
+        );
+    }
+
+    #[test]
+    fn audio_capture_permitted_allows_when_all_pass() {
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.audio.enabled = true;
+        assert!(
+            audio_capture_permitted_now(&cfg, &consent(true, true), false, now),
+            "audio capture must be permitted when audio.enabled + microphone consent + hours + ts-inactive + not-paused"
+        );
+    }
+
+    #[test]
+    fn audio_capture_permitted_decoupled_from_vision_capture_enabled() {
+        // The core fix: audio must NOT be coupled to the vision/screen toggle.
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.audio.enabled = true;
+        cfg.vision.capture_enabled = false; // vision off must NOT block audio
+        assert!(
+            audio_capture_permitted_now(&cfg, &consent(true, true), false, now),
+            "audio.enabled=true must permit audio even when vision.capture_enabled=false (decoupling)"
+        );
+        cfg.audio.enabled = false;
+        cfg.vision.capture_enabled = true; // vision on must NOT enable audio
+        assert!(
+            !audio_capture_permitted_now(&cfg, &consent(true, true), false, now),
+            "audio.enabled=false must deny audio even when vision.capture_enabled=true"
+        );
+    }
+
+    #[test]
+    fn audio_capture_permitted_denies_without_consent() {
+        // The microphone consent term — NOT screen_capture — gates audio (#4568).
+        // screen_capture=true here proves screen consent does NOT authorize the mic.
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.audio.enabled = true;
+        assert!(
+            !audio_capture_permitted_now(&cfg, &consent(true, false), false, now),
+            "audio capture must be denied without microphone consent (even with screen_capture granted)"
+        );
+    }
+
+    #[test]
+    fn audio_capture_permitted_denies_when_paused() {
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.audio.enabled = true;
+        assert!(
+            !audio_capture_permitted_now(&cfg, &consent(true, true), true, now),
+            "audio capture must be denied when capture_paused=true"
+        );
+    }
+
+    #[test]
+    fn audio_capture_permitted_with_power_denies_on_battery_saver() {
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.audio.enabled = true;
+        cfg.schedule.pause_on_battery_saver = true;
+        assert!(
+            !audio_capture_permitted_now_with_power(&cfg, &consent(true, true), false, true, now),
+            "audio capture must be denied during battery-saver when pause_on_battery_saver=true"
+        );
+        assert!(
+            audio_capture_permitted_now_with_power(&cfg, &consent(true, true), false, false, now),
+            "audio capture must be permitted when battery-saver inactive"
+        );
+    }
+
+    /// Bidirectional independence (F4 proof, #4568): screen and microphone consent
+    /// terms are fully decoupled. screen-only grant permits screen but NOT audio;
+    /// mic-only grant permits audio but NOT screen.
+    #[test]
+    fn screen_and_microphone_consent_are_independent() {
+        let now = monday_at(12, 30);
+        let mut cfg = build_scenario_cfg(true, true, now);
+        cfg.vision.capture_enabled = true;
+        cfg.audio.enabled = true;
+
+        // screen=true, mic=false → screen permitted, audio denied.
+        let screen_only = consent(true, false);
+        assert!(
+            capture_permitted_now(&cfg, &screen_only, false, now),
+            "screen consent (mic=false) must permit screen capture"
+        );
+        assert!(
+            !audio_capture_permitted_now(&cfg, &screen_only, false, now),
+            "screen consent must NOT authorize the mic (mic=false → audio denied)"
+        );
+
+        // mic=true, screen=false → audio permitted, screen denied (mirror).
+        let mic_only = consent(false, true);
+        assert!(
+            audio_capture_permitted_now(&cfg, &mic_only, false, now),
+            "microphone consent (screen=false) must permit audio capture"
+        );
+        assert!(
+            !capture_permitted_now(&cfg, &mic_only, false, now),
+            "microphone consent must NOT authorize screen capture (screen=false → screen denied)"
+        );
     }
 
     /// Builds an `AppConfig` that puts active_hours and ts_inactive gates into
@@ -499,7 +791,7 @@ mod tests {
         // TS disabled — not firing.
         cfg.tracking_schedule = TrackingScheduleConfig::default();
 
-        let c = consent(true); // consent granted
+        let c = consent(true, true); // consent granted
         let capture_paused = false;
 
         assert!(
@@ -524,7 +816,7 @@ mod tests {
         cfg.tracking_schedule = TrackingScheduleConfig::default();
 
         // Consent revoked: screen_capture = false.
-        let c = consent(false);
+        let c = consent(false, false);
         let capture_paused = false;
 
         assert!(
@@ -547,7 +839,7 @@ mod tests {
         cfg.schedule.active_days = vec![Weekday::Mon];
         cfg.tracking_schedule = TrackingScheduleConfig::default();
 
-        let c = consent(true); // consent granted
+        let c = consent(true, true); // consent granted
         let capture_paused = true; // user tray-toggle veto
 
         assert!(
@@ -657,7 +949,7 @@ mod tests {
             timezone: "Local".to_string(),
         };
 
-        let c = consent(false); // revoked
+        let c = consent(false, false); // revoked
         let capture_paused = true;
 
         assert!(
@@ -679,13 +971,149 @@ mod tests {
         // TS not firing (disabled).
         cfg.tracking_schedule = TrackingScheduleConfig::default();
 
-        let c = consent(true); // granted
+        let c = consent(true, true); // granted
         let capture_paused = false;
 
         assert!(
             capture_permitted_now(&cfg, &c, capture_paused, now),
             "all four gates true must return true"
         );
+    }
+
+    /// POWER-001: battery saver closes the capture gate when the user enabled
+    /// the battery-saver schedule option.
+    #[test]
+    fn battery_saver_blocks_capture_when_schedule_option_enabled() {
+        let now = monday_at(12, 30);
+        let mut cfg = AppConfig::default_config();
+        cfg.schedule.pause_on_battery_saver = true;
+
+        assert!(
+            !capture_permitted_now_with_power(&cfg, &consent(true, true), false, true, now),
+            "battery saver must block capture when pause_on_battery_saver=true"
+        );
+    }
+
+    /// POWER-002: when AC / normal power is restored, the same capture gates
+    /// return to full-rate behavior.
+    #[test]
+    fn normal_power_restores_capture_when_other_gates_permit() {
+        let now = monday_at(12, 30);
+        let mut cfg = AppConfig::default_config();
+        cfg.schedule.pause_on_battery_saver = true;
+
+        assert!(
+            capture_permitted_now_with_power(&cfg, &consent(true, true), false, false, now),
+            "normal power must restore capture when all other gates permit"
+        );
+    }
+
+    /// The new power gate is opt-in: existing users keep the old behavior until
+    /// `pause_on_battery_saver` is enabled.
+    #[test]
+    fn battery_saver_is_ignored_when_schedule_option_disabled() {
+        let now = monday_at(12, 30);
+        let mut cfg = AppConfig::default_config();
+        cfg.schedule.pause_on_battery_saver = false;
+
+        assert!(
+            capture_permitted_now_with_power(&cfg, &consent(true, true), false, true, now),
+            "battery saver must not block capture when pause_on_battery_saver=false"
+        );
+    }
+
+    // ── decide_monitor_tick tests (#4795 idle backoff + #4798 battery) ──────
+
+    /// 활성(무입력 임계 미만) + AC 전원 → 매 틱 처리, 비싼 작업 포함.
+    #[test]
+    fn monitor_tick_active_ac_processes_every_tick() {
+        for tick in 0..10 {
+            let d = decide_monitor_tick(tick, 0, false);
+            assert!(d.process, "active+AC must process every tick (tick={tick})");
+            assert!(!d.skip_expensive, "active+AC must not skip expensive work");
+        }
+    }
+
+    /// idle(무입력 임계 이상) + AC → MONITOR_IDLE_CADENCE_SECS 마다만 처리.
+    #[test]
+    fn monitor_tick_idle_backs_off_to_idle_cadence() {
+        let idle_secs = MONITOR_IDLE_BACKOFF_SECS; // 정확히 임계 → idle
+        let mut processed = 0u64;
+        for tick in 0..MONITOR_IDLE_CADENCE_SECS * 4 {
+            let d = decide_monitor_tick(tick, idle_secs, false);
+            if d.process {
+                processed += 1;
+                assert_eq!(
+                    tick % MONITOR_IDLE_CADENCE_SECS,
+                    0,
+                    "idle processing must align to cadence phase"
+                );
+            }
+            assert!(
+                !d.skip_expensive,
+                "AC power must not skip expensive work even when idle"
+            );
+        }
+        assert_eq!(
+            processed, 4,
+            "expected exactly 4 processed ticks over 4 cadences"
+        );
+    }
+
+    /// 입력 엣지(idle → active) 복귀 시 즉시 풀 cadence 복원 (latency 0틱).
+    /// backoff 중 임의 위상에서 active 로 떨어져도 그 즉시 process=true.
+    #[test]
+    fn monitor_tick_input_edge_restores_full_cadence_immediately() {
+        // backoff 위상상 "건너뛰는" 틱(예: tick=3, cadence=5)에서
+        // idle_secs 가 임계 미만으로 떨어지면 즉시 처리되어야 한다.
+        let skip_tick = 3u64;
+        assert!(!skip_tick.is_multiple_of(MONITOR_IDLE_CADENCE_SECS));
+        let idle_d = decide_monitor_tick(skip_tick, MONITOR_IDLE_BACKOFF_SECS, false);
+        assert!(
+            !idle_d.process,
+            "tick 3 must be skipped while idle (cadence 5)"
+        );
+
+        let active_d = decide_monitor_tick(skip_tick, 0, false);
+        assert!(
+            active_d.process,
+            "input edge (idle_secs<threshold) must restore processing on the same tick"
+        );
+    }
+
+    /// 배터리 절약 + 활성 → MONITOR_BATTERY_CADENCE_SECS 마다 처리 + 비싼 작업 생략.
+    #[test]
+    fn monitor_tick_battery_saver_throttles_and_skips_expensive() {
+        let mut processed = 0u64;
+        for tick in 0..MONITOR_BATTERY_CADENCE_SECS * 3 {
+            let d = decide_monitor_tick(tick, 0, true);
+            if d.process {
+                processed += 1;
+            }
+            assert!(
+                d.skip_expensive,
+                "battery saver must skip expensive AX/GUI-LLM work"
+            );
+        }
+        assert_eq!(
+            processed, 3,
+            "battery saver must process once per battery cadence"
+        );
+    }
+
+    /// idle + 배터리 절약 동시 → 더 긴 cadence(둘 중 큰 주기) 적용 + 비싼 작업 생략.
+    #[test]
+    fn monitor_tick_idle_and_battery_use_longer_cadence() {
+        let longer = MONITOR_IDLE_CADENCE_SECS.max(MONITOR_BATTERY_CADENCE_SECS);
+        for tick in 0..longer * 2 {
+            let d = decide_monitor_tick(tick, MONITOR_IDLE_BACKOFF_SECS, true);
+            assert_eq!(
+                d.process,
+                tick.is_multiple_of(longer),
+                "combined idle+battery must use the longer cadence"
+            );
+            assert!(d.skip_expensive, "battery saver must skip expensive work");
+        }
     }
 
     // ── evaluate_and_notify_transitions tests (A.18) ────────────────────────

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  English (en-US) display strings for maekon.admx (E20-45 #4837).
+  Place at: PolicyDefinitions\en-US\maekon.adml (alongside maekon.admx).
+-->
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           revision="1.0" schemaVersion="1.0"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Maekon Managed Policies</displayName>
+  <description>Group Policy template for the Maekon desktop client managed configuration.</description>
+  <resources>
+    <stringTable>
+      <string id="Cat_Maekon">Maekon</string>
+
+      <string id="Telemetry_Enabled">Enable telemetry</string>
+      <string id="Telemetry_Enabled_Help">Locks telemetry.enabled. When Disabled, OTLP telemetry egress is hard-disabled fleet-wide and the local user cannot turn it on. Not configured = user-controlled.</string>
+
+      <string id="Telemetry_CrashReports">Enable crash reports</string>
+      <string id="Telemetry_CrashReports_Help">Locks telemetry.crash_reports. Not configured = user-controlled.</string>
+
+      <string id="Vision_CaptureEnabled">Enable screen capture</string>
+      <string id="Vision_CaptureEnabled_Help">Locks vision.capture_enabled. When Disabled, screen capture is hard-disabled fleet-wide. Not configured = user-controlled.</string>
+
+      <string id="Update_Enabled">Enable application updates</string>
+      <string id="Update_Enabled_Help">Locks update.enabled. When Disabled, this is an immediate fleet update kill-switch: the update loop never spawns and the coordinator stays Idle. Not configured = user-controlled.</string>
+
+      <string id="Privacy_PiiFilterLevel">PII filter level</string>
+      <string id="Privacy_PiiFilterLevel_Help">Locks privacy.pii_filter_level. Higher levels mask more PII on-device before any upload. Not configured = user-controlled.</string>
+      <string id="Pii_Off">Off</string>
+      <string id="Pii_Basic">Basic</string>
+      <string id="Pii_Standard">Standard</string>
+      <string id="Pii_Strict">Strict</string>
+
+      <string id="Audio_CloudSttPolicy">Cloud speech-to-text policy</string>
+      <string id="Audio_CloudSttPolicy_Help">Locks audio.cloud_stt_policy — the fleet gate for cloud STT raw-audio egress, independent of whether any user enters an API key. "Disabled" means raw audio never leaves the device. Not configured = user-controlled.</string>
+      <string id="Stt_Allow">Allow</string>
+      <string id="Stt_RequireAdminApproval">Require admin approval</string>
+      <string id="Stt_Disabled">Disabled</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="Privacy_PiiFilterLevel">
+        <dropdownList refId="Privacy_PiiFilterLevel_Enum" defaultItem="2">PII filter level</dropdownList>
+      </presentation>
+      <presentation id="Audio_CloudSttPolicy">
+        <dropdownList refId="Audio_CloudSttPolicy_Enum" defaultItem="0">Cloud STT policy</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

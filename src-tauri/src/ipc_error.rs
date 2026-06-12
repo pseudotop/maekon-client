@@ -31,10 +31,8 @@
 //!
 //! ## Migration
 //!
-//! Ongoing — see `docs/reviews/2026-04-20-adr019-followup-ipc-error-dto-design.md`
-//! for the phased migration plan. This module ships the foundation; individual
-//! command files migrate in separate PRs (low-risk read-only commands first,
-//! then state-mutating, then streaming/heavy-IO).
+//! The migration is complete: command files now return `IpcError` rather than
+//! plain strings, preserving ADR-019 wire codes through the Tauri boundary.
 
 use maekon_core::error::CoreError;
 use maekon_core::error::GuiInteractionError;

@@ -44,11 +44,13 @@ Security updates are provided for the following versions.
 
 | Version | Support Status |
 |---------|---------------|
-| Latest `main` branch | Supported |
-| Latest release tag | Supported |
-| Previous releases | Not supported |
+| Latest `main` branch | Supported for source builds and unreleased fixes |
+| Current public prerelease (`v0.0.1-rc.6`) | Supported |
+| Latest stable release tag | Supported after the first stable release |
+| Previous prereleases/releases | Not supported |
 
-As no official release has been made yet, please report security vulnerabilities against the **latest `main` branch**.
+The current public binary is a prerelease. Please include the exact tag, commit
+SHA, or `main` revision you tested when reporting a vulnerability.
 
 ## Response Time SLA
 

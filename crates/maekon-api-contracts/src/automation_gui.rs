@@ -1,13 +1,18 @@
-use maekon_core::models::gui::{GuiActionRequest, GuiExecutionTicket, GuiInteractionSession};
+use maekon_core::models::gui::{
+    GuiActionRequest, GuiBenchmarkDecision, GuiExecutionTicket, GuiInteractionSession,
+    GuiReadinessSnapshot,
+};
 use maekon_core::models::intent::IntentResult;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiSessionPath {
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiCreateSessionRequest {
     pub app_name: Option<String>,
     pub screen_id: Option<String>,
@@ -17,43 +22,80 @@ pub struct GuiCreateSessionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiHighlightRequest {
     pub candidate_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiConfirmRequest {
     pub candidate_id: String,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub action: GuiActionRequest,
     pub ticket_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiExecutionRequest {
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub ticket: GuiExecutionTicket,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiCreateSessionResponse {
     pub schema_version: String,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub session: GuiInteractionSession,
     pub capability_token: String,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiSessionResponse {
     pub schema_version: String,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub session: GuiInteractionSession,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiConfirmResponse {
     pub schema_version: String,
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub ticket: GuiExecutionTicket,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiExecutionOutcome {
+    // Cross-crate `maekon-core` type — contained as an opaque object.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub session: GuiInteractionSession,
     pub succeeded: bool,
     pub detail: Option<String>,
@@ -62,18 +104,50 @@ pub struct GuiExecutionOutcome {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiExecuteResponse {
     pub schema_version: String,
     pub command_id: String,
+    // Cross-crate `maekon-core` types — contained as opaque objects.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub ticket: GuiExecutionTicket,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
     pub result: IntentResult,
     pub outcome: GuiExecutionOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GuiReadinessResponse {
+    pub schema_version: String,
+    // Cross-crate `maekon-core` types — contained as opaque objects.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
+    pub benchmark_decision: GuiBenchmarkDecision,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
+    pub snapshot: GuiReadinessSnapshot,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maekon_core::models::gui::GuiActionType;
+    use chrono::Utc;
+    use maekon_core::models::gui::{
+        GuiActionType, GuiBenchmarkDecision, GuiCapabilityMatrix, GuiCapabilityState,
+        GuiExecutionVerificationMode, GuiInputExecutionMode, GuiInputExecutionModeReason,
+        GuiReadinessPlatform, GuiReadinessSnapshot, GUI_READINESS_SCHEMA_VERSION,
+    };
 
     #[test]
     fn create_session_request_deserializes_minimal() {
@@ -183,5 +257,45 @@ mod tests {
         assert_eq!(outcome.session.session_id, "s1");
         assert_eq!(outcome.steps_completed, 1);
         assert_eq!(outcome.total_steps, 1);
+    }
+
+    #[test]
+    fn readiness_response_serializes_snapshot_and_decision() {
+        let snapshot = GuiReadinessSnapshot {
+            schema_version: GUI_READINESS_SCHEMA_VERSION.to_string(),
+            platform: GuiReadinessPlatform::Windows,
+            captured_at: Utc::now(),
+            automation_enabled: true,
+            controller_built: true,
+            gui_service_configured: true,
+            hmac_secret_present: true,
+            input_execution_mode: GuiInputExecutionMode::DirectRealInput,
+            input_execution_reason: GuiInputExecutionModeReason::DirectNativeInput,
+            execution_verification_mode: GuiExecutionVerificationMode::ObservableStateChange,
+            session_constraints: vec![],
+            capabilities: GuiCapabilityMatrix {
+                screen_visibility: GuiCapabilityState::Available,
+                accessibility_extraction: GuiCapabilityState::Available,
+                ocr_fallback: GuiCapabilityState::Available,
+                overlay: GuiCapabilityState::Available,
+                input_execution: GuiCapabilityState::Available,
+                permissions: GuiCapabilityState::Available,
+                sandbox_support: GuiCapabilityState::Unsupported,
+                audit: GuiCapabilityState::Available,
+                privacy_policy: GuiCapabilityState::Available,
+            },
+            diagnostics: vec![],
+        };
+        let response = GuiReadinessResponse {
+            schema_version: GUI_READINESS_SCHEMA_VERSION.to_string(),
+            benchmark_decision: snapshot.benchmark_decision(),
+            snapshot,
+        };
+
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["schema_version"], GUI_READINESS_SCHEMA_VERSION);
+        assert_eq!(value["benchmark_decision"], "run");
+        assert_eq!(value["snapshot"]["platform"], "windows");
+        assert_eq!(response.benchmark_decision, GuiBenchmarkDecision::Run);
     }
 }

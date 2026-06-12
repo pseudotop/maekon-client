@@ -1,5 +1,6 @@
 import { DEFAULT_WEB_PORT } from '../constants'
 import { palette } from '../styles/tokens'
+import { isTauriRuntime } from '../utils/platform'
 import type {
   AppSettings,
   AutomationSettings,
@@ -11,12 +12,12 @@ import type {
   ExecuteSceneActionRequest,
   ExecutionPolicyConfig,
   FocusMetricsResponse,
-  LocalSuggestion,
   PoliciesInfo,
   ReportResponse,
   RestoreResult,
   SearchResponse,
   StorageStats,
+  SuggestionDto,
   Tag,
   TimelineResponse,
   TrackingScheduleConfig,
@@ -35,7 +36,7 @@ function hasWindow(): boolean {
 }
 
 function isTauriWindow(): boolean {
-  return hasWindow() && '__TAURI_INTERNALS__' in window
+  return isTauriRuntime()
 }
 
 function detectInitialStandaloneMode(): boolean {
@@ -413,6 +414,7 @@ function makeDefaultAutomationStatus(): AutomationStatus {
     llm_fallback_reason: null,
     external_data_policy: 'disabled',
     pending_audit_entries: 0,
+    confirmation_policy: 'AUTO',
   }
 }
 
@@ -478,7 +480,7 @@ type StandaloneState = {
   updateStatus: UpdateStatus
   tags: Tag[]
   frameTags: Map<number, Set<number>>
-  suggestions: LocalSuggestion[]
+  suggestions: SuggestionDto[]
   presets: WorkflowPreset[]
   executionPolicies: ExecutionPolicyConfig[]
   trackingSchedule: TrackingScheduleConfig
@@ -836,6 +838,9 @@ export async function handleStandaloneRequest(
   if (path === '/api/focus/interruptions' && method === 'GET') {
     return jsonResponse([])
   }
+  if (path === '/api/suggestions' && method === 'GET') {
+    return jsonResponse(state.suggestions)
+  }
   if (path === '/api/focus/suggestions' && method === 'GET') {
     return jsonResponse(state.suggestions)
   }
@@ -851,9 +856,26 @@ export async function handleStandaloneRequest(
     return jsonResponse(makeDefaultTrackingScheduleStatus())
   }
 
-  const suggestionFeedbackMatch = path.match(/^\/api\/focus\/suggestions\/(\d+)\/feedback$/)
+  const suggestionFeedbackMatch = path.match(/^\/api\/suggestions\/([^/]+)\/feedback$/)
   if (suggestionFeedbackMatch && method === 'POST') {
-    const suggestionId = parseId(suggestionFeedbackMatch[1])
+    const suggestionId = decodeURIComponent(suggestionFeedbackMatch[1])
+    const action = (body as { action?: string } | null)?.action
+    if (suggestionId && action) {
+      state.suggestions = state.suggestions.map((suggestion) => {
+        if (suggestion.suggestion_id !== suggestionId) return suggestion
+        const now = new Date().toISOString()
+        if (action === 'shown') return { ...suggestion, shown_at: now }
+        if (action === 'dismissed') return { ...suggestion, dismissed_at: now }
+        if (action === 'acted') return { ...suggestion, acted_at: now }
+        return suggestion
+      })
+    }
+    return jsonResponse({ ok: true })
+  }
+
+  const legacySuggestionFeedbackMatch = path.match(/^\/api\/focus\/suggestions\/(\d+)\/feedback$/)
+  if (legacySuggestionFeedbackMatch && method === 'POST') {
+    const suggestionId = parseId(legacySuggestionFeedbackMatch[1])
     const action = (body as { action?: string } | null)?.action
     if (suggestionId != null && action) {
       state.suggestions = state.suggestions.map((suggestion) => {
@@ -861,7 +883,7 @@ export async function handleStandaloneRequest(
         const now = new Date().toISOString()
         if (action === 'shown') return { ...suggestion, shown_at: now }
         if (action === 'dismissed') return { ...suggestion, dismissed_at: now }
-        if (action === 'acted') return { ...suggestion, acted_at: now }
+        if (action === 'acted' || action === 'accept') return { ...suggestion, acted_at: now }
         return suggestion
       })
     }
@@ -1195,6 +1217,7 @@ export async function handleStandaloneRequest(
       },
       settings_snapshot: makeDefaultSettings(),
       storage_stats: makeDefaultStorageStats(),
+      provider_cli: [],
       recent_audit_entries: [],
       recent_policy_events: [],
     })

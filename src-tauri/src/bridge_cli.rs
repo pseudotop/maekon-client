@@ -88,15 +88,26 @@ mod tests {
 
     #[test]
     fn parse_user_scope_flag_accepts_default_and_flag() {
-        assert!(parse_user_scope_flag(&[]).is_ok());
+        // The empty-args path delegates to should_include_user_scope() whose
+        // return value is environment-dependent (platform heuristic); we can
+        // only assert it succeeds without error.
+        // (#5594: ok-only IS the whole contract for the empty-arg path)
+        parse_user_scope_flag(&[]).expect("empty args must succeed (delegates to heuristic)");
+
+        // The --user-scope flag has a deterministic contract: always Ok(true).
         assert_eq!(
             parse_user_scope_flag(&["--user-scope".to_string()]),
-            Ok(true)
+            Ok(true),
+            "--user-scope must unconditionally return Ok(true)"
         );
     }
 
     #[test]
     fn parse_user_scope_flag_rejects_unknown_args() {
-        assert!(parse_user_scope_flag(&["--other".to_string()]).is_err());
+        let err = parse_user_scope_flag(&["--other".to_string()]).unwrap_err();
+        assert!(
+            err.contains("Usage:"),
+            "unknown arg must yield a Usage: error; got: {err}"
+        );
     }
 }

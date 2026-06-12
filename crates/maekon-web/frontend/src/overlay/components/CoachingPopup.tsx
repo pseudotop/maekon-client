@@ -109,7 +109,11 @@ export default function CoachingPopup({ message, autoDismissSecs }: CoachingPopu
     <div className="fixed top-4 right-4 z-overlay">
       <div className="w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-content-inverse/10 bg-surface-sunken/90 p-4 shadow-2xl backdrop-blur-md">
         {/* Message text with transition */}
+        {/* aria-live(polite): announce coaching text (incl. LLM upgrade) to screen
+            readers, reusing the Toast polite-region pattern. */}
         <p
+          aria-live="polite"
+          aria-atomic="true"
           className={`mb-3 text-content text-sm leading-relaxed ${motion.opacity}${
             transitioning ? 'opacity-0' : 'opacity-100'
           }`}

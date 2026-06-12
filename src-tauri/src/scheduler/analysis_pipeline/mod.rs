@@ -287,7 +287,7 @@ pub(super) async fn run_analysis_tick(
     ts.auto_tune_tick_count += 1;
 
     // Periodically (every 100 ticks): generate overrides → ParamResolver
-    if ts.auto_tune_tick_count % 100 == 0 {
+    if ts.auto_tune_tick_count.is_multiple_of(100) {
         let overrides = ts.ema_tracker.generate_overrides();
         for (cat_key, params) in &overrides {
             let category = AppCategory::from_category_str(cat_key);

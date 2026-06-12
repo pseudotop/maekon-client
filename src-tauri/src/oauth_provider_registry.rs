@@ -1,29 +1,29 @@
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_api_contracts::ai_providers::ProviderTransportSpec;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_api_contracts::provider_specs::{
     self, parse_surface_execution_kind, provider_surface_catalog, provider_surface_spec,
     ProviderSurfaceSpec, ProviderTransportKind, SurfaceExecutionKind,
 };
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AiProviderType, ExternalApiEndpoint};
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::error::CoreError;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::provider_surface::default_provider_surface_id;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_network::oauth::provider_config::OAuthProviderConfig;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use tracing::warn;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 #[derive(Clone, Copy)]
 struct ManagedOAuthProviderFactory {
     vendor_id: &'static str,
     build: fn(&ProviderSurfaceSpec) -> Option<OAuthProviderConfig>,
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn managed_oauth_provider_factories() -> [ManagedOAuthProviderFactory; 2] {
     [
         ManagedOAuthProviderFactory {
@@ -37,7 +37,7 @@ fn managed_oauth_provider_factories() -> [ManagedOAuthProviderFactory; 2] {
     ]
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn configured_oauth_provider_configs() -> Vec<OAuthProviderConfig> {
     managed_oauth_surface_specs()
         .into_iter()
@@ -46,7 +46,7 @@ pub fn configured_oauth_provider_configs() -> Vec<OAuthProviderConfig> {
         .collect()
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn managed_oauth_surface_specs() -> Result<Vec<&'static ProviderSurfaceSpec>, String> {
     let catalog = provider_surface_catalog()?;
     Ok(catalog
@@ -62,7 +62,7 @@ fn managed_oauth_surface_specs() -> Result<Vec<&'static ProviderSurfaceSpec>, St
         .collect())
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn build_managed_oauth_provider_config(
     surface: &ProviderSurfaceSpec,
 ) -> Option<OAuthProviderConfig> {
@@ -80,7 +80,7 @@ fn build_managed_oauth_provider_config(
     (factory.build)(surface)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn configured_oauth_provider_ids() -> Vec<String> {
     configured_oauth_provider_configs()
         .into_iter()
@@ -88,7 +88,7 @@ pub fn configured_oauth_provider_ids() -> Vec<String> {
         .collect()
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn selected_managed_oauth_provider_ids(
     config: &AiProviderConfig,
 ) -> Result<Vec<String>, CoreError> {
@@ -120,7 +120,7 @@ pub fn selected_managed_oauth_provider_ids(
     Ok(provider_ids)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn managed_oauth_provider_id_for_endpoint(
     endpoint: &ExternalApiEndpoint,
     _kind: ProviderTransportKind,
@@ -128,7 +128,7 @@ pub fn managed_oauth_provider_id_for_endpoint(
     Ok(managed_oauth_surface(endpoint)?.vendor_id.clone())
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn managed_oauth_transport_url_for_endpoint(
     endpoint: &ExternalApiEndpoint,
     kind: ProviderTransportKind,
@@ -136,7 +136,7 @@ pub fn managed_oauth_transport_url_for_endpoint(
     Ok(managed_oauth_transport_spec(endpoint, kind)?.url.clone())
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn managed_oauth_transport_spec(
     endpoint: &ExternalApiEndpoint,
     kind: ProviderTransportKind,
@@ -157,7 +157,7 @@ fn managed_oauth_transport_spec(
     Ok(spec)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn managed_oauth_surface(
     endpoint: &ExternalApiEndpoint,
 ) -> Result<&maekon_api_contracts::provider_specs::ProviderSurfaceSpec, CoreError> {
@@ -194,7 +194,7 @@ fn managed_oauth_surface(
     Ok(surface)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn maybe_push_managed_provider(
     provider_ids: &mut Vec<String>,
     endpoint: &ExternalApiEndpoint,
@@ -216,7 +216,7 @@ fn maybe_push_managed_provider(
     }
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn configured_provisioning_env_value(
     surface: &ProviderSurfaceSpec,
     index: usize,
@@ -230,26 +230,29 @@ fn configured_provisioning_env_value(
         .filter(|value| !value.is_empty())
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn google_oauth_client_id(surface: &ProviderSurfaceSpec) -> Option<String> {
     configured_provisioning_env_value(surface, 0)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn build_openai_managed_oauth_provider(
     _surface: &ProviderSurfaceSpec,
 ) -> Option<OAuthProviderConfig> {
     Some(OAuthProviderConfig::openai_codex())
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn build_google_managed_oauth_provider(
     surface: &ProviderSurfaceSpec,
 ) -> Option<OAuthProviderConfig> {
     google_oauth_client_id(surface).map(OAuthProviderConfig::google_cloud_vision)
 }
 
-#[cfg(all(test, feature = "server"))]
+// ToS 불변식: managed_oauth_provider_factories는 openai+google만 등록한다.
+// Anthropic 구독 OAuth relay는 ADR-025/#4884 ToS 정책상 금지.
+// 이 배열에 "anthropic" vendor를 추가하기 전에 ADR-019 §5 8-step 체크리스트를 따르라.
+#[cfg(all(test, feature = "analysis"))]
 mod tests {
     use super::*;
     use maekon_core::config::{
@@ -311,5 +314,36 @@ mod tests {
         let client_id = google_oauth_client_id(surface);
         std::env::remove_var("MAEKON_GOOGLE_OAUTH_CLIENT_ID");
         assert_eq!(client_id.as_deref(), Some("test-google-client-id"));
+    }
+
+    /// ToS invariant guard (ADR-025 / #4884): managed_oauth_provider_factories must
+    /// contain only openai + google.  Anthropic subscription OAuth relay is prohibited.
+    ///
+    /// If this test fails, a new vendor was added — review the ADR-019 §5 8-step
+    /// checklist before merging.
+    #[test]
+    fn managed_oauth_provider_factories_does_not_contain_anthropic() {
+        let factories = managed_oauth_provider_factories();
+        for factory in &factories {
+            let vendor = factory.vendor_id.to_lowercase();
+            assert_ne!(
+                vendor, "anthropic",
+                "Anthropic must NOT appear in managed_oauth_provider_factories — ADR-025 ToS gate"
+            );
+        }
+    }
+
+    /// ToS invariant: factory count is exactly 2 (openai + google).
+    ///
+    /// If this count changes, update this test AND review ADR-025 before merging.
+    #[test]
+    fn managed_oauth_provider_factories_has_exactly_two_entries() {
+        let factories = managed_oauth_provider_factories();
+        assert_eq!(
+            factories.len(),
+            2,
+            "Expected exactly 2 managed OAuth providers (openai + google); got {}",
+            factories.len()
+        );
     }
 }

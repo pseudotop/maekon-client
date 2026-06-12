@@ -9,6 +9,7 @@ use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::sanitized;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 const CACHE_CAPACITY: usize = 64;
@@ -58,6 +59,22 @@ pub struct LlmWorkTypeRefiner {
     /// configured sanitizer fall back to raw Display.
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     pii_level: PiiFilterLevel,
+    /// F-RR-C28-03: 백그라운드 LLM 프리페치 태스크 핸들.
+    /// Drop 시 abort() 호출로 고아 태스크 방지 (cycle 26 #3733/#3749 패턴).
+    prefetch_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+/// F-RR-C28-03: Drop 시 진행 중인 프리페치 태스크를 취소.
+/// abort()는 이미 완료된 태스크에서 no-op이므로 클린 셧다운에도 안전.
+impl Drop for LlmWorkTypeRefiner {
+    fn drop(&mut self) {
+        // Mutex는 sync context에서 try_lock 사용 (Drop은 sync 컨텍스트)
+        if let Ok(mut guard) = self.prefetch_handle.try_lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+    }
 }
 
 impl LlmWorkTypeRefiner {
@@ -69,6 +86,7 @@ impl LlmWorkTypeRefiner {
             ))),
             pii_sanitizer: None,
             pii_level: PiiFilterLevel::Standard,
+            prefetch_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -136,7 +154,8 @@ impl LlmWorkTypeRefiner {
             baseline,
         );
 
-        tokio::spawn(async move {
+        // F-RR-C28-03: JoinHandle을 prefetch_handle에 저장하여 Drop 시 abort 보장.
+        let handle = tokio::spawn(async move {
             match provider.summarize_text(&context, SYSTEM_PROMPT).await {
                 Ok(response) => {
                     if let Some(parsed) = parse_response(&response) {
@@ -174,6 +193,20 @@ impl LlmWorkTypeRefiner {
                 }
             }
         });
+        // F-PF-C29-02/F-RR-C29-01: try_lock().expect() panics under concurrent
+        // refine() calls. Graceful match: if another refine() holds the lock,
+        // abort this duplicate prefetch to avoid leaking the handle.
+        match self.prefetch_handle.try_lock() {
+            Ok(mut guard) => {
+                if let Some(prev_handle) = guard.take() {
+                    prev_handle.abort();
+                }
+                *guard = Some(handle);
+            }
+            Err(_) => {
+                handle.abort();
+            }
+        }
 
         None
     }
@@ -319,5 +352,80 @@ mod tests {
         let refiner = LlmWorkTypeRefiner::new(Arc::new(NoOpAnalysisProvider));
         assert!(refiner.pii_sanitizer.is_none());
         assert_eq!(refiner.pii_level, PiiFilterLevel::Standard);
+    }
+
+    /// F-RR-C28-03/F-QA-C29-01: Drop 시 prefetch_handle이 abort되는지 검증.
+    /// `abort_handle()`를 미리 확보하여 abort 전파 후 `is_finished()` 검증.
+    #[tokio::test]
+    async fn drop_aborts_prefetch_handle() {
+        use crate::fallback_analysis_provider::NoOpAnalysisProvider;
+        use tokio::sync::oneshot;
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let refiner = LlmWorkTypeRefiner::new(Arc::new(NoOpAnalysisProvider));
+
+        // 무한 대기 태스크 스폰
+        let long_task = tokio::spawn(async move {
+            let _ = rx.await;
+        });
+        // abort_handle을 미리 확보 (JoinHandle은 prefetch_handle로 move됨)
+        let abort_handle = long_task.abort_handle();
+
+        // JoinHandle을 prefetch_handle에 주입
+        *refiner.prefetch_handle.try_lock().expect("lock available") = Some(long_task);
+
+        // Drop 시 Drop impl이 try_lock 후 handle.abort() 호출
+        drop(refiner);
+
+        // abort가 스케줄러로 전파될 시간 확보
+        tokio::task::yield_now().await;
+
+        // F-QA-C29-01: cycle 28 #3824 무-assertion 테스트 보강.
+        // Drop impl이 abort()를 호출했다면 abort_handle.is_finished() == true.
+        assert!(
+            abort_handle.is_finished(),
+            "Drop impl must abort the tracked prefetch handle"
+        );
+    }
+
+    /// F-PF-C29-02/F-RR-C29-01/F-QA-C30-03: concurrent refine() 호출 시 try_lock 경합이
+    /// panic이 아닌 graceful abort-new 정책으로 처리되는지 검증.
+    /// (try_lock().expect() 가 살아있다면 이 테스트가 panic으로 실패함)
+    ///
+    /// F-QA-C30-03: Err arm 에서 spawned handle 이 실제로 abort 되었는지 검증.
+    /// lock_guard 해제 후 prefetch_handle 이 None 인지 확인 (abort path 는 handle 을
+    /// prefetch_handle 에 저장하지 않으므로 guard 취득 후 None 이어야 함).
+    #[tokio::test]
+    async fn concurrent_try_lock_does_not_panic() {
+        use crate::fallback_analysis_provider::NoOpAnalysisProvider;
+
+        let refiner = Arc::new(LlmWorkTypeRefiner::new(Arc::new(NoOpAnalysisProvider)));
+
+        // prefetch_handle Mutex를 외부에서 잡아 try_lock이 항상 WouldBlock 반환하게 만듦
+        let lock_guard = refiner.prefetch_handle.clone().lock_owned().await;
+
+        // 이 상태에서 refine() 호출 — 내부 try_lock이 WouldBlock이지만 panic 없이
+        // handle을 abort하고 None을 반환해야 함
+        let result = refiner
+            .refine(WorkType::Unknown, "VSCode", "main.rs", None, None, 0.0)
+            .await;
+        // 캐시 미스라 None 반환 (기존 contract)
+        assert!(result.is_none());
+
+        // F-QA-C30-03: lock_guard 를 해제하여 prefetch_handle Mutex 를 돌려준다.
+        // Err arm 은 handle.abort() 를 호출하고 prefetch_handle 에 저장하지 않으므로
+        // guard 취득 후 내부 값이 None 이어야 한다 (abort path 검증).
+        drop(lock_guard);
+
+        // abort 전파 대기
+        tokio::task::yield_now().await;
+
+        // Err arm 이 prefetch_handle 에 handle 을 저장하지 않았음을 검증
+        // (Ok arm 은 Some(handle) 을 저장하므로 Err/Ok 경로가 구별됨)
+        let guard = refiner.prefetch_handle.lock().await;
+        assert!(
+            guard.is_none(),
+            "F-QA-C30-03: Err arm must NOT store handle in prefetch_handle              — it aborts immediately without storing. If Some, abort path was bypassed."
+        );
     }
 }

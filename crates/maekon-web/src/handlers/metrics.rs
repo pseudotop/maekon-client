@@ -28,7 +28,9 @@ pub async fn get_hourly_metrics(
     Query(params): Query<HourlyQuery>,
 ) -> Result<Json<Vec<HourlyMetricsResponse>>, ApiError> {
     Ok(Json(
-        MetricsQueryService::new(context).get_hourly_metrics(&params)?,
+        MetricsQueryService::new(context)
+            .get_hourly_metrics(&params)
+            .await?,
     ))
 }
 
@@ -37,11 +39,9 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -53,8 +53,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[test]

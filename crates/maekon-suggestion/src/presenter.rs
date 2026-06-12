@@ -38,6 +38,11 @@ pub fn type_to_title(st: &SuggestionType) -> String {
         SuggestionType::ProductivityTip => "Productivity Tip".to_string(),
         SuggestionType::WorkflowOptimization => "Workflow Optimization".to_string(),
         SuggestionType::ContextBased => "Context-Based Suggestion".to_string(),
+        SuggestionType::BreakReminder => "Break Reminder".to_string(),
+        SuggestionType::FocusMode => "Focus Mode".to_string(),
+        SuggestionType::TakeBreak => "Take a Break".to_string(),
+        SuggestionType::NeedFocusTime => "Need Focus Time".to_string(),
+        SuggestionType::RestoreContext => "Restore Context".to_string(),
     }
 }
 
@@ -48,6 +53,11 @@ fn type_to_icon(st: &SuggestionType) -> String {
         SuggestionType::ProductivityTip => "zap".to_string(),
         SuggestionType::WorkflowOptimization => "git-branch".to_string(),
         SuggestionType::ContextBased => "brain".to_string(),
+        SuggestionType::BreakReminder => "bell".to_string(),
+        SuggestionType::FocusMode => "target".to_string(),
+        SuggestionType::TakeBreak => "coffee".to_string(),
+        SuggestionType::NeedFocusTime => "clock".to_string(),
+        SuggestionType::RestoreContext => "refresh-cw".to_string(),
     }
 }
 
@@ -102,6 +112,7 @@ mod tests {
             expires_at: None,
             source: Default::default(),
             reasoning: None,
+            context_scope: None,
         }
     }
 

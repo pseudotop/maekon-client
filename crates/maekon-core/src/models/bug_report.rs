@@ -42,30 +42,55 @@ mod tests {
 
     #[test]
     fn valid_bug_id() {
-        let id = BugId::new("BUG-a1b2c3d4e5f6".to_string());
-        assert!(id.is_ok());
-        assert_eq!(id.unwrap().as_str(), "BUG-a1b2c3d4e5f6");
+        // Collapse: is_ok() is immediately followed by unwrap() + value assertion.
+        let id = BugId::new("BUG-a1b2c3d4e5f6".to_string())
+            .expect("BUG- prefix + 12 lowercase hex chars is the valid BugId format");
+        assert_eq!(
+            id.as_str(),
+            "BUG-a1b2c3d4e5f6",
+            "as_str() must round-trip the original input"
+        );
     }
 
     #[test]
     fn rejects_short_id() {
-        assert!(BugId::new("BUG-abc".to_string()).is_err());
+        let err = BugId::new("BUG-abc".to_string()).unwrap_err();
+        assert!(
+            err.contains("BUG-{12_hex_chars}"),
+            "short ID must produce format error, got: {err:?}"
+        );
     }
 
     #[test]
     fn rejects_wrong_prefix() {
-        assert!(BugId::new("ERR-a1b2c3d4e5f6".to_string()).is_err());
+        let err = BugId::new("ERR-a1b2c3d4e5f6".to_string()).unwrap_err();
+        assert!(
+            err.contains("BUG-{12_hex_chars}"),
+            "wrong prefix must produce format error, got: {err:?}"
+        );
     }
 
     #[test]
     fn rejects_non_hex_chars() {
-        assert!(BugId::new("BUG-ghijklmnopqr".to_string()).is_err());
-        assert!(BugId::new("BUG-<script>aaaa".to_string()).is_err());
+        let err1 = BugId::new("BUG-ghijklmnopqr".to_string()).unwrap_err();
+        assert!(
+            err1.contains("BUG-{12_hex_chars}"),
+            "non-hex chars must produce format error, got: {err1:?}"
+        );
+        let err2 = BugId::new("BUG-<script>aaaa".to_string()).unwrap_err();
+        assert!(
+            err2.contains("BUG-{12_hex_chars}"),
+            "script injection must produce format error, got: {err2:?}"
+        );
     }
 
     #[test]
     fn rejects_too_long() {
-        assert!(BugId::new("BUG-a1b2c3d4e5f6aa".to_string()).is_err());
+        let err = BugId::new("BUG-a1b2c3d4e5f6aa".to_string()).unwrap_err();
+        assert!(
+            err.contains("BUG-{12_hex_chars}"),
+            "too-long ID must produce format error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -83,11 +108,17 @@ mod tests {
 
     #[test]
     fn deserialize_rejects_invalid() {
-        let result: Result<BugId, _> = serde_json::from_str("\"INVALID\"");
-        assert!(result.is_err());
+        let err1 = serde_json::from_str::<BugId>("\"INVALID\"").unwrap_err();
+        assert!(
+            err1.to_string().contains("BUG-{12_hex_chars}"),
+            "INVALID BugId deserialization must propagate format message, got: {err1}"
+        );
 
-        let result: Result<BugId, _> = serde_json::from_str("\"BUG-ghijklmnopqr\"");
-        assert!(result.is_err());
+        let err2 = serde_json::from_str::<BugId>("\"BUG-ghijklmnopqr\"").unwrap_err();
+        assert!(
+            err2.to_string().contains("BUG-{12_hex_chars}"),
+            "non-hex BugId deserialization must propagate format message, got: {err2}"
+        );
     }
 
     #[test]

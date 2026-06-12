@@ -39,6 +39,7 @@
     "search": "検索",
     "automation": "オートメーション",
     "dashboardDay": "日別ビュー",
+    "dashboardWeek": "週別ビュー",
     "mainNavLabel": "メインナビゲーション",
     "coaching": "コーチング",
     "recalibration": "再キャリブレーション",
@@ -468,6 +469,11 @@
     "notifHighUsage": "システムリソース警告",
     "notifHighUsageDesc": "CPU/メモリ使用率が高い場合に警告",
     "notifHighUsageThreshold": "使用率しきい値 (%)",
+    "notifTestAction": "テスト通知を送信",
+    "notifTestDesc": "現在の OS 権限と通知配信経路を確認するため、ローカライズされたネイティブ通知を今すぐ送信します。",
+    "notifTestTitle": "Maekon テスト通知",
+    "notifTestBody": "通知を使用する準備ができました。",
+    "notifTestSuccess": "テスト通知を送信しました。",
     "monitorTitle": "モニタリング制御",
     "permissionSectionTitle": "デスクトップアクセス状態",
     "permissionSectionTitleMac": "macOS 権限",
@@ -490,6 +496,12 @@
     "permissionScreenCaptureDesc": "タイムラインとインサイト用のスクリーンショット取得に必要です。",
     "permissionMacNotificationsDesc": "通知配信は macOS のシステム設定で管理されており、現状では自動確認できません。",
     "permissionNotificationsDesc": "休憩リマインダーやコーチング通知に使用されます。",
+    "permissionMicrophoneLabel": "マイク",
+    "permissionMicrophoneDesc": "音声入力と音声テキスト化に必要です。",
+    "permissionInputMonitoringLabel": "入力監視",
+    "permissionInputMonitoringDesc": "Maekon がキーボードショートカットを監視したり入力自動化を実行する前に必要です。",
+    "permissionOpenSystemSettingsAction": "システム設定を開く",
+    "permissionOpenSystemSettingsFollowUp": "macOS のシステム設定で権限を変更したら Maekon に戻り、権限ステータスを更新してください。",
     "permissionLinuxAccessibilityLabel": "アクセシビリティサービス",
     "permissionLinuxAccessibilityDesc": "Linux では AT-SPI セッションの可用性がフォーカス要素コンテキストを左右します。",
     "permissionLinuxScreenCaptureLabel": "デスクトップキャプチャ",
@@ -638,6 +650,10 @@
     "supportFramesDir": "フレームディレクトリ",
     "supportAuditCount": "最近の監査エントリ",
     "supportPolicyCount": "最近のポリシーイベント",
+    "supportProviderCli": "Provider CLI 診断",
+    "supportProviderCliEmpty": "報告された Provider CLI サーフェスはありません。",
+    "supportProviderCliDependency": "依存関係",
+    "supportProviderCliRestartRequired": "PATH/環境を再読み込みするには Maekon を再起動してください",
     "supportRecentLogs": "最近のランタイムログ (native + web)",
     "supportLogSource": "ログソース",
     "supportNoLogs": "最近のランタイムログは見つかりませんでした。",
@@ -682,6 +698,16 @@
     "bugReportNever": "なし",
     "bugReportGrpc": "gRPC有効",
     "bugReportWebSocket": "WebSocket接続",
+    "bugReportRuntimeLogs": "ランタイムログ",
+    "bugReportRuntimeLogsGenerated": "生成日時",
+    "bugReportRuntimeLogsFile": "ログファイル",
+    "bugReportRuntimeLogsLineCount": "行数",
+    "bugReportNoRuntimeLogs": "このレポートにはランタイムログが含まれていません。",
+    "bugReportNoRuntimeLogText": "ランタイムログのテキストはキャプチャされていません。",
+    "bugReportProviderCli": "Provider CLI 診断",
+    "bugReportNoProviderCli": "このレポートには Provider CLI 診断が含まれていません。",
+    "bugReportProviderCliDependency": "依存関係",
+    "bugReportProviderCliRestartRequired": "PATH/環境を再読み込みするには Maekon を再起動してください",
     "bugReportAuditEntries": "最近の監査エントリ",
     "bugReportPolicyEvents": "最近のポリシーイベント",
     "bugReportNoEntries": "エントリなし",
@@ -786,6 +812,13 @@
     "deleted": "削除しました。",
     "deleteFailed": "削除に失敗しました",
     "subtitle": "収集されたデータの確認と削除",
+    "capturePauseTitle": "キャプチャ制御",
+    "capturePauseDesc": "プライバシー画面から画面キャプチャを一時停止または再開します。",
+    "pauseCapture": "キャプチャを一時停止",
+    "resumeCapture": "キャプチャを再開",
+    "capturePaused": "キャプチャは一時停止中です",
+    "captureRunning": "キャプチャは実行中です",
+    "capturePauseUnavailable": "キャプチャの一時停止はデスクトップアプリで利用できます。",
     "currentData": "現在保存されているデータ",
     "eventsLabel": "イベント",
     "screenshotsLabel": "スクリーンショット",
@@ -812,6 +845,7 @@
     "allDataTypes": "すべてのデータ種類",
     "confirmDeleteAll": "すべてのデータを削除",
     "confirmDeleteAllMsg": "本当にすべてのデータを削除しますか？\n\nこの操作は元に戻せません。すべてのスクリーンショット、イベントログ、システムメトリクスが完全に削除されます。",
+    "deleteAllExportNote": "すでにディスクにエクスポート・バックアップしたファイル（JSON/CSV レポート、バックアップファイル）はアプリの外に保存されており、この操作では削除されません。保存先から手動で削除してください。",
     "close": "閉じる",
     "cancel": "キャンセル",
     "dataTypes": {
@@ -827,6 +861,80 @@
       "metrics": "メトリクス: {{count}}件 削除",
       "process_snapshots": "プロセススナップショット: {{count}}件 削除",
       "idle_periods": "アイドル記録: {{count}}件 削除"
+    },
+    "consent": {
+      "title": "同意",
+      "subtitle": "このエージェントが収集できる項目について、同意を付与または撤回します。",
+      "loading": "同意状態を読み込み中...",
+      "unavailable": "このモードでは同意コントロールを利用できません。",
+      "actionFailed": "同意設定を更新できませんでした",
+      "osNote": "ここで同意を付与しても、OS の画面録画権限が付与されるわけではありません。キャプチャの実行には両方のレイヤーが必要です。OS の権限は、設定 → モニタリングで別途許可してください。",
+      "status": {
+        "label": "ステータス",
+        "valid": "有効",
+        "notGranted": "未付与",
+        "expired": "期限切れ",
+        "updateRequired": "更新が必要",
+        "expiredTitle": "同意の期限切れ",
+        "expiredWarning": "同意の有効期限が切れたため、収集が停止されています。以下で同意を付与し直すと再開されます。",
+        "updateRequiredTitle": "同意の更新が必要",
+        "updateRequiredWarning": "前回の同意以降に同意条項が変更されたため、収集が停止されています。以下で内容を確認し、同意を付与し直すと再開されます。"
+      },
+      "monitoring": {
+        "label": "アクティビティモニタリング",
+        "description": "エージェントが作業を支援できるよう、作業コンテキストをデバイス上で収集します。すべてのデータはお使いのコンピューター内にのみ保存されます。",
+        "collectedTitle": "オンの場合に収集される項目:",
+        "collected": {
+          "screenFrames": "画面フレーム",
+          "windowTitles": "ウィンドウタイトル",
+          "appUsage": "アプリ使用状況",
+          "inputActivity": "入力アクティビティのレベル",
+          "activeProcesses": "実行中のプロセス",
+          "systemMetrics": "システムおよびバッテリーの指標",
+          "activitySegments": "アクティビティセグメント",
+          "focusMetrics": "集中度および使用状況の指標",
+          "digests": "日次・週次ダイジェスト",
+          "memoryGraph": "ローカルメモリグラフのクレーム",
+          "embeddings": "オンデバイス埋め込み",
+          "guiInteractions": "GUI 操作"
+        }
+      },
+      "clipboard": {
+        "label": "クリップボードおよびファイルアクセス",
+        "description": "機微度が高いため、デフォルトではオフです。クリップボードおよびファイルアクセスのアクティビティを含めたい場合のみオンにしてください。",
+        "collectedTitle": "オンの場合に収集される項目:",
+        "collected": {
+          "clipboardEvents": "クリップボードイベント（マスク済みプレビュー付き）",
+          "fileAccessEvents": "ファイルアクセスイベント（監視対象フォルダ内）"
+        }
+      },
+      "microphone": {
+        "label": "マイクおよび音声",
+        "description": "機微度が高いため、デフォルトではオフです。音声キャプチャ（音声アクティビティの連続リスニング、またはプッシュトゥトーク）を含めたい場合のみオンにしてください。",
+        "collectedTitle": "オンの場合に収集される項目:",
+        "collected": {
+          "audioCapture": "マイク音声（音声アクティビティモードでは連続、またはプッシュトゥトークを押している間）",
+          "transcript": "チャットに入力されるテキスト文字起こし（テキストは PII マスク済み）",
+          "cloudEgress": "クラウド音声テキスト変換を設定すると、生の音声がご自身で設定したエンドポイント（既定: OpenAI API、米国所在）に送信されます"
+        },
+        "disclosure": "音声がキャプチャされ（音声アクティビティモードでは連続、またはプッシュトゥトークを押している間）、チャットに入力されるテキストに文字起こしされます（テキストは PII マスク済み）。クラウド音声テキスト変換（設定 → オーディオ）を有効にして API キーを設定すると、文字起こしだけでなく生の音声が、フィルタリングされずに、ご自身で設定した音声テキスト変換エンドポイント（既定: OpenAI の API）に送信されます。すでに送信された文字起こしはチャット履歴に残り、このトグルではなくそこで管理・消去されます。",
+        "osNote": "ここで同意を付与しても、OS のマイク権限が付与されるわけではありません。音声キャプチャの実行には両方のレイヤーが必要です。OS のマイク権限は、設定 → モニタリングで別途許可してください。",
+        "upgradeNotice": {
+          "title": "マイクには個別の同意が必要になりました",
+          "body": "音声入力が一時停止しています。このバージョンからマイクは画面キャプチャとは別の独自の同意を使用します。プライバシーページで同意すると音声キャプチャが再開されます。",
+          "cta": "プライバシー設定を開く",
+          "dismiss": "閉じる"
+        }
+      },
+      "withdraw": {
+        "label": "同意の撤回",
+        "description": "撤回すると、すべての収集が停止され、すでに収集されたデータの消去が要求されます。これは単にモニタリングをオフにするよりも強力な操作です。",
+        "button": "同意を撤回",
+        "confirmTitle": "同意を撤回しますか？",
+        "confirmMessage": "すべての収集が停止され、すでに収集されたデータの消去が要求されます。",
+        "confirmNote": "すでにディスクへエクスポートまたはバックアップしたファイルはアプリの外部に保存されており、この操作では削除されません。",
+        "confirmButton": "撤回して消去"
+      }
     }
   },
   "search": {
@@ -926,6 +1034,7 @@
     "idle": "アイドル",
     "capture": "キャプチャ",
     "noFrames": "この時刻のフレームはありません",
+    "capturedOcr": "キャプチャされたOCR",
     "imageUnavailable": "スクリーンショット画像を読み込めませんでした。保持ポリシーまたはフレームファイルのパスを確認してください。",
     "sceneElements": "{{count}}個の検出要素",
     "sceneUnavailable": "このフレームのシーン分析は利用できません。",
@@ -1075,7 +1184,21 @@
     "confirmAutoDeny": "{{seconds}}秒後に自動拒否",
     "confirmDeny": "拒否",
     "confirmApprove": "承認",
-    "confirmSubmitError": "確認を送信できませんでした。"
+    "confirmSubmitError": "確認を送信できませんでした。",
+    "intentHintTitle": "自然言語コマンド",
+    "intentHintPlaceholder": "例: 保存ボタンをクリック",
+    "intentHintRun": "実行",
+    "intentHintRunsImmediately": "厳格なサンドボックス下で即座に実行されます。",
+    "intentHintRequiresConfirmation": "実行前に確認が必要です。",
+    "intentHintBlockedByPolicy": "ポリシーによりオートメーションの実行が無効化されています。",
+    "intentHintDisabledHint": "この機能を使用するには、設定でオートメーションを有効にしてください。",
+    "intentHintSetupLlm": "インテントプランニング用のLLMプロバイダーが設定されていません",
+    "intentHintBlockedConsent": "プライバシー設定により外部LLMへのアクセスがブロックされています",
+    "intentHintSuccess": "コマンド完了",
+    "intentHintFailed": "コマンド失敗",
+    "intentHintPlannedIntent": "プランされたインテント",
+    "intentHintViewHistory": "実行履歴で表示",
+    "intentHintErrorCheckHistory": "リクエストはすでに実行された可能性があります — 実行履歴を確認してください。"
   },
   "settingsAutomation": {
     "title": "オートメーション",
@@ -1192,6 +1315,8 @@
     "accessModeCliDescription": "サブスクリプション製品に推奨。Maekonはインストール済みプロバイダーCLIフローを案内します。",
     "accessModeOAuthLabel": "ダイレクトOAuth（実験的）",
     "accessModeOAuthDescription": "対応プロバイダーサーフェス向けの実験的マネージドOAuthパス。利用可能な場合はインストール済みCLIを優先してください。",
+    "accessModeLocalLabel": "ローカルモデル",
+    "accessModeLocalDescription": "デバイス内処理のみ — このデバイス上のローカルOllamaサーバーを使用して意図計画を実行します（Ollama未起動時はルールベースにフォールバック）。データはデバイス外に送信されません。",
     "pathSummaryTitle": "運用パス",
     "pathSummarySurface": "選択されたサーフェス: {{surface}}",
     "pathExecutionLabel": "実行パス",
@@ -1272,10 +1397,10 @@
       "patternDetected": "パターンを検出: {description}",
       "excessiveCommunication": "コミュニケーション時間が長くなっています。集中時間を確保しましょう",
       "default": "新しい提案があります",
-      "act": "実行",
+      "act": "完了にする",
       "loadFailed": "フォーカス提案の読み込みに失敗しました。",
       "dismissFailed": "提案の却下に失敗しました。",
-      "actFailed": "提案の適用に失敗しました。"
+      "actFailed": "提案を完了として記録できませんでした。"
     },
     "pomodoro": {
       "title": "ポモドーロ",
@@ -1562,6 +1687,27 @@
       "unavailable": "利用不可",
       "partially_available": "部分的に利用可能"
     },
+    "cliReadiness": {
+      "not_detected": "CLI not detected",
+      "auth_required": "Sign-in required",
+      "auth_unsupported": "Plan unsupported",
+      "auth_stale": "Session refresh required",
+      "interactive_required": "Interactive sign-in required",
+      "auth_unverified": "Auth not verified",
+      "auth_ready": "Signed in; invocation unavailable",
+      "invocation_ready": "Ready to invoke",
+      "runtime_unsupported": "Runtime unsupported"
+    },
+    "cliDependency": {
+      "ready": "Dependency ready",
+      "missing": "Dependency missing",
+      "stale_process_env": "Restart required",
+      "not_required": "No extra dependency"
+    },
+    "cliDiscovery": {
+      "executablePath": "{{candidate}} at {{path}}",
+      "restartRequired": "Restart Maekon after updating PATH or user environment variables so the running app can see the new CLI settings."
+    },
     "maturity": {
       "stable": "安定",
       "beta": "ベータ",
@@ -1601,6 +1747,12 @@
             "auth_required": "Gemini CLIはインストール済みですがまだ認証されていません。まずCLIログインフローを完了してください。",
             "partially_available": "Gemini CLIが検出されました。CLIが認証されワークフローがサポートされればプロバイダーCLIパスを優先できます。",
             "unavailable": "Gemini CLIがインストールされていないか、PATHで見つかりません。"
+          },
+          "antigravity_cli": {
+            "available": "Antigravity CLI is installed and authenticated. Maekon can hand off to this provider-owned CLI surface where supported.",
+            "auth_required": "Antigravity CLI is installed but not authenticated yet. Run the provider-owned CLI sign-in flow first, then return to this panel.",
+            "partially_available": "Antigravity CLI was detected, but this surface is manual GUI-only. Maekon cannot invoke it through the headless subprocess adapter yet.",
+            "unavailable": "Antigravity CLI is not installed or not available on PATH."
           }
         },
         "ollama": {
@@ -1735,7 +1887,12 @@
       "noData": "データなし"
     },
     "noEventsHint": "Coaching nudges will appear here as you work.",
-    "noGoalsHint": "Goals will appear here once regime tracking is active."
+    "noGoalsHint": "Goals will appear here once regime tracking is active.",
+    "disabledBannerTitle": "コーチングはオフです",
+    "disabledBannerDesc": "コーチングを有効にすると、プロアクティブなナッジと習慣トラッキングが使用できます。",
+    "disabledBannerButton": "コーチングを有効にする",
+    "enableMasterToggle": "コーチングを有効にする",
+    "enableMasterToggleDesc": "マスタースイッチ — すべてのコーチングナッジと通知をオン/オフします。"
   },
   "onboarding": {
     "step1Title": "Maekonへようこそ",
@@ -1763,7 +1920,7 @@
     "back": "戻る",
     "skip": "スキップ",
     "complete": "始める",
-    "step2DescMac": "macOSのフル体験には、アクセシビリティ、画面収録、通知アクセスの権限が必要です。",
+    "step2DescMac": "コンテキストを安定して取得するにはアクセシビリティと画面収録が必要です。通知はリマインダーとコーチングのために推奨されますが、セットアップを止めるものではありません。",
     "step2AccessibilityAction": "アクセシビリティアクセスを許可",
     "step2ScreenCaptureAction": "画面収録を許可",
     "step2PermissionEnabled": "有効",
@@ -1773,6 +1930,8 @@
     "step2ReadyTitle": "必要な権限が準備できました",
     "step2ReadyDesc": "アクセシビリティと画面収録が有効です。続行できます。",
     "step2ReadyInline": "アクセシビリティと画面収録が有効です。",
+    "step2ScreenCaptureRestartTitle": "画面収録を有効にした後、Maekonを再起動してください",
+    "step2ScreenCaptureRestartDesc": "macOSでは、新しく許可した画面収録アクセスが実行中のアプリに反映されるまで再起動が必要な場合があります。",
     "step2PermissionCheckFailed": "現在のデスクトップ権限状態を読み取れませんでした。",
     "step2SystemSettingsOpenFailed": "macOSシステム設定を開けませんでした。",
     "step2NotificationRequestFailed": "通知権限のリクエストに失敗しました。",
@@ -1782,6 +1941,33 @@
       "enable_button": "Enable",
       "not_now_button": "Not now",
       "dismiss_button": "Don't ask again"
+    },
+    "consent": {
+      "title": "モニタリングを開始",
+      "description": "Maekon が作業を支援できるよう、デバイス上のコンテキスト収集に同意してください。すべてのデータはお使いのコンピューターに保存され、プライバシー設定からいつでも同意を撤回できます。",
+      "collectedTitle": "モニタリングを開始すると、Maekon は次の項目を収集します:",
+      "grantButton": "モニタリングを開始（同意を付与）",
+      "granting": "付与中…",
+      "granted": "モニタリングの同意を付与しました",
+      "grantedNote": "Maekon がデバイス上のコンテキスト収集を開始します。プライバシー設定からいつでも同意を管理・撤回できます。",
+      "osNote": "同意の付与は、上記の OS 画面録画権限とは別です。画面をキャプチャするには Maekon に両方が必要です。",
+      "error": "同意を付与できませんでした: {{error}}"
+    },
+    "coaching": {
+      "title": "プロアクティブコーチング",
+      "description": "Maekon があなたの活動パターンを分析し、集中維持のためのナッジ（オーバーレイのヒントやデスクトップ通知）を送信できます。すべての処理はデバイス内でのみ行われます。",
+      "enablesList": {
+        "item1": "コンテキスト対応オーバーレイナッジ（ローカルのみ）",
+        "item2": "集中と目標達成のためのデスクトップ通知",
+        "item3": "活動パターン学習（Tier-4 同意）",
+        "item4": "クワイエットアワーとプロファイルの設定"
+      },
+      "enableButton": "コーチングを有効にする",
+      "enabling": "有効化中…",
+      "enabled": "コーチングが有効になりました",
+      "activeNote": "変更はすぐに反映されます — 再起動は不要です。",
+      "monitoringMissingWarning": "モニタリングの同意がまだ付与されていません。コーチングを機能させるには、前のステップで同意を許可してください。",
+      "error": "コーチングを有効にできませんでした: {{error}}"
     }
   },
   "chat": {
@@ -1834,8 +2020,10 @@
     "mic_vad_stop": "Click to stop listening",
     "mic_vad_tooltip": "Click to toggle listening",
     "model_needed": "Download model in Settings",
+    "request_suggestions": "AI提案を取得",
     "read_only_notice": "This session has ended. History is read-only.",
-    "stt_error": "Transcription failed"
+    "stt_error": "Transcription failed",
+    "mic_privacy_stopped": "マイクが停止しました — プライバシーゲートが有効です"
   },
   "policies": {
     "title": "実行ポリシー",
@@ -1886,6 +2074,15 @@
     "sourceLocal": "ローカル",
     "sourceRules": "ルール",
     "suggestionLabel": "提案: {{title}}",
+    "targetBadgeLabel": "{{target}} の新しい提案",
+    "currentTarget": "現在の対象",
+    "noAutoAction": "自動操作なし",
+    "replayTargetLocked": "対象を固定しました",
+    "replayProposalShown": "提案を表示しました",
+    "replayConsentGate": "同意ゲート",
+    "replayAuditReady": "監査準備完了",
+    "replayTrailLabel": "提案リプレイトレイル",
+    "replayTrailTitle": "リプレイトレイル",
     "accept": "承認",
     "reject": "拒否",
     "later": "後で",
@@ -1893,6 +2090,9 @@
     "noHistory": "まだ履歴がありません",
     "noSuggestions": "まだ提案がありません",
     "loadError": "提案を読み込めませ��でした。",
+    "refreshing": "提案を更新しています...",
+    "retryLoad": "再試行",
+    "retryPending": "更新中...",
     "openingInChat": "チャットで開いています...",
     "toastAccepted": "提案を承認しました",
     "toastRejected": "提案を拒否しま���た",
@@ -1964,7 +2164,74 @@
     "openSettings": "設定を開く",
     "comingSoon": "近日公開",
     "ocr": "OCR",
-    "focus": "フォーカス"
+    "focus": "フォーカス",
+    "floatingMenu": "フローティング コマンド メニュー",
+    "running": "実行中",
+    "pinned": "ピン留め",
+    "recent": "最近",
+    "usage": "使用状況",
+    "screenContextReady": "画面コンテキスト準備完了",
+    "screenContextPaused": "画面コンテキスト一時停止",
+    "localMode": "ローカルモード",
+    "captureServicesReady": "キャプチャサービス準備完了",
+    "extractTasks": "現在のアプリからタスクを抽出",
+    "extractTasksMeta": "表示中の GUI コンテキストで提案を生成",
+    "captureCurrentContextMeta": "現在の画面コンテキストを保存",
+    "reviewCurrentWindow": "現在のウィンドウを確認",
+    "reviewCurrentWindowMeta": "GUI、OCR、アクセシビリティを分析",
+    "aiSuggestionsMeta": "コンテキスト提案を開く",
+    "focusModeMeta": "25 分の集中ブロックを開始または停止",
+    "captureUsage": "このセッションのキャプチャ {{count}} 件",
+    "serviceLanesConnected": "{{count}}/{{total}} サービスレーン接続済み",
+    "newChat": "新規チャット",
+    "openMaekon": "Maekon を開く",
+    "quitMaekon": "Maekon を終了",
+    "chatOpened": "チャットを開きました",
+    "quitRequested": "終了をリクエストしました",
+    "quitUnavailable": "終了できません"
+  },
+  "trayDashboard": {
+    "regionLabel": "トレイダッシュボード",
+    "title": "Maekon",
+    "captureCount": "{{count}} 件のキャプチャ",
+    "unreadSuggestions": "未読の提案 {{count}} 件",
+    "providerCount": "プロバイダー {{count}}/{{total}}",
+    "currentContext": "現在の GUI コンテキスト",
+    "suggestionQueue": "提案キュー",
+    "privacyProvider": "プライバシーとプロバイダー",
+    "reviewSuggestion": "提案を確認 {{title}}",
+    "consentRequired": "同意が必要",
+    "auditReady": "監査準備完了",
+    "auditPending": "監査待機中",
+    "providersReady": "{{count}} 件のプロバイダーが準備済み",
+    "captureNow": "今すぐキャプチャ",
+    "openTimeline": "タイムラインを開く",
+    "openAudit": "監査を開く",
+    "openSettings": "設定を開く",
+    "captureState": {
+      "active": "アクティブ",
+      "paused": "一時停止",
+      "local": "ローカルモード"
+    },
+    "placement": {
+      "adjacent-popover": "ウィンドウマーカー",
+      "window-side-panel": "サイドパネル",
+      "bottom-dock": "下部ドック"
+    },
+    "redaction": {
+      "clean": "機密テキストなし",
+      "redacted": "プロバイダー送信前にマスク済み",
+      "blocked": "機密画面をブロック"
+    },
+    "egress": {
+      "allowed": "外部送信を許可",
+      "blocked": "外部送信をブロック"
+    },
+    "providerStatus": {
+      "connected": "接続済み",
+      "unavailable": "利用不可",
+      "blocked": "ブロック"
+    }
   },
   "syncTab": {
     "loading": "同期ステータスを読み込み中...",
@@ -2039,5 +2306,37 @@
   },
   "stats": {
     "guiInteractions": "GUI Interactions"
+  },
+  "week": {
+    "title": "週間ダイジェスト",
+    "empty": "まだ週間ダイジェストがありません。アクティビティセグメントが蓄積されると毎週自動生成されます。",
+    "stale": "直近の生成週",
+    "totalTracked": "追跡時間",
+    "deepWork": "ディープワーク",
+    "communication": "コミュニケーション",
+    "contextSwitches": "コンテキスト切替",
+    "longestSegment": "最長集中",
+    "comparison": "前週比",
+    "regimes": "レジーム（時間）",
+    "categories": "カテゴリ（時間）",
+    "topContent": "主なコンテンツ",
+    "narrative": "週間ナラティブ",
+    "narrativeUnavailable": "ナラティブは利用できません。"
+  },
+  "codex": {
+    "approvalTitle": "Codex 承認",
+    "approvalSubmitError": "承認を送信できませんでした。",
+    "process": "プロセス",
+    "args": "引数",
+    "fileChange": "{{count}} 行の差分",
+    "networkHost": "ネットワーク: {{host}}",
+    "autoDecline": "{{seconds}}秒後に自動拒否",
+    "accept": "承認",
+    "decline": "拒否",
+    "cancel": "キャンセル",
+    "turnControl": "ターン制御",
+    "interrupt": "中断",
+    "steerPlaceholder": "ターンを誘導…",
+    "steerSend": "送信"
   }
 }

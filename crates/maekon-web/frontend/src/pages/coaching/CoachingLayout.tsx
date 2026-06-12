@@ -6,7 +6,7 @@ import { fetchSettings, updateSettings } from '../../api/client'
 import type { CoachingEvent, GoalProgress } from '../../api/coaching'
 import type { AppSettings } from '../../api/contracts'
 import HabitTrackerWidget from '../../components/HabitTrackerWidget'
-import { Card, CardContent, CardHeader, CardTitle, Select, Skeleton } from '../../components/ui'
+import { Alert, Button, Card, CardContent, CardHeader, CardTitle, Select, Skeleton } from '../../components/ui'
 import { useCoachingHistory, useGoalProgress } from '../../hooks/useCoaching'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -40,6 +40,8 @@ export default function CoachingLayout() {
     staleTime: 30_000,
   })
   const [saved, setSaved] = useState(false)
+  // #5707: inline enable mutation for the disabled banner button.
+  const [enabling, setEnabling] = useState(false)
 
   const updateFreq = useMutation({
     mutationFn: updateSettings,
@@ -49,6 +51,18 @@ export default function CoachingLayout() {
       setTimeout(() => setSaved(false), 1500)
     },
   })
+
+  // #5707: inline handler to enable coaching from the disabled-state banner.
+  // Uses the same updateSettings mutation pattern as the frequency selector.
+  const handleEnableCoaching = useCallback(async () => {
+    setEnabling(true)
+    try {
+      const fresh = await queryClient.fetchQuery<AppSettings>({ queryKey: ['settings'], queryFn: fetchSettings })
+      updateFreq.mutate({ ...fresh, coaching: { ...fresh.coaching, enabled: true } })
+    } finally {
+      setEnabling(false)
+    }
+  }, [queryClient, updateFreq])
 
   const intervalSecs = Object.values(settings?.coaching?.profiles ?? {})[0]?.min_interval_secs ?? 300
   const isCustom = !INTERVAL_PRESETS.some((p) => p.value === intervalSecs)
@@ -67,9 +81,35 @@ export default function CoachingLayout() {
 
   const ctx: CoachingOutletContext = { history, histLoading, goals, goalsLoading }
 
+  // Coaching disabled → show self-healing banner instead of empty history/habit grids.
+  const coachingEnabled = settings?.coaching?.enabled ?? true // default true: show content while loading
+  const coachingKnownDisabled = !settingsLoading && settings !== undefined && !coachingEnabled
+
   return (
     <div className="min-h-full p-6">
       <h1 className={cn(typography.h1, colors.text.pageTitle, 'mb-6')}>{t('coaching.title', 'Coaching History')}</h1>
+
+      {/* #5707: Self-healing empty state — shown when coaching.enabled === false.
+          Inline Enable button reuses the updateSettings mutation to avoid a full page
+          navigation. The banner disappears as soon as settings refetch confirms enabled=true. */}
+      {coachingKnownDisabled && (
+        <section className="mb-6" data-testid="coaching-disabled-banner">
+          <Alert variant="warning" title={t('coaching.disabledBannerTitle', 'Coaching is off')}>
+            <p className="mb-3">
+              {t('coaching.disabledBannerDesc', 'Enable coaching to receive proactive nudges and track your habits.')}
+            </p>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              isLoading={enabling || updateFreq.isPending}
+              onClick={() => void handleEnableCoaching()}
+            >
+              {t('coaching.disabledBannerButton', 'Enable coaching')}
+            </Button>
+          </Alert>
+        </section>
+      )}
 
       {/* Coaching frequency control */}
       <section className="mb-6">

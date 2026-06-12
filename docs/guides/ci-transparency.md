@@ -32,6 +32,18 @@ The CI pipeline is defined in [`.github/workflows/ci.yml`](../../.github/workflo
 
 The `Test` check is always emitted on pull requests so branch protection can require it consistently. When a PR only changes frontend files, the job exits quickly with a no-op success instead of running the full Rust suite.
 
+### Native parser seams
+
+Some platform adapters isolate pure parser logic from OS FFI calls so ordinary
+PR tests can catch cross-platform logic regressions even when a host-specific
+runner is unavailable. Examples include active-window title decoding, rectangle
+validation, and idle-time conversion around the Windows/macOS active-window
+adapters.
+
+These parser seams do not replace native smoke coverage. They are the fast
+feedback layer; release smoke and platform-specific workflows remain the source
+of truth for launch, signing, packaging, and OS permission behavior.
+
 ### Release Smoke (post-merge / manual)
 
 Release-grade desktop smoke is intentionally separated from the fast PR lane. The workflow lives in [`.github/workflows/release-smoke.yml`](../../.github/workflows/release-smoke.yml) and runs on pushes to `main` / `develop` or via manual dispatch.
@@ -151,7 +163,7 @@ All update downloads are verified with signature checking. Signature verificatio
 | Workflow | Trigger | Purpose |
 |---------|---------|---------|
 | `integrity-gates.yml` | Push to main / manual / schedule | Integrity policy + dependency audit |
-| `security-compliance.yml` | Push to main / manual / schedule | Supply-chain controls + SBOM |
+| `security-compliance.yml` | Manual | Public supply-chain controls + SBOM; scheduled variants may run in release infrastructure |
 | `release-smoke.yml` | Push to main / manual | Cross-platform desktop release smoke |
 | `grpc-governance.yml` | Push to main | gRPC contract stability |
 | `ai-integration-smoke.yml` | Push to main | AI provider integration smoke |

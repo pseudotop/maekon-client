@@ -6,6 +6,7 @@ import {
   type AiProviderSettings,
   type AppSettings,
   type AutomationSettings,
+  type DesktopPermissionSettingsKind,
   discoverProviderModels,
   downloadBlob,
   type ExportDataType,
@@ -15,17 +16,20 @@ import {
   type MonitorControlSettings,
   type NotificationSettings as NotificationSettingsType,
   type OcrValidationSettings as OcrValidationSettingsType,
+  openDesktopPermissionSettings,
   type PrivacySettings as PrivacySettingsType,
   type ProviderDiscoveredModel,
   type ProviderModelsResponse,
   type ProviderSurfaceSpec,
   postUpdateAction,
   requestDesktopNotificationPermission,
+  requestDesktopScreenCapturePermission,
   type SandboxSettings,
   type SavedAiProviderProfile,
   type SceneActionOverrideSettings as SceneActionOverrideSettingsType,
   type SceneIntelligenceSettings as SceneIntelligenceSettingsType,
   type ScheduleSettings as ScheduleSettingsType,
+  sendTestNotification,
   type TelemetrySettings,
   type UpdateAction,
   updateSettings,
@@ -66,6 +70,13 @@ export interface SettingsFormResult {
   saveMutation: { isPending: boolean }
   updateActionMutation: { isPending: boolean; mutate: (action: UpdateAction) => void }
   requestNotificationPermissionMutation: { isPending: boolean; mutate: () => void }
+  requestScreenCapturePermissionMutation: { isPending: boolean; mutate: () => void }
+  testNotificationMutation: { isPending: boolean; mutate: () => void }
+  openDesktopPermissionSettingsMutation: {
+    isPending: boolean
+    mutate: (permissionKind: DesktopPermissionSettingsKind) => void
+    pendingPermissionKind: DesktopPermissionSettingsKind | null
+  }
 
   // Export state
   exportFormat: ExportFormat
@@ -165,6 +176,8 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     llm_api: null,
   })
   const [modelCatalogLoading, setModelCatalogLoading] = useState<'ocr_api' | 'llm_api' | null>(null)
+  const [pendingDesktopPermissionKind, setPendingDesktopPermissionKind] =
+    useState<DesktopPermissionSettingsKind | null>(null)
 
   // ---- Normalization helpers (memoised) -----------------------------------
   const normalizeAiProviderProfileConfig = useCallback(
@@ -423,6 +436,72 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     },
     onError: (error: Error) => {
       showToast('error', error.message, 5000)
+    },
+  })
+
+  const requestScreenCapturePermissionMutation = useMutation({
+    mutationFn: requestDesktopScreenCapturePermission,
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(['desktop-permission-status'], snapshot)
+      if (snapshot.screen_capture.state === 'granted') {
+        showToast(
+          'info',
+          t(
+            'onboarding.step2ScreenCaptureRestartDesc',
+            'macOS may not apply newly granted Screen Recording access to the running app until Maekon is relaunched.',
+          ),
+          5000,
+        )
+      } else {
+        showToast(
+          'info',
+          t(
+            'settings.permissionAttentionDescMac',
+            'If a required permission is missing, re-open the setup guide and approve it in System Settings.',
+          ),
+          5000,
+        )
+      }
+    },
+    onError: (error: Error) => {
+      showToast('error', error.message, 5000)
+    },
+  })
+
+  const testNotificationMutation = useMutation({
+    mutationFn: () =>
+      sendTestNotification({
+        title: t('settings.notifTestTitle'),
+        body: t('settings.notifTestBody'),
+      }),
+    onSuccess: () => {
+      showToast('success', t('settings.notifTestSuccess'), 3000)
+    },
+    onError: (error: Error) => {
+      showToast('error', error.message, 5000)
+    },
+  })
+
+  const openDesktopPermissionSettingsMutation = useMutation({
+    mutationFn: async (permissionKind: DesktopPermissionSettingsKind) => {
+      setPendingDesktopPermissionKind(permissionKind)
+      await openDesktopPermissionSettings(permissionKind)
+    },
+    onSuccess: () => {
+      showToast(
+        'info',
+        t(
+          'settings.permissionOpenSystemSettingsFollowUp',
+          'Return to Maekon and refresh the permission status after changing macOS System Settings.',
+        ),
+        4000,
+      )
+    },
+    onError: (error: Error) => {
+      showToast('error', error.message, 5000)
+    },
+    onSettled: () => {
+      setPendingDesktopPermissionKind(null)
     },
   })
 
@@ -857,7 +936,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
 
     const canFallbackToRawModelList = !result.model_details || result.model_details.length === 0
     if (
-      (!currentModel || !currentModel.trim()) &&
+      !currentModel?.trim() &&
       (preferredDiscoveredModel ||
         (canFallbackToRawModelList && unknownPolicy !== 'reject' && result.models.length > 0))
     ) {
@@ -941,6 +1020,19 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     requestNotificationPermissionMutation: {
       isPending: requestNotificationPermissionMutation.isPending,
       mutate: requestNotificationPermissionMutation.mutate,
+    },
+    requestScreenCapturePermissionMutation: {
+      isPending: requestScreenCapturePermissionMutation.isPending,
+      mutate: requestScreenCapturePermissionMutation.mutate,
+    },
+    testNotificationMutation: {
+      isPending: testNotificationMutation.isPending,
+      mutate: testNotificationMutation.mutate,
+    },
+    openDesktopPermissionSettingsMutation: {
+      isPending: openDesktopPermissionSettingsMutation.isPending,
+      mutate: openDesktopPermissionSettingsMutation.mutate,
+      pendingPermissionKind: pendingDesktopPermissionKind,
     },
 
     exportFormat,

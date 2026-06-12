@@ -6,7 +6,6 @@ use async_trait::async_trait;
 
 use crate::error::CoreError;
 use crate::models::event::EventBatch;
-use crate::models::frame::ContextUpload;
 use crate::models::suggestion::{Suggestion, SuggestionFeedback};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,9 +33,6 @@ pub trait ApiClient: Send + Sync {
 
     /// Upload an event batch to the server.
     async fn upload_batch(&self, batch: &EventBatch) -> Result<(), CoreError>;
-
-    /// Upload context data (frames + metadata) to the server.
-    async fn upload_context(&self, upload: &ContextUpload) -> Result<(), CoreError>;
 
     /// Send suggestion feedback (accept/reject) to the server.
     async fn send_feedback(&self, feedback: &SuggestionFeedback) -> Result<(), CoreError>;

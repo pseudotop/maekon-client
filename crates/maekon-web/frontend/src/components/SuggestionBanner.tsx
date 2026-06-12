@@ -1,7 +1,7 @@
-import { Brain, Coffee, Focus, MessageSquare, Play, RotateCcw, X } from 'lucide-react'
+import { Brain, Check, Coffee, Focus, MessageSquare, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { fetchLocalSuggestions, type LocalSuggestion, submitSuggestionFeedback } from '../api/client'
+import { fetchUnifiedSuggestions, type SuggestionDto, submitUnifiedSuggestionFeedback } from '../api/client'
 import { addToast } from '../hooks/useToast'
 import { iconSize, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
@@ -38,20 +38,73 @@ const SUGGESTION_ICONS: Record<string, { icon: typeof Focus; color: string; bgCo
     bgColor: 'bg-semantic-warning/20',
     borderColor: 'border-semantic-warning',
   },
+  WORK_GUIDANCE: {
+    icon: Focus,
+    color: 'text-semantic-info',
+    bgColor: 'bg-semantic-info/20',
+    borderColor: 'border-semantic-info',
+  },
+  EMAIL_DRAFT: {
+    icon: MessageSquare,
+    color: 'text-semantic-info',
+    bgColor: 'bg-semantic-info/20',
+    borderColor: 'border-semantic-info',
+  },
+  PRODUCTIVITY_TIP: {
+    icon: Coffee,
+    color: 'text-semantic-warning',
+    bgColor: 'bg-semantic-warning/20',
+    borderColor: 'border-semantic-warning',
+  },
+  WORKFLOW_OPTIMIZATION: {
+    icon: RotateCcw,
+    color: 'text-semantic-success',
+    bgColor: 'bg-semantic-success/20',
+    borderColor: 'border-semantic-success',
+  },
+  CONTEXT_BASED: {
+    icon: Brain,
+    color: 'text-semantic-success',
+    bgColor: 'bg-semantic-success/20',
+    borderColor: 'border-semantic-success',
+  },
+  // #5696: the wire serializes SuggestionType as SCREAMING_SNAKE_CASE — the
+  // CamelCase keys above are legacy/unreachable for API rows. These three are
+  // what the rule producer emits after type differentiation.
+  TAKE_BREAK: {
+    icon: Coffee,
+    color: 'text-semantic-warning',
+    bgColor: 'bg-semantic-warning/20',
+    borderColor: 'border-semantic-warning',
+  },
+  NEED_FOCUS_TIME: {
+    icon: Focus,
+    color: 'text-semantic-info',
+    bgColor: 'bg-semantic-info/20',
+    borderColor: 'border-semantic-info',
+  },
+  RESTORE_CONTEXT: {
+    icon: RotateCcw,
+    color: 'text-semantic-info',
+    bgColor: 'bg-semantic-info/20',
+    borderColor: 'border-semantic-info',
+  },
 }
 
-function getSuggestionMessage(suggestion: LocalSuggestion, t: (key: string) => string): string {
-  const payload = suggestion.payload as Record<string, unknown>
+function getSuggestionMessage(suggestion: SuggestionDto, t: (key: string) => string): string {
+  if (suggestion.content.trim()) {
+    return suggestion.content
+  }
 
   switch (suggestion.suggestion_type) {
     case 'NeedFocusTime':
-      return t('focus.suggestions.needFocusTime').replace('{minutes}', String(payload.suggested_focus_mins || 25))
+      return t('focus.suggestions.needFocusTime').replace('{minutes}', '25')
     case 'TakeBreak':
-      return t('focus.suggestions.takeBreak').replace('{minutes}', String(payload.continuous_work_mins || 90))
+      return t('focus.suggestions.takeBreak').replace('{minutes}', '90')
     case 'RestoreContext':
-      return t('focus.suggestions.restoreContext').replace('{app}', String(payload.interrupted_app || 'app'))
+      return t('focus.suggestions.restoreContext').replace('{app}', 'app')
     case 'PatternDetected':
-      return t('focus.suggestions.patternDetected').replace('{description}', String(payload.pattern_description || ''))
+      return t('focus.suggestions.patternDetected').replace('{description}', '')
     case 'ExcessiveCommunication':
       return t('focus.suggestions.excessiveCommunication')
     default:
@@ -61,36 +114,36 @@ function getSuggestionMessage(suggestion: LocalSuggestion, t: (key: string) => s
 
 export default function SuggestionBanner() {
   const { t } = useTranslation()
-  const [suggestions, setSuggestions] = useState<LocalSuggestion[]>([])
+  const [suggestions, setSuggestions] = useState<SuggestionDto[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set())
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    fetchLocalSuggestions()
+    fetchUnifiedSuggestions()
       .then((data) => {
         const pending = data.filter((s) => !s.acted_at && !s.dismissed_at)
         setSuggestions(pending)
       })
       .catch((e) => {
-        console.warn('fetchLocalSuggestions failed:', e)
+        console.warn('fetchUnifiedSuggestions failed:', e)
         addToast('warning', t('focus.suggestions.loadFailed', 'Failed to load focus suggestions.'), 5000)
       })
       .finally(() => setLoading(false))
   }, [t])
 
-  const pendingSuggestions = suggestions.filter((s) => !dismissed.has(s.id))
+  const pendingSuggestions = suggestions.filter((s) => !dismissed.has(s.suggestion_id))
 
   const currentSuggestion = pendingSuggestions[currentIndex]
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally keyed on id and shown_at only — full object would cause unnecessary re-fires
   useEffect(() => {
     if (currentSuggestion && !currentSuggestion.shown_at) {
-      submitSuggestionFeedback(currentSuggestion.id, 'shown').catch((e) =>
-        console.warn('submitSuggestionFeedback(shown) failed:', e),
+      submitUnifiedSuggestionFeedback(currentSuggestion.suggestion_id, 'shown').catch((e) =>
+        console.warn('submitUnifiedSuggestionFeedback(shown) failed:', e),
       )
     }
-  }, [currentSuggestion?.id, currentSuggestion?.shown_at])
+  }, [currentSuggestion?.suggestion_id, currentSuggestion?.shown_at])
 
   if (loading || pendingSuggestions.length === 0) {
     return null
@@ -101,27 +154,27 @@ export default function SuggestionBanner() {
 
   const handleDismiss = async () => {
     try {
-      await submitSuggestionFeedback(currentSuggestion.id, 'dismissed')
-      setDismissed(new Set(dismissed).add(currentSuggestion.id))
+      await submitUnifiedSuggestionFeedback(currentSuggestion.suggestion_id, 'dismissed')
+      setDismissed(new Set(dismissed).add(currentSuggestion.suggestion_id))
       if (currentIndex >= pendingSuggestions.length - 1) {
         setCurrentIndex(Math.max(0, currentIndex - 1))
       }
     } catch (e) {
-      console.warn('submitSuggestionFeedback(dismissed) failed:', e)
+      console.warn('submitUnifiedSuggestionFeedback(dismissed) failed:', e)
       addToast('error', t('focus.suggestions.dismissFailed', 'Failed to dismiss the suggestion.'), 5000)
     }
   }
 
-  const handleAct = async () => {
+  const handleMarkDone = async () => {
     try {
-      await submitSuggestionFeedback(currentSuggestion.id, 'acted')
-      setDismissed(new Set(dismissed).add(currentSuggestion.id))
+      await submitUnifiedSuggestionFeedback(currentSuggestion.suggestion_id, 'acted')
+      setDismissed(new Set(dismissed).add(currentSuggestion.suggestion_id))
       if (currentIndex >= pendingSuggestions.length - 1) {
         setCurrentIndex(Math.max(0, currentIndex - 1))
       }
     } catch (e) {
-      console.warn('submitSuggestionFeedback(acted) failed:', e)
-      addToast('error', t('focus.suggestions.actFailed', 'Failed to apply the suggestion.'), 5000)
+      console.warn('submitUnifiedSuggestionFeedback(acted) failed:', e)
+      addToast('error', t('focus.suggestions.actFailed', 'Failed to mark the suggestion as done.'), 5000)
     }
   }
 
@@ -156,8 +209,8 @@ export default function SuggestionBanner() {
       {/* UI note */}
       <div className="flex flex-shrink-0 items-center gap-2">
         {/* UI note */}
-        <Button variant="primary" size="sm" onClick={handleAct} className="flex items-center gap-1">
-          <Play className={iconSize.xs} />
+        <Button variant="primary" size="sm" onClick={handleMarkDone} className="flex items-center gap-1">
+          <Check className={iconSize.xs} />
           {t('focus.suggestions.act')}
         </Button>
 

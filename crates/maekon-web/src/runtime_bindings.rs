@@ -13,11 +13,19 @@ use maekon_core::ports::integration::{
     IntegrationAuditPort, IntegrationAuthPort, IntegrationInboxPort, IntegrationInboxStorePort,
     IntegrationOutboxPort, IntegrationRuntimeTelemetryPort, IntegrationSessionPort,
 };
+use maekon_core::ports::memory_graph_port::MemoryGraphPort;
+use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use tokio::sync::broadcast;
 
 use crate::update_control::UpdateControl;
 use crate::{AiRuntimeStatus, RealtimeEvent};
+
+// #5734: per-call LLM health handle forwarded from the composition root so the
+// live GET /api/automation/status can read the true last-call outcome.
+// Imported from maekon-core (the canonical definition site) to avoid a
+// forbidden adapter-to-adapter dependency on maekon-network.
+pub use maekon_core::ports::llm_provider::LlmCallHealth;
 
 #[derive(Clone, Default)]
 pub struct CoreRuntimeBindings {
@@ -26,6 +34,12 @@ pub struct CoreRuntimeBindings {
     pub frame_storage: Option<Arc<dyn FrameStoragePort>>,
     pub config_manager: Option<ConfigManager>,
     pub update_control: Option<UpdateControl>,
+    /// ADR-023: local memory-graph store, so the digest export endpoint can
+    /// render accumulated claims (`DigestExporter::to_markdown_with_claims`).
+    pub memory_graph: Option<Arc<dyn MemoryGraphPort>>,
+    /// #4478 G3: one-shot signal the "Delete all data" endpoint sets so the
+    /// SyncEngine propagates a device-wide erasure to LAN peers.
+    pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[derive(Clone, Default)]
@@ -40,6 +54,10 @@ pub struct AutomationRuntimeBindings {
     pub audit_logger: Option<Arc<dyn AuditLogPort>>,
     pub automation_controller: Option<Arc<dyn AutomationPort>>,
     pub ai_runtime_status: Option<AiRuntimeStatus>,
+    /// #5734: per-call LLM health handle. `None` means health tracking is not
+    /// wired (standalone web server, tests, CLI arm). Cloned into `AutomationState`
+    /// and surfaced as `AutomationStatusDto.llm_healthy` at request time.
+    pub llm_call_health: Option<Arc<LlmCallHealth>>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +77,7 @@ pub struct AnalysisRuntimeBindings {
     pub override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub coaching_engine: Option<Arc<dyn CoachingPort>>,
+    pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
 }
 
 #[derive(Clone, Default)]

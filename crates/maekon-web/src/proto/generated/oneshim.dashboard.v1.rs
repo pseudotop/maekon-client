@@ -675,8 +675,8 @@ pub mod dashboard_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// V2b: server-streaming. Realtime (interval_secs=0) or interval-aggregated
-        /// MetricBuckets. See docs/reviews/2026-04-21-d13-v2b-streaming-design.md §1.
+        /// Server-streaming. Realtime (interval_secs=0) or interval-aggregated
+        /// MetricBuckets.
         pub async fn subscribe_metrics(
             &mut self,
             request: impl tonic::IntoRequest<super::SubscribeMetricsRequest>,
@@ -706,8 +706,8 @@ pub mod dashboard_service_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
-        /// V2b: server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
-        /// server-enforced per-type rate limits. See §1 + §2.
+        /// Server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
+        /// server-enforced per-type rate limits.
         pub async fn subscribe_events(
             &mut self,
             request: impl tonic::IntoRequest<super::SubscribeEventsRequest>,
@@ -813,8 +813,8 @@ pub mod dashboard_service_server {
             >
             + std::marker::Send
             + 'static;
-        /// V2b: server-streaming. Realtime (interval_secs=0) or interval-aggregated
-        /// MetricBuckets. See docs/reviews/2026-04-21-d13-v2b-streaming-design.md §1.
+        /// Server-streaming. Realtime (interval_secs=0) or interval-aggregated
+        /// MetricBuckets.
         async fn subscribe_metrics(
             &self,
             request: tonic::Request<super::SubscribeMetricsRequest>,
@@ -828,8 +828,8 @@ pub mod dashboard_service_server {
             >
             + std::marker::Send
             + 'static;
-        /// V2b: server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
-        /// server-enforced per-type rate limits. See §1 + §2.
+        /// Server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
+        /// server-enforced per-type rate limits.
         async fn subscribe_events(
             &self,
             request: tonic::Request<super::SubscribeEventsRequest>,

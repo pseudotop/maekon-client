@@ -146,7 +146,7 @@ impl EncryptionKey {
 /// Creates an ACL with a single ACE granting the current user GENERIC_ALL,
 /// and applies it as a protected DACL (no inheritance from parent).
 #[cfg(windows)]
-fn set_owner_only_dacl(path: &std::path::Path) -> Result<(), StorageError> {
+pub(crate) fn set_owner_only_dacl(path: &std::path::Path) -> Result<(), StorageError> {
     // windows-sys 0.61: `OpenProcessToken` moved from `Win32::Security` to
     // `Win32::System::Threading`, `GENERIC_ALL` moved to `Win32::Foundation`,
     // and `HANDLE` is now `*mut c_void` instead of `isize` — token_handle
@@ -346,15 +346,25 @@ mod tests {
         let plaintext = b"secret data";
 
         let encrypted = key1.encrypt(plaintext).unwrap();
-        let result = key2.decrypt(&encrypted);
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                key2.decrypt(&encrypted).unwrap_err(),
+                StorageError::Encryption(_)
+            ),
+            "wrong key must yield StorageError::Encryption (AES-GCM auth failure)"
+        );
     }
 
     #[test]
     fn decrypt_too_short_data_fails() {
         let key = fixture_key(0x42);
-        let result = key.decrypt(&[0u8; 5]);
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                key.decrypt(&[0u8; 5]).unwrap_err(),
+                StorageError::Encryption(_)
+            ),
+            "ciphertext shorter than nonce must yield StorageError::Encryption"
+        );
     }
 
     #[test]
@@ -365,8 +375,13 @@ mod tests {
         if encrypted.len() > 15 {
             encrypted[15] ^= 0xFF;
         }
-        let result = key.decrypt(&encrypted);
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                key.decrypt(&encrypted).unwrap_err(),
+                StorageError::Encryption(_)
+            ),
+            "corrupted ciphertext must yield StorageError::Encryption (auth tag mismatch)"
+        );
     }
 
     #[test]

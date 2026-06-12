@@ -35,6 +35,7 @@ impl EventsQueryService {
             .ctx
             .storage
             .count_events_in_range(&window)
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         let fetch_limit = limit + offset;

@@ -72,6 +72,23 @@ pub trait AccessibilityExtractor: Send + Sync {
             .collect())
     }
 
+    /// Extract an accessibility tree for a specific running application.
+    ///
+    /// Implementations that can resolve app names or bundle identifiers SHOULD
+    /// traverse the target app root. The default falls back to the focused
+    /// window tree so existing platform adapters remain source-compatible.
+    async fn extract_application_elements(
+        &self,
+        _app_name: &str,
+        max_depth: u32,
+        max_elements: usize,
+        pii_level: PiiFilterLevel,
+        has_full_text_consent: bool,
+    ) -> Result<Vec<AccessibilityElement>, CoreError> {
+        self.extract_window_elements(max_depth, max_elements, pii_level, has_full_text_consent)
+            .await
+    }
+
     /// Check if OS-level accessibility permission is currently granted.
     fn has_permission(&self) -> bool;
 

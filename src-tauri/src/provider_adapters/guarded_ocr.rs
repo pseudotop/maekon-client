@@ -1,17 +1,15 @@
 use std::sync::Arc;
 
-#[cfg(feature = "server")]
 use async_trait::async_trait;
 use maekon_core::config::OcrValidationConfig;
 use maekon_core::error::CoreError;
 use maekon_core::ports::ocr_provider::OcrProvider;
 use maekon_core::ports::ocr_provider::OcrResult;
-#[cfg(feature = "server")]
 use tracing::debug;
 
 use super::types::ExternalOcrPrivacyGuard;
 
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(super) struct GuardedOcrProvider {
     inner: Arc<dyn OcrProvider>,
     privacy_guard: ExternalOcrPrivacyGuard,
@@ -19,7 +17,7 @@ pub(super) struct GuardedOcrProvider {
     ocr_validation: OcrValidationConfig,
 }
 
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 impl GuardedOcrProvider {
     pub(super) fn new(
         inner: Arc<dyn OcrProvider>,
@@ -66,17 +64,19 @@ impl GuardedOcrProvider {
 
         let invalid_ratio = invalid as f64 / total as f64;
         if invalid_ratio > self.ocr_validation.max_invalid_ratio {
-            return Err(CoreError::OcrError { code: maekon_core::error_codes::ProviderCode::OcrFailed, message: format!(
-                "OCR calibration validation failure: invalid_ratio={invalid_ratio:.2}, max_invalid_ratio={:.2}",
-                self.ocr_validation.max_invalid_ratio
-            ) });
+            return Err(CoreError::OcrError {
+                code: maekon_core::error_codes::ProviderCode::OcrFailed,
+                message: format!(
+                    "OCR calibration validation failure: invalid_ratio={invalid_ratio:.2}, max_invalid_ratio={:.2}",
+                    self.ocr_validation.max_invalid_ratio
+                ),
+            });
         }
 
         Ok(filtered)
     }
 }
 
-#[cfg(feature = "server")]
 #[async_trait]
 impl OcrProvider for GuardedOcrProvider {
     async fn extract_elements(

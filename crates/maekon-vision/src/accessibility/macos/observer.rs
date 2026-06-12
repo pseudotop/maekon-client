@@ -148,25 +148,47 @@ impl FocusObserverHandle {
                 return;
             }
 
-            // Subscribe to kAXFocusedUIElementChangedNotification.
+            // Subscribe to focus notifications emitted by the app. WebView
+            // DOM focus changes do not always surface as UI-element changes,
+            // while native window focus transitions are reported separately.
             //
             // The `refcon` pointer carries our shared state so the
             // callback can set the `focus_changed` flag. We convert
             // the Arc to a raw pointer. The Arc is kept alive by
             // `state` in this scope -- we do NOT call Arc::from_raw
             // in the callback (which would double-free).
-            let notification_name = CFString::new(AX_FOCUSED_UI_ELEMENT_CHANGED_NOTIFICATION);
+            let notification_names = [
+                CFString::new(AX_FOCUSED_UI_ELEMENT_CHANGED_NOTIFICATION),
+                CFString::new(AX_FOCUSED_WINDOW_CHANGED_NOTIFICATION),
+            ];
+            let mut subscribed_indexes = Vec::new();
             let refcon = Arc::as_ptr(&state) as *mut c_void;
 
-            let add_err = AXObserverAddNotification(
-                observer,
-                app_element,
-                Self::as_cf_string_ref(&notification_name),
-                refcon,
-            );
+            for (index, notification_name) in notification_names.iter().enumerate() {
+                let add_err = AXObserverAddNotification(
+                    observer,
+                    app_element,
+                    Self::as_cf_string_ref(notification_name),
+                    refcon,
+                );
 
-            if add_err != kAXErrorSuccess {
-                warn!(pid, ax_error = add_err, "AXObserverAddNotification failed");
+                if add_err == kAXErrorSuccess {
+                    subscribed_indexes.push(index);
+                } else {
+                    warn!(
+                        pid,
+                        ax_error = add_err,
+                        notification = notification_name.to_string(),
+                        "AXObserverAddNotification failed"
+                    );
+                }
+            }
+
+            if subscribed_indexes.is_empty() {
+                warn!(
+                    pid,
+                    "AXObserverAddNotification failed for all focus notifications"
+                );
                 CFRelease(app_element);
                 CFRelease(observer);
                 return;
@@ -177,7 +199,12 @@ impl FocusObserverHandle {
             let source = AXObserverGetRunLoopSource(observer);
             if source.is_null() {
                 warn!(pid, "AXObserverGetRunLoopSource returned null");
-                Self::cleanup_observer(observer, app_element, &notification_name);
+                Self::cleanup_observer(
+                    observer,
+                    app_element,
+                    &notification_names,
+                    &subscribed_indexes,
+                );
                 return;
             }
 
@@ -213,7 +240,12 @@ impl FocusObserverHandle {
 
             // Cleanup: remove notification, release observer and element.
             CFRunLoopRemoveSource(run_loop, source, Self::as_cf_string_ref(&mode));
-            Self::cleanup_observer(observer, app_element, &notification_name);
+            Self::cleanup_observer(
+                observer,
+                app_element,
+                &notification_names,
+                &subscribed_indexes,
+            );
 
             debug!(pid, "AXObserver thread exiting");
         }
@@ -250,13 +282,18 @@ impl FocusObserverHandle {
     unsafe fn cleanup_observer(
         observer: AXObserverRef,
         element: AXUIElementRef,
-        notification_name: &CFString,
+        notification_names: &[CFString],
+        subscribed_indexes: &[usize],
     ) {
-        let _ = AXObserverRemoveNotification(
-            observer,
-            element,
-            Self::as_cf_string_ref(notification_name),
-        );
+        for index in subscribed_indexes {
+            if let Some(notification_name) = notification_names.get(*index) {
+                let _ = AXObserverRemoveNotification(
+                    observer,
+                    element,
+                    Self::as_cf_string_ref(notification_name),
+                );
+            }
+        }
         CFRelease(element);
         CFRelease(observer);
     }

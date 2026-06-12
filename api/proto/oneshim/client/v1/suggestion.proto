@@ -12,12 +12,32 @@ message SubscribeRequest {
   string session_id = 1;
 }
 
+// Typed suggestion classification enum mirroring oneshim.v1.user_context.SuggestionType.
+// field 5 (category) is deprecated — consumers should use suggestion_type_enum (field 6).
+enum SuggestionType {
+  SUGGESTION_TYPE_UNSPECIFIED = 0;
+  SUGGESTION_TYPE_WORK_GUIDANCE = 1;
+  SUGGESTION_TYPE_EMAIL_DRAFT = 2;
+  SUGGESTION_TYPE_PRODUCTIVITY_TIP = 3;
+  SUGGESTION_TYPE_WORKFLOW_OPTIMIZATION = 4;
+  SUGGESTION_TYPE_CONTEXT_BASED = 5;
+  SUGGESTION_TYPE_BREAK_REMINDER = 6;
+  SUGGESTION_TYPE_FOCUS_MODE = 7;
+  SUGGESTION_TYPE_TAKE_BREAK = 8;
+  SUGGESTION_TYPE_NEED_FOCUS_TIME = 9;
+  SUGGESTION_TYPE_RESTORE_CONTEXT = 10;
+}
+
 message SuggestionEvent {
   string suggestion_id = 1;
   string content = 2;
   Priority priority = 3;
   double confidence_score = 4;
+  // Deprecated: use suggestion_type_enum (field 6) for type-safe classification.
+  // Retained for wire compatibility with pre-cycle18 server releases.
   string category = 5;
+  // F-RC-12: typed suggestion classification (proto field 6).
+  SuggestionType suggestion_type_enum = 6;
 }
 
 enum Priority {

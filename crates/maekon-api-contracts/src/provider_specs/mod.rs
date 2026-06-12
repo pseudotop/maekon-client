@@ -16,11 +16,11 @@ use validation::{validate_parameter_profile, validate_surface_catalog};
 
 // --- Re-exports: models ---
 pub use models::{
-    ProviderAvailabilityProbeSpec, ProviderKnownModelCapabilities, ProviderKnownModelSpec,
-    ProviderLlmCapabilities, ProviderOcrCapabilities, ProviderSurfaceCatalog,
-    ProviderSurfaceProvisioningSpec, ProviderSurfaceSpec, ProviderSurfaceSupports,
-    ProviderUnknownModelPolicySet, ProviderVendorProjectionSpec, ProviderVendorSpec,
-    SubprocessTransportSpec, SurfaceDefaultModels,
+    ProviderAvailabilityProbeSpec, ProviderCliCompatibilitySpec, ProviderKnownModelCapabilities,
+    ProviderKnownModelSpec, ProviderLlmCapabilities, ProviderOcrCapabilities,
+    ProviderSurfaceCatalog, ProviderSurfaceProvisioningSpec, ProviderSurfaceSpec,
+    ProviderSurfaceSupports, ProviderUnknownModelPolicySet, ProviderVendorProjectionSpec,
+    ProviderVendorSpec, SubprocessTransportSpec, SurfaceDefaultModels,
 };
 
 // --- Re-exports: enums ---
@@ -44,8 +44,8 @@ pub use queries::{
     list_provider_surface_specs, list_subprocess_surface_specs,
     model_capability_status_for_surface, model_catalog_strategy,
     ocr_requires_structured_output_model, parameter_profile_for_surface, provider_surface_catalog,
-    provider_surface_spec, subprocess_auth_probe_mode, subprocess_invocation_mode,
-    subprocess_supports_json_output, subprocess_transport,
+    provider_surface_spec, subprocess_auth_probe_mode, subprocess_compatibility,
+    subprocess_invocation_mode, subprocess_supports_json_output, subprocess_transport,
     surface_requires_explicit_model_selection, surface_stability, surface_supports_capability,
     surface_supports_model_selection, surface_supports_parameter, unknown_model_policy_for_surface,
     validate_supported_surface_parameters,

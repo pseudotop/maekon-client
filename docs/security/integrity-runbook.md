@@ -32,10 +32,13 @@ PRs must not bypass the fast-lane workflows. Full integrity, supply-chain, and r
 
 Current documented exception:
 
-- `RUSTSEC-2024-0429` (`glib 0.18.5`) is ignored in `cargo audit` and `cargo deny`.
-- Scope is limited to the Linux GTK3 / `webkit2gtk` / `wry` / Tauri transitive chain.
-- Exit criterion: remove the exception once the upstream desktop stack moves to patched `gtk-rs-core` / `glib` releases.
-- Treat any new advisory outside this documented exception as a release blocker.
+- No RustSec advisory is ignored in the local integrity script.
+- The previous `RUSTSEC-2024-0429` (`glib 0.18.5`) exception was retired by the E31 GTK4/WebKitGTK 6 migration.
+- `cargo audit` must stay at zero vulnerabilities. Existing informational
+  transitive warnings are tracked in `deny.toml` and issue #5431; release
+  operators should treat a new warning ID or a changed dependency path as a
+  fresh triage item.
+- Treat any new advisory as a release blocker unless it has an explicit repository policy entry with owner, expiry, and issue reference.
 - GitHub release gating is stricter than the local `cargo audit` exception list:
   any open Dependabot or CodeQL alert must be fixed or explicitly recorded in
   `supply-chain/release-alert-acceptance.json` with an expiry and review issue.

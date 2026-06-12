@@ -181,7 +181,11 @@ mod tests {
             .compress(data, CompressionAlgorithm::Gzip)
             .unwrap();
         let result = compressor.decompress(&compressed, CompressionAlgorithm::Zstd);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "wrong-algo decode must be CoreError::Internal, got: {err:?}"
+        );
     }
 
     #[test]
@@ -192,7 +196,11 @@ mod tests {
             .compress(data, CompressionAlgorithm::Lz4)
             .unwrap();
         let result = compressor.decompress(&compressed, CompressionAlgorithm::Gzip);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "wrong-algo decode must be CoreError::Internal, got: {err:?}"
+        );
     }
 
     #[test]
@@ -200,7 +208,11 @@ mod tests {
         let compressor = AdaptiveCompressor::new();
         let corrupted = vec![0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03];
         let result = compressor.decompress(&corrupted, CompressionAlgorithm::Gzip);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "corrupted gzip must be CoreError::Internal, got: {err:?}"
+        );
     }
 
     #[test]
@@ -208,7 +220,11 @@ mod tests {
         let compressor = AdaptiveCompressor::new();
         let corrupted = vec![0xAB, 0xCD, 0xEF, 0x00, 0x11, 0x22];
         let result = compressor.decompress(&corrupted, CompressionAlgorithm::Zstd);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "corrupted zstd must be CoreError::Internal, got: {err:?}"
+        );
     }
 
     #[test]
@@ -222,6 +238,10 @@ mod tests {
             *byte ^= 0xFF;
         }
         let result = compressor.decompress(&compressed, CompressionAlgorithm::Lz4);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CoreError::Internal { .. }),
+            "corrupted lz4 must be CoreError::Internal, got: {err:?}"
+        );
     }
 }

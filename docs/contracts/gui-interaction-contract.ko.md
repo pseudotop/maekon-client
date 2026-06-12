@@ -16,7 +16,8 @@ GUI V2 인터랙션 API의 버전화된 HTTP 계약을 정의합니다
 1. 클라이언트는 `schema_version`이 있으면 반드시 읽고 분기해야 합니다.
 2. 동일 버전 내 새 필드 추가는 하위 호환됩니다.
 3. 필드 변경이 깨지는 경우 새 스키마 버전 문자열이 필요합니다.
-4. `x-gui-session-token` 헤더는 세션 생성을 제외한 모든 엔드포인트에서 필수입니다.
+4. 스트림이 아닌 엔드포인트는 세션 생성을 제외하고 `x-gui-session-token` 헤더가 필요합니다.
+5. 브라우저 SSE 클라이언트는 `/events`에 path-scoped `maekon_gui_session_token` 쿠키를 사용해야 하며 capability 토큰을 URL에 넣으면 안 됩니다.
 
 ## 엔드포인트
 
@@ -32,15 +33,24 @@ GUI V2 인터랙션 API의 버전화된 HTTP 계약을 정의합니다
 
 ## 인증
 
-`POST /sessions`를 제외한 모든 엔드포인트에 capability 토큰 헤더 필요:
+`POST /sessions`를 제외한 스트림이 아닌 엔드포인트에 capability 토큰 헤더 필요:
 
 ```
 x-gui-session-token: {token}
 ```
 
+SSE 엔드포인트는 브라우저 `EventSource`가 커스텀 헤더 없이 인증할 수 있도록
+동일한 토큰을 path-scoped 쿠키에서도 읽습니다.
+
+```
+Cookie: maekon_gui_session_token={token}
+```
+
 - 토큰은 `GuiCreateSessionResponse.capability_token`에서 반환됩니다.
 - 빈 값 또는 공백만 있는 값은 `401 Unauthorized`로 거부됩니다.
 - 토큰은 단일 세션에 한정됩니다.
+- 비브라우저 클라이언트를 위해 SSE 엔드포인트의 헤더 fallback은 유지됩니다.
+- Query string 토큰은 계약에 포함되지 않습니다.
 
 ## 상태 머신
 

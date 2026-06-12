@@ -88,12 +88,13 @@ impl GrpcSessionClient {
         Ok(())
     }
 
-    pub async fn heartbeat(&mut self, session_id: &str) -> Result<(), CoreError> {
+    pub async fn heartbeat(&mut self, session_id: &str, token: &str) -> Result<(), CoreError> {
         debug!(session_id = %session_id, "gRPC heartbeat sent");
 
-        let request = tonic::Request::new(HeartbeatRequest {
+        let mut request = tonic::Request::new(HeartbeatRequest {
             session_id: session_id.to_string(),
         });
+        super::auth_meta::inject_bearer_auth(&mut request, token)?;
 
         self.client.heartbeat(request).await.map_err(|status| {
             error!(error = %status, "gRPC heartbeat failure");

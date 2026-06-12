@@ -8,6 +8,7 @@ impl DesktopStartupCoordinator {
     pub(crate) fn apply(
         app: &App,
         frontend_web_port: u16,
+        local_auth_token: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         crate::tray::setup_tray(app)?;
 
@@ -17,11 +18,11 @@ impl DesktopStartupCoordinator {
             info!("macOS dock icon set from embedded icon.png");
         }
 
-        Self::show_main_window(app, frontend_web_port);
+        Self::show_main_window(app, frontend_web_port, local_auth_token);
         Ok(())
     }
 
-    fn show_main_window(app: &App, frontend_web_port: u16) {
+    fn show_main_window(app: &App, frontend_web_port: u16, local_auth_token: &str) {
         if let Some(window) = app.get_webview_window("main") {
             #[cfg(not(target_os = "macos"))]
             {
@@ -34,6 +35,18 @@ impl DesktopStartupCoordinator {
             if let Err(e) = window.eval(&port_js) {
                 debug!("eval failed: {e}");
             }
+
+            // E20-41 (#4833): inject the per-session local-API auth token into the
+            // legit WebView only. A different local user's browser never transits
+            // Tauri, so it never receives the token and is rejected (401) by the
+            // /api gate. `{:?}` JSON-quotes/escapes the hex token. The frontend also
+            // has a get_local_auth_token IPC fallback to cover the post-load timing.
+            let auth_js = format!("window.__MAEKON_LOCAL_AUTH__ = {local_auth_token:?};");
+            if let Err(e) = window.eval(&auth_js) {
+                debug!("local-auth eval failed: {e}");
+            }
+
+            crate::window_state::restore_main_window_state(&window);
 
             if let Err(e) = window.show() {
                 debug!("window show failed: {e}");

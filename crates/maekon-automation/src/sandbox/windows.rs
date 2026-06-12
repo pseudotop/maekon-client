@@ -3,18 +3,19 @@
 //! **Enforcement model (subprocess):**
 //! The sandbox spawns the `maekon-sandbox-worker` binary as a child process
 //! inside a Win32 Job Object with configured resource limits. A restricted
-//! token is created via `CreateRestrictedToken` and applied to the child via
-//! `CreateProcessAsUserW`.
+//! token is created via `CreateRestrictedToken`; the current worker launch
+//! path still uses `tokio::process::Command`, so the token is not applied to
+//! the child process yet.
 //!
 //! **Dual code paths (`windows-sandbox` feature):**
 //! - **Enabled**: Real Win32 API calls — `CreateJobObjectW`, `SetInformationJobObject`,
-//!   `CreateRestrictedToken`, `CreateProcessAsUserW`, `AssignProcessToJobObject`.
+//!   `CreateRestrictedToken`, `AssignProcessToJobObject`.
 //! - **Disabled**: Log-only stubs that describe what *would* be enforced.
 //!
 //! **Enforcement status:**
 //! - **Resource limits**: Enforced via Job Object (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
 //! - **Process isolation**: Enforced via subprocess model (child inherits Job Object).
-//! - **Token restriction**: `DISABLE_MAX_PRIVILEGE` strips dangerous privileges.
+//! - **Token restriction**: Token setup is verified; child-token application is not implemented.
 //! - **Filesystem isolation**: Not enforced (Job Objects do not isolate FS).
 //! - **Syscall filtering**: Not available on Windows.
 //! - **Network isolation**: Not enforced (would require Windows Firewall rules).
@@ -23,7 +24,10 @@ use async_trait::async_trait;
 
 use crate::error::AutomationError;
 use crate::sandbox::ipc;
-use maekon_core::config::{SandboxConfig, SandboxProfile};
+use crate::sandbox::win_limits::{
+    build_job_limits, build_token_restrictions, JobObjectLimits, TokenRestrictions,
+};
+use maekon_core::config::SandboxConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::automation::AutomationAction;
 use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
@@ -32,16 +36,23 @@ use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
 
 /// RAII wrapper for Win32 HANDLE values. Calls `CloseHandle` on drop.
 ///
-/// In `windows-sys 0.61`, HANDLE is `isize` (not a pointer type).
-/// Null (0) and `INVALID_HANDLE_VALUE` (-1) are both invalid sentinels.
 #[cfg(feature = "windows-sandbox")]
-struct OwnedHandle(isize);
+type Win32Handle = windows_sys::Win32::Foundation::HANDLE;
+
+#[cfg(feature = "windows-sandbox")]
+struct OwnedHandle(Win32Handle);
+
+#[cfg(feature = "windows-sandbox")]
+// SAFETY: Win32 HANDLE values are process-local opaque references. This wrapper
+// owns exactly one handle and only transfers ownership so it can be used and
+// closed from the async task after creation on a blocking thread.
+unsafe impl Send for OwnedHandle {}
 
 #[cfg(feature = "windows-sandbox")]
 impl OwnedHandle {
     /// Returns `true` when the handle is neither null nor INVALID_HANDLE_VALUE.
     fn is_valid(&self) -> bool {
-        self.0 != 0 && self.0 != -1 // 0 = null, -1 = INVALID_HANDLE_VALUE
+        !self.0.is_null() && self.0 != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
     }
 }
 
@@ -74,56 +85,6 @@ impl WindowsSandbox {
             is_available: check_windows_sandbox_support(),
         }
     }
-
-    fn build_job_limits(config: &SandboxConfig) -> JobObjectLimits {
-        let (default_memory, default_cpu_ms, default_max_processes) = match config.profile {
-            SandboxProfile::Permissive => (0, 0, 0),
-            SandboxProfile::Standard => (512 * 1024 * 1024, 30_000, 10), // 512MB, 30s, 10 processes
-            SandboxProfile::Strict => (256 * 1024 * 1024, 10_000, 3),    // 256MB, 10s, 3 processes
-        };
-
-        JobObjectLimits {
-            max_memory_bytes: if config.max_memory_bytes > 0 {
-                config.max_memory_bytes
-            } else {
-                default_memory
-            },
-            max_cpu_time_ms: if config.max_cpu_time_ms > 0 {
-                config.max_cpu_time_ms
-            } else {
-                default_cpu_ms
-            },
-            max_processes: default_max_processes,
-        }
-    }
-
-    fn build_token_restrictions(config: &SandboxConfig) -> TokenRestrictions {
-        match config.profile {
-            SandboxProfile::Permissive => TokenRestrictions {
-                disable_admin_sid: true,
-                disable_most_sids: false,
-                remove_privileges: false,
-            },
-            SandboxProfile::Standard => TokenRestrictions {
-                disable_admin_sid: true,
-                disable_most_sids: true,
-                remove_privileges: true,
-            },
-            SandboxProfile::Strict => TokenRestrictions {
-                disable_admin_sid: true,
-                disable_most_sids: true,
-                remove_privileges: true,
-            },
-        }
-    }
-}
-
-/// Returns `true` when the config is Permissive with no custom resource limits,
-/// meaning subprocess sandboxing can be skipped entirely.
-fn is_permissive_noop(config: &SandboxConfig) -> bool {
-    matches!(config.profile, SandboxProfile::Permissive)
-        && config.max_memory_bytes == 0
-        && config.max_cpu_time_ms == 0
 }
 
 #[async_trait]
@@ -148,11 +109,6 @@ impl Sandbox for WindowsSandbox {
             });
         }
 
-        if is_permissive_noop(config) {
-            tracing::debug!("Permissive profile with no limits -- skipping subprocess");
-            return Ok(());
-        }
-
         let worker_path = ipc::resolve_worker_path()?;
         let request = ipc::SandboxRequest {
             action: action.clone(),
@@ -163,8 +119,8 @@ impl Sandbox for WindowsSandbox {
                 message: format!("serialize: {e}"),
             })?;
 
-        let job_limits = Self::build_job_limits(config);
-        let token_restrictions = Self::build_token_restrictions(config);
+        let job_limits = build_job_limits(config);
+        let token_restrictions = build_token_restrictions(config);
 
         let timeout_ms = if config.max_cpu_time_ms > 0 {
             config.max_cpu_time_ms + 5000
@@ -219,8 +175,8 @@ impl Sandbox for WindowsSandbox {
         // The Job Object outlives the child because `job` is held until the
         // end of this function.
         //
-        // `Child::raw_handle()` returns `Option<RawHandle>` where
-        // `RawHandle = *mut c_void`. We cast to isize for the Win32 HANDLE.
+        // `Child::raw_handle()` returns `Option<RawHandle>`, which matches
+        // the `windows-sys` HANDLE representation for the current crate lock.
         #[cfg(feature = "windows-sandbox")]
         {
             let raw_child_handle =
@@ -230,7 +186,7 @@ impl Sandbox for WindowsSandbox {
                         code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
                         message: "child process handle unavailable".into(),
                     })?;
-            assign_process_to_job(&job, raw_child_handle as isize)?;
+            assign_process_to_job(&job, raw_child_handle)?;
         }
 
         // Write serialized request to child stdin
@@ -312,22 +268,9 @@ impl Sandbox for WindowsSandbox {
     }
 }
 
-// ── Internal types ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct JobObjectLimits {
-    max_memory_bytes: u64,
-    max_cpu_time_ms: u64,
-    max_processes: u32,
-}
-
-#[derive(Debug, Clone)]
-struct TokenRestrictions {
-    disable_admin_sid: bool,
-    #[allow(dead_code)] // Reserved for future SID-level restrictions
-    disable_most_sids: bool,
-    remove_privileges: bool,
-}
+// `JobObjectLimits` / `TokenRestrictions` + their builders now live in the
+// cfg-free `super::win_limits` module (#5138); the Win32 enforcement below
+// consumes them via the import at the top of this file.
 
 fn check_windows_sandbox_support() -> bool {
     cfg!(target_os = "windows")
@@ -345,7 +288,7 @@ fn create_job_object(limits: &JobObjectLimits) -> Result<OwnedHandle, Automation
     use windows_sys::Win32::System::JobObjects::*;
 
     let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if handle == 0 {
+    if handle.is_null() {
         let err = unsafe { GetLastError() };
         return Err(AutomationError::SandboxEnforcement(format!(
             "CreateJobObjectW failed: error {err}"
@@ -424,7 +367,7 @@ fn create_restricted_token(
     use windows_sys::Win32::Security::*;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    let mut process_token: isize = 0;
+    let mut process_token: Win32Handle = std::ptr::null_mut();
     let ret = unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
@@ -445,7 +388,7 @@ fn create_restricted_token(
         flags |= DISABLE_MAX_PRIVILEGE;
     }
 
-    let mut restricted_token: isize = 0;
+    let mut restricted_token: Win32Handle = std::ptr::null_mut();
     let ret = unsafe {
         CreateRestrictedToken(
             process_token,
@@ -490,7 +433,7 @@ fn create_restricted_token(restrictions: &TokenRestrictions) -> Result<(), Autom
 /// Must be called after spawning the child but before it exits, so the Job
 /// Object limits apply for the lifetime of the child.
 #[cfg(feature = "windows-sandbox")]
-fn assign_process_to_job(job: &OwnedHandle, child_handle: isize) -> Result<(), CoreError> {
+fn assign_process_to_job(job: &OwnedHandle, child_handle: Win32Handle) -> Result<(), CoreError> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
@@ -511,66 +454,25 @@ fn assign_process_to_job(job: &OwnedHandle, child_handle: isize) -> Result<(), C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::is_permissive_noop;
+    use maekon_core::config::SandboxProfile;
 
-    #[test]
-    fn build_job_limits_profiles() {
-        let standard = WindowsSandbox::build_job_limits(&SandboxConfig {
-            profile: SandboxProfile::Standard,
-            ..Default::default()
-        });
-        assert_eq!(standard.max_memory_bytes, 512 * 1024 * 1024);
-        assert_eq!(standard.max_processes, 10);
-
-        let strict = WindowsSandbox::build_job_limits(&SandboxConfig {
-            profile: SandboxProfile::Strict,
-            ..Default::default()
-        });
-        assert_eq!(strict.max_memory_bytes, 256 * 1024 * 1024);
-        assert_eq!(strict.max_processes, 3);
-    }
-
-    #[test]
-    fn build_job_limits_custom_override() {
-        let limits = WindowsSandbox::build_job_limits(&SandboxConfig {
-            profile: SandboxProfile::Strict,
-            max_memory_bytes: 1024 * 1024 * 1024,
-            max_cpu_time_ms: 60_000,
-            ..Default::default()
-        });
-        assert_eq!(limits.max_memory_bytes, 1024 * 1024 * 1024);
-        assert_eq!(limits.max_cpu_time_ms, 60_000);
-    }
-
-    #[test]
-    fn build_token_restrictions_profiles() {
-        let permissive = WindowsSandbox::build_token_restrictions(&SandboxConfig {
-            profile: SandboxProfile::Permissive,
-            ..Default::default()
-        });
-        assert!(permissive.disable_admin_sid);
-        assert!(!permissive.disable_most_sids);
-
-        let standard = WindowsSandbox::build_token_restrictions(&SandboxConfig {
-            profile: SandboxProfile::Standard,
-            ..Default::default()
-        });
-        assert!(standard.disable_admin_sid);
-        assert!(standard.disable_most_sids);
-        assert!(standard.remove_privileges);
-    }
+    // build_job_limits / build_token_restrictions tests moved to the cfg-free
+    // `crate::sandbox::win_limits` module (#5138) so the limit/token policy is
+    // verified on every OS, not only a Windows runner.
 
     #[cfg(feature = "windows-sandbox")]
     #[test]
     fn owned_handle_validity() {
-        let null_h = OwnedHandle(0);
+        let null_h = OwnedHandle(std::ptr::null_mut());
         assert!(!null_h.is_valid());
         std::mem::forget(null_h);
 
-        let invalid_h = OwnedHandle(-1);
+        let invalid_h = OwnedHandle(windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE);
         assert!(!invalid_h.is_valid());
         std::mem::forget(invalid_h);
 
-        let valid_h = OwnedHandle(42);
+        let valid_h = OwnedHandle(42usize as Win32Handle);
         assert!(valid_h.is_valid());
         std::mem::forget(valid_h);
     }
@@ -629,8 +531,14 @@ mod tests {
             assert!(!sandbox.is_available());
             let action = AutomationAction::MouseMove { x: 0, y: 0 };
             let config = SandboxConfig::default();
-            let result = sandbox.execute_sandboxed(&action, &config).await;
-            assert!(result.is_err());
+            let err = sandbox
+                .execute_sandboxed(&action, &config)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, CoreError::SandboxUnsupported { .. }),
+                "non-Windows OS must produce SandboxUnsupported, got: {err:?}"
+            );
         }
     }
 }

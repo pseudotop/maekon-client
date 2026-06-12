@@ -3,6 +3,8 @@ use serde_json::Value;
 use maekon_core::error::CoreError;
 use maekon_core::ports::llm_provider::InterpretedAction;
 
+use crate::provider_error_body::provider_parse_error_message;
+
 pub(super) fn parse_claude_response(body: &str) -> Result<InterpretedAction, CoreError> {
     let response: Value = serde_json::from_str(body).map_err(CoreError::from)?;
 
@@ -63,12 +65,12 @@ fn parse_action_json(text: &str) -> Result<InterpretedAction, CoreError> {
         text
     };
 
-    serde_json::from_str(json_str).map_err(|_e| CoreError::Validation {
+    serde_json::from_str(json_str).map_err(|e| CoreError::Validation {
         code: maekon_core::error_codes::ValidationCode::InvalidField,
         field: "llm_response.action".to_string(),
-        message: format!(
-            "Failed to parse InterpretedAction from LLM response (raw: {})",
-            json_str.chars().take(200).collect::<String>()
+        message: provider_parse_error_message(
+            "LLM API",
+            &format!("failed to parse InterpretedAction ({e})"),
         ),
     })
 }

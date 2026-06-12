@@ -47,13 +47,13 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::Utc;
+    use maekon_core::id_generation::generate_id;
     use maekon_core::models::ai_session::SessionAuditEntry;
     use maekon_core::models::audit::{AuditLevel, AuditStats, AuditStatus};
     use maekon_core::ports::audit_log::AuditLogPort;
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::{Arc, Mutex};
     use tokio::sync::broadcast;
-    use uuid::Uuid;
 
     /// 테스트용 AuditLogPort 구현 — 시드된 항목으로 recent_entries 및
     /// entries_by_command_id 쿼리를 지원합니다.
@@ -77,7 +77,7 @@ mod tests {
     /// 고정된 command_id와 action_type으로 AuditEntry를 생성하는 헬퍼
     fn make_entry(command_id: &str, action_type: &str) -> AuditEntry {
         AuditEntry {
-            entry_id: Uuid::new_v4().to_string(),
+            entry_id: generate_id("aud"),
             timestamp: Utc::now(),
             session_id: "sess-test".to_string(),
             command_id: command_id.to_string(),

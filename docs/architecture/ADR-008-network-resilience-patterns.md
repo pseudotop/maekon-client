@@ -145,6 +145,29 @@ per-endpoint breaker through a shared `CircuitBreakerRegistry` keyed by
 (e.g., two OpenAI clients on different models) converge on one breaker.
 The original circuit-breaker broadening design is archived as an internal planning artifact and is not part of the public-minimal export.
 
+**iter-011 — shared-registry wiring COMPLETED (2026-06-04, #4812 / E20-20)**:
+The shared-registry consolidation is now done. Previously each of the 5 adapter
+composition sites called `CircuitBreakerRegistry::new()` independently — so two
+adapters targeting the same endpoint got *isolated* breakers, defeating the
+keyed-convergence intent above. As of #4812 a SINGLE `Arc<CircuitBreakerRegistry>`
+is constructed once at the desktop composition root
+(`src-tauri/src/app_runtime_launch/mod.rs::build_and_spawn`) and threaded
+(`Arc::clone`) into every network-adapter composition path:
+- the agent runtime (`AgentRuntimeBundle` / `AgentRuntimeBuilder` →
+  `build_embedding_components`, `build_analysis_provider[_with_flag]`,
+  `build_analysis_pipeline`, `build_enrichment_provider`, plus the
+  `ContextAnalyzer` provider via `AgentSupportContextBuilder`);
+- the session manager (`SessionManagerImpl::with_breaker_registry` →
+  `HttpApiSession`);
+- the web automation controller (`WebServerSupportContext` →
+  `AutomationControllerBuilder` → `build_automation_runtime` →
+  `resolve_ai_provider_adapters` → the OCR/LLM resolvers, direct + managed-OAuth).
+
+The 8 isolated `CircuitBreakerRegistry::new()` production sites collapsed to one
+shared `Arc`. Builders/contexts that can be used standalone (e.g. in tests) keep
+a fresh default registry and accept the shared one via a `with_breaker_registry`
+setter, so the composition root is the single source of the shared instance.
+
 Classification is centralized in `resilience::classify_for_breaker`:
 - 5xx / transport / 401 / 429 → `Failure` (endpoint health)
 - 2xx → `Success`

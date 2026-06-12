@@ -79,6 +79,12 @@ impl maekon_core::ports::storage::StorageService for NoopStorage {
     ) -> Result<(), CoreError> {
         Ok(())
     }
+    async fn save_activity_segment(
+        &self,
+        _summary: &maekon_core::models::tiered_memory::SegmentSummary,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
     async fn update_segment_llm_summary(
         &self,
         _segment_id: &str,
@@ -299,6 +305,42 @@ async fn params_resolver_updates_on_tick() {
     assert!(ts.params.t_high > 0.0);
     assert!(ts.params.t_low >= 0.0);
     assert!(ts.params.t_low < ts.params.t_high);
+}
+
+/// Verifies that the `LLM_SUMMARY_SEMAPHORE` constant-new semaphore is
+/// correctly initialised with a permit cap of 4 and that `try_acquire`
+/// is non-blocking when permits are available and returns `Err` when
+/// exhausted — without spawning any real LLM tasks.
+#[tokio::test]
+async fn llm_summary_semaphore_caps_at_four() {
+    use super::segment::LLM_SUMMARY_SEMAPHORE;
+
+    // Drain all 4 permits.
+    let p1 = LLM_SUMMARY_SEMAPHORE.try_acquire().expect("permit 1");
+    let p2 = LLM_SUMMARY_SEMAPHORE.try_acquire().expect("permit 2");
+    let p3 = LLM_SUMMARY_SEMAPHORE.try_acquire().expect("permit 3");
+    let p4 = LLM_SUMMARY_SEMAPHORE.try_acquire().expect("permit 4");
+
+    // 5th acquisition must fail (semaphore exhausted).
+    assert!(
+        matches!(
+            LLM_SUMMARY_SEMAPHORE.try_acquire(),
+            Err(tokio::sync::TryAcquireError::NoPermits)
+        ),
+        "semaphore should be exhausted after 4 permits"
+    );
+
+    // Release permits — subsequent acquisition must succeed again.
+    drop(p1);
+    drop(p2);
+    drop(p3);
+    drop(p4);
+
+    // Pin: after all 4 permits are released a fresh acquisition must succeed,
+    // proving RAII release works correctly.
+    let _reacquired = LLM_SUMMARY_SEMAPHORE
+        .try_acquire()
+        .expect("semaphore must have a free permit after all 4 are dropped");
 }
 
 #[tokio::test]

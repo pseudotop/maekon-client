@@ -15,10 +15,9 @@ impl LocalSuggestionQueryPort for SqliteStorage {
     ) -> Result<Vec<LocalSuggestionRecord>, CoreError> {
         let storage = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let guard = storage.lock().map_err(|err| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("SQLite lock poisoned: {err}"),
-            })?;
+            // 읽기 — read_lock(deletion_flag 무관).
+            let read = storage.read_lock();
+            let guard = read.conn();
 
             let sql = if after_id.is_some() {
                 "SELECT id, suggestion_type, payload, created_at, shown_at, dismissed_at, acted_at

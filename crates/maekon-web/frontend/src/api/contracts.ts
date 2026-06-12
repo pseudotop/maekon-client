@@ -928,6 +928,7 @@ export type TimelineItem =
       window_title: string
       importance: number
       image_url: string
+      ocr_text?: string | null
     }
   | { type: 'IdlePeriod'; start: string; end: string; duration_secs: number }
 
@@ -1000,6 +1001,24 @@ export interface LocalSuggestion {
   shown_at: string | null
   dismissed_at: string | null
   acted_at: string | null
+}
+
+export interface SuggestionDto {
+  id: number
+  suggestion_id: string
+  suggestion_type: string
+  source: string
+  content: string
+  priority: string
+  confidence_score: number
+  relevance_score: number
+  is_actionable: boolean
+  reasoning?: string | null
+  shown_at?: string | null
+  dismissed_at?: string | null
+  acted_at?: string | null
+  created_at: string
+  expires_at?: string | null
 }
 
 export type SuggestionFeedbackAction = 'shown' | 'dismissed' | 'acted'
@@ -1118,10 +1137,36 @@ export type FeatureMaturity = 'stable' | 'beta' | 'experimental' | 'deprecated'
 
 export type FeatureAvailability = 'available' | 'unavailable' | 'partially_available'
 
+export type ProviderCliReadiness =
+  | 'not_detected'
+  | 'auth_required'
+  | 'auth_unsupported'
+  | 'auth_stale'
+  | 'interactive_required'
+  | 'auth_unverified'
+  | 'auth_ready'
+  | 'invocation_ready'
+  | 'runtime_unsupported'
+
+export type ProviderCliVersionStatus = 'not_checked'
+
+export type ProviderCliDependencyStatus = 'ready' | 'missing' | 'stale_process_env' | 'not_required'
+
+export interface ProviderCliDiscoveryReport {
+  candidate_name: string
+  executable_path: string
+  version_status: ProviderCliVersionStatus
+  dependency_status: ProviderCliDependencyStatus
+  status_reason: string | null
+  env_refresh_required: boolean
+}
+
 export interface FeatureCapability {
   feature_id: string
   maturity: FeatureMaturity
   availability: FeatureAvailability
+  provider_cli_readiness?: ProviderCliReadiness | null
+  provider_cli_discovery?: ProviderCliDiscoveryReport | null
   preferred: boolean
   requires: string[]
   status_reason: string | null
@@ -1146,6 +1191,8 @@ export interface DesktopPermissionSnapshot {
   platform: string
   accessibility: DesktopPermissionEntry
   screen_capture: DesktopPermissionEntry
+  microphone: DesktopPermissionEntry
+  input_monitoring: DesktopPermissionEntry
   notifications: DesktopPermissionEntry
 }
 
@@ -1170,6 +1217,8 @@ export interface AutomationStatus {
   llm_fallback_reason: string | null
   external_data_policy: string
   pending_audit_entries: number
+  /** Intent-hint confirmation policy — "AUTO" | "CONFIRM" | "BLOCK". Defaults to "AUTO". */
+  confirmation_policy?: string
 }
 
 export interface AuditEntry {
@@ -1600,16 +1649,24 @@ export interface SemanticSearchResult {
 
 // ── Weekly Digest types ──────────────────────────────────────────
 
+// NOTE (#5676): these mirror the Rust wire format in
+// crates/maekon-core/src/models/weekly_digest.rs (no serde renames). The
+// previous hand-written shape (total_minutes/category/deep_work_delta) had
+// drifted from the wire — every renamed field deserialized as undefined.
+// The OpenAPI contract types these endpoints as GenericObject, so
+// openapi-sync cannot catch drift here; keep this in lockstep manually.
 export interface ContentRanking {
   content_label: string
-  total_minutes: number
-  category: string
+  total_mins: number
+  /** WorkType enum — SCREAMING_SNAKE_CASE string (e.g. "ACTIVE_CODING"). */
+  dominant_work_type: string
 }
 
 export interface WeekComparison {
-  deep_work_delta: number
-  communication_delta: number
+  deep_work_delta_hours: number
+  communication_delta_hours: number
   context_switch_delta: number
+  trend_summary: string
 }
 
 export interface WeeklyDigest {
@@ -1665,8 +1722,21 @@ export interface DiagnosticsBundleResponse {
   health: DiagnosticsHealth
   settings_snapshot: AppSettings
   storage_stats: StorageStats | null
+  provider_cli: ProviderCliDiagnosticSummary[]
   recent_audit_entries: AuditEntry[]
   recent_policy_events: AuditEntry[]
+}
+
+export interface ProviderCliDiagnosticSummary {
+  surface_id: string
+  tool_id: string | null
+  candidate_name: string | null
+  executable_hint: string | null
+  readiness: ProviderCliReadiness
+  availability: FeatureAvailability
+  dependency_status: ProviderCliDependencyStatus | null
+  status_reason: string | null
+  env_refresh_required: boolean
 }
 
 // ── Coaching Stats types ────────────────────────────────────────
@@ -1766,4 +1836,48 @@ export interface TrackingScheduleStatus {
   ends_at: string | null
   next_starts_at: string | null
   label: string
+}
+
+// ── Consent (GDPR) types ─────────────────────────────────────────────────────
+// maekon-core/src/consent.rs 의 와이어 계약을 그대로 미러링한다:
+//   - ConsentStatus: #[serde(rename_all = "PascalCase")] → PascalCase 문자열.
+//   - ConsentPermissions: struct 에 rename_all 없음 → 필드는 snake_case 직렬화.
+//   - ConsentSnapshot: src-tauri/src/commands/consent.rs 의 DTO.
+
+/** Matches Rust's `ConsentStatus` enum serialized as PascalCase (serde rename_all). */
+export type ConsentStatus = 'NotGranted' | 'Valid' | 'Expired' | 'UpdateRequired'
+
+/**
+ * Matches Rust's `ConsentPermissions` struct (snake_case fields, no rename_all).
+ * 14 tiered boolean permissions; all default to false (fail-closed) on the Rust side.
+ */
+export interface ConsentPermissions {
+  // Tier 1
+  screen_capture: boolean
+  ocr_processing: boolean
+  telemetry: boolean
+  process_monitoring: boolean
+  input_activity: boolean
+  // Tier 2
+  window_title_collection: boolean
+  app_usage_analytics: boolean
+  // Tier 3
+  clipboard_monitoring: boolean
+  file_access_monitoring: boolean
+  // Tier 4: Tiered Memory
+  activity_pattern_learning: boolean
+  // Tier 5: Cross-Device Sync
+  cross_device_sync: boolean
+  // Tier 6: Text Intelligence
+  full_text_extraction: boolean
+  // Tier 7: Memory-Graph Enrichment
+  memory_graph_enrichment: boolean
+  // Tier 8: Audio/Voice
+  microphone: boolean
+}
+
+/** Matches Rust's `ConsentSnapshot` DTO returned by the consent IPC commands. */
+export interface ConsentSnapshot {
+  status: ConsentStatus
+  permissions: ConsentPermissions
 }

@@ -7,7 +7,6 @@
 mod mock_server;
 
 use maekon_core::models::event::{Event, EventBatch, UserEvent, UserEventType};
-use maekon_core::models::frame::{ContextUpload, FrameMetadata};
 use maekon_core::ports::api_client::ApiClient;
 use maekon_network::auth::TokenManager;
 use maekon_network::http_client::HttpApiClient;
@@ -32,12 +31,10 @@ async fn test_token_manager_login() {
     let result = token_manager
         .login("test@example.com", &fixture_password())
         .await;
-    assert!(result.is_ok(), "login failure: {:?}", result.err());
+    result.expect("login must succeed with valid mock credentials");
 
     let token = token_manager.get_token().await;
-    assert!(token.is_ok(), "failed to acquire token: {:?}", token.err());
-
-    let token_str = token.unwrap();
+    let token_str = token.expect("get_token must return Ok after successful login");
     assert!(
         token_str.starts_with("mock_access_"),
         "unexpected token format: {}",
@@ -64,9 +61,7 @@ async fn test_api_client_create_session() {
     let client_id = format!("client_{}", Uuid::new_v4());
     let result = api_client.create_session(&client_id).await;
 
-    assert!(result.is_ok(), "session create failure: {:?}", result.err());
-
-    let session = result.unwrap();
+    let session = result.expect("session creation must succeed with authenticated client");
     assert!(session.session_id.starts_with("session_"));
     assert_eq!(session.client_id, client_id);
 
@@ -75,45 +70,6 @@ async fn test_api_client_create_session() {
     // structural metadata and are fine to log.
     println!("[OK] session create success");
     println!("   - Capabilities: {:?}", session.capabilities);
-}
-
-#[tokio::test]
-async fn test_api_client_upload_context() {
-    let server = MockServer::start().await;
-    println!("Mock server started: {}", server.url());
-
-    let token_manager = Arc::new(TokenManager::new(server.url()));
-    token_manager
-        .login("test@example.com", &fixture_password())
-        .await
-        .expect("login failure");
-
-    let api_client =
-        HttpApiClient::new(server.url(), token_manager, Duration::from_secs(30)).unwrap();
-
-    let context = ContextUpload {
-        session_id: "test_session_123".to_string(),
-        timestamp: chrono::Utc::now(),
-        metadata: FrameMetadata {
-            timestamp: chrono::Utc::now(),
-            trigger_type: "AppSwitch".to_string(),
-            app_name: "Visual Studio Code".to_string(),
-            window_title: "server_integration_test.rs - maekon-client".to_string(),
-            resolution: (1920, 1080),
-            importance: 0.8,
-        },
-        ocr_text: Some("test text".to_string()),
-        image: None,
-    };
-
-    let result = api_client.upload_context(&context).await;
-    assert!(result.is_ok(), "context upload failure: {:?}", result.err());
-
-    assert_eq!(server.context_count(), 1);
-
-    println!("[OK] context upload success");
-    println!("   - App: {}", context.metadata.app_name);
-    println!("   - Window: {}", context.metadata.window_title);
 }
 
 #[tokio::test]
@@ -149,7 +105,8 @@ async fn test_api_client_upload_batch() {
     };
 
     let result = api_client.upload_batch(&batch).await;
-    assert!(result.is_ok(), "batch upload failure: {:?}", result.err());
+    // upload_batch returns Result<()>; the only contract value is unit (#5594).
+    result.expect("batch upload must succeed for valid authenticated session");
 
     // Don't println! batch.session_id (CodeQL rust/cleartext-logging).
     println!("[OK] batch event upload success");
@@ -176,7 +133,8 @@ async fn test_api_client_health_check() {
         .expect("session create failure");
 
     let result = api_client.send_heartbeat(&session.session_id).await;
-    assert!(result.is_ok(), "health check failed: {:?}", result.err());
+    // send_heartbeat returns Result<()>; the only contract value is unit (#5594).
+    result.expect("heartbeat must succeed for an active session");
 
     println!("[OK] success");
 }
@@ -237,28 +195,6 @@ async fn test_full_client_workflow() {
     // Don't println! session.session_id (CodeQL rust/cleartext-logging).
     println!("step 2: session created");
 
-    for i in 0..3 {
-        let context = ContextUpload {
-            session_id: session.session_id.clone(),
-            timestamp: chrono::Utc::now(),
-            metadata: FrameMetadata {
-                timestamp: chrono::Utc::now(),
-                trigger_type: "Timer".to_string(),
-                app_name: format!("App{}", i),
-                window_title: format!("Document {}", i),
-                resolution: (1920, 1080),
-                importance: 0.5,
-            },
-            ocr_text: None,
-            image: None,
-        };
-        api_client
-            .upload_context(&context)
-            .await
-            .unwrap_or_else(|_| panic!("Step 4-{}: context upload failure", i));
-    }
-    println!("step 3: uploaded 3 context entries");
-
     let events: Vec<Event> = (0..10)
         .map(|i| {
             Event::User(UserEvent {
@@ -289,13 +225,11 @@ async fn test_full_client_workflow() {
         .expect("Step 6: health check failed");
     println!("step 5: completed");
 
-    assert!(server.request_count() >= 7, "insufficient request count");
-    assert_eq!(server.context_count(), 3, "unexpected context count");
+    assert!(server.request_count() >= 4, "insufficient request count");
     assert_eq!(server.session_count(), 1, "unexpected session count");
 
     println!("\n[OK] success!");
     println!("- request: {}", server.request_count());
-    println!("- context: {} items", server.context_count());
     println!("- session: {} items", server.session_count());
 }
 
@@ -312,7 +246,11 @@ async fn test_invalid_credentials() {
     let blank_pwd: String = String::new();
     let result = token_manager.login(&blank_user, &blank_pwd).await;
 
-    assert!(result.is_err(), "login should fail with empty credentials");
+    let auth_err = result.unwrap_err();
+    assert!(
+        matches!(auth_err, maekon_core::error::CoreError::Auth { .. }),
+        "blank credentials must yield CoreError::Auth; got: {auth_err:?}"
+    );
     println!("[OK] deny check");
 }
 

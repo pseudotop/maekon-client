@@ -62,7 +62,7 @@ pub(super) async fn search_ivf_impl(
     let filters = filters.clone();
 
     index
-        .with_conn(move |conn| {
+        .with_conn_read(move |conn| {
             let (mut conditions, mut param_values) = build_filter_conditions(&filters);
 
             // Add cluster filter
@@ -177,7 +177,7 @@ pub(super) async fn search_ivf_binary_impl(
     let candidate_count = limit * oversample_factor;
 
     index
-        .with_conn(move |conn| {
+        .with_conn_read(move |conn| {
             // Stage 1: Load binary codes for probed clusters
             let base_idx = 0usize;
             let placeholders: Vec<String> = probe_ids

@@ -146,8 +146,15 @@ mod tests {
                 text: "fallback hello",
             }),
         );
-        let result = fb.transcribe(AudioBuffer::new(vec![0.0; 100])).await;
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                fb.transcribe(AudioBuffer::new(vec![0.0; 100]))
+                    .await
+                    .unwrap_err(),
+                CoreError::RequestTimeout { .. }
+            ),
+            "timeout error must propagate without fallback"
+        );
     }
 
     #[tokio::test]
@@ -169,7 +176,6 @@ mod tests {
             }),
         );
         let result = fb.transcribe(AudioBuffer::new(vec![0.0; 100])).await;
-        assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("model missing"));
     }
 }

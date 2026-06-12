@@ -209,9 +209,15 @@ mod tests {
 
     #[test]
     fn new_rejects_empty_api_key() {
-        let result =
-            CloudSttProvider::new(String::new(), "http://test".into(), SttLanguage::Auto, 10);
-        assert!(result.is_err());
+        // `.err().expect()` instead of `.unwrap_err()`: the Ok type
+        // (`CloudSttProvider`) is deliberately not `Debug` (it holds an API key).
+        let err = CloudSttProvider::new(String::new(), "http://test".into(), SttLanguage::Auto, 10)
+            .err()
+            .expect("empty API key must be rejected at construction");
+        assert!(
+            matches!(err, CoreError::SpeechToText { .. }),
+            "empty API key must yield CoreError::SpeechToText"
+        );
     }
 
     #[test]

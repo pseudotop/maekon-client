@@ -27,10 +27,18 @@ impl LanSyncTransport {
             }
         };
 
+        // get_session_token_with_retry drives authenticate_with_peer on a cache
+        // miss, which populates peer_clients with the TOFU-pinned TLS client.
+        let client = self
+            .cached_peer_client(peer_id)
+            .ok_or_else(|| CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("no TLS client cached for peer {peer_id}"),
+            })?;
+
         let url = Self::peer_url(peer, "/sync/push");
 
-        let resp = self
-            .http_client
+        let resp = client
             .post(&url)
             .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/octet-stream")
@@ -58,8 +66,17 @@ impl LanSyncTransport {
                     }
                 };
 
-                let retry = self
-                    .http_client
+                // authenticate_with_peer has refreshed the per-peer TLS client.
+                let retry_client =
+                    self.cached_peer_client(peer_id)
+                        .ok_or_else(|| CoreError::Network {
+                            code: maekon_core::error_codes::NetworkCode::Generic,
+                            message: format!(
+                                "no TLS client cached for peer {peer_id} after re-auth"
+                            ),
+                        })?;
+
+                let retry = retry_client
                     .post(&url)
                     .header("authorization", format!("Bearer {new_token}"))
                     .header("content-type", "application/octet-stream")
@@ -113,6 +130,15 @@ impl LanSyncTransport {
             }
         };
 
+        // get_session_token_with_retry drives authenticate_with_peer on a cache
+        // miss, which populates peer_clients with the TOFU-pinned TLS client.
+        let client = self
+            .cached_peer_client(peer_id)
+            .ok_or_else(|| CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("no TLS client cached for peer {peer_id}"),
+            })?;
+
         let url = format!(
             "{}?since_wall_ms={}&since_counter={}&device_id={}",
             Self::peer_url(peer, "/sync/pull"),
@@ -121,8 +147,7 @@ impl LanSyncTransport {
             self.local_device_id,
         );
 
-        let resp = self
-            .http_client
+        let resp = client
             .get(&url)
             .header("authorization", format!("Bearer {token}"))
             .send()
@@ -148,8 +173,17 @@ impl LanSyncTransport {
                     }
                 };
 
-                let retry = self
-                    .http_client
+                // authenticate_with_peer has refreshed the per-peer TLS client.
+                let retry_client =
+                    self.cached_peer_client(peer_id)
+                        .ok_or_else(|| CoreError::Network {
+                            code: maekon_core::error_codes::NetworkCode::Generic,
+                            message: format!(
+                                "no TLS client cached for peer {peer_id} after re-auth"
+                            ),
+                        })?;
+
+                let retry = retry_client
                     .get(&url)
                     .header("authorization", format!("Bearer {new_token}"))
                     .send()
@@ -203,31 +237,10 @@ impl LanSyncTransport {
                 message: format!("deserialize pull response: {e}"),
             })?;
 
-        if changesets.is_empty() {
-            return Ok(None);
-        }
-
-        // Merge all pulled changesets into a single composite changeset
-        // by concatenating their Vec fields and keeping the latest watermark.
-        let mut iter = changesets.into_iter();
-        // Safe: checked `changesets.is_empty()` above, so at least one element exists.
-        let mut merged = iter.next().expect("non-empty checked above");
-        for cs in iter {
-            merged.segments.extend(cs.segments);
-            merged.regimes.extend(cs.regimes);
-            merged.overrides.extend(cs.overrides);
-            merged.embeddings.extend(cs.embeddings);
-            merged.suggestions.extend(cs.suggestions);
-            merged.param_snapshots.extend(cs.param_snapshots);
-            merged.preferences.extend(cs.preferences);
-            // Keep the latest watermark
-            if cs.watermark.wall_ms > merged.watermark.wall_ms
-                || (cs.watermark.wall_ms == merged.watermark.wall_ms
-                    && cs.watermark.counter > merged.watermark.counter)
-            {
-                merged.watermark = cs.watermark;
-            }
-        }
+        let merged = match merge_pulled_changesets(changesets) {
+            Some(m) => m,
+            None => return Ok(None),
+        };
         debug!(
             peer_id,
             origin = %merged.origin_device_id,
@@ -235,5 +248,89 @@ impl LanSyncTransport {
             "pulled from LAN peer"
         );
         Ok(Some(merged))
+    }
+}
+
+/// Composite-merge pulled changesets into one, concatenating every row vec and keeping
+/// the latest watermark. Returns `None` for an empty pull.
+///
+/// The GDPR Art.17 erasure `tombstones` (#5174) are concatenated like any other row vec —
+/// the post-erase changeset is pulled AFTER the data changeset, so OMITTING them here
+/// would silently drop the erasure and break cross-device convergence over LAN.
+fn merge_pulled_changesets(changesets: Vec<ChangeSet>) -> Option<ChangeSet> {
+    let mut iter = changesets.into_iter();
+    let mut merged = iter.next()?;
+    for cs in iter {
+        merged.segments.extend(cs.segments);
+        merged.regimes.extend(cs.regimes);
+        merged.overrides.extend(cs.overrides);
+        merged.embeddings.extend(cs.embeddings);
+        merged.suggestions.extend(cs.suggestions);
+        merged.param_snapshots.extend(cs.param_snapshots);
+        merged.preferences.extend(cs.preferences);
+        merged.tombstones.extend(cs.tombstones);
+        // Keep the latest watermark.
+        if cs.watermark.wall_ms > merged.watermark.wall_ms
+            || (cs.watermark.wall_ms == merged.watermark.wall_ms
+                && cs.watermark.counter > merged.watermark.counter)
+        {
+            merged.watermark = cs.watermark;
+        }
+    }
+    Some(merged)
+}
+
+#[cfg(test)]
+mod composite_merge_tests {
+    use super::*;
+    use maekon_core::models::sync::Tombstone;
+
+    fn cs_with_tombstone(row_id: &str, wall: u64) -> ChangeSet {
+        ChangeSet {
+            watermark: maekon_core::sync::Hlc {
+                wall_ms: wall,
+                counter: 0,
+                device_id: "dev-a".to_string(),
+            },
+            tombstones: vec![Tombstone {
+                table_name: "activity_segments".to_string(),
+                row_id: row_id.to_string(),
+                origin_device_id: "dev-a".to_string(),
+                hlc_wall_ms: wall,
+                hlc_counter: 0,
+                deleted_at: "2026-01-01 00:00:00".to_string(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_pull_merges_to_none() {
+        assert!(merge_pulled_changesets(vec![]).is_none());
+    }
+
+    #[test]
+    fn tombstones_from_every_changeset_survive_composite_merge() {
+        // #5174 regression: a peer pulling [data_cs, post-erase tombstone_cs] must NOT
+        // drop the erasure tombstone carried by the second changeset.
+        let data_cs = ChangeSet {
+            segments: vec![serde_json::json!({"id": "seg-1"})],
+            watermark: maekon_core::sync::Hlc {
+                wall_ms: 100,
+                counter: 0,
+                device_id: "dev-a".to_string(),
+            },
+            ..Default::default()
+        };
+        let merged = merge_pulled_changesets(vec![data_cs, cs_with_tombstone("seg-1", 200)])
+            .expect("non-empty");
+        assert_eq!(
+            merged.tombstones.len(),
+            1,
+            "later changeset's tombstone preserved"
+        );
+        assert_eq!(merged.tombstones[0].row_id, "seg-1");
+        assert_eq!(merged.segments.len(), 1, "data also preserved");
+        assert_eq!(merged.watermark.wall_ms, 200, "latest watermark kept");
     }
 }

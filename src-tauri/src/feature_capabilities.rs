@@ -1,15 +1,22 @@
+// OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 869
 use serde::Serialize;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::runtime_state::SecretBackendCapabilities;
 use crate::subprocess_provider::{
-    probe_for_surface_id, probe_known_cli_surfaces, runtime_ready_for_surface,
-    runtime_supported_for_surface, ProbedSubprocessCli, SubprocessCliAuthStatus,
+    cli_discovery_report_for_detected, probe_for_surface_id, probe_known_cli_surfaces,
+    runtime_ready_for_surface, runtime_supported_for_surface, ProbedSubprocessCli,
+    SubprocessCliAuthStatus, SubprocessCliDependencyStatus, SubprocessCliDiscoveryReport,
 };
 use maekon_api_contracts::provider_specs::{
     parse_surface_execution_kind, parse_surface_placement_kind, parse_surface_stability,
     provider_surface_catalog, ProviderAuthScheme, ProviderSurfaceSpec, SurfaceExecutionKind,
     SurfacePlacementKind, SurfaceStability,
+};
+use maekon_api_contracts::support::ProviderCliDiagnosticSummaryDto;
+use maekon_web::services::provider_cli_diagnostics::{
+    ProviderCliDiagnosticsFuture, ProviderCliDiagnosticsProvider,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -29,11 +36,29 @@ pub enum FeatureAvailability {
     PartiallyAvailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCliReadiness {
+    NotDetected,
+    AuthRequired,
+    AuthUnsupported,
+    AuthStale,
+    InteractiveRequired,
+    AuthUnverified,
+    AuthReady,
+    InvocationReady,
+    RuntimeUnsupported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeatureCapability {
     pub feature_id: String,
     pub maturity: FeatureMaturity,
     pub availability: FeatureAvailability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cli_readiness: Option<ProviderCliReadiness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cli_discovery: Option<SubprocessCliDiscoveryReport>,
     pub preferred: bool,
     pub requires: Vec<String>,
     pub status_reason: Option<String>,
@@ -60,10 +85,35 @@ pub struct ProviderEndpointProbeResult {
 
 pub struct FeatureCapabilityState(pub SecretBackendCapabilities);
 
+pub(crate) struct ProviderCliDiagnosticsSnapshotProvider {
+    secret_backend: SecretBackendCapabilities,
+}
+
+impl ProviderCliDiagnosticsSnapshotProvider {
+    pub(crate) fn new(secret_backend: SecretBackendCapabilities) -> Self {
+        Self { secret_backend }
+    }
+}
+
+impl ProviderCliDiagnosticsProvider for ProviderCliDiagnosticsSnapshotProvider {
+    fn provider_cli_diagnostics(&self) -> ProviderCliDiagnosticsFuture<'_> {
+        let secret_backend = self.secret_backend.clone();
+        Box::pin(async move {
+            let snapshot = build_feature_capability_snapshot(&secret_backend).await;
+            provider_cli_diagnostics_from_snapshot(&snapshot)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndpointProbeKind {
     LlmApi,
     OcrApi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderEndpointProbePolicyError {
+    ExternalEgressConsentRequired,
 }
 
 pub async fn build_feature_capability_snapshot(
@@ -145,6 +195,8 @@ fn managed_oauth_feature(
         } else {
             FeatureAvailability::Unavailable
         },
+        provider_cli_readiness: None,
+        provider_cli_discovery: None,
         preferred: surface.preferred_for_product_auth,
         requires: vec![
             "os_secret_store".to_string(),
@@ -178,61 +230,132 @@ fn subprocess_cli_feature(
 ) -> FeatureCapability {
     let detected = probe_for_surface_id(detected_surfaces, &surface.surface_id);
     let runtime_supported = runtime_supported_for_surface(&surface.surface_id);
-    let availability = match detected {
-        Some(surface)
-            if runtime_supported
-                && runtime_ready_for_surface(&surface.detected.surface_id, surface.auth_status) =>
-        {
-            FeatureAvailability::Available
-        }
-        Some(_) => FeatureAvailability::PartiallyAvailable,
-        None => FeatureAvailability::Unavailable,
+    let provider_cli_discovery =
+        detected.map(|surface| cli_discovery_report_for_detected(&surface.detected));
+    let provider_cli_readiness = subprocess_cli_readiness(detected, runtime_supported);
+    let dependency_blocked = provider_cli_discovery
+        .as_ref()
+        .is_some_and(|discovery| dependency_blocks_invocation(discovery.dependency_status));
+    let availability = match (provider_cli_readiness, dependency_blocked) {
+        (_, true) => FeatureAvailability::PartiallyAvailable,
+        (ProviderCliReadiness::InvocationReady, false) => FeatureAvailability::Available,
+        (ProviderCliReadiness::NotDetected, false) => FeatureAvailability::Unavailable,
+        _ => FeatureAvailability::PartiallyAvailable,
     };
 
-    let (status_reason, copy_suffix) = match detected {
-        Some(surface)
-            if runtime_supported
-                && runtime_ready_for_surface(&surface.detected.surface_id, surface.auth_status) =>
+    let (status_reason, copy_suffix): (String, &'static str) = match (
+        detected,
+        provider_cli_readiness,
+        provider_cli_discovery.as_ref(),
+    ) {
+        (Some(_), ProviderCliReadiness::AuthRequired, _) => {
+            ("cli_detected_auth_required".to_string(), "auth_required")
+        }
+        (Some(_), ProviderCliReadiness::AuthUnsupported, _) => {
+            ("cli_auth_unsupported".to_string(), "partially_available")
+        }
+        (Some(_), ProviderCliReadiness::AuthStale, _) => {
+            ("cli_auth_stale".to_string(), "partially_available")
+        }
+        (Some(_), ProviderCliReadiness::InteractiveRequired, _) => (
+            "cli_auth_interactive_required".to_string(),
+            "partially_available",
+        ),
+        (Some(_), _, Some(discovery))
+            if dependency_blocks_invocation(discovery.dependency_status) =>
         {
             (
-                if surface.auth_status == SubprocessCliAuthStatus::Unknown {
-                    "cli_ready_probe_skipped"
-                } else {
-                    "cli_ready"
-                },
-                "available",
+                discovery
+                    .status_reason
+                    .clone()
+                    .unwrap_or_else(|| "cli_detected_dependency_missing".to_string()),
+                "partially_available",
             )
         }
-        Some(_) if !runtime_supported => ("cli_detected_runtime_pending", "partially_available"),
-        Some(surface) => match surface.auth_status {
-            SubprocessCliAuthStatus::Authenticated => {
-                ("cli_detected_runtime_pending", "partially_available")
-            }
-            SubprocessCliAuthStatus::Unauthenticated => {
-                ("cli_detected_auth_required", "auth_required")
-            }
-            SubprocessCliAuthStatus::Unknown => {
-                ("cli_detected_auth_unverified", "partially_available")
-            }
-        },
-        None => ("cli_not_installed", "unavailable"),
+        (Some(surface), ProviderCliReadiness::InvocationReady, _) => (
+            if surface.auth_status == SubprocessCliAuthStatus::Unknown {
+                "cli_ready_probe_skipped".to_string()
+            } else {
+                "cli_ready".to_string()
+            },
+            "available",
+        ),
+        (Some(_), ProviderCliReadiness::AuthReady, _) if !runtime_supported => (
+            "cli_auth_ready_runtime_unsupported".to_string(),
+            "partially_available",
+        ),
+        (Some(_), ProviderCliReadiness::AuthReady, _) => (
+            "cli_auth_ready_runtime_pending".to_string(),
+            "partially_available",
+        ),
+        (Some(_), ProviderCliReadiness::AuthUnverified, _) => (
+            "cli_detected_auth_unverified".to_string(),
+            "partially_available",
+        ),
+        (Some(_), ProviderCliReadiness::RuntimeUnsupported, _) => (
+            "cli_detected_runtime_unsupported".to_string(),
+            "partially_available",
+        ),
+        (Some(_), ProviderCliReadiness::NotDetected, _) => (
+            "cli_detected_auth_unverified".to_string(),
+            "partially_available",
+        ),
+        (None, _, _) => ("cli_not_installed".to_string(), "unavailable"),
     };
 
     FeatureCapability {
         feature_id: surface.surface_id.clone(),
         maturity: feature_maturity(surface),
         availability,
+        provider_cli_readiness: Some(provider_cli_readiness),
+        provider_cli_discovery,
         preferred: surface.preferred_for_product_auth,
         requires: surface
             .subprocess_transport
             .as_ref()
             .map(|transport| vec![format!("cli:{}", transport.tool_id)])
             .unwrap_or_default(),
-        status_reason: Some(status_reason.to_string()),
+        status_reason: Some(status_reason),
         status_copy_key: Some(surface_status_copy_key(&surface.surface_id, copy_suffix)),
         setup_copy_key: None,
         setup_docs_url: None,
         configuration_env_vars: Vec::new(),
+    }
+}
+
+fn dependency_blocks_invocation(status: SubprocessCliDependencyStatus) -> bool {
+    matches!(
+        status,
+        SubprocessCliDependencyStatus::Missing | SubprocessCliDependencyStatus::StaleProcessEnv
+    )
+}
+
+fn subprocess_cli_readiness(
+    detected: Option<&ProbedSubprocessCli>,
+    runtime_supported: bool,
+) -> ProviderCliReadiness {
+    let Some(surface) = detected else {
+        return ProviderCliReadiness::NotDetected;
+    };
+
+    let invocation_ready = runtime_supported
+        && runtime_ready_for_surface(&surface.detected.surface_id, surface.auth_status);
+    match surface.auth_status {
+        SubprocessCliAuthStatus::Authenticated if invocation_ready => {
+            ProviderCliReadiness::InvocationReady
+        }
+        SubprocessCliAuthStatus::Authenticated => ProviderCliReadiness::AuthReady,
+        SubprocessCliAuthStatus::Unauthenticated => ProviderCliReadiness::AuthRequired,
+        SubprocessCliAuthStatus::Unsupported => ProviderCliReadiness::AuthUnsupported,
+        SubprocessCliAuthStatus::StaleSession => ProviderCliReadiness::AuthStale,
+        SubprocessCliAuthStatus::InteractiveRequired => ProviderCliReadiness::InteractiveRequired,
+        SubprocessCliAuthStatus::Unknown if invocation_ready => {
+            ProviderCliReadiness::InvocationReady
+        }
+        SubprocessCliAuthStatus::Unknown if !runtime_supported => {
+            ProviderCliReadiness::RuntimeUnsupported
+        }
+        SubprocessCliAuthStatus::Unknown => ProviderCliReadiness::AuthUnverified,
     }
 }
 
@@ -242,6 +365,8 @@ async fn probed_http_surface_feature(surface: &ProviderSurfaceSpec) -> FeatureCa
             feature_id: surface.surface_id.clone(),
             maturity: feature_maturity(surface),
             availability,
+            provider_cli_readiness: None,
+            provider_cli_discovery: None,
             preferred: surface.preferred_for_product_auth,
             requires: vec![format!("endpoint:{}", surface.vendor_id)],
             status_reason: Some(status_reason),
@@ -282,6 +407,8 @@ async fn probed_http_surface_feature(surface: &ProviderSurfaceSpec) -> FeatureCa
         feature_id: surface.surface_id.clone(),
         maturity: feature_maturity(surface),
         availability,
+        provider_cli_readiness: None,
+        provider_cli_discovery: None,
         preferred: surface.preferred_for_product_auth,
         requires,
         status_reason: Some(status_reason.to_string()),
@@ -357,7 +484,7 @@ async fn probe_surface_http_reachability_at_url(
             return Err(format!(
                 "Self-hosted availability probe for '{}' uses unsupported auth_scheme '{}'.",
                 surface.surface_id, other
-            ))
+            ));
         }
     };
     if auth_scheme != ProviderAuthScheme::None {
@@ -379,7 +506,7 @@ async fn probe_surface_http_reachability_at_url(
             return Err(format!(
                 "Self-hosted availability probe for '{}' uses unsupported method '{}'.",
                 surface.surface_id, other
-            ))
+            ));
         }
     }
     .map_err(|error| format!("Availability probe request failed: {error}"))?;
@@ -391,9 +518,47 @@ pub async fn probe_provider_surface_endpoint(
     surface_id: &str,
     endpoint_kind: &str,
     endpoint: &str,
+    allow_external_egress: bool,
 ) -> ProviderEndpointProbeResult {
     let normalized_endpoint = endpoint.trim().to_string();
+    let sanitized_endpoint = sanitize_endpoint_for_probe_result(&normalized_endpoint);
     let copy_key = |suffix: &str| Some(surface_status_copy_key(surface_id, suffix));
+
+    if let Err(error) =
+        evaluate_provider_endpoint_probe_policy(&normalized_endpoint, allow_external_egress)
+    {
+        let status_reason = match error {
+            ProviderEndpointProbePolicyError::ExternalEgressConsentRequired => {
+                "external_probe_blocked:consent_required"
+            }
+        };
+        audit_provider_endpoint_probe_policy(
+            surface_id,
+            endpoint_kind,
+            &sanitized_endpoint,
+            "denied",
+            status_reason,
+        );
+        return ProviderEndpointProbeResult {
+            surface_id: surface_id.to_string(),
+            endpoint_kind: endpoint_kind.to_string(),
+            endpoint: sanitized_endpoint,
+            availability: FeatureAvailability::Unavailable,
+            status_reason: Some(status_reason.to_string()),
+            status_copy_key: copy_key("unavailable"),
+        };
+    }
+    audit_provider_endpoint_probe_policy(
+        surface_id,
+        endpoint_kind,
+        &sanitized_endpoint,
+        "allowed",
+        if allow_external_egress {
+            "explicit_external_egress_gate"
+        } else {
+            "loopback_endpoint"
+        },
+    );
 
     let surface = match maekon_api_contracts::provider_specs::provider_surface_spec(surface_id) {
         Ok(surface) => surface,
@@ -401,11 +566,11 @@ pub async fn probe_provider_surface_endpoint(
             return ProviderEndpointProbeResult {
                 surface_id: surface_id.to_string(),
                 endpoint_kind: endpoint_kind.to_string(),
-                endpoint: normalized_endpoint,
+                endpoint: sanitized_endpoint,
                 availability: FeatureAvailability::PartiallyAvailable,
                 status_reason: Some(format!("surface_missing:{error}")),
                 status_copy_key: copy_key("partially_available"),
-            }
+            };
         }
     };
 
@@ -415,11 +580,11 @@ pub async fn probe_provider_surface_endpoint(
             return ProviderEndpointProbeResult {
                 surface_id: surface.surface_id.clone(),
                 endpoint_kind: endpoint_kind.to_string(),
-                endpoint: normalized_endpoint,
+                endpoint: sanitized_endpoint,
                 availability: FeatureAvailability::PartiallyAvailable,
                 status_reason: Some(format!("endpoint_kind_invalid:{error}")),
                 status_copy_key: copy_key("partially_available"),
-            }
+            };
         }
     };
 
@@ -427,7 +592,7 @@ pub async fn probe_provider_surface_endpoint(
         return ProviderEndpointProbeResult {
             surface_id: surface.surface_id.clone(),
             endpoint_kind: endpoint_kind.to_string(),
-            endpoint: normalized_endpoint,
+            endpoint: sanitized_endpoint,
             availability,
             status_reason: Some(status_reason),
             status_copy_key: copy_key(copy_suffix),
@@ -440,11 +605,11 @@ pub async fn probe_provider_surface_endpoint(
             return ProviderEndpointProbeResult {
                 surface_id: surface.surface_id.clone(),
                 endpoint_kind: endpoint_kind.to_string(),
-                endpoint: normalized_endpoint,
+                endpoint: sanitized_endpoint,
                 availability: FeatureAvailability::PartiallyAvailable,
                 status_reason: Some(format!("probe_url_invalid:{error}")),
                 status_copy_key: copy_key("partially_available"),
-            }
+            };
         }
     };
 
@@ -470,7 +635,7 @@ pub async fn probe_provider_surface_endpoint(
     ProviderEndpointProbeResult {
         surface_id: surface.surface_id.clone(),
         endpoint_kind: endpoint_kind.to_string(),
-        endpoint: normalized_endpoint,
+        endpoint: sanitized_endpoint,
         availability,
         status_reason,
         status_copy_key: copy_key(copy_suffix),
@@ -521,6 +686,65 @@ fn probe_url_for_endpoint(
     Ok(resolved.to_string())
 }
 
+fn evaluate_provider_endpoint_probe_policy(
+    endpoint: &str,
+    allow_external_egress: bool,
+) -> Result<(), ProviderEndpointProbePolicyError> {
+    if allow_external_egress {
+        return Ok(());
+    }
+
+    match endpoint_requires_external_egress(endpoint) {
+        Some(true) => Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired),
+        Some(false) | None => Ok(()),
+    }
+}
+
+fn endpoint_requires_external_egress(endpoint: &str) -> Option<bool> {
+    let url = reqwest::Url::parse(endpoint.trim()).ok()?;
+    let host = url.host_str()?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Some(false);
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Some(!ip.is_loopback());
+    }
+
+    Some(true)
+}
+
+fn sanitize_endpoint_for_probe_result(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string().trim_end_matches('/').to_string()
+}
+
+fn audit_provider_endpoint_probe_policy(
+    surface_id: &str,
+    endpoint_kind: &str,
+    sanitized_endpoint: &str,
+    decision: &str,
+    reason: &str,
+) {
+    tracing::info!(
+        target: "provider_endpoint_probe.audit",
+        surface_id = %surface_id,
+        endpoint_kind = %endpoint_kind,
+        endpoint = %sanitized_endpoint,
+        decision = %decision,
+        reason = %reason,
+        "provider endpoint probe policy decision"
+    );
+}
+
 fn default_surface_transport_url(
     surface: &ProviderSurfaceSpec,
     endpoint_kind: EndpointProbeKind,
@@ -569,6 +793,85 @@ fn surface_status_copy_key(surface_id: &str, suffix: &str) -> String {
     format!("featureCapability.surface.{surface_id}.{suffix}")
 }
 
+pub(crate) fn provider_cli_diagnostics_from_snapshot(
+    snapshot: &FeatureCapabilitySnapshot,
+) -> Vec<ProviderCliDiagnosticSummaryDto> {
+    snapshot
+        .features
+        .iter()
+        .filter(|feature| feature.provider_cli_readiness.is_some())
+        .map(|feature| {
+            let discovery = feature.provider_cli_discovery.as_ref();
+            ProviderCliDiagnosticSummaryDto {
+                surface_id: feature.feature_id.clone(),
+                tool_id: tool_id_from_requires(&feature.requires),
+                candidate_name: discovery.map(|report| report.candidate_name.clone()),
+                executable_hint: discovery
+                    .and_then(|report| executable_file_name_hint(&report.executable_path)),
+                readiness: provider_cli_readiness_wire(
+                    feature
+                        .provider_cli_readiness
+                        .unwrap_or(ProviderCliReadiness::NotDetected),
+                )
+                .to_string(),
+                availability: feature_availability_wire(feature.availability).to_string(),
+                dependency_status: discovery
+                    .map(|report| dependency_status_wire(report.dependency_status).to_string()),
+                status_reason: feature.status_reason.clone().or_else(|| {
+                    discovery
+                        .and_then(|report| report.status_reason.as_ref())
+                        .cloned()
+                }),
+                env_refresh_required: discovery.is_some_and(|report| report.env_refresh_required),
+            }
+        })
+        .collect()
+}
+
+fn tool_id_from_requires(requires: &[String]) -> Option<String> {
+    requires
+        .iter()
+        .find_map(|value| value.strip_prefix("cli:").map(str::to_string))
+}
+
+fn executable_file_name_hint(value: &str) -> Option<String> {
+    value
+        .rsplit(['\\', '/'])
+        .find(|part| !part.is_empty())
+        .map(str::to_string)
+}
+
+fn feature_availability_wire(value: FeatureAvailability) -> &'static str {
+    match value {
+        FeatureAvailability::Available => "available",
+        FeatureAvailability::Unavailable => "unavailable",
+        FeatureAvailability::PartiallyAvailable => "partially_available",
+    }
+}
+
+fn provider_cli_readiness_wire(value: ProviderCliReadiness) -> &'static str {
+    match value {
+        ProviderCliReadiness::NotDetected => "not_detected",
+        ProviderCliReadiness::AuthRequired => "auth_required",
+        ProviderCliReadiness::AuthUnsupported => "auth_unsupported",
+        ProviderCliReadiness::AuthStale => "auth_stale",
+        ProviderCliReadiness::InteractiveRequired => "interactive_required",
+        ProviderCliReadiness::AuthUnverified => "auth_unverified",
+        ProviderCliReadiness::AuthReady => "auth_ready",
+        ProviderCliReadiness::InvocationReady => "invocation_ready",
+        ProviderCliReadiness::RuntimeUnsupported => "runtime_unsupported",
+    }
+}
+
+fn dependency_status_wire(value: SubprocessCliDependencyStatus) -> &'static str {
+    match value {
+        SubprocessCliDependencyStatus::Ready => "ready",
+        SubprocessCliDependencyStatus::Missing => "missing",
+        SubprocessCliDependencyStatus::StaleProcessEnv => "stale_process_env",
+        SubprocessCliDependencyStatus::NotRequired => "not_required",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,6 +907,7 @@ mod tests {
         );
         assert_eq!(feature.maturity, FeatureMaturity::Experimental);
         assert_eq!(feature.availability, FeatureAvailability::Unavailable);
+        assert_eq!(feature.provider_cli_readiness, None);
         assert!(!feature.preferred);
     }
 
@@ -620,6 +924,7 @@ mod tests {
             &backend_caps(true, &["openai"]),
         );
         assert_eq!(feature.availability, FeatureAvailability::Unavailable);
+        assert_eq!(feature.provider_cli_readiness, None);
         assert_eq!(
             feature.status_reason.as_deref(),
             Some("oauth_provider_not_configured")
@@ -670,7 +975,9 @@ mod tests {
         );
         assert_eq!(
             feature.status_copy_key.as_deref(),
-            Some("featureCapability.surface.provider_surface.openai.subprocess_cli.partially_available")
+            Some(
+                "featureCapability.surface.provider_surface.openai.subprocess_cli.partially_available"
+            )
         );
     }
 
@@ -696,6 +1003,10 @@ mod tests {
         );
         assert_eq!(feature.maturity, FeatureMaturity::Beta);
         assert_eq!(feature.availability, FeatureAvailability::Available);
+        assert_eq!(
+            feature.provider_cli_readiness,
+            Some(ProviderCliReadiness::InvocationReady)
+        );
         assert_eq!(feature.status_reason.as_deref(), Some("cli_ready"));
         assert_eq!(
             feature.status_copy_key.as_deref(),
@@ -740,6 +1051,94 @@ mod tests {
     }
 
     #[test]
+    fn subprocess_cli_feature_reports_auth_edge_states() {
+        let surface = provider_surface_catalog()
+            .expect("catalog should load")
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface_id == "provider_surface.openai.subprocess_cli")
+            .expect("openai subprocess surface should exist")
+            .clone();
+
+        for (auth_status, readiness, status_reason) in [
+            (
+                SubprocessCliAuthStatus::Unsupported,
+                ProviderCliReadiness::AuthUnsupported,
+                "cli_auth_unsupported",
+            ),
+            (
+                SubprocessCliAuthStatus::StaleSession,
+                ProviderCliReadiness::AuthStale,
+                "cli_auth_stale",
+            ),
+            (
+                SubprocessCliAuthStatus::InteractiveRequired,
+                ProviderCliReadiness::InteractiveRequired,
+                "cli_auth_interactive_required",
+            ),
+        ] {
+            let feature = subprocess_cli_feature(
+                &surface,
+                &[ProbedSubprocessCli {
+                    detected: crate::subprocess_provider::DetectedSubprocessCli {
+                        surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                        executable_path: "/usr/bin/codex".into(),
+                    },
+                    auth_status,
+                    auth_detail: Some(status_reason.to_string()),
+                }],
+            );
+
+            assert_eq!(feature.provider_cli_readiness, Some(readiness));
+            assert_eq!(feature.status_reason.as_deref(), Some(status_reason));
+            assert_eq!(
+                feature.availability,
+                FeatureAvailability::PartiallyAvailable
+            );
+        }
+    }
+
+    #[test]
+    fn subprocess_cli_feature_reports_auth_ready_when_runtime_is_not_invocable() {
+        let surface = provider_surface_catalog()
+            .expect("catalog should load")
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface_id == "provider_surface.google.antigravity_cli")
+            .expect("google antigravity subprocess surface should exist")
+            .clone();
+        let feature = subprocess_cli_feature(
+            &surface,
+            &[ProbedSubprocessCli {
+                detected: crate::subprocess_provider::DetectedSubprocessCli {
+                    surface_id: "provider_surface.google.antigravity_cli".to_string(),
+                    executable_path: "/usr/bin/antigravity".into(),
+                },
+                auth_status: SubprocessCliAuthStatus::Authenticated,
+                auth_detail: Some("cli_authenticated".to_string()),
+            }],
+        );
+        assert_eq!(
+            feature.availability,
+            FeatureAvailability::PartiallyAvailable
+        );
+        assert_eq!(
+            feature.provider_cli_readiness,
+            Some(ProviderCliReadiness::AuthReady)
+        );
+        assert_eq!(
+            feature.status_reason.as_deref(),
+            Some("cli_auth_ready_runtime_unsupported")
+        );
+        assert_eq!(
+            feature.status_copy_key.as_deref(),
+            Some(
+                "featureCapability.surface.provider_surface.google.antigravity_cli.partially_available"
+            )
+        );
+    }
+
+    #[test]
     fn subprocess_cli_feature_is_available_when_auth_probe_is_skipped() {
         let surface = provider_surface_catalog()
             .expect("catalog should load")
@@ -770,6 +1169,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_cli_diagnostics_from_snapshot_keeps_safe_executable_hint() {
+        let snapshot = FeatureCapabilitySnapshot {
+            features: vec![FeatureCapability {
+                feature_id: "provider_surface.openai.subprocess_cli".to_string(),
+                maturity: FeatureMaturity::Beta,
+                availability: FeatureAvailability::Available,
+                provider_cli_readiness: Some(ProviderCliReadiness::InvocationReady),
+                provider_cli_discovery: Some(SubprocessCliDiscoveryReport {
+                    candidate_name: "codex".to_string(),
+                    executable_path: "C:\\Users\\alice\\AppData\\Local\\Programs\\Codex\\codex.exe"
+                        .to_string(),
+                    version_status:
+                        crate::subprocess_provider::SubprocessCliVersionStatus::NotChecked,
+                    dependency_status: SubprocessCliDependencyStatus::Ready,
+                    status_reason: None,
+                    env_refresh_required: false,
+                }),
+                preferred: true,
+                requires: vec!["cli:codex".to_string()],
+                status_reason: Some("cli_ready".to_string()),
+                status_copy_key: None,
+                setup_copy_key: None,
+                setup_docs_url: None,
+                configuration_env_vars: vec![],
+            }],
+        };
+
+        let diagnostics = provider_cli_diagnostics_from_snapshot(&snapshot);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].surface_id,
+            "provider_surface.openai.subprocess_cli"
+        );
+        assert_eq!(diagnostics[0].tool_id.as_deref(), Some("codex"));
+        assert_eq!(diagnostics[0].executable_hint.as_deref(), Some("codex.exe"));
+        assert_eq!(diagnostics[0].readiness, "invocation_ready");
+        assert_eq!(diagnostics[0].availability, "available");
+        assert_eq!(diagnostics[0].dependency_status.as_deref(), Some("ready"));
+    }
+
     #[tokio::test]
     async fn snapshot_contains_expected_feature_ids() {
         let snapshot = build_feature_capability_snapshot(&backend_caps(true, &["openai"])).await;
@@ -795,6 +1236,7 @@ mod tests {
             .expect("ollama surface should exist")
             .clone();
         let feature = probed_http_surface_feature(&surface).await;
+        assert_eq!(feature.provider_cli_readiness, None);
         assert!(feature
             .requires
             .iter()
@@ -865,5 +1307,53 @@ mod tests {
         .expect("probe url should resolve");
 
         assert_eq!(url, "http://127.0.0.1:11434/api/version");
+    }
+
+    #[test]
+    fn provider_endpoint_probe_policy_requires_gate_for_non_loopback_endpoint() {
+        let decision = evaluate_provider_endpoint_probe_policy(
+            "https://api.example.com/v1/responses?key=secret#fragment",
+            false,
+        );
+
+        assert_eq!(
+            decision,
+            Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired)
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_probe_policy_allows_loopback_without_external_gate() {
+        let decision =
+            evaluate_provider_endpoint_probe_policy("http://127.0.0.1:11434/v1/responses", false);
+
+        assert_eq!(decision, Ok(()));
+    }
+
+    #[test]
+    fn provider_endpoint_probe_result_endpoint_strips_credentials_query_and_fragment() {
+        let sanitized = sanitize_endpoint_for_probe_result(
+            "https://user:secret@api.example.com/v1/responses?api_key=secret#fragment",
+        );
+
+        assert_eq!(sanitized, "https://api.example.com/v1/responses");
+    }
+
+    #[tokio::test]
+    async fn provider_endpoint_probe_denies_remote_without_external_egress_gate() {
+        let result = probe_provider_surface_endpoint(
+            "provider_surface.ollama.local_http",
+            "llm_api",
+            "https://api.example.com/v1/responses?api_key=secret",
+            false,
+        )
+        .await;
+
+        assert_eq!(result.availability, FeatureAvailability::Unavailable);
+        assert_eq!(
+            result.status_reason.as_deref(),
+            Some("external_probe_blocked:consent_required")
+        );
+        assert_eq!(result.endpoint, "https://api.example.com/v1/responses");
     }
 }

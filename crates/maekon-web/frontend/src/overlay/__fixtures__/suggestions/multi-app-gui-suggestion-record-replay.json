@@ -1,0 +1,169 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-NATIVE-011"],
+  "scenarios": [
+    {
+      "key": "notes-selection",
+      "placement": "window-side-panel",
+      "native_context": {
+        "active_app": "Notes",
+        "bundle_id": "com.apple.Notes",
+        "active_process": {
+          "process_name": "Notes",
+          "bundle_id": "com.apple.Notes",
+          "pid": 4101,
+          "screen_id": "main",
+          "window_title": "Launch Plan",
+          "window_bounds": { "x": 90, "y": 90, "width": 640, "height": 560 }
+        },
+        "target_entity": {
+          "entity_id": "notes:selected:launch-plan",
+          "kind": "selected_text",
+          "label": "selected paragraph",
+          "value": "Q3 launch plan",
+          "bounds": { "x": 188, "y": 238, "width": 418, "height": 76 },
+          "center": { "x": 397, "y": 276 },
+          "confidence": 0.94,
+          "sources": ["ax", "ocr", "screenshot"]
+        },
+        "highlight": {
+          "target_entity_id": "notes:selected:launch-plan",
+          "bounds": { "x": 188, "y": 238, "width": 418, "height": 76 }
+        }
+      },
+      "expected": {
+        "breadcrumb": "Notes > selected paragraph Q3 launch plan",
+        "visible_title": "Summarize selected launch note",
+        "suggestion_id": "notes-selection-summary",
+        "hidden_titles": ["Review selected PDF before sharing", "Check checkout total before submit"],
+        "forbidden_preconsent_commands": ["open_file", "write_note", "submit_form", "send_external"]
+      }
+    },
+    {
+      "key": "finder-pdf",
+      "placement": "adjacent-popover",
+      "native_context": {
+        "active_app": "Finder",
+        "bundle_id": "com.apple.finder",
+        "active_process": {
+          "process_name": "Finder",
+          "bundle_id": "com.apple.finder",
+          "pid": 4120,
+          "screen_id": "main",
+          "window_title": "Downloads",
+          "window_bounds": { "x": 120, "y": 112, "width": 720, "height": 520 }
+        },
+        "target_entity": {
+          "entity_id": "finder:file:vendor-contract-pdf",
+          "kind": "file",
+          "label": "selected file",
+          "value": "Vendor Contract.pdf",
+          "bounds": { "x": 232, "y": 264, "width": 212, "height": 44 },
+          "center": { "x": 338, "y": 286 },
+          "confidence": 0.91,
+          "sources": ["ax", "screenshot"]
+        },
+        "highlight": {
+          "target_entity_id": "finder:file:vendor-contract-pdf",
+          "bounds": { "x": 232, "y": 264, "width": 212, "height": 44 }
+        }
+      },
+      "expected": {
+        "breadcrumb": "Finder > selected file Vendor Contract.pdf",
+        "visible_title": "Review selected PDF before sharing",
+        "suggestion_id": "finder-pdf-review",
+        "hidden_titles": ["Summarize selected launch note", "Check checkout total before submit"],
+        "forbidden_preconsent_commands": ["open_file", "rename_file", "send_external", "write_note"]
+      }
+    },
+    {
+      "key": "safari-checkout",
+      "placement": "bottom-dock",
+      "native_context": {
+        "active_app": "Safari",
+        "bundle_id": "com.apple.Safari",
+        "active_process": {
+          "process_name": "Safari",
+          "bundle_id": "com.apple.Safari",
+          "pid": 4177,
+          "screen_id": "main",
+          "window_title": "Checkout",
+          "window_bounds": { "x": 64, "y": 72, "width": 920, "height": 640 }
+        },
+        "target_entity": {
+          "entity_id": "safari:checkout:total",
+          "kind": "web_total",
+          "label": "checkout total",
+          "value": "$248.20",
+          "bounds": { "x": 704, "y": 412, "width": 156, "height": 42 },
+          "center": { "x": 782, "y": 433 },
+          "confidence": 0.89,
+          "sources": ["ocr", "screenshot"]
+        },
+        "highlight": {
+          "target_entity_id": "safari:checkout:total",
+          "bounds": { "x": 704, "y": 412, "width": 156, "height": 42 }
+        }
+      },
+      "expected": {
+        "breadcrumb": "Safari > checkout total $248.20",
+        "visible_title": "Check checkout total before submit",
+        "suggestion_id": "safari-checkout-review",
+        "hidden_titles": ["Summarize selected launch note", "Review selected PDF before sharing"],
+        "forbidden_preconsent_commands": ["submit_form", "send_external", "open_file", "write_note"]
+      }
+    }
+  ],
+  "suggestions": [
+    {
+      "id": "notes-selection-summary",
+      "title": "Summarize selected launch note",
+      "body": "Create a short summary of the selected launch-plan paragraph. Do not edit the note until the user confirms.",
+      "priority": "medium",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.92,
+      "created_at": "2026-05-23T01:20:00Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is a selected paragraph in Notes.",
+      "context_scope": {
+        "app_name": "Notes",
+        "window_title": "Launch Plan",
+        "target_id": "notes:selected:launch-plan"
+      }
+    },
+    {
+      "id": "finder-pdf-review",
+      "title": "Review selected PDF before sharing",
+      "body": "Offer a privacy-safe review checklist for Vendor Contract.pdf. Do not open, rename, or send the file before consent.",
+      "priority": "high",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.88,
+      "created_at": "2026-05-23T01:20:10Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is a selected Finder PDF.",
+      "context_scope": {
+        "app_name": "Finder",
+        "window_title": "Downloads",
+        "target_id": "finder:file:vendor-contract-pdf"
+      }
+    },
+    {
+      "id": "safari-checkout-review",
+      "title": "Check checkout total before submit",
+      "body": "Highlight the visible checkout total and suggest a final review. Do not submit the form or send page data externally before consent.",
+      "priority": "high",
+      "category": null,
+      "source": "local",
+      "confidence_score": 0.86,
+      "created_at": "2026-05-23T01:20:20Z",
+      "is_read": false,
+      "reasoning": "The active GUI target is a checkout total in Safari.",
+      "context_scope": {
+        "app_name": "Safari",
+        "window_title": "Checkout",
+        "target_id": "safari:checkout:total"
+      }
+    }
+  ]
+}

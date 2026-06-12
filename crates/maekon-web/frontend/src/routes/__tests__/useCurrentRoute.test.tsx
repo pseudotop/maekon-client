@@ -62,6 +62,12 @@ describe('useCurrentRoute', () => {
     expect(result.current.child).toBeNull()
   })
 
+  it('resolves a childless leaf route "/week" with no active child (#5676)', () => {
+    const { result } = renderHook(() => useCurrentRoute(), { wrapper: wrapperForPath('/week') })
+    expect(result.current.node.path).toBe('/week')
+    expect(result.current.child).toBeNull()
+  })
+
   it('resolves a childless leaf route "/chat" with no active child', () => {
     const { result } = renderHook(() => useCurrentRoute(), { wrapper: wrapperForPath('/chat') })
     expect(result.current.node.path).toBe('/chat')
@@ -81,6 +87,7 @@ describe('useCurrentGroup', () => {
     ['/', 'monitor'],
     ['/overview', 'monitor'],
     ['/day', 'monitor'],
+    ['/week', 'monitor'],
     ['/timeline/all', 'monitor'],
     ['/replay/timeline', 'monitor'],
     ['/focus/score', 'monitor'],

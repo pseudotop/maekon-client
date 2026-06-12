@@ -9,7 +9,7 @@ use crate::error::AutomationError;
 use crate::policy::{AuditLevel, PolicyClient};
 use crate::resolver;
 use maekon_core::config::SandboxConfig;
-use maekon_core::models::automation::{AutomationCommand, CommandResult};
+use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
 
 pub(super) const GUI_SESSION_POLICY_TOKEN: &str = "gui-session";
 pub(super) const INTENT_HINT_POLICY_TOKEN: &str = "intent-hint";
@@ -96,7 +96,7 @@ impl CommandExecutionGate {
             logger.log_denied(
                 &cmd.command_id,
                 &cmd.session_id,
-                &format!("{:?}", cmd.action),
+                &audit_action_label(&cmd.action),
             );
             return Ok(CommandResult::Denied);
         }
@@ -109,7 +109,7 @@ impl CommandExecutionGate {
                 audit_level,
                 &cmd.command_id,
                 &cmd.session_id,
-                &format!("{:?}", cmd.action),
+                &audit_action_label(&cmd.action),
             );
         }
 
@@ -157,5 +157,20 @@ impl CommandExecutionGate {
         }
 
         Ok(result)
+    }
+}
+
+pub(super) fn audit_action_label(action: &AutomationAction) -> String {
+    match action {
+        AutomationAction::MouseMove { x, y } => format!("MouseMove {{ x={x}, y={y} }}"),
+        AutomationAction::MouseClick { button, x, y } => {
+            format!("MouseClick {{ button={button}, x={x}, y={y} }}")
+        }
+        AutomationAction::KeyType { text } => {
+            format!("KeyType {{ text_len={} }}", text.chars().count())
+        }
+        AutomationAction::KeyPress { key } => format!("KeyPress {{ key={key} }}"),
+        AutomationAction::KeyRelease { key } => format!("KeyRelease {{ key={key} }}"),
+        AutomationAction::Hotkey { keys } => format!("Hotkey {{ keys={} }}", keys.join("+")),
     }
 }

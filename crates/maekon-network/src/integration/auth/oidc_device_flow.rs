@@ -587,7 +587,7 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
                 "failed to parse integration device authorization response: {error}"
             ))))
         })?;
-        let flow_id = uuid::Uuid::new_v4().to_string();
+        let flow_id = maekon_core::generate_id("flow");
         let flow = IntegrationDeviceAuthorizationFlow {
             flow_id: flow_id.clone(),
             user_code: payload.user_code,

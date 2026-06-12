@@ -1,5 +1,6 @@
+// OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 847
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use parking_lot::Mutex;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -18,23 +19,27 @@ use maekon_api_contracts::provider_specs::{default_surface_model, provider_surfa
 use maekon_core::config::AiSessionConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{
-    ChatMessage, ChatRole, ConversationSessionInfo, OutboundMessage, SessionConfig, SessionMessage,
-    SessionState, SessionTransport, TokenUsage, ToolDefinition, ToolUseStatus,
+    ChatMessage, ChatRole, ControlAction, ConversationSessionInfo, OutboundMessage, SessionConfig,
+    SessionMessage, SessionState, SessionTransport, TokenUsage, ToolDefinition, ToolUseStatus,
 };
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 
 use crate::session_adapters::prompt_payload::{
     extract_native_response_schema, render_conversation_prompt, render_message_payload,
 };
+use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
-    append_model_flag, append_oneshot_flags, classify_subprocess_error, DetectedSubprocessCli,
-    SubprocessKind,
+    append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
+    sanitize_subprocess_error_output, DetectedSubprocessCli, SubprocessKind,
 };
 use tracing::debug;
 
 pub struct GenericSubprocessSession {
     session_id: String,
     surface: DetectedSubprocessCli,
+    /// Catalog invocation mode that drives conversation dispatch (E21 #4864 B3
+    /// SSOT) — replaces hard-coded `surface_id` string comparisons.
+    invocation_mode: maekon_api_contracts::provider_specs::SubprocessInvocationMode,
     provider_name: String,
     model: String,
     system_prompt: Option<String>,
@@ -46,6 +51,8 @@ pub struct GenericSubprocessSession {
     last_active: Mutex<Instant>,
     timeout: Duration,
     max_history_turns: u32,
+    cancel_requested: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
 }
 
 impl GenericSubprocessSession {
@@ -72,9 +79,20 @@ impl GenericSubprocessSession {
             .map(|spec| spec.vendor_id.clone())
             .unwrap_or_else(|_| "subprocess".to_string());
 
+        // Resolve the catalog invocation mode once at construction; this drives
+        // conversation dispatch (B3 SSOT). An unresolvable surface falls back to
+        // `ManualChatGui`, which routes to the "unsupported surface" error path —
+        // preserving the prior unknown-surface behavior.
+        let invocation_mode =
+            maekon_api_contracts::provider_specs::subprocess_invocation_mode(&surface.surface_id)
+                .unwrap_or(
+                    maekon_api_contracts::provider_specs::SubprocessInvocationMode::ManualChatGui,
+                );
+
         Self {
             session_id: Uuid::new_v4().to_string(),
             surface,
+            invocation_mode,
             provider_name,
             model,
             system_prompt: config.system_prompt.clone(),
@@ -86,36 +104,37 @@ impl GenericSubprocessSession {
             last_active: Mutex::new(Instant::now()),
             timeout: Duration::from_secs(session_config.session_timeout_secs),
             max_history_turns: session_config.max_history_turns,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
         }
     }
 
+    /// Catalog invocation mode driving conversation dispatch (B3 SSOT).
+    #[cfg(test)]
+    pub(crate) fn invocation_mode(
+        &self,
+    ) -> maekon_api_contracts::provider_specs::SubprocessInvocationMode {
+        self.invocation_mode
+    }
+
     async fn invoke_surface(&self, prompt: &str) -> Result<String, CoreError> {
-        if self
-            .surface
-            .surface_id
-            .eq("provider_surface.openai.subprocess_cli")
-        {
-            self.run_codex(prompt).await
-        } else if self
-            .surface
-            .surface_id
-            .eq("provider_surface.google.subprocess_cli")
-        {
-            self.run_gemini(prompt).await
-        } else {
-            // Iter-94: reachable only if caller configured a surface that has
-            // no conversation-session implementation on this code path. That's
-            // a configuration mismatch (invalid surface for this operation),
-            // not an internal error — wire code `config.invalid` lets
-            // telemetry/i18n surface "pick a different provider" rather than
-            // "something broke inside maekon".
-            Err(CoreError::Config {
+        use maekon_api_contracts::provider_specs::SubprocessInvocationMode;
+        match self.invocation_mode {
+            SubprocessInvocationMode::CodexExecJson => self.run_codex(prompt).await,
+            SubprocessInvocationMode::GeminiCliPrompt => self.run_gemini(prompt).await,
+            // Iter-94: reachable only if caller configured a surface whose mode
+            // has no conversation-session implementation on this code path
+            // (e.g. ClaudePrintJson routes to ClaudeSubprocessSession; app-server
+            // mode's runtime lands in #4865). Config mismatch, not internal fault
+            // — wire code `config.invalid` lets telemetry/i18n surface "pick a
+            // different provider" rather than "something broke inside maekon".
+            _ => Err(CoreError::Config {
                 code: maekon_core::error_codes::ConfigCode::Invalid,
                 message: format!(
-                    "subprocess conversation sessions are not implemented for surface '{}'",
-                    self.surface.surface_id
+                    "subprocess conversation sessions are not implemented for surface '{}' (invocation mode {:?})",
+                    self.surface.surface_id, self.invocation_mode
                 ),
-            })
+            }),
         }
     }
 
@@ -162,10 +181,11 @@ impl GenericSubprocessSession {
             .map_err(CoreError::Io)?;
 
         if !output.status.success() {
-            return Err(classify_subprocess_error(
+            return Err(classify_subprocess_error_with_redactions(
                 SubprocessKind::Llm,
                 &self.surface.surface_id,
                 &String::from_utf8_lossy(&output.stderr),
+                &[prompt],
             ));
         }
 
@@ -198,10 +218,11 @@ impl GenericSubprocessSession {
             .map_err(CoreError::Io)?;
 
         if !output.status.success() {
-            return Err(classify_subprocess_error(
+            return Err(classify_subprocess_error_with_redactions(
                 SubprocessKind::Llm,
                 &self.surface.surface_id,
                 &String::from_utf8_lossy(&output.stderr),
+                &[prompt],
             ));
         }
 
@@ -253,13 +274,14 @@ impl GenericSubprocessSession {
 
         if let Some(schema) = response_schema.as_ref() {
             let schema_path = temp_dir.path().join("output-schema.json");
-            std::fs::write(
+            tokio::fs::write(
                 &schema_path,
                 serde_json::to_vec_pretty(schema).map_err(|err| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
                     message: format!("Failed to serialize Codex output schema for session: {err}"),
                 })?,
             )
+            .await
             .map_err(|err| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Failed to write Codex output schema for session: {err}"),
@@ -296,23 +318,52 @@ impl GenericSubprocessSession {
         let timeout = self.timeout;
         let surface_id = self.surface.surface_id.clone();
         let provider_name = self.provider_name.clone();
+        let cancel_requested = self.cancel_requested.clone();
+        let cancel_notify = self.cancel_notify.clone();
+        let prompt_redaction = prompt.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
             let _temp_dir = temp_dir;
             let mut lines = tokio::io::BufReader::new(stdout).lines();
             let deadline = tokio::time::Instant::now() + timeout;
-            let stderr_task = tokio::spawn(async move {
+            let stderr_task = AbortOnDropJoin::new(tokio::spawn(async move {
                 let mut stderr_buf = String::new();
                 if let Err(e) = stderr.read_to_string(&mut stderr_buf).await {
                     debug!("read_to_string failed: {e}");
                 }
                 stderr_buf
-            });
+            }));
             let mut assistant_text = String::new();
             let mut saw_non_empty_event = false;
+            let mut emitted_terminal_error = false;
+            let mut codex_stream_state =
+                CodexStreamState::with_sensitive_values(vec![prompt_redaction]);
 
             loop {
-                let line_result = tokio::time::timeout_at(deadline, lines.next_line()).await;
+                if cancel_requested.load(Ordering::Acquire) {
+                    yield OutboundMessage::Control {
+                        action: ControlAction::Cancel,
+                    };
+                    emitted_terminal_error = true;
+                    if let Err(e) = child.kill().await {
+                        debug!("process kill failed: {e}");
+                    }
+                    break;
+                }
+
+                let line_result = tokio::select! {
+                    line_result = tokio::time::timeout_at(deadline, lines.next_line()) => line_result,
+                    _ = cancel_notify.notified() => {
+                        yield OutboundMessage::Control {
+                            action: ControlAction::Cancel,
+                        };
+                        emitted_terminal_error = true;
+                        if let Err(e) = child.kill().await {
+                            debug!("process kill failed: {e}");
+                        }
+                        break;
+                    }
+                };
                 match line_result {
                     Ok(Ok(Some(line))) => {
                         let trimmed = line.trim();
@@ -320,11 +371,7 @@ impl GenericSubprocessSession {
                             continue;
                         }
 
-                        if let Some(message) = parse_codex_json_event(trimmed) {
-                            if matches!(&message, OutboundMessage::Error { message, .. } if message.starts_with("Reconnecting...")) {
-                                continue;
-                            }
-
+                        if let Some(message) = codex_stream_state.normalize_line(trimmed) {
                             if let OutboundMessage::Text { content, .. } = &message {
                                 if !content.is_empty() {
                                     assistant_text.push_str(content);
@@ -335,15 +382,7 @@ impl GenericSubprocessSession {
                             }
 
                             yield message;
-                            continue;
                         }
-
-                        assistant_text.push_str(trimmed);
-                        saw_non_empty_event = true;
-                        yield OutboundMessage::Text {
-                            content: trimmed.to_string(),
-                            done: false,
-                        };
                     }
                     Ok(Ok(None)) => break,
                     Ok(Err(err)) => {
@@ -352,6 +391,7 @@ impl GenericSubprocessSession {
                             message: err.to_string(),
                             retryable: false,
                         };
+                        emitted_terminal_error = true;
                         if let Err(e) = child.kill().await {
                             debug!("process kill failed: {e}");
                         }
@@ -363,6 +403,7 @@ impl GenericSubprocessSession {
                             message: format!("Session response timeout ({}s)", timeout.as_secs()),
                             retryable: true,
                         };
+                        emitted_terminal_error = true;
                         if let Err(e) = child.kill().await {
                             debug!("process kill failed: {e}");
                         }
@@ -372,11 +413,16 @@ impl GenericSubprocessSession {
             }
 
             let status = child.wait().await.map_err(CoreError::Io)?;
-            let stderr_output = stderr_task.await.unwrap_or_default();
+            let stderr_output = stderr_task.join().await.unwrap_or_default();
 
-            if !status.success() {
+            if !status.success() && !emitted_terminal_error {
                 let classified =
-                    classify_subprocess_error(SubprocessKind::Llm, &surface_id, &stderr_output);
+                    classify_subprocess_error_with_redactions(
+                        SubprocessKind::Llm,
+                        &surface_id,
+                        &stderr_output,
+                        &[codex_stream_state.sensitive_value()],
+                    );
                 yield OutboundMessage::Error {
                     code: "subprocess_error".to_string(),
                     message: classified.to_string(),
@@ -412,10 +458,11 @@ impl GenericSubprocessSession {
 #[async_trait]
 impl ConversationSession for GenericSubprocessSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
-        if self
-            .surface
-            .surface_id
-            .eq("provider_surface.openai.subprocess_cli")
+        // B3 SSOT: route by catalog invocation mode, not surface_id string.
+        // Codex exec gets the streaming JSON-event path; other modes fall
+        // through to the one-shot `invoke_surface` path.
+        if self.invocation_mode
+            == maekon_api_contracts::provider_specs::SubprocessInvocationMode::CodexExecJson
         {
             return self.send_codex_message(message).await;
         }
@@ -501,10 +548,78 @@ impl ConversationSession for GenericSubprocessSession {
     fn provider_name(&self) -> &str {
         &self.provider_name
     }
+
+    fn is_external(&self) -> bool {
+        // Codex/Gemini CLI subprocess transmits chat content off-device.
+        true
+    }
+
+    async fn terminate(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        self.cancel_notify.notify_waiters();
+        *self.state.lock() = SessionState::Terminated;
+    }
 }
 
+#[derive(Default)]
+struct CodexStreamState {
+    saw_terminal_result: bool,
+    sensitive_values: Vec<String>,
+}
+
+impl CodexStreamState {
+    fn with_sensitive_values(sensitive_values: Vec<String>) -> Self {
+        Self {
+            saw_terminal_result: false,
+            sensitive_values,
+        }
+    }
+
+    fn sensitive_value(&self) -> &str {
+        self.sensitive_values
+            .first()
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    fn normalize_line(&mut self, line: &str) -> Option<OutboundMessage> {
+        let message = parse_codex_json_event_with_redactions(line, &self.sensitive_values)?;
+        match &message {
+            OutboundMessage::Error { message, .. } if message.starts_with("Reconnecting...") => {
+                None
+            }
+            OutboundMessage::Result { done: true, .. } if self.saw_terminal_result => None,
+            OutboundMessage::Result { done: true, .. } => {
+                self.saw_terminal_result = true;
+                Some(message)
+            }
+            _ => Some(message),
+        }
+    }
+}
+
+#[cfg(test)]
 fn parse_codex_json_event(line: &str) -> Option<OutboundMessage> {
-    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    parse_codex_json_event_with_redactions(line, &[])
+}
+
+fn parse_codex_json_event_with_redactions(
+    line: &str,
+    sensitive_values: &[String],
+) -> Option<OutboundMessage> {
+    let value = match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(OutboundMessage::Error {
+                code: "malformed_event".to_string(),
+                message: format!(
+                    "Codex CLI emitted malformed JSON event: {}",
+                    sanitize_session_event_text(line, sensitive_values)
+                ),
+                retryable: false,
+            });
+        }
+    };
     let event_type = value.get("type")?.as_str()?;
 
     match event_type {
@@ -516,15 +631,33 @@ fn parse_codex_json_event(line: &str) -> Option<OutboundMessage> {
         }),
         "error" => Some(OutboundMessage::Error {
             code: "subprocess_error".to_string(),
-            message: value
-                .get("message")
-                .and_then(|message| message.as_str())
-                .unwrap_or("Codex CLI error")
-                .to_string(),
+            message: sanitize_session_event_text(
+                value
+                    .get("message")
+                    .and_then(|message| message.as_str())
+                    .unwrap_or("Codex CLI error"),
+                sensitive_values,
+            ),
             retryable: true,
         }),
         _ => None,
     }
+}
+
+fn sanitize_session_event_text(raw: &str, sensitive_values: &[String]) -> String {
+    let exact_redacted =
+        sensitive_values
+            .iter()
+            .map(String::as_str)
+            .fold(raw.to_string(), |output, value| {
+                if value.trim().is_empty() {
+                    output
+                } else {
+                    output.replace(value, "<redacted-payload>")
+                }
+            });
+
+    sanitize_subprocess_error_output(&exact_redacted)
 }
 
 fn parse_codex_item_event(event_type: &str, item: &serde_json::Value) -> Option<OutboundMessage> {
@@ -775,6 +908,132 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_codex_malformed_json_as_sanitized_error() {
+        let event = parse_codex_json_event("not json alice@example.com sk-secret")
+            .expect("malformed Codex JSON should surface a safe error");
+
+        match event {
+            OutboundMessage::Error {
+                code,
+                message,
+                retryable,
+            } => {
+                assert_eq!(code, "malformed_event");
+                assert!(!retryable);
+                assert!(!message.contains("alice@example.com"));
+                assert!(!message.contains("sk-secret"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_error_event_with_redactions() {
+        let event = parse_codex_json_event(
+            r#"{"type":"error","message":"failed for alice@example.com token sk-secret"}"#,
+        )
+        .expect("Codex error event should parse");
+
+        match event {
+            OutboundMessage::Error { message, .. } => {
+                assert!(!message.contains("alice@example.com"));
+                assert!(!message.contains("sk-secret"));
+                assert!(message.contains("<redacted-email>"));
+                assert!(message.contains("<redacted-token>"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_stream_state_skips_unknown_and_duplicate_result_events() {
+        let mut state = CodexStreamState::default();
+
+        assert!(state
+            .normalize_line(r#"{"type":"session.created","provider_debug":"ignore me"}"#)
+            .is_none());
+
+        let first_result = state
+            .normalize_line(r#"{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2},"debug":{"prompt":"secret"}}"#)
+            .expect("first result should be emitted");
+        assert!(matches!(
+            first_result,
+            OutboundMessage::Result { done: true, .. }
+        ));
+
+        assert!(
+            state
+                .normalize_line(
+                    r#"{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":4}}"#
+                )
+                .is_none(),
+            "duplicate terminal results should not reach the UI"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_join_aborts_drain_task() {
+        use std::future::pending;
+        use tokio::sync::oneshot;
+
+        struct DropProbe(Option<oneshot::Sender<()>>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let guard = AbortOnDropJoin::new(tokio::spawn(async move {
+            let _probe = DropProbe(Some(dropped_tx));
+            let _ = started_tx.send(());
+            pending::<String>().await
+        }));
+
+        started_rx
+            .await
+            .expect("drain task should start before guard drop");
+        drop(guard);
+
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("drain task should be aborted on guard drop")
+            .expect("drop probe should report task cancellation");
+    }
+
+    #[tokio::test]
+    async fn generic_subprocess_terminate_requests_stream_cancel() {
+        let config = SessionConfig {
+            transport: SessionTransport::Subprocess,
+            surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            system_prompt: None,
+            tools_enabled: false,
+            cwd: None,
+            sandbox_policy: None,
+            approval_policy: None,
+        };
+        let session = GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("/usr/bin/false"),
+            },
+            &config,
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+
+        session.terminate().await;
+
+        assert!(session.cancel_requested.load(Ordering::Acquire));
+        assert_eq!(*session.state.lock(), SessionState::Terminated);
+    }
+
     #[tokio::test]
     async fn session_prompt_includes_message_metadata() {
         let session = GenericSubprocessSession {
@@ -783,6 +1042,8 @@ mod tests {
                 surface_id: "provider_surface.google.subprocess_cli".to_string(),
                 executable_path: PathBuf::from("/usr/bin/false"),
             },
+            invocation_mode:
+                maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt,
             provider_name: "google".to_string(),
             model: "gemini-2.5-pro".to_string(),
             system_prompt: Some("Be concise.".to_string()),
@@ -805,6 +1066,8 @@ mod tests {
             last_active: Mutex::new(Instant::now()),
             timeout: Duration::from_secs(30),
             max_history_turns: 8,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
         };
 
         let message = SessionMessage {
@@ -842,5 +1105,82 @@ mod tests {
         assert!(prompt.contains("Available tools JSON"));
         assert!(prompt.contains("Required response format JSON"));
         assert!(prompt.contains("Additional context JSON"));
+    }
+
+    #[test]
+    fn generic_session_routes_by_invocation_mode_not_surface_id() {
+        use maekon_api_contracts::provider_specs::SubprocessInvocationMode;
+        // E21 #4864 (B3 SSOT): the conversation dispatch must key off the
+        // catalog invocation_mode, not a hard-coded surface_id string.
+        let codex = GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/bin/false"),
+            },
+            &SessionConfig {
+                transport: SessionTransport::Subprocess,
+                surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+                model: None,
+                system_prompt: None,
+                tools_enabled: false,
+                cwd: None,
+                sandbox_policy: None,
+                approval_policy: None,
+            },
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+        assert_eq!(
+            codex.invocation_mode(),
+            SubprocessInvocationMode::CodexExecJson
+        );
+
+        let gemini = GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.google.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/bin/false"),
+            },
+            &SessionConfig {
+                transport: SessionTransport::Subprocess,
+                surface_id: Some("provider_surface.google.subprocess_cli".to_string()),
+                model: None,
+                system_prompt: None,
+                tools_enabled: false,
+                cwd: None,
+                sandbox_policy: None,
+                approval_policy: None,
+            },
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+        assert_eq!(
+            gemini.invocation_mode(),
+            SubprocessInvocationMode::GeminiCliPrompt
+        );
+    }
+
+    #[test]
+    fn generic_subprocess_session_is_external() {
+        // Codex/Gemini CLI transmit chat content off-device → must be guarded.
+        let config = SessionConfig {
+            transport: SessionTransport::Subprocess,
+            surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            system_prompt: None,
+            tools_enabled: false,
+            cwd: None,
+            sandbox_policy: None,
+            approval_policy: None,
+        };
+        let session = GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/bin/false"),
+            },
+            &config,
+            Arc::new(AiSessionConfig::default()),
+            None,
+        );
+        assert!(session.is_external());
     }
 }

@@ -24,6 +24,19 @@ Internal planning, research, review, roadmap, and migration archives are kept
 out of the public-minimal export. Durable decisions that matter to public
 contributors should be promoted into ADRs, guides, contracts, or security docs.
 
+## Architecture and index policy
+
+- Public readers should start with `docs/architecture/README.md` for ADRs, then
+  use `docs/guides/`, `docs/contracts/`, `docs/security/`, and crate docs for
+  shipped behavior.
+- Internal maintainers should use the plan index in the parent SSOT before TC
+  catalog backfill or architecture promotion. That index can point to private
+  planning, research, and TC records that are intentionally absent from the
+  public export.
+- Public docs and exported source comments must remain self-contained. If a
+  source comment needs a durable explanation, first promote the behavior into a
+  public ADR, guide, contract, security doc, or crate doc.
+
 ## Naming and placement quick rules
 
 1. Use `ADR-XXX-*` naming only under `docs/architecture/`.

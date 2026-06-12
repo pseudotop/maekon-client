@@ -245,8 +245,13 @@ Do the thing."#;
     #[test]
     fn loader_returns_not_found_for_missing_skill() {
         let loader = FileSkillLoader::new(vec![]);
-        let result = loader.get_skill("nonexistent");
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                loader.get_skill("nonexistent").unwrap_err(),
+                CoreError::NotFound { .. }
+            ),
+            "missing skill must yield CoreError::NotFound"
+        );
     }
 
     #[test]

@@ -16,21 +16,27 @@ pub async fn export_metrics(
     State(context): State<StorageWebContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
-    ExportQueryService::new(context).export_metrics(&params)
+    ExportQueryService::new(context)
+        .export_metrics(&params)
+        .await
 }
 
 pub async fn export_events(
     State(context): State<StorageWebContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
-    ExportQueryService::new(context).export_events(&params)
+    ExportQueryService::new(context)
+        .export_events(&params)
+        .await
 }
 
 pub async fn export_frames(
     State(context): State<StorageWebContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
-    ExportQueryService::new(context).export_frames(&params)
+    ExportQueryService::new(context)
+        .export_frames(&params)
+        .await
 }
 
 /// GET /api/export/ical — export work sessions as iCalendar (.ics)
@@ -38,7 +44,7 @@ pub async fn export_ical(
     State(context): State<StorageWebContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
-    ExportQueryService::new(context).export_ical(&params)
+    ExportQueryService::new(context).export_ical(&params).await
 }
 
 /// GET /api/export/toggl — export work sessions in Toggl-compatible CSV
@@ -46,7 +52,7 @@ pub async fn export_toggl(
     State(context): State<StorageWebContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
-    ExportQueryService::new(context).export_toggl(&params)
+    ExportQueryService::new(context).export_toggl(&params).await
 }
 
 #[cfg(test)]

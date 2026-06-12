@@ -45,7 +45,13 @@ mod tests {
     fn apply_patch_invalid_data_returns_error() {
         let old = b"original";
         let bad_patch = b"not a valid bsdiff patch";
-        assert!(apply_patch(old, bad_patch).is_err());
+        assert!(
+            matches!(
+                apply_patch(old, bad_patch).unwrap_err(),
+                UpdateError::Install(_)
+            ),
+            "invalid patch data must yield UpdateError::Install"
+        );
     }
 
     #[test]

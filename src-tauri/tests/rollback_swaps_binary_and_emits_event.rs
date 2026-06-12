@@ -94,7 +94,7 @@ fn rollback_swaps_binary_and_emits_event() {
             *captured_clone.lock().unwrap() = Some(info.clone());
         },
     );
-    assert!(result.is_ok(), "simulated swap should succeed");
+    result.expect("simulated rollback swap must succeed with valid backup and exe paths");
 
     // (a) current_exe now holds the backup's pre-rollback bytes.
     let post_swap = std::fs::read(&current_exe).unwrap();
@@ -143,8 +143,9 @@ fn rollback_requires_backup_to_exist() {
             |_| {},
         )
     });
+    // lint:allow-is-err-hedge — catch_unwind Err payload is Box<dyn Any + Send>, no typed variant to match
     assert!(
         result.is_err(),
-        "simulate_rollback_swap should fail when backup is missing"
+        "simulate_rollback_swap must panic when backup is missing"
     );
 }

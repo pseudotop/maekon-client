@@ -15,7 +15,8 @@ struct PendingNonce {
 
 /// An authenticated session.
 struct Session {
-    #[allow(dead_code)]
+    /// #5211: the device_id proven by the HMAC challenge — used to bind a pushed
+    /// changeset's `origin_device_id` to the authenticated peer (anti-spoof).
     peer_device_id: String,
     created_at: Instant,
 }
@@ -109,12 +110,16 @@ impl SessionStore {
         token_hex
     }
 
-    /// Validate a session token. Returns true if valid and not expired.
-    pub(super) fn validate_token(&self, token: &str) -> bool {
+    /// #5211: the authenticated peer's device_id for a valid, non-expired token, else
+    /// `None`. Used to bind a pushed changeset's `origin_device_id` to the peer.
+    pub(super) fn authenticated_device_id(&self, token: &str) -> Option<String> {
         let sessions = self.sessions.read();
-        match sessions.get(token) {
-            Some(session) => Instant::now().duration_since(session.created_at) < SESSION_TTL,
-            None => false,
-        }
+        sessions.get(token).and_then(|session| {
+            if Instant::now().duration_since(session.created_at) < SESSION_TTL {
+                Some(session.peer_device_id.clone())
+            } else {
+                None
+            }
+        })
     }
 }

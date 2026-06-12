@@ -1,0 +1,107 @@
+{
+  "schema_version": "automation.gui.installed_desktop_smoke.v1",
+  "generated_at": "2026-06-02T11:45:00Z",
+  "desktop_handoffs": {
+    "initial_consent_state": "NotGranted/defaultClosed",
+    "pre_consent_capture": "none",
+    "operator_approval_required": true,
+    "consent_integrity": {
+      "classification": "not_proven_ui_only",
+      "audit_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "chain_status": "unsigned_json_only",
+      "claim_boundary": "UI behavior proof only; durable consent authenticity not claimed"
+    },
+    "tray": {
+      "visible": "pass",
+      "evidence_kind": "state_marker"
+    },
+    "overlay": {
+      "visible": "pass",
+      "evidence_kind": "geometry_marker"
+    },
+    "notification": {
+      "visible": "soft_block",
+      "evidence_kind": "notification_marker"
+    },
+    "revoke_verification": {
+      "expected_state": "consent_blocked_diagnostic",
+      "new_frame_count": 0
+    }
+  },
+  "installed_first_launch": {
+    "source": {
+      "parent_source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "public_export_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "public_repo_artifact_url": "https://github.com/pseudotop/maekon-client/releases/download/v0.1.0-rc.5/maekon-windows-x64.zip"
+    },
+    "release_tag": "v0.1.0-rc.5",
+    "artifact_checksum": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "signature_status": "verified",
+    "install_path_class": "throwaway_app_path",
+    "profile_path_class": "throwaway_profile",
+    "app_version": "0.1.0-rc.5",
+    "settings_available": true,
+    "first_window_visible": true,
+    "privacy_defaults": {
+      "consent": "NotGranted",
+      "capture": "off",
+      "user_input_collection": "off"
+    },
+    "cleanup": {
+      "status": "pass",
+      "raw_paths_recorded": false,
+      "path_classes": ["throwaway_app_path", "throwaway_profile"],
+      "counts_only": true,
+      "deleted_count": 2,
+      "pending_deletion_count": 0
+    }
+  },
+  "synthetic_provider_invocation": {
+    "installed_artifact_only": true,
+    "live_provider_calls": "disabled_by_default",
+    "synthetic_fixture_allowed": true,
+    "readiness_class": "settings_ready_synthetic_provider",
+    "provider_surface_id_class": "provider_surface_class_only",
+    "audit_egress_decision": "allowed_synthetic",
+    "redacted_result_class": "synthetic_text_completion_shape",
+    "raw_prompt_recorded": false,
+    "raw_stdout_stderr_recorded": false,
+    "account_or_org_recorded": false,
+    "failure_taxonomy": [
+      "ui_selection_failure",
+      "egress_privacy_gate_failure",
+      "provider_auth_failure",
+      "invocation_timeout",
+      "parser_schema_failure"
+    ]
+  },
+  "installed_update_smoke": {
+    "workflow_dispatch_or_manual_only": true,
+    "previous_release": {
+      "tag": "v0.1.0-rc.4",
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "artifact_checksum": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "candidate_release": {
+      "tag": "v0.1.0-rc.5",
+      "sha": "ffffffffffffffffffffffffffffffffffffffff",
+      "artifact_checksum": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "update_path_class": "release_supported_install_or_update_path",
+    "profile_mutation_policy": "disposable_or_restore_proven",
+    "post_update_checks": {
+      "version_metadata": "candidate",
+      "settings_available": true,
+      "provider_routing_survived": "manual_required",
+      "consent_state_preserved": "pass",
+      "tray_notification_state": "soft_block",
+      "clean_shutdown": "pass"
+    },
+    "cleanup": {
+      "status": "pass",
+      "raw_paths_recorded": false,
+      "path_classes": ["throwaway_app_path", "throwaway_profile"],
+      "counts_only": true
+    }
+  }
+}

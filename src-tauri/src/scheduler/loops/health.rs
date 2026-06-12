@@ -30,7 +30,7 @@ pub(crate) fn spawn_health_check_loop(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
+        let mut ticker = super::intervals::coalescing_interval(interval);
         loop {
             tokio::select! {
                 _ = ticker.tick() => {

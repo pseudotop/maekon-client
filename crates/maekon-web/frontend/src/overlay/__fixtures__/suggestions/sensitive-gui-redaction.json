@@ -1,0 +1,41 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-SAFETY-001"],
+  "gui_context": {
+    "active_app": "Notes",
+    "bundle_id": "com.apple.Notes",
+    "raw_sensitive_fragments": [
+      "password: redaction-fixture-secret",
+      "0000 0000 0000 0000",
+      "redaction-fixture@example.invalid",
+      "000-00-0000"
+    ],
+    "redaction_classes": ["secret", "payment_card", "email", "personal_id"]
+  },
+  "suggestions": [
+    {
+      "id": "notes-sensitive-redaction-proposal",
+      "title": "Review note with password: redaction-fixture-secret",
+      "body": "Summarize redaction-fixture@example.invalid and card 0000 0000 0000 0000 without exposing SSN 000-00-0000.",
+      "priority": "high",
+      "category": "privacy-review",
+      "source": "local",
+      "confidence_score": 0.72,
+      "created_at": "2026-05-22T00:00:00Z",
+      "is_read": false,
+      "reasoning": "The selected note includes password: redaction-fixture-secret and should be redacted before display."
+    }
+  ],
+  "expected": {
+    "redacted_title": "Review note with password: [REDACTED_SECRET]",
+    "visible_redacted_fragments": ["[REDACTED_SECRET]", "[REDACTED_CARD]", "[REDACTED_EMAIL]", "[REDACTED_ID]"],
+    "feedback_payload_fields": ["action", "snoozeMinutes", "suggestionId"],
+    "forbidden_feedback_fields": ["title", "body", "reasoning", "gui_context", "prompt"]
+  },
+  "privacy": {
+    "prompt_redacted_before_display": true,
+    "audit_metadata_only": {
+      "redaction_classes": ["secret", "payment_card", "email", "personal_id"],
+      "raw_value_persisted": false
+    }
+  }
+}

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use maekon_core::error::CoreError;
 use maekon_core::models::integration::{
-    InsightPacket, IntegrationEnvelope, IntegrationPrivacyClassification,
+    InsightPacket, IntegrationCapabilityScope, IntegrationEnvelope,
+    IntegrationPrivacyClassification, IntegrationPromptReceipt,
 };
 use maekon_core::ports::integration::IntegrationEgressDecision;
 use maekon_core::ports::integration::IntegrationEgressPolicyPort;
@@ -31,6 +32,20 @@ impl IntegrationEgressPolicyPort for DefaultIntegrationEgressPolicy {
 
         Ok(decision)
     }
+
+    async fn authorize_prompt_receipt(
+        &self,
+        envelope: &IntegrationEnvelope,
+        _receipt: &IntegrationPromptReceipt,
+    ) -> Result<IntegrationEgressDecision, CoreError> {
+        if envelope.capability_scope == IntegrationCapabilityScope::PromptAck {
+            return Ok(IntegrationEgressDecision::allow());
+        }
+
+        Ok(IntegrationEgressDecision::deny(
+            "prompt receipts must use the prompt acknowledgement capability scope",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -40,6 +55,7 @@ mod tests {
     use super::*;
     use maekon_core::models::integration::{
         InsightSourceWindow, IntegrationCapabilityScope, IntegrationMessageType, IntegrationOrigin,
+        IntegrationPromptReceiptAction,
     };
 
     fn sample_envelope() -> IntegrationEnvelope {
@@ -59,6 +75,15 @@ mod tests {
         }
     }
 
+    fn sample_envelope_with_scope(
+        capability_scope: IntegrationCapabilityScope,
+    ) -> IntegrationEnvelope {
+        IntegrationEnvelope {
+            capability_scope,
+            ..sample_envelope()
+        }
+    }
+
     fn sample_packet(classification: IntegrationPrivacyClassification) -> InsightPacket {
         InsightPacket {
             packet_id: "packet-1".to_string(),
@@ -70,6 +95,16 @@ mod tests {
             },
             privacy_classification: classification,
             audit_reference_id: None,
+        }
+    }
+
+    fn sample_receipt() -> IntegrationPromptReceipt {
+        IntegrationPromptReceipt {
+            receipt_id: "receipt-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            action: IntegrationPromptReceiptAction::Acknowledged,
+            occurred_at: Utc::now(),
+            reason: None,
         }
     }
 
@@ -101,6 +136,34 @@ mod tests {
             .unwrap();
         assert_eq!(
             decision.disposition,
+            maekon_core::models::integration::IntegrationEgressDisposition::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_receipt_is_allowed_only_with_prompt_ack_scope() {
+        let policy = DefaultIntegrationEgressPolicy;
+        let allow = policy
+            .authorize_prompt_receipt(
+                &sample_envelope_with_scope(IntegrationCapabilityScope::PromptAck),
+                &sample_receipt(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            allow.disposition,
+            maekon_core::models::integration::IntegrationEgressDisposition::Allow
+        );
+
+        let deny = policy
+            .authorize_prompt_receipt(
+                &sample_envelope_with_scope(IntegrationCapabilityScope::InsightWrite),
+                &sample_receipt(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            deny.disposition,
             maekon_core::models::integration::IntegrationEgressDisposition::Deny
         );
     }

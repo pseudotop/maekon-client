@@ -34,6 +34,7 @@ use maekon_core::models::storage_records::{
 };
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::models::system::SystemMetrics;
+use maekon_core::models::tiered_memory::SegmentSummary;
 use maekon_core::models::work_session::FocusMetrics;
 use maekon_core::ports::annotation_storage::AnnotationStorage;
 use maekon_core::ports::storage::{MetricsStorage, StorageService};
@@ -102,6 +103,10 @@ impl StorageService for FailingStorage {
 
     async fn save_suggestion(&self, suggestion: &Suggestion) -> Result<(), CoreError> {
         self.inner.save_suggestion(suggestion).await
+    }
+
+    async fn save_activity_segment(&self, summary: &SegmentSummary) -> Result<(), CoreError> {
+        self.inner.save_activity_segment(summary).await
     }
 
     async fn update_segment_llm_summary(
@@ -222,142 +227,170 @@ impl MetricsStorage for FailingStorage {
 
 // ── TagStorage ────────────────────────────────────────────────────────────────
 
+#[async_trait]
 impl TagStorage for FailingStorage {
-    fn get_all_tags(&self) -> Result<Vec<TagRecord>, CoreError> {
-        self.inner.get_all_tags().map_err(Into::into)
+    async fn get_all_tags(&self) -> Result<Vec<TagRecord>, CoreError> {
+        TagStorage::get_all_tags(&*self.inner)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, CoreError> {
-        self.inner.get_tag(tag_id).map_err(Into::into)
+    async fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, CoreError> {
+        TagStorage::get_tag(&*self.inner, tag_id)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_tag_ids_for_frames(
+    async fn get_tag_ids_for_frames(
         &self,
         frame_ids: &[i64],
     ) -> Result<std::collections::HashMap<i64, Vec<i64>>, CoreError> {
-        self.inner
-            .get_tag_ids_for_frames(frame_ids)
+        TagStorage::get_tag_ids_for_frames(&*self.inner, frame_ids)
+            .await
             .map_err(Into::into)
     }
 
-    fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, CoreError> {
-        self.inner.create_tag(name, color).map_err(Into::into)
-    }
-
-    fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, CoreError> {
-        self.inner
-            .update_tag(tag_id, name, color)
+    async fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, CoreError> {
+        TagStorage::create_tag(&*self.inner, name, color)
+            .await
             .map_err(Into::into)
     }
 
-    fn delete_tag(&self, tag_id: i64) -> Result<bool, CoreError> {
-        self.inner.delete_tag(tag_id).map_err(Into::into)
-    }
-
-    fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, CoreError> {
-        self.inner.get_tags_for_frame(frame_id).map_err(Into::into)
-    }
-
-    fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), CoreError> {
-        self.inner
-            .add_tag_to_frame(frame_id, tag_id)
+    async fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, CoreError> {
+        TagStorage::update_tag(&*self.inner, tag_id, name, color)
+            .await
             .map_err(Into::into)
     }
 
-    fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, CoreError> {
-        self.inner
-            .remove_tag_from_frame(frame_id, tag_id)
+    async fn delete_tag(&self, tag_id: i64) -> Result<bool, CoreError> {
+        TagStorage::delete_tag(&*self.inner, tag_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, CoreError> {
+        TagStorage::get_tags_for_frame(&*self.inner, frame_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), CoreError> {
+        TagStorage::add_tag_to_frame(&*self.inner, frame_id, tag_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, CoreError> {
+        TagStorage::remove_tag_from_frame(&*self.inner, frame_id, tag_id)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── FrameQueryStorage ────────────────────────────────────────────────────────
 
+#[async_trait]
 impl FrameQueryStorage for FailingStorage {
-    fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError> {
-        self.inner.count_frames_in_range(window).map_err(Into::into)
+    async fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError> {
+        FrameQueryStorage::count_frames_in_range(&*self.inner, window)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_frames(
+    async fn get_frames(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, CoreError> {
-        self.inner.get_frames(from, to, limit).map_err(Into::into)
-    }
-
-    fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, CoreError> {
-        self.inner.get_frame_file_path(frame_id).map_err(Into::into)
-    }
-
-    fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError> {
-        self.inner.list_all_frame_file_paths().map_err(Into::into)
-    }
-
-    fn list_frame_file_paths_in_range(
-        &self,
-        window: &TimeWindow,
-    ) -> Result<Vec<String>, CoreError> {
-        self.inner
-            .list_frame_file_paths_in_range(window)
+        FrameQueryStorage::get_frames(&*self.inner, from, to, limit)
+            .await
             .map_err(Into::into)
     }
 
-    fn count_search_frames(
+    async fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, CoreError> {
+        FrameQueryStorage::get_frame_file_path(&*self.inner, frame_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn list_all_frame_file_paths(&self) -> Result<Vec<String>, CoreError> {
+        FrameQueryStorage::list_all_frame_file_paths(&*self.inner)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn list_frame_file_paths_in_range(
+        &self,
+        window: &TimeWindow,
+    ) -> Result<Vec<String>, CoreError> {
+        FrameQueryStorage::list_frame_file_paths_in_range(&*self.inner, window)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn count_search_frames(
         &self,
         count_sql: &str,
         pattern: Option<&str>,
     ) -> Result<u64, CoreError> {
-        self.inner
-            .count_search_frames(count_sql, pattern)
+        FrameQueryStorage::count_search_frames(&*self.inner, count_sql, pattern)
+            .await
             .map_err(Into::into)
     }
 
-    fn search_frames_with_sql(
+    async fn search_frames_with_sql(
         &self,
         select_sql: &str,
         pattern: Option<&str>,
         limit: usize,
         offset: usize,
     ) -> Result<Vec<SearchFrameRow>, CoreError> {
-        self.inner
-            .search_frames_with_sql(select_sql, pattern, limit, offset)
+        FrameQueryStorage::search_frames_with_sql(&*self.inner, select_sql, pattern, limit, offset)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── EventQueryStorage ────────────────────────────────────────────────────────
 
+#[async_trait]
 impl EventQueryStorage for FailingStorage {
-    fn count_events_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError> {
-        self.inner.count_events_in_range(window).map_err(Into::into)
+    async fn count_events_in_range(&self, window: &TimeWindow) -> Result<u64, CoreError> {
+        EventQueryStorage::count_events_in_range(&*self.inner, window)
+            .await
+            .map_err(Into::into)
     }
 
-    fn count_search_events(&self, pattern: &str) -> Result<u64, CoreError> {
-        self.inner.count_search_events(pattern).map_err(Into::into)
+    async fn count_search_events(&self, pattern: &str) -> Result<u64, CoreError> {
+        EventQueryStorage::count_search_events(&*self.inner, pattern)
+            .await
+            .map_err(Into::into)
     }
 
-    fn search_events(
+    async fn search_events(
         &self,
         pattern: &str,
         limit: usize,
         offset: usize,
     ) -> Result<Vec<SearchEventRow>, CoreError> {
-        self.inner
-            .search_events(pattern, limit, offset)
+        EventQueryStorage::search_events(&*self.inner, pattern, limit, offset)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── StorageMaintenanceStorage ────────────────────────────────────────────────
 
+#[async_trait]
 impl StorageMaintenanceStorage for FailingStorage {
-    fn get_storage_stats_summary(&self) -> Result<StorageStatsSummaryRecord, CoreError> {
-        self.inner.get_storage_stats_summary().map_err(Into::into)
+    async fn get_storage_stats_summary(&self) -> Result<StorageStatsSummaryRecord, CoreError> {
+        StorageMaintenanceStorage::get_storage_stats_summary(&*self.inner)
+            .await
+            .map_err(Into::into)
     }
 
-    fn delete_data_in_range(
+    async fn delete_data_in_range(
         &self,
         window: &TimeWindow,
         delete_events: bool,
@@ -366,239 +399,288 @@ impl StorageMaintenanceStorage for FailingStorage {
         delete_processes: bool,
         delete_idle: bool,
     ) -> Result<DeletedRangeCounts, CoreError> {
-        self.inner
-            .delete_data_in_range(
-                window,
-                delete_events,
-                delete_frames,
-                delete_metrics,
-                delete_processes,
-                delete_idle,
-            )
-            .map_err(Into::into)
+        StorageMaintenanceStorage::delete_data_in_range(
+            &*self.inner,
+            window,
+            delete_events,
+            delete_frames,
+            delete_metrics,
+            delete_processes,
+            delete_idle,
+        )
+        .await
+        .map_err(Into::into)
     }
 
-    fn delete_all_data(&self) -> Result<(), CoreError> {
-        self.inner.delete_all_data().map_err(Into::into)
+    async fn delete_all_data(&self) -> Result<(), CoreError> {
+        StorageMaintenanceStorage::delete_all_data(&*self.inner)
+            .await
+            .map_err(Into::into)
     }
 }
 
 // ── ActivityStatsStorage ─────────────────────────────────────────────────────
 
+#[async_trait]
 impl ActivityStatsStorage for FailingStorage {
-    fn get_app_durations_by_date(
+    async fn get_app_durations_by_date(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<(String, i64)>, CoreError> {
-        self.inner
-            .get_app_durations_by_date(from, to)
+        ActivityStatsStorage::get_app_durations_by_date(&*self.inner, from, to)
+            .await
             .map_err(Into::into)
     }
 
-    fn get_daily_active_secs(&self, window: &TimeWindow) -> Result<Vec<(String, i64)>, CoreError> {
-        self.inner.get_daily_active_secs(window).map_err(Into::into)
+    async fn get_daily_active_secs(
+        &self,
+        window: &TimeWindow,
+    ) -> Result<Vec<(String, i64)>, CoreError> {
+        ActivityStatsStorage::get_daily_active_secs(&*self.inner, window)
+            .await
+            .map_err(Into::into)
     }
 
-    fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, CoreError> {
-        self.inner.list_session_stats(limit).map_err(Into::into)
+    async fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, CoreError> {
+        ActivityStatsStorage::list_session_stats(&*self.inner, limit)
+            .await
+            .map_err(Into::into)
     }
 }
 
 // ── FocusQueryStorage ────────────────────────────────────────────────────────
 
+#[async_trait]
 impl FocusQueryStorage for FailingStorage {
-    fn get_or_create_focus_metrics(&self, date: &str) -> Result<FocusMetrics, CoreError> {
-        self.inner
-            .get_or_create_focus_metrics(date)
+    async fn get_or_create_focus_metrics(&self, date: &str) -> Result<FocusMetrics, CoreError> {
+        FocusQueryStorage::get_or_create_focus_metrics(&*self.inner, date)
+            .await
             .map_err(Into::into)
     }
 
-    fn get_recent_focus_metrics(
+    async fn get_recent_focus_metrics(
         &self,
         days: usize,
     ) -> Result<Vec<(String, FocusMetrics)>, CoreError> {
-        self.inner
-            .get_recent_focus_metrics(days)
+        FocusQueryStorage::get_recent_focus_metrics(&*self.inner, days)
+            .await
             .map_err(Into::into)
     }
 
-    fn list_work_sessions(
+    async fn list_work_sessions(
         &self,
         from: &str,
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusWorkSessionRecord>, CoreError> {
-        self.inner
-            .list_work_sessions(from, to, limit)
+        FocusQueryStorage::list_work_sessions(&*self.inner, from, to, limit)
+            .await
             .map_err(Into::into)
     }
 
-    fn list_interruptions(
+    async fn list_interruptions(
         &self,
         from: &str,
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusInterruptionRecord>, CoreError> {
-        self.inner
-            .list_interruptions(from, to, limit)
+        FocusQueryStorage::list_interruptions(&*self.inner, from, to, limit)
+            .await
             .map_err(Into::into)
     }
 
-    fn list_recent_local_suggestions(
+    async fn list_recent_local_suggestions(
         &self,
         cutoff: &str,
         limit: usize,
     ) -> Result<Vec<LocalSuggestionRecord>, CoreError> {
-        self.inner
-            .list_recent_local_suggestions(cutoff, limit)
+        FocusQueryStorage::list_recent_local_suggestions(&*self.inner, cutoff, limit)
+            .await
             .map_err(Into::into)
     }
 
-    fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), CoreError> {
-        self.inner
-            .mark_suggestion_shown(suggestion_id)
+    async fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), CoreError> {
+        FocusQueryStorage::mark_suggestion_shown(&*self.inner, suggestion_id)
+            .await
             .map_err(Into::into)
     }
 
-    fn mark_suggestion_dismissed(&self, suggestion_id: i64) -> Result<(), CoreError> {
-        self.inner
-            .mark_suggestion_dismissed(suggestion_id)
+    async fn mark_suggestion_dismissed(&self, suggestion_id: i64) -> Result<(), CoreError> {
+        FocusQueryStorage::mark_suggestion_dismissed(&*self.inner, suggestion_id)
+            .await
             .map_err(Into::into)
     }
 
-    fn mark_suggestion_acted(&self, suggestion_id: i64) -> Result<(), CoreError> {
-        self.inner
-            .mark_suggestion_acted(suggestion_id)
+    async fn mark_suggestion_acted(&self, suggestion_id: i64) -> Result<(), CoreError> {
+        FocusQueryStorage::mark_suggestion_acted(&*self.inner, suggestion_id)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── SuggestionQueryStorage ───────────────────────────────────────────────────
 
+// ADR-026 PR-6: async sub-trait. Delegation is fully-qualified so the async
+// trait method (not the synchronous inherent twin on `SqliteStorage`) is
+// selected on the concrete `Arc<SqliteStorage>` inner.
+#[async_trait]
 impl SuggestionQueryStorage for FailingStorage {
-    fn list_suggestions(&self, limit: usize) -> Result<Vec<SuggestionRecord>, CoreError> {
-        self.inner.list_suggestions(limit).map_err(Into::into)
-    }
-
-    fn dismiss_unified_suggestion(&self, suggestion_id: &str) -> Result<bool, CoreError> {
-        self.inner
-            .dismiss_unified_suggestion(suggestion_id)
+    async fn list_suggestions(&self, limit: usize) -> Result<Vec<SuggestionRecord>, CoreError> {
+        SuggestionQueryStorage::list_suggestions(&*self.inner, limit)
+            .await
             .map_err(Into::into)
     }
 
-    fn has_recent_server_suggestions(&self, lookback_secs: u64) -> Result<bool, CoreError> {
-        self.inner
-            .has_recent_server_suggestions(lookback_secs)
+    async fn dismiss_unified_suggestion(&self, suggestion_id: &str) -> Result<bool, CoreError> {
+        SuggestionQueryStorage::dismiss_unified_suggestion(&*self.inner, suggestion_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn mark_unified_suggestion_shown(&self, suggestion_id: &str) -> Result<bool, CoreError> {
+        SuggestionQueryStorage::mark_unified_suggestion_shown(&*self.inner, suggestion_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn mark_unified_suggestion_acted(&self, suggestion_id: &str) -> Result<bool, CoreError> {
+        SuggestionQueryStorage::mark_unified_suggestion_acted(&*self.inner, suggestion_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn has_recent_server_suggestions(&self, lookback_secs: u64) -> Result<bool, CoreError> {
+        SuggestionQueryStorage::has_recent_server_suggestions(&*self.inner, lookback_secs)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── DigestStorage ────────────────────────────────────────────────────────────
 
+#[async_trait]
 impl DigestStorage for FailingStorage {
-    fn save_daily_digest(&self, digest: &DailyDigest) -> Result<(), CoreError> {
-        self.inner.save_daily_digest(digest).map_err(Into::into)
+    async fn save_daily_digest(&self, digest: &DailyDigest) -> Result<(), CoreError> {
+        DigestStorage::save_daily_digest(&*self.inner, digest)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_daily_digest(&self, date: &str) -> Result<Option<DailyDigest>, CoreError> {
-        self.inner.get_daily_digest(date).map_err(Into::into)
+    async fn get_daily_digest(&self, date: &str) -> Result<Option<DailyDigest>, CoreError> {
+        DigestStorage::get_daily_digest(&*self.inner, date)
+            .await
+            .map_err(Into::into)
     }
 
-    fn list_daily_digests(&self, limit: usize) -> Result<Vec<DailyDigest>, CoreError> {
-        self.inner.list_daily_digests(limit).map_err(Into::into)
+    async fn list_daily_digests(&self, limit: usize) -> Result<Vec<DailyDigest>, CoreError> {
+        DigestStorage::list_daily_digests(&*self.inner, limit)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_segments_for_date(&self, date: &str) -> Result<Vec<SegmentSummaryRecord>, CoreError> {
-        self.inner.get_segments_for_date(date).map_err(Into::into)
+    async fn get_segments_for_date(
+        &self,
+        date: &str,
+    ) -> Result<Vec<SegmentSummaryRecord>, CoreError> {
+        DigestStorage::get_segments_for_date(&*self.inner, date)
+            .await
+            .map_err(Into::into)
     }
 
-    fn list_weekly_digests(
+    async fn list_weekly_digests(
         &self,
         limit: usize,
     ) -> Result<Vec<maekon_core::models::weekly_digest::WeeklyDigest>, CoreError> {
-        self.inner.list_weekly_digests(limit).map_err(Into::into)
+        DigestStorage::list_weekly_digests(&*self.inner, limit)
+            .await
+            .map_err(Into::into)
     }
 
-    fn get_current_week_digest(
+    async fn get_current_week_digest(
         &self,
     ) -> Result<Option<maekon_core::models::weekly_digest::WeeklyDigest>, CoreError> {
-        self.inner.get_current_week_digest().map_err(Into::into)
+        DigestStorage::get_current_week_digest(&*self.inner)
+            .await
+            .map_err(Into::into)
     }
 
-    fn save_weekly_digest(
+    async fn save_weekly_digest(
         &self,
         digest: &maekon_core::models::weekly_digest::WeeklyDigest,
     ) -> Result<(), CoreError> {
-        self.inner.save_weekly_digest(digest).map_err(Into::into)
+        DigestStorage::save_weekly_digest(&*self.inner, digest)
+            .await
+            .map_err(Into::into)
     }
 }
 
 // ── BackupStorage ────────────────────────────────────────────────────────────
 
+// ADR-026 PR-7: async sub-trait. Delegation is fully-qualified so the async
+// trait method (not the synchronous inherent twin on `SqliteStorage`) is
+// selected on the concrete `Arc<SqliteStorage>` inner.
+#[async_trait]
 impl BackupStorage for FailingStorage {
-    fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError> {
-        self.inner.list_backup_tags().map_err(Into::into)
+    async fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError> {
+        BackupStorage::list_backup_tags(&*self.inner).await
     }
 
-    fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError> {
-        self.inner.list_backup_frame_tags().map_err(Into::into)
+    async fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError> {
+        BackupStorage::list_backup_frame_tags(&*self.inner).await
     }
 
-    fn list_event_exports(
+    async fn list_event_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<EventExportRecord>, CoreError> {
-        self.inner.list_event_exports(from, to).map_err(Into::into)
+        BackupStorage::list_event_exports(&*self.inner, from, to).await
     }
 
-    fn list_metric_exports(
+    async fn list_metric_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<MetricExportRecord>, CoreError> {
-        self.inner.list_metric_exports(from, to).map_err(Into::into)
+        BackupStorage::list_metric_exports(&*self.inner, from, to).await
     }
 
-    fn list_frame_exports(
+    async fn list_frame_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<FrameExportRecord>, CoreError> {
-        self.inner.list_frame_exports(from, to).map_err(Into::into)
+        BackupStorage::list_frame_exports(&*self.inner, from, to).await
     }
 
-    fn list_hourly_metrics_since(&self, from: &str) -> Result<Vec<HourlyMetricsRecord>, CoreError> {
-        self.inner
-            .list_hourly_metrics_since(from)
-            .map_err(Into::into)
+    async fn list_hourly_metrics_since(
+        &self,
+        from: &str,
+    ) -> Result<Vec<HourlyMetricsRecord>, CoreError> {
+        BackupStorage::list_hourly_metrics_since(&*self.inner, from).await
     }
 
-    fn upsert_backup_tag(
+    async fn upsert_backup_tag(
         &self,
         id: i64,
         name: &str,
         color: &str,
         created_at: &str,
     ) -> Result<(), CoreError> {
-        self.inner
-            .upsert_backup_tag(id, name, color, created_at)
-            .map_err(Into::into)
+        BackupStorage::upsert_backup_tag(&*self.inner, id, name, color, created_at).await
     }
 
-    fn upsert_backup_frame_tag(
+    async fn upsert_backup_frame_tag(
         &self,
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
     ) -> Result<(), CoreError> {
-        self.inner
-            .upsert_backup_frame_tag(frame_id, tag_id, created_at)
-            .map_err(Into::into)
+        BackupStorage::upsert_backup_frame_tag(&*self.inner, frame_id, tag_id, created_at).await
     }
 
-    fn upsert_backup_event(
+    async fn upsert_backup_event(
         &self,
         event_id: &str,
         event_type: &str,
@@ -606,12 +688,18 @@ impl BackupStorage for FailingStorage {
         app_name: Option<&str>,
         window_title: Option<&str>,
     ) -> Result<(), CoreError> {
-        self.inner
-            .upsert_backup_event(event_id, event_type, timestamp, app_name, window_title)
-            .map_err(Into::into)
+        BackupStorage::upsert_backup_event(
+            &*self.inner,
+            event_id,
+            event_type,
+            timestamp,
+            app_name,
+            window_title,
+        )
+        .await
     }
 
-    fn upsert_backup_frame(
+    async fn upsert_backup_frame(
         &self,
         id: i64,
         timestamp: &str,
@@ -623,53 +711,51 @@ impl BackupStorage for FailingStorage {
         height: i32,
         ocr_text: Option<&str>,
     ) -> Result<(), CoreError> {
-        self.inner
-            .upsert_backup_frame(
-                id,
-                timestamp,
-                trigger_type,
-                app_name,
-                window_title,
-                importance,
-                width,
-                height,
-                ocr_text,
-            )
-            .map_err(Into::into)
+        BackupStorage::upsert_backup_frame(
+            &*self.inner,
+            id,
+            timestamp,
+            trigger_type,
+            app_name,
+            window_title,
+            importance,
+            width,
+            height,
+            ocr_text,
+        )
+        .await
     }
 }
 
 // ── GuiInteractionStorage ────────────────────────────────────────────────────
 
+#[async_trait]
 impl GuiInteractionStorage for FailingStorage {
-    fn save_gui_interaction(&self, input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
-        self.inner.save_gui_interaction(input).map_err(Into::into)
+    async fn save_gui_interaction(&self, input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
+        GuiInteractionStorage::save_gui_interaction(&*self.inner, input).await
     }
 
-    fn list_gui_interactions_for_segment(
+    async fn list_gui_interactions_for_segment(
         &self,
         segment_id: &str,
     ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        self.inner
-            .list_gui_interactions_for_segment(segment_id)
-            .map_err(Into::into)
+        GuiInteractionStorage::list_gui_interactions_for_segment(&*self.inner, segment_id).await
     }
 
-    fn query_gui_interaction_density(
+    async fn query_gui_interaction_density(
         &self,
         start: &str,
         end: &str,
     ) -> Result<Vec<(String, u32)>, CoreError> {
-        self.inner
-            .query_gui_interaction_density(start, end)
-            .map_err(Into::into)
+        GuiInteractionStorage::query_gui_interaction_density(&*self.inner, start, end).await
     }
 }
 
 // ── SegmentQueryStorage ──────────────────────────────────────────────────────
 
+#[async_trait]
 impl SegmentQueryStorage for FailingStorage {
-    fn get_segment_details(
+    async fn get_segment_details(
         &self,
         segment_ids: &[String],
     ) -> Result<
@@ -679,39 +765,37 @@ impl SegmentQueryStorage for FailingStorage {
         >,
         CoreError,
     > {
-        self.inner
-            .get_segment_details(segment_ids)
-            .map_err(Into::into)
+        SegmentQueryStorage::get_segment_details(&*self.inner, segment_ids).await
     }
 }
 
 // ── CoachingQueryStorage ─────────────────────────────────────────────────────
 
+#[async_trait]
 impl CoachingQueryStorage for FailingStorage {
-    fn query_coaching_events(
+    async fn query_coaching_events(
         &self,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<maekon_core::models::coaching::CoachingEventRow>, CoreError> {
-        self.inner
-            .query_coaching_events(limit, offset)
-            .map_err(Into::into)
+        // Fully-qualified to select the async trait method (SqliteStorage also has
+        // a synchronous inherent twin of the same name).
+        CoachingQueryStorage::query_coaching_events(&*self.inner, limit, offset).await
     }
 
-    fn query_coaching_events_since(
+    async fn query_coaching_events_since(
         &self,
         since_date: &str,
     ) -> Result<Vec<maekon_core::models::coaching::CoachingEventRow>, CoreError> {
-        self.inner
-            .query_coaching_events_since(since_date)
-            .map_err(Into::into)
+        CoachingQueryStorage::query_coaching_events_since(&*self.inner, since_date).await
     }
 }
 
 // ── HabitStorage ─────────────────────────────────────────────────────────────
 
+#[async_trait]
 impl HabitStorage for FailingStorage {
-    fn upsert_habit_streak(
+    async fn upsert_habit_streak(
         &self,
         regime_label: &str,
         date: &str,
@@ -719,57 +803,73 @@ impl HabitStorage for FailingStorage {
         target_minutes: u32,
         met: bool,
     ) -> Result<(), CoreError> {
-        self.inner
-            .upsert_habit_streak(regime_label, date, minutes_logged, target_minutes, met)
-            .map_err(Into::into)
+        // Fully-qualified to select the async trait method (SqliteStorage also has
+        // a synchronous inherent twin of the same name).
+        HabitStorage::upsert_habit_streak(
+            &*self.inner,
+            regime_label,
+            date,
+            minutes_logged,
+            target_minutes,
+            met,
+        )
+        .await
     }
 
-    fn query_habit_streaks(
+    async fn query_habit_streaks(
         &self,
         days: u32,
     ) -> Result<Vec<maekon_core::models::coaching::HabitStreakRow>, CoreError> {
-        self.inner.query_habit_streaks(days).map_err(Into::into)
+        HabitStorage::query_habit_streaks(&*self.inner, days).await
     }
 }
 
 // ── AnnotationStorage ────────────────────────────────────────────────────────
 
+#[async_trait]
 impl AnnotationStorage for FailingStorage {
-    fn list_annotations(&self, frame_id: i64) -> Result<Vec<FrameAnnotation>, CoreError> {
-        self.inner.list_annotations(frame_id).map_err(Into::into)
+    async fn list_annotations(&self, frame_id: i64) -> Result<Vec<FrameAnnotation>, CoreError> {
+        self.inner
+            .list_annotations(frame_id)
+            .await
+            .map_err(Into::into)
     }
 
-    fn save_annotation(&self, annotation: &FrameAnnotation) -> Result<(), CoreError> {
-        self.inner.save_annotation(annotation).map_err(Into::into)
+    async fn save_annotation(&self, annotation: &FrameAnnotation) -> Result<(), CoreError> {
+        self.inner
+            .save_annotation(annotation)
+            .await
+            .map_err(Into::into)
     }
 
-    fn delete_annotation(&self, annotation_id: &str) -> Result<(), CoreError> {
+    async fn delete_annotation(&self, annotation_id: &str) -> Result<(), CoreError> {
         self.inner
             .delete_annotation(annotation_id)
+            .await
             .map_err(Into::into)
     }
 }
 
 // ── DashboardStreamingStorage ────────────────────────────────────────────────
 
+#[async_trait]
 impl DashboardStreamingStorage for FailingStorage {
-    fn aggregate_metrics_window(
+    async fn aggregate_metrics_window(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<MetricBucketRecord, CoreError> {
-        self.inner
-            .aggregate_metrics_window(from, to)
-            .map_err(Into::into)
+        // `SqliteStorage` has no sync inherent twin for this method — the async
+        // `DashboardStreamingStorage` trait method (ADR-026 PR-9) resolves
+        // unambiguously on the inner `Arc<SqliteStorage>`.
+        self.inner.aggregate_metrics_window(from, to).await
     }
 
-    fn fetch_dashboard_event_source(
+    async fn fetch_dashboard_event_source(
         &self,
         signal: &DashboardEventSignal,
     ) -> Result<DashboardEventRecord, CoreError> {
-        self.inner
-            .fetch_dashboard_event_source(signal)
-            .map_err(Into::into)
+        self.inner.fetch_dashboard_event_source(signal).await
     }
 }
 

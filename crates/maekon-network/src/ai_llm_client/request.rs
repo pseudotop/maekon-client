@@ -1,8 +1,7 @@
-use std::sync::atomic::Ordering;
-
 use super::parsers;
 use super::RemoteLlmProvider;
 use crate::circuit_breaker::CircuitState;
+use crate::provider_error_body::provider_error_message;
 use crate::resilience::{classify_for_breaker, BreakerSignal};
 use maekon_api_contracts::provider_specs::ProviderAuthScheme;
 use maekon_api_contracts::provider_specs::ProviderRequestShape;
@@ -64,7 +63,10 @@ impl RemoteLlmProvider {
         system_prompt: &str,
         user_prompt: &str,
     ) -> serde_json::Value {
-        serde_json::json!({ "model": self.model, "instructions": system_prompt, "input": user_prompt, "max_output_tokens": 512 })
+        // Decision 4: `max_output_tokens` defaults to 512 for all provider paths;
+        // overridden to 2048 for the Ollama intent path via `with_token_budget(2048)`
+        // so qwen3 thinking tokens do not exhaust the budget before the JSON output.
+        serde_json::json!({ "model": self.model, "instructions": system_prompt, "input": user_prompt, "max_output_tokens": self.max_output_tokens })
     }
     pub(super) fn build_chat_body(
         &self,
@@ -174,8 +176,8 @@ impl RemoteLlmProvider {
             BreakerSignal::Neutral => {}
         }
         let response = send_result.map_err(|e| {
-            if let Some(ref flag) = self.last_request_ok {
-                flag.store(false, Ordering::Relaxed);
+            if let Some(ref handle) = self.call_health {
+                handle.record_failed();
             }
             // Iter-90: split timeout vs generic per canonical pattern
             // (cloud_stt.rs:107, http_client.rs map_reqwest_error).
@@ -208,15 +210,11 @@ impl RemoteLlmProvider {
             }
         })?;
         if !status.is_success() {
-            if let Some(ref flag) = self.last_request_ok {
-                flag.store(false, Ordering::Relaxed);
+            if let Some(ref handle) = self.call_health {
+                handle.record_failed();
             }
             warn!(status = %status, "LLM API error response");
-            let message = format!(
-                "LLM API error ({}): {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            );
+            let message = provider_error_message("LLM API", status, Some(&body));
             // Semantic status mapping per iter-55 / iter-56 pattern — give
             // upstream LLM failures specific wire codes so telemetry can
             // distinguish timeouts (transient, retryable) from auth (permanent)
@@ -267,10 +265,15 @@ impl RemoteLlmProvider {
                 });
             }
         };
-        if let Some(ref flag) = self.last_request_ok {
-            flag.store(true, Ordering::Relaxed);
+        if let Some(ref handle) = self.call_health {
+            handle.record_ok();
         }
-        debug!(action_type = %action.action_type, target = ?action.target_text, confidence = action.confidence, "LLM intent interpretation completed");
+        debug!(
+            action_type = %action.action_type,
+            has_target_text = action.target_text.is_some(),
+            confidence = action.confidence,
+            "LLM intent interpretation completed"
+        );
         Ok(action)
     }
 }

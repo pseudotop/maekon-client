@@ -2,6 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum UpdatePhase {
     Idle,
     Checking,
@@ -23,6 +24,7 @@ pub enum UpdatePhase {
 /// rollback. Additive enum — new reasons can be appended without breaking
 /// existing consumers (snake_case serde).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RollbackReason {
     /// D11 health probe counted two consecutive failed boots without a
@@ -34,6 +36,7 @@ pub enum RollbackReason {
 /// `UpdateStatus` when the phase transitions to `UpdatePhase::RolledBack`.
 /// All timestamp fields are RFC3339 UTC strings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RollbackInfo {
     pub from_version: String,
     /// RFC3339 UTC `published_at` of the rolled-from release (if known).
@@ -49,6 +52,7 @@ pub struct RollbackInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PendingUpdateInfo {
     pub current_version: String,
     pub latest_version: String,
@@ -65,6 +69,7 @@ pub struct PendingUpdateInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DownloadProgress {
     pub bytes_downloaded: u64,
     pub total_bytes: u64,
@@ -72,6 +77,7 @@ pub struct DownloadProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateStatus {
     pub enabled: bool,
     pub auto_install: bool,
@@ -113,6 +119,7 @@ impl UpdateStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum UpdateAction {
     Approve,
     Defer,
@@ -120,11 +127,13 @@ pub enum UpdateAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateActionRequest {
     pub action: UpdateAction,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateActionResponse {
     pub accepted: bool,
     pub status: UpdateStatus,

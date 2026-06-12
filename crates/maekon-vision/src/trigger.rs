@@ -94,6 +94,13 @@ impl SmartCaptureTrigger {
             None => false,
         }
     }
+
+    fn bypasses_throttle(trigger_type: &TriggerType) -> bool {
+        matches!(
+            trigger_type,
+            TriggerType::ContextSwitch | TriggerType::WindowChange
+        )
+    }
 }
 
 impl CaptureTrigger for SmartCaptureTrigger {
@@ -116,7 +123,10 @@ impl CaptureTrigger for SmartCaptureTrigger {
         let input_boost = (event.input_activity_level * 0.3).min(0.3);
         let importance = (base_importance + input_boost).min(1.0);
 
-        if importance < 0.8 && Self::is_throttled(&state.last_capture, now, self.throttle_ms) {
+        if !Self::bypasses_throttle(&trigger_type)
+            && importance < 0.8
+            && Self::is_throttled(&state.last_capture, now, self.throttle_ms)
+        {
             debug!(
                 "capture: {:?} (in progress {:.1})",
                 trigger_type, importance
@@ -139,9 +149,12 @@ impl CaptureTrigger for SmartCaptureTrigger {
             importance,
             app_name: event.app_name.clone(),
             window_title: event.window_title.clone(),
+            monitor_id: None,
+            app_bundle_id: None,
             // Window bounds are not available from ContextEvent; the caller
             // sets this field after receiving the CaptureRequest.
             window_bounds: None,
+            screen_scale_factor: None,
         })
     }
 }
@@ -321,5 +334,37 @@ mod tests {
             second.is_none(),
             "second call within the throttle window for a low-importance event must return None"
         );
+    }
+
+    #[test]
+    fn crt_prv_cap_001_active_window_change_bypasses_throttle() {
+        let trigger = SmartCaptureTrigger::new(10_000);
+
+        let t0 = Utc::now();
+        let first = ContextEvent {
+            app_name: "Code".to_string(),
+            window_title: "main.rs".to_string(),
+            timestamp: t0,
+            ..Default::default()
+        };
+        assert!(trigger.should_capture(&first).is_some());
+
+        let second = ContextEvent {
+            app_name: "Safari".to_string(),
+            window_title: "Research".to_string(),
+            prev_app_name: Some("Code".to_string()),
+            timestamp: t0 + chrono::Duration::milliseconds(500),
+            ..Default::default()
+        };
+        let request = trigger.should_capture(&second);
+
+        assert!(
+            request.is_some(),
+            "CAP-001: active-window changes must trigger capture even inside the throttle window"
+        );
+        let request = request.unwrap();
+        assert_eq!(request.trigger_type, "ContextSwitch");
+        assert_eq!(request.app_name, "Safari");
+        assert_eq!(request.window_title, "Research");
     }
 }

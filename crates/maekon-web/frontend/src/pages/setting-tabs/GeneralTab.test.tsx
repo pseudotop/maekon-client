@@ -141,6 +141,29 @@ describe('GeneralTab — Startup section', () => {
     })
   })
 
+  it('toggle click invokes disable_autostart when turning off', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'is_autostart_enabled') return Promise.resolve(true)
+      if (cmd === 'autostart_capabilities') return Promise.resolve({ supported: true, environment: 'mac_os' })
+      if (cmd === 'disable_autostart') return Promise.resolve(undefined)
+      return Promise.resolve(undefined)
+    })
+
+    renderWithProviders(<StartupSection />)
+
+    const toggle = await screen.findByRole('checkbox', { name: /Start Maekon at login/i })
+    await waitFor(() => expect(toggle).toBeChecked())
+    await waitFor(() => expect(toggle).not.toBeDisabled())
+
+    await act(async () => {
+      fireEvent.click(toggle)
+    })
+
+    await waitFor(() => {
+      expect(mockInvoke.mock.calls.some((call) => call[0] === 'disable_autostart')).toBe(true)
+    })
+  })
+
   it('toggle error re-fetches OS state via is_autostart_enabled', async () => {
     let queryCallCount = 0
     mockInvoke.mockImplementation((cmd: string) => {

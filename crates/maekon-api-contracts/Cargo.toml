@@ -14,3 +14,22 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 maekon-core = { workspace = true }
+# Optional: only pulled in by the `schema` feature used by the schema-emit
+# binary (`cargo run --bin emit-openapi-schemas --features schema`). The 14
+# client crates and the binary stay schemars-free in normal builds. Pinned to
+# the locked 1.x major already present in the workspace lockfile.
+# `chrono04` so the derived schemas cover the `chrono::DateTime<Utc>` fields
+# used by the integration contracts (RFC 3339 string schema).
+schemars = { version = "1", optional = true, features = ["chrono04"] }
+
+[features]
+# Enables `#[derive(schemars::JsonSchema)]` on the contract DTOs so the
+# OpenAPI generator can splice real body schemas. OFF by default; cross-crate
+# `maekon-core` field types are contained as opaque objects (see
+# `schema_support`) so the derive never recurses into `maekon-core`.
+schema = ["dep:schemars"]
+
+[[bin]]
+name = "emit-openapi-schemas"
+path = "src/bin/emit_openapi_schemas.rs"
+required-features = ["schema"]

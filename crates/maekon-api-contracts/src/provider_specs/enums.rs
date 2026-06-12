@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProviderTransportKind {
     Llm,
     Ocr,
@@ -6,6 +7,7 @@ pub enum ProviderTransportKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProviderAuthScheme {
     None,
     Bearer,
@@ -15,6 +17,7 @@ pub enum ProviderAuthScheme {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProviderRequestShape {
     AnthropicMessages,
     AnthropicVisionMessages,
@@ -27,18 +30,21 @@ pub enum ProviderRequestShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ModelCatalogResponseShape {
     StandardDataOrModels,
     GoogleModels,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SurfaceCapabilityKind {
     Llm,
     Ocr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SurfaceModelCapabilityKind {
     Llm,
     Ocr,
@@ -56,6 +62,7 @@ impl From<SurfaceCapabilityKind> for SurfaceModelCapabilityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SurfaceExecutionKind {
     DirectHttp,
     ManagedHttp,
@@ -63,6 +70,7 @@ pub enum SurfaceExecutionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SurfacePlacementKind {
     ProviderHosted,
     SelfHosted,
@@ -71,6 +79,7 @@ pub enum SurfacePlacementKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SurfaceStability {
     Ga,
     Preview,
@@ -79,6 +88,7 @@ pub enum SurfaceStability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ModelCatalogStrategy {
     None,
     HttpModelsEndpoint,
@@ -86,20 +96,39 @@ pub enum ModelCatalogStrategy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SubprocessInvocationMode {
     CodexExecJson,
     ClaudePrintJson,
     GeminiCliPrompt,
+    ManualChatGui,
+    /// Codex `app-server` JSON-RPC 2.0 transport (E21 #4864). The headless
+    /// runtime adapter lands in #4865; until then this mode is recognized but
+    /// has no runtime (treated like `ManualChatGui` — `runtime_supported=false`).
+    CodexAppServer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SubprocessAuthProbeMode {
     None,
     CodexLoginStatusText,
     ClaudeAuthStatusJson,
+    /// Codex `app-server` structured auth status via the read-only `account/read`
+    /// JSON-RPC method (E21 #4868 Part 1). This replaces the fragile
+    /// `codex login status` stdout text grep for the app-server surface only; the
+    /// exec fallback surface keeps [`SubprocessAuthProbeMode::CodexLoginStatusText`].
+    ///
+    /// `account/read` is READ-ONLY (ADR-025-blessed). It never reads, persists,
+    /// relays, or injects the ChatGPT OAuth token; the CLI owns OAuth. The
+    /// token-injection path (`account/login/start`, `chatgptAuthTokens`) is
+    /// legal-gated (ADR-025 Decision 4 + #4868 B4/R5) and explicitly NOT part of
+    /// this mode.
+    CodexAccountReadJson,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderUnknownModelPolicy {
     Allow,

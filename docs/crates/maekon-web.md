@@ -39,7 +39,7 @@ maekon-web/
     │   ├── components/ # UI components
     │   ├── api/        # API client (incl. desktop.ts with IpcError TS type guard per ADR-019)
     │   ├── hooks/      # React hooks
-    │   ├── i18n/       # i18n translations (en/ko) incl. wire-errors.{en,ko}.json (41 codes)
+    │   ├── i18n/       # i18n translations (en/ko) incl. wire-errors.{en,ko}.json (42 codes)
     │   └── styles/     # Design tokens
     ├── e2e/            # Playwright E2E tests
     └── # Biome (lint), Vitest (unit), Playwright (e2e), Storybook (review catalog)

@@ -117,14 +117,24 @@ pub async fn get_analysis_status(
 /// Reload the embedding model at runtime without restarting the app.
 ///
 /// Returns the new model version on success (monotonically increasing u64).
+///
+/// F-RR-C24-01: `ReloadableModel::reload` is a synchronous blocking call that
+/// may download an ONNX model file (several seconds) and acquire
+/// `std::sync::Mutex` locks.  Wrapping in `spawn_blocking` moves the work onto
+/// a dedicated blocking thread, preventing it from stalling the async runtime.
+/// Reference pattern: `feature_capabilities.rs:72` (`spawn_blocking(probe_known_cli_surfaces)`).
 #[command]
 pub async fn reload_embedding_model(
     state: tauri::State<'_, EmbeddingRuntimeState>,
 ) -> Result<u64, IpcError> {
     let reloadable = state
         .reloadable()
-        .ok_or_else(|| IpcError::new("service.unavailable", "Embedding provider not available"))?;
-    reloadable.reload().map_err(IpcError::from)
+        .ok_or_else(|| IpcError::new("service.unavailable", "Embedding provider not available"))?
+        .clone();
+    tokio::task::spawn_blocking(move || reloadable.reload())
+        .await
+        .map_err(|join_err| IpcError::new("internal.generic", join_err.to_string()))?
+        .map_err(IpcError::from)
 }
 
 /// Health status of the analysis LLM provider fallback chain.
@@ -204,9 +214,53 @@ mod tests {
         assert!(err.contains("throttle_secs"), "got: {err}");
     }
 
+    /// F-RR-C24-01: `reload_embedding_model` must execute `ReloadableModel::reload`
+    /// on a blocking thread via `spawn_blocking`.  This test verifies the
+    /// `spawn_blocking` path completes and returns the reload result correctly
+    /// using a trivial in-process impl (no ONNX download involved).
+    #[tokio::test]
+    async fn reload_embedding_model_spawn_blocking_returns_version() {
+        use maekon_core::error::CoreError;
+        use maekon_core::ports::embedding_provider::ReloadableModel;
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+
+        struct MockReloadable {
+            version: AtomicU64,
+        }
+        impl ReloadableModel for MockReloadable {
+            fn model_version(&self) -> u64 {
+                self.version.load(AtomicOrdering::SeqCst)
+            }
+            fn reload(&self) -> Result<u64, CoreError> {
+                let v = self.version.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                Ok(v)
+            }
+        }
+
+        let reloadable: Arc<dyn ReloadableModel> = Arc::new(MockReloadable {
+            version: AtomicU64::new(0),
+        });
+
+        // Exercise the spawn_blocking path directly (not via Tauri State).
+        let result = tokio::task::spawn_blocking({
+            let r = reloadable.clone();
+            move || r.reload()
+        })
+        .await
+        .expect("spawn_blocking join must not panic")
+        .expect("reload must succeed");
+
+        assert_eq!(result, 1, "F-RR-C24-01: first reload must return version 1");
+    }
+
     #[test]
     fn validate_analysis_accepts_valid_defaults() {
+        // AnalysisConfig::default() must satisfy all validate_analysis_config
+        // checks: 0.0<=min_confidence<=1.0, max_suggestions>=1,
+        // throttle_secs>=1, interval_secs>=10, full_interval_secs>=interval_secs.
         let cfg = default_analysis();
-        assert!(validate_analysis_config(&cfg).is_ok());
+        validate_analysis_config(&cfg)
+            .expect("default AnalysisConfig must pass all validate_analysis_config checks");
     }
 }

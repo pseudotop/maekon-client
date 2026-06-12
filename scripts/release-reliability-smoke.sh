@@ -211,6 +211,8 @@ if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
 fi
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-release-smoke.XXXXXX")"
+touch "$TMP_DIR/.maekon-tmp-owned"
+printf '%s\n' "$$" > "$TMP_DIR/.maekon-tmp-owner-pid"
 SERVER_LOG="$TMP_DIR/http.log"
 LOG_DIR="${MAEKON_SMOKE_LOG_DIR:-$TMP_DIR}"
 if [[ -z "$INSTALL_DIR" ]]; then
@@ -229,6 +231,8 @@ cleanup() {
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 PYTHON_CMD=""
 if command -v python3 >/dev/null 2>&1; then
@@ -269,6 +273,8 @@ info "Running installer against local base URL"
 INSTALL_ARGS=(--install-dir "$INSTALL_DIR" --base-url "$BASE_URL")
 if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
   INSTALL_ARGS+=(--require-signature)
+else
+  INSTALL_ARGS+=(--allow-unsigned)
 fi
 bash "$INSTALL_SCRIPT" "${INSTALL_ARGS[@]}"
 

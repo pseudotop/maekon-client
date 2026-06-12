@@ -4,7 +4,7 @@
 //! of truth (via `src-tauri/src/autostart.rs`). This struct stores ONLY
 //! onboarding-related state.
 //!
-//! See spec: docs/superpowers/specs/2026-04-25-phase9-pr-b-autostart-ipc-foundation-design.md §5.3
+//! Public behavior: docs/guides/autostart.md.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,16 @@ pub enum AutostartPromptState {
 
     /// "Don't ask again" or already enabled — never prompt.
     Dismissed,
+}
+
+impl std::fmt::Display for AutostartPromptState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => f.write_str("pending"),
+            Self::Snoozed { .. } => f.write_str("snoozed"),
+            Self::Dismissed => f.write_str("dismissed"),
+        }
+    }
 }
 
 impl Default for AutostartConfig {
@@ -171,5 +181,18 @@ mod tests {
         // Simulate deserialization from old config without `autostart` field
         let parsed: AutostartConfig = serde_json::from_str(r#"{}"#).unwrap_or_default();
         assert_eq!(parsed, AutostartConfig::default());
+    }
+
+    #[test]
+    fn autostart_prompt_state_display_matches_serde_kind_tag() {
+        assert_eq!(AutostartPromptState::Pending.to_string(), "pending");
+        assert_eq!(
+            AutostartPromptState::Snoozed {
+                remind_after_session_count: 3
+            }
+            .to_string(),
+            "snoozed"
+        );
+        assert_eq!(AutostartPromptState::Dismissed.to_string(), "dismissed");
     }
 }

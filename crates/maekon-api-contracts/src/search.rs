@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TagInfo {
     pub id: i64,
     pub name: String,
@@ -8,6 +9,7 @@ pub struct TagInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SearchQuery {
     #[serde(default)]
     pub q: String,
@@ -23,6 +25,7 @@ fn default_search_type() -> String {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SearchResult {
     pub result_type: String,
     pub id: String,
@@ -37,6 +40,7 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SearchResponse {
     pub query: String,
     pub total: u64,
@@ -47,6 +51,7 @@ pub struct SearchResponse {
 
 /// Query parameters for semantic (vector) search.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SemanticSearchQuery {
     /// Natural language query text.
     pub q: String,
@@ -58,6 +63,7 @@ pub struct SemanticSearchQuery {
 
 /// A single semantic search result, enriched with segment metadata.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SemanticSearchResult {
     pub segment_id: String,
     pub content_type: String,

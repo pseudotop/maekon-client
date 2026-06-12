@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpen,
   Calendar,
+  CalendarRange,
   ClipboardList,
   Clock,
   FileText,
@@ -65,6 +66,7 @@ const AuditLayout = lazy(() => import('../pages/audit/AuditLayout'))
 
 // --- Lazy imports: Leaf pages (no children) ---
 const DashboardDay = lazy(() => import('../pages/DashboardDay'))
+const DashboardWeek = lazy(() => import('../pages/DashboardWeek'))
 const Search = lazy(() => import('../pages/Search'))
 const Chat = lazy(() => import('../pages/chat'))
 const Policies = lazy(() => import('../pages/policies'))
@@ -164,6 +166,13 @@ export const routeTree: RouteNode[] = [
     labelKey: 'nav.dashboardDay',
     icon: Calendar,
     component: DashboardDay,
+    group: 'monitor',
+  },
+  {
+    path: '/week',
+    labelKey: 'nav.dashboardWeek',
+    icon: CalendarRange,
+    component: DashboardWeek,
     group: 'monitor',
   },
   {

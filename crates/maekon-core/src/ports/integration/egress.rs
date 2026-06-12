@@ -23,7 +23,8 @@ use std::time::Duration;
 use crate::error::CoreError;
 use crate::models::integration::{
     InsightPacket, IntegrationAckCursor, IntegrationEgressDisposition, IntegrationEnvelope,
-    IntegrationInsightAuditRecord, IntegrationOutboundPayload, QueuedIntegrationEgressMessage,
+    IntegrationInsightAuditRecord, IntegrationOutboundPayload, IntegrationPromptReceipt,
+    QueuedIntegrationEgressMessage,
 };
 
 #[async_trait]
@@ -130,6 +131,15 @@ pub trait IntegrationEgressPolicyPort: Send + Sync {
         envelope: &IntegrationEnvelope,
         packet: &InsightPacket,
     ) -> Result<IntegrationEgressDecision, CoreError>;
+
+    /// Evaluate whether a proactive prompt receipt may leave the device.
+    async fn authorize_prompt_receipt(
+        &self,
+        _envelope: &IntegrationEnvelope,
+        _receipt: &IntegrationPromptReceipt,
+    ) -> Result<IntegrationEgressDecision, CoreError> {
+        Ok(IntegrationEgressDecision::allow())
+    }
 }
 
 #[async_trait]

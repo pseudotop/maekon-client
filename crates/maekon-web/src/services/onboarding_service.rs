@@ -40,14 +40,22 @@ fn recommended_presets() -> Vec<WorkflowPreset> {
 }
 
 fn dashboard_url_from_context(context: &ConfigWebContext) -> String {
-    if let Some(config_manager) = context.config_manager.as_ref() {
-        let config = config_manager.get();
-        if config.web.allow_external {
-            return format!("http://0.0.0.0:{}", config.web.port);
-        }
-        return format!("http://127.0.0.1:{}", config.web.port);
-    }
-    format!("http://127.0.0.1:{}", maekon_core::config::DEFAULT_WEB_PORT)
+    let port = context
+        .config_manager
+        .as_ref()
+        .map(|manager| manager.get().web.port)
+        .unwrap_or(maekon_core::config::DEFAULT_WEB_PORT);
+    dashboard_url(port)
+}
+
+/// Display URL for the local dashboard — always loopback (#5593).
+///
+/// `0.0.0.0` is a bind address, not a connectable URL, so it must never be
+/// rendered for users even when `web.allow_external` is set: in that mode the
+/// listener may also accept LAN connections, but the URL we show has to work
+/// from the local machine, and `http://127.0.0.1:{port}` always does.
+fn dashboard_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
 }
 
 fn quickstart_checklist() -> Vec<QuickstartStepDto> {
@@ -103,5 +111,23 @@ mod tests {
         let ids: Vec<String> = presets.into_iter().map(|preset| preset.id).collect();
         assert!(ids.iter().any(|id| id == "daily-priority-sync"));
         assert!(ids.iter().any(|id| id == "deep-work-start"));
+    }
+
+    #[test]
+    fn dashboard_url_is_always_loopback() {
+        assert_eq!(dashboard_url(10090), "http://127.0.0.1:10090");
+        // 0.0.0.0 is a bind address, never a connectable display URL (#5593).
+        assert!(!dashboard_url(8080).contains("0.0.0.0"));
+    }
+
+    #[test]
+    fn dashboard_url_without_config_manager_uses_default_port() {
+        let ctx = ConfigWebContext {
+            config_manager: None,
+        };
+        assert_eq!(
+            dashboard_url_from_context(&ctx),
+            format!("http://127.0.0.1:{}", maekon_core::config::DEFAULT_WEB_PORT)
+        );
     }
 }

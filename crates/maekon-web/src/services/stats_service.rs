@@ -38,17 +38,18 @@ impl StatsQueryService {
             .sum();
 
         let events = self.ctx.storage.get_events(from, to, 100000).await?;
-        let frames = self.ctx.storage.get_frames(from, to, 100000)?;
+        let frames = self.ctx.storage.get_frames(from, to, 100000).await?;
         let events_logged = events.len() as u64;
         let frames_captured = frames.len() as u64;
 
         let mut app_stats = build_activity_counts(&events, &frames);
-        let session_app_durations = app_durations_for_range(&self.ctx, from, to);
+        let session_app_durations = app_durations_for_range(&self.ctx, from, to).await;
         let mut top_apps = build_app_usage_entries(&mut app_stats, &session_app_durations);
         top_apps.sort_by_key(|a| std::cmp::Reverse(a.duration_secs));
         top_apps.truncate(10);
 
-        let total_active_secs = total_active_secs_for_range(&self.ctx, from, to, events_logged);
+        let total_active_secs =
+            total_active_secs_for_range(&self.ctx, from, to, events_logged).await;
 
         Ok(assemble_daily_summary(DailySummaryInput {
             date,
@@ -65,10 +66,10 @@ impl StatsQueryService {
     pub async fn get_app_usage(&self, params: &DateQuery) -> Result<AppUsageResponse, ApiError> {
         let (date, from, to) = resolve_day_range(params)?;
         let events = self.ctx.storage.get_events(from, to, 100000).await?;
-        let frames = self.ctx.storage.get_frames(from, to, 100000)?;
+        let frames = self.ctx.storage.get_frames(from, to, 100000).await?;
 
         let mut app_stats = build_activity_counts(&events, &frames);
-        let session_app_durations = app_durations_for_range(&self.ctx, from, to);
+        let session_app_durations = app_durations_for_range(&self.ctx, from, to).await;
         let mut apps = build_app_usage_entries(&mut app_stats, &session_app_durations);
         apps.sort_by_key(|a| std::cmp::Reverse(a.duration_secs));
 
@@ -81,7 +82,7 @@ impl StatsQueryService {
         let from = to - Duration::days(days);
 
         let events = self.ctx.storage.get_events(from, to, 100000).await?;
-        let frames = self.ctx.storage.get_frames(from, to, 100000)?;
+        let frames = self.ctx.storage.get_frames(from, to, 100000).await?;
 
         let mut grid: [[u32; 24]; 7] = [[0; 24]; 7];
 

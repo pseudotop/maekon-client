@@ -4,11 +4,11 @@
 //! exercises each RPC, and verifies the wire protocol + service
 //! registration + port wiring end-to-end.
 //!
-//! Feature-gated by `grpc-dashboard` — the entire file compiles away when
-//! the feature is off (matches the production gating in
-//! `maekon-web::grpc`).
+//! Feature-gated by `grpc-dashboard,test-support` — the entire file compiles
+//! away unless the production gRPC surface and its mock support are both
+//! enabled.
 
-#![cfg(feature = "grpc-dashboard")]
+#![cfg(all(feature = "grpc-dashboard", feature = "test-support"))]
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -1647,6 +1647,7 @@ mod subscribe_events_tests {
                 llm_source: "local".to_string(),
                 ocr_fallback_reason: Some("error at secret@example.com".to_string()),
                 llm_fallback_reason: None,
+                llm_healthy: None,
             }),
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
             streaming_enabled: true,

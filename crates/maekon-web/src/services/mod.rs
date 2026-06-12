@@ -32,6 +32,7 @@ pub(crate) mod onboarding_assembler;
 pub mod onboarding_service;
 pub(crate) mod processes_assembler;
 pub mod processes_service;
+pub mod provider_cli_diagnostics;
 pub(crate) mod reports_assembler;
 pub(crate) mod reports_query_support;
 pub mod reports_service;

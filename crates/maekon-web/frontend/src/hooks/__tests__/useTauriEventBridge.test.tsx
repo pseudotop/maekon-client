@@ -10,6 +10,7 @@ type EventCallback = (event: { payload?: unknown }) => void
 type RenderBridgeHarnessOptions = {
   expectedListenCalls?: number
   listenImpl?: (eventName: string, callback: EventCallback) => Promise<() => void>
+  webviewListenImpl?: (eventName: string, callback: EventCallback) => Promise<() => void>
 }
 
 // 6 global listen calls (navigate, tray-approve-update, tray-defer-update,
@@ -18,7 +19,11 @@ type RenderBridgeHarnessOptions = {
 // `tray-toggle-automation` and `automation:quick-access` events were folded
 // into the single `navigate` event after the tray IPC unification — tray.rs
 // now emits plain `navigate` with a deep-link path for those menu items.
-async function renderBridgeHarness({ expectedListenCalls = 6, listenImpl }: RenderBridgeHarnessOptions = {}) {
+async function renderBridgeHarness({
+  expectedListenCalls = 6,
+  listenImpl,
+  webviewListenImpl,
+}: RenderBridgeHarnessOptions = {}) {
   const listeners = new Map<string, EventCallback>()
   const unlistenCallbacks: Array<ReturnType<typeof vi.fn>> = []
   const defaultListenImpl = async (eventName: string, callback: EventCallback) => {
@@ -32,7 +37,7 @@ async function renderBridgeHarness({ expectedListenCalls = 6, listenImpl }: Rend
   const listen = vi.fn(listenImpl ?? defaultListenImpl)
   // Webview-scoped listener (used for frontend-recovery so emit_to filters
   // delivery on the Rust side). Same shape as global listen for the test.
-  const webviewListen = vi.fn(listenImpl ?? defaultListenImpl)
+  const webviewListen = vi.fn(webviewListenImpl ?? listenImpl ?? defaultListenImpl)
 
   vi.doMock('../../utils/platform', () => ({
     IS_TAURI: true,
@@ -277,6 +282,38 @@ describe('useTauriEventBridge', () => {
     expect(listeners.has('frontend-recovery')).toBe(true)
     // Fallback warning was logged
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('webview API unavailable'), expect.any(Error))
+
+    consoleWarn.mockRestore()
+  })
+
+  it('preserves the webview receiver when registering scoped recovery listeners', async () => {
+    let observedReceiver: unknown = null
+    const { webviewListen } = await renderBridgeHarness({
+      webviewListenImpl: async function (this: unknown) {
+        observedReceiver = this
+        return vi.fn()
+      },
+    })
+
+    expect(webviewListen).toHaveBeenCalledTimes(1)
+    expect(observedReceiver).toEqual(expect.objectContaining({ listen: webviewListen }))
+  })
+
+  it('falls back to global listen when the webview-scoped listener rejects', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const webviewFailure = new TypeError("Cannot read properties of undefined (reading '_handleTauriEvent')")
+    const { listeners, listen, webviewListen, unlistenCallbacks } = await renderBridgeHarness({
+      expectedListenCalls: 7,
+      webviewListenImpl: async () => {
+        throw webviewFailure
+      },
+    })
+
+    expect(webviewListen).toHaveBeenCalledTimes(1)
+    expect(listen).toHaveBeenCalledTimes(7)
+    expect(listeners.has('frontend-recovery')).toBe(true)
+    expect(unlistenCallbacks).toHaveLength(7)
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('webview-scoped listen failed'), webviewFailure)
 
     consoleWarn.mockRestore()
   })

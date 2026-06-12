@@ -4,7 +4,7 @@
 //! thresholds (q25, q50, q75). Produces a compact `BinaryCode` (96 bytes for 384 dims)
 //! suitable for fast Hamming distance pre-filtering before INT8 re-ranking.
 //!
-//! See: docs/superpowers/specs/2026-03-19-p3-vector-phase-c-advanced-compression-design.md
+//! Public architecture context: docs/architecture/ADR-013-llm-summary-vector-rag.md.
 
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
@@ -214,15 +214,21 @@ mod tests {
     #[test]
     fn threshold_computation_single_vector() {
         let vectors = vec![vec![1.0, 2.0, 3.0]];
-        let result = BinaryQuantizer::compute_thresholds(&vectors, 3);
-        assert!(result.is_err());
+        let err = BinaryQuantizer::compute_thresholds(&vectors, 3).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "fewer than 2 vectors must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
     fn threshold_computation_empty() {
         let vectors: Vec<Vec<f32>> = vec![];
-        let result = BinaryQuantizer::compute_thresholds(&vectors, 3);
-        assert!(result.is_err());
+        let err = BinaryQuantizer::compute_thresholds(&vectors, 3).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "empty vectors must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]
@@ -267,8 +273,11 @@ mod tests {
             q75: vec![3.0],
             dimensions: 1,
         };
-        let result = BinaryQuantizer::encode(&[1.0, 2.0], &thresholds);
-        assert!(result.is_err());
+        let err = BinaryQuantizer::encode(&[1.0, 2.0], &thresholds).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "dimension mismatch in encode must produce InvalidArguments, got: {err:?}"
+        );
     }
 
     #[test]

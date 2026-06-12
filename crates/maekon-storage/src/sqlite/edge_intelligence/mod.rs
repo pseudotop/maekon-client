@@ -10,4 +10,5 @@ mod tests;
 // Re-export pub(crate) helpers for sibling modules
 // (events.rs, calibration_store_impl.rs, integration_query_impl.rs)
 pub(crate) use suggestions::map_local_suggestion_row;
+pub(crate) use suggestions::suggestion_stamp;
 pub(crate) use work_sessions::enum_to_sql_str;

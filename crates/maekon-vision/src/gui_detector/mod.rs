@@ -4,7 +4,7 @@
 //! proximity fallback, PII filtering, and resolution-aware thresholds.
 //!
 //! Integration into the monitor loop pipeline via `gui_pipeline.rs`
-//! (see docs/superpowers/specs/2026-03-19-gui-activity-intelligence-design.md).
+//! (public crate guide: docs/crates/maekon-vision.md).
 
 mod correlation;
 mod inference;

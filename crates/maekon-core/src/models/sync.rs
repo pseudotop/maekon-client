@@ -25,6 +25,27 @@ pub enum ChangeSetKind {
 /// In Phase 3a-1 the row types are opaque `serde_json::Value`
 /// placeholders; Phase 3a-2 will replace them with typed row structs
 /// when the ChangeExtractor impl is built.
+/// A content-free erasure skeleton (GDPR Art.17 cross-device, epic #5174): one
+/// deleted synced-table row's id + the erasure HLC. Carries NO user content over the
+/// wire (privacy P5). Mirrors a `sync_tombstones` row (V38, see migration). The fields
+/// map 1:1 to the table columns; `hlc_wall_ms`/`hlc_counter` match `Hlc` so the S3
+/// suppression compare is lexicographically identical to `Hlc`'s `Ord`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tombstone {
+    /// One of the 6 synced tables (validated against the allowlist before use in SQL).
+    pub table_name: String,
+    /// The deleted row's primary key (id / override_id / suggestion_id).
+    pub row_id: String,
+    /// Device that authored the erased row (origin-scoping; preserved across the wire).
+    pub origin_device_id: String,
+    /// Erasure HLC wall-clock ms (matches `Hlc::wall_ms`).
+    pub hlc_wall_ms: u64,
+    /// Erasure HLC counter (matches `Hlc::counter`).
+    pub hlc_counter: u32,
+    /// ISO-8601 erasure timestamp.
+    pub deleted_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChangeSet {
@@ -39,6 +60,10 @@ pub struct ChangeSet {
     pub suggestions: Vec<serde_json::Value>,
     pub param_snapshots: Vec<serde_json::Value>,
     pub preferences: Vec<serde_json::Value>,
+    /// GDPR Art.17 row-level erasure tombstones (#5174 S2/#5179). Content-free skeletons
+    /// that flow through the normal sync stream so offline peers converge. The struct-level
+    /// `#[serde(default)]` above keeps pre-upgrade peers decoding this as empty (P4 compat).
+    pub tombstones: Vec<Tombstone>,
 }
 
 impl ChangeSet {
@@ -51,6 +76,7 @@ impl ChangeSet {
             && self.suggestions.is_empty()
             && self.param_snapshots.is_empty()
             && self.preferences.is_empty()
+            && self.tombstones.is_empty()
     }
 
     /// Total number of rows across all tables.
@@ -62,6 +88,7 @@ impl ChangeSet {
             + self.suggestions.len()
             + self.param_snapshots.len()
             + self.preferences.len()
+            + self.tombstones.len()
     }
 }
 

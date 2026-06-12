@@ -27,14 +27,25 @@ function buildStreakMap(data: HabitStreak[]) {
   return map
 }
 
-/** Get the last N days as YYYY-MM-DD strings, most recent first. */
+/** Format a Date as a LOCAL YYYY-MM-DD key. The backend writer stamps rows
+ *  with the machine's local date (#5669), so the columns must use local dates
+ *  too — `toISOString()` is UTC and shifts today's row into the wrong column
+ *  (or off the grid) for non-UTC users between local and UTC midnight. */
+function toLocalDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** Get the last N days as local YYYY-MM-DD strings, most recent first. */
 function lastNDays(n: number): string[] {
   const days: string[] = []
   const now = new Date()
   for (let i = 0; i < n; i++) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
-    days.push(d.toISOString().slice(0, 10))
+    days.push(toLocalDateKey(d))
   }
   return days
 }

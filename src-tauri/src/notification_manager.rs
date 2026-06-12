@@ -1,23 +1,103 @@
 use chrono::{DateTime, Utc};
 use maekon_core::config::NotificationConfig;
+use maekon_core::models::suggestion::{Priority, Suggestion};
 use maekon_core::ports::notifier::DesktopNotifier;
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
+
+pub const NOTIFICATION_NAVIGATION_EVENT: &str = "navigate";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotificationActivationOutcome {
+    pub event_name: &'static str,
+    pub route: String,
+    pub focus_main_window: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationActivationError {
+    MissingRoute,
+    InvalidRoute,
+}
+
+impl NotificationActivationError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::MissingRoute => "notification activation route is required",
+            Self::InvalidRoute => "notification activation route must be an internal app path",
+        }
+    }
+}
+
+pub fn notification_activation_outcome_from_route(
+    route: Option<&str>,
+) -> Result<NotificationActivationOutcome, NotificationActivationError> {
+    let route = route
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(NotificationActivationError::MissingRoute)?;
+
+    if !is_safe_notification_route(route) {
+        return Err(NotificationActivationError::InvalidRoute);
+    }
+
+    Ok(NotificationActivationOutcome {
+        event_name: NOTIFICATION_NAVIGATION_EVENT,
+        route: route.to_string(),
+        focus_main_window: true,
+    })
+}
+
+fn is_safe_notification_route(route: &str) -> bool {
+    route.len() <= 256
+        && route.starts_with('/')
+        && !route.starts_with("//")
+        && !route.contains("://")
+        && !route.contains('\\')
+        && route
+            .chars()
+            .all(|ch| !ch.is_control() && !ch.is_whitespace())
+}
 
 #[derive(Debug, Default)]
 struct NotificationState {
     last_idle_notification: Option<DateTime<Utc>>,
     last_long_session_notification: Option<DateTime<Utc>>,
     last_high_usage_notification: Option<DateTime<Utc>>,
+    last_suggestion_notification: Option<DateTime<Utc>>,
     session_start: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
 }
+
+/// Cooldown between suggestion toasts (#5694). Matches the high-usage 300s
+/// pattern and the default periodic-analysis interval, so steady state is at
+/// most ~one toast per analysis tick. `Priority::Critical` bypasses it.
+const SUGGESTION_NOTIFY_COOLDOWN_SECS: i64 = 300;
 
 pub struct NotificationManager {
     config: RwLock<NotificationConfig>,
     notifier: Arc<dyn DesktopNotifier>,
     state: RwLock<NotificationState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotificationSuppressionLogFields {
+    title_present: bool,
+    body_present: bool,
+    body_len: usize,
+}
+
+fn notification_suppression_log_fields(
+    title: &str,
+    body: &str,
+) -> NotificationSuppressionLogFields {
+    NotificationSuppressionLogFields {
+        title_present: !title.is_empty(),
+        body_present: !body.is_empty(),
+        body_len: body.len(),
+    }
 }
 
 #[allow(dead_code)] // API surface wired in scheduler notification loop
@@ -173,9 +253,54 @@ impl NotificationManager {
         debug!("session reset");
     }
 
+    /// Desktop toast for a locally produced suggestion (#5694). Until now only
+    /// the server SSE receiver ever called `show_suggestion`, so standalone
+    /// suggestions were silent. Rate-limited by [`SUGGESTION_NOTIFY_COOLDOWN_SECS`]
+    /// (`Priority::Critical` bypasses the cooldown); the master `enabled`
+    /// switch suppresses everything.
+    pub async fn notify_suggestion(&self, suggestion: &Suggestion) {
+        let config = self.config.read().await;
+        if !config.enabled {
+            debug!(
+                suggestion_id = %suggestion.suggestion_id,
+                "suggestion toast suppressed: notifications disabled"
+            );
+            return;
+        }
+        drop(config);
+
+        let mut state = self.state.write().await;
+        let now = Utc::now();
+        if suggestion.priority != Priority::Critical {
+            if let Some(last) = state.last_suggestion_notification {
+                if (now - last).num_seconds() < SUGGESTION_NOTIFY_COOLDOWN_SECS {
+                    debug!(
+                        suggestion_id = %suggestion.suggestion_id,
+                        "suggestion toast suppressed: cooldown"
+                    );
+                    return;
+                }
+            }
+        }
+
+        if let Err(e) = self.notifier.show_suggestion(suggestion).await {
+            debug!("notification failure: {e}");
+        } else {
+            state.last_suggestion_notification = Some(now);
+        }
+    }
+
     pub async fn notify(&self, title: &str, body: &str) {
         let config = self.config.read().await;
         if !config.enabled {
+            let fields = notification_suppression_log_fields(title, body);
+            info!(
+                reason = "consent_disabled",
+                title_present = fields.title_present,
+                body_present = fields.body_present,
+                body_len = fields.body_len,
+                "notification suppressed: consent_disabled"
+            );
             return;
         }
 
@@ -191,6 +316,14 @@ impl NotificationManager {
     pub async fn notify_coaching(&self, body: &str) {
         let config = self.config.read().await;
         if !config.enabled {
+            let fields = notification_suppression_log_fields("Maekon Coach", body);
+            info!(
+                reason = "consent_disabled",
+                title_present = fields.title_present,
+                body_present = fields.body_present,
+                body_len = fields.body_len,
+                "notification suppressed: consent_disabled"
+            );
             return;
         }
 
@@ -360,6 +493,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notify_disabled_logs_suppression_without_dispatch() {
+        let config = NotificationConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let notifier = Arc::new(MockNotifier::new());
+        let manager = NotificationManager::new(config, notifier.clone());
+        let fields =
+            notification_suppression_log_fields("private title", "private notification body");
+
+        manager
+            .notify("private title", "private notification body")
+            .await;
+
+        assert_eq!(notifier.calls(), 0);
+        assert!(fields.title_present);
+        assert!(fields.body_present);
+        assert_eq!(fields.body_len, 25);
+    }
+
+    #[tokio::test]
     async fn notify_enabled_sends() {
         let config = NotificationConfig {
             enabled: true,
@@ -441,5 +595,22 @@ mod tests {
 
         manager.check_idle(120).await;
         assert_eq!(notifier.calls(), 1);
+    }
+
+    #[test]
+    fn crt_prv_notif_005_notification_activation_uses_payload_route() {
+        let outcome = notification_activation_outcome_from_route(Some("/replay/timeline")).unwrap();
+
+        assert_eq!(outcome.event_name, "navigate");
+        assert_eq!(outcome.route, "/replay/timeline");
+        assert!(outcome.focus_main_window);
+    }
+
+    #[test]
+    fn crt_prv_notif_005_notification_activation_rejects_external_url() {
+        let err =
+            notification_activation_outcome_from_route(Some("https://example.com")).unwrap_err();
+
+        assert_eq!(err, NotificationActivationError::InvalidRoute);
     }
 }

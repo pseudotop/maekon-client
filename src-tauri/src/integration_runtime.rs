@@ -377,11 +377,17 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             integration.max_batch_size,
         ));
         let egress_signal = base_egress.clone() as Arc<dyn IntegrationEgressSignalPort>;
-        let egress = Arc::new(PolicyAwareIntegrationEgressCoordinator::new(
-            base_egress as Arc<dyn IntegrationEgressPort>,
-            Arc::new(DefaultIntegrationEgressPolicy),
-            audit.clone(),
-        )) as Arc<dyn IntegrationEgressPort>;
+        let egress = Arc::new(
+            PolicyAwareIntegrationEgressCoordinator::new(
+                base_egress as Arc<dyn IntegrationEgressPort>,
+                Arc::new(DefaultIntegrationEgressPolicy),
+                audit.clone(),
+            )
+            .with_pii_sanitizer(
+                Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
+                self.config.privacy.pii_filter_level,
+            ),
+        ) as Arc<dyn IntegrationEgressPort>;
         let base_inbox = Arc::new(IntegrationInboxCoordinator::new(
             device_id.clone(),
             session.clone(),

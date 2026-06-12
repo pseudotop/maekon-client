@@ -32,11 +32,13 @@ impl AutomationSceneQueryService {
                 .ctx
                 .storage
                 .get_frame_file_path(frame_id)
+                .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound(format!("frame {frame_id} has no image")))?;
 
             let image_path = resolve_frame_image_path(&self.ctx, &stored_path)?;
-            let image_data = std::fs::read(&image_path)
+            let image_data = tokio::fs::read(&image_path)
+                .await
                 .map_err(|e| ApiError::Internal(format!("Failed to read frame image: {e}")))?;
 
             controller

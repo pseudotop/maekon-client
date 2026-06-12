@@ -5,10 +5,10 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-C: `missing_const_for_fn` accepted crate-wide. See
-// docs/reviews/2026-04-21-p2-missing-const-for-fn-decision.md.
+// P2 PR-C: `missing_const_for_fn` accepted crate-wide.
+// Rationale: const-viral cascade + nursery false-positive rate outweigh the value.
 #![allow(clippy::missing_const_for_fn)]
-// P2 remaining-nursery-lints: see decision doc.
+// P2 remaining-nursery-lints: stylistic/cosmetic nursery lints accepted crate-wide.
 #![allow(
     clippy::use_self,
     clippy::option_if_let_else,
@@ -36,8 +36,20 @@ pub mod system;
 pub mod system_info;
 pub mod window_layout;
 
+// Pure, cfg-free parsers for the Windows active-window FFI shim (#5120). Kept
+// un-gated so the logic is unit-testable on any OS, not only a Windows runner.
+mod active_window_parse;
+// Cfg-free macOS `pmset -g batt` → PowerStatus parser (#5138), same rationale.
+mod power_parse;
+// Content-free log digest for window titles (#5591) + crate-wide textual guard
+// against raw-title tracing. Un-gated so the guard runs on every host OS.
+mod log_privacy;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+#[cfg(target_os = "macos")]
+mod macos_ax_ffi;
 
 #[cfg(target_os = "windows")]
 pub mod windows;

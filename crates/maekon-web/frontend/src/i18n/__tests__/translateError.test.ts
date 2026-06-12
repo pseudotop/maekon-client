@@ -25,26 +25,38 @@ function readWireCodeRegistry(): string[] {
 describe('wire-code i18n coverage', () => {
   const registry = readWireCodeRegistry()
 
-  it('snapshot contains the expected 53 codes', () => {
+  it('snapshot contains the expected 54 codes', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
-    expect(registry).toHaveLength(53)
+    // 53 → 54 with audio integrity check error coverage.
+    expect(registry).toHaveLength(54)
   })
 
-  it.each(['en', 'ko'] as const)('every wire code has a %s translation', (locale) => {
+  // 앱 런타임 로케일(`src/i18n/index.ts` supportedLngs)과 동일한 5개 로케일.
+  // 와이어 에러 번역은 이 전부에 대해 빠짐없이 커버되어야 한다 (#4824).
+  const ALL_LOCALES = ['en', 'ko', 'ja', 'zh-CN', 'es'] as const
+
+  it.each(ALL_LOCALES)('every wire code has a %s translation', (locale) => {
     const missing = registry.filter((code) => !hasTranslation(code, locale))
     expect(missing, `missing ${locale} translations`).toEqual([])
   })
 
-  it('en and ko resource sets have the same keys (no drift between locales)', () => {
+  it('all 5 locale resource sets have identical keys (no drift between locales)', () => {
+    // en 을 기준으로 나머지 로케일의 키 집합이 정확히 일치하는지 검증한다.
     const enCodes = new Set(translatedCodes('en'))
-    const koCodes = new Set(translatedCodes('ko'))
-    const onlyEn = [...enCodes].filter((c) => !koCodes.has(c))
-    const onlyKo = [...koCodes].filter((c) => !enCodes.has(c))
-    expect(onlyEn, 'codes in en but not ko').toEqual([])
-    expect(onlyKo, 'codes in ko but not en').toEqual([])
+    for (const locale of ALL_LOCALES) {
+      const localeCodes = new Set(translatedCodes(locale))
+      const onlyEn = [...enCodes].filter((c) => !localeCodes.has(c))
+      const onlyLocale = [...localeCodes].filter((c) => !enCodes.has(c))
+      expect(onlyEn, `codes in en but not ${locale}`).toEqual([])
+      expect(onlyLocale, `codes in ${locale} but not en`).toEqual([])
+    }
+  })
+
+  it.each(ALL_LOCALES)('%s has exactly the same key count as the registry', (locale) => {
+    expect(translatedCodes(locale)).toHaveLength(registry.length)
   })
 })
 
@@ -57,6 +69,13 @@ describe('translateError', () => {
   it('formats a known wire code with the {message} placeholder in ko', () => {
     const err: IpcError = { code: 'config.invalid', message: 'bad value' }
     expect(translateError(err, 'ko')).toBe('설정 값이 올바르지 않습니다: bad value')
+  })
+
+  it('formats a known wire code with the {message} placeholder in ja/zh-CN/es', () => {
+    const err: IpcError = { code: 'config.invalid', message: 'bad value' }
+    expect(translateError(err, 'ja')).toBe('設定が正しくありません: bad value')
+    expect(translateError(err, 'zh-CN')).toBe('配置无效：bad value')
+    expect(translateError(err, 'es')).toBe('Configuración no válida: bad value')
   })
 
   it('handles codes without placeholders (consent.expired, network.rate_limit, etc.)', () => {
@@ -120,12 +139,13 @@ describe('hasTranslation', () => {
 })
 
 describe('translatedCodes', () => {
-  it('returns all 53 codes for en', () => {
+  it('returns all 54 codes for en', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
-    expect(translatedCodes('en')).toHaveLength(53)
+    // 53 → 54 with audio integrity check error coverage.
+    expect(translatedCodes('en')).toHaveLength(54)
   })
 
   it('returns a frozen readonly array', () => {

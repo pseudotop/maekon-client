@@ -1,0 +1,170 @@
+{
+  "schema_version": "automation.gui.permission_evidence.v1",
+  "permission_rules": [
+    {
+      "permission": "screen_capture",
+      "requirement": "required",
+      "platform_names": [
+        { "platform": "macos", "name": "Screen Recording" },
+        { "platform": "windows", "name": "Graphics capture consent" },
+        { "platform": "linux", "name": "Portal or compositor screen capture" }
+      ],
+      "action_kind": "open_system_settings",
+      "remediation_key": "gui.permission.screen_capture",
+      "safe_display_label": "Screen capture permission"
+    },
+    {
+      "permission": "accessibility",
+      "requirement": "required",
+      "platform_names": [
+        { "platform": "macos", "name": "Accessibility" },
+        { "platform": "windows", "name": "UI Automation access" },
+        { "platform": "linux", "name": "AT-SPI accessibility bus" }
+      ],
+      "action_kind": "open_system_settings",
+      "remediation_key": "gui.permission.accessibility",
+      "safe_display_label": "Accessibility extraction permission"
+    },
+    {
+      "permission": "automation_input_control",
+      "requirement": "required",
+      "platform_names": [
+        { "platform": "macos", "name": "Input Monitoring or Automation" },
+        { "platform": "windows", "name": "Foreground input control" },
+        { "platform": "linux", "name": "Desktop portal or compositor input control" }
+      ],
+      "action_kind": "open_system_settings",
+      "remediation_key": "gui.permission.input_control",
+      "safe_display_label": "Input execution permission"
+    },
+    {
+      "permission": "notifications",
+      "requirement": "recommended",
+      "platform_names": [
+        { "platform": "macos", "name": "Notifications" },
+        { "platform": "windows", "name": "Toast notifications" },
+        { "platform": "linux", "name": "Desktop notifications" }
+      ],
+      "action_kind": "open_system_settings",
+      "remediation_key": "gui.permission.notifications",
+      "safe_display_label": "Notification permission"
+    },
+    {
+      "permission": "local_service_reachability",
+      "requirement": "required",
+      "platform_names": [
+        { "platform": "macos", "name": "Loopback GUI service" },
+        { "platform": "windows", "name": "Loopback GUI service" },
+        { "platform": "linux", "name": "Loopback GUI service" }
+      ],
+      "action_kind": "configure_local_service",
+      "remediation_key": "gui.permission.local_service",
+      "safe_display_label": "Local GUI service reachability"
+    },
+    {
+      "permission": "ocr_capability",
+      "requirement": "recommended",
+      "platform_names": [
+        { "platform": "macos", "name": "Vision OCR runtime" },
+        { "platform": "windows", "name": "WinRT OCR runtime" },
+        { "platform": "linux", "name": "OCR fallback package" }
+      ],
+      "action_kind": "install_capability",
+      "remediation_key": "gui.permission.ocr",
+      "safe_display_label": "OCR fallback capability"
+    }
+  ],
+  "evidence_rules": [
+    {
+      "artifact_kind": "broad_screenshot",
+      "default_audience": "local_only",
+      "shareable_by_default": false,
+      "requires_opt_in_override": true,
+      "opt_in_override_requirements": [
+        "necessity_justification",
+        "retention_policy",
+        "deletion_plan"
+      ],
+      "raw_ui_allowed": false,
+      "redaction_rule": "prohibited",
+      "retention_key": "discard_after_local_review"
+    },
+    {
+      "artifact_kind": "cropped_region",
+      "default_audience": "shareable_benchmark_artifact",
+      "shareable_by_default": true,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "geometry_only",
+      "retention_key": "benchmark_artifact_ttl"
+    },
+    {
+      "artifact_kind": "text_metadata",
+      "default_audience": "shareable_benchmark_artifact",
+      "shareable_by_default": true,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "masked_scene_labels",
+      "retention_key": "benchmark_artifact_ttl"
+    },
+    {
+      "artifact_kind": "audit_excerpt",
+      "default_audience": "audit_only",
+      "shareable_by_default": false,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "diagnostic_codes_only",
+      "retention_key": "audit_retention"
+    },
+    {
+      "artifact_kind": "log_excerpt",
+      "default_audience": "shareable_benchmark_artifact",
+      "shareable_by_default": true,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "diagnostic_codes_only",
+      "retention_key": "benchmark_artifact_ttl"
+    },
+    {
+      "artifact_kind": "worker_log",
+      "default_audience": "local_only",
+      "shareable_by_default": false,
+      "requires_opt_in_override": true,
+      "opt_in_override_requirements": [
+        "necessity_justification",
+        "retention_policy",
+        "deletion_plan"
+      ],
+      "raw_ui_allowed": false,
+      "redaction_rule": "diagnostic_codes_only",
+      "retention_key": "discard_after_local_review"
+    },
+    {
+      "artifact_kind": "gui_session_event",
+      "default_audience": "shareable_benchmark_artifact",
+      "shareable_by_default": true,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "masked_scene_labels",
+      "retention_key": "benchmark_artifact_ttl"
+    },
+    {
+      "artifact_kind": "benchmark_report",
+      "default_audience": "shareable_benchmark_artifact",
+      "shareable_by_default": true,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": false,
+      "redaction_rule": "masked_scene_labels",
+      "retention_key": "benchmark_artifact_ttl"
+    },
+    {
+      "artifact_kind": "raw_accessibility_label",
+      "default_audience": "local_only",
+      "shareable_by_default": false,
+      "requires_opt_in_override": false,
+      "raw_ui_allowed": true,
+      "redaction_rule": "raw_allowed_local_only",
+      "retention_key": "discard_after_local_matching"
+    }
+  ]
+}

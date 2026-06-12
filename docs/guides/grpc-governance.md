@@ -6,15 +6,17 @@ This guide defines the minimum governance baseline for MAEKON gRPC client operat
 
 ## Scope
 
-- `crates/maekon-network/src/grpc/*`
-- `crates/maekon-network/src/proto/generated/*`
-- `api/proto/maekon/v1/*`
+- Consumer client contracts: `api/proto/oneshim/client/v1/*`
+- Dashboard service contract: `api/proto/oneshim/dashboard/v1/*`
+- Consumer generated code: `crates/maekon-network/src/proto/generated/*`
+- Dashboard generated code: `crates/maekon-web/src/proto/generated/oneshim.dashboard.v1.rs`
+- gRPC runtime code: `crates/maekon-network/src/grpc/*`, `crates/maekon-web/src/grpc/*`
 
 ## Baseline Rules
 
 1. **Contract integrity**
    - Proto files under `api/proto` are the single source of truth.
-   - Generated Rust files in `crates/maekon-network/src/proto/generated` must stay committed and up-to-date.
+   - Generated Rust files in `crates/maekon-network/src/proto/generated` and `crates/maekon-web/src/proto/generated` must stay committed and up-to-date.
 2. **Feature-gated safety**
    - All gRPC changes must pass compile/test with `--features grpc`.
    - `maekon-app` wiring must compile with `--features grpc`.

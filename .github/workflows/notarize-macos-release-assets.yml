@@ -18,6 +18,8 @@ on:
 permissions:
   contents: write
   actions: read
+  id-token: write
+  attestations: write
 
 jobs:
   notarize-macos-assets:
@@ -28,16 +30,21 @@ jobs:
        (startsWith(github.event.workflow_run.head_branch, 'v') ||
         github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: macos-latest
+    environment: macos-notarization
     timeout-minutes: 180
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      source_run_id: ${{ steps.release.outputs.source_run_id }}
     env:
       GH_TOKEN: ${{ github.token }}
       MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
       MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
       MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Resolve release tag and source run id
+        id: release
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -90,6 +97,8 @@ jobs:
 
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           echo "SOURCE_RUN_ID=$SOURCE_RUN_ID" >> "$GITHUB_ENV"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "Resolved RELEASE_TAG=$RELEASE_TAG SOURCE_RUN_ID=$SOURCE_RUN_ID"
 
       - name: Validate notarization secrets
@@ -182,26 +191,243 @@ jobs:
 
           spctl --assess --type install --verbose=4 dist/maekon-macos-universal.pkg
 
+      - name: Record final notarized checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          dist = Path("dist")
+          assets = []
+          for artifact_name in (
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+          ):
+              artifact = dist / artifact_name
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              assets.append(
+                  {
+                      "name": artifact_name,
+                      "sha256": digest,
+                      "notary_log": str(dist / "notary-logs" / f"{artifact_name}.notary-log.json"),
+                  }
+              )
+
+          manifest = {
+              "schema_version": 1,
+              "release_tag": os.environ["RELEASE_TAG"],
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+              "macos_assets": assets,
+          }
+          (dist / "notarization-final-byte-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat dist/notarization-final-byte-manifest.json
+
       - name: Upload notarization logs artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: maekon-macos-notary-logs-${{ env.RELEASE_TAG }}
           path: dist/notary-logs/*.json
           if-no-files-found: ignore
+          retention-days: 14
 
-      - name: Replace release assets with notarized installers
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release upload "$RELEASE_TAG" \
-            dist/maekon-macos-universal.dmg \
-            dist/maekon-macos-universal.pkg \
-            --clobber \
-            --repo "$GITHUB_REPOSITORY"
+      - name: Upload notarized final bytes artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: maekon-macos-notarized-assets-${{ env.RELEASE_TAG }}
+          path: |
+            dist/maekon-macos-universal.dmg
+            dist/maekon-macos-universal.pkg
+            dist/notarization-final-byte-manifest.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Cleanup notary keychain
         if: always()
         shell: bash
         run: |
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  publish-notarized-assets:
+    needs: notarize-macos-assets
+    runs-on: ubuntu-latest
+    environment: release-signing
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.notarize-macos-assets.outputs.release_tag }}
+      UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+      MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Download notarized final bytes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: maekon-macos-notarized-assets-${{ needs.notarize-macos-assets.outputs.release_tag }}
+          path: dist
+
+      - name: Validate release signing secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in UPDATE_SIGNING_PRIVATE_KEY_B64 MAEKON_UPDATE_PUBLIC_KEY; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "Missing required secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Generate final notarized sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pynacl
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import os
+          from pathlib import Path
+
+          from nacl.signing import SigningKey
+
+          key = SigningKey(base64.b64decode(os.environ["UPDATE_SIGNING_PRIVATE_KEY_B64"]))
+          assets = [
+              Path("dist/maekon-macos-universal.dmg"),
+              Path("dist/maekon-macos-universal.pkg"),
+              Path("dist/notarization-final-byte-manifest.json"),
+          ]
+
+          for path in assets:
+              data = path.read_bytes()
+              digest = hashlib.sha256(data).hexdigest()
+              path.with_suffix(path.suffix + ".sha256").write_text(
+                  f"{digest}  {path.name}\n",
+                  encoding="utf-8",
+              )
+              signature = key.sign(data).signature
+              path.with_suffix(path.suffix + ".sig").write_text(
+                  base64.b64encode(signature).decode("ascii") + "\n",
+                  encoding="utf-8",
+              )
+          PY
+          ls -la dist
+
+      - name: Attest final notarized provenance
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd  # v2.3.0
+        with:
+          subject-path: dist/*
+
+      - name: Publish notarized final bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            dist/maekon-macos-universal.dmg \
+            dist/maekon-macos-universal.dmg.sha256 \
+            dist/maekon-macos-universal.dmg.sig \
+            dist/maekon-macos-universal.pkg \
+            dist/maekon-macos-universal.pkg.sha256 \
+            dist/maekon-macos-universal.pkg.sig \
+            dist/notarization-final-byte-manifest.json \
+            dist/notarization-final-byte-manifest.json.sha256 \
+            dist/notarization-final-byte-manifest.json.sig \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Verify published notarized final bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf published-assets
+          mkdir -p published-assets
+
+          set +e
+          verify_status=0
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir published-assets \
+            --pattern 'maekon-macos-universal.dmg*' \
+            --pattern 'maekon-macos-universal.pkg*' \
+            --pattern 'notarization-final-byte-manifest.json*' \
+            || verify_status=$?
+
+          if [[ "$verify_status" -eq 0 ]]; then
+            python3 -m pip install --upgrade pynacl || verify_status=$?
+          fi
+
+          if [[ "$verify_status" -eq 0 ]]; then
+            python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from nacl.exceptions import BadSignatureError
+          from nacl.signing import VerifyKey
+
+          root = Path("published-assets")
+          public_key_bytes = base64.b64decode(os.environ["MAEKON_UPDATE_PUBLIC_KEY"])
+          verify_key = VerifyKey(public_key_bytes)
+
+          manifest_path = root / "notarization-final-byte-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest_sha_by_name = {
+              asset["name"]: asset["sha256"]
+              for asset in manifest.get("macos_assets", [])
+          }
+
+          for asset_name in (
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+              "notarization-final-byte-manifest.json",
+          ):
+              asset = root / asset_name
+              sha_path = root / f"{asset_name}.sha256"
+              sig_path = root / f"{asset_name}.sig"
+
+              if not asset.is_file():
+                  raise SystemExit(f"missing release asset: {asset_name}")
+              if not sha_path.is_file():
+                  raise SystemExit(f"missing checksum sidecar: {sha_path.name}")
+              if not sig_path.is_file():
+                  raise SystemExit(f"missing signature sidecar: {sig_path.name}")
+
+              data = asset.read_bytes()
+              actual_sha = hashlib.sha256(data).hexdigest()
+              expected_sha = sha_path.read_text(encoding="utf-8").split()[0]
+              if actual_sha != expected_sha:
+                  raise SystemExit(
+                      f"stale checksum sidecar for {asset_name}: expected {actual_sha}, got {expected_sha}"
+                  )
+
+              if asset_name in manifest_sha_by_name and manifest_sha_by_name[asset_name] != actual_sha:
+                  raise SystemExit(
+                      f"notarization manifest checksum mismatch for {asset_name}"
+                  )
+
+              signature = base64.b64decode(sig_path.read_text(encoding="utf-8").strip())
+              try:
+                  verify_key.verify(data, signature)
+              except BadSignatureError as exc:
+                  raise SystemExit(f"stale signature sidecar for {asset_name}") from exc
+          PY
+            verify_status=$?
+          fi
+          set -e
+
+          if [[ "$verify_status" -ne 0 ]]; then
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            echo "::error::Deleted invalid release for ${RELEASE_TAG}: final byte sidecar validation failed."
+            exit "$verify_status"
+          fi

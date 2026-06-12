@@ -16,9 +16,10 @@ pub async fn list_coaching_templates() -> Json<CoachingTemplateListDto> {
     let templates: Vec<CoachingTemplateDto> = TEMPLATES
         .iter()
         .map(|t| CoachingTemplateDto {
-            profile: format!("{:?}", t.profile),
+            // F-RC-C37-03: use Display (PascalCase) not Debug to match serde wire contract.
+            profile: t.profile.to_string(),
             trigger_type: t.trigger_type.to_string(),
-            tone: format!("{:?}", t.tone),
+            tone: t.tone.to_string(),
             locale: t.locale.to_string(),
             text: t.text.to_string(),
         })
@@ -36,7 +37,8 @@ pub async fn list_presets() -> Json<PresetSummaryListDto> {
             id: p.id,
             name: p.name,
             description: p.description,
-            category: format!("{:?}", p.category),
+            // F-RC-C37-03: use Display (PascalCase) not Debug to match serde wire contract.
+            category: p.category.to_string(),
             step_count: p.steps.len(),
             builtin: p.builtin,
         })
@@ -51,10 +53,8 @@ mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -63,8 +63,7 @@ mod tests {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
         let (event_tx, _) = broadcast::channel(16);
         let state = AppState::with_core(storage, event_tx);
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[tokio::test]

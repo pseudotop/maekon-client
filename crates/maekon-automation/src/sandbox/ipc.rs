@@ -1,6 +1,8 @@
 use maekon_core::models::automation::AutomationAction;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const WORKER_BASE_NAME: &str = "maekon-sandbox-worker";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SandboxRequest {
@@ -13,62 +15,71 @@ pub struct SandboxResponse {
     pub error: Option<String>,
 }
 
-/// Resolve the sandbox worker binary path.
-/// Search order: exact name adjacent to binary, Tauri platform-suffixed, then PATH.
+/// 샌드박스 워커 바이너리 경로를 실행 파일 인접 디렉터리 안에서만 찾는다.
 pub fn resolve_worker_path() -> Result<PathBuf, maekon_core::error::CoreError> {
-    let base_name = "maekon-sandbox-worker";
-    let ext = if cfg!(target_os = "windows") {
-        ".exe"
-    } else {
-        ""
-    };
-
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // 1. Exact name (dev builds: cargo puts binaries in target/debug/)
-            let candidate = dir.join(format!("{base_name}{ext}"));
-            if candidate.exists() {
-                return Ok(candidate);
+            if let Some(worker_path) = resolve_worker_path_in_dir(dir) {
+                return Ok(worker_path);
             }
-            // 2. Tauri sidecar: platform-suffixed name
-            let target = target_triple();
-            let suffixed = dir.join(format!("{base_name}-{target}{ext}"));
-            if suffixed.exists() {
-                return Ok(suffixed);
-            }
-        }
-    }
 
-    #[cfg(not(target_os = "windows"))]
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("maekon-sandbox-worker")
-        .output()
-    {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    if let Ok(output) = std::process::Command::new("where.exe")
-        .arg("maekon-sandbox-worker")
-        .output()
-    {
-        if output.status.success() {
-            if let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                let path = first_line.trim().to_string();
-                if !path.is_empty() {
-                    return Ok(PathBuf::from(path));
+            // cargo-test layout only: the test executable lives in
+            // `target/debug/deps/`, while `cargo build -p maekon-sandbox-worker`
+            // places the worker one level up in `target/debug/`. Production
+            // builds keep the strict adjacent-only lookup above.
+            #[cfg(test)]
+            if let Some(parent) = dir.parent() {
+                if let Some(worker_path) = resolve_worker_path_in_dir(parent) {
+                    return Ok(worker_path);
                 }
             }
         }
     }
 
-    Err(maekon_core::error::CoreError::SandboxExecution { code: maekon_core::error_codes::SandboxCode::ExecutionFailed, message: "sandbox worker binary not found: checked adjacent to executable, Tauri sidecar, and PATH"
-            .into() })
+    Err(worker_not_found_error())
+}
+
+fn resolve_worker_path_in_dir(executable_dir: &Path) -> Option<PathBuf> {
+    worker_path_candidates(executable_dir)
+        .into_iter()
+        .find(|candidate| worker_candidate_is_allowed(executable_dir, candidate))
+}
+
+fn worker_path_candidates(executable_dir: &Path) -> Vec<PathBuf> {
+    let ext = worker_extension();
+    let target = target_triple();
+    vec![
+        executable_dir.join(format!("{WORKER_BASE_NAME}{ext}")),
+        executable_dir.join(format!("{WORKER_BASE_NAME}-{target}{ext}")),
+    ]
+}
+
+fn worker_extension() -> &'static str {
+    if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
+fn worker_candidate_is_allowed(executable_dir: &Path, candidate: &Path) -> bool {
+    if !candidate.is_file() {
+        return false;
+    }
+
+    match (executable_dir.canonicalize(), candidate.canonicalize()) {
+        (Ok(root), Ok(resolved_candidate)) => resolved_candidate.starts_with(root),
+        _ => candidate.starts_with(executable_dir),
+    }
+}
+
+fn worker_not_found_error() -> maekon_core::error::CoreError {
+    maekon_core::error::CoreError::SandboxExecution {
+        code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+        message:
+            "sandbox worker binary not found: checked adjacent to executable and Tauri sidecar"
+                .into(),
+    }
 }
 
 /// Returns the Rust target triple for the current platform.
@@ -165,11 +176,67 @@ mod tests {
 
     #[test]
     fn parse_worker_response_empty_stdout() {
-        assert!(parse_worker_response(b"").is_err());
+        let err = parse_worker_response(b"").unwrap_err();
+        assert!(
+            matches!(err, maekon_core::error::CoreError::SandboxExecution { .. }),
+            "empty stdout must produce SandboxExecution, got: {err:?}"
+        );
     }
 
     #[test]
     fn parse_worker_response_malformed() {
-        assert!(parse_worker_response(b"not json").is_err());
+        let err = parse_worker_response(b"not json").unwrap_err();
+        assert!(
+            matches!(err, maekon_core::error::CoreError::SandboxExecution { .. }),
+            "malformed stdout must produce SandboxExecution, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn worker_path_resolution_does_not_use_path_lookup() {
+        let source = include_str!("ipc.rs");
+        let unix_path_lookup = format!("Command::new({:?})", "which");
+        let windows_path_lookup = format!("Command::new({:?})", "where.exe");
+        assert!(!source.contains(&unix_path_lookup));
+        assert!(!source.contains(&windows_path_lookup));
+    }
+
+    #[test]
+    fn worker_path_resolution_accepts_adjacent_worker_only() {
+        let dir = temp_worker_test_dir("adjacent");
+        let worker_path = dir.join(worker_file_name());
+        std::fs::write(&worker_path, b"").unwrap();
+
+        let resolved = resolve_worker_path_in_dir(&dir).unwrap();
+
+        assert_eq!(resolved, worker_path);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn worker_candidate_rejects_path_outside_executable_dir() {
+        let executable_dir = temp_worker_test_dir("root");
+        let path_dir = temp_worker_test_dir("path");
+        let path_worker = path_dir.join(worker_file_name());
+        std::fs::write(&path_worker, b"").unwrap();
+
+        assert!(!worker_candidate_is_allowed(&executable_dir, &path_worker));
+
+        std::fs::remove_dir_all(&executable_dir).ok();
+        std::fs::remove_dir_all(&path_dir).ok();
+    }
+
+    fn temp_worker_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "maekon-automation-ipc-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn worker_file_name() -> String {
+        format!("{}{}", WORKER_BASE_NAME, worker_extension())
     }
 }

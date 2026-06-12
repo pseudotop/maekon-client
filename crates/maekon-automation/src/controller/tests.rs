@@ -218,8 +218,11 @@ async fn sandbox_integrated_dispatch() {
         timeout_ms: None,
         policy_token: "token".to_string(),
     };
-    let result = controller.execute_command(&cmd).await;
-    assert!(result.is_err()); // disabled -> PolicyDenied
+    let err = controller.execute_command(&cmd).await.unwrap_err();
+    assert!(
+        matches!(err, AutomationError::PolicyDenied(_)),
+        "disabled controller must produce PolicyDenied, got: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -229,8 +232,14 @@ async fn sandbox_error_propagation() {
     };
     let sandbox = NoOpSandbox;
     let config = SandboxConfig::default();
-    let result = sandbox.execute_sandboxed(&action, &config).await;
-    assert!(result.is_ok());
+    // NoOpSandbox.execute_sandboxed is a pure no-op: it always returns Ok(()).
+    // The contract being checked is that a NoOp sandbox never propagates errors
+    // regardless of the action or config supplied — Ok(()) is the full contract.
+    // (#5594: Ok-only is justified; no return value to assert beyond the unit type.)
+    sandbox
+        .execute_sandboxed(&action, &config)
+        .await
+        .expect("NoOpSandbox::execute_sandboxed must never return an error");
 }
 
 #[tokio::test]
@@ -365,8 +374,11 @@ async fn run_workflow_disabled_returns_error() {
         platform: None,
         ai_profile_id: None,
     };
-    let result = controller.run_workflow(&preset).await;
-    assert!(result.is_err());
+    let err = controller.run_workflow(&preset).await.unwrap_err();
+    assert!(
+        matches!(err, AutomationError::PolicyDenied(_)),
+        "disabled controller run_workflow must produce PolicyDenied, got: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -390,8 +402,14 @@ async fn run_workflow_no_executor_returns_error() {
         platform: None,
         ai_profile_id: None,
     };
-    let result = controller.run_workflow(&preset).await;
-    assert!(result.is_err());
+    let err = controller.run_workflow(&preset).await.unwrap_err();
+    // IntentExecutor not configured → Core(Config { code: Missing })
+    let core: maekon_core::error::CoreError = err.into();
+    assert_eq!(
+        core.code(),
+        "config.missing",
+        "no-executor run_workflow must produce config.missing wire code, got: {core:?}"
+    );
 }
 
 #[tokio::test]
@@ -451,13 +469,11 @@ async fn execute_intent_disabled_returns_policy_denied() {
         timeout_ms: None,
         policy_token: "token".to_string(),
     };
-    let result = controller.execute_intent(&cmd).await;
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        crate::error::AutomationError::PolicyDenied(_)
-    ));
+    let err = controller.execute_intent(&cmd).await.unwrap_err();
+    assert!(
+        matches!(err, crate::error::AutomationError::PolicyDenied(_)),
+        "disabled controller execute_intent must produce PolicyDenied, got: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -474,14 +490,16 @@ async fn execute_intent_no_executor_returns_internal_error() {
         timeout_ms: None,
         policy_token: "token".to_string(),
     };
-    let result = controller.execute_intent(&cmd).await;
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = controller.execute_intent(&cmd).await.unwrap_err();
     // Iter-100: "IntentExecutor not configured" now emits config.missing
     // (was internal.generic). The test still catches the regression
     // that iter-100 fixed — just at the wire-code level now.
     let core: maekon_core::error::CoreError = err.into();
-    assert_eq!(core.code(), "config.missing");
+    assert_eq!(
+        core.code(),
+        "config.missing",
+        "no-executor execute_intent must produce config.missing wire code, got: {core:?}"
+    );
 }
 
 #[tokio::test]
@@ -523,6 +541,68 @@ async fn execute_intent_success_with_audit_log() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 4);
+}
+
+#[tokio::test]
+async fn gui_session_key_type_audit_masks_raw_text_payload() {
+    use super::gate::GUI_SESSION_POLICY_TOKEN;
+    use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+
+    let policy_client = Arc::new(PolicyClient::new());
+    let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+    let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+    let sandbox_config = SandboxConfig::default();
+    let mut controller =
+        AutomationController::new(policy_client, audit_logger.clone(), sandbox, sandbox_config);
+    controller.set_enabled(true);
+
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+
+    let raw_text = "Secret payroll code 1234";
+    let cmd = maekon_core::models::intent::IntentCommand {
+        command_id: "gui-session-raw-type".to_string(),
+        session_id: "sess-gui-1".to_string(),
+        intent: AutomationIntent::Raw(AutomationAction::KeyType {
+            text: raw_text.to_string(),
+        }),
+        config: None,
+        timeout_ms: None,
+        policy_token: GUI_SESSION_POLICY_TOKEN.to_string(),
+    };
+
+    let result = controller.execute_intent(&cmd).await.unwrap();
+    assert!(result.success);
+
+    let logger = audit_logger.read().await;
+    let audit_blob = logger
+        .recent_entries(20)
+        .into_iter()
+        .map(|entry| {
+            format!(
+                "{} {} {:?}",
+                entry.command_id, entry.action_type, entry.details
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !audit_blob.contains(raw_text),
+        "GUI session audit must not store raw typed text: {audit_blob}"
+    );
+    assert!(
+        audit_blob.contains("text_len=24"),
+        "GUI session audit should keep payload-free length evidence: {audit_blob}"
+    );
 }
 
 #[tokio::test]
@@ -580,13 +660,12 @@ async fn execute_intent_hint_requires_planner() {
         IntentConfig::default(),
     )));
 
-    let result = controller
+    let err = controller
         .execute_intent_hint("hint-1", "sess-1", "save 버튼 클릭")
-        .await;
-    assert!(result.is_err());
+        .await
+        .unwrap_err();
     // Iter-100: "IntentPlanner is not configured" now routes via
     // AutomationError::Core(Config{Missing}) → wire config.missing.
-    let err = result.unwrap_err();
     let core: maekon_core::error::CoreError = err.into();
     assert_eq!(core.code(), "config.missing");
     assert!(
@@ -954,4 +1033,257 @@ fn gui_action_timeout_less_than_total() {
             < std::hint::black_box(GUI_EXECUTE_TIMEOUT_SECS),
         "Per-action timeout must be less than total execution timeout"
     );
+}
+
+// ── C3 HITL invariant regression pin ─────────────────────────────────────────
+//
+// Decision 7 (E35-C3): execute_intent_hint operates under INTENT_HINT_POLICY_TOKEN,
+// which is classified as an internal policy token.  This means:
+//   (a) uses_internal_policy_token("intent-hint") == true
+//   (b) resolve_for_command returns default_strict_config + Basic audit level
+//   (c) gate.execute() skips PolicyClient.validate_command (no external approval)
+//
+// C3 changes only the planner quality (LLM vs rule matcher); it must NOT widen
+// execution authority or introduce new confirmation paths.  These tests pin the
+// gate semantics so any future change that widens authority fails CI.
+
+#[test]
+fn hitl_intent_hint_is_classified_as_internal_policy_token() {
+    use super::gate::INTENT_HINT_POLICY_TOKEN;
+    // (a) Static classification: "intent-hint" must be an internal token.
+    // This prevents any refactor that accidentally promotes it to an external,
+    // validate_command-gated token.
+    assert!(
+        gate::CommandExecutionGate::uses_internal_policy_token(INTENT_HINT_POLICY_TOKEN),
+        "INTENT_HINT_POLICY_TOKEN must be classified as internal \
+         so that PolicyClient.validate_command is bypassed"
+    );
+}
+
+#[test]
+fn hitl_intent_hint_does_not_widen_authority_vs_other_internal_tokens() {
+    use super::gate::{
+        GUI_SESSION_POLICY_TOKEN, INTENT_HINT_POLICY_TOKEN, SCENE_ACTION_POLICY_TOKEN,
+        WORKFLOW_STEP_POLICY_TOKEN,
+    };
+    // (a) All four well-known internal tokens must be recognised as internal.
+    // If INTENT_HINT_POLICY_TOKEN were ever dropped from the match, the gate
+    // would fall through to validate_command, changing HITL posture.
+    for token in [
+        INTENT_HINT_POLICY_TOKEN,
+        GUI_SESSION_POLICY_TOKEN,
+        SCENE_ACTION_POLICY_TOKEN,
+        WORKFLOW_STEP_POLICY_TOKEN,
+    ] {
+        assert!(
+            gate::CommandExecutionGate::uses_internal_policy_token(token),
+            "token {token:?} must remain an internal policy token"
+        );
+    }
+    // (b) External-looking tokens must NOT be classified as internal.
+    for external_token in ["", "external:nonce", "test-pol:nonce_0001"] {
+        assert!(
+            !gate::CommandExecutionGate::uses_internal_policy_token(external_token),
+            "token {external_token:?} must NOT be classified as internal"
+        );
+    }
+}
+
+#[tokio::test]
+async fn hitl_intent_hint_resolves_default_strict_config_and_basic_audit() {
+    use super::gate::INTENT_HINT_POLICY_TOKEN;
+    // (b) resolve_for_command must return default_strict_config + AuditLevel::Basic
+    // for INTENT_HINT_POLICY_TOKEN — identical to all other internal tokens.
+    // This pins that C3 does not accidentally introduce a wider sandbox profile.
+    let controller = make_controller();
+    let cmd = AutomationCommand {
+        command_id: "hitl-pin".to_string(),
+        session_id: "sess-hitl".to_string(),
+        action: AutomationAction::MouseMove { x: 0, y: 0 },
+        timeout_ms: None,
+        policy_token: INTENT_HINT_POLICY_TOKEN.to_string(),
+    };
+
+    let (resolved, audit_level) = controller.resolve_for_command(&cmd).await;
+
+    // Internal tokens always resolve to Strict profile (default_strict_config).
+    assert!(
+        matches!(
+            resolved.profile,
+            maekon_core::config::SandboxProfile::Strict
+        ),
+        "INTENT_HINT_POLICY_TOKEN must resolve to Strict sandbox profile"
+    );
+    // Internal tokens always use Basic audit level.
+    assert!(
+        matches!(audit_level, AuditLevel::Basic),
+        "INTENT_HINT_POLICY_TOKEN must use Basic audit level, not Detailed"
+    );
+}
+
+// ── confirmation_policy knob gate tests ──────────────────────────────────────
+//
+// #5734: AutomationConfig.confirmation_policy must gate execute_intent_hint.
+//   Auto  → immediate execution (D2-② default; C3 pins remain unaffected)
+//   Block → PolicyBlocked before execution
+//   Confirm → UserDenied when denied (fail-closed, mirrors preset semantics)
+
+#[tokio::test]
+async fn confirmation_policy_auto_executes_immediately() {
+    use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    // Auto is the default; set explicitly to document intent.
+    controller.set_confirmation_policy(ConfirmationRequirement::Auto);
+    controller.set_intent_planner(Arc::new(StubPlanner {
+        planned: AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    }));
+
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+
+    // Auto: must succeed without any confirmation callback wired.
+    let result = controller
+        .execute_intent_hint("policy-auto", "sess-1", "save")
+        .await
+        .expect("Auto policy must execute immediately without a confirmation callback");
+    assert!(result.result.success);
+}
+
+#[tokio::test]
+async fn confirmation_policy_block_denies_before_execution() {
+    use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Block);
+    controller.set_intent_planner(Arc::new(StubPlanner {
+        planned: AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    }));
+
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+
+    let err = controller
+        .execute_intent_hint("policy-block", "sess-1", "save")
+        .await
+        .expect_err("Block policy must return a PolicyBlocked error");
+    assert!(
+        matches!(err, crate::error::AutomationError::PolicyBlocked),
+        "expected PolicyBlocked, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn confirmation_policy_confirm_denies_when_rejected() {
+    use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Confirm);
+    controller.set_intent_planner(Arc::new(StubPlanner {
+        planned: AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    }));
+
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+
+    // Simulate user clicking "Deny" via the pending-confirmation map.
+    // Spawn a task that resolves the oneshot with false so the test does not wait 30 s.
+    let pending = controller.pending_confirmations.clone();
+    let cmd_id = "policy-confirm-deny".to_string();
+    tokio::spawn(async move {
+        // Yield to let execute_intent_hint insert the pending entry first.
+        tokio::task::yield_now().await;
+        let mut map = pending.lock().await;
+        if let Some((_, tx)) = map.remove(&cmd_id) {
+            let _ = tx.send(false);
+        }
+    });
+
+    let err = controller
+        .execute_intent_hint("policy-confirm-deny", "sess-1", "save")
+        .await
+        .expect_err("Confirm policy with denial must return UserDenied");
+    assert!(
+        matches!(err, crate::error::AutomationError::UserDenied),
+        "expected UserDenied after denial, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn confirmation_policy_confirm_executes_when_approved() {
+    use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Confirm);
+    controller.set_intent_planner(Arc::new(StubPlanner {
+        planned: AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    }));
+
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+
+    // Simulate user clicking "Approve".
+    let pending = controller.pending_confirmations.clone();
+    let cmd_id = "policy-confirm-approve".to_string();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        let mut map = pending.lock().await;
+        if let Some((_, tx)) = map.remove(&cmd_id) {
+            let _ = tx.send(true);
+        }
+    });
+
+    let result = controller
+        .execute_intent_hint("policy-confirm-approve", "sess-1", "save")
+        .await
+        .expect("Confirm policy with approval must execute successfully");
+    assert!(result.result.success);
 }

@@ -21,6 +21,14 @@ describe('request_desktop_notification_permission IPC contract', () => {
             state: 'granted',
             status_reason: 'macos_screen_capture_granted',
           },
+          microphone: {
+            state: 'needs_attention',
+            status_reason: 'macos_microphone_not_determined',
+          },
+          input_monitoring: {
+            state: 'needs_attention',
+            status_reason: 'macos_input_monitoring_unknown',
+          },
           notifications: {
             state: 'granted',
             status_reason: 'macos_notifications_granted',

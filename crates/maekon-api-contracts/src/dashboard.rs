@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 /// Query parameters for the dashboard day endpoint.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DashboardDayQuery {
     /// Date in YYYY-MM-DD format. Defaults to today.
     pub date: Option<String>,
@@ -9,6 +10,7 @@ pub struct DashboardDayQuery {
 
 /// Internal deserialization helper for content activity JSON blobs.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RawContentActivity {
     pub content_label: Option<String>,
     pub duration_secs: Option<u64>,
@@ -17,6 +19,7 @@ pub struct RawContentActivity {
 
 /// Internal deserialization helper for content activity JSON (minimal fields).
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RawContentActivityBrief {
     pub content_label: Option<String>,
     pub duration_secs: Option<u64>,

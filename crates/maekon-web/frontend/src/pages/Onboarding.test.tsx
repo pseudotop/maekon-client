@@ -1,0 +1,271 @@
+import { fireEvent, screen, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders } from '../__tests__/helpers/render-helpers'
+import type { ConsentPermissions } from '../api/contracts'
+import en from '../i18n/locales/en.json'
+import Onboarding from './Onboarding'
+
+const mockInvoke = vi.fn()
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}))
+
+vi.mock('../utils/platform', () => ({
+  IS_LINUX: false,
+  IS_MAC: true,
+  IS_TAURI: false,
+  IS_WINDOWS: false,
+  MOD_KEY: '⌘',
+  isTauriRuntime: vi.fn(() => false),
+}))
+
+// #5707: stub the HTTP api/client calls used in StepCoaching (fetchSettings,
+// updateSettings). getConsent/setConsent route through mockInvoke (IPC).
+const mockFetchSettings = vi.fn()
+const mockUpdateSettings = vi.fn()
+vi.mock('../api/client', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...mod,
+    fetchSettings: (...args: unknown[]) => mockFetchSettings(...args),
+    updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  }
+})
+
+describe('Onboarding', () => {
+  beforeEach(() => {
+    mockInvoke.mockReset()
+    mockFetchSettings.mockReset()
+    mockUpdateSettings.mockReset()
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+  })
+
+  it('persists completion when the user skips setup', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+    const onComplete = vi.fn()
+
+    renderWithProviders(<Onboarding onComplete={onComplete} />)
+
+    fireEvent.click(screen.getByTestId('onboarding-skip'))
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('complete_onboarding')
+      expect(onComplete).toHaveBeenCalled()
+    })
+  })
+
+  it('separates required macOS permissions from recommended notifications', () => {
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(screen.getByText(/Accessibility and Screen Recording are required/i)).toBeInTheDocument()
+    expect(screen.getByText(/Notifications are recommended/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/requires Accessibility, Screen Recording, and notification access/i),
+    ).not.toBeInTheDocument()
+  })
+
+  // Intro(0) → Permissions(1) → Consent(2). IS_TAURI=false 라 Permissions 단계는
+  // 자동으로 ready 가 되어 Next 가 막히지 않는다.
+  function gotoConsentStep() {
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+  }
+
+  it('grant CTA → calls set_consent with the 6 master fields true and the other 7 false', async () => {
+    // 동의 IPC 는 부여 스냅샷을 반환한다(다른 invoke 는 undefined).
+    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'set_consent') {
+        const perms = (args as { permissions: ConsentPermissions }).permissions
+        return Promise.resolve({ status: 'Valid', permissions: perms })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoConsentStep()
+
+    // 부여 전에는 수집 항목 열거가 보여야 한다(정보 제공형).
+    expect(screen.getByText(en.privacy.consent.monitoring.collected.screenFrames)).toBeInTheDocument()
+    expect(screen.getByText(en.privacy.consent.monitoring.collected.guiInteractions)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('onboarding-consent-grant'))
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('set_consent', {
+        permissions: {
+          screen_capture: true,
+          window_title_collection: true,
+          app_usage_analytics: true,
+          process_monitoring: true,
+          input_activity: true,
+          telemetry: true,
+          ocr_processing: false,
+          clipboard_monitoring: false,
+          file_access_monitoring: false,
+          activity_pattern_learning: false,
+          cross_device_sync: false,
+          full_text_extraction: false,
+          memory_graph_enrichment: false,
+          microphone: false,
+        },
+      })
+    })
+  })
+
+  it('shows a confirmed state after a successful grant', async () => {
+    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'set_consent') {
+        const perms = (args as { permissions: ConsentPermissions }).permissions
+        return Promise.resolve({ status: 'Valid', permissions: perms })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoConsentStep()
+
+    fireEvent.click(screen.getByTestId('onboarding-consent-grant'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-consent-granted')).toBeInTheDocument()
+    })
+  })
+
+  it('does not call set_consent until the user explicitly clicks grant (not auto-granted)', () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoConsentStep()
+
+    expect(mockInvoke).not.toHaveBeenCalledWith('set_consent', expect.anything())
+  })
+
+  // #5707: StepCoaching tests — index 4 of 6 (after Features step).
+  // Intro(0)→Permissions(1)→Consent(2)→Features(3)→Coaching(4).
+  // IS_TAURI=false means PermissionsStep auto-readies; Next is never blocked.
+
+  function gotoCoachingStep() {
+    // From step 0, click Next four times to reach step 4.
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 0→1
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 1→2
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 2→3
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 3→4
+  }
+
+  it('renders StepCoaching at index 4 with the Enable button', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoCoachingStep()
+
+    // The coaching enable button must be present before any click.
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-coaching-enable')).toBeInTheDocument()
+    })
+    // The "already enabled" confirmation must NOT be present yet.
+    expect(screen.queryByTestId('onboarding-coaching-enabled')).not.toBeInTheDocument()
+  })
+
+  it('clicking Enable coaching calls get_consent → set_consent → fetchSettings → updateSettings', async () => {
+    // IPC stubs: get_consent returns a minimal snapshot; set_consent echoes it.
+    const basePermissions: ConsentPermissions = {
+      screen_capture: true,
+      window_title_collection: true,
+      app_usage_analytics: true,
+      process_monitoring: true,
+      input_activity: true,
+      telemetry: true,
+      ocr_processing: false,
+      clipboard_monitoring: false,
+      file_access_monitoring: false,
+      activity_pattern_learning: false,
+      cross_device_sync: false,
+      full_text_extraction: false,
+      memory_graph_enrichment: false,
+      microphone: false,
+    }
+    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'get_consent') {
+        return Promise.resolve({ status: 'Valid', permissions: basePermissions })
+      }
+      if (cmd === 'set_consent') {
+        const perms = (args as { permissions: ConsentPermissions }).permissions
+        return Promise.resolve({ status: 'Valid', permissions: perms })
+      }
+      return Promise.resolve(undefined)
+    })
+    // HTTP stubs for fetchSettings / updateSettings.
+    const settingsBase = { coaching: { enabled: false } }
+    mockFetchSettings.mockResolvedValue(settingsBase)
+    mockUpdateSettings.mockResolvedValue({ ...settingsBase, coaching: { enabled: true } })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoCoachingStep()
+
+    const enableBtn = await screen.findByTestId('onboarding-coaching-enable')
+    fireEvent.click(enableBtn)
+
+    await waitFor(() => {
+      // Tier-4 consent must be merged: activity_pattern_learning → true.
+      expect(mockInvoke).toHaveBeenCalledWith('set_consent', {
+        permissions: { ...basePermissions, activity_pattern_learning: true },
+      })
+      // HTTP settings write must have been called with coaching.enabled = true.
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ coaching: expect.objectContaining({ enabled: true }) }),
+      )
+    })
+  })
+
+  it('shows the confirmed state after Enable coaching succeeds', async () => {
+    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'get_consent') {
+        return Promise.resolve({ status: 'Valid', permissions: {} })
+      }
+      if (cmd === 'set_consent') {
+        const perms = (args as { permissions: ConsentPermissions }).permissions
+        return Promise.resolve({ status: 'Valid', permissions: perms })
+      }
+      return Promise.resolve(undefined)
+    })
+    mockFetchSettings.mockResolvedValue({ coaching: { enabled: false } })
+    mockUpdateSettings.mockResolvedValue({ coaching: { enabled: true } })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoCoachingStep()
+
+    const enableBtn = await screen.findByTestId('onboarding-coaching-enable')
+    fireEvent.click(enableBtn)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-coaching-enabled')).toBeInTheDocument()
+    })
+  })
+
+  it('default-off guard: coaching Enable button is NOT auto-clicked — coaching stays off if user skips', () => {
+    // No mocks fire — if the button were auto-clicked, get_consent IPC would fire.
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoCoachingStep()
+
+    // get_consent must not have been called (no auto-grant).
+    expect(mockInvoke).not.toHaveBeenCalledWith('get_consent')
+  })
+})

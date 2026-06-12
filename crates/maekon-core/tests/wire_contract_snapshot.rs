@@ -12,7 +12,20 @@ fn wire_codes_match_expected_snapshot() {
     let actual: Vec<&'static str> = error_codes::all_codes();
     let mut actual_sorted = actual.clone();
     actual_sorted.sort();
+    // F-RC-C31-01: assert no duplicates before dedup so the snapshot test cannot
+    // silently pass when all_codes() returns duplicates that also appear in the
+    // expected fixture (dedup would make both sides match, hiding the duplicate).
+    let pre_dedup_len = actual_sorted.len();
     actual_sorted.dedup();
+    assert_eq!(
+        pre_dedup_len,
+        actual_sorted.len(),
+        "Duplicate wire code detected — dedup reduced {} → {}. \
+         Per spec §7.5, each wire code must be unique. \
+         Fix all_codes() to remove the duplicate registration.",
+        pre_dedup_len,
+        actual_sorted.len()
+    );
 
     let expected_raw = include_str!("wire_contract_snapshot.expected.txt");
     let expected: Vec<&str> = expected_raw

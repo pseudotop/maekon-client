@@ -36,7 +36,7 @@ impl MetricsQueryService {
             .map(|metrics| metrics.into_iter().map(assemble_metrics_response).collect())
     }
 
-    pub fn get_hourly_metrics(
+    pub async fn get_hourly_metrics(
         &self,
         params: &HourlyQuery,
     ) -> Result<Vec<HourlyMetricsResponse>, ApiError> {
@@ -49,6 +49,7 @@ impl MetricsQueryService {
         self.ctx
             .storage
             .list_hourly_metrics_since(&from)
+            .await
             .map_err(|error| ApiError::Internal(error.to_string()))
             .map(|rows| {
                 rows.into_iter()

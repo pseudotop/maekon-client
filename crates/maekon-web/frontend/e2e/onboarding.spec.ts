@@ -107,9 +107,9 @@ test.describe('Onboarding (simulated first-run)', () => {
 
     const stepIndicator = page.locator('fieldset[aria-label="Step indicator"]')
     await expect(stepIndicator).toBeVisible()
-    // 4 dots for 4 steps
+    // 6 dots for 6 steps (TOTAL_STEPS in Onboarding.tsx — #5707 added StepCoaching)
     const dots = stepIndicator.locator('div')
-    await expect(dots).toHaveCount(4)
+    await expect(dots).toHaveCount(6)
   })
 
   test('should skip onboarding via skip button', async ({ page }) => {
@@ -121,18 +121,23 @@ test.describe('Onboarding (simulated first-run)', () => {
     await expect(page.getByRole('heading', { name: dashboardTitleName })).toBeVisible({ timeout: 10000 })
   })
 
-  test('step 4 shows CommandPalette keyboard shortcut tip', async ({ page }) => {
+  test('final step shows CommandPalette keyboard shortcut tip', async ({ page }) => {
     await page.goto('/')
     await expect(page.getByText(step1TitleName)).toBeVisible({ timeout: 10000 })
 
-    // Advance to step 4 (step 1 → 2 → 3 → 4)
+    // Advance to the Ready step (screen 6 of 6; i18n keys keep their
+    // historical step4* names): welcome → permissions → privacy → features
+    // → coaching (#5707 opt-in, Next leaves it off) → ready.
     const nextBtn = page.getByRole('button', { name: nextButtonName })
     await nextBtn.click()
     await expect(page.getByText(step2TitleName)).toBeVisible({ timeout: 5000 })
     await nextBtn.click()
-    // step 3 (features)
+    // features
     await nextBtn.click()
-    // step 4 (ready)
+    // coaching opt-in
+    await nextBtn.click()
+    // ready
+    await nextBtn.click()
     await expect(page.getByText(step4TitleName)).toBeVisible({ timeout: 5000 })
 
     // The tip card with role="note" should mention the keyboard shortcut

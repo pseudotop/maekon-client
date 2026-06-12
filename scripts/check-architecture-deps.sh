@@ -8,6 +8,103 @@ echo "[arch-deps] Verifying workspace runtime dependency direction"
 
 METADATA_JSON="$(cargo metadata --format-version 1 --no-deps)"
 
+if command -v node >/dev/null 2>&1; then
+  ARCH_DEPS_METADATA="$METADATA_JSON" node <<'JS'
+const metadata = JSON.parse(process.env.ARCH_DEPS_METADATA);
+const packages = metadata.packages;
+const workspaceNames = new Set(packages.map((pkg) => pkg.name));
+
+// Normal/runtime dependency allowlist.
+// Dev/build-only edges are intentionally ignored so architecture guardrails
+// focus on production crate coupling.
+const allowedRuntimeEdges = new Map([
+  ["maekon-core", []],
+  ["maekon-api-contracts", ["maekon-core"]],
+  ["maekon-lint", []],
+  ["maekon-audio", ["maekon-core"]],
+  ["maekon-monitor", ["maekon-core"]],
+  ["maekon-vision", ["maekon-core"]],
+  ["maekon-network", ["maekon-core", "maekon-api-contracts"]],
+  ["maekon-storage", ["maekon-core"]],
+  ["maekon-suggestion", ["maekon-core"]],
+  ["maekon-web", ["maekon-core", "maekon-api-contracts"]],
+  ["maekon-automation", ["maekon-core"]],
+  ["maekon-analysis", ["maekon-core"]],
+  ["maekon-embedding", ["maekon-core"]],
+  ["maekon-sandbox-worker", ["maekon-core"]],
+  [
+    "maekon-app",
+    [
+      "maekon-core",
+      "maekon-api-contracts",
+      "maekon-audio",
+      "maekon-monitor",
+      "maekon-vision",
+      "maekon-network",
+      "maekon-storage",
+      "maekon-suggestion",
+      "maekon-web",
+      "maekon-automation",
+      "maekon-analysis",
+      "maekon-embedding",
+    ],
+  ],
+]);
+
+const errors = [];
+const lines = [];
+
+for (const pkg of [...packages].sort((a, b) => a.name.localeCompare(b.name))) {
+  const name = pkg.name;
+  if (!allowedRuntimeEdges.has(name)) {
+    errors.push(`missing allowlist entry for workspace package: ${name}`);
+    continue;
+  }
+
+  const runtimeDeps = [...new Set(
+    pkg.dependencies
+      .filter((dep) => dep.path !== null && dep.kind === null && workspaceNames.has(dep.name))
+      .map((dep) => dep.name),
+  )].sort();
+  lines.push(`${name}: ${runtimeDeps.length > 0 ? runtimeDeps.join(", ") : "(none)"}`);
+
+  const allowed = new Set(allowedRuntimeEdges.get(name));
+  const unexpected = runtimeDeps.filter((dep) => !allowed.has(dep));
+  if (unexpected.length > 0) {
+    errors.push(`${name} has unexpected runtime workspace deps: ${unexpected.join(", ")}`);
+  }
+}
+
+const unknownAllowlistEntries = [...allowedRuntimeEdges.keys()]
+  .filter((name) => !workspaceNames.has(name))
+  .sort();
+if (unknownAllowlistEntries.length > 0) {
+  errors.push(
+    `allowlist references packages that are no longer in the workspace: ${unknownAllowlistEntries.join(", ")}`,
+  );
+}
+
+if (errors.length > 0) {
+  console.error("[arch-deps] Runtime dependency direction check failed:");
+  for (const error of errors) {
+    console.error(`  - ${error}`);
+  }
+  console.error("[arch-deps] Current runtime dependency snapshot:");
+  for (const line of lines) {
+    console.error(`  - ${line}`);
+  }
+  process.exit(1);
+}
+
+console.log("[arch-deps] Runtime dependency snapshot:");
+for (const line of lines) {
+  console.log(`  - ${line}`);
+}
+console.log("[arch-deps] Dependency direction check passed");
+JS
+  exit $?
+fi
+
 ARCH_DEPS_METADATA="$METADATA_JSON" python3 - <<'PY'
 import json
 import os

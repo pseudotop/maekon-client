@@ -32,6 +32,9 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP_PATH/Contents/Info.plist")"
 DISPLAY_NAME="$(/usr/libexec/PlistBuddy -c "Print CFBundleDisplayName" "$APP_PATH/Contents/Info.plist")"
+SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1 || true)"
+CDHASH="$(printf '%s\n' "$SIGNATURE_DETAILS" | awk -F= '/^CDHash=/ { print $2; exit }')"
+SIGNATURE_KIND="$(printf '%s\n' "$SIGNATURE_DETAILS" | awk -F= '/^Signature=/ { print $2; exit }')"
 
 if [[ "$BUNDLE_ID" != "com.maekon.app.dev" ]]; then
   echo "error: expected dev bundle identifier com.maekon.app.dev, got: $BUNDLE_ID" >&2
@@ -46,10 +49,14 @@ fi
 echo "Built and signed: $APP_PATH"
 echo "Bundle identifier: $BUNDLE_ID"
 echo "Display name: $DISPLAY_NAME"
+echo "Code signature: ${SIGNATURE_KIND:-unknown}"
+echo "CDHash: ${CDHASH:-unknown}"
 echo "Launch for native QC: open -n \"$APP_PATH\""
 echo "QC note: quit any installed release Maekon app before launch so macOS does not surface the release identity."
+echo "TCC diagnostic: ./scripts/diagnose-macos-dev-tcc.sh"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   echo "warning: ad-hoc signing uses a cdhash-based requirement; macOS TCC permissions may need to be granted again after rebuilds." >&2
+  echo "warning: System Settings can show Maekon Dev enabled for an older cdhash while the rebuilt app still probes permissions as missing." >&2
   echo "warning: set MAEKON_DEV_CODESIGN_IDENTITY to a local signing identity for stable Accessibility/Screen Recording permissions." >&2
 fi

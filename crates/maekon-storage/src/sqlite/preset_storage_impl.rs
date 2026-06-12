@@ -8,10 +8,9 @@ use super::SqliteStorage;
 impl PresetStorage for SqliteStorage {
     /// List all custom presets from the `automation_presets` table.
     fn list_presets(&self) -> Result<Vec<WorkflowPreset>, CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         let mut stmt = conn
             .prepare(
@@ -52,10 +51,9 @@ impl PresetStorage for SqliteStorage {
 
     /// Get a single preset by ID.
     fn get_preset(&self, id: &str) -> Result<Option<WorkflowPreset>, CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         let result = conn.query_row(
             "SELECT id, name, description, category, steps_json, builtin, platform, ai_profile_id
@@ -89,11 +87,6 @@ impl PresetStorage for SqliteStorage {
     /// Insert or replace a preset. Sets `updated_at` to now; sets `created_at`
     /// only for new rows.
     fn save_preset(&self, preset: &WorkflowPreset) -> Result<(), CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
-
         let steps_json = serde_json::to_string(&preset.steps).map_err(|e| CoreError::Storage {
             code: maekon_core::error_codes::StorageCode::Failed,
             message: format!("serialize steps: {e}"),
@@ -105,6 +98,8 @@ impl PresetStorage for SqliteStorage {
             })?;
         let now = Utc::now().to_rfc3339();
 
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, automation_presets ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
         conn.execute(
             "INSERT INTO automation_presets
              (id, name, description, category, steps_json, builtin, platform, ai_profile_id, created_at, updated_at)
@@ -134,27 +129,26 @@ impl PresetStorage for SqliteStorage {
         .map_err(|e| CoreError::Storage { code: maekon_core::error_codes::StorageCode::Failed, message: format!("upsert: {e}") })?;
 
         Ok(())
+        })
     }
 
     /// Delete a preset by ID. Built-in presets (builtin=1) are protected and
     /// will not be deleted. Returns true if a row was actually removed.
     fn delete_preset(&self, id: &str) -> Result<bool, CoreError> {
-        let conn = self.conn.lock().map_err(|e| CoreError::Storage {
-            code: maekon_core::error_codes::StorageCode::Failed,
-            message: format!("lock: {e}"),
-        })?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false 반환).
+        self.conn.write_lock().run(false, |conn| {
+            let affected = conn
+                .execute(
+                    "DELETE FROM automation_presets WHERE id = ?1 AND builtin = 0",
+                    [id],
+                )
+                .map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("delete: {e}"),
+                })?;
 
-        let affected = conn
-            .execute(
-                "DELETE FROM automation_presets WHERE id = ?1 AND builtin = 0",
-                [id],
-            )
-            .map_err(|e| CoreError::Storage {
-                code: maekon_core::error_codes::StorageCode::Failed,
-                message: format!("delete: {e}"),
-            })?;
-
-        Ok(affected > 0)
+            Ok(affected > 0)
+        })
     }
 }
 

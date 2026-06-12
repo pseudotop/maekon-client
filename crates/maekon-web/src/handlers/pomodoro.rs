@@ -4,9 +4,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use maekon_api_contracts::pomodoro::{PomodoroSessionResponse, StartPomodoroRequest};
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::pomodoro::{PomodoroSession, PomodoroStatus};
 use tracing::debug;
-use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::AppState;
@@ -77,7 +77,7 @@ pub async fn start_pomodoro(
             }
         }
 
-        let session = PomodoroSession::new(Uuid::new_v4().to_string(), duration, break_mins);
+        let session = PomodoroSession::new(generate_id("pomo"), duration, break_mins);
         let response = session_to_response(&session);
         *guard = Some(session);
         response

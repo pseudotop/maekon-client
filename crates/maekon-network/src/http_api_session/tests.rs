@@ -314,6 +314,22 @@ fn new_session_with_system_prompt_initializes_history() {
 }
 
 #[test]
+fn http_api_session_is_external() {
+    // Cloud HTTP API transmits chat content off-device → must be guarded.
+    let session = test_session(
+        "provider_surface.anthropic.direct_api".to_string(),
+        "claude-sonnet-4-20250514".to_string(),
+        "https://api.anthropic.com/v1/messages".to_string(),
+        CredentialSource::ApiKey("sk-test".to_string()),
+        AiProviderType::Anthropic,
+        None,
+        Arc::new(AiSessionConfig::default()),
+        None,
+    );
+    assert!(session.is_external());
+}
+
+#[test]
 fn new_session_without_system_prompt_has_empty_history() {
     let session = test_session(
         "provider_surface.openai.direct_api".to_string(),

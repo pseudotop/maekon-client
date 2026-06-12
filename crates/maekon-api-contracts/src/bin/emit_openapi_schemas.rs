@@ -1,0 +1,268 @@
+//! Schema-emit binary for the OpenAPI generator.
+//!
+//! Run with `cargo run -p maekon-api-contracts --bin emit-openapi-schemas
+//! --features schema`. Prints a single JSON object whose keys are the
+//! schema definition names (the contract DTO type names) and whose values are
+//! the JSON Schema (draft 2020-12) for each type. `scripts/generate-http-openapi.sh`
+//! splices this map into `components.schemas`.
+//!
+//! The full set of public contract DTOs is emitted on purpose: the owner
+//! decision is FULL schema disclosure (the API is loopback-only + token-gated;
+//! schemas describe type structure, not secret values). Cross-crate
+//! `maekon-core` field types are rendered as opaque objects via
+//! `maekon_api_contracts::schema_support` so the schemas never recurse into
+//! `maekon-core`. The generic `common::PaginatedResponse<T>` is intentionally
+//! omitted (it has no standalone concrete body form).
+
+use schemars::SchemaGenerator;
+
+fn main() {
+    let mut generator = SchemaGenerator::default();
+
+    // Register every public contract DTO. `subschema_for` accumulates the named
+    // definition (and any crate-local transitive types) into the generator's
+    // `$defs` map; we then emit that map.
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderTransportSpec>();
+    generator
+        .subschema_for::<maekon_api_contracts::ai_providers::ProviderModelCatalogTransportSpec>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderHealthTransportSpec>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelSupportStatus>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelCapabilityRules>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelCapabilityProfile>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderParameterSet>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderParameterProfile>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelsRequest>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderDiscoveredModel>();
+    generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelsResponse>();
+    generator.subschema_for::<maekon_api_contracts::annotations::CreateAnnotationRequest>();
+    generator.subschema_for::<maekon_api_contracts::audit_export::AuditExportQuery>();
+    generator.subschema_for::<maekon_api_contracts::automation::AutomationStatusDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::AuditEntryDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::AuditQuery>();
+    generator.subschema_for::<maekon_api_contracts::automation::PolicyEventQuery>();
+    generator.subschema_for::<maekon_api_contracts::automation::AutomationStatsDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::PoliciesDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::PresetListDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::PresetRunResult>();
+    generator.subschema_for::<maekon_api_contracts::automation::ExecuteIntentHintRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation::ExecuteIntentHintResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation::SceneActionType>();
+    generator.subschema_for::<maekon_api_contracts::automation::ExecuteSceneActionRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation::ExecuteSceneActionResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation::AutomationContractsDto>();
+    generator.subschema_for::<maekon_api_contracts::automation::SceneQuery>();
+    generator.subschema_for::<maekon_api_contracts::automation::SceneCalibrationQuery>();
+    generator.subschema_for::<maekon_api_contracts::automation::SceneCalibrationDto>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiSessionPath>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiCreateSessionRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiHighlightRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiConfirmRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiExecutionRequest>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiCreateSessionResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiSessionResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiConfirmResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiExecutionOutcome>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiExecuteResponse>();
+    generator.subschema_for::<maekon_api_contracts::automation_gui::GuiReadinessResponse>();
+    generator.subschema_for::<maekon_api_contracts::backup::BackupQuery>();
+    generator.subschema_for::<maekon_api_contracts::backup::BackupMetadata>();
+    generator.subschema_for::<maekon_api_contracts::backup::BackupIncludes>();
+    generator.subschema_for::<maekon_api_contracts::backup::TagBackup>();
+    generator.subschema_for::<maekon_api_contracts::backup::FrameTagBackup>();
+    generator.subschema_for::<maekon_api_contracts::backup::SettingsBackup>();
+    generator.subschema_for::<maekon_api_contracts::backup::EventBackup>();
+    generator.subschema_for::<maekon_api_contracts::backup::FrameBackup>();
+    generator.subschema_for::<maekon_api_contracts::backup::BackupArchive>();
+    generator.subschema_for::<maekon_api_contracts::bug_report::BugReportBundleDto>();
+    generator.subschema_for::<maekon_api_contracts::bug_report::SystemInfoDto>();
+    generator.subschema_for::<maekon_api_contracts::bug_report::ConnectionStatusDto>();
+    generator.subschema_for::<maekon_api_contracts::bug_report::CreateBugReportRequest>();
+    generator.subschema_for::<maekon_api_contracts::coaching::CoachingHistoryQuery>();
+    generator.subschema_for::<maekon_api_contracts::coaching::CoachingEventResponse>();
+    generator.subschema_for::<maekon_api_contracts::coaching::GoalProgressResponse>();
+    generator.subschema_for::<maekon_api_contracts::coaching::CoachingStatsTodayResponse>();
+    generator.subschema_for::<maekon_api_contracts::coaching::UpdateGoalsRequest>();
+    generator.subschema_for::<maekon_api_contracts::coaching::HabitStreakQuery>();
+    generator.subschema_for::<maekon_api_contracts::coaching::HabitStreakResponse>();
+    generator.subschema_for::<maekon_api_contracts::common::TimeRangeQuery>();
+    generator.subschema_for::<maekon_api_contracts::common::PaginationMeta>();
+    generator.subschema_for::<maekon_api_contracts::dashboard::DashboardDayQuery>();
+    generator.subschema_for::<maekon_api_contracts::dashboard::RawContentActivity>();
+    generator.subschema_for::<maekon_api_contracts::dashboard::RawContentActivityBrief>();
+    generator.subschema_for::<maekon_api_contracts::data::DeleteRangeRequest>();
+    generator.subschema_for::<maekon_api_contracts::data::DeleteResult>();
+    generator.subschema_for::<maekon_api_contracts::digests::DigestListQuery>();
+    generator.subschema_for::<maekon_api_contracts::error::ErrorResponse>();
+    generator.subschema_for::<maekon_api_contracts::events::EventResponse>();
+    generator.subschema_for::<maekon_api_contracts::export::ExportQuery>();
+    generator.subschema_for::<maekon_api_contracts::export::MetricExportRecord>();
+    generator.subschema_for::<maekon_api_contracts::export::EventExportRecord>();
+    generator.subschema_for::<maekon_api_contracts::export::FrameExportRecord>();
+    generator.subschema_for::<maekon_api_contracts::external_grpc::LoadPolicyView>();
+    generator.subschema_for::<maekon_api_contracts::external_grpc::LiveConfigResponse>();
+    generator.subschema_for::<maekon_api_contracts::focus::FocusMetricsDto>();
+    generator.subschema_for::<maekon_api_contracts::focus::FocusMetricsResponse>();
+    generator.subschema_for::<maekon_api_contracts::focus::WorkSessionDto>();
+    generator.subschema_for::<maekon_api_contracts::focus::InterruptionDto>();
+    generator.subschema_for::<maekon_api_contracts::focus::LocalSuggestionDto>();
+    generator.subschema_for::<maekon_api_contracts::focus::SuggestionFeedbackRequest>();
+    generator.subschema_for::<maekon_api_contracts::frames::FrameResponse>();
+    generator.subschema_for::<maekon_api_contracts::idle::IdlePeriodResponse>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationStatus>();
+    generator
+        .subschema_for::<maekon_api_contracts::integration::IntegrationOutboundRuntimeStatus>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationDeviceAuthorizationCommandResult>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationDeviceAuthorizationFlowRequest>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationSessionSummary>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationAckCursorSummary>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationAuditRecordSummary>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationAuditLogResponse>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationInboxPromptSummary>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationInboxResponse>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationInboxRefreshResponse>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationInboxActionResponse>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationInboxDismissRequest>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationBootstrapRequest>();
+    generator
+        .subschema_for::<maekon_api_contracts::integration::IntegrationBootstrapSessionBinding>();
+    generator
+        .subschema_for::<maekon_api_contracts::integration::IntegrationSessionHeartbeatPayload>();
+    generator
+        .subschema_for::<maekon_api_contracts::integration::IntegrationSessionDisconnectPayload>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationAckPayload>();
+    generator.subschema_for::<maekon_api_contracts::integration::IntegrationBootstrapResponse>();
+    generator.subschema_for::<maekon_api_contracts::metrics::MetricsResponse>();
+    generator.subschema_for::<maekon_api_contracts::metrics::HourlyQuery>();
+    generator.subschema_for::<maekon_api_contracts::metrics::HourlyMetricsResponse>();
+    generator.subschema_for::<maekon_api_contracts::onboarding::QuickstartStepDto>();
+    generator.subschema_for::<maekon_api_contracts::onboarding::OnboardingQuickstartDto>();
+    generator.subschema_for::<maekon_api_contracts::playbooks::CoachingTemplateDto>();
+    generator.subschema_for::<maekon_api_contracts::playbooks::CoachingTemplateListDto>();
+    generator.subschema_for::<maekon_api_contracts::playbooks::PresetSummaryDto>();
+    generator.subschema_for::<maekon_api_contracts::playbooks::PresetSummaryListDto>();
+    generator.subschema_for::<maekon_api_contracts::pomodoro::StartPomodoroRequest>();
+    generator.subschema_for::<maekon_api_contracts::pomodoro::PomodoroSessionResponse>();
+    generator.subschema_for::<maekon_api_contracts::processes::ProcessEntryResponse>();
+    generator.subschema_for::<maekon_api_contracts::processes::ProcessSnapshotResponse>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderTransportKind>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderAuthScheme>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderRequestShape>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ModelCatalogResponseShape>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfaceCapabilityKind>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfaceModelCapabilityKind>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfaceExecutionKind>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfacePlacementKind>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfaceStability>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ModelCatalogStrategy>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SubprocessInvocationMode>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SubprocessAuthProbeMode>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderUnknownModelPolicy>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderSurfaceCatalog>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderVendorSpec>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderVendorProjectionSpec>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderSurfaceSpec>();
+    generator
+        .subschema_for::<maekon_api_contracts::provider_specs::ProviderSurfaceProvisioningSpec>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderSurfaceSupports>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderLlmCapabilities>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderOcrCapabilities>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SurfaceDefaultModels>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderKnownModelSpec>();
+    generator
+        .subschema_for::<maekon_api_contracts::provider_specs::ProviderKnownModelCapabilities>();
+    generator
+        .subschema_for::<maekon_api_contracts::provider_specs::ProviderUnknownModelPolicySet>();
+    generator
+        .subschema_for::<maekon_api_contracts::provider_specs::ProviderAvailabilityProbeSpec>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::SubprocessTransportSpec>();
+    generator.subschema_for::<maekon_api_contracts::provider_specs::ProviderCliCompatibilitySpec>();
+    generator.subschema_for::<maekon_api_contracts::recalibration::CreateOverrideRequest>();
+    generator.subschema_for::<maekon_api_contracts::recalibration::ListOverridesQuery>();
+    generator.subschema_for::<maekon_api_contracts::recalibration::SuccessResponse>();
+    generator.subschema_for::<maekon_api_contracts::reports::ReportPeriod>();
+    generator.subschema_for::<maekon_api_contracts::reports::ReportQuery>();
+    generator.subschema_for::<maekon_api_contracts::reports::DailyStat>();
+    generator.subschema_for::<maekon_api_contracts::reports::AppStat>();
+    generator.subschema_for::<maekon_api_contracts::reports::HourlyActivity>();
+    generator.subschema_for::<maekon_api_contracts::reports::ProductivityMetrics>();
+    generator.subschema_for::<maekon_api_contracts::reports::ReportResponse>();
+    generator.subschema_for::<maekon_api_contracts::search::TagInfo>();
+    generator.subschema_for::<maekon_api_contracts::search::SearchQuery>();
+    generator.subschema_for::<maekon_api_contracts::search::SearchResult>();
+    generator.subschema_for::<maekon_api_contracts::search::SearchResponse>();
+    generator.subschema_for::<maekon_api_contracts::search::SemanticSearchQuery>();
+    generator.subschema_for::<maekon_api_contracts::search::SemanticSearchResult>();
+    generator.subschema_for::<maekon_api_contracts::sessions::AiSessionPath>();
+    generator.subschema_for::<maekon_api_contracts::sessions::AiSendMessageRequest>();
+    generator.subschema_for::<maekon_api_contracts::sessions::SessionResponse>();
+    generator.subschema_for::<maekon_api_contracts::settings::StorageStats>();
+    generator.subschema_for::<maekon_api_contracts::settings::AppSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::NotificationSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::UpdateSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::TelemetrySettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::MonitorControlSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::PrivacySettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::ScheduleSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::AutomationSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::SandboxSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::AiProviderSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::AiProviderProfileConfig>();
+    generator.subschema_for::<maekon_api_contracts::settings::SavedAiProviderProfile>();
+    generator.subschema_for::<maekon_api_contracts::settings::OcrValidationSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::SceneActionOverrideSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::SceneIntelligenceSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::ExternalApiSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::AiSessionSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::SuggestionSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::IndicatorSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::AnalysisSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::NetworkSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::CoachingSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::IntegrationSettings>();
+    generator.subschema_for::<maekon_api_contracts::settings::SyncSettings>();
+    generator.subschema_for::<maekon_api_contracts::stats::DateQuery>();
+    generator.subschema_for::<maekon_api_contracts::stats::AppUsageEntry>();
+    generator.subschema_for::<maekon_api_contracts::stats::DailySummaryResponse>();
+    generator.subschema_for::<maekon_api_contracts::stats::AppUsageResponse>();
+    generator.subschema_for::<maekon_api_contracts::stats::HeatmapQuery>();
+    generator.subschema_for::<maekon_api_contracts::stats::HeatmapCell>();
+    generator.subschema_for::<maekon_api_contracts::stats::HeatmapResponse>();
+    generator.subschema_for::<maekon_api_contracts::stats::GuiHeatmapQuery>();
+    generator.subschema_for::<maekon_api_contracts::stats::GuiHeatmapCell>();
+    generator.subschema_for::<maekon_api_contracts::stream::AiRuntimeStatus>();
+    generator.subschema_for::<maekon_api_contracts::stream::RealtimeEvent>();
+    generator.subschema_for::<maekon_api_contracts::stream::MetricsUpdate>();
+    generator.subschema_for::<maekon_api_contracts::stream::FrameUpdate>();
+    generator.subschema_for::<maekon_api_contracts::stream::IdleUpdate>();
+    generator.subschema_for::<maekon_api_contracts::suggestions::SuggestionDto>();
+    generator.subschema_for::<maekon_api_contracts::suggestions::SuggestionFeedbackRequest>();
+    generator.subschema_for::<maekon_api_contracts::support::DiagnosticsHealthDto>();
+    generator.subschema_for::<maekon_api_contracts::support::ProviderCliDiagnosticSummaryDto>();
+    generator.subschema_for::<maekon_api_contracts::support::DiagnosticsBundleDto>();
+    generator.subschema_for::<maekon_api_contracts::support::RuntimeLogSnapshotDto>();
+    generator.subschema_for::<maekon_api_contracts::tags::TagResponse>();
+    generator.subschema_for::<maekon_api_contracts::tags::CreateTagRequest>();
+    generator.subschema_for::<maekon_api_contracts::tags::UpdateTagRequest>();
+    generator.subschema_for::<maekon_api_contracts::tags::BatchTagRequest>();
+    generator.subschema_for::<maekon_api_contracts::tags::BatchTagResponse>();
+    generator.subschema_for::<maekon_api_contracts::timeline::SessionInfo>();
+    generator.subschema_for::<maekon_api_contracts::timeline::TimelineItem>();
+    generator.subschema_for::<maekon_api_contracts::timeline::AppSegment>();
+    generator.subschema_for::<maekon_api_contracts::timeline::TimelineResponse>();
+    generator.subschema_for::<maekon_api_contracts::timeline::TimelineQuery>();
+    generator.subschema_for::<maekon_api_contracts::tracking_schedule::TrackingScheduleStatus>();
+    generator.subschema_for::<maekon_api_contracts::update::UpdatePhase>();
+    generator.subschema_for::<maekon_api_contracts::update::RollbackReason>();
+    generator.subschema_for::<maekon_api_contracts::update::RollbackInfo>();
+    generator.subschema_for::<maekon_api_contracts::update::PendingUpdateInfo>();
+    generator.subschema_for::<maekon_api_contracts::update::DownloadProgress>();
+    generator.subschema_for::<maekon_api_contracts::update::UpdateStatus>();
+    generator.subschema_for::<maekon_api_contracts::update::UpdateAction>();
+    generator.subschema_for::<maekon_api_contracts::update::UpdateActionRequest>();
+    generator.subschema_for::<maekon_api_contracts::update::UpdateActionResponse>();
+
+    let definitions = generator.definitions();
+    let serialized = serde_json::to_string_pretty(definitions)
+        .expect("schema definitions must serialize to JSON");
+    println!("{serialized}");
+}

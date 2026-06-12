@@ -1,5 +1,7 @@
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::config::LlmProviderType;
+use std::sync::Arc;
+
 use maekon_core::config::{AiProviderConfig, PiiFilterLevel};
 use maekon_core::error::CoreError;
 use maekon_core::ports::secret_store::SecretStoreSet;
@@ -17,14 +19,28 @@ pub(super) fn resolve_direct_surface_adapters(
     pii_filter_level: PiiFilterLevel,
     external_ocr_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     secret_stores: Option<SecretStoreSet>,
+    // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
+    // registry from the composition root. The OCR and LLM adapters resolved here
+    // both clone this one Arc.
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    // Per-call LLM health handle forwarded to FU-3 Local arm when LlmProviderType=Local.
+    // Remote/CLI arms are unaffected (None is safe).
+    llm_call_health: Option<std::sync::Arc<maekon_core::ports::llm_provider::LlmCallHealth>>,
 ) -> Result<AiProviderAdapters, CoreError> {
     let (ocr, ocr_source, ocr_fallback_reason) = resolve_ocr_provider(
         config,
         pii_filter_level,
-        external_ocr_privacy_guard,
+        external_ocr_privacy_guard.clone(),
         secret_stores.clone(),
+        breaker_registry.clone(),
     )?;
-    let (llm, llm_source, llm_fallback_reason) = resolve_llm_provider(config, secret_stores)?;
+    let (llm, llm_source, llm_fallback_reason) = resolve_llm_provider(
+        config,
+        external_ocr_privacy_guard,
+        secret_stores,
+        breaker_registry,
+        llm_call_health,
+    )?;
 
     Ok(AiProviderAdapters {
         ocr,
@@ -48,7 +64,7 @@ pub(super) fn configured_ocr_surface_transport(
         })
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) fn configured_llm_surface_transport(
     config: &AiProviderConfig,
 ) -> Option<(String, ProviderSurfaceTransport)> {
@@ -61,7 +77,7 @@ pub(super) fn configured_llm_surface_transport(
         })
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) fn llm_uses_managed_oauth(config: &AiProviderConfig) -> bool {
     if config.llm_provider != LlmProviderType::Remote {
         return false;

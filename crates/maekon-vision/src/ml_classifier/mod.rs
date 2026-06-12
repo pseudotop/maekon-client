@@ -145,7 +145,9 @@ impl OnnxGuiClassifier {
             return false;
         }
 
-        match ort::session::Session::builder().and_then(|b| b.commit_from_file(&self.model_path)) {
+        match ort::session::Session::builder()
+            .and_then(|mut b| b.commit_from_file(&self.model_path))
+        {
             Ok(new_session) => {
                 let mut session = self.session.lock().unwrap_or_else(|e| {
                     warn!("ml classifier session lock poisoned — recovering inner data");
@@ -226,8 +228,13 @@ mod tests {
     #[test]
     fn load_missing_model_returns_none() {
         let result = OnnxGuiClassifier::load(&PathBuf::from("/nonexistent/model.onnx"));
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
+        // Contract: a non-existent model file is not an error — callers fall back to
+        // heuristic inference. Must be Ok(None), never Err.
+        let classifier = result.expect("missing model file must not produce an error");
+        assert!(
+            classifier.is_none(),
+            "missing model must yield None, not a loaded classifier"
+        );
     }
 
     #[test]

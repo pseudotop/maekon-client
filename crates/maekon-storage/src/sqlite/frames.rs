@@ -10,11 +10,27 @@ use super::{FrameRecord, SqliteStorage};
 impl SqliteStorage {
     pub fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, StorageError> {
         let (from, to) = window.to_sql_pair();
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::count_frames_in_range_inner(read.conn(), &from, &to)
+    }
 
+    /// Async `count_frames_in_range` over the read funnel (ADR-026 PR-4).
+    pub(crate) async fn count_frames_in_range_async(
+        &self,
+        window: &TimeWindow,
+    ) -> Result<u64, StorageError> {
+        // owned move into the Send + 'static closure.
+        let (from, to) = window.to_sql_pair();
+        self.with_conn_read(move |conn| Self::count_frames_in_range_inner(conn, &from, &to))
+            .await
+    }
+
+    fn count_frames_in_range_inner(
+        conn: &rusqlite::Connection,
+        from: &str,
+        to: &str,
+    ) -> Result<u64, StorageError> {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM frames WHERE timestamp >= ?1 AND timestamp <= ?2",
@@ -27,11 +43,25 @@ impl SqliteStorage {
     }
 
     pub fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::get_frame_file_path_inner(read.conn(), frame_id)
+    }
 
+    /// Async `get_frame_file_path` over the read funnel (ADR-026 PR-4).
+    pub(crate) async fn get_frame_file_path_async(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<String>, StorageError> {
+        // `frame_id` is Copy — moved into the Send + 'static closure.
+        self.with_conn_read(move |conn| Self::get_frame_file_path_inner(conn, frame_id))
+            .await
+    }
+
+    fn get_frame_file_path_inner(
+        conn: &rusqlite::Connection,
+        frame_id: i64,
+    ) -> Result<Option<String>, StorageError> {
         let result: Result<Option<String>, rusqlite::Error> = conn.query_row(
             "SELECT file_path FROM frames WHERE id = ?1",
             rusqlite::params![frame_id],
@@ -47,7 +77,19 @@ impl SqliteStorage {
         }
     }
 
-    /// # Arguments
+    /// 프레임 메타데이터를 SQLite에 저장한다 (window bounds 없음).
+    ///
+    /// # PRECONDITION — GDPR Art. 25 (Privacy by Design)
+    ///
+    /// 호출자는 저장 전에 PII 민감 필드를 반드시 sanitize해야 한다:
+    /// - `metadata.window_title` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
+    /// - `ocr_text` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
+    ///   (OCR 출력에는 이메일, 전화번호, 카드번호 등 raw PII가 포함될 수 있음)
+    ///
+    /// `maekon-storage`는 `maekon-vision`에 의존할 수 없으므로 (순환 의존성)
+    /// PII 필터링은 이 저장소 계층에서 수행되지 않는다.
+    /// 실제 sanitization 호출 위치: `src-tauri/src/scheduler/loops/helpers.rs`
+    /// (F-PR-C20-06 — 2026-05-23)
     pub fn save_frame_metadata(
         &self,
         metadata: &FrameMetadata,
@@ -57,7 +99,19 @@ impl SqliteStorage {
         self.save_frame_metadata_with_bounds(metadata, file_path, ocr_text, None)
     }
 
-    /// # Arguments
+    /// 프레임 메타데이터를 window bounds 포함하여 SQLite에 저장한다.
+    ///
+    /// # PRECONDITION — GDPR Art. 25 (Privacy by Design)
+    ///
+    /// 호출자는 저장 전에 PII 민감 필드를 반드시 sanitize해야 한다:
+    /// - `metadata.window_title` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
+    /// - `ocr_text` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
+    ///   (OCR 출력에는 이메일, 전화번호, 카드번호 등 raw PII가 포함될 수 있음)
+    ///
+    /// `maekon-storage`는 `maekon-vision`에 의존할 수 없으므로 (순환 의존성)
+    /// PII 필터링은 이 저장소 계층에서 수행되지 않는다.
+    /// 실제 sanitization 호출 위치: `src-tauri/src/scheduler/loops/helpers.rs`
+    /// (F-PR-C20-06 — 2026-05-23)
     pub fn save_frame_metadata_with_bounds(
         &self,
         metadata: &FrameMetadata,
@@ -65,11 +119,8 @@ impl SqliteStorage {
         ocr_text: Option<&str>,
         bounds: Option<&WindowBounds>,
     ) -> Result<i64, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
-
+        // 쓰기 — write_lock(deletion_flag set 시 스킵 → id 0, frames ∈ ALL_TABLES).
+        self.conn.write_lock().run(0i64, |conn| {
         conn.execute(
             "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image, file_path, ocr_text, window_x, window_y, window_width, window_height)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
@@ -101,6 +152,7 @@ impl SqliteStorage {
         );
 
         Ok(frame_id)
+        })
     }
 
     /// # Arguments
@@ -110,13 +162,31 @@ impl SqliteStorage {
         to: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, StorageError> {
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        Self::get_frames_inner(read.conn(), from, to, limit)
+    }
+
+    /// Async `get_frames` over the read funnel (ADR-026 PR-4).
+    pub(crate) async fn get_frames_async(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<FrameRecord>, StorageError> {
+        // `from`/`to` (Copy) + `limit` (Copy) moved into the Send + 'static closure.
+        self.with_conn_read(move |conn| Self::get_frames_inner(conn, from, to, limit))
+            .await
+    }
+
+    fn get_frames_inner(
+        conn: &rusqlite::Connection,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<FrameRecord>, StorageError> {
         let from_str = from.to_rfc3339();
         let to_str = to.to_rfc3339();
-
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
 
         let mut stmt = conn
             .prepare_cached(
@@ -165,6 +235,8 @@ mod tests {
             window_title: "Test Window".to_string(),
             resolution: (1920, 1080),
             importance: 0.5,
+            monitor_id: None,
+            app_bundle_id: None,
         }
     }
 

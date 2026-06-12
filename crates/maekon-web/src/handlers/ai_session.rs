@@ -179,7 +179,6 @@ mod tests {
     use crate::AppState;
     use async_trait::async_trait;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_core::error::CoreError;
@@ -187,7 +186,6 @@ mod tests {
     use maekon_core::ports::conversation_session::{ConversationSession, SessionManager};
     use maekon_storage::sqlite::SqliteStorage;
     use std::collections::HashMap;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex};
     use tower::ServiceExt;
@@ -243,7 +241,7 @@ mod tests {
         ) -> Result<Arc<dyn ConversationSession>, CoreError> {
             let now = chrono::Utc::now();
             let info = ConversationSessionInfo {
-                session_id: uuid::Uuid::new_v4().to_string(),
+                session_id: maekon_core::id_generation::generate_id("ses"),
                 provider_name: "mock".to_string(),
                 model: config.model.unwrap_or_else(|| "mock-model".to_string()),
                 state: SessionState::Active,
@@ -323,8 +321,7 @@ mod tests {
     }
 
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     // ── Tests ────────────────────────────────────────────────────

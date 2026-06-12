@@ -28,6 +28,34 @@ pub struct MonitorInfo {
     pub name: String,
 }
 
+pub fn monitor_index_for_window(
+    bounds: Option<&WindowBounds>,
+    monitors: &[MonitorInfo],
+) -> Option<usize> {
+    let primary = || monitors.iter().find(|m| m.is_primary).map(|m| m.index);
+    let first = || monitors.first().map(|m| m.index);
+
+    let Some(bounds) = bounds else {
+        return primary().or_else(first);
+    };
+
+    let cx = bounds.x as i64 + (bounds.width as i64 / 2);
+    let cy = bounds.y as i64 + (bounds.height as i64 / 2);
+
+    monitors
+        .iter()
+        .find(|m| {
+            let mx = m.x as i64;
+            let my = m.y as i64;
+            let mw = m.width as i64;
+            let mh = m.height as i64;
+            mw > 0 && mh > 0 && cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
+        })
+        .map(|m| m.index)
+        .or_else(primary)
+        .or_else(first)
+}
+
 #[derive(Clone)]
 pub struct ScreenCapture;
 
@@ -69,35 +97,62 @@ impl ScreenCapture {
         &self,
         bounds: Option<&WindowBounds>,
     ) -> Result<DynamicImage, VisionError> {
+        self.capture_for_window_with_monitor(bounds)
+            .map(|(image, _)| image)
+    }
+
+    /// Capture the monitor containing the active window and return the selected
+    /// monitor index alongside the image.
+    ///
+    /// The returned monitor index matches [`Self::list_monitors`] ordering.
+    pub fn capture_for_window_with_monitor(
+        &self,
+        bounds: Option<&WindowBounds>,
+    ) -> Result<(DynamicImage, Option<usize>), VisionError> {
         let monitors = Monitor::all()
             .map_err(|e| VisionError::Internal(format!("Failed to query monitor list: {e}")))?;
 
-        // Single monitor — primary capture
-        if monitors.len() <= 1 {
-            return self.capture_primary();
+        if monitors.is_empty() {
+            return Err(VisionError::Internal("Monitor not found".to_string()));
         }
 
-        let Some(bounds) = bounds else {
-            return self.capture_primary();
-        };
-        // Window center point
-        let cx = bounds.x + (bounds.width as i32 / 2);
-        let cy = bounds.y + (bounds.height as i32 / 2);
+        // Single monitor — capture the only available display and report index 0.
+        if monitors.len() == 1 {
+            let monitor = monitors
+                .first()
+                .ok_or_else(|| VisionError::Internal("Monitor not found".to_string()))?;
+            let image = monitor
+                .capture_image()
+                .map_err(|e| VisionError::Internal(format!("Screen capture failed: {e}")))?;
 
-        // Find the monitor whose rect contains the window center
-        let target = monitors.iter().find(|m| {
-            let Ok(mx) = m.x() else { return false };
-            let Ok(my) = m.y() else { return false };
-            let Ok(mw) = m.width() else { return false };
-            let Ok(mh) = m.height() else { return false };
-            let mw = mw as i32;
-            let mh = mh as i32;
-            cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
-        });
+            debug!(
+                "screen capture completed: {}x{}",
+                image.width(),
+                image.height()
+            );
 
-        let monitor = target
+            return Ok((DynamicImage::ImageRgba8(image), Some(0)));
+        }
+
+        let infos: Vec<MonitorInfo> = monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| MonitorInfo {
+                index,
+                x: monitor.x().unwrap_or(0),
+                y: monitor.y().unwrap_or(0),
+                width: monitor.width().unwrap_or(0),
+                height: monitor.height().unwrap_or(0),
+                is_primary: monitor.is_primary().unwrap_or(false),
+                name: monitor.name().unwrap_or_default(),
+            })
+            .collect();
+
+        let target_index = monitor_index_for_window(bounds, &infos).unwrap_or(0);
+        let monitor = monitors
+            .get(target_index)
             .or_else(|| monitors.iter().find(|m| m.is_primary().unwrap_or(false)))
-            .or(monitors.first())
+            .or_else(|| monitors.first())
             .ok_or_else(|| VisionError::Internal("No monitor found".to_string()))?;
 
         let image = monitor
@@ -112,7 +167,7 @@ impl ScreenCapture {
             image.height()
         );
 
-        Ok(DynamicImage::ImageRgba8(image))
+        Ok((DynamicImage::ImageRgba8(image), Some(target_index)))
     }
 
     /// Capture the monitor at the given zero-based `index`.
@@ -213,5 +268,38 @@ mod tests {
             }
             assert!(infos.iter().filter(|m| m.is_primary).count() <= 1);
         }
+    }
+
+    #[test]
+    fn crt_prv_cap_008_window_center_selects_active_monitor() {
+        let monitors = vec![
+            MonitorInfo {
+                index: 0,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                is_primary: true,
+                name: "Primary".to_string(),
+            },
+            MonitorInfo {
+                index: 1,
+                x: 1920,
+                y: 0,
+                width: 1600,
+                height: 900,
+                is_primary: false,
+                name: "Secondary".to_string(),
+            },
+        ];
+        let bounds = WindowBounds {
+            x: 2200,
+            y: 100,
+            width: 800,
+            height: 600,
+        };
+
+        assert_eq!(monitor_index_for_window(Some(&bounds), &monitors), Some(1));
+        assert_eq!(monitor_index_for_window(None, &monitors), Some(0));
     }
 }

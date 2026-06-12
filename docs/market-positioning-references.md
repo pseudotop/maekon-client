@@ -10,7 +10,7 @@ This document records the **public market category** Maekon operates in, the clo
 
 This document is **not** an ADR — it captures market context, not architectural decisions. Architectural axes that follow from this positioning live in the ADR registry (`docs/architecture/`).
 
-## Problem space
+## Problem Space
 
 **Ambient AI + screen context understanding** — AI that observes a user's screen, focus, and activity stream, then turns natural pointing/typing intent ("summarize this", "what's that", "organize") into structured suggestions or actions.
 
@@ -25,7 +25,7 @@ Source pointers:
 - DeepMind AI Pointer: https://deepmind.google/blog/ai-pointer/
 - OpenAI Codex Chronicle: https://developers.openai.com/codex/memories/chronicle
 
-## DeepMind AI Pointer — 4 design principles (reference)
+## DeepMind AI Pointer — 4 Design Principles (Reference)
 
 DeepMind articulates four design principles for AI Pointer that align closely with the broader category:
 
@@ -38,7 +38,7 @@ Quoted: *"AI capabilities should work across all apps, not force users into 'AI 
 
 Maekon adopts these as the **target experience** for the work-signal layer, while differentiating on four operational axes below.
 
-## Maekon's 4 differentiation axes
+## Maekon's 4 Differentiation Axes
 
 | Axis | DeepMind AI Pointer | OpenAI Codex Chronicle | **Maekon** |
 |---|---|---|---|
@@ -47,7 +47,7 @@ Maekon adopts these as the **target experience** for the work-signal layer, whil
 | **Automation boundary** | Natural intent → **direct action** | Memory-only (Codex still acts) | Natural intent → **next-action candidates** with explicit review/approval gate (policy-gated) |
 | **Platform reach** | Chrome / Gemini / Googlebook (Google ecosystem) | macOS only / ChatGPT Pro subscription / EU/UK/CH excluded | **3 OS** (macOS, Windows, Linux), Apache-2.0, ecosystem-neutral |
 
-## Vocabulary alignment
+## Vocabulary Alignment
 
 The vocabulary used in Maekon's user-facing surface and the broader market frame:
 
@@ -58,9 +58,9 @@ The vocabulary used in Maekon's user-facing surface and the broader market frame
 | "edge processing" | "Show and Tell" + on-device | Pre-process locally before any cloud round-trip |
 | "delta encoding" | (Maekon-specific) | Send only changes between frames to keep bandwidth low |
 
-> An equivalent canonical vocabulary in the wider ONESHIM SSOT is **"pointed context → actionable entity"** (used in submission materials and investor decks). Both vocabularies map to the same underlying mechanism — local work signals + focus timeline + screen/OCR edge → reviewable candidate flow. Surface vocabulary differs by audience (developer/user frame vs. evaluator/investor frame).
+Maekon can also be described with the enterprise vocabulary **"pointed context → actionable entity"**. Both phrases map to the same public mechanism — local work signals + focus timeline + screen/OCR edge → reviewable candidate flow. Surface vocabulary differs by audience, but the product boundary remains the same Apache-2.0 desktop client.
 
-## Why not direct competition
+## Why Not Direct Competition
 
 Maekon does not position as a head-to-head replacement for DeepMind AI Pointer or Codex Chronicle. Each addresses the same problem space from a different ecosystem assumption:
 
@@ -70,13 +70,12 @@ Maekon does not position as a head-to-head replacement for DeepMind AI Pointer o
 
 This is a **category-adjacent differentiation**, not direct competition.
 
-## Cross-references
+## Cross-References
 
-- ONESHIM SSOT competitor scan: [K27] DeepMind AI Pointer, [K28] OpenAI Codex Chronicle (full entries in the parent submission package at `plan/_shared/references/competitor.md`)
-- ONESHIM product positioning: `plan/_shared/제품현황.md` v2.22+ "Maekon 어휘 통합 정책" section
 - Maekon README: see `## Why Maekon → Market positioning (2026)`
+- Public source pointers above remain the canonical public references for this OSS document.
 
-## Update policy
+## Update Policy
 
 Refresh this document when:
 - A new comparable product enters the ambient AI + screen context space

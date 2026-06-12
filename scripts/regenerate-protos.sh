@@ -17,12 +17,14 @@ CARGO_CMD="$ROOT_DIR/scripts/cargo-cache.sh"
 PROTO_ROOT="$ROOT_DIR/api/proto"
 OUT_DIR="$ROOT_DIR/crates/maekon-network/src/proto/generated"
 
+# Consumer Contract is now at `oneshim/client/v1` (parent SSOT migration).
+# build.rs:6 watches the matching path; both must stay in sync.
 PROTOS=(
-  "$PROTO_ROOT/maekon/client/v1/auth.proto"
-  "$PROTO_ROOT/maekon/client/v1/session.proto"
-  "$PROTO_ROOT/maekon/client/v1/context.proto"
-  "$PROTO_ROOT/maekon/client/v1/suggestion.proto"
-  "$PROTO_ROOT/maekon/client/v1/health.proto"
+  "$PROTO_ROOT/oneshim/client/v1/auth.proto"
+  "$PROTO_ROOT/oneshim/client/v1/session.proto"
+  "$PROTO_ROOT/oneshim/client/v1/context.proto"
+  "$PROTO_ROOT/oneshim/client/v1/suggestion.proto"
+  "$PROTO_ROOT/oneshim/client/v1/health.proto"
 )
 
 # Verify all proto files exist
@@ -37,9 +39,16 @@ mkdir -p "$OUT_DIR"
 
 echo "Compiling Consumer Contract protos..."
 
-# Use a temporary Cargo project to run tonic-prost-build
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+# Use a temporary Cargo project to run tonic-prost-build.
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-proto-gen.XXXXXX")"
+touch "$TEMP_DIR/.maekon-tmp-owned"
+printf '%s\n' "$$" > "$TEMP_DIR/.maekon-tmp-owner-pid"
+cleanup_temp_dir() {
+  rm -rf "$TEMP_DIR"
+}
+trap cleanup_temp_dir EXIT
+trap 'cleanup_temp_dir; exit 130' INT
+trap 'cleanup_temp_dir; exit 143' TERM
 
 cat > "$TEMP_DIR/Cargo.toml" <<'CARGO'
 [package]
@@ -75,7 +84,7 @@ BUILDRS
 echo "Running code generation (this downloads tonic-prost-build if needed)..."
 "$CARGO_CMD" build --manifest-path "$TEMP_DIR/Cargo.toml" --quiet 2>&1
 
-echo "Generated: $OUT_DIR/maekon.client.v1.rs"
+echo "Generated: $OUT_DIR/oneshim.client.v1.rs"
 echo ""
 echo "Don't forget to commit the updated generated file:"
 echo "  git add crates/maekon-network/src/proto/generated/"

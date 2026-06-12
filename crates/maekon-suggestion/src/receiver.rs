@@ -2,7 +2,8 @@ use maekon_core::models::suggestion::Suggestion;
 use maekon_core::ports::api_client::{SseClient, SseEvent};
 use maekon_core::ports::notifier::DesktopNotifier;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::error::SuggestionError;
@@ -19,6 +20,15 @@ pub struct SuggestionReceiver {
     queue: Arc<Mutex<SuggestionQueue>>,
     scorer: Arc<Mutex<FeedbackScorer>>,
     on_new: Mutex<Option<OnNewSuggestion>>,
+    /// Sender half of the shutdown channel. Sending (or dropping) signals the
+    /// background SSE task spawned in `run` to stop. Stored so callers can
+    /// invoke `shutdown()` explicitly, and so Drop signals implicitly.
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// F-RR-C24-05: JoinHandle for the background SSE task spawned in `run`.
+    /// Stored as a struct field so `shutdown()` can abort the task if the
+    /// oneshot signal is not enough (e.g. `run()` future was cancelled before
+    /// the while-loop started). Absence means `run()` has not been called yet.
+    stream_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SuggestionReceiver {
@@ -34,6 +44,38 @@ impl SuggestionReceiver {
             queue,
             scorer,
             on_new: Mutex::new(None),
+            shutdown_tx: Mutex::new(None),
+            stream_task: Mutex::new(None),
+        }
+    }
+
+    /// Signal the background SSE task to stop and await its completion.
+    ///
+    /// Calling this is optional — dropping the receiver also triggers shutdown
+    /// via the `oneshot` channel being closed.
+    ///
+    /// F-RR-C24-05: also aborts the stream_task JoinHandle if the oneshot
+    /// signal is not sufficient (e.g. `run()` future was dropped before the
+    /// event loop started). Logs a warning on abort so operators can observe
+    /// unexpected early-cancellation paths.
+    pub async fn shutdown(&self) {
+        // 1. Signal the spawned task via the oneshot channel.
+        let tx = self.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            // send() fails only if the receiver is already gone (task finished).
+            let _ = tx.send(());
+        }
+
+        // 2. F-RR-C24-05: Abort + await the JoinHandle to prevent leaking a
+        //    detached task when `run()` was cancelled mid-flight.
+        let handle = self.stream_task.lock().await.take();
+        if let Some(h) = handle {
+            if !h.is_finished() {
+                warn!("stream_task still running after shutdown signal — aborting");
+                h.abort();
+            }
+            // await to confirm the task has actually stopped (abort is async).
+            let _ = h.await;
         }
     }
 
@@ -44,15 +86,32 @@ impl SuggestionReceiver {
     }
 
     pub async fn run(&self, session_id: &str) -> Result<(), SuggestionError> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(64);
+        let (event_tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(64);
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+
+        // Store the stop sender so shutdown() / Drop can cancel the task.
+        *self.shutdown_tx.lock().await = Some(stop_tx);
 
         let sse = self.sse_client.clone();
         let sid = session_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = sse.connect(&sid, tx).await {
-                error!("SSE connection error: {e}");
+        // F-RR-C24-05: store handle in struct field so shutdown() can abort
+        // the task if run() is cancelled before the event loop drains naturally.
+        *self.stream_task.lock().await = Some(tokio::spawn(async move {
+            tokio::select! {
+                result = sse.connect(&sid, event_tx) => {
+                    if let Err(e) = result {
+                        error!("SSE connection error: {e}");
+                    }
+                }
+                _ = &mut stop_rx => {
+                    debug!("SSE task received shutdown signal");
+                }
             }
-        });
+        }));
+
+        // The task is not awaited here: run() processes events until the
+        // channel closes (task finished or sender dropped), which is the
+        // natural termination path. shutdown() covers the abort path.
 
         info!("suggestion received waiting started");
 
@@ -203,6 +262,7 @@ mod tests {
             expires_at: None,
             source: SuggestionSource::RuleBased,
             reasoning: None,
+            context_scope: None,
         }
     }
 
@@ -312,6 +372,68 @@ mod tests {
 
         assert_eq!(notified_count.load(Ordering::SeqCst), 1);
         assert_eq!(queue.lock().await.len(), 1);
+    }
+
+    /// F-RR-24: verify that calling shutdown() signals the background SSE task to stop.
+    /// The test uses a mock SseClient that blocks indefinitely (simulating a live SSE
+    /// stream) and confirms that shutdown() causes run() to return.
+    #[tokio::test]
+    async fn shutdown_cancels_sse_task() {
+        use std::sync::atomic::AtomicBool;
+        use tokio::time::{timeout, Duration};
+
+        // A mock SSE client that blocks until the sender side is dropped.
+        struct BlockingSseClient {
+            unblocked: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl SseClient for BlockingSseClient {
+            async fn connect(
+                &self,
+                _session_id: &str,
+                _tx: tokio::sync::mpsc::Sender<SseEvent>,
+            ) -> Result<(), CoreError> {
+                // Block until cancelled — simulates a live stream that never
+                // produces events.  We just sleep long enough for the test to
+                // exercise the cancellation path.
+                while !self.unblocked.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(())
+            }
+        }
+
+        let unblocked = Arc::new(AtomicBool::new(false));
+        let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+        let scorer = Arc::new(Mutex::new(FeedbackScorer::new()));
+        let receiver = Arc::new(SuggestionReceiver::new(
+            Arc::new(BlockingSseClient {
+                unblocked: unblocked.clone(),
+            }) as Arc<dyn SseClient>,
+            None,
+            queue,
+            scorer,
+        ));
+
+        let receiver_clone = receiver.clone();
+        let run_handle =
+            tokio::spawn(async move { receiver_clone.run("sess-shutdown-test").await });
+
+        // Let the task start.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Call shutdown() — this should unblock run() within the timeout.
+        receiver.shutdown().await;
+
+        // timeout returns Ok(join_result) when run_handle completes within the
+        // deadline; Err(Elapsed) if it hangs.  The inner JoinHandle result must
+        // also be Ok — run() must return cleanly, not panic.
+        let join_result = timeout(Duration::from_millis(500), run_handle)
+            .await
+            .expect("run() did not return within 500 ms after shutdown()");
+        join_result
+            .expect("run() task must not panic after shutdown()")
+            .expect("run() must return Ok after shutdown()");
     }
 
     #[tokio::test]

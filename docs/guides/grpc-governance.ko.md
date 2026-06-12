@@ -6,15 +6,17 @@
 
 ## 적용 범위
 
-- `crates/maekon-network/src/grpc/*`
-- `crates/maekon-network/src/proto/generated/*`
-- `api/proto/maekon/v1/*`
+- Consumer 클라이언트 계약: `api/proto/oneshim/client/v1/*`
+- Dashboard 서비스 계약: `api/proto/oneshim/dashboard/v1/*`
+- Consumer 생성 코드: `crates/maekon-network/src/proto/generated/*`
+- Dashboard 생성 코드: `crates/maekon-web/src/proto/generated/oneshim.dashboard.v1.rs`
+- gRPC 런타임 코드: `crates/maekon-network/src/grpc/*`, `crates/maekon-web/src/grpc/*`
 
 ## 기본 규칙
 
 1. **계약 무결성**
    - `api/proto` 하위 proto 파일을 단일 진실 원천(SSOT)으로 유지합니다.
-   - `crates/maekon-network/src/proto/generated` 생성 코드는 항상 최신 상태로 커밋되어야 합니다.
+   - `crates/maekon-network/src/proto/generated` 및 `crates/maekon-web/src/proto/generated` 생성 코드는 항상 최신 상태로 커밋되어야 합니다.
 2. **Feature-gated 안정성**
    - 모든 gRPC 변경은 `--features grpc` 빌드/테스트를 통과해야 합니다.
    - `maekon-app` 배선도 `--features grpc`로 컴파일 검증해야 합니다.

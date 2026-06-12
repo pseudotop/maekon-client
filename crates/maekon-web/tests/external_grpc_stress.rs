@@ -1,7 +1,6 @@
 //! External gRPC stress test suite.
 //!
-//! See `docs/superpowers/specs/2026-04-24-grpc-stress-test-suite-design.md`
-//! and `docs/superpowers/plans/2026-04-24-grpc-stress-test-suite-plan.md`.
+//! Public gRPC behavior is documented in `docs/guides/external-grpc.md`.
 //!
 //! Three tests:
 //! 1. `concurrent_connection_cap_enforced` — `max_connections = 1024`
@@ -132,7 +131,7 @@ fn make_jwt_stress_config(
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
     let pub_key_bytes = std::fs::read(jwt_pub_key_path).expect("read jwt pub key");
     let jwt_verifier = Arc::new(
@@ -459,9 +458,11 @@ async fn concurrent_connection_cap_enforced() {
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
     }
     .await;
+    let over_cap_err = over_cap_result.unwrap_err();
+    let err_str = over_cap_err.to_string();
     assert!(
-        over_cap_result.is_err(),
-        "(CAP+1)th channel must be rejected; got: {over_cap_result:?}"
+        err_str.contains("ResourceExhausted") || err_str.contains("resource exhausted"),
+        "(CAP+1)th channel must be rejected with ResourceExhausted; got: {over_cap_err}"
     );
 
     // ── Phase 3: drop one slot, retry ───────────────────────────────────────

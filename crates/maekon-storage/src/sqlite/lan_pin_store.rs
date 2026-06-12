@@ -8,10 +8,9 @@ impl SqliteStorage {
     /// Get the stored pin for a peer device.
     /// Returns `Some((fingerprint, trust_revoked))` if found, `None` otherwise.
     pub fn get_lan_pin(&self, device_id: &str) -> Result<Option<(String, bool)>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
         let mut stmt = conn
             .prepare(
                 "SELECT cert_fingerprint, trust_revoked FROM lan_peer_pins WHERE device_id = ?",
@@ -37,36 +36,44 @@ impl SqliteStorage {
         device_id: &str,
         cert_fingerprint: &str,
     ) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
-        conn.execute(
-            "INSERT INTO lan_peer_pins (device_id, cert_fingerprint)
+        // 쓰기 — write_lock(deletion_flag set 시 스킵, lan_peer_pins ∈ ALL_TABLES).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "INSERT INTO lan_peer_pins (device_id, cert_fingerprint)
              VALUES (?, ?)
              ON CONFLICT(device_id) DO UPDATE SET
                 cert_fingerprint = excluded.cert_fingerprint,
                 last_seen_at = datetime('now')",
-            rusqlite::params![device_id, cert_fingerprint],
-        )
-        .map_err(|e| StorageError::Internal(format!("upsert_lan_pin: {e}")))?;
+                rusqlite::params![device_id, cert_fingerprint],
+            )
+            .map_err(|e| StorageError::Internal(format!("upsert_lan_pin: {e}")))?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Revoke trust for a peer device (TOFU violation).
     pub fn revoke_lan_pin(&self, device_id: &str) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
-        conn.execute(
-            "UPDATE lan_peer_pins SET trust_revoked = 1 WHERE device_id = ?",
-            [device_id],
-        )
-        .map_err(|e| StorageError::Internal(format!("revoke_lan_pin: {e}")))?;
+        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute(
+                "UPDATE lan_peer_pins SET trust_revoked = 1 WHERE device_id = ?",
+                [device_id],
+            )
+            .map_err(|e| StorageError::Internal(format!("revoke_lan_pin: {e}")))?;
 
-        Ok(())
+            Ok(())
+        })
+    }
+
+    /// Remove a peer's TOFU pin entirely (recovery path).
+    pub fn clear_lan_pin(&self, device_id: &str) -> Result<(), StorageError> {
+        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        self.conn.write_lock().run((), |conn| {
+            conn.execute("DELETE FROM lan_peer_pins WHERE device_id = ?", [device_id])
+                .map_err(|e| StorageError::Internal(format!("clear_lan_pin: {e}")))?;
+            Ok(())
+        })
     }
 }
 
@@ -126,5 +133,13 @@ mod tests {
         let (stored_fp, _) = storage.get_lan_pin("dev-1").unwrap().unwrap();
         let new_fp = "different-fp";
         assert_ne!(stored_fp, new_fp); // TOFU violation detected
+    }
+
+    #[test]
+    fn clear_pin_removes_row() {
+        let storage = test_storage();
+        storage.upsert_lan_pin("dev-1", "fp1").unwrap();
+        storage.clear_lan_pin("dev-1").unwrap();
+        assert!(storage.get_lan_pin("dev-1").unwrap().is_none());
     }
 }

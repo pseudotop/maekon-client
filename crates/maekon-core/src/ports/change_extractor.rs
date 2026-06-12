@@ -30,4 +30,17 @@ pub trait ChangeExtractor: Send + Sync {
     ///
     /// This is the maximum HLC across all syncable tables on this device.
     async fn local_watermark(&self) -> Result<Hlc, CoreError>;
+
+    /// The persisted GDPR Art.17 erasure HLC anchor (`app_meta["sync.erasure_hlc"]`),
+    /// written by the erase producer (#5179) and retained across the local wipe.
+    ///
+    /// The SyncEngine stamps the device-wide `DeletionEvent` watermark with this so a
+    /// receiving peer can BOUND the delete to data that existed at erasure time —
+    /// any post-re-grant data (HLC > anchor) is spared (#5181). Returns `None` when no
+    /// erase has run on this device (pre-#5179 installs / tests); the caller then falls
+    /// back to `Hlc::now`, which is effectively unbounded. The default impl returns
+    /// `Ok(None)` so non-SQLite/mocks need not implement it.
+    async fn persisted_erasure_hlc(&self) -> Result<Option<Hlc>, CoreError> {
+        Ok(None)
+    }
 }

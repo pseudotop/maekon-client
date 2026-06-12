@@ -31,7 +31,7 @@ maekon-storage/src/
 │   ├── override_store_impl.rs        # OverrideStore port impl
 │   ├── preset_storage_impl.rs        # PresetStorage port impl
 │   └── port_contract_tests.rs        # shared port-contract test helpers
-├── migration/                        # Schema migrations V1→V31 (CURRENT_VERSION: u32 = 31)
+├── migration/                        # Schema migrations V1→V40 (CURRENT_VERSION: u32 = 40)
 │   ├── mod.rs                        # orchestrator (run_migrations, get_version)
 │   ├── v01_v08.rs                    # legacy V1-V8 grouped
 │   ├── v09_v18.rs                    # legacy V9-V18 grouped
@@ -42,7 +42,8 @@ maekon-storage/src/
 │   ├── v26.rs                        # V26 (ai_sessions)
 │   ├── v27.rs                        # V27 (type_confidence)
 │   ├── v28.rs, v29.rs, v30.rs        # V28-V30
-│   └── v31_regime_manager_state.rs   # V31 (regime_manager_state, current)
+│   ├── v31_regime_manager_state.rs   # V31 (regime_manager_state)
+│   └── v32_*.rs ... v40_*.rs         # audit, suggestion context, memory graph, egress, sync, HLC
 ├── frame_storage.rs                  # Frame image file storage + retention + buffer pool
 ├── integration_state_store/, regime_manager_state_store.rs — orthogonal state stores
 ├── sync_extractor.rs, sync_merger.rs — cross-device sync
@@ -152,7 +153,7 @@ impl StorageService for SqliteStorage {
 
 ## Database Schema
 
-Schema evolved from V1 (original Phase-2 baseline shown below) through **V31** (current — `CURRENT_VERSION: u32 = 31` in `migration/mod.rs`). See per-version migration files in `migration/v*.rs` for incremental column adds, table renames, and new tables added across superpowers/phase-4/ADR-019 work (focus_metrics, activity_segments, embedding_vectors, regimes, FTS5, gui_interactions, sync, IVF index, coaching, app_meta, session_audit, ai_sessions, type_confidence, regime_manager_state).
+Schema evolved from V1 (original Phase-2 baseline shown below) through **V40** (current — `CURRENT_VERSION: u32 = 40` in `migration/mod.rs`). See per-version migration files in `migration/v*.rs` for incremental column adds, table renames, and new tables added across superpowers/phase-4/ADR-019/E20 work (focus_metrics, activity_segments, embedding_vectors, regimes, FTS5, gui_interactions, sync, IVF index, coaching, app_meta, session_audit, ai_sessions, type_confidence, regime_manager_state, audit hash-chain/index hardening, suggestion context scope, memory graph, egress ledger, sync tombstones, HLC clock, and egress recipient counts).
 
 ### V1 Schema (migration/v01_v08.rs, original Phase-2 baseline)
 

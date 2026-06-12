@@ -1,7 +1,6 @@
 use chrono::Utc;
 #[allow(deprecated)]
 use maekon_core::models::work_session::{AppCategory, FocusMetrics, Interruption, LocalSuggestion};
-use maekon_core::ports::web_storage::DigestStorage;
 
 use super::super::SqliteStorage;
 
@@ -103,18 +102,35 @@ fn local_suggestion_persistence() {
 fn segments_for_date_query() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
+    // #5664: `get_segments_for_date` interprets the date in the MACHINE-LOCAL
+    // timezone. Derive fixture instants from the same production window helper
+    // so this test is green on any machine/CI timezone (hardcoded `T09:00Z`
+    // fixtures broke on UTC-10-and-westward machines).
+    let mid_of = |date: &str| -> String {
+        let (from, _) =
+            crate::sqlite::web_storage_impl::suggestion_digest_storage::local_date_utc_window(
+                date,
+                &chrono::Local,
+            )
+            .unwrap();
+        let start = chrono::DateTime::parse_from_rfc3339(&from).unwrap();
+        (start + chrono::Duration::hours(1)).to_rfc3339()
+    };
+    let day1_start = mid_of("2026-03-19");
+    let day2_start = mid_of("2026-03-20");
+
     // Insert a test segment
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
         conn.execute(
             "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, trigger_reason, dominant_category, event_count, avg_importance)
-             VALUES ('seg-001', '2026-03-19T09:00:00Z', '2026-03-19T10:00:00Z', 3600, 'SCORE_HIGH', 'Development', 50, 0.8)",
-            [],
+             VALUES ('seg-001', ?1, ?1, 3600, 'SCORE_HIGH', 'Development', 50, 0.8)",
+            rusqlite::params![day1_start],
         ).unwrap();
         conn.execute(
             "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, trigger_reason, dominant_category, event_count, avg_importance)
-             VALUES ('seg-002', '2026-03-20T09:00:00Z', '2026-03-20T10:00:00Z', 3600, 'SCORE_HIGH', 'Communication', 30, 0.5)",
-            [],
+             VALUES ('seg-002', ?1, ?1, 3600, 'SCORE_HIGH', 'Communication', 30, 0.5)",
+            rusqlite::params![day2_start],
         ).unwrap();
     }
 

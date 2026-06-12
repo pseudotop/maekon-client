@@ -280,16 +280,35 @@ mod tests {
 
     #[tokio::test]
     async fn noop_driver_all_methods_ok() {
+        // NoOpInputDriver is a pure no-op stub: every method returns Ok(()) with no side
+        // effects. Ok(()) is the entire contract — there is no return value to inspect
+        // beyond success. Each call is asserted individually so a future regression in
+        // one method does not hide failures in the others. (#5594)
         let driver = NoOpInputDriver;
-        assert!(driver.mouse_move(100, 200).await.is_ok());
-        assert!(driver.mouse_click("left", 100, 200).await.is_ok());
-        assert!(driver.type_text("hello").await.is_ok());
-        assert!(driver.key_press("Enter").await.is_ok());
-        assert!(driver.key_release("Enter").await.is_ok());
-        assert!(driver
+        driver
+            .mouse_move(100, 200)
+            .await
+            .expect("NoOpInputDriver::mouse_move should always return Ok(())");
+        driver
+            .mouse_click("left", 100, 200)
+            .await
+            .expect("NoOpInputDriver::mouse_click should always return Ok(())");
+        driver
+            .type_text("hello")
+            .await
+            .expect("NoOpInputDriver::type_text should always return Ok(())");
+        driver
+            .key_press("Enter")
+            .await
+            .expect("NoOpInputDriver::key_press should always return Ok(())");
+        driver
+            .key_release("Enter")
+            .await
+            .expect("NoOpInputDriver::key_release should always return Ok(())");
+        driver
             .hotkey(&["Ctrl".to_string(), "S".to_string()])
             .await
-            .is_ok());
+            .expect("NoOpInputDriver::hotkey should always return Ok(())");
     }
 
     #[test]

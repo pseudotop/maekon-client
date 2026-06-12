@@ -1,4 +1,5 @@
 use crate::error::MonitorError;
+use crate::log_privacy::title_digest;
 use maekon_core::models::context::{MousePosition, WindowInfo};
 use std::time::Duration;
 use tokio::process::Command;
@@ -114,10 +115,16 @@ async fn get_active_window_gnome() -> Option<WindowInfo> {
         .await
         .unwrap_or_else(|| "Unknown".to_string());
 
-    debug!("GNOME Wayland active window: {} - {}", app_name, title);
+    // Title is PII — log a content-free digest only (#5591).
+    debug!(
+        "GNOME Wayland active window: {} ({})",
+        app_name,
+        title_digest(&title)
+    );
     Some(WindowInfo {
         title,
         app_name,
+        app_bundle_id: None,
         pid: 0, // PID not available through this GNOME Shell API
         bounds: None,
     })
@@ -195,10 +202,16 @@ async fn get_active_window_sway() -> Option<WindowInfo> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let (title, app_id) = parse_sway_focused_window(&stdout)?;
 
-    debug!("Sway Wayland active window: {} - {}", app_id, title);
+    // Title is PII — log a content-free digest only (#5591).
+    debug!(
+        "Sway Wayland active window: {} ({})",
+        app_id,
+        title_digest(&title)
+    );
     Some(WindowInfo {
         title,
         app_name: app_id,
+        app_bundle_id: None,
         pid: 0, // Could be extracted from sway tree but adds complexity
         bounds: None,
     })
@@ -311,18 +324,27 @@ async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
     .unwrap_or(0);
 
     let app_name = if pid > 0 {
-        get_process_name(pid).unwrap_or_else(|| "Unknown".to_string())
+        get_process_name(pid)
+            .await
+            .unwrap_or_else(|| "Unknown".to_string())
     } else {
         "Unknown".to_string()
     };
 
     let bounds = get_window_geometry_x11(&window_id).await;
 
-    debug!("active window: {} - {} (PID: {})", app_name, title, pid);
+    // Title is PII — log a content-free digest only (#5591).
+    debug!(
+        "active window: {} ({}) (PID: {})",
+        app_name,
+        title_digest(&title),
+        pid
+    );
 
     Ok(Some(WindowInfo {
         title,
         app_name,
+        app_bundle_id: None,
         pid,
         bounds,
     }))
@@ -371,9 +393,13 @@ async fn get_window_geometry_x11(
     })
 }
 
-fn get_process_name(pid: u32) -> Option<String> {
+/// `/proc/<pid>/comm` 에서 프로세스 이름을 읽습니다.
+///
+/// `tokio::fs::read_to_string` 을 사용해 async 런타임을 블로킹하지 않습니다.
+async fn get_process_name(pid: u32) -> Option<String> {
     let comm_path = format!("/proc/{}/comm", pid);
-    std::fs::read_to_string(&comm_path)
+    tokio::fs::read_to_string(&comm_path)
+        .await
         .ok()
         .map(|s| s.trim().to_string())
 }
@@ -552,9 +578,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn get_process_name_from_proc() {
-        let name = get_process_name(1);
+    #[tokio::test]
+    async fn get_process_name_from_proc() {
+        let name = get_process_name(1).await;
         assert!(name.is_some());
         let name = name.unwrap();
         assert!(!name.is_empty());
@@ -562,8 +588,11 @@ mod tests {
 
     #[tokio::test]
     async fn active_window_returns_option() {
-        let result = get_active_window_linux().await;
-        assert!(result.is_ok());
+        // Environment-dependent probe: headless CI yields None, a desktop
+        // session Some — the pinned contract is exactly "never Err" (#5594).
+        get_active_window_linux()
+            .await
+            .expect("active-window probe must not error without a display server");
     }
 
     #[tokio::test]

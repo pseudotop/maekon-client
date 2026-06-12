@@ -129,14 +129,6 @@ impl LinuxSandbox {
     }
 }
 
-/// Returns `true` when the config is Permissive with no custom resource limits,
-/// meaning subprocess sandboxing can be skipped entirely.
-fn is_permissive_noop(config: &SandboxConfig) -> bool {
-    matches!(config.profile, SandboxProfile::Permissive)
-        && config.max_memory_bytes == 0
-        && config.max_cpu_time_ms == 0
-}
-
 #[async_trait]
 impl Sandbox for LinuxSandbox {
     fn platform(&self) -> &str {
@@ -154,11 +146,6 @@ impl Sandbox for LinuxSandbox {
         action: &AutomationAction,
         config: &SandboxConfig,
     ) -> Result<(), CoreError> {
-        if is_permissive_noop(config) {
-            tracing::debug!("Permissive profile with no limits — skipping subprocess");
-            return Ok(());
-        }
-
         let worker_path = ipc::resolve_worker_path()?;
         let request = ipc::SandboxRequest {
             action: action.clone(),
@@ -343,8 +330,11 @@ fn build_seccomp_bpf(
     use std::collections::BTreeMap;
 
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    let deny = vec![SeccompRule::new(vec![])
-        .map_err(|e| AutomationError::SandboxInit(format!("seccomp rule: {e}")))?];
+    // seccompiler semantics: an EMPTY rule vector means the syscall matches
+    // unconditionally (-> the filter's match action, Errno(EPERM) below).
+    // `SeccompRule::new(vec![])` is rejected by seccompiler ("condition vector
+    // cannot be empty") — first executed on the linux-sandbox CI leg.
+    let deny: Vec<SeccompRule> = Vec::new();
 
     // Block network syscalls when not allowed
     if !allowlist.allow_network {
@@ -745,6 +735,7 @@ fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), AutomationError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::is_permissive_noop;
 
     #[test]
     fn build_landlock_rules_permissive() {
@@ -819,21 +810,65 @@ mod tests {
         assert_eq!(limits.max_cpu_time_ms, 60_000);
     }
 
+    /// Layering contract (#5604): `execute_sandboxed` ALWAYS routes through the
+    /// out-of-process worker, even for Permissive+zero-limits configs. The
+    /// permissive-noop fast-path deliberately lives one level up, in
+    /// `SandboxActionDispatcher::dispatch` (#4539, `action_dispatcher.rs`),
+    /// which executes inline instead — a guard down here would silently drop
+    /// the action for direct sandbox callers.
+    ///
+    /// Integration precondition: requires `maekon-sandbox-worker` in
+    /// `target/debug` — built by any workspace-level `cargo build`/`cargo test`
+    /// (CI's `cargo test --workspace` qualifies). An isolated
+    /// `cargo test -p maekon-automation` on a fresh target dir must build the
+    /// worker first: `cargo build -p maekon-sandbox-worker`.
     #[tokio::test]
-    async fn linux_sandbox_execute_permissive_noop() {
+    async fn linux_sandbox_execute_routes_permissive_noop_through_worker() {
         let sandbox = LinuxSandbox::new();
         let action = AutomationAction::KeyType {
             text: "hello".to_string(),
         };
-        // Permissive with zero limits → fast-path, no subprocess needed
         let config = SandboxConfig {
             profile: SandboxProfile::Permissive,
             max_memory_bytes: 0,
             max_cpu_time_ms: 0,
             ..Default::default()
         };
+        assert!(
+            is_permissive_noop(&config),
+            "fixture must be the permissive-noop shape"
+        );
         let result = sandbox.execute_sandboxed(&action, &config).await;
-        assert!(result.is_ok());
+
+        // The contract under test is the ROUTING: permissive-noop must go
+        // through the sandbox worker (the no-op fast-path belongs to the
+        // dispatcher, #5604). On a desktop the round-trip succeeds; on a
+        // HEADLESS box (CI runners, containers) the worker spawns but its
+        // input executor cannot reach a display server — that worker-flavored
+        // error is itself proof the worker route was taken. A reintroduced
+        // fast-path would return Ok WITHOUT any worker involvement, which the
+        // headless branch rejects.
+        let headless =
+            std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
+        match (headless, result) {
+            (_, Ok(())) if !headless => {}
+            (false, Err(e)) => {
+                panic!("desktop execution through the worker must succeed: {e:?}")
+            }
+            (true, Err(e)) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("worker") || msg.contains("spawn"),
+                    "headless failure must come from the worker route (proof of routing), \
+                     got: {msg}"
+                );
+            }
+            (true, Ok(())) => panic!(
+                "headless Ok means the action was NOT executed by the worker — \
+                 the dispatcher no-op fast-path leaked back into the sandbox (#4539/#5604)"
+            ),
+            (false, Ok(())) => {}
+        }
     }
 
     #[test]

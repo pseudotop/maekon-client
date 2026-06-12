@@ -1,4 +1,5 @@
 audio.capture_failed
+audio.integrity_check_failed
 audio.stt_failed
 auth.failed
 autostart.counter_increment_failed

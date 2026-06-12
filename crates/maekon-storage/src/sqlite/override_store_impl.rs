@@ -93,11 +93,16 @@ impl OverrideStore for SqliteStorage {
         let (action_type, action_data) = serialize_action(&entry.user_action);
         let created_at = entry.created_at.to_rfc3339();
 
+        let clock = self.clock.clone();
         self.with_conn(move |conn| {
+            // F0/#5186: stamp a monotonic HLC so this override propagates via sync.
+            let h = clock
+                .next(conn)
+                .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
             conn.execute(
-                "INSERT INTO regime_overrides (override_id, segment_id, original_regime_id, action_type, action_data, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![override_id, segment_id, original_regime_id, action_type, action_data, created_at],
+                "INSERT INTO regime_overrides (override_id, segment_id, original_regime_id, action_type, action_data, created_at, hlc_wall_ms, hlc_counter, origin_device_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![override_id, segment_id, original_regime_id, action_type, action_data, created_at, h.wall_ms, h.counter, h.device_id],
             )
             .map_err(|e| StorageError::Internal(format!("Failed to save override: {e}")))?;
             Ok(())
@@ -221,6 +226,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_override_stamps_monotonic_hlc() {
+        // F0/#5186: regime_overrides INSERT must carry a monotonic HLC + device id so it
+        // propagates via cross-device sync (previously hlc=0 → never propagated).
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        {
+            let c = storage.conn.test_lock();
+            c.execute(
+                "INSERT INTO device_identity (id, device_id, device_name) VALUES (1, 'dev-z', 'Z')",
+                [],
+            )
+            .unwrap();
+        }
+        let entry = RegimeOverride {
+            override_id: "ovr-hlc".to_string(),
+            segment_id: "seg-hlc".to_string(),
+            original_regime_id: None,
+            user_action: UserOverrideAction::MarkAsNoise,
+            created_at: Utc::now(),
+        };
+        storage.save_override(&entry).await.unwrap();
+
+        let (wall, dev): (i64, String) = {
+            let c = storage.conn.test_lock();
+            c.query_row(
+                "SELECT hlc_wall_ms, origin_device_id FROM regime_overrides \
+                 WHERE override_id = 'ovr-hlc'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert!(wall > 0, "regime_override must be HLC-stamped");
+        assert_eq!(dev, "dev-z", "origin_device_id must be stamped");
+    }
+
+    #[tokio::test]
     async fn save_reassign_regime_roundtrip() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
         let now = Utc::now();
@@ -315,9 +356,7 @@ mod tests {
     async fn delete_nonexistent_override_returns_not_found() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
-        let result = storage.delete_override("nonexistent-id").await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = storage.delete_override("nonexistent-id").await.unwrap_err();
         assert!(
             matches!(err, CoreError::NotFound { .. }),
             "expected NotFound, got: {err:?}"

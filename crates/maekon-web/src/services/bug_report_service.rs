@@ -218,6 +218,34 @@ fn sanitize_bundle(
     if let Some(ref mut api) = s.ai_provider.llm_api {
         api.endpoint = sanitizer.sanitize_text(&api.endpoint, effective);
     }
+
+    for summary in &mut bundle.diagnostics.provider_cli {
+        summary.surface_id = sanitizer.sanitize_text(&summary.surface_id, effective);
+        if let Some(ref mut tool_id) = summary.tool_id {
+            *tool_id = sanitizer.sanitize_text(tool_id, effective);
+        }
+        if let Some(ref mut candidate_name) = summary.candidate_name {
+            *candidate_name = sanitizer.sanitize_text(candidate_name, effective);
+        }
+        if let Some(ref mut executable_hint) = summary.executable_hint {
+            *executable_hint =
+                executable_file_name_hint(&sanitizer.sanitize_text(executable_hint, effective));
+        }
+        if let Some(ref mut dependency_status) = summary.dependency_status {
+            *dependency_status = sanitizer.sanitize_text(dependency_status, effective);
+        }
+        if let Some(ref mut status_reason) = summary.status_reason {
+            *status_reason = sanitizer.sanitize_text(status_reason, effective);
+        }
+    }
+}
+
+fn executable_file_name_hint(value: &str) -> String {
+    value
+        .rsplit(['\\', '/'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(value)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -261,6 +289,7 @@ mod tests {
         fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
             text.replace("user@example.com", "[EMAIL]")
                 .replace("/Users/alice", "[USER]")
+                .replace("sk_live_abc123", "[PROVIDER_SECRET]")
         }
     }
 
@@ -286,6 +315,7 @@ mod tests {
                 },
                 settings_snapshot: Default::default(),
                 storage_stats: None,
+                provider_cli: vec![],
                 recent_audit_entries: vec![AuditEntryDto {
                     schema_version: "1".to_string(),
                     entry_id: "1".to_string(),
@@ -355,6 +385,24 @@ mod tests {
                 },
                 settings_snapshot: Default::default(),
                 storage_stats: None,
+                provider_cli: vec![
+                    maekon_api_contracts::support::ProviderCliDiagnosticSummaryDto {
+                        surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                        tool_id: Some("codex".to_string()),
+                        candidate_name: Some("codex".to_string()),
+                        executable_hint: Some(
+                            "C:\\Users\\alice\\AppData\\Local\\Programs\\Codex\\codex.exe"
+                                .to_string(),
+                        ),
+                        readiness: "auth_required".to_string(),
+                        availability: "partially_available".to_string(),
+                        dependency_status: Some("ready".to_string()),
+                        status_reason: Some(
+                            "auth failed for user@example.com with sk_live_abc123".to_string(),
+                        ),
+                        env_refresh_required: false,
+                    },
+                ],
                 recent_audit_entries: vec![],
                 recent_policy_events: vec![],
             },
@@ -384,5 +432,11 @@ mod tests {
 
         let err = bundle.diagnostics.health.storage_error.as_ref().unwrap();
         assert!(err.contains("[USER]"));
+        let provider_cli = &bundle.diagnostics.provider_cli[0];
+        assert_eq!(provider_cli.executable_hint.as_deref(), Some("codex.exe"));
+        assert_eq!(
+            provider_cli.status_reason.as_deref(),
+            Some("auth failed for [EMAIL] with [PROVIDER_SECRET]")
+        );
     }
 }

@@ -43,6 +43,18 @@ pub struct Suggestion {
     pub source: SuggestionSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_scope: Option<SuggestionContextScope>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SuggestionContextScope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -53,6 +65,16 @@ pub enum SuggestionType {
     ProductivityTip,
     WorkflowOptimization,
     ContextBased,
+    /// proto: SUGGESTION_TYPE_BREAK_REMINDER (6)
+    BreakReminder,
+    /// proto: SUGGESTION_TYPE_FOCUS_MODE (7)
+    FocusMode,
+    /// proto: SUGGESTION_TYPE_TAKE_BREAK (8) — mirrors LocalSuggestion::TakeBreak
+    TakeBreak,
+    /// proto: SUGGESTION_TYPE_NEED_FOCUS_TIME (9) — mirrors LocalSuggestion::NeedFocusTime
+    NeedFocusTime,
+    /// proto: SUGGESTION_TYPE_RESTORE_CONTEXT (10) — mirrors LocalSuggestion::RestoreContext
+    RestoreContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,6 +100,30 @@ pub enum FeedbackType {
     Accepted,
     Rejected,
     Deferred,
+}
+
+#[cfg(test)]
+mod suggestion_type_tests {
+    use super::SuggestionType;
+
+    /// F-RC-11 regression guard: SuggestionType must have exactly 10 variants
+    /// matching proto oneshim.v1.user_context.SuggestionType values 1-10.
+    #[test]
+    fn suggestion_type_has_ten_variants() {
+        let variants = [
+            SuggestionType::WorkGuidance,
+            SuggestionType::EmailDraft,
+            SuggestionType::ProductivityTip,
+            SuggestionType::WorkflowOptimization,
+            SuggestionType::ContextBased,
+            SuggestionType::BreakReminder,
+            SuggestionType::FocusMode,
+            SuggestionType::TakeBreak,
+            SuggestionType::NeedFocusTime,
+            SuggestionType::RestoreContext,
+        ];
+        assert_eq!(variants.len(), 10, "SuggestionType must have 10 variants");
+    }
 }
 
 /// Suggestion with feedback data, used for few-shot prompt construction.

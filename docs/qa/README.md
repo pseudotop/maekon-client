@@ -8,7 +8,10 @@ This directory is the canonical location for manual/reviewed QA execution result
   - `docs/guides/uiux-qa-sheet.md`
   - `docs/guides/replay-uiux-qa-sheet.md`
   - `docs/qa/ai-integration-readiness-checklist.md`
+  - `docs/qa/customer-journey-tc-map.md`
+  - `docs/qa/debug-client-audit-tc-runbook.md`
   - `docs/qa/local-debug-ai-integration-smoke.md`
+  - `docs/qa/windows-e17-live-monitoring-runbook.md`
 - Actual QA run outputs (mutable run evidence, excluded from the public-minimal
   export unless intentionally published):
   - `docs/qa/runs/*.md`

@@ -36,7 +36,7 @@ Maekon is an Apache-2.0 local-first desktop agent that can be used independently
 
 ## Source Build Quick Start
 
-The public repository is live, and `v0.0.1-rc.5` is available as the current
+The public repository is live, and `v0.0.1-rc.6` is available as the current
 public prerelease. Because GitHub's `latest` release endpoint excludes
 prereleases, use the version-pinned installer commands in the install guide for
 release-binary testing. For monorepo development and debug builds, run Maekon
@@ -133,7 +133,7 @@ Standalone mode remains the production-ready default path for release use.
 
 ## Requirements
 
-- Rust 1.77.1 or later
+- Rust 1.88.0 or later
 - macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
 
 ## Developer Quick Start (Build from Source)
@@ -171,15 +171,25 @@ brew install sccache
 ./scripts/cargo-cache.sh check --workspace
 ./scripts/cargo-cache.sh test -p maekon-web
 ./scripts/cargo-cache.sh build -p maekon-app
+
+# Optional: keep compiled debug artifacts on a stable shared target path
+export CARGO_TARGET_DIR="$HOME/.cache/maekon-client/cargo-target-debug"
+./scripts/cargo-cache.sh test -p maekon-app suggestion_replay_event
 ```
 
 If `sccache` is not installed, the wrapper falls back to normal `cargo`.
+`CARGO_TARGET_DIR` is the preferred way to share compiled artifacts across
+debug and private-test runs; `MAEKON_TARGET_DIR` remains as a wrapper alias and
+must match `CARGO_TARGET_DIR` if both are set.
 
 `cargo-cache.sh` also enforces target-size guardrails to prevent local disk bloat:
 - Soft limit (`MAEKON_TARGET_SOFT_LIMIT_MB`, default `8192`): prunes `target/debug/incremental`, then `target/debug/deps` if still large
 - Hard limit (`MAEKON_TARGET_HARD_LIMIT_MB`, default `12288`): additionally prunes `target/debug/build`
 - Auto prune toggle: `MAEKON_TARGET_AUTO_PRUNE=1` (default) / `0` (disable)
 - Current cache status: `./scripts/cargo-cache.sh --status`
+
+Temporary workspace cleanup is marker-based and report-first for local build
+artifacts.
 
 Example custom limits:
 ```bash
@@ -209,6 +219,8 @@ Use this only for non-interactive smoke/debug paths.
 ```bash
 # Rust tests
 ./scripts/cargo-cache.sh test --workspace
+# Build-cache wrapper regression
+./scripts/test-cargo-cache.sh
 
 # E2E tests — web dashboard
 cd crates/maekon-web/frontend && pnpm test:e2e
@@ -243,7 +255,7 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> The current public binary release is the prerelease `v0.0.1-rc.5`. GitHub's
+> The current public binary release is the prerelease `v0.0.1-rc.6`. GitHub's
 > `latest` stable URL is not available until the first stable release, so the
 > commands below pin the prerelease explicitly.
 
@@ -251,7 +263,7 @@ macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.5 bash /tmp/maekon-install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh
 ```
 
 Windows (PowerShell):
@@ -260,14 +272,14 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.5
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-The current published prerelease is `v0.0.1-rc.5`. This table documents the
+The current published prerelease is `v0.0.1-rc.6`. This table documents the
 expected release asset names used by the installer, updater, checksum, and
 signature flows.
 

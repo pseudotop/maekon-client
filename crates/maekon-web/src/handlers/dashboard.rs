@@ -25,6 +25,7 @@ pub async fn get_dashboard_day(
 
     // Iter-96: CoreError → ApiError via semantic From impl (preserves wire code).
     let digest = dashboard_service::get_or_generate_digest(&state, &date_str, date)
+        .await
         .map_err(ApiError::from)?;
 
     Ok(Json(digest))

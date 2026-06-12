@@ -4,7 +4,7 @@ use std::sync::Arc;
 use maekon_core::config::{CredentialBackendKind, CredentialBinding};
 use maekon_core::error::CoreError;
 use maekon_core::ports::secret_store::SecretStore;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 use maekon_storage::env_secret_store::EnvSecretStore;
 use maekon_storage::file_secret_store::FileSecretStore;
@@ -103,7 +103,7 @@ pub fn create_secret_store_for_binding(
     }
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub fn build_provider_secret_store_set(
     config_dir: &Path,
     os_secret_store: Option<Arc<dyn SecretStore>>,
@@ -129,7 +129,7 @@ pub fn build_provider_secret_store_set(
     }
 }
 
-#[cfg(all(feature = "server", test))]
+#[cfg(all(feature = "analysis", test))]
 pub fn is_writable_backend_kind(backend_kind: CredentialBackendKind) -> bool {
     matches!(
         backend_kind,
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(path, temp_dir.path().join(FILE_SECRET_STORE_NAME));
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(feature = "analysis")]
     #[test]
     fn writable_backend_kind_matches_os_and_file() {
         assert!(is_writable_backend_kind(

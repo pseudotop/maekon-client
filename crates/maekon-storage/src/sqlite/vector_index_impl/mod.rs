@@ -13,14 +13,16 @@ mod tests;
 use maekon_core::models::embedding::{EmbeddingContentType, SearchFilters, SearchResult};
 use maekon_core::quantization::{QuantizedVector, ScalarQuantizer};
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::error::StorageError;
+use crate::sqlite::GuardedConnection;
 
 /// SQLite-backed vector index supporting IVF clustering and binary code search.
 pub struct SqliteVectorIndex {
-    conn: Arc<Mutex<Connection>>,
+    /// 공유 [`GuardedConnection`](#4928 — barrier-free 핸들 불가).
+    conn: Arc<GuardedConnection>,
     /// Cached centroids for query-time probe selection.
     /// Uses `tokio::sync::RwLock` so the guard is `Send` — safe to hold
     /// briefly inside async methods without blocking the executor.
@@ -34,29 +36,37 @@ struct CachedCentroid {
 }
 
 impl SqliteVectorIndex {
-    /// Create a new index implementation sharing the same DB connection.
-    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+    /// Create a new index implementation sharing the same [`GuardedConnection`].
+    pub fn new(conn: Arc<GuardedConnection>) -> Self {
         Self {
             conn,
             centroid_cache: RwLock::new(None),
         }
     }
 
-    /// Execute a closure with the SQLite connection via spawn_blocking.
+    /// **쓰기** 클로저를 spawn_blocking 으로 격리하는 funnel.
+    /// deletion_flag set 시 클로저는 실행되지 않고 `Ok(T::default())` 를 반환한다.
     async fn with_conn<F, T>(&self, f: F) -> Result<T, StorageError>
+    where
+        F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
+        T: Default + Send + 'static,
+    {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || conn.write_lock().run(T::default(), f))
+            .await
+            .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+    }
+
+    /// **읽기** 클로저를 spawn_blocking 으로 격리하는 funnel(deletion_flag 무관).
+    async fn with_conn_read<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
         T: Send + 'static,
     {
         let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let guard = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
-            f(&guard)
-        })
-        .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+        tokio::task::spawn_blocking(move || conn.read_lock().run(f))
+            .await
+            .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
     /// Load centroids from DB into cache if not already cached.
@@ -71,10 +81,9 @@ impl SqliteVectorIndex {
         // Scope the entire SQLite operation so conn + stmt are dropped
         // before the tokio RwLock write-await below.
         let centroids = {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| StorageError::Internal(format!("SQLite lock poisoned: {e}")))?;
+            // 읽기 — read_lock(deletion_flag 무관).
+            let read = self.conn.read_lock();
+            let conn = read.conn();
 
             let mut stmt = conn
                 .prepare("SELECT id, centroid_int8, centroid_scale, centroid_offset FROM ivf_centroids ORDER BY id")

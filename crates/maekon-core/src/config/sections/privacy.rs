@@ -1,5 +1,5 @@
 // 개인정보/격리 설정 — PII 필터 수준, 자동화 샌드박스, 제외 앱 목록
-use super::super::enums::{PiiFilterLevel, SandboxProfile};
+use super::super::enums::{ConfirmationRequirement, PiiFilterLevel, SandboxProfile};
 use serde::{Deserialize, Serialize};
 
 // ── PrivacyConfig ──────────────────────────────────────────────────
@@ -66,20 +66,26 @@ impl Default for SandboxConfig {
 
 // ── AutomationConfig ───────────────────────────────────────────────
 
-/// Confirmation policy for automation (RPA) execution.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum AutomationConfirmPolicy {
-    /// Show confirmation dialog before every execution (safest).
-    #[default]
-    AlwaysConfirm,
-    /// Auto-execute presets marked as trusted; confirm others.
-    TrustedOnly,
-    /// Execute immediately without confirmation (power users only).
-    NeverConfirm,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Configuration for the automation (RPA) subsystem.
+///
+/// `confirmation_policy` uses [`ConfirmationRequirement`], which is the
+/// canonical runtime gate enum (Auto / Confirm / Block).  The former
+/// `AutomationConfirmPolicy` (AlwaysConfirm / TrustedOnly / NeverConfirm)
+/// has been retired and unified here (F-RC-C24-02).  Existing config files
+/// that stored `ALWAYS_CONFIRM` or `TRUSTED_ONLY` should be migrated to
+/// `CONFIRM`; `NEVER_CONFIRM` maps to `AUTO`.
+///
+/// The knob's default is `Auto` (D2-② product sign-off: intent-hint runs
+/// immediately under strict sandbox, matching the "Runs immediately under
+/// strict sandbox" caption shown in the UI).  Set `confirmation_policy =
+/// "CONFIRM"` to require user approval on every intent-hint execution, or
+/// `"BLOCK"` to disable it.
+///
+/// Note: this `Auto` default is applied at the FIELD level. The enum-level
+/// `ConfirmationRequirement::default()` stays `Confirm` (fail-safe) because it
+/// is also the `#[serde(default)]` for `ExecutionPolicy.confirmation` — a
+/// security gate that must not default open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -87,12 +93,64 @@ pub struct AutomationConfig {
     pub sandbox: SandboxConfig,
     #[serde(default)]
     pub custom_presets: Vec<crate::models::intent::WorkflowPreset>,
-    #[serde(default)]
-    pub confirmation_policy: AutomationConfirmPolicy,
+    #[serde(default = "default_confirmation_policy")]
+    pub confirmation_policy: ConfirmationRequirement,
+}
+
+impl Default for AutomationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sandbox: SandboxConfig::default(),
+            custom_presets: Vec::new(),
+            confirmation_policy: default_confirmation_policy(),
+        }
+    }
+}
+
+/// D2-② sign-off default for the intent-hint confirmation knob.
+fn default_confirmation_policy() -> ConfirmationRequirement {
+    ConfirmationRequirement::Auto
 }
 
 // ── Private default helpers ─────────────────────────────────────────
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automation_config_confirmation_policy_serde_round_trip() {
+        // AutomationConfig.confirmation_policy must serialise/deserialise using
+        // SCREAMING_SNAKE_CASE tokens (inherited from ConfirmationRequirement serde attr).
+        let config = AutomationConfig {
+            enabled: false,
+            confirmation_policy: ConfirmationRequirement::Confirm,
+            ..AutomationConfig::default()
+        };
+        let json = serde_json::to_string(&config).expect("must serialise");
+        assert!(
+            json.contains("\"CONFIRM\""),
+            "confirmation_policy must serialise as SCREAMING_SNAKE_CASE; got: {json}"
+        );
+        let restored: AutomationConfig = serde_json::from_str(&json).expect("must deserialise");
+        assert_eq!(
+            restored.confirmation_policy,
+            ConfirmationRequirement::Confirm
+        );
+    }
+
+    #[test]
+    fn automation_config_default_confirmation_policy_is_auto() {
+        // Default is Auto (D2-② product sign-off: immediate-run under strict sandbox).
+        // F-RC-C24-02: users opt into Confirm/Block via config.
+        assert_eq!(
+            AutomationConfig::default().confirmation_policy,
+            ConfirmationRequirement::Auto
+        );
+    }
 }

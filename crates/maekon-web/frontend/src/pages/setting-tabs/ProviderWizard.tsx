@@ -1,33 +1,21 @@
-import anthropicSvg from '@lobehub/icons-static-svg/icons/anthropic.svg?raw'
-import copilotSvg from '@lobehub/icons-static-svg/icons/copilot-color.svg?raw'
-import deepseekSvg from '@lobehub/icons-static-svg/icons/deepseek-color.svg?raw'
-import googleSvg from '@lobehub/icons-static-svg/icons/google-brand-color.svg?raw'
-import groqSvg from '@lobehub/icons-static-svg/icons/groq.svg?raw'
-import mistralSvg from '@lobehub/icons-static-svg/icons/mistral-color.svg?raw'
-import nvidiaSvg from '@lobehub/icons-static-svg/icons/nvidia-color.svg?raw'
-import ollamaSvg from '@lobehub/icons-static-svg/icons/ollama.svg?raw'
-import openaiSvg from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import openrouterSvg from '@lobehub/icons-static-svg/icons/openrouter.svg?raw'
-import xaiSvg from '@lobehub/icons-static-svg/icons/xai.svg?raw'
+import anthropicIcon from '@lobehub/icons-static-svg/icons/anthropic.svg?url'
+import copilotIcon from '@lobehub/icons-static-svg/icons/copilot-color.svg?url'
+import deepseekIcon from '@lobehub/icons-static-svg/icons/deepseek-color.svg?url'
+import googleIcon from '@lobehub/icons-static-svg/icons/google-brand-color.svg?url'
+import groqIcon from '@lobehub/icons-static-svg/icons/groq.svg?url'
+import mistralIcon from '@lobehub/icons-static-svg/icons/mistral-color.svg?url'
+import nvidiaIcon from '@lobehub/icons-static-svg/icons/nvidia-color.svg?url'
+import ollamaIcon from '@lobehub/icons-static-svg/icons/ollama.svg?url'
+import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?url'
+import openrouterIcon from '@lobehub/icons-static-svg/icons/openrouter.svg?url'
+import xaiIcon from '@lobehub/icons-static-svg/icons/xai.svg?url'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Badge, Button, Card, Input } from '../../components/ui'
 import { colors, motion, radius, typography } from '../../styles/tokens'
 import type { BadgeColor } from '../../styles/variants'
+import { withLocalAuthHeaders } from '../../utils/api-base'
 import { cn } from '../../utils/cn'
-
-const toDataUri = (svg: string) => `data:image/svg+xml,${encodeURIComponent(svg)}`
-const anthropicIcon = toDataUri(anthropicSvg)
-const copilotIcon = toDataUri(copilotSvg)
-const deepseekIcon = toDataUri(deepseekSvg)
-const googleIcon = toDataUri(googleSvg)
-const groqIcon = toDataUri(groqSvg)
-const mistralIcon = toDataUri(mistralSvg)
-const nvidiaIcon = toDataUri(nvidiaSvg)
-const ollamaIcon = toDataUri(ollamaSvg)
-const openaiIcon = toDataUri(openaiSvg)
-const openrouterIcon = toDataUri(openrouterSvg)
-const xaiIcon = toDataUri(xaiSvg)
 
 interface ProviderDef {
   id: string
@@ -213,15 +201,20 @@ export default function ProviderWizard({ onSelect, className }: ProviderWizardPr
     setTesting(true)
     setTestResult('idle')
     try {
-      const resp = await fetch('/api/ai/providers/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          surface_id: selected.surfaceId,
-          endpoint: null,
-          api_key: apiKey.trim() || null,
+      // E20-41 (#4833): raw fetch outside the client.ts chokepoint — attach the
+      // X-Local-Auth header explicitly so the local-API gate admits it.
+      const resp = await fetch(
+        '/api/ai/providers/models',
+        withLocalAuthHeaders({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            surface_id: selected.surfaceId,
+            endpoint: null,
+            api_key: apiKey.trim() || null,
+          }),
         }),
-      })
+      )
       setTestResult(resp.ok ? 'success' : 'error')
     } catch {
       setTestResult('error')

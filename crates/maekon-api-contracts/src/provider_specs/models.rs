@@ -6,6 +6,7 @@ use crate::ai_providers::{
 use super::enums::ProviderUnknownModelPolicy;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderSurfaceCatalog {
     pub version: u32,
     #[serde(default)]
@@ -15,6 +16,7 @@ pub struct ProviderSurfaceCatalog {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderVendorSpec {
     pub vendor_id: String,
     pub provider_type: String,
@@ -26,6 +28,7 @@ pub struct ProviderVendorSpec {
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderVendorProjectionSpec {
     #[serde(default)]
     pub api_key_env_vars: Vec<String>,
@@ -34,6 +37,7 @@ pub struct ProviderVendorProjectionSpec {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderSurfaceSpec {
     pub surface_id: String,
     pub vendor_id: String,
@@ -73,12 +77,15 @@ pub struct ProviderSurfaceSpec {
     #[serde(default)]
     pub subprocess_transport: Option<SubprocessTransportSpec>,
     #[serde(default)]
+    pub compatibility: Option<ProviderCliCompatibilitySpec>,
+    #[serde(default)]
     pub provisioning: Option<ProviderSurfaceProvisioningSpec>,
     #[serde(default)]
     pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderSurfaceProvisioningSpec {
     #[serde(default)]
     pub configuration_env_vars: Vec<String>,
@@ -89,6 +96,7 @@ pub struct ProviderSurfaceProvisioningSpec {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderSurfaceSupports {
     #[serde(default)]
     pub llm: bool,
@@ -101,12 +109,14 @@ pub struct ProviderSurfaceSupports {
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderLlmCapabilities {
     #[serde(default)]
     pub structured_output: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderOcrCapabilities {
     #[serde(default = "default_ocr_strategy")]
     pub strategy: String,
@@ -121,6 +131,7 @@ pub struct ProviderOcrCapabilities {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SurfaceDefaultModels {
     #[serde(default)]
     pub llm_models: Vec<String>,
@@ -129,6 +140,7 @@ pub struct SurfaceDefaultModels {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderKnownModelSpec {
     pub id: String,
     #[serde(default)]
@@ -143,6 +155,7 @@ pub struct ProviderKnownModelSpec {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderKnownModelCapabilities {
     #[serde(default = "default_true")]
     pub llm: bool,
@@ -153,6 +166,7 @@ pub struct ProviderKnownModelCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderUnknownModelPolicySet {
     #[serde(default = "default_unknown_model_policy")]
     pub llm: ProviderUnknownModelPolicy,
@@ -161,6 +175,7 @@ pub struct ProviderUnknownModelPolicySet {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderAvailabilityProbeSpec {
     pub method: String,
     pub url: String,
@@ -168,6 +183,7 @@ pub struct ProviderAvailabilityProbeSpec {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SubprocessTransportSpec {
     pub tool_id: String,
     #[serde(default)]
@@ -184,6 +200,36 @@ pub struct SubprocessTransportSpec {
     pub oneshot_flags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_flags: Vec<String>,
+    /// Args that launch the long-lived app-server (e.g. `["app-server"]`), used
+    /// only by `codex_app_server` surfaces (E21 #4866). Read by the factory to
+    /// build the `CodexAppServerSession` command.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_server_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProviderCliCompatibilitySpec {
+    pub matrix_version: String,
+    #[serde(default)]
+    pub supported_oses: Vec<String>,
+    pub minimum_supported_version: String,
+    #[serde(default)]
+    pub known_bad_versions: Vec<String>,
+    #[serde(default)]
+    pub version_probe_command: Vec<String>,
+    #[serde(default)]
+    pub auth_probe_command: Vec<String>,
+    pub invocation_mode: String,
+    pub output_envelope: String,
+    pub ocr_support: String,
+    pub session_support: String,
+    #[serde(default)]
+    pub ci_fake_cli_contracts: Vec<String>,
+    #[serde(default)]
+    pub manual_live_smoke_required: bool,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 fn default_true() -> bool {

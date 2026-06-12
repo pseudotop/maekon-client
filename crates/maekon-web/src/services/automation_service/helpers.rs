@@ -43,6 +43,10 @@ pub(crate) fn default_automation_status(pending: usize) -> AutomationStatusDto {
         llm_fallback_reason: None,
         external_data_policy: "PiiFilterStrict".to_string(),
         pending_audit_entries: pending,
+        // #5734: no health signal in the unconfigured path.
+        llm_healthy: None,
+        // 설정 관리자 미설정 시 기본값 "AUTO" (AutomationConfig::default()와 일치).
+        confirmation_policy: "AUTO".to_string(),
     }
 }
 
@@ -87,6 +91,8 @@ pub(crate) fn resolve_ai_runtime_status(
             .to_string(),
             ocr_fallback_reason: None,
             llm_fallback_reason: None,
+            // No health signal in the inferred fallback — ai_runtime_status was not set.
+            llm_healthy: None,
         })
 }
 

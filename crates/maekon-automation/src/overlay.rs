@@ -1,7 +1,5 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use uuid::Uuid;
-
 use maekon_core::error::CoreError;
 use maekon_core::models::gui::{HighlightHandle, HighlightRequest};
 use maekon_core::models::ui_scene::UiScene;
@@ -20,7 +18,7 @@ impl OverlayDriver for NoOpOverlayDriver {
         );
 
         Ok(HighlightHandle {
-            handle_id: Uuid::new_v4().to_string(),
+            handle_id: maekon_core::generate_id("hl"),
             rendered_at: Utc::now(),
             target_count: req.targets.len(),
         })

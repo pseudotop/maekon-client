@@ -44,10 +44,14 @@
 - SBOM: `cargo cyclonedx --workspace`
 - Provenance: 릴리즈 아티팩트 Attestation 생성
 
-문서화된 예외:
+현재 예외 정책:
 
-- `RUSTSEC-2024-0429` (`glib 0.18.5`)는 Linux 전용 GTK3 / `webkit2gtk` / `wry` / Tauri 전이 의존성이라 현재 프로젝트가 직접 해소할 수 없어 한시적으로 허용합니다.
-- 이 예외는 저장소 정책(`deny.toml`, integrity workflow/script)에 명시적으로 남아 있어야 하며, upstream desktop stack이 패치된 `glib` / `gtk-rs-core`로 이동하면 즉시 제거해야 합니다.
+- 로컬 무결성 스크립트는 RustSec advisory를 ignore하지 않습니다.
+- 기존 `RUSTSEC-2024-0429` (`glib 0.18.5`) 예외는 E31 GTK4/WebKitGTK 6 이관으로 제거되었습니다.
+- `cargo audit`의 vulnerability는 0개여야 합니다. transitive informational
+  warning은 상류 Tauri/urlpattern/tokenizers 릴리즈로 제거될 때까지 저장소
+  정책과 이슈 #5431에서 추적합니다.
+- 신규 advisory는 수정하거나, owner/만료일/이슈 참조가 포함된 저장소 정책으로 명시적으로 triage해야 합니다.
 
 ### 3) 런타임 경계 규칙
 

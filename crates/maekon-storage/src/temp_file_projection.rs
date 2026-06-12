@@ -58,66 +58,76 @@ impl TempFileSecretProjection {
         )
     }
 
-    fn load_registry(&self) -> Result<HashMap<String, PathBuf>, StorageError> {
-        if !self.registry_path.exists() {
-            return Ok(HashMap::new());
-        }
+    async fn load_registry(&self) -> Result<HashMap<String, PathBuf>, StorageError> {
+        let registry_path = self.registry_path.clone();
+        tokio::task::spawn_blocking(move || {
+            if !registry_path.exists() {
+                return Ok(HashMap::new());
+            }
 
-        let raw = std::fs::read_to_string(&self.registry_path).map_err(|e| {
-            StorageError::Internal(format!(
-                "failed to read temp projection registry ({}): {}",
-                self.registry_path.display(),
-                e
-            ))
-        })?;
-
-        let stored: HashMap<String, String> = serde_json::from_str(&raw).map_err(|e| {
-            StorageError::Internal(format!(
-                "failed to parse temp projection registry ({}): {}",
-                self.registry_path.display(),
-                e
-            ))
-        })?;
-
-        Ok(stored
-            .into_iter()
-            .map(|(consumer_id, path)| (consumer_id, PathBuf::from(path)))
-            .collect())
-    }
-
-    fn save_registry(&self, registry: &HashMap<String, PathBuf>) -> Result<(), StorageError> {
-        if let Some(parent) = self.registry_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            let raw = std::fs::read_to_string(&registry_path).map_err(|e| {
                 StorageError::Internal(format!(
-                    "failed to create temp projection registry dir ({}): {}",
-                    parent.display(),
+                    "failed to read temp projection registry ({}): {}",
+                    registry_path.display(),
                     e
                 ))
             })?;
-        }
 
+            let stored: HashMap<String, String> = serde_json::from_str(&raw).map_err(|e| {
+                StorageError::Internal(format!(
+                    "failed to parse temp projection registry ({}): {}",
+                    registry_path.display(),
+                    e
+                ))
+            })?;
+
+            Ok(stored
+                .into_iter()
+                .map(|(consumer_id, path)| (consumer_id, PathBuf::from(path)))
+                .collect())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+    }
+
+    async fn save_registry(&self, registry: &HashMap<String, PathBuf>) -> Result<(), StorageError> {
+        let registry_path = self.registry_path.clone();
         let stored: HashMap<String, String> = registry
             .iter()
             .map(|(consumer_id, path)| (consumer_id.clone(), path.display().to_string()))
             .collect();
 
-        let json = serde_json::to_string_pretty(&stored).map_err(|e| {
-            StorageError::Internal(format!(
-                "failed to serialize temp projection registry ({}): {}",
-                self.registry_path.display(),
-                e
-            ))
-        })?;
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = registry_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageError::Internal(format!(
+                        "failed to create temp projection registry dir ({}): {}",
+                        parent.display(),
+                        e
+                    ))
+                })?;
+            }
 
-        std::fs::write(&self.registry_path, json).map_err(|e| {
-            StorageError::Internal(format!(
-                "failed to write temp projection registry ({}): {}",
-                self.registry_path.display(),
-                e
-            ))
-        })?;
+            let json = serde_json::to_string_pretty(&stored).map_err(|e| {
+                StorageError::Internal(format!(
+                    "failed to serialize temp projection registry ({}): {}",
+                    registry_path.display(),
+                    e
+                ))
+            })?;
 
-        Ok(())
+            std::fs::write(&registry_path, json).map_err(|e| {
+                StorageError::Internal(format!(
+                    "failed to write temp projection registry ({}): {}",
+                    registry_path.display(),
+                    e
+                ))
+            })?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
     fn file_prefix(template: &ProjectionTemplate) -> String {
@@ -138,8 +148,8 @@ impl TempFileSecretProjection {
         format!("maekon-{}-", normalized.trim_matches('-'))
     }
 
-    fn remove_file_if_exists(path: &Path) -> Result<(), StorageError> {
-        match std::fs::remove_file(path) {
+    async fn remove_file_if_exists(path: PathBuf) -> Result<(), StorageError> {
+        tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(StorageError::Internal(format!(
@@ -147,7 +157,9 @@ impl TempFileSecretProjection {
                 path.display(),
                 err
             ))),
-        }
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 }
 
@@ -227,18 +239,21 @@ impl SecretProjectionPort for TempFileSecretProjection {
                 ),
             })?;
 
-        std::fs::create_dir_all(&self.projection_dir).map_err(|e| CoreError::Internal {
-            code: maekon_core::error_codes::InternalCode::Generic,
-            message: format!(
-                "failed to create temp projection dir ({}): {}",
-                self.projection_dir.display(),
-                e
-            ),
-        })?;
+        // F-RC-10: use tokio::fs::create_dir_all in async context
+        tokio::fs::create_dir_all(&self.projection_dir)
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!(
+                    "failed to create temp projection dir ({}): {}",
+                    self.projection_dir.display(),
+                    e
+                ),
+            })?;
 
-        let mut registry = self.load_registry()?;
+        let mut registry = self.load_registry().await?;
         if let Some(existing_path) = registry.get(&request.consumer_id).cloned() {
-            Self::remove_file_if_exists(&existing_path)?;
+            Self::remove_file_if_exists(existing_path).await?;
         }
 
         let temp_file = Builder::new()
@@ -260,29 +275,37 @@ impl SecretProjectionPort for TempFileSecretProjection {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("failed to initialize temp file: {e}"),
             })?;
-        std::fs::write(temp_file.path(), secret).map_err(|e| CoreError::Internal {
-            code: maekon_core::error_codes::InternalCode::Generic,
-            message: format!(
-                "failed to write projected temp file ({}): {}",
-                temp_file.path().display(),
-                e
-            ),
-        })?;
+        // F-RC-10: use tokio::fs::write in async context
+        tokio::fs::write(temp_file.path(), secret)
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!(
+                    "failed to write projected temp file ({}): {}",
+                    temp_file.path().display(),
+                    e
+                ),
+            })?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-
-            let permissions = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(temp_file.path(), permissions).map_err(|e| {
-                CoreError::Internal {
+            let temp_path = temp_file.path().to_owned();
+            tokio::task::spawn_blocking(move || {
+                use std::os::unix::fs::PermissionsExt;
+                let permissions = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(&temp_path, permissions).map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
                     message: format!(
                         "failed to secure projected temp file ({}): {}",
-                        temp_file.path().display(),
+                        temp_path.display(),
                         e
                     ),
-                }
-            })?;
+                })
+            })
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("spawn_blocking join error: {e}"),
+            })??;
         }
 
         let (path, keep_error): (PathBuf, Option<std::io::Error>) = match temp_file.keep() {
@@ -301,7 +324,7 @@ impl SecretProjectionPort for TempFileSecretProjection {
         }
 
         registry.insert(request.consumer_id, path.clone());
-        self.save_registry(&registry)?;
+        self.save_registry(&registry).await?;
 
         Ok(SecretProjectionResult::TempFile {
             path,
@@ -310,13 +333,13 @@ impl SecretProjectionPort for TempFileSecretProjection {
     }
 
     async fn revoke_projection(&self, consumer_id: &str) -> Result<(), CoreError> {
-        let mut registry = self.load_registry()?;
+        let mut registry = self.load_registry().await?;
         let Some(path) = registry.remove(consumer_id) else {
             return Ok(());
         };
 
-        Self::remove_file_if_exists(&path)?;
-        self.save_registry(&registry).map_err(CoreError::from)
+        Self::remove_file_if_exists(path).await?;
+        self.save_registry(&registry).await.map_err(CoreError::from)
     }
 }
 

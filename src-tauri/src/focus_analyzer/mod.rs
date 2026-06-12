@@ -49,15 +49,22 @@ impl FocusAnalyzer {
 
     #[allow(dead_code)] // convenience wrapper used in tests
     pub async fn on_app_switch(&self, new_app: &str) {
-        self.on_app_switch_with_context(new_app, "", None).await;
+        // 테스트 편의 래퍼: app_usage_analytics 동의 부여(true)로 전체 경로 활성.
+        self.on_app_switch_with_context(new_app, "", None, true)
+            .await;
     }
 
+    /// 앱 전환 처리. `app_usage_permitted` 는 ConsentPermissions 의 app_usage_analytics
+    /// own-field 게이트로, WorkflowIntelligence 앱-사용 집계(update_usage/touch_app/
+    /// advance_workflow)만 게이트한다. 포커스 세션/방해 추적(focus metrics)은 별도
+    /// 복합 게이트(screen_capture)로 이미 보호되므로 여기서 끄지 않는다.
     pub async fn on_app_switch_with_context(
         &self,
         new_app: &str,
         window_title: &str,
         ocr_hint: Option<&str>,
-    ) {
+        app_usage_permitted: bool,
+    ) -> Vec<maekon_core::models::suggestion::Suggestion> {
         let new_category = AppCategory::from_app_name(new_app);
         let now = Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
@@ -73,7 +80,7 @@ impl FocusAnalyzer {
             let prev_start = tracker.current_app_start;
 
             if prev_app.as_deref() == Some(new_app) {
-                return;
+                return Vec::new();
             }
 
             debug!(
@@ -95,14 +102,18 @@ impl FocusAnalyzer {
                     (0, 0)
                 };
 
-                if let Err(e) = self.storage.increment_focus_metrics(
-                    &today,
-                    duration_secs, // total_active
-                    deep_work,
-                    comm,
-                    1, // context_switch
-                    0, // interruption
-                ) {
+                if let Err(e) = self
+                    .storage
+                    .increment_focus_metrics(
+                        &today,
+                        duration_secs, // total_active
+                        deep_work,
+                        comm,
+                        1, // context_switch
+                        0, // interruption
+                    )
+                    .await
+                {
                     warn!("in progress min failure: {e}");
                 }
 
@@ -110,7 +121,11 @@ impl FocusAnalyzer {
                     tracker.continuous_deep_work_secs += duration_secs;
 
                     if let Some(session_id) = tracker.active_session_id {
-                        if let Err(e) = self.storage.add_deep_work_secs(session_id, duration_secs) {
+                        if let Err(e) = self
+                            .storage
+                            .add_deep_work_secs(session_id, duration_secs)
+                            .await
+                        {
                             warn!("session deep_work_secs add failure: {e}");
                         }
                     }
@@ -124,21 +139,25 @@ impl FocusAnalyzer {
                         None, // snapshot_frame_id (future linkage)
                     );
 
-                    match self.storage.record_interruption(&interruption) {
+                    match self.storage.record_interruption(&interruption).await {
                         Ok(id) => {
                             debug!("record: id={}", id);
                             tracker.pending_interruption_id = Some(id);
 
                             if let Some(session_id) = tracker.active_session_id {
-                                if let Err(e) =
-                                    self.storage.increment_work_session_interruption(session_id)
+                                if let Err(e) = self
+                                    .storage
+                                    .increment_work_session_interruption(session_id)
+                                    .await
                                 {
                                     debug!("increment_work_session_interruption failed: {e}");
                                 }
                             }
 
-                            if let Err(e) =
-                                self.storage.increment_focus_metrics(&today, 0, 0, 0, 0, 1)
+                            if let Err(e) = self
+                                .storage
+                                .increment_focus_metrics(&today, 0, 0, 0, 0, 1)
+                                .await
                             {
                                 debug!("increment_focus_metrics (interruption) failed: {e}");
                             }
@@ -149,7 +168,11 @@ impl FocusAnalyzer {
 
                 if prev_cat.is_communication() && new_category.is_deep_work() {
                     if let Some(int_id) = tracker.pending_interruption_id.take() {
-                        if let Err(e) = self.storage.record_interruption_resume(int_id, new_app) {
+                        if let Err(e) = self
+                            .storage
+                            .record_interruption_resume(int_id, new_app)
+                            .await
+                        {
                             debug!("record_interruption_resume failed: {e}");
                         }
                         debug!(": id={}", int_id);
@@ -160,14 +183,14 @@ impl FocusAnalyzer {
 
             if new_category.is_communication() {
                 if let Some(session_id) = tracker.active_session_id.take() {
-                    if let Err(e) = self.storage.end_work_session(session_id) {
+                    if let Err(e) = self.storage.end_work_session(session_id).await {
                         debug!("end_work_session failed: {e}");
                     }
                     tracker.continuous_deep_work_secs = 0;
                     debug!("session ended ( switch): id={}", session_id);
                 }
             } else if new_category.is_deep_work() && tracker.active_session_id.is_none() {
-                match self.storage.start_work_session(new_app, new_category) {
+                match self.storage.start_work_session(new_app, new_category).await {
                     Ok(session) => {
                         debug!("session started: id={}, app={}", session.id, new_app);
                         tracker.active_session_id = Some(session.id);
@@ -181,7 +204,10 @@ impl FocusAnalyzer {
             tracker.current_app_start = Some(now);
         }
 
-        let playbook_signal = {
+        // Own-field gate (#4802): app_usage_analytics 동의가 없으면 앱-사용 집계 경로를
+        // 통째로 건너뛴다 (update_usage/touch_app/advance_workflow). 동의가 없으면
+        // WorkflowIntelligence 의 usage 맵·workflow 세그먼트에 아무것도 쌓이지 않는다.
+        let playbook_signal = if app_usage_permitted {
             let mut intelligence = self.workflow_intelligence.write().await;
 
             if let Some((prev_app, prev_cat, duration_secs)) = previous_usage {
@@ -205,26 +231,38 @@ impl FocusAnalyzer {
                 self.config.playbook_min_relevance,
                 self.config.workflow_split_idle_secs,
             )
+        } else {
+            debug!("on_app_switch: app_usage_analytics own-field gate closed — skipping usage aggregation");
+            None
         };
 
+        // #5696: collect produced rule suggestions so the scheduler can bridge
+        // them into the live review queue (save + OS toast already happened
+        // inside each maybe_suggest_*).
+        let mut produced = Vec::new();
         if let Some(signal) = playbook_signal {
-            self.maybe_suggest_pattern_detected(signal).await;
+            if let Some(s) = self.maybe_suggest_pattern_detected(signal).await {
+                produced.push(s);
+            }
         }
 
         if should_suggest_restore {
-            self.maybe_suggest_restore_context(new_app, now).await;
+            if let Some(s) = self.maybe_suggest_restore_context(new_app, now).await {
+                produced.push(s);
+            }
         }
+        produced
     }
 
-    pub async fn analyze_periodic(&self) {
+    pub async fn analyze_periodic(&self) -> Vec<maekon_core::models::suggestion::Suggestion> {
         let now = Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
 
-        let metrics = match self.storage.get_or_create_focus_metrics(&today) {
+        let metrics = match self.storage.get_or_create_focus_metrics(&today).await {
             Ok(m) => m,
             Err(e) => {
                 warn!("in progress query failure: {e}");
-                return;
+                return Vec::new();
             }
         };
 
@@ -232,14 +270,18 @@ impl FocusAnalyzer {
         if (focus_score - metrics.focus_score).abs() > 0.01 {
             let mut updated = metrics.clone();
             updated.focus_score = focus_score;
-            if let Err(e) = self.storage.update_focus_metrics(&today, &updated) {
+            if let Err(e) = self.storage.update_focus_metrics(&today, &updated).await {
                 debug!("update_focus_metrics failed: {e}");
             }
         }
 
-        self.maybe_suggest_break().await;
-
-        self.maybe_suggest_focus_time(&metrics).await;
+        let mut produced = Vec::new();
+        if let Some(s) = self.maybe_suggest_break().await {
+            produced.push(s);
+        }
+        if let Some(s) = self.maybe_suggest_focus_time(&metrics).await {
+            produced.push(s);
+        }
 
         let playbook_signal = {
             let mut intelligence = self.workflow_intelligence.write().await;
@@ -250,7 +292,9 @@ impl FocusAnalyzer {
             )
         };
         if let Some(signal) = playbook_signal {
-            self.maybe_suggest_pattern_detected(signal).await;
+            if let Some(s) = self.maybe_suggest_pattern_detected(signal).await {
+                produced.push(s);
+            }
         }
 
         debug!(
@@ -260,10 +304,11 @@ impl FocusAnalyzer {
             metrics.communication_secs,
             metrics.interruption_count
         );
+        produced
     }
 
     #[allow(dead_code)] // convenience wrapper used in tests
-    pub async fn on_idle_resume(&self) {
+    pub async fn on_idle_resume(&self) -> Vec<maekon_core::models::suggestion::Suggestion> {
         let now = Utc::now();
         let playbook_signal = {
             let mut intelligence = self.workflow_intelligence.write().await;
@@ -273,7 +318,7 @@ impl FocusAnalyzer {
         let mut tracker = self.tracker.write().await;
 
         if let Some(session_id) = tracker.active_session_id.take() {
-            if let Err(e) = self.storage.end_work_session(session_id) {
+            if let Err(e) = self.storage.end_work_session(session_id).await {
                 debug!("end_work_session (idle resume) failed: {e}");
             }
         }
@@ -286,9 +331,13 @@ impl FocusAnalyzer {
 
         debug!("session reset (idle )");
 
+        let mut produced = Vec::new();
         if let Some(signal) = playbook_signal {
-            self.maybe_suggest_pattern_detected(signal).await;
+            if let Some(s) = self.maybe_suggest_pattern_detected(signal).await {
+                produced.push(s);
+            }
         }
+        produced
     }
 }
 
@@ -360,6 +409,60 @@ mod tests {
         let tracker = analyzer.tracker.read().await;
         assert_eq!(tracker.current_app, Some("Visual Studio Code".to_string()));
         assert_eq!(tracker.current_category, Some(AppCategory::Development));
+    }
+
+    /// Own-field gate (#4802): app_usage_analytics 동의가 없으면(=false) 앱-사용 집계
+    /// (WorkflowIntelligence usage/segment)에 아무것도 쌓이지 않아야 한다.
+    /// 포커스 세션 추적(tracker)은 별도 복합 게이트 소관이므로 여기서 끄지 않는다 —
+    /// tracker 는 갱신되지만 usage 집계는 비어 있어야 한다.
+    #[tokio::test]
+    async fn app_usage_not_aggregated_with_only_monitoring_bundle() {
+        let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+
+        // app_usage_permitted=false (monitoring 번들만 부여된 상태를 모사).
+        analyzer
+            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, false)
+            .await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        analyzer
+            .on_app_switch_with_context("Slack", "general", None, false)
+            .await;
+
+        let intelligence = analyzer.workflow_intelligence.read().await;
+        assert_eq!(
+            intelligence.usage_len(),
+            0,
+            "app_usage_analytics 미부여 시 usage 집계는 비어야 함"
+        );
+        assert!(
+            !intelligence.has_active_segment(),
+            "app_usage_analytics 미부여 시 workflow 세그먼트가 시작되지 않아야 함"
+        );
+    }
+
+    /// Own-field gate (#4802): app_usage_analytics 동의가 있으면(=true) 앱-사용 집계가
+    /// 정상 동작해야 한다.
+    #[tokio::test]
+    async fn app_usage_aggregated_when_own_field_granted() {
+        let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+
+        analyzer
+            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, true)
+            .await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        analyzer
+            .on_app_switch_with_context("Slack", "general", None, true)
+            .await;
+
+        let intelligence = analyzer.workflow_intelligence.read().await;
+        assert!(
+            intelligence.usage_len() > 0,
+            "app_usage_analytics 부여 시 usage 집계가 채워져야 함"
+        );
+        assert!(
+            intelligence.has_active_segment(),
+            "app_usage_analytics 부여 시 workflow 세그먼트가 진행되어야 함"
+        );
     }
 
     #[tokio::test]

@@ -1,22 +1,94 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MOD_KEY } from '../utils/platform'
 import { AutomationConfirmModal } from './components/AutomationConfirmModal'
 import { CaptureFlash } from './components/CaptureFlash'
 import CoachingPopup from './components/CoachingPopup'
+import { CodexApprovalModal } from './components/CodexApprovalModal'
 import DetectionHeader from './components/DetectionHeader'
 import DetectionOverlay from './components/DetectionOverlay'
 import FocusHighlight from './components/FocusHighlight'
 import { FocusModeIndicator } from './components/FocusModeIndicator'
 import GoalProgressBar from './components/GoalProgressBar'
 import HeatmapGhost from './components/HeatmapGhost'
+import { PointerContextHighlight } from './components/PointerContextHighlight'
 import { SuggestionBadge } from './components/SuggestionBadge'
 import { SuggestionsPanel } from './components/SuggestionsPanel'
 import { showToast, ToastContainer } from './components/Toast'
+import { TrackingBorder } from './components/TrackingBorder'
 import { useOverlayEvents } from './hooks/useOverlayEvents'
-import type { SuggestionViewDto } from './types'
+import { redactSuggestionViews } from './suggestionPrivacy'
+import { buildSuggestionReplayEvent, recordSuggestionReplayEvent } from './suggestionReplay'
+import type { CaptureStatePayload, SuggestionViewDto } from './types'
 
 export default function OverlayApp() {
+  const windowLabel = useTauriWindowLabel()
+
+  if (!windowLabel.resolved) {
+    return <div className="relative h-screen w-screen overflow-hidden" />
+  }
+
+  if (isTrackingBorderWindowLabel(windowLabel.value)) {
+    return <TrackingBorderSurface windowLabel={windowLabel.value} />
+  }
+
+  return <InteractiveOverlaySurface windowLabel={windowLabel.value} />
+}
+
+interface TauriWindowLabelState {
+  resolved: boolean
+  value?: string
+}
+
+const ACTIVE_TRACKING_BORDER_STATE: CaptureStatePayload = {
+  paused: false,
+  indicator_visible: true,
+}
+
+function isTrackingBorderWindowLabel(windowLabel?: string): windowLabel is string {
+  switch (windowLabel) {
+    case 'tracking-border-top':
+    case 'tracking-border-bottom':
+    case 'tracking-border-left':
+    case 'tracking-border-right':
+      return true
+    default:
+      return false
+  }
+}
+
+function useTauriWindowLabel(): TauriWindowLabelState {
+  const [windowLabel, setWindowLabel] = useState<TauriWindowLabelState>({ resolved: false })
+
+  useEffect(() => {
+    let mounted = true
+
+    ;(async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        if (mounted) setWindowLabel({ resolved: true, value: getCurrentWindow().label })
+      } catch {
+        if (mounted) setWindowLabel({ resolved: true, value: undefined })
+      }
+    })()
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  return windowLabel
+}
+
+function TrackingBorderSurface({ windowLabel }: { windowLabel: string }) {
+  return (
+    <div className="relative h-screen w-screen overflow-hidden">
+      <TrackingBorder captureState={ACTIVE_TRACKING_BORDER_STATE} windowLabel={windowLabel} />
+    </div>
+  )
+}
+
+function InteractiveOverlaySurface({ windowLabel }: { windowLabel?: string }) {
   const { state, dispatch } = useOverlayEvents()
   const { t } = useTranslation()
   const isRich = state.mode === 'rich' || state.mode === 'adaptive'
@@ -38,16 +110,24 @@ export default function OverlayApp() {
   // Sync automation confirmation modal → Rust overlay mode.
   // Uses dedicated IPC so the mode priority system can recalculate
   // the correct window layout when the modal is dismissed.
+  // A full-screen interactive modal (automation confirm OR codex approval, E21
+  // #5044) needs the overlay window to capture events. Reuse the generic
+  // full-screen-interactive toggle (`set_automation_confirm_mode`) — it is mode
+  // priority, not automation-specific — OR'd across BOTH modal states so neither
+  // clobbers the other's capture mode.
+  // NOTE: click-through / event capture is NOT verifiable in cargo/Vitest —
+  // flag for human visual confirmation.
+  const fullScreenModalActive = !!state.pendingConfirmation || !!state.pendingCodexApproval
   useEffect(() => {
     ;(async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
-        await invoke('toggle_automation_confirm', { active: !!state.pendingConfirmation })
+        await invoke('toggle_automation_confirm', { active: fullScreenModalActive })
       } catch (e) {
         console.warn('toggle_automation_confirm failed:', e)
       }
     })()
-  }, [state.pendingConfirmation])
+  }, [fullScreenModalActive])
 
   // Show keyboard shortcut hint toast on first overlay activation.
   const overlayVisible = !!state.coaching || state.suggestionsPanelOpen
@@ -87,9 +167,9 @@ export default function OverlayApp() {
     const { invoke } = await import('@tauri-apps/api/core')
     try {
       const suggestions = await invoke<SuggestionViewDto[]>('get_pending_suggestions')
-      dispatch({ type: 'set-suggestions', payload: suggestions })
+      dispatch({ type: 'set-suggestions', payload: redactSuggestionViews(suggestions) })
     } catch (e) {
-      console.warn('get_pending_suggestions failed:', e)
+      console.warn('get_pending_suggestions failed')
       throw e
     }
   }, [dispatch])
@@ -120,11 +200,22 @@ export default function OverlayApp() {
   }, [])
 
   const handleBadgeClick = useCallback(() => {
+    void recordSuggestionReplayEvent(
+      buildSuggestionReplayEvent({
+        phase: 'marker_opened',
+        placement: state.suggestionSurface.placement,
+        anchor: state.suggestionSurface.anchor,
+        suggestion: state.suggestions[0] ?? null,
+      }),
+    )
     dispatch({ type: 'toggle-suggestions-panel', payload: true })
-  }, [dispatch])
+  }, [dispatch, state.suggestionSurface.anchor, state.suggestionSurface.placement, state.suggestions])
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
+      <TrackingBorder captureState={state.captureState} windowLabel={windowLabel} />
+      <PointerContextHighlight pointerContext={state.pointerContext} />
+
       {/* Detection mode header */}
       {state.detectionScene && (
         <DetectionHeader
@@ -153,7 +244,13 @@ export default function OverlayApp() {
       {state.coaching && <CoachingPopup message={state.coaching} autoDismissSecs={state.coaching.auto_dismiss_secs} />}
 
       {/* Suggestion badge (shown when panel is closed and there are new items) */}
-      {!state.suggestionsPanelOpen && <SuggestionBadge count={state.suggestionBadgeCount} onClick={handleBadgeClick} />}
+      {!state.suggestionsPanelOpen && (
+        <SuggestionBadge
+          count={state.suggestionBadgeCount}
+          anchor={state.suggestionSurface.anchor}
+          onClick={handleBadgeClick}
+        />
+      )}
 
       {/* Suggestions panel (right side, slide in/out) */}
       <SuggestionsPanel
@@ -161,6 +258,8 @@ export default function OverlayApp() {
         suggestions={state.suggestions}
         onClose={handleClosePanel}
         onRefresh={handleRefreshSuggestions}
+        placement={state.suggestionSurface.placement}
+        anchor={state.suggestionSurface.anchor}
       />
 
       {/* Rich mode: goal progress bar at bottom */}
@@ -174,6 +273,14 @@ export default function OverlayApp() {
         <AutomationConfirmModal
           confirmation={state.pendingConfirmation}
           onDismiss={() => dispatch({ type: 'automation-confirm-dismiss' })}
+        />
+      )}
+
+      {/* Codex app-server approval modal (E21 #5044) */}
+      {state.pendingCodexApproval && (
+        <CodexApprovalModal
+          approval={state.pendingCodexApproval}
+          onDismiss={() => dispatch({ type: 'codex-approval-dismiss' })}
         />
       )}
 

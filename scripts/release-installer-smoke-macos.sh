@@ -6,6 +6,9 @@ ASSETS_DIR="${MAEKON_SMOKE_INSTALLERS_DIR:-smoke-installers}"
 DMG_NAME="${MAEKON_SMOKE_DMG_NAME:-maekon-macos-universal.dmg}"
 PKG_NAME="${MAEKON_SMOKE_PKG_NAME:-maekon-macos-universal.pkg}"
 APP_NAME="${MAEKON_SMOKE_APP_NAME:-Maekon.app}"
+DRY_RUN_BACKUP_RESTORE_PROOF=0
+SYSTEM_APPLICATIONS_DIR="${MAEKON_SYSTEM_APPLICATIONS_DIR:-/Applications}"
+USER_APPLICATIONS_DIR="${MAEKON_USER_APPLICATIONS_DIR:-${HOME}/Applications}"
 
 info() {
   printf '[INSTALLER-SMOKE] %s\n' "$*"
@@ -28,6 +31,8 @@ Options:
   --dmg-name <name>    DMG file name (default: maekon-macos-universal.dmg)
   --pkg-name <name>    PKG file name (default: maekon-macos-universal.pkg)
   --app-name <name>    Installed app bundle name (default: Maekon.app)
+  --dry-run-backup-restore-proof
+                       Exercise backup/cleanup/restore logic without DMG/PKG artifacts
   -h, --help           Show help
 EOF
 }
@@ -54,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       APP_NAME="$2"
       shift 2
       ;;
+    --dry-run-backup-restore-proof)
+      DRY_RUN_BACKUP_RESTORE_PROOF=1
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -63,8 +72,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-[[ -d "$ASSETS_DIR" ]] || fatal "Asset directory not found: $ASSETS_DIR"
 
 resolve_asset() {
   local file_name="$1"
@@ -83,6 +90,10 @@ resolve_asset() {
 }
 
 run_as_root() {
+  if [[ "${MAEKON_SMOKE_NO_SUDO:-0}" == "1" ]]; then
+    "$@"
+    return
+  fi
   if command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
@@ -149,20 +160,25 @@ run_gui_bootstrap_smoke() {
   info "GUI bootstrap smoke OK (rc=$rc, ${label})"
 }
 
-find_existing_app_path() {
+backup_existing_apps() {
   local candidate
-  for candidate in "$SYSTEM_APP_INSTALL_PATH" "$USER_APP_INSTALL_PATH"; do
+  local index=0
+  mkdir -p "$APP_BACKUP_DIR"
+  for candidate in "${APP_CANDIDATE_PATHS[@]}"; do
     if [[ -d "$candidate" ]]; then
-      printf '%s' "$candidate"
-      return 0
+      local backup_path="$APP_BACKUP_DIR/app-$index"
+      info "Backing up existing app at $candidate"
+      run_as_root mv "$candidate" "$backup_path"
+      APP_RESTORE_PATHS+=("$candidate")
+      APP_BACKUP_PATHS+=("$backup_path")
     fi
+    index=$((index + 1))
   done
-  return 1
 }
 
 find_installed_app_path() {
   local candidate
-  for candidate in "$SYSTEM_APP_INSTALL_PATH" "$USER_APP_INSTALL_PATH"; do
+  for candidate in "${APP_CANDIDATE_PATHS[@]}"; do
     if [[ -x "$candidate/Contents/MacOS/maekon" ]]; then
       printf '%s' "$candidate"
       return 0
@@ -170,7 +186,7 @@ find_installed_app_path() {
   done
 
   local found_path
-  found_path="$(find /Applications "$HOME/Applications" -maxdepth 1 -type d -name "$APP_NAME" 2>/dev/null | head -n1 || true)"
+  found_path="$(find "$SYSTEM_APPLICATIONS_DIR" "$USER_APPLICATIONS_DIR" -maxdepth 1 -type d -name "$APP_NAME" 2>/dev/null | head -n1 || true)"
   if [[ -n "$found_path" && -x "$found_path/Contents/MacOS/maekon" ]]; then
     printf '%s' "$found_path"
     return 0
@@ -179,20 +195,20 @@ find_installed_app_path() {
   return 1
 }
 
-DMG_PATH="$(resolve_asset "$DMG_NAME")"
-PKG_PATH="$(resolve_asset "$PKG_NAME")"
-
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maekon-installer-smoke.XXXXXX")"
+touch "$TMP_DIR/.maekon-tmp-owned"
+printf '%s\n' "$$" > "$TMP_DIR/.maekon-tmp-owner-pid"
 MOUNT_DIR="$TMP_DIR/mount"
 LOG_DIR="${MAEKON_SMOKE_LOG_DIR:-${RUNNER_TEMP:-$TMP_DIR}/maekon-installer-smoke}"
-SYSTEM_APP_INSTALL_PATH="/Applications/$APP_NAME"
-USER_APP_INSTALL_PATH="${HOME}/Applications/$APP_NAME"
+SYSTEM_APP_INSTALL_PATH="$SYSTEM_APPLICATIONS_DIR/$APP_NAME"
+USER_APP_INSTALL_PATH="$USER_APPLICATIONS_DIR/$APP_NAME"
 APP_INSTALL_PATH="$SYSTEM_APP_INSTALL_PATH"
 APP_BINARY_PATH="$APP_INSTALL_PATH/Contents/MacOS/maekon"
-APP_BACKUP_PATH="$TMP_DIR/${APP_NAME}.backup"
+APP_BACKUP_DIR="$TMP_DIR/app-backups"
 MOUNTED=0
-APP_WAS_PRESENT=0
-APP_RESTORE_PATH=""
+declare -a APP_CANDIDATE_PATHS=("$SYSTEM_APP_INSTALL_PATH" "$USER_APP_INSTALL_PATH")
+declare -a APP_BACKUP_PATHS=()
+declare -a APP_RESTORE_PATHS=()
 
 mkdir -p "$LOG_DIR"
 
@@ -202,33 +218,64 @@ cleanup() {
   fi
 
   local candidate
-  for candidate in "$SYSTEM_APP_INSTALL_PATH" "$USER_APP_INSTALL_PATH"; do
-    if [[ "$APP_WAS_PRESENT" == "1" && "$candidate" == "$APP_RESTORE_PATH" ]]; then
-      continue
-    fi
+  for candidate in "${APP_CANDIDATE_PATHS[@]}"; do
     if [[ -d "$candidate" ]]; then
       run_as_root rm -rf "$candidate" || true
     fi
   done
 
-  if [[ "$APP_WAS_PRESENT" == "1" && -n "$APP_RESTORE_PATH" && -d "$APP_BACKUP_PATH" ]]; then
-    run_as_root mv "$APP_BACKUP_PATH" "$APP_RESTORE_PATH" || true
-  fi
+  local index
+  for ((index = 0; index < ${#APP_RESTORE_PATHS[@]}; index++)); do
+    local restore_path="${APP_RESTORE_PATHS[$index]}"
+    local backup_path="${APP_BACKUP_PATHS[$index]}"
+    if [[ -d "$backup_path" ]]; then
+      run_as_root mkdir -p "$(dirname "$restore_path")" || true
+      run_as_root mv "$backup_path" "$restore_path" || true
+    fi
+  done
 
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+run_backup_restore_dry_run_proof() {
+  info "Running backup/restore dry-run proof"
+  backup_existing_apps
+
+  local candidate
+  for candidate in "${APP_CANDIDATE_PATHS[@]}"; do
+    mkdir -p "$candidate/Contents/MacOS"
+    printf 'smoke-created\n' > "$candidate/Contents/MacOS/smoke-created-marker"
+  done
+
+  cleanup
+  trap - EXIT
+
+  local restore_path
+  for restore_path in "${APP_RESTORE_PATHS[@]}"; do
+    [[ -d "$restore_path" ]] || fatal "Dry-run restore failed for $restore_path"
+    [[ ! -f "$restore_path/Contents/MacOS/smoke-created-marker" ]] \
+      || fatal "Dry-run cleanup leaked smoke artifact at $restore_path"
+  done
+  info "Backup/restore dry-run proof completed"
+}
+
+if [[ "$DRY_RUN_BACKUP_RESTORE_PROOF" == "1" ]]; then
+  run_backup_restore_dry_run_proof
+  exit 0
+fi
+
+[[ -d "$ASSETS_DIR" ]] || fatal "Asset directory not found: $ASSETS_DIR"
+
+DMG_PATH="$(resolve_asset "$DMG_NAME")"
+PKG_PATH="$(resolve_asset "$PKG_NAME")"
 
 info "Using DMG: $DMG_PATH"
 info "Using PKG: $PKG_PATH"
 
-EXISTING_APP_PATH="$(find_existing_app_path || true)"
-if [[ -n "$EXISTING_APP_PATH" ]]; then
-  info "Backing up existing app at $EXISTING_APP_PATH"
-  run_as_root mv "$EXISTING_APP_PATH" "$APP_BACKUP_PATH"
-  APP_WAS_PRESENT=1
-  APP_RESTORE_PATH="$EXISTING_APP_PATH"
-fi
+backup_existing_apps
 
 mkdir -p "$MOUNT_DIR"
 info "Mounting DMG"

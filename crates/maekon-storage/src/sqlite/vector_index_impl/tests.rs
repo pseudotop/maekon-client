@@ -1,17 +1,19 @@
 use super::*;
 use crate::migration;
+use crate::sqlite::GuardedConnection;
+use maekon_core::error::CoreError;
 use maekon_core::models::embedding::EmbeddingMetadata;
 use maekon_core::ports::vector_index::VectorIndex;
 use maekon_core::ports::vector_store::VectorStore;
 
-fn setup_db() -> Arc<Mutex<Connection>> {
+fn setup_db() -> Arc<GuardedConnection> {
     let conn = Connection::open_in_memory().unwrap();
     migration::run_migrations(&conn).unwrap();
-    Arc::new(Mutex::new(conn))
+    Arc::new(GuardedConnection::new_unflagged(conn))
 }
 
 /// Store a quantized vector via SqliteVectorStore.
-async fn store_quantized_vector(conn: &Arc<Mutex<Connection>>, segment_id: &str, vector: &[f32]) {
+async fn store_quantized_vector(conn: &Arc<GuardedConnection>, segment_id: &str, vector: &[f32]) {
     let store = super::super::vector_store_impl::SqliteVectorStore::new(conn.clone());
     let qv = ScalarQuantizer::quantize(vector).unwrap();
     store
@@ -63,7 +65,7 @@ async fn build_ivf_and_search_roundtrip() {
     assert!(n_clusters > 0);
 
     // Verify centroids stored
-    let guard = conn.lock().unwrap();
+    let guard = conn.test_lock();
     let centroid_count: i64 = guard
         .query_row("SELECT COUNT(*) FROM ivf_centroids", [], |row| row.get(0))
         .unwrap();
@@ -110,7 +112,7 @@ async fn build_binary_codes_and_search() {
     assert_eq!(count, 20);
 
     // Verify codes stored
-    let guard = conn.lock().unwrap();
+    let guard = conn.test_lock();
     let code_count: i64 = guard
         .query_row("SELECT COUNT(*) FROM vector_binary_codes", [], |row| {
             row.get(0)
@@ -164,7 +166,7 @@ async fn assign_to_cluster_incremental() {
     store_quantized_vector(&conn, "new-vec", &[1.0, 0.0, 0.0, 0.0]).await;
 
     // Get its ID
-    let guard = conn.lock().unwrap();
+    let guard = conn.test_lock();
     let new_id: i64 = guard
         .query_row(
             "SELECT id FROM embedding_vectors WHERE segment_id = 'new-vec'",
@@ -179,7 +181,7 @@ async fn assign_to_cluster_incremental() {
     index.assign_to_cluster(new_id, &qv).await.unwrap();
 
     // Verify assignment exists
-    let guard = conn.lock().unwrap();
+    let guard = conn.test_lock();
     let assigned: i64 = guard
         .query_row(
             "SELECT COUNT(*) FROM ivf_assignments WHERE vector_id = ?1",
@@ -234,8 +236,13 @@ async fn count_unindexed_tracks_new_vectors() {
 async fn empty_store_build_returns_error() {
     let conn = setup_db();
     let index = SqliteVectorIndex::new(conn);
-    let result = index.build_ivf_index(3, 5).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(
+            index.build_ivf_index(3, 5).await.unwrap_err(),
+            CoreError::NotFound { .. }
+        ),
+        "building IVF on an empty store must yield CoreError::NotFound"
+    );
 }
 
 #[tokio::test]
@@ -414,4 +421,57 @@ async fn recall_validation_ivf_vs_brute_force() {
         avg_ivf_binary_recall >= 0.50,
         "IVF+binary recall {avg_ivf_binary_recall:.3} < 0.50 threshold"
     );
+}
+
+/// F-PF-20 회귀 테스트: build_ivf_index 가 tokio 멀티스레드 런타임에서
+/// spawn_blocking 없이 executor 를 블로킹하지 않음을 확인.
+/// 10,000 벡터 미만이면 IVF 빌드가 트리거되지 않으므로 10개 기준.
+/// 핵심 검증: build_ivf_index().await 가 패닉 없이 정상 완료되어야 한다.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_ivf_build_async_safe() {
+    let conn = setup_db();
+    let index = SqliteVectorIndex::new(conn.clone());
+
+    // 10개 벡터 삽입 후 IVF 빌드 (실제 k-means spawn_blocking 경로 실행)
+    for i in 0..10 {
+        let v: Vec<f32> = (0..4).map(|j| i as f32 * 0.1 + j as f32 * 0.01).collect();
+        store_quantized_vector(&conn, &format!("pf20-{i}"), &v).await;
+    }
+
+    // spawn_blocking 이 올바르게 작동하면 패닉 없이 완료된다.
+    // Line 437: build_ivf_index returns Ok(n_clusters) on success.
+    // We requested 3 clusters from 10 vectors; the implementation may clamp,
+    // so only the non-error contract matters for F-PF-20 (async-safety), but
+    // we still assert >=1 cluster to confirm real work happened.
+    let n_clusters = index
+        .build_ivf_index(3, 5)
+        .await
+        .expect("build_ivf_index should complete without blocking executor (F-PF-20)");
+    assert!(
+        n_clusters >= 1,
+        "build_ivf_index should produce at least 1 cluster, got {n_clusters}"
+    );
+}
+
+/// F-PF-20 회귀 테스트: build_binary_codes 가 tokio 멀티스레드 런타임에서
+/// spawn_blocking 을 통해 async executor 를 블로킹하지 않음을 확인.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_binary_codes_build_async_safe() {
+    let conn = setup_db();
+    let index = SqliteVectorIndex::new(conn.clone());
+
+    for i in 0..10 {
+        let v: Vec<f32> = (0..4).map(|j| i as f32 * 0.2 + j as f32 * 0.05).collect();
+        store_quantized_vector(&conn, &format!("bc20-{i}"), &v).await;
+    }
+
+    // 벡터가 없거나 적으면 Ok(0) 반환, 있으면 실제 spawn_blocking 경로 실행.
+    // Line 457: build_binary_codes returns Ok(n_codes). With 10 indexed vectors
+    // the implementation encodes each; result >= 0 (0 if below the threshold).
+    let n_codes = index
+        .build_binary_codes()
+        .await
+        .expect("build_binary_codes should complete without blocking executor (F-PF-20)");
+    // n_codes >= 0 is trivially true for u64; assert it came back at all (no panic/Err).
+    let _ = n_codes; // value acknowledged — async-safety is the primary F-PF-20 contract
 }

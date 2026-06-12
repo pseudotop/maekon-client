@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use maekon_core::models::embedding::{EmbeddingContentType, SearchResult};
 use maekon_core::quantization::QuantizedVector;
+use rusqlite::Connection;
+use tracing::warn;
 
 /// Convert a slice of f32 values to a little-endian byte vector.
 pub fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
@@ -154,8 +156,15 @@ pub fn brute_force_search(
 
 /// Execute brute-force search on INT8 quantized rows.
 ///
-/// Uses `cosine_similarity_int8_unchecked` because all rows originate from
-/// the same model and share the query's dimensionality.
+/// Rows whose stored INT8 vector dimension (`vector_int8.len()`) differs from the
+/// query dimension are **skipped** silently. This is the read-side guard for the
+/// mixed-dimension problem (#5755 FLAG-DIM-768): when the embedding model changes
+/// from e.g. 384 → 768 dimensions, old-model rows that have not yet been
+/// re-embedded carry a different length. Including them in the dot-product via
+/// `zip`-truncation would produce silently incorrect scores.
+///
+/// IVF search is **not** touched here — it already returns `CoreError::InvalidArguments`
+/// on centroid/query dimension mismatch (intended; see vector_index_impl/search.rs).
 pub fn brute_force_search_quantized(
     rows: Vec<QuantizedVectorRow>,
     query_vector: &QuantizedVector,
@@ -163,9 +172,18 @@ pub fn brute_force_search_quantized(
     time_decay_hours: f32,
 ) -> Vec<SearchResult> {
     let now = Utc::now();
+    let query_dims = query_vector.data.len();
+    let mut skipped: usize = 0;
+
     let mut scored: Vec<SearchResult> = rows
         .into_iter()
-        .map(|row| {
+        .filter_map(|row| {
+            // Read-side dimension guard: skip rows whose stored dimension does not
+            // match the query. These are stale-model rows pending re-embedding.
+            if row.vector_int8.len() != query_dims {
+                skipped += 1;
+                return None;
+            }
             let row_qv = QuantizedVector {
                 data: row.vector_int8,
                 scale: row.quant_scale,
@@ -183,7 +201,7 @@ pub fn brute_force_search_quantized(
                 1.0
             };
             let score = similarity * time_decay;
-            SearchResult {
+            Some(SearchResult {
                 segment_id: row.segment_id,
                 content_type: parse_content_type(&row.content_type),
                 content_label: row.content_label,
@@ -192,9 +210,18 @@ pub fn brute_force_search_quantized(
                 time_decay,
                 timestamp: row.timestamp,
                 original_text: row.original_text,
-            }
+            })
         })
         .collect();
+
+    if skipped > 0 {
+        // Log once per search call (outside the loop). Callers see this in debug output;
+        // the system.rs sweep loop will eventually re-embed these rows.
+        warn!(
+            skipped,
+            query_dims, "brute_force_search_quantized: skipped dim-mismatched rows (stale-model vectors pending re-embed)"
+        );
+    }
 
     scored.sort_by(|a, b| {
         b.score
@@ -203,4 +230,112 @@ pub fn brute_force_search_quantized(
     });
     scored.truncate(limit);
     scored
+}
+
+/// Check and update the corpus vector dimension recorded in `app_meta`.
+///
+/// Called from `store` and `store_quantized` before each INSERT. This is the
+/// write-side guard for the mixed-dimension problem (#5755 FLAG-DIM-768).
+///
+/// # Behaviour
+///
+/// - **First write** (key absent): records `new_dims` → `Ok(())`.
+/// - **Matching dims**: returns `Ok(())` immediately (hot-path, no write).
+/// - **Dimension transition** (old != new):
+///   1. Updates `app_meta` to `new_dims`.
+///   2. Emits a single `warn!` with old/new dims and a re-embed notice.
+///   3. Marks ALL non-stale rows as `is_stale = 1` via
+///      `UPDATE embedding_vectors SET is_stale = 1 WHERE is_stale = 0`.
+///      This is intentionally broad: every row produced by the old dimension
+///      model is incorrect for the new query space regardless of model_id.
+///      The sweep loop in `src-tauri/src/scheduler/loops/system.rs` picks up
+///      these rows via `get_stale_vectors` → `embed_batch` → `update_vector`
+///      (clears `is_stale = 0`). This contract is the existing stale-model
+///      re-embedding pipeline; we reuse it exactly.
+///
+/// # Why inline inside the write closure?
+///
+/// `get_meta`/`set_meta` on `SqliteStorage` use the same `GuardedConnection`
+/// mutex that `with_conn` already holds. Calling them from outside that closure
+/// would require a second `spawn_blocking` + mutex re-entry, which deadlocks on
+/// the non-reentrant `parking_lot::Mutex`. This function is called from inside
+/// `with_conn` so the mutex is already held by the current `spawn_blocking` task.
+///
+/// # In-process cache coherence
+///
+/// The caller (`store` / `store_quantized` in `trait_impl.rs`) maintains an
+/// `AtomicU32` cache of the corpus dims and stores `new_dims` unconditionally
+/// after this function returns `Ok(())` — including the transition path. That
+/// is correct: once the transition has run (meta key updated, old rows marked
+/// stale), `new_dims` IS the corpus dimension, so subsequent same-dim writes
+/// skip the DB round-trip and a write with yet another dimension misses the
+/// cache and re-enters this guard.
+pub fn corpus_dims_guard(
+    conn: &Connection,
+    new_dims: usize,
+) -> Result<(), crate::error::StorageError> {
+    let key = super::CORPUS_DIMS_META_KEY;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        )
+        .ok();
+
+    match stored {
+        None => {
+            // First write: record dimension.
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, new_dims.to_string()],
+            )
+            .map_err(|e| {
+                crate::error::StorageError::Internal(format!(
+                    "corpus_dims_guard: failed to record initial dims: {e}"
+                ))
+            })?;
+        }
+        Some(ref s) => {
+            let stored_dims: usize = s.parse().unwrap_or(0);
+            if stored_dims != new_dims {
+                // Dimension transition: update app_meta.
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![key, new_dims.to_string()],
+                )
+                .map_err(|e| {
+                    crate::error::StorageError::Internal(format!(
+                        "corpus_dims_guard: failed to update dims: {e}"
+                    ))
+                })?;
+
+                warn!(
+                    old_dims = stored_dims,
+                    new_dims,
+                    "Embedding corpus dimension changed — marking all active vectors stale for re-embedding"
+                );
+
+                // Mark ALL active (non-stale) rows stale so the scheduler sweep
+                // (system.rs: get_stale_vectors → embed_batch → update_vector)
+                // re-embeds them with the new-dimension model.
+                let marked = conn
+                    .execute(
+                        "UPDATE embedding_vectors SET is_stale = 1 WHERE is_stale = 0",
+                        [],
+                    )
+                    .map_err(|e| {
+                        crate::error::StorageError::Internal(format!(
+                            "corpus_dims_guard: bulk stale-mark failed: {e}"
+                        ))
+                    })?;
+
+                warn!(
+                    marked,
+                    "corpus_dims_guard: marked old-dim vectors stale (pending re-embed)"
+                );
+            }
+        }
+    }
+    Ok(())
 }

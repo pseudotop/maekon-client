@@ -153,6 +153,7 @@ fn make_controller() -> Arc<AutomationController> {
             Arc::new(M4MockFocusProbe),
             Arc::new(M4MockOverlayDriver),
             Some(M4_HMAC_SECRET.to_string()),
+            &tokio::runtime::Handle::current(),
         )
         .expect("configure_gui_interaction should succeed");
 

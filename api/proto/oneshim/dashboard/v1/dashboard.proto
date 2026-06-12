@@ -3,9 +3,9 @@
 // Unlike `oneshim.client.v1.*` which is the CONSUMER contract (client-rust talks to server),
 // this service is what maekon-web SERVES to external clients on the local dashboard port.
 //
-// Per the D13 design spec (docs/superpowers/specs/2026-04-21-d13-grpc-web-exposure-design.md),
-// v1 ships with a minimal RPC set (GetAgentInfo + HealthCheck). Future PRs expand per-domain
-// (frames, events, sessions) to reach REST-parity.
+// Governance: docs/guides/grpc-governance.md.
+// v1 ships agent identity, health, frame, metric, focus, and streaming RPCs
+// for local dashboard consumers.
 
 syntax = "proto3";
 
@@ -33,12 +33,12 @@ service DashboardService {
   // Focus aggregates over the last N days. Mirrors REST `GET /api/focus/stats`.
   rpc GetFocusStats(GetFocusStatsRequest) returns (FocusStatsResponse);
 
-  // V2b: server-streaming. Realtime (interval_secs=0) or interval-aggregated
-  // MetricBuckets. See docs/reviews/2026-04-21-d13-v2b-streaming-design.md §1.
+  // Server-streaming. Realtime (interval_secs=0) or interval-aggregated
+  // MetricBuckets.
   rpc SubscribeMetrics(SubscribeMetricsRequest) returns (stream SubscribeMetricsResponse);
 
-  // V2b: server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
-  // server-enforced per-type rate limits. See §1 + §2.
+  // Server-streaming. Frame/Idle/AiRuntimeStatus DashboardEvents with
+  // server-enforced per-type rate limits.
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
 }
 

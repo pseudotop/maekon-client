@@ -17,7 +17,9 @@ use maekon_core::models::ai_session::{
 use maekon_core::ports::conversation_session::SessionManager;
 
 use crate::ipc_error::IpcError;
-use crate::runtime_state::{AiSessionRuntimeState, SuggestionRuntimeState};
+use crate::runtime_state::{
+    AiSessionRuntimeState, CodexApprovalRuntimeState, SuggestionRuntimeState,
+};
 use tracing::debug;
 
 /// Require a live session manager; returns a service.unavailable IpcError
@@ -104,6 +106,20 @@ pub async fn send_session_message(
         return Err(IpcError::new(
             "policy.denied",
             "Daily token budget exhausted",
+        ));
+    }
+
+    // Guard: reject inputs exceeding 256 KiB to prevent OOM on AI providers
+    // and stop malformed IPC frames from amplifying into multi-MB gRPC calls.
+    const MAX_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
+    if request.message.len() > MAX_INPUT_BYTES {
+        return Err(IpcError::new(
+            "input.too_large",
+            format!(
+                "message exceeds maximum allowed size ({} bytes > {} bytes)",
+                request.message.len(),
+                MAX_INPUT_BYTES
+            ),
         ));
     }
 
@@ -431,6 +447,94 @@ pub async fn get_token_usage(
     })
 }
 
+// ── E21 #5017: mid-turn control + #5044: approval response ───────────────────
+
+/// Interrupt (stop) the in-flight turn of an AI session (E21 #5017). Mirrors
+/// `send_session_message`'s manager/get_session pattern; returns `Result`
+/// (no stream), so no `AppHandle` is needed. The call traverses the decorator
+/// stack (Auditing → Guarded → CodexAppServerSession) — the LIVE consumer of
+/// `ConversationSession::interrupt`.
+#[command]
+pub async fn interrupt_session_turn(
+    state: tauri::State<'_, AiSessionRuntimeState>,
+    session_id: String,
+) -> Result<(), IpcError> {
+    let mgr = require_session_manager_impl(&state)?;
+    let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
+    session.interrupt().await.map_err(IpcError::from)
+}
+
+/// Steer (course-correct) the in-flight turn of an AI session with additional
+/// user input (E21 #5017). Applies the same 256 KiB input guard as
+/// `send_session_message`. The steering content traverses the privacy guard
+/// (Guarded decorator) fail-closed before reaching an external backend.
+#[command]
+pub async fn steer_session_turn(
+    state: tauri::State<'_, AiSessionRuntimeState>,
+    session_id: String,
+    message: String,
+) -> Result<(), IpcError> {
+    // Guard: reject oversized steering input (same limit as send_session_message).
+    const MAX_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
+    if message.len() > MAX_INPUT_BYTES {
+        return Err(IpcError::new(
+            "input.too_large",
+            format!(
+                "steer message exceeds maximum allowed size ({} bytes > {} bytes)",
+                message.len(),
+                MAX_INPUT_BYTES
+            ),
+        ));
+    }
+    let mgr = require_session_manager_impl(&state)?;
+    let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
+    let msg = SessionMessage {
+        role: MessageRole::User,
+        content: message,
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+    session.steer(&msg).await.map_err(IpcError::from)
+}
+
+/// Map a UI decision verb to the fail-closed boolean the decider's oneshot
+/// expects (E21 #5044). `accept` → true; everything else (`decline`, `cancel`,
+/// or any unexpected verb) → false. CANCEL and any unknown verb are FAIL-CLOSED
+/// declines — only the explicit `accept` verb approves.
+fn decision_to_bool(decision: &str) -> bool {
+    decision == "accept"
+}
+
+/// Resolve a parked Codex approval request with the user's UI decision (E21
+/// #5044). Removes the parked `oneshot::Sender<bool>` from the shared registry
+/// and resolves it. A missing/already-resolved id returns `not_found` (the
+/// decider has already timed out + declined — fail-closed).
+#[command]
+pub async fn respond_codex_approval(
+    state: tauri::State<'_, CodexApprovalRuntimeState>,
+    request_id: u64,
+    decision: String,
+) -> Result<(), IpcError> {
+    let tx = state
+        .registry()
+        .lock()
+        .await
+        .remove(&request_id)
+        .ok_or_else(|| {
+            IpcError::new(
+                "not_found.resource_missing",
+                "approval request not found or already resolved",
+            )
+        })?;
+    let accept = decision_to_bool(&decision);
+    // A dropped receiver (decider already declined on timeout) is benign — the
+    // send just returns Err and the system stays fail-closed.
+    let _ = tx.send(accept);
+    Ok(())
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageResponse {
@@ -438,4 +542,20 @@ pub struct TokenUsageResponse {
     pub total_output_tokens: u64,
     pub daily_budget: u64,
     pub budget_remaining: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decision_to_bool;
+
+    #[test]
+    fn accept_maps_true_decline_and_cancel_map_false() {
+        // E21 #5044 fail-closed UI mapping: only `accept` approves; `cancel` is a
+        // UI verb that fails closed to decline; an unknown verb also declines.
+        assert!(decision_to_bool("accept"));
+        assert!(!decision_to_bool("decline"));
+        assert!(!decision_to_bool("cancel"));
+        assert!(!decision_to_bool("anything-else"));
+        assert!(!decision_to_bool(""));
+    }
 }

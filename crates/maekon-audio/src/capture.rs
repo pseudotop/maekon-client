@@ -585,12 +585,11 @@ mod tests {
         let capture = AudioCapture::new();
         // Simulate VAD being active
         capture.vad_active.store(true, Ordering::SeqCst);
-        let result = capture.start();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot start PTT while VAD is active"));
+        let err = capture.start().unwrap_err().to_string();
+        assert!(
+            err.contains("cannot start PTT while VAD is active"),
+            "starting PTT while VAD active must describe the conflict; got: {err}"
+        );
     }
 
     #[test]
@@ -604,12 +603,11 @@ mod tests {
             min_speech_ms: 300,
         };
         let signal = std::sync::Arc::new(|| {});
-        let result = capture.start_vad(config, signal);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot start VAD while PTT is active"));
+        let err = capture.start_vad(config, signal).unwrap_err().to_string();
+        assert!(
+            err.contains("cannot start VAD while PTT is active"),
+            "starting VAD while PTT active must describe the conflict; got: {err}"
+        );
     }
 
     #[test]

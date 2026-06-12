@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use maekon_core::config::TlsConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::event::EventBatch;
-use maekon_core::models::frame::ContextUpload;
 use maekon_core::models::suggestion::SuggestionFeedback;
 use maekon_core::ports::api_client::{ApiClient, SessionCreateResponse};
 use std::sync::Arc;
@@ -69,6 +68,35 @@ fn is_localhost(url: &str) -> bool {
         || host == "::1"
 }
 
+/// Strict loopback check for the ADR-023 MG-PII-02 enrichment egress gate.
+///
+/// Parses the URL and accepts ONLY `localhost` or an IP that is loopback (the
+/// full `127.0.0.0/8` range + `::1`, via `IpAddr::is_loopback`). Stronger than
+/// [`is_localhost`]'s literal set. **Fail-closed**: an unparseable URL, a missing
+/// host, or a non-loopback host returns `false`. Note: the IPv4-mapped IPv6
+/// loopback (`::ffff:127.0.0.1`) is NOT loopback per `IpAddr::is_loopback` and is
+/// therefore refused (safe default).
+pub fn host_is_loopback(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => match parsed.host_str() {
+            Some(host) => {
+                // `host_str()` serializes IPv6 WITH brackets (e.g. "[::1]"); strip
+                // them so the address parses.
+                let host = host
+                    .strip_prefix('[')
+                    .and_then(|h| h.strip_suffix(']'))
+                    .unwrap_or(host);
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|addr| addr.is_loopback())
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
 pub fn build_reqwest_client(
     tls: &TlsConfig,
     timeout: Option<Duration>,
@@ -82,7 +110,7 @@ pub fn build_reqwest_client_for_url(
     timeout: Option<Duration>,
     base_url: Option<&str>,
 ) -> Result<reqwest::Client, NetworkError> {
-    let mut builder = reqwest::Client::builder();
+    let mut builder = reqwest::Client::builder().use_native_tls();
     if let Some(t) = timeout {
         builder = builder.timeout(t);
     }
@@ -202,9 +230,14 @@ impl HttpApiClient {
             429 => Err(NetworkError::RateLimited {
                 retry_after_secs: retry_after,
             }),
-            // 502 Bad Gateway is a transient upstream failure — retryable just
-            // like 503 Service Unavailable. (iter-54)
-            502 | 503 => Err(NetworkError::ServiceUnavailable(text)),
+            // All 5xx are transient server-side faults — retryable. 504 is
+            // consumed by the timeout arm above; this catches 500/501/502/503/
+            // 505 and proxy-specific codes (520-526). Previously only 502/503
+            // were mapped, so a bare 500 fell through to `Internal` and was NOT
+            // retried — a contract §5 gap for at-least-once callers like the
+            // #5069 feature-perf emitter (which then dropped the batch instead
+            // of backing off). (iter-54 / #5069)
+            500..=599 => Err(NetworkError::ServiceUnavailable(text)),
             _ => Err(NetworkError::Internal(format!(
                 "API error ({status}): {text}"
             ))),
@@ -320,27 +353,6 @@ impl ApiClient for HttpApiClient {
         .map_err(CoreError::from)
     }
 
-    async fn upload_context(&self, upload: &ContextUpload) -> Result<(), CoreError> {
-        debug!("context upload: {}", upload.metadata.app_name);
-
-        self.execute_with_retry(|| async {
-            let req = self
-                .authorized_request(reqwest::Method::POST, "/user_context/contexts")
-                .await?;
-
-            let resp = req
-                .json(upload)
-                .send()
-                .await
-                .map_err(|e| map_reqwest_error(e, "context upload failure", self.timeout_ms))?;
-
-            self.check_response(resp).await?;
-            Ok(())
-        })
-        .await
-        .map_err(CoreError::from)
-    }
-
     async fn send_feedback(&self, feedback: &SuggestionFeedback) -> Result<(), CoreError> {
         debug!(
             "feedback sent: {} → {:?}",
@@ -387,6 +399,40 @@ impl ApiClient for HttpApiClient {
     }
 }
 
+#[async_trait]
+impl maekon_core::ports::feature_perf::FeaturePerfSink for HttpApiClient {
+    /// `POST /api/v1/system/features/{feature_key}/performance` with body
+    /// `{"samples": [...]}` (#5069). Bearer JWT via `authorized_request`; the org
+    /// is derived by the server from the token (never sent in the body).
+    /// `execute_with_retry` provides the contract §5 5xx backoff; permanent 4xx
+    /// (404/403/422) are non-retryable and returned for the caller to drop.
+    async fn upload_feature_performance(
+        &self,
+        feature_key: &str,
+        samples: &[maekon_core::models::feature_performance::FeaturePerfSample],
+    ) -> Result<(), CoreError> {
+        // `feature_key` comes from the closed canonical registry (kebab-case, no
+        // path/query chars), so direct interpolation is URL-safe.
+        let path = format!("/api/v1/system/features/{feature_key}/performance");
+        let body = crate::feature_perf_uploader::PerfUploadBody { samples };
+
+        self.execute_with_retry(|| async {
+            let req = self
+                .authorized_request(reqwest::Method::POST, &path)
+                .await?;
+
+            let resp = req.json(&body).send().await.map_err(|e| {
+                map_reqwest_error(e, "feature performance upload failure", self.timeout_ms)
+            })?;
+
+            self.check_response(resp).await?;
+            Ok(())
+        })
+        .await
+        .map_err(CoreError::from)
+    }
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
@@ -409,22 +455,48 @@ mod tests {
     }
 
     #[test]
+    fn host_is_loopback_strict_table() {
+        // Accepted: literal localhost + any loopback IP (full 127.0.0.0/8 + ::1).
+        assert!(host_is_loopback("http://localhost:11434"));
+        assert!(host_is_loopback("http://127.0.0.1:8000"));
+        assert!(host_is_loopback("http://127.0.0.5:1"));
+        assert!(host_is_loopback("http://[::1]:50051"));
+        // Refused (fail-closed):
+        assert!(!host_is_loopback("https://api.example.com"));
+        assert!(!host_is_loopback("http://localhost.evil.com")); // not literal localhost
+        assert!(!host_is_loopback("http://10.0.0.5:11434")); // private but remote
+        assert!(!host_is_loopback("http://[::ffff:127.0.0.1]:1")); // mapped-loopback refused
+        assert!(!host_is_loopback("not a url")); // unparseable
+        assert!(!host_is_loopback("http://")); // no host
+    }
+
+    #[test]
     fn build_reqwest_client_tls_disabled_succeeds() {
         // TLS 비활성화 시 http:// 요청 허용 — 개발/테스트 환경
         let tls = TlsConfig {
             enabled: false,
             allow_self_signed: false,
         };
-        let result = build_reqwest_client(&tls, Some(Duration::from_secs(5)));
-        assert!(result.is_ok(), "TLS 비활성화 클라이언트 생성 성공");
+        let client = build_reqwest_client(&tls, Some(Duration::from_secs(5)))
+            .expect("TLS disabled + http:// allowed: client construction must succeed");
+        // Verify the client is usable by confirming it has a default User-Agent header
+        // (reqwest::Client::builder().build() always produces a valid client).
+        // The meaningful contract here is successful construction — no allow_self_signed rejection.
+        // Justified: reqwest::Client carries no observable fields; construction success is the contract.
+        // #5594: ok-only justified — Client has no public accessors to probe.
+        let _ = client;
     }
 
     #[test]
     fn build_reqwest_client_tls_enabled_succeeds() {
         // TLS 활성화 시 클라이언트 생성 자체는 성공 (요청 시점에 https 강제)
         let tls = TlsConfig::default();
-        let result = build_reqwest_client(&tls, Some(Duration::from_secs(5)));
-        assert!(result.is_ok(), "TLS 활성화 클라이언트 생성 성공");
+        let client = build_reqwest_client(&tls, Some(Duration::from_secs(5)))
+            .expect("TLS enabled: client construction succeeds (https_only enforcement deferred to request time)");
+        // Construction succeeds; https_only is enforced only at request dispatch, not at build time.
+        // reqwest::Client has no public field accessors — construction success is the full contract.
+        // #5594: ok-only justified — Client internals are opaque; only Err path is observable.
+        let _ = client;
     }
 
     #[test]
@@ -449,9 +521,10 @@ mod tests {
         };
         let tm = Arc::new(TokenManager::new("http://localhost:8000"));
         let client =
-            HttpApiClient::new_with_tls("http://localhost:8000", tm, Duration::from_secs(5), &tls);
-        assert!(client.is_ok());
-        assert_eq!(client.unwrap().base_url, "http://localhost:8000");
+            HttpApiClient::new_with_tls("http://localhost:8000", tm, Duration::from_secs(5), &tls)
+                .expect("TLS disabled + http:// URL must construct without error");
+        assert_eq!(client.base_url, "http://localhost:8000");
+        assert_eq!(client.max_retries, DEFAULT_MAX_RETRIES);
     }
 
     #[test]
@@ -517,9 +590,10 @@ mod tests {
             .create_async()
             .await;
 
-        let result = client.create_session("cli_1").await;
-        assert!(result.is_ok());
-        let session = result.unwrap();
+        let session = client
+            .create_session("cli_1")
+            .await
+            .expect("create_session must succeed on 200 with valid JSON");
         assert_eq!(session.session_id, "sess_123");
         assert_eq!(session.user_id, "user_1");
         mock.assert_async().await;
@@ -536,71 +610,12 @@ mod tests {
             .create_async()
             .await;
 
-        let result = client.end_session("sess_123").await;
-        assert!(result.is_ok());
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn upload_context_success() {
-        let mut server = mockito::Server::new_async().await;
-        let (client, _login_mock) = setup_authed_client(&mut server).await;
-
-        let mock = server
-            .mock("POST", "/user_context/contexts")
-            .with_status(200)
-            .create_async()
-            .await;
-
-        let upload = maekon_core::models::frame::ContextUpload {
-            session_id: "sess_1".to_string(),
-            timestamp: chrono::Utc::now(),
-            metadata: maekon_core::models::frame::FrameMetadata {
-                timestamp: chrono::Utc::now(),
-                trigger_type: "test".to_string(),
-                app_name: "Test".to_string(),
-                window_title: "Test Window".to_string(),
-                resolution: (1920, 1080),
-                importance: 0.5,
-            },
-            ocr_text: None,
-            image: None,
-        };
-
-        let result = client.upload_context(&upload).await;
-        assert!(result.is_ok());
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn upload_context_server_error() {
-        let mut server = mockito::Server::new_async().await;
-        let (client, _login_mock) = setup_authed_client(&mut server).await;
-
-        let mock = server
-            .mock("POST", "/user_context/contexts")
-            .with_status(500)
-            .with_body("Internal Server Error")
-            .create_async()
-            .await;
-
-        let upload = maekon_core::models::frame::ContextUpload {
-            session_id: "sess_1".to_string(),
-            timestamp: chrono::Utc::now(),
-            metadata: maekon_core::models::frame::FrameMetadata {
-                timestamp: chrono::Utc::now(),
-                trigger_type: "test".to_string(),
-                app_name: "Test".to_string(),
-                window_title: "Test Window".to_string(),
-                resolution: (1920, 1080),
-                importance: 0.5,
-            },
-            ocr_text: None,
-            image: None,
-        };
-
-        let result = client.upload_context(&upload).await;
-        assert!(result.is_err());
+        // end_session returns () on success; the only contract to pin is that
+        // the DELETE request was accepted (200) and returned Ok(()).
+        client
+            .end_session("sess_123")
+            .await
+            .expect("end_session must succeed on 200 response");
         mock.assert_async().await;
     }
 
@@ -623,7 +638,6 @@ mod tests {
         };
 
         let result = client.upload_batch(&batch).await;
-        assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("Authentication"));
         mock.assert_async().await;
@@ -635,30 +649,19 @@ mod tests {
         let (client, _login_mock) = setup_authed_client(&mut server).await;
         let client = client.with_max_retries(0); // attempt failure
         let mock = server
-            .mock("POST", "/user_context/contexts")
+            .mock("POST", "/user_context/batches")
             .with_status(429)
             .with_body("Too Many Requests")
             .create_async()
             .await;
 
-        let upload = maekon_core::models::frame::ContextUpload {
+        let batch = maekon_core::models::event::EventBatch {
             session_id: "sess_1".to_string(),
-            timestamp: chrono::Utc::now(),
-            metadata: maekon_core::models::frame::FrameMetadata {
-                timestamp: chrono::Utc::now(),
-                trigger_type: "test".to_string(),
-                app_name: "Test".to_string(),
-                window_title: "Test Window".to_string(),
-                resolution: (1920, 1080),
-                importance: 0.5,
-            },
-            ocr_text: None,
-            image: None,
+            events: vec![],
+            created_at: chrono::Utc::now(),
         };
 
-        let result = client.upload_context(&upload).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = client.upload_batch(&batch).await.unwrap_err();
         assert!(matches!(
             err,
             CoreError::RateLimit {
@@ -682,9 +685,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = client.send_heartbeat("sess_1").await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = client.send_heartbeat("sess_1").await.unwrap_err();
         assert!(
             matches!(err, CoreError::ServiceUnavailable { .. }),
             "err: {err:?}"
@@ -703,8 +704,12 @@ mod tests {
             .create_async()
             .await;
 
-        let result = client.send_heartbeat("sess_test").await;
-        assert!(result.is_ok());
+        // send_heartbeat returns () on 200; pin that the call succeeds and the
+        // mock endpoint was actually reached.
+        client
+            .send_heartbeat("sess_test")
+            .await
+            .expect("send_heartbeat must succeed on 200 response");
         mock.assert_async().await;
     }
 
@@ -788,6 +793,88 @@ mod tests {
         assert!(
             matches!(err, CoreError::RequestTimeout { .. }),
             "504 must map to CoreError::RequestTimeout, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_server_error_500_maps_to_service_unavailable() {
+        // #5069 review (devils F5): a bare 500 must be transient/retryable, not
+        // dropped as Internal — else at-least-once callers lose the batch.
+        let mut server = mockito::Server::new_async().await;
+        let (client, _login_mock) = setup_authed_client(&mut server).await;
+        let client = client.with_max_retries(0);
+
+        let _mock = server
+            .mock("POST", "/user_context/sessions/sess_test/heartbeat")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let err = client.send_heartbeat("sess_test").await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::ServiceUnavailable { .. }),
+            "500 must map to CoreError::ServiceUnavailable (transient/retryable), got: {err:?}"
+        );
+    }
+
+    fn perf_sample() -> maekon_core::models::feature_performance::FeaturePerfSample {
+        maekon_core::models::feature_performance::FeaturePerfSample {
+            response_time_ms: 12.5,
+            timestamp: None,
+            total_requests: Some(1),
+            error_count: Some(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn feature_performance_posts_to_canonical_path_with_samples_envelope() {
+        use maekon_core::ports::feature_perf::FeaturePerfSink;
+        let mut server = mockito::Server::new_async().await;
+        let (client, _login_mock) = setup_authed_client(&mut server).await;
+
+        // Exact contract path (full /api/v1 prefix) + POST + `{"samples":[...]}`.
+        let mock = server
+            .mock("POST", "/api/v1/system/features/screen-capture/performance")
+            .match_body(mockito::Matcher::Regex(r#""samples""#.to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"feature_key":"screen-capture","recorded_count":2,"status":"recorded"}"#)
+            .create_async()
+            .await;
+
+        let samples = vec![perf_sample(), perf_sample()];
+        let result = client
+            .upload_feature_performance("screen-capture", &samples)
+            .await;
+        // 200 response with {"recorded_count":2,"status":"recorded"} body → Ok(()).
+        // The port method returns Result<(), CoreError>; Ok(()) carries no richer value.
+        // #5594: ok-only justified — upload_feature_performance returns unit on success; mock.assert verifies the request shape.
+        result.expect("200 recorded → Ok: upload_feature_performance must succeed on 200");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn feature_performance_404_maps_to_notfound_for_drop() {
+        use maekon_core::ports::feature_perf::FeaturePerfSink;
+        let mut server = mockito::Server::new_async().await;
+        let (client, _login_mock) = setup_authed_client(&mut server).await;
+
+        // Unknown feature_key → server 404 → NotFound (permanent ⇒ caller drops).
+        let _mock = server
+            .mock("POST", "/api/v1/system/features/unknown-key/performance")
+            .with_status(404)
+            .with_body("feature not found")
+            .create_async()
+            .await;
+
+        let err = client
+            .upload_feature_performance("unknown-key", &[perf_sample()])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::NotFound { .. }),
+            "404 must map to CoreError::NotFound (permanent/drop), got: {err:?}"
         );
     }
 }

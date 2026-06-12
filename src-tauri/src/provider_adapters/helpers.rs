@@ -1,22 +1,22 @@
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use std::sync::Arc;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::config::{AiProviderConfig, AiProviderType, ExternalApiEndpoint};
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_core::error::CoreError;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use maekon_network::oauth::provider_config::OAuthProviderConfig;
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use tracing::warn;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 use super::types::ProviderSource;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) const DEFAULT_OPENAI_OAUTH_MODEL: &str = "gpt-5.4";
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) fn oauth_llm_endpoint(config: &AiProviderConfig) -> ExternalApiEndpoint {
     let mut endpoint = config.llm_api.clone().unwrap_or(ExternalApiEndpoint {
         endpoint: OAuthProviderConfig::OPENAI_API_BASE_URL.to_string(),
@@ -47,7 +47,7 @@ pub(super) fn oauth_llm_endpoint(config: &AiProviderConfig) -> ExternalApiEndpoi
     endpoint
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) fn require_endpoint_config<'a>(
     endpoint: Option<&'a ExternalApiEndpoint>,
     field_name: &str,
@@ -79,7 +79,7 @@ pub(super) fn require_endpoint_config<'a>(
     Ok(endpoint)
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 pub(super) fn resolve_remote_with_optional_fallback<T: ?Sized>(
     provider_kind: &str,
     fallback_to_local: bool,
@@ -106,10 +106,10 @@ pub(super) fn resolve_remote_with_optional_fallback<T: ?Sized>(
     }
 }
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 const MAX_FALLBACK_REASON_CHARS: usize = 240;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "analysis")]
 fn format_fallback_reason(err: &CoreError) -> String {
     let raw = err.to_string().replace(['\n', '\r'], " ");
     let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");

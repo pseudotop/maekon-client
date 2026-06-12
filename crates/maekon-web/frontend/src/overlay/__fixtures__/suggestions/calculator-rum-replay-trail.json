@@ -1,0 +1,106 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-UX-003"],
+  "recorded_at": "2026-05-25T00:00:00Z",
+  "scenario": "calculator-gui-suggestion-rum-replay-trail",
+  "workflow": {
+    "steps": [
+      "render_contour_marker",
+      "open_attached_suggestion_surface",
+      "show_replay_trail",
+      "record_metadata_only_rum",
+      "accept_policy_gated_proposal"
+    ],
+    "rum_phases": ["marker_opened", "proposal_visible", "feedback_submitted"],
+    "privacy_gates": {
+      "metadata_only": true,
+      "raw_context_included": false,
+      "action_not_auto_executed": true
+    }
+  },
+  "native_context": {
+    "active_app": "Calculator",
+    "bundle_id": "com.apple.calculator",
+    "active_process": {
+      "process_name": "Calculator",
+      "bundle_id": "com.apple.calculator",
+      "pid": null,
+      "screen_id": "main",
+      "window_title": "Calculator",
+      "window_bounds": { "x": 200, "y": 120, "width": 260, "height": 360 }
+    },
+    "display_value": "46",
+    "expression": "23 x 2",
+    "target_entity": {
+      "entity_id": "display-result",
+      "kind": "calculator-display",
+      "label": "result",
+      "value": "46",
+      "bounds": { "x": 228, "y": 174, "width": 184, "height": 52 },
+      "center": { "x": 320, "y": 200 },
+      "confidence": 0.97,
+      "sources": ["ax", "ocr", "screenshot"]
+    },
+    "highlight": {
+      "target_entity_id": "display-result",
+      "bounds": { "x": 228, "y": 174, "width": 184, "height": 52 }
+    }
+  },
+  "suggestions": [
+    {
+      "id": "calculator-result-rum-replay-proposal",
+      "title": "Review this Calculator result",
+      "body": "Calculator shows result 46 for 23 x 2. Keep the action gated while showing why this target was chosen.",
+      "priority": "high",
+      "category": "calculator-context",
+      "source": "server",
+      "confidence_score": 0.94,
+      "created_at": "2026-05-25T00:00:00Z",
+      "is_read": false,
+      "reasoning": "The highlighted Calculator display is the resolved target; replay must persist metadata only.",
+      "context_scope": {
+        "app_name": "Calculator",
+        "window_title": "Calculator",
+        "target_id": "display-result"
+      }
+    }
+  ],
+  "expected": {
+    "marker_label": "new suggestions for Calculator result 46",
+    "breadcrumb": "Calculator > result 46",
+    "proposal_title": "Review this Calculator result",
+    "replay_trail_label": "Suggestion replay trail",
+    "replay_step_labels": ["Target locked", "Proposal shown", "Consent gate", "Audit ready"],
+    "replay_payload_fields": [
+      "action",
+      "appName",
+      "auditReady",
+      "eventName",
+      "phase",
+      "rawContextIncluded",
+      "suggestionId",
+      "surfacePlacement",
+      "targetId",
+      "windowTitle"
+    ],
+    "forbidden_preconsent_commands": [
+      "execute_automation_action",
+      "run_suggestion_action",
+      "type_into_calculator",
+      "copy_calculator_result",
+      "open_notes_for_suggestion",
+      "write_note_from_suggestion",
+      "call_live_llm_provider"
+    ],
+    "forbidden_replay_fragments": [
+      "46",
+      "23 x 2",
+      "Calculator shows result",
+      "highlighted Calculator display",
+      "bounds",
+      "center",
+      "sources",
+      "confidence_score",
+      "reasoning"
+    ]
+  }
+}

@@ -79,7 +79,7 @@ pub(super) async fn get_index_meta_impl(
     index: &SqliteVectorIndex,
 ) -> Result<IndexMeta, StorageError> {
     index
-        .with_conn(move |conn| {
+        .with_conn_read(move |conn| {
             let get_meta = |key: &str| -> Option<String> {
                 conn.query_row(
                     "SELECT value FROM vector_index_meta WHERE key = ?1",
@@ -107,6 +107,13 @@ pub(super) async fn get_index_meta_impl(
                 )
                 .unwrap_or(total);
 
+            // Count the number of clusters persisted in ivf_centroids.
+            // This is a cheap integer scan on a small table (one row per cluster).
+            // The value is used by the routing layer to compute a proportional nprobe.
+            let n_clusters: i64 = conn
+                .query_row("SELECT COUNT(*) FROM ivf_centroids", [], |row| row.get(0))
+                .unwrap_or(0);
+
             let ivf_vec_count: u64 = get_meta("ivf_vector_count")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
@@ -117,6 +124,7 @@ pub(super) async fn get_index_meta_impl(
                 binary_built_at: get_meta("binary_built_at"),
                 total_vector_count: total as u64,
                 unindexed_count: unindexed as u64,
+                n_clusters: n_clusters as usize,
             })
         })
         .await
@@ -124,7 +132,7 @@ pub(super) async fn get_index_meta_impl(
 
 pub(super) async fn count_unindexed_impl(index: &SqliteVectorIndex) -> Result<u64, StorageError> {
     index
-        .with_conn(move |conn| {
+        .with_conn_read(move |conn| {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM embedding_vectors
@@ -145,7 +153,7 @@ pub(super) async fn load_quantile_thresholds_impl(
     index: &SqliteVectorIndex,
 ) -> Result<Option<QuantileThresholds>, StorageError> {
     index
-        .with_conn(move |conn| {
+        .with_conn_read(move |conn| {
             let json_opt: Option<String> = conn
                 .query_row(
                     "SELECT value FROM vector_index_meta WHERE key = 'binary_quantile_thresholds'",

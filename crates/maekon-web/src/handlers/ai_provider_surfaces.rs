@@ -13,11 +13,9 @@ pub async fn list_provider_surfaces() -> Result<Json<ProviderSurfaceCatalog>, Ap
 mod tests {
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{Request, StatusCode};
 
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -30,8 +28,7 @@ mod tests {
 
     fn loopback_app() -> axum::Router {
         let state = test_app_state();
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[tokio::test]

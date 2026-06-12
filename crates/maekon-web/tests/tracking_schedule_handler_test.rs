@@ -14,7 +14,7 @@
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use maekon_storage::sqlite::SqliteStorage;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -27,6 +27,9 @@ use maekon_web::app_state::AppState;
 use maekon_web::WebServer;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const LOCAL_AUTH_HEADER: &str = "x-local-auth";
+const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
 
 /// Build an `AppState` backed by in-memory SQLite + a temp-file `ConfigManager`
 /// so config mutations in one test cannot bleed into others (each test gets its
@@ -49,8 +52,19 @@ fn app_state_with_config() -> (AppState, TempDir) {
 
 /// Build the full Axum router (same as production, minus TCP binding) and
 /// attach a loopback `MockConnectInfo` so `require_loopback_client` passes.
-fn loopback_app(state: AppState) -> axum::Router {
-    WebServer::build_router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+fn loopback_app(mut state: AppState) -> axum::Router {
+    state.auth.local_auth_token = Some(Arc::from(TEST_LOCAL_AUTH_TOKEN));
+    WebServer::build_router(state)
+        .layer(axum::middleware::map_request(
+            |mut req: axum::extract::Request| async move {
+                req.headers_mut().insert(
+                    LOCAL_AUTH_HEADER,
+                    HeaderValue::from_static(TEST_LOCAL_AUTH_TOKEN),
+                );
+                req
+            },
+        ))
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
 }
 
 // ── Test 1: GET /api/tracking-schedule → 200 with default config ─────────────

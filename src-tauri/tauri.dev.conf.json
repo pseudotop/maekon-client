@@ -7,5 +7,10 @@
     "devUrl": "http://127.0.0.1:5273",
     "beforeDevCommand": "",
     "beforeBuildCommand": "scripts/build-frontend.sh"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; connect-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; object-src 'none'; base-uri 'self'"
+    }
   }
 }

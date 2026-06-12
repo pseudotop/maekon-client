@@ -19,6 +19,7 @@ function resolveVersion(): string {
 }
 
 export default defineConfig({
+  publicDir: resolve(__dirname, '../../../assets/brand'),
   define: {
     __APP_VERSION__: JSON.stringify(`v${resolveVersion()}`),
   },
@@ -34,6 +35,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
+    assetsInlineLimit: 0,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),

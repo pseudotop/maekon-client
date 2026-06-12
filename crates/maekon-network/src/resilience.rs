@@ -77,7 +77,7 @@ impl RetryBackoffGate {
     }
 
     pub fn is_ready(&self, now: Instant) -> bool {
-        self.blocked_until.map_or(true, |until| now >= until)
+        self.blocked_until.is_none_or(|until| now >= until)
     }
 
     pub fn on_success(&mut self) {
@@ -295,6 +295,6 @@ mod tests {
 
     #[test]
     fn authority_rejects_malformed_url() {
-        assert!(endpoint_authority("not a url").is_err());
+        assert!(endpoint_authority("not a url").is_err()); // lint:allow-is-err-hedge — url::ParseError is an opaque external type with no further discriminable variants
     }
 }

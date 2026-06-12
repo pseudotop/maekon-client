@@ -20,7 +20,7 @@ use std::process::Command;
 
 use crate::error::AutomationError;
 use crate::sandbox::ipc;
-use maekon_core::config::{SandboxConfig, SandboxProfile};
+use maekon_core::config::SandboxConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::automation::AutomationAction;
 use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
@@ -50,65 +50,6 @@ impl MacOsSandbox {
         Self {
             sandbox_exec_path: path,
         }
-    }
-
-    fn generate_sbpl_profile(config: &SandboxConfig) -> String {
-        let mut rules = String::new();
-        rules.push_str("(version 1)\n");
-
-        match config.profile {
-            SandboxProfile::Permissive => {
-                rules.push_str("(allow default)\n");
-                rules.push_str("(deny file-write* (subpath \"/System\"))\n");
-                rules.push_str("(deny file-write* (subpath \"/usr\"))\n");
-            }
-            SandboxProfile::Standard => {
-                rules.push_str("(deny default)\n");
-                rules.push_str("(allow process-exec)\n");
-                rules.push_str("(allow process-fork)\n");
-                rules.push_str("(allow sysctl-read)\n");
-                rules.push_str("(allow mach-lookup)\n");
-
-                rules.push_str("(allow file-read* (subpath \"/usr/lib\"))\n");
-                rules.push_str("(allow file-read* (subpath \"/System/Library\"))\n");
-                rules.push_str("(allow file-read* (subpath \"/Library/Frameworks\"))\n");
-                rules.push_str("(allow file-read* (subpath \"/dev\"))\n");
-
-                for path in &config.allowed_read_paths {
-                    let escaped = escape_sbpl_path(path);
-                    rules.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", escaped));
-                }
-
-                for path in &config.allowed_write_paths {
-                    let escaped = escape_sbpl_path(path);
-                    rules.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", escaped));
-                }
-
-                if !config.allow_network {
-                    rules.push_str("(deny network*)\n");
-                } else {
-                    rules.push_str("(allow network*)\n");
-                }
-            }
-            SandboxProfile::Strict => {
-                rules.push_str("(deny default)\n");
-                rules.push_str("(allow process-exec)\n");
-                rules.push_str("(allow sysctl-read)\n");
-
-                rules.push_str("(allow file-read* (subpath \"/usr/lib\"))\n");
-                rules.push_str("(allow file-read* (subpath \"/dev/null\"))\n");
-                rules.push_str("(allow file-read* (subpath \"/dev/urandom\"))\n");
-
-                for path in &config.allowed_read_paths {
-                    let escaped = escape_sbpl_path(path);
-                    rules.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", escaped));
-                }
-
-                rules.push_str("(deny network*)\n");
-            }
-        }
-
-        rules
     }
 
     /// Build the `sandbox-exec` command line for the given SBPL profile.
@@ -141,14 +82,6 @@ impl MacOsSandbox {
     }
 }
 
-/// Returns `true` when the config is Permissive with no custom resource limits,
-/// meaning subprocess sandboxing can be skipped entirely.
-fn is_permissive_noop(config: &SandboxConfig) -> bool {
-    matches!(config.profile, SandboxProfile::Permissive)
-        && config.max_memory_bytes == 0
-        && config.max_cpu_time_ms == 0
-}
-
 #[async_trait]
 impl Sandbox for MacOsSandbox {
     fn platform(&self) -> &str {
@@ -171,12 +104,7 @@ impl Sandbox for MacOsSandbox {
             });
         }
 
-        if is_permissive_noop(config) {
-            tracing::debug!("Permissive profile with no limits — skipping subprocess");
-            return Ok(());
-        }
-
-        let profile = Self::generate_sbpl_profile(config);
+        let profile = super::sbpl::generate_sbpl_profile(config);
         tracing::debug!(
             profile_type = %config.profile as u8,
             sbpl_len = profile.len(),
@@ -326,10 +254,6 @@ fn find_sandbox_exec() -> Option<String> {
     None
 }
 
-fn escape_sbpl_path(path: &str) -> String {
-    path.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 fn apply_resource_limits(config: &SandboxConfig) -> Result<(), AutomationError> {
     if config.max_memory_bytes > 0 {
         tracing::debug!(
@@ -351,52 +275,11 @@ fn apply_resource_limits(config: &SandboxConfig) -> Result<(), AutomationError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::is_permissive_noop;
+    use maekon_core::config::SandboxProfile;
 
-    #[test]
-    fn generate_permissive_profile() {
-        let config = SandboxConfig {
-            profile: SandboxProfile::Permissive,
-            ..Default::default()
-        };
-        let profile = MacOsSandbox::generate_sbpl_profile(&config);
-        assert!(profile.contains("(version 1)"));
-        assert!(profile.contains("(allow default)"));
-    }
-
-    #[test]
-    fn generate_standard_profile() {
-        let config = SandboxConfig {
-            profile: SandboxProfile::Standard,
-            allowed_read_paths: vec!["/tmp/test".to_string()],
-            allow_network: false,
-            ..Default::default()
-        };
-        let profile = MacOsSandbox::generate_sbpl_profile(&config);
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(deny network*)"));
-        assert!(profile.contains("/tmp/test"));
-    }
-
-    #[test]
-    fn generate_strict_profile() {
-        let config = SandboxConfig {
-            profile: SandboxProfile::Strict,
-            ..Default::default()
-        };
-        let profile = MacOsSandbox::generate_sbpl_profile(&config);
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(deny network*)"));
-        assert!(!profile.contains("(allow network*)"));
-    }
-
-    #[test]
-    fn escape_sbpl_path_special_chars() {
-        assert_eq!(escape_sbpl_path("/normal/path"), "/normal/path");
-        assert_eq!(
-            escape_sbpl_path("/path/with \"quotes\""),
-            "/path/with \\\"quotes\\\""
-        );
-    }
+    // SBPL profile-generation tests moved to the cfg-free `super::super::sbpl`
+    // module (#5120) so the security policy is verified on every OS.
 
     #[tokio::test]
     async fn macos_sandbox_available() {
@@ -425,8 +308,11 @@ mod tests {
     #[test]
     fn build_sandbox_command_without_exec_path_fails() {
         let sandbox = MacOsSandbox::with_exec_path(None);
-        let result = sandbox.build_sandbox_command("(version 1)\n");
-        assert!(result.is_err());
+        let err = sandbox.build_sandbox_command("(version 1)\n").unwrap_err();
+        assert!(
+            matches!(err, CoreError::SandboxUnsupported { .. }),
+            "missing exec path must produce SandboxUnsupported, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -440,13 +326,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result = sandbox.execute_sandboxed(&action, &config).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = sandbox
+            .execute_sandboxed(&action, &config)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::SandboxUnsupported { .. }),
+            "missing exec path must produce SandboxUnsupported, got: {err:?}"
+        );
         assert!(
             err.to_string().contains("sandbox-exec not found"),
-            "expected SandboxUnsupported, got: {}",
-            err
+            "SandboxUnsupported message must mention sandbox-exec, got: {err}"
         );
     }
 

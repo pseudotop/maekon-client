@@ -1,12 +1,18 @@
 //! OS accessibility API integration for focused element extraction.
 //!
 //! Platform-dispatched module:
-//! - macOS: Native AXUIElement FFI (`macos.rs`)
-//! - Windows: UIAutomation COM API (`windows.rs`)
-//! - Linux: AT-SPI2 over D-Bus (`linux.rs`, feature `linux-atspi`)
+//! - macOS: Native AXUIElement FFI (`macos/`)
+//! - Windows: UIAutomation COM API (`windows/`)
+//! - Linux: AT-SPI2 over D-Bus (`linux/`, feature `linux-atspi`)
 //!
 //! The `create_extractor()` factory function returns the appropriate
 //! platform implementation behind `Arc<dyn AccessibilityExtractor>`.
+
+// Cfg-free PII-redaction core (#5120). The per-level field gating shared by the
+// macOS and Windows `FocusedElementInfo` extractors lives here so the
+// security-critical logic is a single source of truth — tested directly,
+// cross-platform, instead of re-implemented inside each platform's test module.
+mod pii_filter;
 
 #[cfg(target_os = "macos")]
 pub(crate) mod ffi_macos;

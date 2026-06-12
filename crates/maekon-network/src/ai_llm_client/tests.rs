@@ -1,6 +1,7 @@
 use super::*;
 use super::{parsers, request};
 use maekon_core::config::ExternalApiEndpoint;
+use maekon_core::error::CoreError;
 
 #[test]
 fn system_prompt_not_empty() {
@@ -22,7 +23,6 @@ fn new_remote_llm_rejects_retired_model_by_policy() {
     };
 
     let result = RemoteLlmProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("retired as of"));
 }
@@ -61,7 +61,6 @@ fn new_remote_llm_rejects_known_non_llm_model() {
     };
 
     let result = RemoteLlmProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("not marked as LLM-capable"));
 }
@@ -210,15 +209,52 @@ fn parse_openai_response_with_output_text() {
 #[test]
 fn parse_claude_response_invalid_json() {
     let body = r#"{"content": [{"type": "text", "text": "not json at all"}]}"#;
-    let result = parsers::parse_claude_response(body);
-    assert!(result.is_err());
+    let err = parsers::parse_claude_response(body).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CoreError::Validation {
+                code: maekon_core::error_codes::ValidationCode::InvalidField,
+                ..
+            }
+        ),
+        "non-JSON LLM text must produce CoreError::Validation::InvalidField, got: {err:?}"
+    );
+}
+
+#[test]
+fn parse_claude_response_parse_error_omits_raw_private_output() {
+    let body = r#"{
+        "content": [{
+            "type": "text",
+            "text": "not json: alice@example.com OTP 123456 payroll 김범준"
+        }]
+    }"#;
+
+    let err = parsers::parse_claude_response(body).unwrap_err();
+    let message = err.to_string();
+
+    assert!(message.contains("body=omitted_for_privacy"));
+    assert!(!message.contains("alice@example.com"));
+    assert!(!message.contains("123456"));
+    assert!(!message.contains("payroll"));
+    assert!(!message.contains("김범준"));
 }
 
 #[test]
 fn parse_openai_response_no_choices() {
     let body = r#"{"choices": []}"#;
-    let result = parsers::parse_openai_response(body);
-    assert!(result.is_err());
+    let err = parsers::parse_openai_response(body).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CoreError::Analysis {
+                code: maekon_core::error_codes::ProviderCode::AnalysisFailed,
+                ..
+            }
+        ),
+        "empty choices must produce CoreError::Analysis::AnalysisFailed, got: {err:?}"
+    );
 }
 
 /// Iter-151 regression guard: parsers that can't extract text from a
@@ -368,7 +404,6 @@ fn local_openai_compatible_llm_requires_explicit_model_selection() {
         credential: None,
     };
     let result = RemoteLlmProvider::new(&config, crate::CircuitBreakerRegistry::new());
-    assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()

@@ -1,0 +1,31 @@
+{
+  "tc_ids": ["CRT-PRV-SUG-UX-001"],
+  "initial_suggestions": [],
+  "recovered_suggestions": [
+    {
+      "id": "panel-recovered-local-proposal",
+      "title": "Review the recovered local suggestion",
+      "body": "The panel recovered after an error without reopening itself or duplicating requests.",
+      "priority": "low",
+      "category": "fallback",
+      "source": "local",
+      "confidence_score": 0.58,
+      "created_at": "2026-05-22T00:00:00Z",
+      "is_read": false,
+      "reasoning": "Fixture for panel state stability."
+    }
+  ],
+  "provider_failure": {
+    "message": "provider_rate_limited: raw_screen_context=Notes selected text should stay out of UI"
+  },
+  "expected": {
+    "loading_message": "Refreshing suggestions...",
+    "empty_message": "No suggestions yet",
+    "generic_error_message": "Could not load suggestions.",
+    "retry_label": "Retry",
+    "recovered_title": "Review the recovered local suggestion",
+    "closed_panel_class": "translate-x-[calc(100%+1rem)]",
+    "open_panel_class": "translate-x-0",
+    "raw_context_fragment": "Notes selected text"
+  }
+}

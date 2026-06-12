@@ -2,6 +2,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use chrono::Utc;
 use maekon_api_contracts::annotations::CreateAnnotationRequest;
+use maekon_core::id_generation::generate_id;
 use maekon_core::models::annotation::FrameAnnotation;
 
 use crate::error::ApiError;
@@ -12,7 +13,9 @@ pub async fn list_annotations(
     State(context): State<StorageWebContext>,
     Path(frame_id): Path<i64>,
 ) -> Result<Json<Vec<FrameAnnotation>>, ApiError> {
-    let annotations = context.storage.list_annotations(frame_id)?;
+    // ADR-026 PR-3: AnnotationStorage is now async — call directly via .await
+    // (the impl routes SQLite work through the with_conn* spawn_blocking funnel).
+    let annotations = context.storage.list_annotations(frame_id).await?;
     Ok(Json(annotations))
 }
 
@@ -23,7 +26,7 @@ pub async fn create_annotation(
     Json(req): Json<CreateAnnotationRequest>,
 ) -> Result<Json<FrameAnnotation>, ApiError> {
     let annotation = FrameAnnotation {
-        annotation_id: uuid::Uuid::new_v4().to_string(),
+        annotation_id: generate_id("ann"),
         frame_id,
         annotation_type: req.annotation_type,
         x: req.x,
@@ -35,7 +38,8 @@ pub async fn create_annotation(
         created_at: Utc::now(),
     };
 
-    context.storage.save_annotation(&annotation)?;
+    // ADR-026 PR-3: async storage call (no spawn_blocking wrapper needed).
+    context.storage.save_annotation(&annotation).await?;
     Ok(Json(annotation))
 }
 
@@ -44,7 +48,8 @@ pub async fn delete_annotation(
     State(context): State<StorageWebContext>,
     Path((_frame_id, annotation_id)): Path<(i64, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    context.storage.delete_annotation(&annotation_id)?;
+    // ADR-026 PR-3: async storage call (no spawn_blocking wrapper needed).
+    context.storage.delete_annotation(&annotation_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

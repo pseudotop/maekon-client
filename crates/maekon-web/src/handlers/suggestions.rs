@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use maekon_api_contracts::suggestions::SuggestionDto;
+use maekon_api_contracts::suggestions::{SuggestionDto, SuggestionFeedbackRequest};
 use tracing::debug;
 
 use crate::error::ApiError;
@@ -14,7 +14,9 @@ pub async fn list_suggestions(
 ) -> Result<Json<Vec<SuggestionDto>>, ApiError> {
     debug!("GET /api/suggestions");
     Ok(Json(
-        SuggestionsQueryService::new(context).list_suggestions(50)?,
+        SuggestionsQueryService::new(context)
+            .list_suggestions(50)
+            .await?,
     ))
 }
 
@@ -24,7 +26,7 @@ pub async fn dismiss_suggestion(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     debug!("POST /api/suggestions/{}/dismiss", id);
-    let found = SuggestionsCommandService::new(context).dismiss(&id)?;
+    let found = SuggestionsCommandService::new(context).dismiss(&id).await?;
     if found {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -34,16 +36,36 @@ pub async fn dismiss_suggestion(
     }
 }
 
+/// POST /api/suggestions/:id/feedback — record shown/dismissed/acted feedback.
+pub async fn submit_suggestion_feedback(
+    State(context): State<StorageWebContext>,
+    Path(id): Path<String>,
+    Json(request): Json<SuggestionFeedbackRequest>,
+) -> Result<StatusCode, ApiError> {
+    debug!(
+        "POST /api/suggestions/{}/feedback action={}",
+        id, request.action
+    );
+    let found = SuggestionsCommandService::new(context)
+        .submit_feedback(&id, &request)
+        .await?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound(format!("suggestion {id} not found")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::AppState;
     use axum::body::Body;
-    use axum::extract::connect_info::MockConnectInfo;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header, Request, StatusCode};
 
+    use chrono::Utc;
+    use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
     use maekon_storage::sqlite::SqliteStorage;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tower::ServiceExt;
@@ -54,9 +76,32 @@ mod tests {
         AppState::with_core(storage, event_tx)
     }
 
+    fn test_app_state_with_storage() -> (AppState, Arc<SqliteStorage>) {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
+        let (event_tx, _) = broadcast::channel(16);
+        let state = AppState::with_core(storage.clone(), event_tx);
+        (state, storage)
+    }
+
     fn loopback_app(state: AppState) -> axum::Router {
-        crate::WebServer::build_router(state)
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+        crate::test_local_auth::authed_loopback_router(state)
+    }
+
+    fn sample_suggestion(suggestion_id: &str) -> Suggestion {
+        Suggestion {
+            suggestion_id: suggestion_id.to_string(),
+            suggestion_type: SuggestionType::WorkGuidance,
+            content: "Review the current window before acting.".to_string(),
+            priority: Priority::Medium,
+            confidence_score: 0.84,
+            relevance_score: 0.91,
+            is_actionable: true,
+            created_at: Utc::now(),
+            expires_at: None,
+            source: SuggestionSource::LlmLocal,
+            reasoning: Some("Visible context matched the request.".to_string()),
+            context_scope: None,
+        }
     }
 
     #[test]
@@ -104,5 +149,37 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json parse");
         assert!(parsed.is_array());
         assert_eq!(parsed.as_array().expect("array").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn post_suggestion_feedback_marks_unified_suggestion_shown() {
+        let (state, storage) = test_app_state_with_storage();
+        storage
+            .save_rule_suggestion_sync(&sample_suggestion("suggestion-feedback-1"))
+            .expect("save suggestion");
+
+        let app = loopback_app(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/suggestions/suggestion-feedback-1/feedback")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"shown"}"#))
+                    .expect("request build"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let rows = storage.list_suggestions(10).expect("list suggestions");
+        let row = rows
+            .into_iter()
+            .find(|row| row.suggestion_id == "suggestion-feedback-1")
+            .expect("saved suggestion");
+        assert!(row.shown_at.is_some());
+        assert!(row.dismissed_at.is_none());
+        assert!(row.acted_at.is_none());
     }
 }

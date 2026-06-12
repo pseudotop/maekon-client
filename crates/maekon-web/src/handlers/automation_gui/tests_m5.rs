@@ -203,7 +203,12 @@ fn make_controller_with(
 
     controller.set_scene_finder(finder);
     controller
-        .configure_gui_interaction(focus_probe, Arc::new(M5MockOverlayDriver), hmac_secret)
+        .configure_gui_interaction(
+            focus_probe,
+            Arc::new(M5MockOverlayDriver),
+            hmac_secret,
+            &tokio::runtime::Handle::current(),
+        )
         .expect("configure_gui_interaction should succeed");
 
     let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =

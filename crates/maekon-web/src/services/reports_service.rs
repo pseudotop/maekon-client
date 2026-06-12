@@ -34,7 +34,7 @@ impl ReportQueryService {
 
         let metrics = self.ctx.storage.get_metrics(from, to, 100000).await?;
         let events = self.ctx.storage.get_events(from, to, 100000).await?;
-        let frames = self.ctx.storage.get_frames(from, to, 100000)?;
+        let frames = self.ctx.storage.get_frames(from, to, 100000).await?;
         let idle_periods = self.ctx.storage.get_idle_periods(from, to).await?;
 
         let total_captures = frames.len() as u64;
@@ -63,10 +63,11 @@ impl ReportQueryService {
             events: &events,
             frames: &frames,
             idle_periods: &idle_periods,
-        });
+        })
+        .await;
         daily_stats.sort_by(|left, right| left.date.cmp(&right.date));
 
-        let app_stats = build_app_stats(&self.ctx, from, to, &events, &frames);
+        let app_stats = build_app_stats(&self.ctx, from, to, &events, &frames).await;
         let hourly_activity = build_hourly_activity(&events, &frames);
         let total_active_secs = resolve_total_active_secs(&daily_stats, total_events);
         let productivity = build_productivity(

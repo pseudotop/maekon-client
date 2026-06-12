@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
 use tracing::debug;
 
+/// E20-41 (#4833): a known token to satisfy the require_local_auth gate in tests.
+const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
+
 #[tokio::test]
 async fn web_server_starts_responds_and_shuts_down() {
     let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
@@ -31,6 +34,7 @@ async fn web_server_starts_responds_and_shuts_down() {
 
     let server = WebServer::new(storage, config)
         .with_bound_port_state(bound_port_state.clone())
+        .with_local_auth_token(Arc::from(TEST_LOCAL_AUTH_TOKEN))
         .with_bound_port_notifier(bound_port_tx);
 
     // Start the server in a background task
@@ -45,9 +49,13 @@ async fn web_server_starts_responds_and_shuts_down() {
     assert!(port > 0, "bound port should be non-zero");
     assert_eq!(bound_port_state.load(Ordering::Relaxed), port);
 
-    // Send a real HTTP request to the focus/metrics endpoint (returns a JSON object)
+    // Send a real HTTP request to the focus/metrics endpoint (returns a JSON object).
+    // E20-41 (#4833): carry the local-auth token header so the gate admits it.
     let url = format!("http://127.0.0.1:{}/api/focus/metrics", port);
-    let response = reqwest::get(&url)
+    let response = reqwest::Client::new()
+        .get(&url)
+        .header("x-local-auth", TEST_LOCAL_AUTH_TOKEN)
+        .send()
         .await
         .expect("HTTP GET /api/focus/metrics failed");
 
@@ -79,11 +87,9 @@ async fn web_server_starts_responds_and_shuts_down() {
         .expect("timed out waiting for server shutdown")
         .expect("server task panicked");
 
-    assert!(
-        server_result.is_ok(),
-        "server exited with error: {:?}",
-        server_result.err()
-    );
+    // WebServer::run returns Result<()>; the only contract is clean shutdown
+    // (no Err). Unit return means there is no further value to pin (#5594).
+    server_result.expect("WebServer::run must exit cleanly after receiving shutdown signal");
 }
 
 #[tokio::test]
@@ -99,9 +105,21 @@ async fn web_server_router_resolves_focus_routes() {
     let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
     let (event_tx, _) = tokio::sync::broadcast::channel(16);
 
-    let state = maekon_web::AppState::with_core(storage, event_tx);
+    let mut state = maekon_web::AppState::with_core(storage, event_tx);
+    // E20-41 (#4833): seed the local-auth token + inject the header on every request
+    // so the focus/coaching routes pass the require_local_auth gate.
+    state.auth.local_auth_token = Some(Arc::from(TEST_LOCAL_AUTH_TOKEN));
 
     let app = WebServer::build_router(state)
+        .layer(axum::middleware::map_request(
+            |mut req: axum::extract::Request| async move {
+                req.headers_mut().insert(
+                    "x-local-auth",
+                    axum::http::HeaderValue::from_static(TEST_LOCAL_AUTH_TOKEN),
+                );
+                req
+            },
+        ))
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
 
     // Verify focus/metrics route

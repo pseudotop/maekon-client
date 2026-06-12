@@ -265,10 +265,9 @@ mod tests {
         let cfg = schedule_with_window("09:00", "18:00", "Work hours");
 
         let set_result = set_tracking_schedule_inner(cfg.clone());
-        assert!(
-            set_result.is_ok(),
-            "set_tracking_schedule should succeed for valid config"
-        );
+        // set_tracking_schedule_inner returns Result<()>; the only contract for a
+        // fully-valid config is that validation passes — unit return (#5594).
+        set_result.expect("set_tracking_schedule must accept a valid HH:MM + IANA tz config");
 
         let get_result = get_tracking_schedule_inner(cfg.clone());
         let returned = get_result.expect("get_tracking_schedule should succeed");

@@ -1,8 +1,8 @@
 //! define_code_enum! — single-source macro for code enum definitions.
 //!
 //! Generates enum body, `as_str` match, `Display` impl, and `all()` enumerator
-//! from one variant list. Prevents drift between match and array per §7.5 of spec
-//! `docs/superpowers/specs/2026-04-19-error-code-infrastructure-design.md`.
+//! from one variant list. Prevents drift between match and array per client
+//! ADR-019.
 
 #[macro_export]
 macro_rules! define_code_enum {

@@ -7,9 +7,8 @@ use maekon_core::config::{AiProviderType, ExternalApiEndpoint};
 use maekon_core::error::CoreError;
 use maekon_core::ports::credential_source::CredentialSource;
 use maekon_core::ports::llm_provider::{
-    InterpretedAction, LlmProvider, ScreenContext, SkillContext,
+    InterpretedAction, LlmCallHealth, LlmProvider, ScreenContext, SkillContext,
 };
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -34,9 +33,14 @@ pub struct RemoteLlmProvider {
     surface_id: Option<String>,
     #[allow(dead_code)]
     timeout_secs: u64,
-    /// Health flag: `true` after a successful LLM request, `false` on failure.
-    /// Read by the health-check loop. `None` when no caller has wired a flag.
-    last_request_ok: Option<Arc<AtomicBool>>,
+    /// Token budget for the `max_output_tokens` field of Responses API bodies.
+    /// Default 512 (all existing providers); raised to 2048 for Ollama intent
+    /// paths (Decision 4: qwen3 thinking tokens consume the 512 budget).
+    max_output_tokens: u32,
+    /// Per-call health handle: tri-state UNKNOWN/OK/FAILED.
+    /// Read by the automation status endpoint at request time.
+    /// `None` when no caller has wired a handle.
+    call_health: Option<Arc<LlmCallHealth>>,
     /// D7: per-endpoint circuit breaker (shared via registry across adapter
     /// instances targeting the same endpoint).
     pub(super) breaker: Arc<CircuitBreaker>,
@@ -208,14 +212,25 @@ impl RemoteLlmProvider {
             provider_type: config.provider_type,
             surface_id: config.surface_id.clone(),
             timeout_secs: config.timeout_secs,
-            last_request_ok: None,
+            max_output_tokens: 512,
+            call_health: None,
             breaker,
         })
     }
-    /// Attach a shared health flag that is set to `true` on successful LLM request
-    /// and `false` on failure.
-    pub fn with_health_flag(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.last_request_ok = Some(flag);
+    /// Attach a shared per-call health handle that records UNKNOWN/OK/FAILED
+    /// after each `interpret_intent` call.  The automation status endpoint reads
+    /// `call_health.as_option_bool()` at request time to expose `llm_healthy`.
+    pub fn with_call_health(mut self, handle: Arc<LlmCallHealth>) -> Self {
+        self.call_health = Some(handle);
+        self
+    }
+    /// Override the `max_output_tokens` cap for this provider (Decision 4).
+    ///
+    /// Default is 512 (all provider paths). Set to 2048 for Ollama intent
+    /// planning where qwen3 thinking tokens can exhaust the 512 budget and
+    /// return an empty parse, silently falling back to the rule matcher.
+    pub fn with_token_budget(mut self, tokens: u32) -> Self {
+        self.max_output_tokens = tokens;
         self
     }
     /// Create a provider with a managed credential source (e.g., OAuth).
@@ -313,7 +328,8 @@ impl RemoteLlmProvider {
             provider_type: config.provider_type,
             surface_id: config.surface_id.clone(),
             timeout_secs: config.timeout_secs,
-            last_request_ok: None,
+            max_output_tokens: 512,
+            call_health: None,
             breaker,
         })
     }

@@ -101,7 +101,7 @@ Out-of-process 격리 실행기 (maekon-app이 spawn)
 - [문서 인덱스](../README.ko.md)
 - [ADR-001: Rust Client Architecture Patterns](../architecture/ADR-001-rust-client-architecture-patterns.ko.md)
 - [ADR-002: OS GUI Interaction Boundary and Runtime Split](../architecture/ADR-002-os-gui-interaction-boundary.ko.md)
-- [ADR-009: Client Architecture Baseline](../architecture/ADR-009-client-architecture-baseline.ko.md)
+- [ADR-009: Client Architecture Baseline](../architecture/ADR-009-client-architecture-baseline.md)
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) - 기여 워크플로우
 - [Contributing Guide](../../CONTRIBUTING.md)
 - [Code of Conduct](../../CODE_OF_CONDUCT.md)

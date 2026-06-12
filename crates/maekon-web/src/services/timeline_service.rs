@@ -41,7 +41,7 @@ impl TimelineQueryService {
         max_frames: usize,
     ) -> Result<TimelineResponse, ApiError> {
         let events = self.ctx.storage.get_events(from, to, max_events).await?;
-        let frames = self.ctx.storage.get_frames(from, to, max_frames)?;
+        let frames = self.ctx.storage.get_frames(from, to, max_frames).await?;
         let idle_periods = self.ctx.storage.get_idle_periods(from, to).await?;
 
         let mut items = Vec::new();

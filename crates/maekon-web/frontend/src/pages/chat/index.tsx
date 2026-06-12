@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Alert, Button, EmptyState, Input } from '../../components/ui'
 import { defaultSurfaceModel } from '../../features/providerSurfaces'
 import { addToast } from '../../hooks/useToast'
+import { SessionTurnControl } from '../../overlay/components/SessionTurnControl'
 import { colors, iconSize, interaction, motion, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { ChatInput } from './ChatInput'
@@ -342,6 +343,15 @@ export default function Chat() {
                   {tokenUsage.total.toLocaleString()} tokens
                   {tokenUsage.budget ? ` / ${tokenUsage.budget.toLocaleString()}` : ''}
                 </span>
+              )}
+              {/* Mid-turn control (E21 #5017): interrupt/steer the live turn.
+                  The LIVE CONSUMER of interrupt_session_turn / steer_session_turn.
+                  Shown while a turn is streaming on an editable (non-historical)
+                  session. */}
+              {activeId && sending && !isReadOnly && (
+                <div className="ml-3">
+                  <SessionTurnControl sessionId={activeId} />
+                </div>
               )}
               <div className="ml-auto flex items-center gap-1">
                 {searchOpen && (

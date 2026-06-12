@@ -1,5 +1,5 @@
 import { screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
 import StatusBar from '../StatusBar'
 
@@ -22,6 +22,10 @@ import { useSSE } from '../../../hooks/useSSE'
 const mockUseSSE = vi.mocked(useSSE)
 
 describe('StatusBar', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('has displayName', () => {
     expect(StatusBar.displayName).toBe('StatusBar')
   })
@@ -39,7 +43,7 @@ describe('StatusBar', () => {
   it('shows "--" for missing metrics', () => {
     renderWithProviders(<StatusBar />)
     const dashes = screen.getAllByText('--')
-    expect(dashes).toHaveLength(2) // CPU and RAM
+    expect(dashes).toHaveLength(3) // Last capture, CPU, and RAM
   })
 
   it('shows "Connected" when status is connected', () => {
@@ -76,5 +80,34 @@ describe('StatusBar', () => {
     expect(screen.getByText('45.2%')).toBeInTheDocument()
     expect(screen.getByText('8.0GB')).toBeInTheDocument()
     expect(screen.queryByText('8192MB')).not.toBeInTheDocument()
+  })
+
+  it('shows live capture indicator and latest capture timestamp', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-16T02:40:00.000Z'))
+
+    const timestamp = '2026-05-16T02:39:59.500Z'
+    mockUseSSE.mockReturnValue({
+      status: 'connected',
+      latestMetrics: null,
+      latestFrame: {
+        id: 42,
+        timestamp,
+        app_name: 'Code',
+        window_title: 'main.rs',
+        importance: 0.9,
+        trigger_type: 'WindowChange',
+      },
+      idleState: null,
+      metricsHistory: [],
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    renderWithProviders(<StatusBar />)
+
+    expect(screen.getByLabelText('Capture active')).toHaveClass('bg-status-connected')
+    expect(screen.getByLabelText('LastCaptureTimestamp')).toHaveAttribute('dateTime', timestamp)
+    expect(screen.getByLabelText('LastCaptureTimestamp')).toHaveTextContent(timestamp)
   })
 })

@@ -7,6 +7,7 @@ use maekon_core::ports::storage::{MetricsStorage, StorageService};
 use std::sync::atomic::Ordering;
 
 use super::test_utils::make_user_event;
+use crate::error::StorageError;
 
 fn make_context_event() -> Event {
     Event::Context(ContextEvent {
@@ -48,7 +49,7 @@ async fn enforce_retention() {
     storage.save_event(&make_user_event()).await.unwrap();
 
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
         conn.execute("UPDATE events SET is_sent = 1", []).unwrap();
     } // MutexGuard await
     let deleted = storage.enforce_retention().await.unwrap();
@@ -80,12 +81,25 @@ async fn get_events_invalid_time_range() {
 async fn mark_nonexistent_ids_no_error() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
+    // Contract: UPDATE matching 0 rows succeeds; pending queue is unaffected.
     let ids = vec!["nonexistent1".to_string(), "nonexistent2".to_string()];
-    let result = storage.mark_as_sent(&ids).await;
-    assert!(result.is_ok());
+    storage
+        .mark_as_sent(&ids)
+        .await
+        .expect("mark_as_sent with nonexistent IDs must not error (#5594)");
 
-    let result = storage.mark_as_sent(&[]).await;
-    assert!(result.is_ok());
+    // Verify the call had no side-effects on the (empty) pending queue.
+    let pending = storage.get_pending_events(100).await.unwrap();
+    assert!(
+        pending.is_empty(),
+        "no events inserted, pending must stay empty after marking nonexistent IDs"
+    );
+
+    // Contract: empty slice hits the early-return Ok(()) path without touching the DB.
+    storage
+        .mark_as_sent(&[])
+        .await
+        .expect("mark_as_sent with empty slice must not error (#5594)");
 }
 
 #[tokio::test]
@@ -363,7 +377,7 @@ fn frame_tag_operations() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
         conn.execute(
             "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image)
              VALUES ('2024-01-01T00:00:00Z', 'manual', 'test', 'test', 0.5, 1920, 1080, 0)",
@@ -396,8 +410,13 @@ fn duplicate_tag_name_fails() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
     storage.create_tag("unique", "#000000").unwrap();
-    let result = storage.create_tag("unique", "#ffffff");
-    assert!(result.is_err());
+    assert!(
+        matches!(
+            storage.create_tag("unique", "#ffffff").unwrap_err(),
+            StorageError::Internal(_)
+        ),
+        "duplicate tag name must yield StorageError::Internal (UNIQUE constraint)"
+    );
 }
 
 #[test]
@@ -405,7 +424,7 @@ fn add_tag_to_frame_idempotent() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
         conn.execute(
             "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image)
              VALUES ('2024-01-01T00:00:00Z', 'manual', 'test', 'test', 0.5, 1920, 1080, 0)",
@@ -428,7 +447,6 @@ fn daily_digest_save_and_get_roundtrip() {
     use maekon_core::models::daily_digest::{
         DailyDigest, DailyInsight, DailyStatistics, DigestHighlight, HighlightType,
     };
-    use maekon_core::ports::web_storage::DigestStorage;
 
     let storage = SqliteStorage::open_in_memory(30).unwrap();
     let today = Utc::now().date_naive();
@@ -468,7 +486,6 @@ fn daily_digest_save_and_get_roundtrip() {
 fn daily_digest_list_ordering() {
     use chrono::Days;
     use maekon_core::models::daily_digest::{DailyDigest, DailyStatistics};
-    use maekon_core::ports::web_storage::DigestStorage;
 
     let storage = SqliteStorage::open_in_memory(30).unwrap();
     let today = Utc::now().date_naive();
@@ -494,11 +511,60 @@ fn daily_digest_list_ordering() {
 
 #[test]
 fn daily_digest_get_nonexistent_returns_none() {
-    use maekon_core::ports::web_storage::DigestStorage;
-
     let storage = SqliteStorage::open_in_memory(30).unwrap();
     let result = storage.get_daily_digest("2020-01-01").unwrap();
     assert!(result.is_none());
+}
+
+/// ADR-026 PR-final — Digest async-safety guard (deferred review follow-up).
+///
+/// The `DigestStorage` async body has **no `maekon-web` entrypoint**, so its
+/// async path is not exercised by any handler `#[tokio::test]`. If a future
+/// change reintroduced a `block_in_place` bridge inside that async body, it
+/// would silently re-block the runtime — and on a single-threaded runtime it
+/// would outright **panic** (`block_in_place` requires the multi-thread
+/// scheduler).
+///
+/// This test runs on the **default `#[tokio::test]` current-thread runtime**
+/// and drives the async trait method `DigestStorage::get_daily_digest` (which
+/// must route through `with_conn_read` → `spawn_blocking`, never
+/// `block_in_place`). Fully-qualified trait syntax is required because the
+/// inherent sync twin `SqliteStorage::get_daily_digest` shadows the trait
+/// method by name. A `block_in_place` reintroduction would either panic or
+/// hang; the 5s `timeout` guards the hang case and the current-thread runtime
+/// guards the panic case.
+#[tokio::test]
+async fn digest_async_path_runs_on_current_thread_runtime() {
+    use maekon_core::ports::web_storage::DigestStorage;
+    use std::time::Duration;
+
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    // Drive the async trait method (NOT the sync inherent twin) so the
+    // `spawn_blocking` funnel is what gets exercised. On the current-thread
+    // runtime, any `block_in_place` in this body would panic.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        DigestStorage::get_daily_digest(&storage, "2020-01-01"),
+    )
+    .await;
+
+    let inner = result.expect("digest async path must complete within 5s (no block_in_place hang)");
+    assert!(
+        inner.expect("digest async query must not error").is_none(),
+        "no digest exists for 2020-01-01"
+    );
+
+    // Also guard a list-style async read so the regression net covers more of
+    // the `DigestStorage` async surface than a single accessor.
+    let listed = tokio::time::timeout(
+        Duration::from_secs(5),
+        DigestStorage::list_daily_digests(&storage, 10),
+    )
+    .await
+    .expect("digest list async path must complete within 5s")
+    .expect("digest list async query must not error");
+    assert!(listed.is_empty(), "empty in-memory store lists no digests");
 }
 
 #[test]
@@ -507,6 +573,7 @@ fn ensure_device_identity_generates_uuid_on_first_call() {
     let (device_id, device_name) = storage.ensure_device_identity("Test Machine").unwrap();
 
     assert!(!device_id.is_empty());
+    // device_id is a server-wire field kept as UUID v4 (ADR-022 exemption).
     // Validate UUID v4 format (8-4-4-4-12 hex chars)
     assert_eq!(device_id.len(), 36);
     assert_eq!(device_name, "Test Machine");
@@ -583,7 +650,7 @@ fn enforce_all_retention_runs_without_error() {
 
     // Insert test data into tables covered by enforce_all_retention
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
 
         // work_sessions — old closed session (schema: primary_app, category, started_at, ended_at)
         conn.execute(
@@ -636,7 +703,7 @@ fn enforce_all_retention_keeps_recent_data() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
     {
-        let conn = storage.conn.lock().unwrap();
+        let conn = storage.conn.test_lock();
 
         // Recent work_session (should NOT be deleted)
         conn.execute(
@@ -657,12 +724,75 @@ fn enforce_all_retention_keeps_recent_data() {
     assert_eq!(deleted, 0, "recent data should not be deleted");
 }
 
+#[test]
+fn gc_sync_tombstones_bounds_outbox_at_max_retention_90() {
+    // #5174 S5/R4: the retained erasure-tombstone outbox is GC'd at max(retention, 90)d.
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+    {
+        let conn = storage.conn.test_lock();
+        // Old, producer-local format (SQLite `datetime('now')`) — past the 90d horizon.
+        conn.execute(
+            "INSERT INTO sync_tombstones (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+             VALUES ('activity_segments', 'old-local', 'dev-a', 100, 0, datetime('now', '-120 days'))",
+            [],
+        ).unwrap();
+        // Defensive: a non-production ISO-8601 `…Z` variant must also normalize + GC
+        // (production stores the `datetime('now')` space-format; this proves robustness).
+        conn.execute(
+            "INSERT INTO sync_tombstones (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+             VALUES ('regimes', 'old-wire', 'dev-b', 100, 0, '2020-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        // Recent — inside the horizon, must SURVIVE.
+        conn.execute(
+            "INSERT INTO sync_tombstones (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+             VALUES ('suggestions', 'recent', 'dev-a', 200, 0, datetime('now', '-10 days'))",
+            [],
+        ).unwrap();
+    }
+
+    // retention=30 → horizon = max(30,90) = 90 days.
+    let gc = storage.gc_sync_tombstones(30).unwrap();
+    assert_eq!(gc, 2, "both old tombstones (local + wire format) GC'd");
+
+    let conn = storage.conn.test_lock();
+    let remaining: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(remaining, 1, "recent tombstone survives the horizon");
+    let survivor: String = conn
+        .query_row("SELECT row_id FROM sync_tombstones", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(survivor, "recent");
+}
+
+#[test]
+fn gc_sync_tombstones_honors_retention_beyond_90() {
+    // A configured retention > 90 extends the horizon (keep tombstones ≥ as long as data).
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+    {
+        let conn = storage.conn.test_lock();
+        // 120 days old: GC'd at horizon 90, but SPARED at horizon 180.
+        conn.execute(
+            "INSERT INTO sync_tombstones (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+             VALUES ('activity_segments', 't-120', 'dev-a', 100, 0, datetime('now', '-120 days'))",
+            [],
+        ).unwrap();
+    }
+    // retention=180 → horizon = max(180,90) = 180 → the 120d-old row survives.
+    let gc = storage.gc_sync_tombstones(180).unwrap();
+    assert_eq!(
+        gc, 0,
+        "retention>90 keeps tombstones younger than the larger horizon"
+    );
+}
+
 // ── Subtask A: configure_connection PRAGMA parity ────────────────
 
 #[test]
 fn in_memory_applies_cache_size_pragma() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let cache_size: i64 = conn
         .query_row("PRAGMA cache_size", [], |row| row.get(0))
         .unwrap();
@@ -672,7 +802,7 @@ fn in_memory_applies_cache_size_pragma() {
 #[test]
 fn in_memory_applies_temp_store_pragma() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let temp_store: i64 = conn
         .query_row("PRAGMA temp_store", [], |row| row.get(0))
         .unwrap();
@@ -688,7 +818,7 @@ fn disk_applies_wal_mode() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test_wal.db");
     let storage = SqliteStorage::open(&db_path, 30, None).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let journal_mode: String = conn
         .query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .unwrap();
@@ -700,7 +830,7 @@ fn disk_applies_synchronous_normal() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test_sync.db");
     let storage = SqliteStorage::open(&db_path, 30, None).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let synchronous: i64 = conn
         .query_row("PRAGMA synchronous", [], |row| row.get(0))
         .unwrap();
@@ -715,7 +845,7 @@ fn disk_applies_journal_size_limit() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test_journal_limit.db");
     let storage = SqliteStorage::open(&db_path, 30, None).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let limit: i64 = conn
         .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
         .unwrap();
@@ -728,7 +858,7 @@ fn disk_applies_journal_size_limit() {
 #[test]
 fn in_memory_does_not_set_journal_size_limit() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let limit: i64 = conn
         .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
         .unwrap();
@@ -819,6 +949,104 @@ fn meta_roundtrip() {
     // Delete and verify absence
     storage.delete_meta("onboarding_completed");
     assert_eq!(storage.get_meta("onboarding_completed"), None);
+}
+
+/// #4801 R2: `set_meta_checked`는 성공 시 Ok를 반환하고 값이 저장되어야 한다.
+#[test]
+fn set_meta_checked_stores_value_and_returns_ok() {
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    // 키가 없는 상태에서 set_meta_checked 호출.
+    storage
+        .set_meta_checked("pending_local_erase", "1")
+        .expect("set_meta_checked는 in-memory DB에서 실패해선 안 된다");
+
+    // 값이 정상적으로 저장되어야 한다.
+    assert_eq!(
+        storage.get_meta("pending_local_erase"),
+        Some("1".to_string()),
+        "set_meta_checked 이후 get_meta로 값을 읽을 수 있어야 한다"
+    );
+}
+
+/// #5156: the `ErasurePropagationStore` impl round-trips through `app_meta`.
+#[test]
+fn erasure_propagation_store_roundtrip() {
+    use maekon_core::ports::erasure_propagation_store::ErasurePropagationStore;
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    assert_eq!(
+        storage.last_pushed_erasure_id(),
+        None,
+        "no erasure recorded initially"
+    );
+
+    storage
+        .record_pushed_erasure_id("2026-06-05T08:11:24.336923+00:00")
+        .expect("record must succeed on an in-memory DB");
+    assert_eq!(
+        storage.last_pushed_erasure_id(),
+        Some("2026-06-05T08:11:24.336923+00:00".to_string()),
+        "the recorded erasure id round-trips through app_meta"
+    );
+
+    // A genuinely distinct erasure overwrites the marker.
+    storage
+        .record_pushed_erasure_id("2026-06-06T00:00:00+00:00")
+        .unwrap();
+    assert_eq!(
+        storage.last_pushed_erasure_id(),
+        Some("2026-06-06T00:00:00+00:00".to_string()),
+        "a new erasure id replaces the previous one"
+    );
+}
+
+/// #4801 R2: `set_meta_checked`는 OR REPLACE 동작으로 기존 값을 갱신해야 한다.
+#[test]
+fn set_meta_checked_overwrites_existing_key() {
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    storage.set_meta_checked("k", "v1").unwrap();
+    storage.set_meta_checked("k", "v2").unwrap();
+
+    assert_eq!(storage.get_meta("k"), Some("v2".to_string()));
+}
+
+/// #4801 R2: `delete_meta_checked`는 성공 시 Ok를 반환하고 키가 삭제되어야 한다.
+#[test]
+fn delete_meta_checked_removes_key_and_returns_ok() {
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    storage.set_meta_checked("marker", "1").unwrap();
+    assert!(storage.get_meta("marker").is_some());
+
+    storage
+        .delete_meta_checked("marker")
+        .expect("delete_meta_checked는 in-memory DB에서 실패해선 안 된다");
+
+    assert_eq!(
+        storage.get_meta("marker"),
+        None,
+        "delete_meta_checked 이후 키가 삭제되어야 한다"
+    );
+}
+
+/// #4801 R2: 존재하지 않는 키를 `delete_meta_checked`로 삭제해도 Ok를 반환해야 한다.
+#[test]
+fn delete_meta_checked_nonexistent_key_returns_ok() {
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+    // 없는 키 삭제 — SQL DELETE는 행이 없어도 에러가 아니므로 Ok여야 한다.
+    // Line 1038: delete_meta_checked on a missing key returns Ok(()) — no error raised.
+    storage
+        .delete_meta_checked("does_not_exist")
+        .expect("존재하지 않는 키 삭제는 Ok를 반환해야 한다");
+    // Read-back: key must still be absent (idempotent delete, no phantom insertion).
+    assert_eq!(
+        storage.get_meta("does_not_exist"),
+        None,
+        "key must remain absent after delete_meta_checked on a non-existent key"
+    );
 }
 
 // ── SQLCipher encryption tests ──────────────────────────────
@@ -915,7 +1143,7 @@ fn add_deep_work_secs_accumulates_on_work_session() {
     storage.add_deep_work_secs(session.id, 45).unwrap();
 
     // Verify via direct SQL that the deep_work_secs column reflects the sum.
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let total: i64 = conn
         .query_row(
             "SELECT deep_work_secs FROM work_sessions WHERE id = ?1",
@@ -942,7 +1170,7 @@ fn increment_work_session_interruption_increments_counter() {
         .increment_work_session_interruption(session.id)
         .unwrap();
 
-    let conn = storage.conn.lock().unwrap();
+    let conn = storage.conn.test_lock();
     let count: i64 = conn
         .query_row(
             "SELECT interruption_count FROM work_sessions WHERE id = ?1",
@@ -1031,4 +1259,510 @@ fn entries_by_command_id_respects_limit() {
     }
     let results = storage.entries_by_command_id("cmd-Z", 3);
     assert_eq!(results.len(), 3);
+}
+
+// ── recent_audit_entries (#4819 — OSS local audit-log export) ─────────────
+
+#[test]
+fn recent_audit_entries_returns_all_newest_first() {
+    use chrono::Utc;
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite open");
+
+    // 서로 다른 command_id 의 5개 항목을 내림차순 timestamp 로 기록한다.
+    for i in 0..5_i64 {
+        let entry = AuditEntry {
+            entry_id: format!("rae-{i}"),
+            timestamp: Utc::now() - chrono::Duration::milliseconds(i),
+            session_id: "s".to_string(),
+            command_id: format!("cmd-{}", i % 2),
+            action_type: "test".to_string(),
+            status: AuditStatus::Completed,
+            details: None,
+            execution_time_ms: Some(10),
+        };
+        storage.save_audit_entry(&entry);
+    }
+
+    let results = storage.recent_audit_entries(100);
+    assert_eq!(results.len(), 5, "all rows regardless of command_id");
+    for w in results.windows(2) {
+        assert!(
+            w[0].timestamp >= w[1].timestamp,
+            "expected newest-first ordering"
+        );
+    }
+}
+
+#[test]
+fn recent_audit_entries_respects_limit_clamp() {
+    use chrono::Utc;
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..10_i64 {
+        let entry = AuditEntry {
+            entry_id: format!("rae-lim-{i}"),
+            timestamp: Utc::now() - chrono::Duration::milliseconds(i),
+            session_id: "s".to_string(),
+            command_id: "cmd".to_string(),
+            action_type: "test".to_string(),
+            status: AuditStatus::Completed,
+            details: None,
+            execution_time_ms: Some(5),
+        };
+        storage.save_audit_entry(&entry);
+    }
+    let results = storage.recent_audit_entries(3);
+    assert_eq!(results.len(), 3, "limit clamps row count");
+    // 가장 최근(가장 작은 i) 항목이 먼저 와야 한다.
+    assert_eq!(results[0].entry_id, "rae-lim-0");
+}
+
+#[test]
+fn recent_audit_entries_empty_when_no_rows() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    assert!(storage.recent_audit_entries(100).is_empty());
+}
+
+// ── Egress 감사 원장 (V36, #4803/E20) ────────────────────────────
+
+fn make_egress_record(record_id: &str, disposition: &str) -> EgressLedgerRecord {
+    EgressLedgerRecord {
+        record_id: record_id.to_string(),
+        event_type: "Context".to_string(),
+        event_id: Some("evt-1".to_string()),
+        byte_count: 128,
+        recipient_count: 1,
+        destination: "server.batch_upload".to_string(),
+        disposition: disposition.to_string(),
+        consent_state: "telemetry=true".to_string(),
+        occurred_at: Utc::now().to_rfc3339(),
+    }
+}
+
+#[test]
+fn record_egress_round_trip() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let rec = make_egress_record("egr-1", "uploaded");
+    storage.record_egress(&rec).expect("record_egress");
+
+    let rows = storage.recent_egress(10);
+    assert_eq!(rows.len(), 1);
+    let got = &rows[0];
+    assert_eq!(got.record_id, "egr-1");
+    assert_eq!(got.event_type, "Context");
+    assert_eq!(got.event_id.as_deref(), Some("evt-1"));
+    assert_eq!(got.byte_count, 128);
+    assert_eq!(got.destination, "server.batch_upload");
+    assert_eq!(got.disposition, "uploaded");
+    assert_eq!(got.consent_state, "telemetry=true");
+}
+
+#[test]
+fn record_egress_unique_dedupes() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    storage
+        .record_egress(&make_egress_record("egr-dup", "uploaded"))
+        .expect("first insert");
+    // 동일 record_id 재삽입은 UNIQUE + INSERT OR IGNORE 로 무시되어야 한다.
+    storage
+        .record_egress(&make_egress_record("egr-dup", "blocked"))
+        .expect("second insert (ignored)");
+
+    let rows = storage.recent_egress(10);
+    assert_eq!(rows.len(), 1, "동일 record_id 는 중복 저장되지 않아야 한다");
+    // 첫 삽입(disposition='uploaded')이 보존된다.
+    assert_eq!(rows[0].disposition, "uploaded");
+}
+
+#[test]
+fn egress_between_filters_by_occurred_at() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+
+    let old_ts = (Utc::now() - Duration::days(10)).to_rfc3339();
+    let mid_ts = (Utc::now() - Duration::days(5)).to_rfc3339();
+    let new_ts = Utc::now().to_rfc3339();
+
+    for (id, ts) in [
+        ("egr-old", &old_ts),
+        ("egr-mid", &mid_ts),
+        ("egr-new", &new_ts),
+    ] {
+        let mut rec = make_egress_record(id, "uploaded");
+        rec.occurred_at = ts.clone();
+        storage.record_egress(&rec).expect("record_egress");
+    }
+
+    let from = (Utc::now() - Duration::days(7)).to_rfc3339();
+    let to = (Utc::now() + Duration::days(1)).to_rfc3339();
+    let rows = storage.egress_between(&from, &to);
+    // mid + new 만 범위에 들어온다 (old 는 -10일로 제외).
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].record_id, "egr-mid", "오름차순 정렬");
+    assert_eq!(rows[1].record_id, "egr-new");
+}
+
+#[test]
+fn recent_egress_empty_when_no_rows() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    assert!(storage.recent_egress(100).is_empty());
+}
+
+#[test]
+fn egress_ledger_survives_gdpr_delete_all_data() {
+    // #4803/E20 + xcut: egress_ledger 는 ALL_TABLES 에 의도적으로 없으므로 GDPR
+    // Art.17 전체 소거(delete_all_data) 후에도 컴플라이언스 증거로 보존되어야 한다
+    // (audit_log 와 동일한 처리-기록 근거; PII 없는 메타데이터만 보유).
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    storage
+        .record_egress(&make_egress_record("egr-survives", "uploaded"))
+        .expect("record_egress");
+    assert_eq!(storage.recent_egress(10).len(), 1);
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    let rows = storage.recent_egress(10);
+    assert_eq!(
+        rows.len(),
+        1,
+        "egress_ledger 행은 GDPR 전체 소거 후에도 보존되어야 한다(컴플라이언스 증거)"
+    );
+    assert_eq!(rows[0].record_id, "egr-survives");
+}
+
+#[test]
+fn sync_tombstones_survives_gdpr_delete_all_data() {
+    // #5174/#5178/E20: sync_tombstones 는 교차기기 삭제 수렴 아웃박스로, ALL_TABLES 에
+    // 의도적으로 없어 GDPR Art.17 전체 소거 후에도 스켈레톤(id+HLC)이 보존되어야 한다 —
+    // 그래야 오프라인이던 피어가 나중에 텀스톤을 받아 수렴한다. (S1 은 스키마+보존만;
+    // erase 시 자동 id 캡처 INSERT 는 S2/#5179.) 여기서는 raw INSERT 로 보존을 증명한다.
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO sync_tombstones \
+             (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+             VALUES ('activity_segments','seg-survives','dev-a',1000,0,'2026-06-05T00:00:00Z')",
+            [],
+        )
+        .expect("insert tombstone");
+    }
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    let surviving: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM sync_tombstones WHERE row_id = 'seg-survives'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        surviving, 1,
+        "sync_tombstones 스켈레톤은 GDPR 전체 소거 후에도 보존되어야 한다(오프라인 피어 수렴 캐리어)"
+    );
+}
+
+#[test]
+fn hlc_clock_is_erased_by_gdpr_delete_all_data() {
+    // F0/#5186: hlc_clock 은 활동-타이밍 메타데이터(wall_ms)이므로 GDPR Art.17 소거
+    // 대상이다 — sync_tombstones/egress_ledger(보존)와 대조적으로 ALL_TABLES 에 포함되어
+    // delete_all_data 로 비워져야 한다. (재시작 시 retained anchor 로 재시드.)
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    {
+        let conn = storage.conn.test_lock();
+        // 클럭을 비-0 값으로 올린다(데이터가 있었음을 분명히).
+        conn.execute(
+            "UPDATE hlc_clock SET last_wall_ms = 12345, last_counter = 6 WHERE id = 0",
+            [],
+        )
+        .expect("bump clock");
+    }
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    let remaining: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.query_row("SELECT COUNT(*) FROM hlc_clock", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        remaining, 0,
+        "hlc_clock 은 GDPR 전체 소거로 비워져야 한다(활동-타이밍 메타데이터, 소거 범위)"
+    );
+}
+
+// ── audit_log SHA-256 해시 체인 (V37, #4834/E20) ────────────────────────────
+
+fn make_audit_entry(
+    entry_id: &str,
+    details: Option<&str>,
+) -> maekon_core::models::audit::AuditEntry {
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+    AuditEntry {
+        entry_id: entry_id.to_string(),
+        timestamp: Utc::now(),
+        session_id: "sess-chain".to_string(),
+        command_id: "cmd-chain".to_string(),
+        action_type: "MouseClick".to_string(),
+        status: AuditStatus::Completed,
+        details: details.map(|s| s.to_string()),
+        execution_time_ms: Some(7),
+    }
+}
+
+/// chain 행의 (seq, prev_hash, entry_hash) 를 entry_id 로 읽는다.
+fn chain_fields(
+    storage: &SqliteStorage,
+    entry_id: &str,
+) -> (Option<i64>, Option<String>, Option<String>) {
+    let conn = storage.conn.test_lock();
+    conn.query_row(
+        "SELECT seq, prev_hash, entry_hash FROM audit_log WHERE entry_id = ?1",
+        [entry_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn save_audit_entry_genesis_on_first_then_links() {
+    use crate::audit_chain::GENESIS_PREV_HASH;
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+
+    storage.save_audit_entry(&make_audit_entry("c-0", Some("first")));
+    let (seq0, prev0, hash0) = chain_fields(&storage, "c-0");
+    assert_eq!(seq0, Some(0), "첫 행 seq 는 0");
+    assert_eq!(
+        prev0.as_deref(),
+        Some(GENESIS_PREV_HASH),
+        "첫 행 prev_hash 는 genesis"
+    );
+    let hash0 = hash0.expect("entry_hash present");
+
+    storage.save_audit_entry(&make_audit_entry("c-1", Some("second")));
+    let (seq1, prev1, _hash1) = chain_fields(&storage, "c-1");
+    assert_eq!(seq1, Some(1), "두번째 행 seq 는 1");
+    assert_eq!(
+        prev1.as_deref(),
+        Some(hash0.as_str()),
+        "두번째 행 prev_hash 는 직전 entry_hash 와 같아야 한다"
+    );
+}
+
+#[test]
+fn verify_audit_chain_clean_is_ok() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..5 {
+        storage.save_audit_entry(&make_audit_entry(&format!("ok-{i}"), Some("d")));
+    }
+    let report = storage.verify_audit_chain();
+    assert!(report.ok, "clean chain should be ok: {report:?}");
+    assert_eq!(report.first_seq, Some(0));
+    assert_eq!(report.last_seq, Some(4));
+    assert_eq!(report.verified_count, 5);
+    assert_eq!(report.legacy_unchained_count, 0);
+    assert!(report.first_break.is_none());
+}
+
+#[test]
+fn verify_audit_chain_empty_is_ok() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let report = storage.verify_audit_chain();
+    assert!(report.ok);
+    assert_eq!(report.verified_count, 0);
+    assert_eq!(report.first_seq, None);
+}
+
+#[test]
+fn verify_audit_chain_detects_tampered_details() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..4 {
+        storage.save_audit_entry(&make_audit_entry(&format!("t-{i}"), Some("orig")));
+    }
+    // seq=2 행의 details 를 직접 변조한다(entry_hash 는 그대로) → 재계산 불일치.
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "UPDATE audit_log SET details = 'TAMPERED' WHERE seq = 2",
+            [],
+        )
+        .unwrap();
+    }
+    let report = storage.verify_audit_chain();
+    assert!(!report.ok, "tamper must be detected");
+    let brk = report.first_break.expect("break present");
+    assert_eq!(brk.seq, 2, "변조는 seq=2 에서 탐지되어야 한다");
+    assert!(brk.reason.contains("tampered") || brk.reason.contains("mismatch"));
+}
+
+#[test]
+fn verify_audit_chain_detects_middle_delete_gap() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..4 {
+        storage.save_audit_entry(&make_audit_entry(&format!("g-{i}"), Some("d")));
+    }
+    // seq=1 행을 삭제 → seq 연속성 깨짐(gap).
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute("DELETE FROM audit_log WHERE seq = 1", [])
+            .unwrap();
+    }
+    let report = storage.verify_audit_chain();
+    assert!(!report.ok, "gap must be detected");
+    let brk = report.first_break.expect("break present");
+    assert_eq!(brk.seq, 2, "gap 은 seq=2 에서 탐지되어야 한다");
+    assert!(brk.reason.contains("gap"), "reason = {}", brk.reason);
+}
+
+#[test]
+fn verify_audit_chain_detects_timestamp_reorder() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..3 {
+        storage.save_audit_entry(&make_audit_entry(&format!("ts-{i}"), Some("d")));
+    }
+    // seq=1 행의 timestamp 를 변조 → canonical 입력 변경 → 재계산 불일치.
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "UPDATE audit_log SET timestamp = '2099-01-01T00:00:00+00:00' WHERE seq = 1",
+            [],
+        )
+        .unwrap();
+    }
+    let report = storage.verify_audit_chain();
+    assert!(!report.ok, "timestamp tamper must be detected");
+    assert_eq!(report.first_break.expect("break").seq, 1);
+}
+
+#[test]
+fn verify_audit_chain_detects_broken_link() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..3 {
+        storage.save_audit_entry(&make_audit_entry(&format!("lk-{i}"), Some("d")));
+    }
+    // seq=2 행의 prev_hash 를 임의 값으로 변조 → 링크 무결성 위반.
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "UPDATE audit_log SET prev_hash = 'deadbeef' WHERE seq = 2",
+            [],
+        )
+        .unwrap();
+    }
+    let report = storage.verify_audit_chain();
+    assert!(!report.ok);
+    assert_eq!(report.first_break.expect("break").seq, 2);
+}
+
+#[test]
+fn save_audit_entry_duplicate_id_does_not_gap_chain() {
+    // INSERT OR IGNORE 가 중복 entry_id 로 no-op 일 때 seq 가 소모되지 않아야 한다.
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    storage.save_audit_entry(&make_audit_entry("dup", Some("first")));
+    // 동일 entry_id 재기록 → INSERT OR IGNORE no-op.
+    storage.save_audit_entry(&make_audit_entry("dup", Some("ignored")));
+    // 새 entry_id → seq 는 1 이어야 한다(중복이 seq 를 소모하지 않음).
+    storage.save_audit_entry(&make_audit_entry("next", Some("d")));
+
+    let (seq_dup, _, _) = chain_fields(&storage, "dup");
+    let (seq_next, _, _) = chain_fields(&storage, "next");
+    assert_eq!(seq_dup, Some(0));
+    assert_eq!(seq_next, Some(1), "중복은 seq 를 소모하지 않아 gap-free");
+
+    let report = storage.verify_audit_chain();
+    assert!(report.ok, "chain must remain valid: {report:?}");
+    assert_eq!(report.verified_count, 2);
+}
+
+#[test]
+fn save_audit_entry_concurrent_chain_is_gap_free() {
+    use std::sync::Arc;
+    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("sqlite"));
+    let mut handles = Vec::new();
+    for t in 0..4 {
+        let s = Arc::clone(&storage);
+        handles.push(std::thread::spawn(move || {
+            for i in 0..10 {
+                s.save_audit_entry(&make_audit_entry(&format!("cc-{t}-{i}"), Some("d")));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let report = storage.verify_audit_chain();
+    assert!(report.ok, "concurrent chain must be valid: {report:?}");
+    assert_eq!(report.verified_count, 40, "40개 모두 gap-free 로 편입");
+    assert_eq!(report.first_seq, Some(0));
+    assert_eq!(report.last_seq, Some(39));
+}
+
+#[test]
+fn legacy_null_chain_rows_excluded_and_counted() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    // v37 이전 작성된 것처럼 chain 컬럼이 NULL 인 legacy 행을 직접 주입한다.
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO audit_log \
+             (entry_id, timestamp, session_id, command_id, action_type, status) \
+             VALUES ('legacy-a', '2026-01-01T00:00:00+00:00', 's', 'c', 'a', 'Completed')",
+            [],
+        )
+        .unwrap();
+    }
+    // 그 다음 정상 write → genesis 부터 새 체인 시작.
+    storage.save_audit_entry(&make_audit_entry("post-1", Some("d")));
+
+    let report = storage.verify_audit_chain();
+    assert!(
+        report.ok,
+        "legacy 행은 체인 검증에서 제외되어야 한다: {report:?}"
+    );
+    assert_eq!(report.legacy_unchained_count, 1);
+    assert_eq!(report.verified_count, 1);
+    assert_eq!(
+        report.first_seq,
+        Some(0),
+        "post-migration write 는 genesis(0) 부터"
+    );
+}
+
+#[test]
+fn save_audit_entry_appends_chain_even_with_deletion_flag_set() {
+    // #4928 상호작용: erase 윈도우(deletion_flag set)에서도 audit_log 는
+    // retained_write_lock 으로 계속 append 되고 체인이 연장되어야 한다.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    storage.save_audit_entry(&make_audit_entry("pre-erase", Some("d")));
+
+    // deletion_flag 를 set (consent revoke / erase 진입 모사).
+    let flag = Arc::new(AtomicBool::new(true));
+    storage
+        .connection_arc()
+        .set_deletion_flag(Arc::clone(&flag));
+    assert!(flag.load(Ordering::Acquire));
+
+    // erase 도중 consent_revoked 감사가 일어남 — retained 경로라 append 되어야 한다.
+    storage.save_audit_entry(&make_audit_entry("during-erase", Some("consent_revoked")));
+
+    let report = storage.verify_audit_chain();
+    assert!(
+        report.ok,
+        "deletion_flag set 에서도 체인은 유효해야 한다: {report:?}"
+    );
+    assert_eq!(
+        report.verified_count, 2,
+        "deletion_flag set 에서도 audit_log 는 append 된다(retained 경로)"
+    );
+    let (seq_during, _, _) = chain_fields(&storage, "during-erase");
+    assert_eq!(seq_during, Some(1), "erase 중 write 도 체인을 연장한다");
 }

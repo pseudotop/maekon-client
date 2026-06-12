@@ -1,6 +1,7 @@
 use crate::error::VisionError;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use image::{DynamicImage, GenericImageView};
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::debug;
 
@@ -49,7 +50,12 @@ static STATS_MEDIUM: CompressionStats = CompressionStats::new();
 static STATS_LOW: CompressionStats = CompressionStats::new();
 
 pub fn encode_webp(image: &DynamicImage, quality: WebPQuality) -> Result<Vec<u8>, VisionError> {
-    let rgba = image.to_rgba8();
+    // 이미 RGBA8 인 경우(프로덕션 caller 전부 ImageRgba8)에는 borrow 로 8MB clone 을 회피하고,
+    // 다른 픽셀 포맷일 때만 to_rgba8() 로 변환한다.
+    let rgba: Cow<'_, image::RgbaImage> = match image.as_rgba8() {
+        Some(rgba8) => Cow::Borrowed(rgba8),
+        None => Cow::Owned(image.to_rgba8()),
+    };
     let (w, h) = (rgba.width(), rgba.height());
     let raw_size = (w * h * 4) as usize;
 
@@ -211,11 +217,46 @@ mod tests {
     }
 
     #[test]
+    fn encode_webp_non_rgba8_falls_back_to_conversion() {
+        // RGBA8 가 아닌 입력(Luma8)도 to_rgba8() fallback 경로로 정상 인코딩되어야 한다.
+        let luma =
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(64, 48, image::Luma([200])));
+        let bytes = encode_webp(&luma, WebPQuality::Medium).unwrap();
+        assert!(!bytes.is_empty());
+
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(decoded.dimensions(), (64, 48));
+    }
+
+    #[test]
+    fn crt_prv_cap_003_webp_roundtrip_preserves_dimensions() {
+        for (width, height) in [(320, 180), (128, 72), (80, 60)] {
+            let img = make_test_image(width, height);
+            let bytes = encode_webp(&img, WebPQuality::Medium).unwrap();
+            let decoded = image::load_from_memory(&bytes).unwrap();
+
+            assert_eq!(decoded.dimensions(), img.dimensions());
+        }
+    }
+
+    #[test]
     fn encode_base64() {
         let img = make_test_image(50, 50);
         let b64 = encode_webp_base64(&img, WebPQuality::Low).unwrap();
         assert!(!b64.is_empty());
-        assert!(B64.decode(&b64).is_ok());
+        // Decoded bytes must be a non-empty WebP bitstream (header magic "RIFF...WEBP").
+        let decoded_bytes = B64
+            .decode(&b64)
+            .expect("base64 output from encode_webp_base64 must be valid standard base64");
+        assert!(
+            decoded_bytes.len() > 4,
+            "decoded WebP must have at least a RIFF header"
+        );
+        assert_eq!(
+            &decoded_bytes[..4],
+            b"RIFF",
+            "decoded bytes must start with WebP RIFF magic"
+        );
     }
 
     #[test]

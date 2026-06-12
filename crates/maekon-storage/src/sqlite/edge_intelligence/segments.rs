@@ -11,10 +11,9 @@ impl SqliteStorage {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<Vec<maekon_core::models::tiered_memory::SegmentSummary>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(format!("Failed to acquire lock: {e}")))?;
+        // 읽기 — read_lock(deletion_flag 무관).
+        let read = self.conn.read_lock();
+        let conn = read.conn();
 
         // Check table existence (may not have run V9 migration yet)
         let table_exists: bool = conn
