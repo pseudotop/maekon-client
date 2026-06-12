@@ -132,6 +132,19 @@ try {
 
     if (-not $SkipUpdaterTests) {
         Write-Info "Running updater reliability regression tests"
+        # tauri::generate_context!() validates frontendDist at compile time.
+        # The cargo test below builds maekon-app from the current working dir,
+        # so create a minimal stub at that workspace's frontendDist when running
+        # outside a full frontend build (CI smoke). Mirrors the .sh smoke path
+        # (lines ~302-307); without it, generate_context! panics with
+        # "frontendDist ... doesn't exist" on Windows.
+        $frontendDist = Join-Path (Get-Location) "crates/maekon-web/frontend/dist"
+        if (-not (Test-Path $frontendDist)) {
+            Write-Info "Creating frontendDist stub for tauri::generate_context!() compilation"
+            New-Item -ItemType Directory -Force -Path $frontendDist | Out-Null
+            Set-Content -Path (Join-Path $frontendDist "index.html") `
+                -Value '<!doctype html><html><body></body></html>' -NoNewline
+        }
         $bashCommand = Get-Command bash -ErrorAction SilentlyContinue
         if ($bashCommand) {
             & $bashCommand.Source -lc "./scripts/cargo-cache.sh test -p maekon-app release_reliability_ -- --nocapture"
