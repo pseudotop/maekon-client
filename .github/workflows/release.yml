@@ -577,7 +577,13 @@ jobs:
       - name: Install Tauri CLI
         if: runner.os == 'Windows'
         shell: bash
-        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2
+        # --locked: install from tauri-cli 2.11.2's published Cargo.lock so the
+        # transitive `time` dep is pinned to the version it was tested with.
+        # Without it, `cargo install` resolves `time` fresh and (since
+        # 2026-06) picks up time 0.3.48, which fails to compile tauri-utils on
+        # the MSVC target with E0119 — a non-reproducible "the world moved"
+        # break that did not exist when rc.5 was built.
+        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2 --locked
 
       - name: Build MSI installer
         if: runner.os == 'Windows'
