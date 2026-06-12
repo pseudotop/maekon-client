@@ -1194,6 +1194,15 @@ jobs:
         with:
           key: release-reliability-smoke-${{ matrix.name }}
 
+      # The sidecar build below compiles maekon-storage → rusqlite with the
+      # `bundled-sqlcipher` feature, whose openssl-sys build needs OPENSSL_DIR
+      # on Windows (the runner image no longer auto-provides it). Mirror the
+      # build job's OpenSSL setup so the smoke sidecar build doesn't fail with
+      # "Missing environment variable OPENSSL_DIR".
+      - name: Configure OpenSSL for SQLCipher (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.workflow-tools/.github/actions/setup-windows-openssl
+
       # Tauri externalBin requires `maekon-sandbox-worker-<triple>[.exe]` at
       # the src-tauri/ root at build time. Build the real sidecar so release
       # reliability smoke also catches missing/stale sandbox-worker packaging
