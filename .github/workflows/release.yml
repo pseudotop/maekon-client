@@ -20,6 +20,10 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
+  # Tolerate transient crates.io / network flakes on the 4-platform build
+  # matrix (e.g. "Error in the HTTP2 framing layer" fetching a dependency).
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
   RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
 
@@ -471,6 +475,13 @@ jobs:
           ref: ${{ github.sha }}
           path: .workflow-tools
 
+      # Clear any stale extraction target so `gh run download` (which refuses
+      # to overwrite) never aborts with "file exists" when the rust-cache
+      # restored a prior run's frontend-dist-bundle into the workspace.
+      - name: Clean stale frontend artifact target
+        shell: bash
+        run: rm -rf crates/maekon-web/frontend/frontend-dist-bundle crates/maekon-web/frontend/frontend-dist.tar.gz
+
       - name: Download frontend dist artifact
         uses: ./.workflow-tools/.github/actions/download-artifact
         with:
@@ -572,7 +583,7 @@ jobs:
       - name: Install cargo-wix
         if: runner.os == 'Windows'
         shell: bash
-        run: ./scripts/cargo-cache.sh install cargo-wix
+        run: ./scripts/cargo-cache.sh install cargo-wix --force
 
       - name: Install Tauri CLI
         if: runner.os == 'Windows'
@@ -583,7 +594,7 @@ jobs:
         # 2026-06) picks up time 0.3.48, which fails to compile tauri-utils on
         # the MSVC target with E0119 — a non-reproducible "the world moved"
         # break that did not exist when rc.5 was built.
-        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2 --locked
+        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2 --locked --force
 
       - name: Build MSI installer
         if: runner.os == 'Windows'
@@ -608,7 +619,7 @@ jobs:
       # ── DEB 패키지 (Linux only) ──
       - name: Install cargo-deb
         if: runner.os == 'Linux'
-        run: ./scripts/cargo-cache.sh install cargo-deb
+        run: ./scripts/cargo-cache.sh install cargo-deb --force
 
       - name: Build DEB package
         if: runner.os == 'Linux'
