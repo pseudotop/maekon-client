@@ -616,11 +616,19 @@ async fn enqueue_message_byte_cap_not_exceeded_under_concurrency() {
 async fn pending_bytes_decremented_after_successful_flush() {
     use std::sync::atomic::Ordering;
 
+    // Build the two items ONCE and reuse the same instances for both the
+    // outbox and the initial-bytes estimate. `queued_item` stamps
+    // `timestamp: Utc::now()`, whose RFC3339 serialization length varies with
+    // trailing-zero trimming — estimating from freshly-built items (a second
+    // `now()`) would diverge from the bytes `flush()` decrements, leaving a
+    // few-byte residual (the F-RR-C25-05 flake first seen on the linux runner).
+    let item1 = queued_item("1");
+    let item2 = queued_item("2");
+    let initial_bytes = estimate_queued_bytes(std::slice::from_ref(&item1))
+        + estimate_queued_bytes(std::slice::from_ref(&item2));
+
     let outbox = Arc::new(MockOutbox {
-        items: Arc::new(Mutex::new(VecDeque::from(vec![
-            queued_item("1"),
-            queued_item("2"),
-        ]))),
+        items: Arc::new(Mutex::new(VecDeque::from(vec![item1, item2]))),
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
@@ -635,9 +643,6 @@ async fn pending_bytes_decremented_after_successful_flush() {
         10,
     );
 
-    let item1 = queued_item("1");
-    let item2 = queued_item("2");
-    let initial_bytes = estimate_queued_bytes(&[item1, item2]);
     coordinator
         .pending_bytes
         .store(initial_bytes, Ordering::Relaxed);

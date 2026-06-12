@@ -2,22 +2,14 @@ name: gRPC Governance
 
 on:
   workflow_dispatch:
+  # "gRPC Contract and Readiness Gate" is a REQUIRED ruleset check — it must
+  # report on every PR to main. A paths-filtered pull_request trigger means a
+  # PR that touches none of the listed paths never produces the check, which
+  # the ruleset treats as permanently "expected" and blocks the merge. Run on
+  # all PRs to main; the push trigger below stays paths-filtered.
   pull_request:
     branches:
       - main
-    paths:
-      - ".github/actions/rust-cache/**"
-      - ".github/workflows/grpc-governance.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "api/proto/**"
-      - "crates/maekon-network/src/proto/**"
-      - "crates/maekon-web/src/proto/generated/**"
-      - "scripts/regenerate-dashboard-protos.sh"
-      - "scripts/regenerate-protos.sh"
-      - "scripts/verify-grpc-compatibility.sh"
-      - "scripts/verify-grpc-mtls-config.sh"
-      - "scripts/verify-grpc-readiness.sh"
   push:
     branches:
       - main

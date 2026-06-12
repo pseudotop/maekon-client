@@ -51,7 +51,11 @@ jobs:
   frontend:
     name: Frontend (build + e2e)
     needs: [changes]
+    # Required ruleset check: must REPORT on every PR (a skipped required check
+    # blocks the merge under the branch ruleset). Always run on pull_request;
+    # keep the path-gated optimization for push/dispatch only.
     if: >
+      github.event_name == 'pull_request' ||
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.frontend == 'true' ||
       needs.changes.outputs.ci == 'true' ||
@@ -148,7 +152,11 @@ jobs:
   check:
     name: Check (fmt + clippy)
     needs: [changes]
+    # Required ruleset check: must REPORT on every PR (a skipped required check
+    # blocks the merge under the branch ruleset). Always run on pull_request;
+    # keep the path-gated optimization for push/dispatch only.
     if: >
+      github.event_name == 'pull_request' ||
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ci == 'true'
