@@ -4,3 +4,9 @@ allowBuilds:
   geckodriver: false
 overrides:
   serialize-javascript: 7.0.5
+  # esbuild 0.28.1 patches GHSA-gv7w-rqvm-qjhr (Deno-loader binary-integrity RCE)
+  # and GHSA-g7r4-m6w7-qqqr (dev-server file read). Forces every transitive
+  # instance (Vite, tsx, …) onto the patched line. Requires build.target to skip
+  # the legacy-Safari destructuring lowering esbuild 0.28 no longer performs —
+  # see vite.config.ts `build.target`. oneshim#5909.
+  esbuild: 0.28.1

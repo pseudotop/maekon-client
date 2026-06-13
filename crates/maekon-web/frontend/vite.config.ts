@@ -33,6 +33,12 @@ export default defineConfig({
     },
   },
   build: {
+    // Modern baseline for the Tauri-embedded WebView + localhost dashboard (no
+    // legacy 2020-era browsers to support). Replaces Vite's default 'modules'
+    // target (which includes safari14), whose destructuring bug-workaround
+    // esbuild 0.28+ can no longer lower — keeping the default would break the
+    // build under the esbuild 0.28.1 security bump. oneshim#5909.
+    target: 'es2022',
     outDir: 'dist',
     assetsDir: 'assets',
     assetsInlineLimit: 0,
