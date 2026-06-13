@@ -1,23 +1,4 @@
 {
-  "dependabot": [
-    {
-      "number": 66,
-      "advisory": "GHSA-gv7w-rqvm-qjhr",
-      "package": "esbuild",
-      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
-      "accepted_until": "2026-08-31",
-      "severity": "high",
-      "reason": "esbuild is a build-time-only transitive dependency of Vite. The shipped maekon-client desktop binary embeds pre-built static frontend assets via rust-embed; esbuild is never executed at runtime. GHSA-gv7w-rqvm-qjhr is the Deno-module binary-integrity (NPM_CONFIG_REGISTRY) RCE vector, which does not apply to this pnpm/Node build (the esbuild binary is fetched with pnpm-lock.yaml integrity hashes, not the Deno loader). Tracked for an esbuild>=0.28.1 bump in oneshim#5909."
-    },
-    {
-      "number": 65,
-      "advisory": "GHSA-g7r4-m6w7-qqqr",
-      "package": "esbuild",
-      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
-      "accepted_until": "2026-08-31",
-      "severity": "low",
-      "reason": "esbuild dev-server arbitrary file read (Windows only). Dev-server-only: the shipped client embeds pre-built static assets and never runs esbuild's development server in production. Build-time-only transitive dependency of Vite. Tracked for an esbuild>=0.28.1 bump in oneshim#5909."
-    }
-  ],
+  "dependabot": [],
   "codeql": []
 }
