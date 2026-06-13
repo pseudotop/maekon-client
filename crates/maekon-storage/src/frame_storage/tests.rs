@@ -27,8 +27,11 @@ mod tests {
         let timestamp = Utc::now();
 
         let path = storage.save_frame(timestamp, test_data).await.unwrap();
-        assert!(path.to_string_lossy().contains("frames/"));
-        assert!(path.to_string_lossy().ends_with(".webp"));
+        // Contract is expressed with '/' separators; normalize the OS separator
+        // first so this asserts the same logical path on Windows ('\\').
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        assert!(path_str.contains("frames/"));
+        assert!(path_str.ends_with(".webp"));
 
         let loaded = storage.load_frame(&path).await.unwrap();
         assert_eq!(loaded, test_data);
@@ -80,7 +83,8 @@ mod tests {
             let path =
                 result.unwrap_or_else(|e| panic!("save_frames_batch frame {i} must succeed: {e}"));
             // Contract: each saved frame returns a relative path under frames/<date>/<name>.webp.
-            let path_str = path.to_string_lossy();
+            // Normalize the OS separator so Windows ('\\') asserts the same logical path.
+            let path_str = path.to_string_lossy().replace('\\', "/");
             assert!(
                 path_str.starts_with("frames/"),
                 "frame {i}: path must start with 'frames/', got '{path_str}'"
