@@ -1121,10 +1121,27 @@ async fn fake_executable_answers_version_probe_and_app_server_dialog() {
     fake.write_executable(&exe_path).expect("write executable");
 
     // (a) `--version` branch: the binary prints a parseable version + exits 0.
-    let version_out = std::process::Command::new(&exe_path)
-        .arg("--version")
-        .output()
-        .expect("run --version");
+    // Retry on ETXTBSY ("Text file busy"): a just-written+chmod'd executable can
+    // still carry a lingering kernel deny-write reference when another thread in
+    // the parallel test runner forks for its own spawn — a well-known Linux race
+    // that cargo itself retries around. The first successful exec warms the
+    // inode, so the `app-server` spawn below no longer races. (#5435)
+    let version_out = {
+        let mut attempt = 0;
+        loop {
+            match std::process::Command::new(&exe_path)
+                .arg("--version")
+                .output()
+            {
+                Ok(out) => break out,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 40 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(e) => panic!("run --version: {e:?}"),
+            }
+        }
+    };
     assert!(version_out.status.success(), "--version must exit 0");
     let stdout = String::from_utf8_lossy(&version_out.stdout);
     assert_eq!(

@@ -197,7 +197,8 @@ fn resolves_local_providers_by_default() {
     assert!(
         matches!(
             adapters.ocr.provider_name(),
-            "local-tesseract" | "macos-vision"
+            // #5857: Windows 는 네이티브 OCR(windows-media-ocr)로 해석된다.
+            "local-tesseract" | "macos-vision" | "windows-media-ocr"
         ),
         "unexpected local OCR provider: {}",
         adapters.ocr.provider_name()
