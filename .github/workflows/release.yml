@@ -1370,11 +1370,14 @@ jobs:
           done
 
       - name: Generate CycloneDX SBOM (F-SC-09/F-SC-13)
-        # F-SC-13: anchore/sbom-action was tag-pinned (@v0.18.0) despite comment
-        # claiming SHA-pinned. Pinned to commit SHA for v0.18.0.
-        # Resolved via: gh api repos/anchore/sbom-action/git/ref/tags/v0.18.0 --jq .object.sha
+        # F-SC-13: anchore/sbom-action SHA-pinned to the v0.18.0 commit.
+        # The prior pin (61119d4) became unresolvable once anchore re-pointed
+        # the v0.18.0 tag and GC'd the old commit — this is the first release
+        # since that pin landed, so it surfaced now. Re-resolved to the current
+        # v0.18.0 commit (which `git/ref/tags/v0.18.0` reports as type=commit;
+        # for lightweight tags object.sha IS the commit, no dereference needed).
         # 생성된 sbom.cdx.json 은 dist/ 에 추가되어 릴리스 어셋으로 첨부된다.
-        uses: anchore/sbom-action@61119d458adab9a6d1dc5941e49f9e0ddc6a3fdb  # v0.18.0
+        uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0  # v0.18.0
         with:
           path: .
           format: cyclonedx-json

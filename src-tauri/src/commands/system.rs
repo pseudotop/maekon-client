@@ -293,8 +293,13 @@ mod tests {
 
     impl PiiSanitizer for MarkerSanitizer {
         fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
+            // #5857: Windows 경로 구분자는 '\\' — POSIX 하드코딩("/Users/alice")은
+            // tempdir 가 만든 실제 경로와 불일치해 마커를 만들지 못한다. OS separator 로
+            // 조립해 양 플랫폼에서 동일한 배선 검증 의미를 갖게 한다.
+            let sep = std::path::MAIN_SEPARATOR;
+            let user_path = format!("{sep}Users{sep}alice");
             text.replace("alice@example.com", "[EMAIL]")
-                .replace("/Users/alice", "[USER]")
+                .replace(&user_path, "[USER]")
                 .replace("sk-ant-secret", "[PROVIDER_SECRET]")
         }
     }
@@ -347,11 +352,13 @@ mod tests {
         let snapshot = runtime_log_snapshot_from_dir(&user_dir, 20, Some(&sanitizer))
             .expect("snapshot should succeed");
 
+        let sep = std::path::MAIN_SEPARATOR;
+        let raw_user_path = format!("{sep}Users{sep}alice");
         assert!(snapshot.log_dir.contains("[USER]"));
-        assert!(!snapshot.log_dir.contains("/Users/alice"));
+        assert!(!snapshot.log_dir.contains(&raw_user_path));
         let log_file = snapshot.log_file.expect("log file should be selected");
         assert!(log_file.contains("[USER]"));
-        assert!(!log_file.contains("/Users/alice"));
+        assert!(!log_file.contains(&raw_user_path));
         assert!(snapshot.recent_text.contains("[EMAIL]"));
         assert!(snapshot.recent_text.contains("[PROVIDER_SECRET]"));
         assert!(!snapshot.recent_text.contains("alice@example.com"));
