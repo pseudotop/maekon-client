@@ -233,7 +233,7 @@ impl ProcessMonitor for ProcessTracker {
         // get_top_processes / get_detailed_processes above.
         #[cfg(target_os = "windows")]
         {
-            tokio::task::spawn_blocking(|| crate::windows::get_active_window_windows())
+            tokio::task::spawn_blocking(crate::windows::get_active_window_windows)
                 .await
                 .map_err(|e| CoreError::Internal {
                     code: InternalCode::Generic,

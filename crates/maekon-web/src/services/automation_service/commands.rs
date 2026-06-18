@@ -36,6 +36,7 @@ impl AutomationCommandService {
         if preset.steps.is_empty() {
             return Err(ApiError::BadRequest("At least one step is required".into()));
         }
+        Self::validate_preset_actions(&preset)?;
         self.validate_preset_ai_profile_binding(&preset)?;
 
         let config_manager = require_config_manager(&self.ctx)?;
@@ -73,6 +74,7 @@ impl AutomationCommandService {
         id: String,
         preset: WorkflowPreset,
     ) -> Result<WorkflowPreset, ApiError> {
+        Self::validate_preset_actions(&preset)?;
         self.validate_preset_ai_profile_binding(&preset)?;
         let config_manager = require_config_manager(&self.ctx)?;
         let mut found = false;
@@ -200,6 +202,24 @@ impl AutomationCommandService {
                 preset.id, ai_profile_id
             )))
         }
+    }
+
+    /// #6333 A11: reject low-level `Raw` actions in API-authored presets. The five
+    /// semantic intents (ClickElement / TypeIntoElement / ExecuteHotkey / WaitForText /
+    /// ActivateApp) are element/text-scoped and safe to persist; `Raw` is arbitrary
+    /// input injection. Built-in presets are seeded in-process and never reach this path.
+    fn validate_preset_actions(preset: &WorkflowPreset) -> Result<(), ApiError> {
+        use maekon_core::models::intent::AutomationIntent;
+        for (idx, step) in preset.steps.iter().enumerate() {
+            if matches!(step.intent, AutomationIntent::Raw(_)) {
+                return Err(ApiError::BadRequest(format!(
+                    "Preset step {idx} (\"{}\") uses a Raw low-level action; API presets must use \
+                     semantic intents (ClickElement/TypeIntoElement/ExecuteHotkey/WaitForText/ActivateApp).",
+                    step.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub async fn execute_intent_hint(
@@ -334,6 +354,7 @@ impl AutomationCommandService {
                 config: None,
                 timeout_ms: None,
                 policy_token: "scene-action".to_string(),
+                origin: maekon_core::models::automation::CommandOrigin::Internal,
             };
 
             match controller.execute_intent(&intent_command).await {
@@ -624,6 +645,48 @@ mod tests {
             saved.automation.custom_presets[0].ai_profile_id.as_deref(),
             Some("anthropic-prod")
         );
+    }
+
+    #[test]
+    fn create_preset_rejects_raw_low_level_action() {
+        // #6333 A11: API-authored presets must not carry Raw low-level input injection.
+        use maekon_core::models::automation::AutomationAction;
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_manager =
+            ConfigManager::with_path(temp_dir.path().join("config.json")).expect("config manager");
+        let service = AutomationCommandService::new(test_context(config_manager));
+
+        let mut preset = test_preset(None);
+        preset.steps = vec![WorkflowStep {
+            name: "raw-type".to_string(),
+            intent: AutomationIntent::Raw(AutomationAction::KeyType {
+                text: "secret".to_string(),
+            }),
+            delay_ms: 0,
+            stop_on_failure: true,
+        }];
+
+        let err = service
+            .create_preset(preset)
+            .expect_err("Raw action must be rejected");
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("Raw low-level action")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_preset_allows_semantic_intent() {
+        // test_preset uses ExecuteHotkey (a semantic intent); no Raw → accepted.
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_manager =
+            ConfigManager::with_path(temp_dir.path().join("config.json")).expect("config manager");
+        let service = AutomationCommandService::new(test_context(config_manager));
+        let preset = service
+            .create_preset(test_preset(None))
+            .expect("semantic-intent preset must be accepted");
+        assert_eq!(preset.steps.len(), 1);
+        assert_eq!(preset.id, "preset-1");
     }
 
     #[tokio::test]

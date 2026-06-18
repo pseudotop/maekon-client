@@ -472,9 +472,7 @@ impl Scheduler {
                             {
                                 let sqlite6 = sqlite6.clone();
                                 offload_storage("segment retention", move || {
-                                    sqlite6
-                                        .enforce_segment_retention(segment_retention_days)
-                                        .map_err(CoreError::from)
+                                    sqlite6.enforce_segment_retention(segment_retention_days)
                                 })
                                 .await;
                             }
@@ -483,7 +481,7 @@ impl Scheduler {
                             {
                                 let sqlite6 = sqlite6.clone();
                                 offload_storage("digest retention", move || {
-                                    sqlite6.enforce_digest_retention(52).map_err(CoreError::from)
+                                    sqlite6.enforce_digest_retention(52)
                                 })
                                 .await;
                             }
@@ -492,7 +490,7 @@ impl Scheduler {
                             {
                                 let sqlite6 = sqlite6.clone();
                                 offload_storage("auxiliary table retention", move || {
-                                    sqlite6.enforce_all_retention().map_err(CoreError::from)
+                                    sqlite6.enforce_all_retention()
                                 })
                                 .await;
                             }
@@ -503,9 +501,7 @@ impl Scheduler {
                             {
                                 let sqlite6 = sqlite6.clone();
                                 offload_storage("sync_tombstones GC", move || {
-                                    sqlite6
-                                        .gc_sync_tombstones(segment_retention_days)
-                                        .map_err(CoreError::from)
+                                    sqlite6.gc_sync_tombstones(segment_retention_days)
                                 })
                                 .await;
                             }

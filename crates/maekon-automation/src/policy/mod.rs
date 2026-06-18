@@ -487,6 +487,7 @@ mod tests {
             action: crate::controller::AutomationAction::MouseMove { x: 0, y: 0 },
             timeout_ms: None,
             policy_token: policy_token.to_string(),
+            origin: maekon_core::models::automation::CommandOrigin::External,
         }
     }
 

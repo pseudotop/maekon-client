@@ -217,6 +217,7 @@ async fn sandbox_integrated_dispatch() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: None,
         policy_token: "token".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
     let err = controller.execute_command(&cmd).await.unwrap_err();
     assert!(
@@ -254,6 +255,7 @@ async fn resolve_uses_policy_config() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: None,
         policy_token: "test-pol:nonce_0001".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let (resolved, audit_level) = controller.resolve_for_command(&cmd).await;
@@ -274,6 +276,7 @@ async fn resolve_defaults_to_strict_without_policy() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: None,
         policy_token: "unknown:nonce".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let (resolved, audit_level) = controller.resolve_for_command(&cmd).await;
@@ -297,6 +300,7 @@ async fn execute_with_timeout_returns_timeout_result() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: Some(5000),
         policy_token: "test-pol:nonce_0002".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -318,6 +322,7 @@ async fn audit_level_none_skips_logging() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_0003".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -468,6 +473,7 @@ async fn execute_intent_disabled_returns_policy_denied() {
         config: None,
         timeout_ms: None,
         policy_token: "token".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
     let err = controller.execute_intent(&cmd).await.unwrap_err();
     assert!(
@@ -489,6 +495,7 @@ async fn execute_intent_no_executor_returns_internal_error() {
         config: None,
         timeout_ms: None,
         policy_token: "token".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
     let err = controller.execute_intent(&cmd).await.unwrap_err();
     // Iter-100: "IntentExecutor not configured" now emits config.missing
@@ -535,6 +542,7 @@ async fn execute_intent_success_with_audit_log() {
         config: None,
         timeout_ms: None,
         policy_token: SCENE_ACTION_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
     let result = controller.execute_intent(&cmd).await.unwrap();
     assert!(result.success);
@@ -577,6 +585,7 @@ async fn gui_session_key_type_audit_masks_raw_text_payload() {
         config: None,
         timeout_ms: None,
         policy_token: GUI_SESSION_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let result = controller.execute_intent(&cmd).await.unwrap();
@@ -636,6 +645,7 @@ async fn execute_intent_with_external_policy_token_preserves_multi_action_execut
         config: None,
         timeout_ms: None,
         policy_token: "test-pol:nonce_external_01".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_intent(&cmd).await.unwrap();
@@ -964,6 +974,7 @@ async fn execute_intent_internal_timeout_reports_effective_limit() {
         }),
         timeout_ms: None,
         policy_token: SCENE_ACTION_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let result = controller.execute_intent(&cmd).await.unwrap();
@@ -989,6 +1000,7 @@ async fn execute_command_enabled_with_valid_policy() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_0099".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -1015,6 +1027,7 @@ async fn execute_command_block_policy_audits_denial() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_block01".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -1062,6 +1075,7 @@ async fn execute_command_user_denied_confirmation_audits_denial() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_confirm1".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -1196,6 +1210,7 @@ async fn hitl_intent_hint_resolves_default_strict_config_and_basic_audit() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: None,
         policy_token: INTENT_HINT_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let (resolved, audit_level) = controller.resolve_for_command(&cmd).await;

@@ -451,17 +451,14 @@ mod coexistence_offload_tests {
     use maekon_core::error::CoreError;
 
     /// A panicking offload closure surfaces as a JoinError on `.await`; the
-    /// `unwrap_or_else(... Ok(false))` + `unwrap_or(false)` chain used at the
+    /// `unwrap_or(Ok(false))` + `unwrap_or(false)` chain used at the
     /// focus/event call sites must collapse it to fail-open `false`.
     #[tokio::test]
     async fn panicking_offload_fails_open_to_false() {
         let handle = tokio::task::spawn_blocking(|| -> Result<bool, CoreError> {
             panic!("intentional coexistence read panic");
         });
-        let coexist = handle
-            .await
-            .unwrap_or_else(|_join_err| Ok(false))
-            .unwrap_or(false);
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
         assert!(
             !coexist,
             "a panicking coexistence offload must fail open to false (proceed with local analysis)"
@@ -477,10 +474,7 @@ mod coexistence_offload_tests {
                 code: maekon_core::error_codes::StorageCode::Failed,
             })
         });
-        let coexist = handle
-            .await
-            .unwrap_or_else(|_join_err| Ok(false))
-            .unwrap_or(false);
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
         assert!(
             !coexist,
             "an errored coexistence offload must fail open to false"
@@ -492,10 +486,7 @@ mod coexistence_offload_tests {
     #[tokio::test]
     async fn successful_true_offload_is_preserved() {
         let handle = tokio::task::spawn_blocking(|| -> Result<bool, CoreError> { Ok(true) });
-        let coexist = handle
-            .await
-            .unwrap_or_else(|_join_err| Ok(false))
-            .unwrap_or(false);
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
         assert!(
             coexist,
             "a successful true coexistence read must be preserved (skip local analysis)"

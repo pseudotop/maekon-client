@@ -30,6 +30,7 @@ pub(crate) fn is_ignored(path: &Path, ignores: &[String]) -> bool {
         .any(|needle| path_str.contains(needle.as_str()))
 }
 
+#[cfg(test)]
 pub(crate) fn first_non_ascii(line: &str) -> Option<(usize, char)> {
     for (idx, ch) in line.char_indices() {
         if !ch.is_ascii() {

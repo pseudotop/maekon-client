@@ -2,11 +2,11 @@
 //!
 //! Client-side mirror of ADR-072 (server audit chain integrity policy); makes
 //! `audit_log` rows tamper-**evident**. Each row gains the following:
-//! - `seq`        — monotonically increasing sequence number within the chain
-//!                  (assigned only to chained rows).
-//! - `prev_hash`  — `entry_hash` of the immediately-prior chain row (genesis is
-//!                  the 64-char zero hex).
-//! - `entry_hash` — hex of `SHA256(prev_hash_bytes || canonical(record))`.
+//! - `seq`: monotonically increasing sequence number within the chain
+//!   (assigned only to chained rows).
+//! - `prev_hash`: `entry_hash` of the immediately-prior chain row (genesis is
+//!   the 64-char zero hex).
+//! - `entry_hash`: hex of `SHA256(prev_hash_bytes || canonical(record))`.
 //!
 //! SQLite `ALTER TABLE ADD COLUMN` can only add nullable columns, so all three
 //! columns allow NULL. Legacy rows written before v37 remain with a NULL chain

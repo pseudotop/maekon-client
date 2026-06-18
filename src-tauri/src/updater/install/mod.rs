@@ -194,10 +194,10 @@ impl Updater {
                  The verified backup is preserved at the path above — recover by reinstalling \
                  the previous version or restoring that backup manually."
             );
-            return Err(UpdateError::Install(format!(
+            Err(UpdateError::Install(format!(
                 "Windows rollback not implemented (#5988 / Task 12); verified backup preserved at {}",
                 backup_path.display()
-            )));
+            )))
         }
 
         #[cfg(not(windows))]

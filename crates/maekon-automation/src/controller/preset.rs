@@ -9,6 +9,7 @@ use maekon_core::config::ConfirmationRequirement;
 #[cfg(test)]
 use maekon_core::config::SandboxConfig;
 use maekon_core::models::audit::AuditStatus;
+use maekon_core::models::automation::CommandOrigin;
 use maekon_core::models::intent::{IntentCommand, WorkflowPreset};
 
 use super::types::{AutomationCommand, CommandResult, WorkflowResult, WorkflowStepResult};
@@ -72,6 +73,7 @@ impl AutomationController {
                 config: None,
                 timeout_ms: None,
                 policy_token: WORKFLOW_STEP_POLICY_TOKEN.to_string(),
+                origin: CommandOrigin::Internal,
             };
             let executor = self.scoped_intent_executor(&intent_command)?;
 

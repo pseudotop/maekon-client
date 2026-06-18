@@ -22,10 +22,15 @@ pub struct ExecutionPolicy {
     pub allowed_paths: Vec<String>,
     #[serde(default)]
     pub allow_network: Option<bool>,
-    #[serde(default)]
+    #[serde(default = "default_require_signed_token")]
     pub require_signed_token: bool,
     #[serde(default)]
     pub confirmation: maekon_core::config::ConfirmationRequirement,
+}
+
+/// #6333 A16: policy tokens must be signed unless a policy explicitly opts out.
+fn default_require_signed_token() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -50,4 +55,21 @@ pub struct ProcessOutput {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[cfg(test)]
+mod a16_tests {
+    use super::ExecutionPolicy;
+
+    #[test]
+    fn execution_policy_requires_signed_token_by_default() {
+        // #6333 A16: a policy that omits `require_signed_token` must be fail-closed
+        // (signed tokens required), not open.
+        let json = r#"{"policy_id":"p","process_name":"proc","process_hash":null,"allowed_args":[],"requires_sudo":false,"max_execution_time_ms":1000}"#;
+        let policy: ExecutionPolicy = serde_json::from_str(json).expect("must deserialize");
+        assert!(
+            policy.require_signed_token,
+            "omitted require_signed_token must default to true (#6333 A16)"
+        );
+    }
 }

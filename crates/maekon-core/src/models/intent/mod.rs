@@ -203,6 +203,7 @@ mod tests {
             config: None,
             timeout_ms: Some(10000),
             policy_token: "token-abc".to_string(),
+            origin: crate::models::automation::CommandOrigin::External,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         let deser: IntentCommand = serde_json::from_str(&json).unwrap();

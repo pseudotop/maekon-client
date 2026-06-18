@@ -401,6 +401,7 @@ unsafe fn extract_current_properties(
 ///
 /// When `use_cache` is false, falls back to the original per-property
 /// `Current*` calls (3 cross-process calls per element).
+#[allow(clippy::too_many_arguments)]
 unsafe fn collect_subtree(
     walker: &IUIAutomationTreeWalker,
     element: &IUIAutomationElement,

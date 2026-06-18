@@ -274,14 +274,11 @@ impl FrameProcessor for EdgeFrameProcessor {
                     code: maekon_core::error_codes::InternalCode::Generic,
                     message: format!("delta task panicked: {e}"),
                 })??;
-                match delta_encoded {
-                    Some((encoded, delta_region)) => Some(ImagePayload::Delta {
-                        data: encoded,
-                        region: delta_region.region,
-                        changed_ratio: delta_region.changed_ratio,
-                    }),
-                    None => None, // no meaningful change
-                }
+                delta_encoded.map(|(encoded, delta_region)| ImagePayload::Delta {
+                    data: encoded,
+                    region: delta_region.region,
+                    changed_ratio: delta_region.changed_ratio,
+                })
             } else {
                 let frame_ref = Arc::clone(&current_frame);
                 let encoded = tokio::task::spawn_blocking(move || {

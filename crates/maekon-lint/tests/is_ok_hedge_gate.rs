@@ -211,11 +211,7 @@ fn comment_before(line: &str, pos: usize) -> bool {
                 // Consume the escaped character so `\"` does not close the string.
                 chars.next();
             }
-            '/' if !in_string => {
-                if chars.peek() == Some(&'/') {
-                    return true;
-                }
-            }
+            '/' if !in_string && chars.peek() == Some(&'/') => return true,
             _ => {}
         }
     }

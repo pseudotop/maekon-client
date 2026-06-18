@@ -47,9 +47,9 @@ const WM_STOP_HOOK: u32 = WM_USER + 1;
 #[cfg(target_os = "windows")]
 thread_local! {
     static TL_COLLECTOR: std::cell::RefCell<Option<Arc<InputActivityCollector>>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
     static TL_RUNNING: std::cell::RefCell<Option<Arc<AtomicBool>>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Run the Raw Input keyboard hook. Blocks until `running` becomes false.
@@ -295,7 +295,7 @@ unsafe extern "system" fn raw_input_wnd_proc(
         let raw = &*(aligned_buf.as_ptr() as *const RAWINPUT);
 
         // Only process keyboard events.
-        if raw.header.dwType == RIM_TYPEKEYBOARD as u32 {
+        if raw.header.dwType == RIM_TYPEKEYBOARD {
             let keyboard = &raw.data.keyboard;
 
             // WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104

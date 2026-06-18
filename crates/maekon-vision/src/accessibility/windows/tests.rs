@@ -258,10 +258,10 @@ fn filter_preserves_position_across_all_levels() {
         PiiFilterLevel::Basic,
         PiiFilterLevel::Off,
     ] {
-        let info = apply_test_filter("Button", None, None, Some(rect.clone()), level);
+        let info = apply_test_filter("Button", None, None, Some(rect), level);
         assert_eq!(
             info.position,
-            Some(rect.clone()),
+            Some(rect),
             "level {level:?} dropped position"
         );
     }
