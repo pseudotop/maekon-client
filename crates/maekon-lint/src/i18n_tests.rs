@@ -304,6 +304,17 @@ fn detect_hardcoded_text_node_skips_jsx_expression() {
     assert!(hits.is_empty());
 }
 
+/// #6424: a commented-out line carrying a UI attribute (or JSX text) must NOT be
+/// flagged — the comment guard now runs before the attribute scan, so commented-out
+/// markup no longer produces a spurious --strict-i18n build failure.
+#[test]
+fn detect_hardcoded_skips_commented_out_jsx_attribute() {
+    assert!(detect_hardcoded_ui_literals(r#"// <Button title="Save changes" />"#).is_empty());
+    assert!(detect_hardcoded_ui_literals(r#"  * title="Old copy text""#).is_empty());
+    // Sanity: the same attribute on a LIVE (non-comment) line is still flagged.
+    assert!(!detect_hardcoded_ui_literals(r#"<Button title="Save changes" />"#).is_empty());
+}
+
 // ── Fix #11: restricted plural/context suffix matching ────────────────────────
 
 /// Direct key match still works.

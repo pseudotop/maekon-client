@@ -146,42 +146,61 @@ impl SuggestionQueue {
         let item = PrioritizedSuggestion { suggestion };
 
         if self.items.len() >= self.max_size {
-            if let Some(last) = self.items.iter().next_back() {
-                if item < *last {
-                    let last_clone = last.clone();
-                    self.items.remove(&last_clone);
+            // Queue full: the only admit path is evicting a strictly-worse `last`.
+            let Some(last) = self.items.iter().next_back().cloned() else {
+                // `max_size == 0` already returned above, so a full queue is non-empty;
+                // unreachable, but reject safely rather than admit over capacity.
+                return false;
+            };
+            if item < last {
+                // #6423: admit the better `item` FIRST, then evict `last` only once
+                // `item` is actually accepted. `items.insert` returns false when `item`
+                // collides with an Ord-equal sibling (same priority/created_at/id cmp
+                // key, different content — keys come from the untrusted server SSE
+                // payload). The previous code evicted `last` unconditionally and then fell
+                // through to an insert that could fail, dropping a valid `last` while
+                // admitting nothing (silent data loss). Mirrors the dedup replace-path
+                // fix (#26 / #6340).
+                let incoming_id = item.suggestion.suggestion_id.clone();
+                let inserted = self.items.insert(item);
+                if inserted {
+                    self.items.remove(&last);
                     self.fingerprints
-                        .remove(&content_fingerprint(&last_clone.suggestion));
+                        .remove(&content_fingerprint(&last.suggestion));
+                    self.fingerprints.insert(fp);
                     tracing::warn!(
-                        evicted_id = %last_clone.suggestion.suggestion_id,
-                        evicted_priority = ?last_clone.suggestion.priority,
-                        new_id = %item.suggestion.suggestion_id,
-                        new_priority = ?item.suggestion.priority,
+                        evicted_id = %last.suggestion.suggestion_id,
+                        evicted_priority = ?last.suggestion.priority,
+                        new_id = %incoming_id,
                         queue_size = self.max_size,
                         "suggestion queue full — evicted lower-priority item"
                     );
                 } else {
                     tracing::warn!(
-                        rejected_id = %item.suggestion.suggestion_id,
-                        rejected_priority = ?item.suggestion.priority,
+                        rejected_id = %incoming_id,
                         queue_size = self.max_size,
-                        "suggestion queue full — rejected (priority too low)"
+                        "suggestion queue full — eviction candidate collided with an Ord-equal item; kept existing"
                     );
-                    return false;
                 }
+                return inserted;
             }
+            tracing::warn!(
+                rejected_id = %item.suggestion.suggestion_id,
+                rejected_priority = ?item.suggestion.priority,
+                queue_size = self.max_size,
+                "suggestion queue full — rejected (priority too low)"
+            );
+            return false;
         }
 
-        // Keep `fingerprints` in 1:1 lockstep with `items` (review4): record the
-        // fingerprint ONLY if the item was actually admitted. `items.insert`
+        // Queue not full. Keep `fingerprints` in 1:1 lockstep with `items` (review4):
+        // record the fingerprint ONLY if the item was actually admitted. `items.insert`
         // returns false when an Ord-equal item already exists (cmp keys on
-        // priority/created_at/suggestion_id, which differ from content_fingerprint),
-        // so an unconditional fingerprint insert would orphan `fp` with no backing
-        // item — and any later suggestion whose content hashes to that orphan fp
-        // would then be permanently, silently rejected (the find at line 102 returns
-        // None → fall through to `return false`). The Ord keys come from the
-        // untrusted server SSE payload, so a buggy/malicious server could poison the
-        // dedup oracle and accumulate orphans without bound.
+        // priority/created_at/suggestion_id, which differ from content_fingerprint), so
+        // an unconditional fingerprint insert would orphan `fp` with no backing item —
+        // any later suggestion whose content hashes to that orphan fp would then be
+        // permanently, silently rejected. The Ord keys come from the untrusted server SSE
+        // payload, so a buggy/malicious server could poison the dedup oracle.
         let inserted = self.items.insert(item);
         if inserted {
             self.fingerprints.insert(fp);

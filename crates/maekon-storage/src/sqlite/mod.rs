@@ -735,8 +735,13 @@ impl SqliteStorage {
                 command_id: row.get("command_id")?,
                 action_type: row.get("action_type")?,
                 status: row.get("status")?,
-                details: row.get("details").ok(),
-                execution_time_ms: row.get("execution_time_ms").ok(),
+                // #6419: read with `?` (like the other columns) so a column-type read
+                // error propagates instead of silently becoming None. A verifier that
+                // hashes None where the write-path hashed the real stored value produces
+                // a false "row tampered" report. A genuine SQL NULL still maps to None
+                // via FromSql for Option<T>; only an unreadable/type-mismatched cell errors.
+                details: row.get("details")?,
+                execution_time_ms: row.get("execution_time_ms")?,
                 seq: row.get("seq")?,
                 prev_hash: row.get("prev_hash")?,
                 entry_hash: row.get("entry_hash")?,
@@ -1097,12 +1102,15 @@ fn apply_sqlcipher_key(
     // returns a `Zeroizing<String>`.
     let pragma = zeroize::Zeroizing::new(format!("PRAGMA key = \"x'{}'\";", key.as_hex().as_str()));
     if let Err(e) = conn.execute_batch(&pragma) {
-        warn!("SQLCipher PRAGMA key execution failed: {e} — opening without encryption");
+        // #6418: applying the key PRAGMA itself failed (SQLCipher unavailable,
+        // malformed key, or I/O) — this is NOT the documented unencrypted-DB
+        // migration case, which surfaces below as a key-VERIFICATION failure.
+        // Encryption was explicitly requested but could not be applied, so fail
+        // CLOSED rather than silently reopening the database as plaintext.
         drop(conn);
-        let fallback = Connection::open(path).map_err(|e| {
-            StorageError::Internal(format!("Failed to reopen SQLite database: {e}"))
-        })?;
-        return Ok(fallback);
+        return Err(StorageError::Internal(format!(
+            "SQLCipher key could not be applied though encryption was requested: {e}"
+        )));
     }
 
     // Verify the key actually works by reading sqlite_master.

@@ -111,6 +111,26 @@ impl Sandbox for WindowsSandbox {
             });
         }
 
+        // #6422: Windows enforces ONLY Job Object resource limits — it has no
+        // filesystem/network/syscall containment (no Landlock/seccomp equivalent; the
+        // restricted token is built but not yet applied — see module docs). A
+        // Standard/Strict profile advertises that containment. The Linux sibling fails
+        // CLOSED here, but doing so literally on Windows would refuse the DEFAULT profile
+        // (Standard) and disable Windows automation wholesale. Instead, make the gap LOUD
+        // and observable rather than silent: the action runs resource-limited but its
+        // requested isolation is NOT enforced. (Full Windows containment is a tracked TODO.)
+        if matches!(
+            config.profile,
+            maekon_core::config::SandboxProfile::Standard
+                | maekon_core::config::SandboxProfile::Strict
+        ) {
+            tracing::warn!(
+                profile = ?config.profile,
+                "Windows sandbox does NOT enforce filesystem/network/syscall isolation for this \
+                 profile — running with Job Object resource limits only (containment unenforced)"
+            );
+        }
+
         let worker_path = ipc::resolve_worker_path()?;
         let request = ipc::SandboxRequest {
             action: action.clone(),

@@ -149,6 +149,27 @@ impl BinaryQuantizer {
             });
         }
 
+        // #6417: the loop below indexes q25[d]/q50[d]/q75[d] for d in 0..dimensions.
+        // `compute_thresholds` always produces consistent lengths, but a deserialized
+        // or drifted `QuantileThresholds` blob (loaded from SQLite) can have quantile
+        // vectors shorter than `dimensions`, which would panic with index-out-of-bounds.
+        // Validate the invariant here rather than abort the process.
+        if thresholds.q25.len() != thresholds.dimensions
+            || thresholds.q50.len() != thresholds.dimensions
+            || thresholds.q75.len() != thresholds.dimensions
+        {
+            return Err(CoreError::InvalidArguments {
+                code: crate::error_codes::ValidationCode::InvalidArguments,
+                message: format!(
+                    "threshold quantile vectors inconsistent with dimensions {} (q25={}, q50={}, q75={})",
+                    thresholds.dimensions,
+                    thresholds.q25.len(),
+                    thresholds.q50.len(),
+                    thresholds.q75.len()
+                ),
+            });
+        }
+
         let num_bytes = (thresholds.dimensions * 2).div_ceil(8);
         let mut data = vec![0u8; num_bytes];
 
@@ -188,6 +209,20 @@ impl BinaryQuantizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_rejects_thresholds_with_short_quantile_vectors() {
+        // #6417: a drifted/corrupt threshold blob whose quantile vectors are shorter
+        // than `dimensions` must be rejected, not panic with index-out-of-bounds.
+        let thresholds = QuantileThresholds {
+            q25: vec![0.0; 2],
+            q50: vec![0.0; 2],
+            q75: vec![0.0; 2],
+            dimensions: 4,
+        };
+        let err = BinaryQuantizer::encode(&vec![0.5f32; 4], &thresholds).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidArguments { .. }));
+    }
 
     #[test]
     fn threshold_computation_basic() {

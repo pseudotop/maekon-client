@@ -87,7 +87,7 @@ pub fn run_x11_record_hook(
             }
         };
         *guard = Some(child);
-        match guard.as_mut().and_then(|c| c.stdout.take()) {
+        let stdout = match guard.as_mut().and_then(|c| c.stdout.take()) {
             Some(s) => s,
             None => {
                 warn!("failed to capture xinput stdout");
@@ -96,7 +96,9 @@ pub fn run_x11_record_hook(
                 }
                 return;
             }
-        }
+        };
+        drop(guard);
+        stdout
     };
 
     use std::io::BufRead;

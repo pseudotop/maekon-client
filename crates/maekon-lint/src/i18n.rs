@@ -502,6 +502,15 @@ fn is_format_hint(value: &str) -> bool {
 pub(crate) fn detect_hardcoded_ui_literals(line: &str) -> Vec<(usize, String)> {
     let mut hits = Vec::new();
 
+    // #6424: comment lines are not JSX — skip them BEFORE any scan so a commented-out
+    // line carrying `title="..."` etc. (or prose between `>`/`<`) is never flagged as
+    // hardcoded UI copy. Previously this guard sat AFTER the attribute scan below, so a
+    // commented-out attribute produced a spurious --strict-i18n build failure.
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+        return hits;
+    }
+
     for attr in UI_ATTRS {
         let marker = format!("{attr}=\"");
         let mut search_from = 0usize;
@@ -530,14 +539,6 @@ pub(crate) fn detect_hardcoded_ui_literals(line: &str) -> Vec<(usize, String)> {
             }
             search_from = value_end + 1;
         }
-    }
-
-    // Comment lines are not JSX. Skip them so a block-comment continuation like
-    // `* Cells are green (met)...` or a `//` line comment is not mistaken for a text
-    // node (the `>`/`<` heuristic below would otherwise read prose between operators).
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-        return hits;
     }
 
     let chars: Vec<char> = line.chars().collect();
