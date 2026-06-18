@@ -1420,11 +1420,12 @@ async fn tofu_pin_mismatch_revokes_pin_and_blocks_peer() {
     tokio::task::yield_now().await;
 
     // Authentication must fail (the TLS handshake is refused by the verifier).
+    let receiver_peer = {
+        let peers = sender.verified_peers.read();
+        peers["revoke-receiver"].clone()
+    };
     let result = sender
-        .authenticate_with_peer(
-            "revoke-receiver",
-            &sender.verified_peers.read()["revoke-receiver"].clone(),
-        )
+        .authenticate_with_peer("revoke-receiver", &receiver_peer)
         .await;
     let err = result
         .expect_err("handshake must fail when the presented cert does not match the stored pin");

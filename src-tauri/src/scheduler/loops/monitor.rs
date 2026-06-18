@@ -184,7 +184,10 @@ impl Scheduler {
                         // In battery-saver mode, skip the most expensive optional blocks (AX extraction / GUI-LLM feedback).
                         let skip_expensive = tick_decision.skip_expensive;
 
-                        match act_mon.collect_context().await {
+                        // #6441 (F13): the monitor loop only uses the active window (+
+                        // mouse), never ctx.processes — use the lightweight collector that
+                        // skips the per-tick full process-table walk.
+                        match act_mon.collect_active_context().await {
                             Ok(ctx) => {
                                 let active_window = ActiveWindowSnapshot::from_context(&ctx);
                                 let app_name = active_window.app_name;
