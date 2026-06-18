@@ -352,6 +352,7 @@ struct LandlockRules {
     write_paths: Vec<String>,
 }
 
+#[cfg(feature = "linux-sandbox")]
 #[derive(Debug, Default)]
 struct SeccompAllowlist {
     allow_basic: bool,

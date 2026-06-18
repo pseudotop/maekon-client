@@ -300,7 +300,8 @@ async fn execute_with_timeout_returns_timeout_result() {
         action: AutomationAction::MouseMove { x: 0, y: 0 },
         timeout_ms: Some(5000),
         policy_token: "test-pol:nonce_0002".to_string(),
-        origin: maekon_core::models::automation::CommandOrigin::External,
+        // #6333 A16: execution-behavior test → trusted in-process command (Internal).
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -322,7 +323,8 @@ async fn audit_level_none_skips_logging() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_0003".to_string(),
-        origin: maekon_core::models::automation::CommandOrigin::External,
+        // #6333 A16: execution-behavior test → trusted in-process command (Internal).
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
@@ -1000,7 +1002,8 @@ async fn execute_command_enabled_with_valid_policy() {
         },
         timeout_ms: None,
         policy_token: "test-pol:nonce_0099".to_string(),
-        origin: maekon_core::models::automation::CommandOrigin::External,
+        // #6333 A16: execution-behavior test → trusted in-process command (Internal).
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
     };
 
     let result = controller.execute_command(&cmd).await.unwrap();
