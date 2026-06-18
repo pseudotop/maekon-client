@@ -29,10 +29,12 @@ pub(crate) async fn handle_frame_capture(
     sqlite: &Arc<dyn SchedulerStorage>,
     session_id: &str,
     pii_filter_level: maekon_core::config::PiiFilterLevel,
-    // Own-field gate: OCR 텍스트 추출/저장은 ocr_processing 동의가 있어야 한다.
-    // 복합 게이트(screen_capture)만 통과해도 ocr_processing 이 false 이면 OCR 텍스트는
-    // 폐기되어 frames.ocr_text 에 저장되지 않고, ocr_regions(바운딩 박스 좌표)와
-    // 힌트 반환값도 비워진다 (effective_permissions() 가 호출자에서 평가된 Valid-only 값).
+    // Own-field gate: OCR text extraction/storage requires ocr_processing
+    // consent. Even if only the composite gate (screen_capture) passes, when
+    // ocr_processing is false the OCR text is discarded and not stored in
+    // frames.ocr_text, and ocr_regions (bounding-box coordinates) plus the hint
+    // return value are also emptied (ocr_permitted is the Valid-only value of
+    // effective_permissions(), evaluated at the caller).
     ocr_permitted: bool,
     event_tx: &Option<broadcast::Sender<RealtimeEvent>>,
 ) -> FrameCaptureResult {
@@ -40,9 +42,11 @@ pub(crate) async fn handle_frame_capture(
         Ok(frame) => {
             debug!("frame completed: {:?}", frame.metadata.trigger_type);
 
-            // Own-field gate: ocr_processing 미부여 시 OCR 영역(좌표 + 텍스트)을 비운다.
-            // 프레임 이미지 자체는 screen_capture 동의로 캡처되지만, OCR로 추출한
-            // 텍스트는 별도 동의가 필요하므로 게이트가 닫히면 텍스트 경로 전체를 차단한다.
+            // Own-field gate: when ocr_processing is not granted, empty the OCR
+            // regions (coordinates + text). The frame image itself is captured
+            // under screen_capture consent, but OCR-extracted text requires
+            // separate consent, so when the gate is closed the entire text path
+            // is blocked.
             let ocr_regions = if ocr_permitted {
                 frame.ocr_regions.clone()
             } else {
@@ -55,8 +59,9 @@ pub(crate) async fn handle_frame_capture(
 
             let (file_path, ocr_text) = if let Some(ref payload) = frame.image_payload {
                 let (data_str, ocr) = match payload {
-                    // Own-field gate: ocr_processing 미부여 시 페이로드에 OCR 텍스트가
-                    // 실려 있어도 폐기한다 (None) — 저장/반환 어느 경로로도 새지 않는다.
+                    // Own-field gate: when ocr_processing is not granted, discard
+                    // any OCR text carried in the payload (None) — it leaks through
+                    // neither the storage nor the return path.
                     ImagePayload::Full { data, ocr_text, .. } => (
                         data.as_str(),
                         if ocr_permitted {
@@ -102,12 +107,45 @@ pub(crate) async fn handle_frame_capture(
             let sanitized_ocr = ocr_text.as_deref().map(|raw| {
                 maekon_vision::privacy::sanitize_title_with_level(raw, pii_filter_level)
             });
-            match sqlite.save_frame_metadata_with_bounds(
-                &frame.metadata,
-                file_path.as_deref(),
-                sanitized_ocr.as_deref(),
-                capture_req.window_bounds.as_ref(),
-            ) {
+
+            // #6133: the frame-metadata write is a synchronous `SchedulerStorage`
+            // call that acquires the SQLite `parking_lot` write lock and runs the
+            // INSERT inline. On the async monitor loop this blocks the reactor
+            // thread for the duration of the write. Offload it to the blocking
+            // pool (mirror the F-PF-19 / #6083 aggregation offload in system.rs):
+            // clone the `Arc<dyn SchedulerStorage>` and move owned copies of the
+            // needed data into the closure, then `.await` the JoinHandle so a
+            // closure panic surfaces as a JoinError (logged + treated as a save
+            // failure, which skips the FrameUpdate emission below).
+            let frame_id = {
+                let sqlite = sqlite.clone();
+                // The original `frame.metadata` must remain available for the
+                // FrameUpdate emission, so clone owned copies for the closure.
+                let metadata = frame.metadata.clone();
+                // `WindowBounds` is `Copy`, so this is a cheap value copy (not a clone).
+                let window_bounds = capture_req.window_bounds;
+                let handle = tokio::task::spawn_blocking(move || {
+                    sqlite.save_frame_metadata_with_bounds(
+                        &metadata,
+                        file_path.as_deref(),
+                        sanitized_ocr.as_deref(),
+                        window_bounds.as_ref(),
+                    )
+                });
+                match handle.await {
+                    Ok(result) => result,
+                    Err(join_err) => {
+                        warn!("frame metadata save task panicked: {join_err}");
+                        // Treat a join error as a save failure so the FrameUpdate
+                        // is not emitted for a frame that was never persisted.
+                        Err(maekon_core::error::CoreError::Storage {
+                            code: maekon_core::error_codes::StorageCode::Failed,
+                            message: format!("frame metadata save task panicked: {join_err}"),
+                        })
+                    }
+                }
+            };
+            match frame_id {
                 Ok(frame_id) => {
                     // Emit FrameUpdate after successful DB insert. Fields sourced from
                     // in-memory frame.metadata — no DB round-trip needed (spec §B).
@@ -141,12 +179,15 @@ pub(crate) async fn handle_frame_capture(
     }
 }
 
-/// Own-field gate (#4802): 윈도우 제목을 window_title_collection 동의 여부로 redact 한다.
+/// Own-field gate (#4802): redact the window title based on whether
+/// window_title_collection consent is given.
 ///
-/// `permitted` 가 true 이면 원본 제목을 그대로 반환하고, false 이면 빈 문자열을 반환한다.
-/// 호출자(monitor 루프)는 `consent.window_title_collection`(effective_permissions() 의
-/// Valid-only 값)을 넘긴다. 빈 문자열로 통일해 모든 다운스트림 소비자가 redact 된 값을
-/// 보게 한다. CRITICAL: ConsentPermissions 의 window_title_collection 이지 config 토글이 아니다.
+/// When `permitted` is true, returns the original title verbatim; when false,
+/// returns an empty string. The caller (the monitor loop) passes
+/// `consent.window_title_collection` (the Valid-only value of
+/// effective_permissions()). Standardizing on an empty string ensures every
+/// downstream consumer sees the redacted value. CRITICAL: this is
+/// ConsentPermissions.window_title_collection, not a config toggle.
 pub(crate) fn redact_window_title(title: String, permitted: bool) -> String {
     if permitted {
         title

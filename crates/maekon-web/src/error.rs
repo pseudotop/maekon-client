@@ -71,9 +71,11 @@ impl From<maekon_core::error::CoreError> for ApiError {
                 resource_type, id, ..
             } => ApiError::NotFound(format!("{resource_type}: {id}")),
             CoreError::ServiceUnavailable { message, .. }
-            | CoreError::SandboxUnsupported { message, .. } => {
-                ApiError::ServiceUnavailable(message)
-            }
+            | CoreError::SandboxUnsupported { message, .. }
+            // #6280: a network/transport failure (upstream unreachable, connection
+            // reset, etc.) is NOT a client error — map it to 503 alongside
+            // RateLimit/RequestTimeout, not 400 BadRequest.
+            | CoreError::Network { message, .. } => ApiError::ServiceUnavailable(message),
             rate_or_timeout @ (CoreError::RateLimit { .. } | CoreError::RequestTimeout { .. }) => {
                 ApiError::ServiceUnavailable(rate_or_timeout.to_string())
             }
@@ -82,7 +84,6 @@ impl From<maekon_core::error::CoreError> for ApiError {
             | CoreError::PermissionDenied { message, .. } => ApiError::Forbidden(message),
             CoreError::InvalidArguments { message, .. }
             | CoreError::Config { message, .. }
-            | CoreError::Network { message, .. }
             | CoreError::OcrError { message, .. }
             | CoreError::SecretStoreError { message, .. }
             | CoreError::SandboxInit { message, .. }
@@ -163,6 +164,22 @@ mod tests {
         assert!(
             matches!(api, ApiError::ServiceUnavailable(_)),
             "RequestTimeout must map to 503 ServiceUnavailable, got: {api:?}"
+        );
+    }
+
+    /// #6280 regression guard: CoreError::Network (transport/upstream failure)
+    /// must map to HTTP 503 ServiceUnavailable, not 400 BadRequest — it is not a
+    /// client error. Parallel to RateLimit/RequestTimeout above.
+    #[test]
+    fn network_error_maps_to_service_unavailable() {
+        let core = maekon_core::error::CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: "connection reset by upstream".to_string(),
+        };
+        let api: ApiError = core.into();
+        assert!(
+            matches!(api, ApiError::ServiceUnavailable(_)),
+            "Network must map to 503 ServiceUnavailable, got: {api:?}"
         );
     }
 

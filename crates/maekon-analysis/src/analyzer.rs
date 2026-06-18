@@ -156,22 +156,41 @@ impl ContextAnalyzer {
 
     /// Full periodic analysis: query events, mine patterns, call LLM.
     pub async fn analyze(&self) -> Result<Vec<Suggestion>, AnalysisError> {
-        if !self.should_analyze().await {
-            debug!("Analysis throttled — skipping");
-            return Ok(vec![]);
-        }
+        // Claim-then-run throttle: atomically check elapsed time AND reserve the
+        // slot (write Some(now)) before releasing the lock and before the LLM
+        // round-trip below. A second concurrent caller then sees the fresh
+        // reservation and bails, preventing a duplicate LLM analysis (#6119).
+        let prev_claim = match self.claim_analysis_slot().await {
+            Some(prev) => prev,
+            None => {
+                debug!("Analysis throttled — skipping");
+                return Ok(vec![]);
+            }
+        };
 
         let now = Utc::now();
         let lookback = Duration::seconds(self.config.full_interval_secs as i64);
         let from = now - lookback;
 
-        let events = self
+        let events = match self
             .storage
             .get_events(from, now, FULL_ANALYSIS_EVENT_LIMIT)
-            .await?;
+            .await
+        {
+            Ok(events) => events,
+            Err(e) => {
+                // Restore the prior claim so a failed fetch does not consume the
+                // throttle window — the next tick can retry immediately (#6119).
+                self.restore_analysis_claim(prev_claim).await;
+                return Err(e.into());
+            }
+        };
 
         if events.is_empty() {
             debug!("No events found for analysis");
+            // No work was done; release the reservation so an empty tick does not
+            // count toward the throttle window (#6119).
+            self.restore_analysis_claim(prev_claim).await;
             return Ok(vec![]);
         }
 
@@ -208,23 +227,45 @@ impl ContextAnalyzer {
         } else {
             vec![]
         };
+        // #5973: the vector_retriever read guard is only needed for the RAG
+        // retrieval above. Release it now so it is NOT held across the LLM
+        // network round-trip below — otherwise set_vector_retriever() (and all
+        // concurrent analysis calls) would block for the full LLM duration on
+        // the 1-second scheduler hot path.
+        drop(retriever_guard);
 
-        let seg_stats = self.segment_stats.read().await;
-        let regime_hint = seg_stats.as_ref().and_then(|s| s.regime_label.as_deref());
+        // Snapshot segment stats before any .await so the RwLock read guard is
+        // not held across the LLM network round-trip (which would serialize all
+        // concurrent analysis calls and risk long lock holds on the hot path).
+        let seg_stats_snapshot = self.segment_stats.read().await.clone();
+        let regime_hint = seg_stats_snapshot
+            .as_ref()
+            .and_then(|s| s.regime_label.as_deref());
 
-        let few_shot_examples = {
-            let fs_guard = self.few_shot_storage.read().await;
-            if let Some(ref fs_storage) = *fs_guard {
-                match fs_storage.get_suggestions_with_feedback(10) {
-                    Ok(history) => self.few_shot_selector.select(&history, regime_hint),
-                    Err(e) => {
-                        debug!("Few-shot history retrieval failed: {e}");
-                        vec![]
-                    }
+        // Clone the few-shot storage Arc out of the RwLock and release the guard
+        // BEFORE awaiting: the underlying SqliteStorage call is synchronous and
+        // takes a blocking read lock + runs a UNION-ALL query, so it must run on
+        // a blocking thread (spawn_blocking) rather than the tokio worker. Holding
+        // the RwLock guard across the await would also serialize set_few_shot_storage()
+        // and all concurrent analysis on the 1-second scheduler hot path.
+        let few_shot_storage = self.few_shot_storage.read().await.clone();
+        let few_shot_examples = if let Some(fs_storage) = few_shot_storage {
+            let history =
+                tokio::task::spawn_blocking(move || fs_storage.get_suggestions_with_feedback(10))
+                    .await;
+            match history {
+                Ok(Ok(history)) => self.few_shot_selector.select(&history, regime_hint),
+                Ok(Err(e)) => {
+                    debug!("Few-shot history retrieval failed: {e}");
+                    vec![]
                 }
-            } else {
-                vec![]
+                Err(e) => {
+                    debug!("Few-shot history task join failed: {e}");
+                    vec![]
+                }
             }
+        } else {
+            vec![]
         };
 
         let ctx = if few_shot_examples.is_empty() {
@@ -233,7 +274,7 @@ impl ContextAnalyzer {
                 &events,
                 &patterns,
                 &metrics,
-                seg_stats.as_ref(),
+                seg_stats_snapshot.as_ref(),
                 &relevant_history,
             )
         } else {
@@ -242,23 +283,36 @@ impl ContextAnalyzer {
                 &events,
                 &patterns,
                 &metrics,
-                seg_stats.as_ref(),
+                seg_stats_snapshot.as_ref(),
                 &relevant_history,
                 &few_shot_examples,
                 regime_hint,
             )
         };
 
-        let suggestions = self
+        let suggestions = match self
             .analysis_provider
             .analyze(&ctx.user_context_json, &ctx.system_prompt)
-            .await?;
+            .await
+        {
+            Ok(suggestions) => suggestions,
+            Err(e) => {
+                // Restore the prior claim so a failed LLM run can be retried on
+                // the next tick rather than being throttled out (#6119).
+                self.restore_analysis_claim(prev_claim).await;
+                return Err(e.into());
+            }
+        };
 
         let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
-        // Update last analysis timestamp
-        let mut last = self.last_analysis_at.lock().await;
-        *last = Some(Utc::now());
+        // Refresh the reservation timestamp to mark the completed run. The slot
+        // was already claimed at entry; this advances the throttle window to the
+        // moment the analysis actually finished.
+        {
+            let mut last = self.last_analysis_at.lock().await;
+            *last = Some(Utc::now());
+        }
 
         // Update patterns hash
         let hash = Self::compute_patterns_hash(&patterns);
@@ -312,17 +366,28 @@ impl ContextAnalyzer {
         window_title: &str,
         ocr_text: Option<&str>,
     ) -> Result<Vec<Suggestion>, AnalysisError> {
-        if !self.should_analyze().await {
-            return Ok(vec![]);
-        }
+        // Claim-then-run throttle (see analyze()): reserve the slot before the
+        // LLM round-trip so a concurrent caller cannot run a duplicate analysis
+        // on the shared ContextAnalyzer (#6119).
+        let prev_claim = match self.claim_analysis_slot().await {
+            Some(prev) => prev,
+            None => return Ok(vec![]),
+        };
 
         let now = Utc::now();
         let from = now - Duration::minutes(SIGNIFICANT_EVENT_LOOKBACK_MINS);
 
-        let events = self
+        let events = match self
             .storage
             .get_events(from, now, SIGNIFICANT_EVENT_LIMIT)
-            .await?;
+            .await
+        {
+            Ok(events) => events,
+            Err(e) => {
+                self.restore_analysis_claim(prev_claim).await;
+                return Err(e.into());
+            }
+        };
 
         let patterns = self.pattern_miner.detect(&events);
         let metrics = Self::build_session_metrics(&events);
@@ -339,38 +404,84 @@ impl ContextAnalyzer {
         // Few-shot enrichment is intentionally skipped for event-driven analysis.
         // Event-triggered analysis is latency-sensitive; the periodic analyze()
         // path handles personalized prompts via build_with_few_shot().
-        let seg_stats = self.segment_stats.read().await;
+        //
+        // Snapshot segment stats before the LLM .await so the RwLock read guard
+        // is not held across the network round-trip.
+        let seg_stats_snapshot = self.segment_stats.read().await.clone();
         let ctx = self.context_assembler.build_with_segment(
             &current,
             &events,
             &patterns,
             &metrics,
-            seg_stats.as_ref(),
+            seg_stats_snapshot.as_ref(),
         );
 
-        let suggestions = self
+        let suggestions = match self
             .analysis_provider
             .analyze(&ctx.user_context_json, &ctx.system_prompt)
-            .await?;
+            .await
+        {
+            Ok(suggestions) => suggestions,
+            Err(e) => {
+                self.restore_analysis_claim(prev_claim).await;
+                return Err(e.into());
+            }
+        };
 
         let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
-        let mut last = self.last_analysis_at.lock().await;
-        *last = Some(Utc::now());
+        // Refresh the reservation timestamp to mark completion (slot already
+        // claimed at entry).
+        {
+            let mut last = self.last_analysis_at.lock().await;
+            *last = Some(Utc::now());
+        }
 
         Ok(filtered)
     }
 
-    /// Check whether enough time has elapsed since last analysis.
-    async fn should_analyze(&self) -> bool {
-        let guard = self.last_analysis_at.lock().await;
-        match *guard {
+    /// Atomically check the throttle window AND reserve the analysis slot.
+    ///
+    /// Holds the `last_analysis_at` lock for the entire check-and-write so the
+    /// throttle is claim-then-run rather than check-only. If enough time has
+    /// elapsed since the last analysis (or none has run yet), this writes an
+    /// in-flight reservation (`Some(now)`) and returns `Some(previous_value)` so
+    /// the caller may restore it on a failed run. A second concurrent caller
+    /// then observes the fresh reservation and is throttled out, returning
+    /// `None` (#6119).
+    async fn claim_analysis_slot(&self) -> Option<Option<chrono::DateTime<Utc>>> {
+        let mut guard = self.last_analysis_at.lock().await;
+        let may_proceed = match *guard {
             None => true,
             Some(last) => {
-                let elapsed = (Utc::now() - last).num_seconds() as u64;
+                // Clamp a backward clock step to 0 before the unsigned cast (review4
+                // F12 sibling): a negative i64 delta cast `as u64` wraps to ~1.8e19
+                // and would bypass the throttle, letting analysis run when it should
+                // be suppressed.
+                let elapsed = (Utc::now() - last).num_seconds().max(0) as u64;
                 elapsed >= self.config.throttle_secs
             }
+        };
+
+        if may_proceed {
+            let prev = *guard;
+            *guard = Some(Utc::now());
+            Some(prev)
+        } else {
+            None
         }
+    }
+
+    /// Restore the `last_analysis_at` reservation to its pre-claim value.
+    ///
+    /// Called on an error or no-op path so a failed/empty run does not consume
+    /// the throttle window, letting the next tick retry immediately. A
+    /// concurrent caller that lost the claim race was already throttled out and
+    /// did not write, so unconditionally restoring the prior value is safe and
+    /// does not clobber another run's timestamp (#6119).
+    async fn restore_analysis_claim(&self, prev: Option<chrono::DateTime<Utc>>) {
+        let mut guard = self.last_analysis_at.lock().await;
+        *guard = prev;
     }
 
     /// Filter suggestions by min_confidence and cap at max_suggestions.
@@ -583,6 +694,58 @@ mod tests {
         }
     }
 
+    // ── Mock FewShotStorage ────────────────────────────────────────
+
+    use maekon_core::models::suggestion::SuggestionHistoryEntry;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Few-shot storage whose synchronous query blocks briefly to emulate the real
+    /// SQLite UNION-ALL read lock. The `analyze()` path must run this on a
+    /// `spawn_blocking` thread rather than the tokio worker (#6086).
+    struct BlockingFewShotStorage {
+        entries: Vec<SuggestionHistoryEntry>,
+        called: Arc<AtomicBool>,
+    }
+
+    impl FewShotStorage for BlockingFewShotStorage {
+        fn get_suggestions_with_feedback(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<SuggestionHistoryEntry>, CoreError> {
+            self.called.store(true, Ordering::SeqCst);
+            // Synchronous blocking sleep, exactly the kind of call that must NOT
+            // occur on the async worker. If this ran on the tokio worker thread it
+            // would stall the 1-second scheduler hot path.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            Ok(self.entries.clone())
+        }
+
+        fn record_suggestion_feedback(
+            &self,
+            _suggestion_id: &str,
+            _feedback_type: &str,
+            _context_app: &str,
+            _context_window: &str,
+            _regime_label: Option<&str>,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn make_history_entry(feedback: &str, content: &str) -> SuggestionHistoryEntry {
+        SuggestionHistoryEntry {
+            suggestion_id: maekon_core::id_generation::generate_id("sug"),
+            suggestion_type: "productivity_tip".to_string(),
+            content: content.to_string(),
+            confidence: 0.8,
+            feedback_type: feedback.to_string(),
+            regime_label: None,
+            context_app: "VSCode".to_string(),
+            context_window: "main.rs".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
     // ── Mock AnalysisProvider ──────────────────────────────────────
 
     struct MockAnalysisProvider {
@@ -607,6 +770,34 @@ mod tests {
 
         fn provider_name(&self) -> &str {
             "mock"
+        }
+    }
+
+    use std::sync::atomic::AtomicUsize;
+
+    /// Provider that records how many times `analyze()` was entered and sleeps
+    /// briefly so two concurrent callers can overlap. Used to prove the throttle
+    /// is claim-then-run: a second caller must be turned away before invoking the
+    /// LLM (#6119).
+    struct CountingSlowProvider {
+        suggestions: Vec<Suggestion>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AnalysisProvider for CountingSlowProvider {
+        async fn analyze(
+            &self,
+            _context_json: &str,
+            _system_prompt: &str,
+        ) -> Result<Vec<Suggestion>, CoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(self.suggestions.clone())
+        }
+
+        fn provider_name(&self) -> &str {
+            "counting-slow"
         }
     }
 
@@ -688,6 +879,52 @@ mod tests {
         // Second analysis should be throttled (throttle_secs = 120)
         let result2 = analyzer.analyze().await.unwrap();
         assert!(result2.is_empty(), "Should be throttled");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_analyze_yields_single_proceed() {
+        // Two near-simultaneous analyze() calls on the SHARED analyzer must
+        // claim-then-run: only one acquires the throttle slot and invokes the
+        // LLM; the other observes the in-flight reservation and bails (#6119).
+        let suggestions = vec![make_suggestion("Tip", 0.9)];
+        let events = make_events(10);
+
+        let storage = Arc::new(MockStorage::new(events));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingSlowProvider {
+            suggestions,
+            calls: calls.clone(),
+        });
+        let miner = PatternMiner::new();
+        let assembler = ContextAssembler::new(Box::new(|t: &str| t.to_string()));
+        let config = AnalysisConfig::default();
+
+        let analyzer = Arc::new(ContextAnalyzer::new(
+            storage, provider, miner, assembler, config,
+        ));
+
+        let a1 = analyzer.clone();
+        let a2 = analyzer.clone();
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { a1.analyze().await.unwrap() }),
+            tokio::spawn(async move { a2.analyze().await.unwrap() }),
+        );
+        let r1 = r1.unwrap();
+        let r2 = r2.unwrap();
+
+        // Exactly one LLM invocation, regardless of scheduling order.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "only one concurrent caller should invoke the LLM"
+        );
+
+        // Exactly one caller returns suggestions; the throttled one returns empty.
+        let proceeded = usize::from(!r1.is_empty()) + usize::from(!r2.is_empty());
+        assert_eq!(
+            proceeded, 1,
+            "exactly one concurrent analyze() should proceed"
+        );
     }
 
     #[tokio::test]
@@ -774,6 +1011,33 @@ mod tests {
             .expect("event-driven suggestion should keep context scope");
         assert_eq!(scope.app_name.as_deref(), Some("VSCode"));
         assert_eq!(scope.window_title.as_deref(), Some("main.rs"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn analyze_offloads_few_shot_query_to_blocking_thread() {
+        let suggestions = vec![make_suggestion("Tip", 0.9)];
+        let events = make_events(10);
+        let analyzer = make_analyzer(events, suggestions);
+
+        let called = Arc::new(AtomicBool::new(false));
+        let fs_storage = Arc::new(BlockingFewShotStorage {
+            entries: vec![
+                make_history_entry("accepted", "Take a break"),
+                make_history_entry("rejected", "Ignore notifications"),
+            ],
+            called: called.clone(),
+        });
+        analyzer.set_few_shot_storage(fs_storage).await;
+
+        // analyze() must complete without stalling the async worker on the
+        // synchronous, blocking few-shot query (it is offloaded via spawn_blocking).
+        let result = analyzer.analyze().await.unwrap();
+
+        assert!(
+            called.load(Ordering::SeqCst),
+            "few-shot storage should have been queried during analysis"
+        );
+        assert!(!result.is_empty());
     }
 
     #[test]

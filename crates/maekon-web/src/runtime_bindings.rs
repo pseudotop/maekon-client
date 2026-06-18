@@ -78,6 +78,13 @@ pub struct AnalysisRuntimeBindings {
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub coaching_engine: Option<Arc<dyn CoachingPort>>,
     pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
+    /// #6279: keyword/FTS text-search provider. Without this the
+    /// `/api/semantic-search` endpoint is permanently inert (every mode returns
+    /// service.unavailable). Wiring it (SqliteStorage impls TextSearchProvider)
+    /// makes Keyword + the Hybrid-degraded path work; the vector-only ports
+    /// below remain optional (semantic-vector mode stays unavailable until the
+    /// embedding pipeline is threaded).
+    pub text_search: Option<Arc<dyn maekon_core::ports::text_search::TextSearchProvider>>,
 }
 
 #[derive(Clone, Default)]

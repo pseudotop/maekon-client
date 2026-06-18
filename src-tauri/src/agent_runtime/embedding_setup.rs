@@ -215,6 +215,10 @@ pub(super) struct EmbeddingComponents {
         Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
     /// VectorStore to wire into scheduler.
     pub vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    /// #6266: the same provider's `ReloadableModel` facet (only the local
+    /// embedding provider supports hot-reload), surfaced so `reload_embedding_model`
+    /// IPC can reach it. `None` for remote/no-op providers.
+    pub reloadable_model: Option<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>,
 }
 
 /// Build the embedding pipeline + LLM segment summarizer from config.
@@ -244,6 +248,12 @@ pub(super) fn build_embedding_components(
         Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
     > = None;
     let mut vector_store_out: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>> = None;
+    // #6266: only the `embedding`-feature Local provider supports hot-reload; the
+    // demoted/remote/no-op arms leave this `None` (so `mut` is unused there).
+    #[cfg_attr(not(feature = "embedding"), allow(unused_mut))]
+    let mut reloadable_model_out: Option<
+        Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>,
+    > = None;
 
     if config.analysis.embedding.enabled {
         let embedding_config = &config.analysis.embedding;
@@ -260,7 +270,19 @@ pub(super) fn build_embedding_components(
                 )) {
                     Ok(provider) => {
                         info!("Local embedding provider initialized");
-                        Some(Arc::new(provider))
+                        // #6266: keep one concrete Arc and expose BOTH facets from
+                        // it — the EmbeddingProvider (scheduler) and the
+                        // ReloadableModel (reload_embedding_model IPC). They share
+                        // the same instance, so a reload mutates the live model.
+                        let concrete = Arc::new(provider);
+                        reloadable_model_out = Some(concrete.clone()
+                            as Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>);
+                        Some(
+                            concrete
+                                as Arc<
+                                    dyn maekon_core::ports::embedding_provider::EmbeddingProvider,
+                                >,
+                        )
                     }
                     Err(e) => {
                         warn!("Local embedding provider init failed: {e}");
@@ -376,20 +398,21 @@ pub(super) fn build_embedding_components(
             }
         };
 
-        // 성공적으로 생성된 provider 를 fallback → NoOp 로 감싸,
-        // 런타임의 일시적 실패가 파이프라인 전체로 전파되지 않고
-        // 영(0) 벡터로 degrade 되도록 한다.
+        // Wrap the successfully created provider with a fallback → NoOp so that a
+        // transient runtime failure does not propagate through the whole pipeline
+        // but instead degrades to zero vectors.
         //
-        // #4813: 이 fallback wrap 은 `embedding` feature 가 꺼진 기본/OSS
-        // 빌드에서도 동작해야 한다. 기존에는 전체 wrap 이 `embedding`
-        // feature 뒤에 숨어 있어, remote provider 만 활성화된 기본 빌드는
-        // 런타임 fallback 없이 동작했다. remote provider 자체는
-        // (maekon-network) feature 게이트가 없으므로, fallback 부재만이
-        // 문제였다. NoOpEmbeddingProvider 는 maekon-core 에 항상 존재하므로
-        // feature 와 무관하게 wrap 을 적용한다.
+        // #4813: this fallback wrap must also work in the default/OSS build where
+        // the `embedding` feature is off. Previously the entire wrap was hidden
+        // behind the `embedding` feature, so the default build (with only the
+        // remote provider enabled) ran without a runtime fallback. The remote
+        // provider itself has no (maekon-network) feature gate, so the missing
+        // fallback was the only problem. NoOpEmbeddingProvider always exists in
+        // maekon-core, so we apply the wrap regardless of feature flags.
         //
-        // `embedding` feature 가 켜진 경우에는 health 추적(`is_primary_healthy`)
-        // 을 제공하는 maekon-embedding 의 풍부한 구현을 그대로 사용한다.
+        // When the `embedding` feature is enabled, we keep using maekon-embedding's
+        // richer implementation, which provides health tracking
+        // (`is_primary_healthy`).
         let embedding_provider: Option<
             Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
         > = embedding_provider.map(|p| {
@@ -403,8 +426,9 @@ pub(super) fn build_embedding_components(
             }
             #[cfg(not(feature = "embedding"))]
             {
-                // maekon-embedding 의존성(optional) 없이 maekon-core 만으로
-                // 동일한 degrade 시멘틱을 제공하는 경량 wrapper.
+                // Lightweight wrapper that provides the same degrade semantics
+                // using only maekon-core, without the (optional) maekon-embedding
+                // dependency.
                 Arc::new(RemoteFallbackEmbeddingProvider::new(p, noop))
                     as Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>
             }
@@ -539,15 +563,17 @@ pub(super) fn build_embedding_components(
         llm_summarizer: llm_summarizer_arc,
         embedding_provider: embedding_provider_out,
         vector_store: vector_store_out,
+        reloadable_model: reloadable_model_out,
     }
 }
 
-/// 기본/OSS 빌드(`embedding` feature off)용 경량 fallback wrapper (#4813).
+/// Lightweight fallback wrapper for the default/OSS build (`embedding` feature
+/// off) (#4813).
 ///
-/// `embedding` feature 가 켜진 경우에는 maekon-embedding 의
-/// `FallbackEmbeddingProvider` 를 사용하므로 이 타입은 컴파일되지 않는다.
-/// primary 실패 시 fallback(NoOp) 으로 degrade 하는 동일한 시멘틱을
-/// maekon-core 만으로 제공한다.
+/// When the `embedding` feature is enabled, maekon-embedding's
+/// `FallbackEmbeddingProvider` is used instead, so this type is not compiled.
+/// It provides the same semantics — degrading to the fallback (NoOp) on primary
+/// failure — using only maekon-core.
 #[cfg(not(feature = "embedding"))]
 struct RemoteFallbackEmbeddingProvider {
     primary: Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
@@ -803,7 +829,7 @@ mod tests {
     use maekon_core::error::CoreError;
     use maekon_core::ports::embedding_provider::{EmbeddingProvider, NoOpEmbeddingProvider};
 
-    /// 항상 실패하는 primary provider — fallback 경로 검증용.
+    /// A primary provider that always fails — used to verify the fallback path.
     struct FailingProvider;
 
     #[async_trait::async_trait]
@@ -824,7 +850,8 @@ mod tests {
         }
     }
 
-    /// 기본 빌드에서도 remote 실패 시 NoOp(영 벡터)으로 degrade 되어야 한다 (#4813).
+    /// Even in the default build, a remote failure must degrade to NoOp (zero
+    /// vectors) (#4813).
     #[tokio::test]
     async fn default_build_falls_back_to_noop_on_primary_failure() {
         let primary = Arc::new(FailingProvider);

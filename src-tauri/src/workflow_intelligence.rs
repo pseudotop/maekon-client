@@ -6,6 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_SEGMENT_STEPS: usize = 10;
 
+/// #6266: bounded-collection guardrail for the runtime-growing `usage` /
+/// `playbooks` maps. Entries not seen within this window are pruned; a hard cap
+/// backstops pathological churn (many distinct app names / playbook keys).
+const TRACKED_ENTRY_RETENTION_SECS: i64 = 30 * 24 * 60 * 60; // 30 days (focus retention)
+const MAX_TRACKED_ENTRIES: usize = 2_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GuiIntent {
     Communicate,
@@ -213,12 +219,48 @@ impl WorkflowIntelligence {
         None
     }
 
+    /// #6266: evict stale / overflow entries from the unbounded usage + playbook
+    /// maps. Time-prune by `last_seen_at` (retention window), then enforce a hard
+    /// cap (drop oldest-by-last_seen_at) as a backstop. Called from the periodic
+    /// `flush_stale_segment` hook so growth is bounded without per-update cost.
+    fn prune_tracked_entries(&mut self, now: DateTime<Utc>) {
+        let cutoff = TRACKED_ENTRY_RETENTION_SECS;
+        self.usage
+            .retain(|_, v| (now - v.last_seen_at).num_seconds() < cutoff);
+        self.playbooks
+            .retain(|_, v| (now - v.last_seen_at).num_seconds() < cutoff);
+        Self::cap_oldest(&mut self.usage, MAX_TRACKED_ENTRIES, |v| v.last_seen_at);
+        Self::cap_oldest(&mut self.playbooks, MAX_TRACKED_ENTRIES, |v| v.last_seen_at);
+    }
+
+    /// Drop the oldest entries (by `last_seen_at`) until `map.len() <= cap`.
+    fn cap_oldest<V>(
+        map: &mut HashMap<String, V>,
+        cap: usize,
+        last_seen: impl Fn(&V) -> DateTime<Utc>,
+    ) {
+        if map.len() <= cap {
+            return;
+        }
+        let mut keyed: Vec<(String, DateTime<Utc>)> =
+            map.iter().map(|(k, v)| (k.clone(), last_seen(v))).collect();
+        // Oldest first.
+        keyed.sort_by_key(|(_, ts)| *ts);
+        let to_drop = map.len() - cap;
+        for (k, _) in keyed.into_iter().take(to_drop) {
+            map.remove(&k);
+        }
+    }
+
     pub fn flush_stale_segment(
         &mut self,
         now: DateTime<Utc>,
         min_relevance: f32,
         stale_secs: u64,
     ) -> Option<PlaybookSignal> {
+        // #6266: bound the runtime-growing maps on every periodic flush.
+        self.prune_tracked_entries(now);
+
         let stale = self
             .active_segment
             .as_ref()
@@ -233,13 +275,15 @@ impl WorkflowIntelligence {
         self.register_segment(segment, min_relevance, now)
     }
 
-    /// 테스트 전용: 집계된 앱-사용 항목 수 (#4802 app_usage_analytics 게이트 검증용).
+    /// Test-only: number of aggregated app-usage entries (for the #4802
+    /// app_usage_analytics gate verification).
     #[cfg(test)]
     pub(crate) fn usage_len(&self) -> usize {
         self.usage.len()
     }
 
-    /// 테스트 전용: 활성 workflow 세그먼트 존재 여부 (#4802 게이트 검증용).
+    /// Test-only: whether an active workflow segment exists (for the #4802 gate
+    /// verification).
     #[cfg(test)]
     pub(crate) fn has_active_segment(&self) -> bool {
         self.active_segment.is_some()
@@ -363,7 +407,7 @@ impl WorkflowIntelligence {
 
         Some(PlaybookSignal {
             description: format!(
-                "반복 업무 흐름 detection ({}회): {} / intent: {} / 평균 {}분",
+                "Recurring workflow detected ({}x): {} / intent: {} / avg {} min",
                 entry.occurrences,
                 entry.representative_path,
                 entry.representative_intents,
@@ -515,7 +559,7 @@ fn infer_gui_intent(
             "failed",
             "분석",
             "통계",
-            "리port",
+            "리포트",
             "error",
         ],
     ) {

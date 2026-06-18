@@ -1,3 +1,4 @@
+use maekon_core::models::ai_session::SessionAuditEntry;
 use maekon_core::models::audit::AuditEntry;
 
 /// Callback trait for persisting audit entries to durable storage.
@@ -11,6 +12,33 @@ pub trait AuditPersistence: Send + Sync {
 /// Blanket impl: any `Fn(&AuditEntry) + Send + Sync` satisfies `AuditPersistence`.
 impl<F: Fn(&AuditEntry) + Send + Sync> AuditPersistence for F {
     fn persist(&self, entry: &AuditEntry) {
+        self(entry);
+    }
+}
+
+/// Callback trait for persisting AI conversation **session** audit entries to
+/// durable storage (#6168).
+///
+/// The session audit trail (`AuditLogPort::record_session_event`) is distinct
+/// from the command audit trail (`AuditPersistence`): it carries
+/// [`SessionAuditEntry`] rows (provider/category/event_type/payload) destined
+/// for the `session_audit_log` table rather than `AuditEntry` rows for
+/// `audit_log`. The binary crate (`src-tauri`) implements this to bridge the
+/// `AuditLogAdapter` (library) to `SqliteStorage` (infrastructure), preserving
+/// the hexagonal boundary (`maekon-automation` MUST NOT depend on
+/// `maekon-storage`).
+///
+/// Best-effort by contract: implementations MUST NOT panic or block the
+/// reactor. The `AuditLogPort::record_session_event` method is infallible, so
+/// failures are logged and dropped at the adapter, never propagated.
+pub trait SessionAuditPersistence: Send + Sync {
+    fn persist(&self, entry: &SessionAuditEntry);
+}
+
+/// Blanket impl: any `Fn(&SessionAuditEntry) + Send + Sync` satisfies
+/// [`SessionAuditPersistence`].
+impl<F: Fn(&SessionAuditEntry) + Send + Sync> SessionAuditPersistence for F {
+    fn persist(&self, entry: &SessionAuditEntry) {
         self(entry);
     }
 }

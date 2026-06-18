@@ -15,7 +15,7 @@ impl LocalSuggestionQueryPort for SqliteStorage {
     ) -> Result<Vec<LocalSuggestionRecord>, CoreError> {
         let storage = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            // 읽기 — read_lock(deletion_flag 무관).
+            // Read — read_lock (independent of deletion_flag).
             let read = storage.read_lock();
             let guard = read.conn();
 

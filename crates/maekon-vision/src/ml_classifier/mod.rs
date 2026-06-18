@@ -20,6 +20,25 @@ use tracing::{debug, info, warn};
 /// Minimum confidence threshold: predictions below this are returned as None.
 const MIN_CONFIDENCE: f32 = 0.3;
 
+/// Numerically-stable softmax over raw model output (review4 V13). Normalizes
+/// logits (or already-normalized probabilities — softmax is idempotent enough in
+/// practice and monotonic, so the argmax class is preserved) into a [0,1]
+/// distribution so MIN_CONFIDENCE gating and downstream type_confidence are sound
+/// regardless of whether the supplied .onnx embeds a softmax layer.
+fn softmax(raw: &[f32]) -> Vec<f32> {
+    let max = raw.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return raw.to_vec();
+    }
+    let exps: Vec<f32> = raw.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f32 = exps.iter().sum();
+    if sum > 0.0 && sum.is_finite() {
+        exps.iter().map(|&e| e / sum).collect()
+    } else {
+        raw.to_vec()
+    }
+}
+
 /// Label ordering must match the model's output layer.
 const LABELS: [GuiElementType; 12] = [
     GuiElementType::Button,
@@ -47,9 +66,10 @@ pub struct OnnxGuiClassifier {
     loaded_mtime: Mutex<Option<std::time::SystemTime>>,
 }
 
-// Safety: ort::Session is Send but not Sync by default.
-// We wrap in Mutex to guarantee exclusive access during run().
-unsafe impl Sync for OnnxGuiClassifier {}
+// #6297: no hand-written `unsafe impl Sync` — the pinned ort 2.0.0-rc.12 declares
+// `unsafe impl Sync for Session {}`, so `Mutex<Session>` (and thus this struct) is
+// already Sync by auto-derivation. A manual `unsafe impl` would mask a future
+// non-Sync field as silent UB instead of a compile error.
 
 impl OnnxGuiClassifier {
     /// Load an ONNX model from the given path.
@@ -183,18 +203,26 @@ impl GuiElementClassifier for OnnxGuiClassifier {
     ) -> Result<Option<(GuiElementType, f32)>, CoreError> {
         let input = preprocess::prepare_input(crop_rgba, width, height)?;
 
-        let probabilities = tokio::task::block_in_place(|| self.run_inference(input))?;
+        let raw_output = tokio::task::block_in_place(|| self.run_inference(input))?;
 
-        if probabilities.len() != LABELS.len() {
+        if raw_output.len() != LABELS.len() {
             return Err(CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!(
                     "model output size mismatch: expected {}, got {}",
                     LABELS.len(),
-                    probabilities.len()
+                    raw_output.len()
                 ),
             });
         }
+
+        // Normalize the raw model output into a true [0,1] probability distribution
+        // with a numerically-stable softmax (review4 V13). The model contract says
+        // the output layer is post-softmax, but that is unenforced — a logit-emitting
+        // model would otherwise defeat the MIN_CONFIDENCE gate and propagate a >1.0
+        // type_confidence downstream (every consumer assumes [0,1]). Softmax is
+        // monotonic, so the argmax class is unchanged for already-softmaxed models.
+        let probabilities = softmax(&raw_output);
 
         // Find argmax
         let (max_idx, max_prob) = probabilities

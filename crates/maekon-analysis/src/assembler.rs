@@ -251,7 +251,11 @@ impl ContextAssembler {
             .iter()
             .map(|p| PatternEntry {
                 pattern_type: format!("{:?}", p.pattern_type),
-                desc: p.description.clone(),
+                // Pattern descriptions interpolate raw app names verbatim (e.g.
+                // "Deep work in {app}", "{from}↔{to}"), so mask them before they
+                // enter the LLM payload — same surface as current.app /
+                // recent_activity[].app. (review4 F1/F11 sibling)
+                desc: self.filter_pii(&p.description),
                 confidence: p.confidence,
             })
             .collect();
@@ -266,12 +270,18 @@ impl ContextAssembler {
                 .content_summary
                 .iter()
                 .map(|e| {
-                    // When GUI summary line is present, enrich the content field
-                    let content = if let Some(ref gui_line) = e.gui_summary_line {
+                    // When GUI summary line is present, enrich the content field.
+                    // The content label is window-title / terminal-command / document-heading
+                    // derived, so it must be PII-masked before it enters the LLM payload,
+                    // mirroring the window/ocr_hint/accessibility_text masking below. The
+                    // gui_summary_line action-count suffix is benign and masking is
+                    // idempotent over it.
+                    let raw_content = if let Some(ref gui_line) = e.gui_summary_line {
                         format!("{} ({})", e.content, gui_line)
                     } else {
                         e.content.clone()
                     };
+                    let content = self.filter_pii(&raw_content);
                     ContentSummaryItem {
                         content,
                         content_type: e.content_type.clone(),
@@ -320,7 +330,7 @@ impl ContextAssembler {
 
         let payload = ContextPayload {
             current: CurrentSnapshot {
-                app: current.app_name.clone(),
+                app: self.filter_pii(&current.app_name),
                 window: self.filter_pii(&current.window_title),
                 ocr_hint: current.ocr_hint.as_ref().map(|t| self.filter_pii(t)),
                 focus_score: current.focus_score,
@@ -401,7 +411,7 @@ impl ContextAssembler {
             let duration = (pair[1].timestamp - pair[0].timestamp).num_seconds();
             result.push(RecentEvent {
                 time: pair[0].timestamp.format("%H:%M").to_string(),
-                app: pair[0].app_name.clone(),
+                app: self.filter_pii(&pair[0].app_name),
                 duration_secs: duration.abs(),
             });
         }
@@ -409,7 +419,7 @@ impl ContextAssembler {
         if let Some(last) = ctx_events.last() {
             result.push(RecentEvent {
                 time: last.timestamp.format("%H:%M").to_string(),
-                app: last.app_name.clone(),
+                app: self.filter_pii(&last.app_name),
                 duration_secs: 0,
             });
         }
@@ -790,6 +800,100 @@ mod tests {
         let ctx = assembler.build(&current, &[], &[], &make_metrics());
         assert!(ctx.user_context_json.contains("[EMAIL]"));
         assert!(!ctx.user_context_json.contains("user@example.com"));
+    }
+
+    #[test]
+    fn segment_content_summary_pii_filtered() {
+        // Regression (review4 F1): segment content_summary[].content is
+        // window-title / terminal-command / document-heading derived and must be
+        // PII-masked before it enters the LLM payload, exactly like the
+        // window_title / ocr_hint / accessibility_text siblings.
+        let assembler = ContextAssembler::new(test_pii_filter());
+        let stats = SegmentStats {
+            duration_mins: 8,
+            regime_label: None,
+            event_count: 12,
+            context_switches: 1,
+            dominant_category: "Communication".to_string(),
+            content_summary: vec![ContentSummaryEntry {
+                content: "Re: Invoice for client@example.com".to_string(),
+                content_type: "Email".to_string(),
+                work_type: "Communication".to_string(),
+                mins: 8,
+                gui_summary_line: None,
+                gui_patterns: vec![],
+            }],
+            gui_patterns: vec![],
+        };
+        let ctx =
+            assembler.build_with_segment(&make_current(), &[], &[], &make_metrics(), Some(&stats));
+        assert!(
+            ctx.user_context_json.contains("[EMAIL]"),
+            "segment content email should be masked"
+        );
+        assert!(
+            !ctx.user_context_json.contains("client@example.com"),
+            "raw email in segment content must not reach the LLM payload"
+        );
+    }
+
+    #[test]
+    fn recent_activity_app_pii_filtered() {
+        // Regression (review4 F11): recent_activity[].app and current.app are
+        // masked too, so an app name that happens to embed a maskable token does
+        // not slip through unmasked while the sibling window_title is masked.
+        let assembler = ContextAssembler::new(test_pii_filter());
+        let events = vec![
+            Event::Context(ContextEvent {
+                app_name: "mailer-boss@corp.com".to_string(),
+                window_title: "Compose".to_string(),
+                timestamp: Utc::now() - Duration::minutes(3),
+                ..Default::default()
+            }),
+            Event::Context(ContextEvent {
+                app_name: "VSCode".to_string(),
+                window_title: "main.rs".to_string(),
+                timestamp: Utc::now() - Duration::minutes(1),
+                ..Default::default()
+            }),
+        ];
+        let ctx = assembler.build(&make_current(), &events, &[], &make_metrics());
+        assert!(
+            !ctx.user_context_json.contains("boss@corp.com"),
+            "raw email-like app name must not reach the LLM payload"
+        );
+    }
+
+    #[test]
+    fn pattern_desc_pii_filtered() {
+        // Regression (review4 F1/F11 sibling): pattern descriptions interpolate raw
+        // app names verbatim, so they must be masked before reaching the LLM payload.
+        use maekon_core::models::analysis::{ActivityPattern, PatternType, TimeRange};
+        let assembler = ContextAssembler::new(test_pii_filter());
+        let now = Utc::now();
+        let patterns = vec![ActivityPattern {
+            pattern_type: PatternType::DeepWorkBlock,
+            description: "Deep work in mailer-boss@corp.com".to_string(),
+            frequency: 3,
+            confidence: 0.9,
+            time_range: TimeRange {
+                start: now - Duration::minutes(30),
+                end: now,
+            },
+            involved_apps: vec!["mailer-boss@corp.com".to_string()],
+        }];
+        let ctx = assembler.build_with_history(
+            &make_current(),
+            &[],
+            &patterns,
+            &make_metrics(),
+            None,
+            &[],
+        );
+        assert!(
+            !ctx.user_context_json.contains("boss@corp.com"),
+            "raw app name in pattern desc must not reach the LLM payload"
+        );
     }
 
     #[test]

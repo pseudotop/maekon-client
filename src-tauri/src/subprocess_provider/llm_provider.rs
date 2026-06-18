@@ -8,20 +8,16 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tempfile::tempdir;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::time::timeout;
 
 use super::{
     append_model_flag, append_oneshot_flags, build_intent_prompt,
     classify_subprocess_error_with_redactions, default_llm_model_for_surface,
     invocation_runtime_for_surface, is_gemini_json_flag_error, parse_interpreted_action_output,
-    provider_name_for_surface_id, BoxFuture, DetectedSubprocessCli, SubprocessKind,
-    ACTION_SCHEMA_JSON, DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+    provider_name_for_surface_id, write_prompt_and_collect_output, BoxFuture,
+    DetectedSubprocessCli, SubprocessKind, ACTION_SCHEMA_JSON, DEFAULT_SUBPROCESS_TIMEOUT_SECS,
 };
 use maekon_api_contracts::provider_specs::subprocess_supports_json_output;
-
-const MAX_ARGV_PROMPT_BYTES: usize = 24 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct SubprocessLlmProvider {
@@ -111,28 +107,15 @@ impl SubprocessLlmProvider {
             .kill_on_drop(true);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
 
-        let mut child = child.spawn().map_err(|err| CoreError::Internal {
+        let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("Failed to spawn Codex CLI subprocess: {err}"),
         })?;
 
-        let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Internal {
-            code: maekon_core::error_codes::InternalCode::Generic,
-            message: "Failed to open stdin for Codex CLI subprocess".to_string(),
-        })?;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(CoreError::Io)?;
-        drop(stdin);
-
-        let output = timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        // #6262: stdin write + output collection bounded under a single timeout
+        // with concurrent pipe draining (avoids stdin/stdout deadlock).
+        let output =
+            write_prompt_and_collect_output(child, prompt, "Codex CLI", self.timeout).await?;
 
         if !output.status.success() {
             return Err(classify_subprocess_error_with_redactions(
@@ -154,34 +137,36 @@ impl SubprocessLlmProvider {
     }
 
     pub(super) async fn run_claude(&self, prompt: &str) -> Result<String, CoreError> {
-        ensure_argv_prompt_safe(&self.surface.surface_id, prompt)?;
         let temp_dir = tempdir().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("Failed to create Claude subprocess tempdir: {err}"),
         })?;
 
         let mut command = Command::new(&self.surface.executable_path);
-        command.arg("-p");
+        // Pass `-` as the prompt argument so the Claude CLI reads the prompt
+        // from stdin, keeping PII out of the process table (ps/Activity Monitor).
+        command.arg("-p").arg("-");
         append_oneshot_flags(&mut command, &self.surface.surface_id);
         command
             .arg("--output-format")
             .arg("json")
             .arg("--json-schema")
             .arg(ACTION_SCHEMA_JSON)
-            .arg(prompt)
             .current_dir(temp_dir.path())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
-        let output = timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        let child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Claude CLI subprocess: {err}"),
+        })?;
+
+        // #6262: bounded stdin write + output collection (see run_codex).
+        let output =
+            write_prompt_and_collect_output(child, prompt, "Claude CLI", self.timeout).await?;
 
         if !output.status.success() {
             return Err(classify_subprocess_error_with_redactions(
@@ -202,7 +187,30 @@ impl SubprocessLlmProvider {
         })?;
 
         let output = match self.run_gemini_command(temp_dir.path(), prompt, true).await {
-            Ok(output) => output,
+            Ok(output) if output.status.success() => output,
+            // #6263: the `--output-format json` version incompatibility surfaces
+            // as a NON-ZERO EXIT (the CLI prints "unknown option ... output-format"
+            // to stderr and exits non-zero), NOT as an `Err` from
+            // run_gemini_command. The previous `Err(error) if is_gemini_json_flag_error`
+            // arm therefore never fired for the real trigger, leaving the
+            // version-compat fallback dead. Classify the failed first attempt and,
+            // if it is the json-flag error, retry once WITHOUT the json flag.
+            Ok(failed) => {
+                let candidate = classify_subprocess_error_with_redactions(
+                    SubprocessKind::Llm,
+                    &self.surface.surface_id,
+                    &String::from_utf8_lossy(&failed.stderr),
+                    &[prompt],
+                );
+                if is_gemini_json_flag_error(&candidate) {
+                    self.run_gemini_command(temp_dir.path(), prompt, false)
+                        .await?
+                } else {
+                    return Err(candidate);
+                }
+            }
+            // Legacy path: if a future CLI returns the flag error as an `Err`,
+            // still retry without the json flag.
             Err(error) if is_gemini_json_flag_error(&error) => {
                 self.run_gemini_command(temp_dir.path(), prompt, false)
                     .await?
@@ -228,9 +236,10 @@ impl SubprocessLlmProvider {
         prompt: &str,
         prefer_json_output: bool,
     ) -> Result<std::process::Output, CoreError> {
-        ensure_argv_prompt_safe(&self.surface.surface_id, prompt)?;
         let mut command = Command::new(&self.surface.executable_path);
-        command.arg("-p").arg(prompt);
+        // Pass `-` as the prompt argument so the Gemini CLI reads the prompt
+        // from stdin, keeping PII out of the process table (ps/Activity Monitor).
+        command.arg("-p").arg("-");
         if prefer_json_output
             && subprocess_supports_json_output(&self.surface.surface_id).unwrap_or(false)
         {
@@ -238,32 +247,20 @@ impl SubprocessLlmProvider {
         }
         command
             .current_dir(workdir)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
-        timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)
-    }
-}
+        let child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Gemini CLI subprocess: {err}"),
+        })?;
 
-fn ensure_argv_prompt_safe(surface_id: &str, prompt: &str) -> Result<(), CoreError> {
-    if prompt.len() <= MAX_ARGV_PROMPT_BYTES {
-        return Ok(());
+        // #6262: bounded stdin write + output collection (see run_codex).
+        write_prompt_and_collect_output(child, prompt, "Gemini CLI", self.timeout).await
     }
-
-    Err(CoreError::Config {
-        code: maekon_core::error_codes::ConfigCode::Invalid,
-        message: format!(
-            "Provider CLI surface '{surface_id}' uses argv prompt transport; prompt payload is too large for the Windows-safe command-line budget."
-        ),
-    })
 }
 
 #[async_trait]
@@ -368,7 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_llm_invocation_preserves_prompt_argv_and_raw_json_stdout() {
+    async fn gemini_llm_invocation_delivers_prompt_via_stdin_and_raw_json_stdout() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let executable_path = write_fake_gemini_llm_cli(temp_dir.path());
         let provider = SubprocessLlmProvider::new(
@@ -379,11 +376,11 @@ mod tests {
             &AiProviderConfig::default(),
         );
 
-        let prompt = "Gemini prompt with spaces && shell metacharacters | should stay one argv";
+        let prompt = "Gemini prompt with spaces && shell metacharacters | should arrive via stdin";
         let raw = provider
             .run_gemini(prompt)
             .await
-            .expect("fake Gemini CLI should preserve prompt argv");
+            .expect("fake Gemini CLI should deliver prompt via stdin");
         let action = parse_interpreted_action_output(&raw).expect("Gemini raw JSON output");
 
         assert_eq!(action.target_text.as_deref(), Some("Gemini"));
@@ -430,28 +427,6 @@ mod tests {
             .expect_err("fake Gemini CLI should time out");
 
         assert_eq!(err.code(), "network.timeout");
-    }
-
-    #[tokio::test]
-    async fn gemini_llm_rejects_argv_prompt_that_exceeds_windows_safe_limit() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let executable_path = write_fake_gemini_llm_cli(temp_dir.path());
-        let provider = SubprocessLlmProvider::new(
-            DetectedSubprocessCli {
-                surface_id: "provider_surface.google.subprocess_cli".to_string(),
-                executable_path,
-            },
-            &AiProviderConfig::default(),
-        );
-        let prompt = "x".repeat(MAX_ARGV_PROMPT_BYTES + 1);
-
-        let err = provider
-            .run_gemini(&prompt)
-            .await
-            .expect_err("long argv prompt should be rejected before spawn");
-
-        assert_eq!(err.code(), "config.invalid");
-        assert!(!err.to_string().contains(&prompt[..128]));
     }
 
     #[tokio::test]
@@ -537,14 +512,24 @@ fn main() {
         std::fs::write(
             &source_path,
             r##"
+use std::io::Read;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let prompt_index = args
+    // Verify that the prompt slot after -p is "-" (stdin sentinel), not the raw prompt.
+    let prompt_slot_index = args
         .iter()
         .position(|arg| arg == "-p")
         .and_then(|index| index.checked_add(1))
         .expect("prompt index");
-    let prompt = args.get(prompt_index).expect("prompt");
+    let prompt_slot = args.get(prompt_slot_index).expect("prompt slot");
+    if prompt_slot != "-" {
+        eprintln!("expected stdin sentinel '-' after -p, got: {prompt_slot}");
+        std::process::exit(10);
+    }
+    // Read the prompt from stdin (where the real Gemini CLI reads it).
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt).expect("stdin");
     match prompt.as_str() {
         "NONZERO" => {
             eprintln!("model not found");
@@ -557,14 +542,14 @@ fn main() {
             eprintln!("provider echoed prompt: {value}");
             std::process::exit(9);
         }
-        expected if expected == "Gemini prompt with spaces && shell metacharacters | should stay one argv" => {
+        expected if expected == "Gemini prompt with spaces && shell metacharacters | should arrive via stdin" => {
             println!(
                 "{}",
                 r#"{"target_text":"Gemini","target_role":"button","action_type":"click","confidence":0.94}"#
             );
         }
         _ => {
-            eprintln!("prompt argv was not preserved");
+            eprintln!("prompt was not delivered via stdin");
             std::process::exit(8);
         }
     }
@@ -600,12 +585,17 @@ fn main() {
         std::fs::write(
             &source_path,
             r##"
+use std::io::Read;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has_json_output = args
         .windows(2)
         .any(|window| window[0] == "--output-format" && window[1] == "json");
     let has_schema = args.iter().any(|arg| arg == "--json-schema");
+    let has_stdin_sentinel = args
+        .windows(2)
+        .any(|window| window[0] == "-p" && window[1] == "-");
     if !has_json_output {
         eprintln!("expected --output-format json");
         std::process::exit(42);
@@ -614,6 +604,13 @@ fn main() {
         eprintln!("expected --json-schema");
         std::process::exit(43);
     }
+    if !has_stdin_sentinel {
+        eprintln!("expected stdin sentinel '-' after -p");
+        std::process::exit(44);
+    }
+    // Consume stdin (prompt delivered via stdin; content not validated in this fake).
+    let mut _sink = String::new();
+    let _ = std::io::stdin().read_to_string(&mut _sink);
     println!(
         "{}",
         r#"{"type":"result","result":"Output provided.","structured_output":{"target_text":"Save","target_role":"button","action_type":"click","confidence":0.97}}"#
@@ -645,6 +642,7 @@ fn main() {
             r#"#!/bin/sh
 found_output=0
 found_schema=0
+found_stdin_sentinel=0
 previous=
 for arg in "$@"; do
   if [ "$previous" = "--output-format" ] && [ "$arg" = "json" ]; then
@@ -652,6 +650,9 @@ for arg in "$@"; do
   fi
   if [ "$previous" = "--json-schema" ]; then
     found_schema=1
+  fi
+  if [ "$previous" = "-p" ] && [ "$arg" = "-" ]; then
+    found_stdin_sentinel=1
   fi
   previous="$arg"
 done
@@ -663,6 +664,12 @@ if [ "$found_schema" -ne 1 ]; then
   echo "expected --json-schema" >&2
   exit 43
 fi
+if [ "$found_stdin_sentinel" -ne 1 ]; then
+  echo "expected stdin sentinel '-' after -p" >&2
+  exit 44
+fi
+# Consume stdin (prompt delivered via stdin; content not validated in this fake).
+cat > /dev/null
 printf '%s\n' '{"type":"result","result":"Output provided.","structured_output":{"target_text":"Save","target_role":"button","action_type":"click","confidence":0.97}}'
 "#,
         )

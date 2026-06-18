@@ -27,18 +27,18 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
     match action {
         "accept" => {
             if let Err(_e) = mgr.feedback().accept(suggestion_id, None).await {
-                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None);
+                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
         }
         "reject" => {
             if let Err(_e) = mgr.feedback().reject(suggestion_id, None).await {
-                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None);
+                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
         }
         "defer" => {
             // Server notification is best-effort; local state changes always proceed.
             if let Err(_e) = mgr.feedback().defer(suggestion_id, None).await {
-                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None);
+                enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
 
             let (removed, scorer_data) = {
@@ -58,14 +58,30 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
             }
 
             if let Some(suggestion) = removed {
-                {
-                    let mut history = mgr.history().lock().await;
-                    history.add(suggestion.clone());
-                    history.record_feedback(suggestion_id, feedback_type);
-                }
                 let duration_mins = snooze_minutes.unwrap_or(120);
                 let duration = chrono::Duration::minutes(duration_mins as i64);
-                mgr.deferred().lock().await.defer(suggestion, duration);
+                let deferred_ok = mgr
+                    .deferred()
+                    .lock()
+                    .await
+                    .defer(suggestion.clone(), duration);
+                if deferred_ok {
+                    let mut history = mgr.history().lock().await;
+                    history.add(suggestion);
+                    history.record_feedback(suggestion_id, feedback_type);
+                } else {
+                    // review4 re-verify: the deferred set is full and this snooze
+                    // would resurface later than every kept entry, so defer()
+                    // rejected it. The suggestion was already removed from the queue
+                    // above — do NOT silently drop it (the user would get Ok for a
+                    // snooze that vanished). Restore it to the active queue so it
+                    // stays actionable.
+                    tracing::warn!(
+                        id = %suggestion_id,
+                        "deferred set full — snooze rejected; restoring suggestion to the active queue"
+                    );
+                    let _ = mgr.queue().lock().await.push(suggestion);
+                }
             }
 
             let count = mgr.queue().lock().await.len();

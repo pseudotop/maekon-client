@@ -3,7 +3,11 @@
 //!
 //! Strategies:
 //! - `BruteForceInt8`: Full scan with INT8 cosine similarity (< 5K vectors)
-//! - `Hnsw`: HNSW approximate nearest neighbor search (5K - 10K vectors, feature = "hnsw")
+//! - `Hnsw`: HNSW approximate nearest neighbor search (feature = "hnsw"). NOTE
+//!   (review4 F10): experimental and currently NOT wired into production — no
+//!   `AnnIndex` is attached at the composition root (`with_ann_index` has no
+//!   production caller), so this tier is unreachable and search gracefully
+//!   degrades to brute-force/IVF even under `--features hnsw`.
 //! - `IvfInt8`: IVF partitioned scan with INT8 cosine (10K - 100K vectors)
 //! - `IvfBinaryRerank`: IVF + 2-bit Hamming filter + INT8 re-rank (>= 100K vectors)
 
@@ -52,7 +56,11 @@ pub struct SearchConfig {
     pub oversample_factor: usize,
     /// Number of IVF partitions to probe. 0 = auto. Default: 0.
     pub default_nprobe: usize,
-    /// Force a specific strategy. None = "auto". Values: "brute_force", "hnsw", "ivf", "ivf_binary".
+    /// Force a specific strategy. None = "auto". Valid values: "brute_force",
+    /// "ivf", "ivf_binary" (and "hnsw" only when compiled with feature = "hnsw"
+    /// AND an AnnIndex is wired — not the case in current production builds).
+    /// An unrecognized value falls back to brute-force; callers should validate
+    /// the configured string and warn before constructing this. (review4 F9/F10)
     pub forced_strategy: Option<String>,
 }
 
@@ -239,7 +247,8 @@ impl AdaptiveSearchCoordinator {
             return self
                 .vector_store
                 .search_quantized(&quantized, limit, time_decay_hours, filters)
-                .await;
+                .await
+                .map_err(AnalysisError::Core);
         }
 
         let quantized = ScalarQuantizer::quantize(query_f32)?;

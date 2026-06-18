@@ -9,7 +9,11 @@ pub(crate) fn sanitize_dashboard_text(
 ) -> String {
     match pii_sanitizer {
         Some(sanitizer) => sanitizer.sanitize_text(&raw, PiiFilterLevel::Standard),
-        None => raw,
+        // #6421: fail CLOSED. `None` means no PII sanitizer is wired (NOT "the user
+        // disabled filtering" — that is expressed through the sanitizer's own level).
+        // Dashboard app/window text can carry PII, so redact rather than emit raw,
+        // matching the fail-closed posture of the REST export/search paths.
+        None => "[redacted: PII sanitizer unavailable]".to_string(),
     }
 }
 
@@ -37,9 +41,11 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_dashboard_text_preserves_text_without_sanitizer() {
+    fn sanitize_dashboard_text_redacts_without_sanitizer() {
+        // #6421: fail closed — an absent sanitizer must NOT pass raw text through.
         let raw = "Notes - local fixture".to_string();
-
-        assert_eq!(sanitize_dashboard_text(raw.clone(), None), raw);
+        let out = sanitize_dashboard_text(raw.clone(), None);
+        assert_ne!(out, raw);
+        assert!(out.contains("redacted"));
     }
 }

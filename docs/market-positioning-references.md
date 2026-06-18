@@ -2,7 +2,7 @@
 
 # Market Positioning References
 
-> Last updated: 2026-05-14
+> Last updated: 2026-06-18
 
 ## Purpose
 
@@ -46,6 +46,20 @@ Maekon adopts these as the **target experience** for the work-signal layer, whil
 | **Audit and traceability** | Not publicly documented | Memories stored **unencrypted** on disk | **Source-first audit** — every signal carries origin, retention, PII-filter trace |
 | **Automation boundary** | Natural intent → **direct action** | Memory-only (Codex still acts) | Natural intent → **next-action candidates** with explicit review/approval gate (policy-gated) |
 | **Platform reach** | Chrome / Gemini / Googlebook (Google ecosystem) | macOS only / ChatGPT Pro subscription / EU/UK/CH excluded | **3 OS** (macOS, Windows, Linux), Apache-2.0, ecosystem-neutral |
+
+## Trust-First Differentiator Dimensions
+
+Beyond the four competitive axes above, Maekon's trust-first wedge is expressed through five user-visible dimensions. Each is a design commitment the desktop client should prove to the user directly — visible provenance, consent, audit, and lightweight evidence — rather than a background claim:
+
+| Dimension | What the user can verify | Why it matters |
+|---|---|---|
+| **Retrieval trust** | Past work context returns with visible provenance — frame, time range, app/window, and source snippet — with sensitive content redacted in index, results, and exports; low-confidence recall asks for clarification instead of fabricating | Searchable past context is only trustworthy when it is auditable and redacted, not opaque |
+| **Agent-safety confirmation** | Captured screen/web/app content is treated as untrusted context and cannot override intent; sensitive actions (payment, credentials, file/email mutation, destructive automation) require explicit confirmation with a clear action summary; allowlist denials stay visible | Screen-reading agents are exposed to prompt injection, so meaningful actions need human confirmation |
+| **Data-control visibility** | Retention, export, deletion, external egress, and provider-training policy are shown in plain language; export sanitizes app/window/OCR fields and fails closed; sharing defaults stay private | Users should be able to control their data without reading architecture docs |
+| **Audio & bystander consent** | Audio/STT stays off until explicit consent, recording scope and external STT egress are explained, a recording notice or bystander guidance appears before always-on capture, and revoke purges buffers | Ambient and meeting-style capture is judged on consent, notice, retention, and deletion |
+| **Evidence readability** | Capture border, pointer halo, and click ripple stay readable without blocking the app; Computer Use and Maekon cursors stay distinct with no duplicate trace; reduced-motion keeps static pointer evidence | Readable, honest capture evidence builds trust in what was observed |
+
+These dimensions describe the **target experience** for the trust layer and are the public-safe framing of Maekon's differentiation. Detailed release-gate execution evidence is maintained in the parent-internal QA process and is intentionally not part of this public document.
 
 ## Vocabulary Alignment
 

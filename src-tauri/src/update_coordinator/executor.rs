@@ -28,7 +28,17 @@ pub trait UpdateExecutor: Send + Sync {
         Ok(result)
     }
 
-    fn install_and_restart(&self, downloaded_path: &Path) -> Result<(), UpdateError>;
+    /// Install the downloaded update and restart.
+    ///
+    /// `new_version` MUST be threaded through so the D11 `.install_pending_{ver}`
+    /// crash-loop marker is written before restart; without it the health-probe
+    /// auto-rollback is dead for every real auto-update (#6258). `None` is only
+    /// for callers that genuinely lack a version (the marker is then skipped).
+    fn install_and_restart(
+        &self,
+        downloaded_path: &Path,
+        new_version: Option<&str>,
+    ) -> Result<(), UpdateError>;
 }
 
 #[async_trait]
@@ -58,7 +68,13 @@ impl UpdateExecutor for Updater {
             .await
     }
 
-    fn install_and_restart(&self, downloaded_path: &Path) -> Result<(), UpdateError> {
-        self.install_and_restart(downloaded_path)
+    fn install_and_restart(
+        &self,
+        downloaded_path: &Path,
+        new_version: Option<&str>,
+    ) -> Result<(), UpdateError> {
+        // #6258: thread the version into the install so write_install_pending
+        // arms the D11 health-probe rollback marker.
+        self.install_and_restart_versioned(downloaded_path, new_version)
     }
 }

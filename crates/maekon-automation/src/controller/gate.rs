@@ -9,7 +9,10 @@ use crate::error::AutomationError;
 use crate::policy::{AuditLevel, PolicyClient};
 use crate::resolver;
 use maekon_core::config::SandboxConfig;
-use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
+use maekon_core::models::audit::AuditStatus;
+use maekon_core::models::automation::{
+    AutomationAction, AutomationCommand, CommandOrigin, CommandResult,
+};
 
 pub(super) const GUI_SESSION_POLICY_TOKEN: &str = "gui-session";
 pub(super) const INTENT_HINT_POLICY_TOKEN: &str = "intent-hint";
@@ -49,11 +52,19 @@ impl CommandExecutionGate {
         )
     }
 
+    /// #6333 A20: a command may use the internal-token bypass ONLY when it was
+    /// minted in-process (`Internal`) AND carries one of the four sentinel tokens.
+    /// A deserialized/external command carrying a sentinel string is rejected here,
+    /// because deserialization always yields `CommandOrigin::External`.
+    pub(super) fn is_trusted_internal(origin: CommandOrigin, policy_token: &str) -> bool {
+        origin == CommandOrigin::Internal && Self::uses_internal_policy_token(policy_token)
+    }
+
     pub(super) async fn resolve_for_command(
         &self,
         cmd: &AutomationCommand,
     ) -> (SandboxConfig, AuditLevel) {
-        if Self::uses_internal_policy_token(&cmd.policy_token) {
+        if Self::is_trusted_internal(cmd.origin, &cmd.policy_token) {
             return (
                 resolver::default_strict_config(&self.base_sandbox_config),
                 AuditLevel::Basic,
@@ -89,7 +100,7 @@ impl CommandExecutionGate {
         &self,
         cmd: &AutomationCommand,
     ) -> Result<CommandResult, AutomationError> {
-        if !Self::uses_internal_policy_token(&cmd.policy_token)
+        if !Self::is_trusted_internal(cmd.origin, &cmd.policy_token)
             && !self.policy_client.validate_command(cmd).await?
         {
             let mut logger = self.audit_logger.write().await;
@@ -147,11 +158,23 @@ impl CommandExecutionGate {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Record the REAL outcome status, not a hardcoded Completed (review4 A1).
+            // Failed dispatches — including sandbox containment failures — must be
+            // durably audited as Failed so entries_by_status/stats and the hash
+            // chain do not misreport them as Completed.
+            let (action_type, status) = match &result {
+                CommandResult::Success => ("complete", AuditStatus::Completed),
+                CommandResult::Failed(_) => ("failed", AuditStatus::Failed),
+                CommandResult::Denied => ("denied", AuditStatus::Denied),
+                CommandResult::Timeout => ("timeout", AuditStatus::Timeout),
+            };
+            logger.log_with_status_and_time(
                 audit_level,
                 &cmd.command_id,
                 &cmd.session_id,
-                &format!("{:?}", result),
+                action_type,
+                status,
+                &format!("{result:?}"),
                 elapsed_ms,
             );
         }
@@ -172,5 +195,31 @@ pub(super) fn audit_action_label(action: &AutomationAction) -> String {
         AutomationAction::KeyPress { key } => format!("KeyPress {{ key={key} }}"),
         AutomationAction::KeyRelease { key } => format!("KeyRelease {{ key={key} }}"),
         AutomationAction::Hotkey { keys } => format!("Hotkey {{ keys={} }}", keys.join("+")),
+    }
+}
+
+#[cfg(test)]
+mod a20_tests {
+    use super::CommandExecutionGate;
+    use maekon_core::models::automation::CommandOrigin;
+
+    #[test]
+    fn is_trusted_internal_requires_both_internal_origin_and_sentinel_token() {
+        // #6333 A20: bypass eligibility = Internal origin AND a sentinel token.
+        // internal token + Internal origin → trusted
+        assert!(CommandExecutionGate::is_trusted_internal(
+            CommandOrigin::Internal,
+            "gui-session"
+        ));
+        // internal token string but External origin (e.g. deserialized) → NOT trusted
+        assert!(!CommandExecutionGate::is_trusted_internal(
+            CommandOrigin::External,
+            "gui-session"
+        ));
+        // external token + Internal origin → not a sentinel, so not internal anyway
+        assert!(!CommandExecutionGate::is_trusted_internal(
+            CommandOrigin::Internal,
+            "test-pol:nonce"
+        ));
     }
 }

@@ -67,42 +67,105 @@ fn visit(dir: &Path, violations: &mut Vec<String>) {
 /// parentheses balance, mirroring the maekon-monitor log_privacy guard).
 /// Skips `debug_assert!` (word boundary), commented-out call sites, and
 /// calls carrying the allow marker.
+///
+/// Fix #12: the pre-assert `//` comment check is string-literal aware — a `//`
+/// that appears inside a double-quoted string literal is NOT treated as a line
+/// comment start.  Example: `let u="http://x"; assert!(parse(u).is_ok());`
+/// must NOT be skipped.
+///
+/// Fix #13: after consuming a balanced `assert!(...)` call the scanner resumes
+/// from just after its closing `)` on the same line, so a second `assert!` on
+/// the same line is also inspected.
 fn find_is_ok_hedges(source: &str) -> Vec<usize> {
     let lines: Vec<&str> = source.lines().collect();
     let mut violations = Vec::new();
     let mut i = 0;
+    // `col_offset` tracks where on line `i` to start scanning (supports #13:
+    // multiple assert! calls on the same line).
+    let mut col_offset = 0usize;
     while i < lines.len() {
-        let Some(pos) = find_assert_macro(lines[i]) else {
+        let line = lines[i];
+        let search_from = col_offset;
+        col_offset = 0; // reset; will be set again only for same-line continue
+
+        let Some(rel_pos) = find_assert_macro(&line[search_from..]) else {
             i += 1;
             continue;
         };
-        if lines[i][..pos].contains("//") {
-            // Commented-out call (or one quoted inside a trailing comment).
+        let pos = search_from + rel_pos;
+
+        // Fix #12: only treat `//` as a comment start when it is NOT inside a
+        // string literal.  Walk the prefix [0..pos] tracking whether we are
+        // inside a double-quoted string (handling `\"` escapes).
+        if comment_before(line, pos) {
+            // The `assert!(` is commented out; skip the rest of this line.
             i += 1;
             continue;
         }
+
         // Join the call text from the macro name until parens balance.
         let mut call = String::new();
         let mut depth = 0i32;
         let mut opened = false;
         let mut j = i;
+        // `end_col` will be set to the byte index just after the closing `)`.
+        let mut end_col = 0usize;
+        // Track string/char literals so a paren INSIDE a literal (e.g. `run(")")`
+        // or `parse_paren(')')`) does not balance the depth and terminate the join
+        // before `.is_ok()` is seen (review4: false-negative). `in_string` is
+        // escape-aware; a char-literal paren is recognized as `'('`/`')'` via the
+        // surrounding quotes — lifetime-safe, since a lifetime like `'a` never has a
+        // closing quote immediately after a paren.
+        let mut in_string = false;
+        let mut prev_ch: Option<char> = None;
         'call: while j < lines.len() {
             let segment = if j == i { &lines[i][pos..] } else { lines[j] };
-            for ch in segment.chars() {
+            let mut chars = segment.char_indices().peekable();
+            while let Some((byte_idx, ch)) = chars.next() {
                 call.push(ch);
-                match ch {
-                    '(' => {
-                        depth += 1;
-                        opened = true;
+                if in_string {
+                    match ch {
+                        '\\' => {
+                            // Consume the escaped char so `\"` does not close the string.
+                            if let Some((_, esc)) = chars.next() {
+                                call.push(esc);
+                            }
+                        }
+                        '"' => in_string = false,
+                        _ => {}
                     }
-                    ')' => depth -= 1,
+                    prev_ch = Some(ch);
+                    continue;
+                }
+                match ch {
+                    '"' => in_string = true,
+                    '(' | ')' => {
+                        let next_is_quote = chars.peek().map(|(_, c)| *c) == Some('\'');
+                        let in_char_literal = prev_ch == Some('\'') && next_is_quote;
+                        if !in_char_literal {
+                            if ch == '(' {
+                                depth += 1;
+                                opened = true;
+                            } else {
+                                depth -= 1;
+                            }
+                            if opened && depth == 0 {
+                                // byte_idx is relative to `segment`; compute absolute col.
+                                end_col = if j == i {
+                                    pos + byte_idx + ch.len_utf8()
+                                } else {
+                                    byte_idx + ch.len_utf8()
+                                };
+                                break 'call;
+                            }
+                        }
+                    }
                     _ => {}
                 }
-                if opened && depth == 0 {
-                    break 'call;
-                }
+                prev_ch = Some(ch);
             }
             call.push(' ');
+            prev_ch = Some(' ');
             j += 1;
         }
         // Marker accepted inside the call span, on the opening line, or on the
@@ -114,9 +177,45 @@ fn find_is_ok_hedges(source: &str) -> Vec<usize> {
         if normalize(&call).contains(".is_ok()") && !exempt {
             violations.push(i + 1);
         }
-        i = j + 1;
+
+        // Fix #13: if the closing `)` was on the same starting line, resume
+        // scanning that line from just after it rather than jumping to j+1.
+        if j == i && end_col < line.len() {
+            col_offset = end_col;
+            // Stay on the same line (do NOT increment i).
+        } else {
+            i = j + 1;
+        }
     }
     violations
+}
+
+/// Returns `true` when there is a `//` comment-start before byte offset `pos`
+/// on `line` that is NOT inside a double-quoted string literal.
+///
+/// Handles:
+/// - `\"` escape sequences inside strings (does not prematurely close the string)
+/// - `\\` escape sequences (a backslash that is itself escaped, so the next
+///   char is NOT part of an escape)
+/// - Single-quoted char literals (e.g. `'\''`) are NOT handled — they are rare
+///   before an `assert!(` and never contain `//` in practice.
+fn comment_before(line: &str, pos: usize) -> bool {
+    let prefix = &line[..pos];
+    let mut in_string = false;
+    let mut chars = prefix.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if !in_string => in_string = true,
+            '"' if in_string => in_string = false,
+            '\\' if in_string => {
+                // Consume the escaped character so `\"` does not close the string.
+                chars.next();
+            }
+            '/' if !in_string && chars.peek() == Some(&'/') => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Position of a word-boundary `assert!(` on the line (rejects identifiers
@@ -207,5 +306,72 @@ fn scanner_accepts_preceding_line_marker_on_wrapped_call() {
     assert!(
         find_is_ok_hedges(src).is_empty(),
         "preceding-line marker must exempt a wrapped call"
+    );
+}
+
+// ── Fix #12: `//` inside a string literal must NOT be treated as a comment ──
+
+#[test]
+fn scanner_not_fooled_by_url_in_string_before_assert() {
+    // A `//` that appears inside a string literal (e.g. a URL) must not cause
+    // the following `assert!(..is_ok())` to be skipped as if it were commented
+    // out.  This was the pre-fix bug: the prefix `let u="http://x"; ` contains
+    // `//` and the whole line was wrongly exempted.
+    let src = "    let u = \"http://example.com\"; assert!(parse(u).is_ok());\n";
+    assert_eq!(
+        find_is_ok_hedges(src),
+        vec![1],
+        "assert!(..is_ok()) after a string-literal containing `//` must be flagged"
+    );
+}
+
+// ── review4: a `)` inside a string/char literal must not balance the call ──
+
+#[test]
+fn scanner_sees_is_ok_through_paren_in_string_literal() {
+    // A `)` inside a string literal must not decrement paren depth and terminate
+    // the join before `.is_ok()` is seen (pre-fix false-negative).
+    let src = "    assert!(run(\")\").is_ok());\n";
+    assert_eq!(
+        find_is_ok_hedges(src),
+        vec![1],
+        "is_ok() after a string-literal paren must be flagged"
+    );
+}
+
+#[test]
+fn scanner_sees_is_ok_through_paren_in_char_literal() {
+    // A `)` inside a char literal `')'` must not balance the parens early.
+    let src = "    assert!(parse_paren(')').is_ok());\n";
+    assert_eq!(
+        find_is_ok_hedges(src),
+        vec![1],
+        "is_ok() after a char-literal paren must be flagged"
+    );
+}
+
+#[test]
+fn scanner_lifetime_does_not_false_positive() {
+    // A lifetime `'a` is not a char literal and must not derail the scan: this
+    // assert has no `.is_ok()`, so nothing should be flagged.
+    let src = "    assert!(make::<&'a str>(x).is_some());\n";
+    assert!(
+        find_is_ok_hedges(src).is_empty(),
+        "lifetime tick must not cause a spurious flag"
+    );
+}
+
+// ── Fix #13: a second `assert!` on the same line must also be inspected ─────
+
+#[test]
+fn scanner_catches_second_assert_on_same_line() {
+    // Two assert! calls on one line: the first is a safe assertion (no .is_ok()),
+    // the second is a value-blind hedge.  Pre-fix, the scanner consumed the first
+    // assert!(...) and then jumped to the next line, silently missing the second.
+    let src = "    assert!(true); assert!(result.is_ok());\n";
+    assert_eq!(
+        find_is_ok_hedges(src),
+        vec![1],
+        "second assert!(..is_ok()) on the same line must be flagged"
     );
 }

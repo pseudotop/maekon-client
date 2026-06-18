@@ -56,9 +56,13 @@ impl FocusAnalyzer {
             }
         };
 
-        let title = "☕ 휴식 시간";
+        // Native OS notification copy is English-only by convention: it is rendered
+        // by the OS outside the WebView, so the frontend i18n layer (which owns the
+        // user's locale) cannot translate it (cf. scheduler/loops/sync.rs). The
+        // frontend-displayed `suggestion.content` above is the localizable surface.
+        let title = "☕ Break time";
         let body = format!(
-            "{}분 동안 집중하셨습니다. 잠시 휴식을 취해보세요!",
+            "You've focused for {} minutes. Consider taking a short break!",
             continuous_mins
         );
 
@@ -115,9 +119,9 @@ impl FocusAnalyzer {
             }
         };
 
-        let title = "🎯 집중 시간 필요";
+        let title = "🎯 Focus time needed";
         let body = format!(
-            "오늘 소통에 {:.0}%의 시간을 사용했습니다. {}분의 집중 시간을 확보해보세요.",
+            "You've spent {:.0}% of today on communication. Consider blocking {} minutes of focus time.",
             comm_ratio * 100.0,
             suggested_focus_mins
         );
@@ -181,9 +185,9 @@ impl FocusAnalyzer {
             }
         };
 
-        let title = "🔄 작업 context";
+        let title = "🔄 Restore context";
         let body = format!(
-            "{}에서 {}분 전 중단되었습니다. 이전 작업으로 돌아가시겠습니까?",
+            "You were interrupted from {} {} minutes ago. Return to your previous task?",
             app, duration_mins
         );
 
@@ -198,7 +202,7 @@ impl FocusAnalyzer {
                 debug!("mark_suggestion_shown_by_id (restore_context) failed: {e}");
             }
             info!(
-                "context 복원 suggestion 발송: {} ({}분 전 중단)",
+                "context restore suggestion sent: {} (interrupted {} min ago)",
                 app, duration_mins
             );
         }
@@ -234,7 +238,7 @@ impl FocusAnalyzer {
             }
         };
 
-        let title = "🧭 반복 플레이북";
+        let title = "🧭 Recurring playbook";
         let confidence_percent = (signal.confidence * 100.0).round() as i32;
         let body = format!(
             "{} (confidence {}%)",
@@ -258,7 +262,7 @@ impl FocusAnalyzer {
         info!(
             confidence = signal.confidence,
             description = %signal.description,
-            "플레이북 패턴 suggestion 발송"
+            "playbook pattern suggestion sent"
         );
         self.update_cooldown(CooldownType::PatternDetected).await;
         Some(suggestion)

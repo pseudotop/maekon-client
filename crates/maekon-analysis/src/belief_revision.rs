@@ -129,12 +129,21 @@ impl BeliefRevision {
             {
                 continue;
             }
+            // Reject non-finite confidence and clamp to [0, 1] before persisting a
+            // durable epistemic edge (review4 F7). RelationEdgeProposal.confidence is
+            // an unvalidated LLM-supplied f32, and the model contract states the
+            // caller applies a confidence gate before persisting; a NaN/Inf/
+            // out-of-range value would otherwise be stored verbatim and could poison
+            // future comparisons/ordering.
+            if !r.confidence.is_finite() {
+                continue;
+            }
             let edge = MemoryEdge {
                 edge_id: generate_id("edg"),
                 src_id: r.src_claim_id,
                 dst_id: r.dst_id,
                 edge_type: r.edge_type,
-                confidence: r.confidence,
+                confidence: r.confidence.clamp(0.0, 1.0),
                 evidence_ref: r.evidence_ref,
                 source: "llm".to_string(),
                 created_at: now_secs,
@@ -152,6 +161,12 @@ impl BeliefRevision {
             .await
             .unwrap_or_default();
         for ch in changes {
+            // review4 F7 sibling: reject non-finite confidence (e.g. an LLM JSON
+            // overflow parsed to +inf) — `inf < threshold` is false, so it would
+            // otherwise slip through the hard gate below and persist as +inf.
+            if !ch.confidence.is_finite() {
+                continue;
+            }
             // F2: a wrong supersede destroys a durable belief — gate hard.
             if f64::from(ch.confidence) < threshold {
                 continue;
@@ -173,7 +188,7 @@ impl BeliefRevision {
                 src_id: ch.winner_claim_id.clone(),
                 dst_id: ch.loser_claim_id.clone(),
                 edge_type: EdgeType::Supersedes,
-                confidence: ch.confidence,
+                confidence: ch.confidence.clamp(0.0, 1.0),
                 evidence_ref: None,
                 source: "llm".to_string(),
                 created_at: now_secs,

@@ -64,6 +64,12 @@ pub(super) fn check_atspi_available() -> bool {
     }
     #[cfg(not(feature = "linux-atspi"))]
     {
-        true // Stub mode: claim available
+        // The AT-SPI extractor is compiled out, so extraction is hard-stubbed to
+        // empty. Report the capability as UNAVAILABLE rather than claiming it is
+        // ready (review4 V20) — a `true` here made desktop_permissions surface
+        // "linux_atspi_ready" (green) while every extraction silently returned
+        // nothing. has_permission()=false → the permission UI shows needs-attention
+        // and the capture path short-circuits honestly.
+        false
     }
 }

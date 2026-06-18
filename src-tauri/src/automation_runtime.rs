@@ -30,8 +30,8 @@ pub struct AutomationRuntime {
     pub element_finder: Arc<dyn ElementFinder>,
     pub intent_executor: Arc<IntentExecutor>,
     pub intent_planner: Arc<dyn IntentPlanner>,
-    /// Permissive-noop 경로(#4539)에서 액션을 인-프로세스로 실행할 입력 드라이버.
-    /// 컨트롤러 빌더가 `set_inline_action_executor`에 전달한다.
+    /// Input driver that runs actions in-process on the permissive-noop path
+    /// (#4539). The controller builder passes it to `set_inline_action_executor`.
     pub input_driver: Arc<dyn InputDriver>,
     pub access_mode: AiAccessMode,
     pub ocr_provider_name: String,
@@ -155,6 +155,9 @@ pub fn build_automation_runtime(
     // provider instance via `resolve_local_model_llm_provider`.
     // `None` is safe: disables health tracking (same as today for all other arms).
     llm_call_health: Option<Arc<LlmCallHealth>>,
+    // #6333 A10: minimum LLM self-reported interpretation confidence to auto-execute
+    // an LLM-planned intent (0.0 = disabled; from config.automation.min_llm_confidence).
+    min_llm_confidence: f64,
 ) -> Result<AutomationRuntime, CoreError> {
     let adapters = resolve_ai_provider_adapters(
         ai_config,
@@ -180,7 +183,8 @@ pub fn build_automation_runtime(
     > = None;
 
     let ocr_finder: Arc<dyn ElementFinder> = if let Some(frame_storage) = frame_storage {
-        let finder = LatestFrameOcrElementFinder::new(frame_storage, adapters.ocr.clone());
+        let finder = LatestFrameOcrElementFinder::new(frame_storage, adapters.ocr.clone())
+            .with_pii_level(pii_filter_level);
         let finder = if let Some(det) = rect_detector {
             finder.with_rectangle_detector(det)
         } else {
@@ -205,7 +209,8 @@ pub fn build_automation_runtime(
         IntentConfig::default(),
     );
     let intent_executor = Arc::new(IntentExecutor::new(resolver, IntentConfig::default()));
-    let planner = LlmIntentPlanner::new(adapters.llm.clone(), element_finder.clone());
+    let planner = LlmIntentPlanner::new(adapters.llm.clone(), element_finder.clone())
+        .with_min_llm_confidence(min_llm_confidence);
     let intent_planner: Arc<dyn IntentPlanner> = if let Some(loader) = skill_loader {
         Arc::new(planner.with_skill_loader(loader))
     } else {
@@ -251,6 +256,12 @@ impl LatestFrameOcrElementFinder {
         }
     }
 
+    /// Set the configured PII level for scene-element text masking (review4 V10).
+    pub fn with_pii_level(mut self, level: maekon_core::config::PiiFilterLevel) -> Self {
+        self.inner = self.inner.with_pii_level(level);
+        self
+    }
+
     pub fn with_rectangle_detector(
         mut self,
         detector: Arc<dyn maekon_core::ports::rectangle_detector::RectangleDetector>,
@@ -281,7 +292,7 @@ impl ElementFinder for LatestFrameOcrElementFinder {
         if !self.refresh_latest_frame().await? {
             return Err(CoreError::ElementNotFound {
                 code: maekon_core::error_codes::UiCode::ElementMissing,
-                name: "자동화용 최신 frame이 없습니다".to_string(),
+                name: "no latest frame available for automation".to_string(),
             });
         }
         self.inner.find_element(text, role, region).await
@@ -295,7 +306,7 @@ impl ElementFinder for LatestFrameOcrElementFinder {
         if !self.refresh_latest_frame().await? {
             return Err(CoreError::ElementNotFound {
                 code: maekon_core::error_codes::UiCode::ElementMissing,
-                name: "자동화용 최신 frame이 없습니다".to_string(),
+                name: "no latest frame available for automation".to_string(),
             });
         }
         self.inner
@@ -340,6 +351,8 @@ mod tests {
     #[cfg(feature = "analysis")]
     use maekon_core::models::event::ProcessDetail;
     #[cfg(feature = "analysis")]
+    use maekon_core::ports::consent_manager::ConsentManagerPort;
+    #[cfg(feature = "analysis")]
     use maekon_core::ports::monitor::ProcessMonitor;
     use maekon_core::ports::ocr_provider::{OcrProvider, OcrResult};
     #[cfg(feature = "analysis")]
@@ -367,7 +380,7 @@ mod tests {
             if image_format != "webp" {
                 return Err(CoreError::OcrError {
                     code: maekon_core::error_codes::ProviderCode::OcrFailed,
-                    message: format!("예상치 못한 포맷: {image_format}"),
+                    message: format!("unexpected format: {image_format}"),
                 });
             }
 
@@ -424,7 +437,7 @@ mod tests {
     #[cfg(feature = "analysis")]
     fn remote_ocr_guard(temp_dir: &TempDir) -> ExternalOcrPrivacyGuard {
         let consent_path = temp_dir.path().join("consent.json");
-        let consent_manager = ConsentManager::new(consent_path.clone());
+        let consent_manager = ConsentManager::new(consent_path);
         consent_manager
             .grant_consent(
                 ConsentPermissions {
@@ -435,9 +448,10 @@ mod tests {
                 30,
             )
             .expect("Failed to write consent");
+        let consent_manager: Arc<dyn ConsentManagerPort> = Arc::new(consent_manager);
 
         ExternalOcrPrivacyGuard::new(
-            consent_path,
+            consent_manager,
             PiiFilterLevel::Standard,
             maekon_core::config::ExternalDataPolicy::PiiFilterStandard,
             PrivacyConfig::default(),
@@ -549,6 +563,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         )
         .expect("LocalModel arm must not return Err");
         assert_eq!(runtime.access_mode, AiAccessMode::LocalModel);
@@ -584,6 +599,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         );
         result.expect("LocalModel arm must not return Err");
     }
@@ -611,6 +627,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         )
         .unwrap();
         assert_eq!(runtime.access_mode, AiAccessMode::ProviderApiKey);
@@ -648,6 +665,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         ) {
             Ok(_) => panic!("Expected an error"),
             // Iter-109: emission variant depends on whether the `server`
@@ -692,6 +710,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         )
         .unwrap();
         assert_eq!(runtime.ocr_source, ProviderSource::Remote);
@@ -724,6 +743,7 @@ mod tests {
             None,
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
+            0.0,  // min_llm_confidence — gate disabled in unit tests
         );
         let err = result
             .err()

@@ -1,25 +1,33 @@
-//! 로컬 SQLite 데이터베이스 암호화 키 관리
+//! Local SQLite database encryption key management.
 //!
-//! # 키 저장 전략
-//! 1. 키 파일 (`app_data_dir/.db_key`): 32바이트 원시 키
-//! 2. 파일 권한: Unix에서 0o600 (소유자만 읽기/쓰기)
+//! # Key storage strategy
+//! 1. Key file (`app_data_dir/.db_key`): 32-byte raw key
+//! 2. File permissions: 0o600 (owner read/write only) on Unix, owner-only DACL on Windows.
+//!    The file is created with restrictive permissions **atomically** — no world-readable
+//!    window between creation and chmod (TOCTOU fix, issue #5991).
 //!
-//! # 향후 작업
-//! SQLCipher 또는 at-rest 암호화 레이어와 연동 예정.
-//! 현재는 키 생성/저장/로드 인프라만 제공.
+//! # Future work
+//! Integration with SQLCipher or an at-rest encryption layer is planned.
+//! Currently only the key generation / storage / load infrastructure is provided.
 
 use crate::error::StorageError;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
-/// 32바이트 AES-256 데이터베이스 암호화 키
-#[derive(Clone)]
+/// 32-byte AES-256 database encryption key.
+///
+/// `ZeroizeOnDrop` derive wipes the 32-byte key material when the last owner is
+/// dropped, so the at-rest master key never lingers in freed heap memory
+/// (finding #6242). `[u8; 32]` already implements `Zeroize`. `Clone` is retained
+/// because the key is shared via `Arc` and produced by `from_bytes`/`generate`.
+#[derive(Clone, zeroize::ZeroizeOnDrop)]
 pub struct EncryptionKey([u8; 32]);
 
 impl EncryptionKey {
-    /// 키 파일에서 로드하거나 신규 생성
+    /// Load from the key file, or generate a new key.
     ///
-    /// - 파일 존재 시: 로드 (32바이트 검증)
-    /// - 파일 없을 시: 생성 후 파일에 저장 (Unix: 0o600 권한)
+    /// - If the file exists: load it (validating the 32-byte length).
+    /// - If the file is absent: generate, then persist to file (Unix: mode 0o600).
     pub fn load_or_create(app_data_dir: &Path) -> Result<Self, StorageError> {
         let key_path = app_data_dir.join(".db_key");
 
@@ -33,23 +41,26 @@ impl EncryptionKey {
         Ok(key)
     }
 
-    /// 원시 바이트에서 키 생성
+    /// Build a key from raw bytes.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// SQLite pragma key 형식 (hex 문자열)
-    pub fn as_hex(&self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    /// SQLite pragma key format (hex string).
+    ///
+    /// Returns the hex inside `Zeroizing` so this plaintext copy of the master
+    /// key is wiped from the heap when the returned value is dropped (#6242).
+    pub fn as_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// 원시 바이트 참조
+    /// Borrow the raw bytes.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// AES-256-GCM으로 데이터 암호화.
-    /// 반환 형식: nonce(12 bytes) || ciphertext(+16 bytes auth tag)
+    /// Encrypt data with AES-256-GCM.
+    /// Output format: nonce(12 bytes) || ciphertext(+16 bytes auth tag)
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, StorageError> {
         use aes_gcm::aead::Aead;
         use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -72,8 +83,14 @@ impl EncryptionKey {
         Ok(result)
     }
 
-    /// AES-256-GCM으로 encrypt()가 생성한 데이터 복호화.
-    pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
+    /// Decrypt data produced by `encrypt()` with AES-256-GCM.
+    ///
+    /// The plaintext is returned inside `Zeroizing` so the decrypted secret
+    /// material (e.g. the secret-registry plaintext) is wiped from the heap when
+    /// the returned buffer is dropped, rather than lingering in freed memory
+    /// (#6242). `Zeroizing<Vec<u8>>` derefs to `&[u8]`/`Vec<u8>`, so callers that
+    /// only read the bytes need no changes.
+    pub fn decrypt(&self, data: &[u8]) -> Result<Zeroizing<Vec<u8>>, StorageError> {
         if data.len() < 12 {
             return Err(StorageError::Encryption(
                 "ciphertext too short (< 12 bytes)".into(),
@@ -90,6 +107,7 @@ impl EncryptionKey {
 
         cipher
             .decrypt(nonce, ciphertext)
+            .map(Zeroizing::new)
             .map_err(|e| StorageError::Encryption(format!("decrypt: {e}")))
     }
 
@@ -118,23 +136,117 @@ impl EncryptionKey {
     }
 
     fn save_to_file(&self, path: &PathBuf) -> Result<(), StorageError> {
-        std::fs::write(path, self.0).map_err(|e| {
-            StorageError::Internal(format!("Key file write failed ({path:?}): {e}"))
-        })?;
+        // Create the file with restrictive permissions BEFORE any bytes are written so
+        // there is never a world-readable window (TOCTOU fix, issue #5991).
+        //
+        // If the file already exists (unexpected on the new-key path, but possible in
+        // concurrent or retry scenarios) we remove it and recreate rather than
+        // opening/truncating an existing file whose permissions may be too open.
+        use std::io::Write as _;
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| StorageError::Internal(format!("Key file permission set failed: {e}")),
-            )?;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // O_CREAT | O_EXCL | mode 0o600 in one syscall — atomically restrictive.
+            let file_result = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path);
+
+            let mut file = match file_result {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Remove stale file and retry with the same atomic open.
+                    std::fs::remove_file(path).map_err(|re| {
+                        StorageError::Internal(format!(
+                            "Key file removal for overwrite failed ({path:?}): {re}"
+                        ))
+                    })?;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(path)
+                        .map_err(|re| {
+                            StorageError::Internal(format!(
+                                "Key file create failed after removal ({path:?}): {re}"
+                            ))
+                        })?
+                }
+                Err(e) => {
+                    return Err(StorageError::Internal(format!(
+                        "Key file create failed ({path:?}): {e}"
+                    )))
+                }
+            };
+
+            file.write_all(&self.0).map_err(|e| {
+                StorageError::Internal(format!("Key file write failed ({path:?}): {e}"))
+            })?;
         }
 
         #[cfg(windows)]
         {
-            if let Err(e) = set_owner_only_dacl(path) {
-                tracing::warn!("Failed to set owner-only DACL on key file: {e}");
+            // On Windows we must apply the owner-only DACL before writing any bytes.
+            // We write to a temporary path first so we can set ACLs on it while it
+            // is still empty, then rename atomically.  If any step fails we treat it
+            // as a hard error — falling back to an unprotected write is not acceptable.
+            let tmp_path = path.with_extension("tmp_key");
+
+            // Remove any leftover temp file from a previous aborted attempt.
+            let _ = std::fs::remove_file(&tmp_path);
+
+            // Create the empty temp file, apply owner-only DACL, then write. The
+            // temp file inherits the parent directory ACL for the brief window
+            // before set_owner_only_dacl runs, but it is EMPTY during that window —
+            // no key bytes exist until after the DACL is applied, so no secret is
+            // ever exposed under the inherited ACL.
+            std::fs::File::create(&tmp_path).map_err(|e| {
+                StorageError::Internal(format!("Key temp file create failed ({tmp_path:?}): {e}"))
+            })?;
+
+            // Hard error if DACL cannot be set — do not leave the file unprotected.
+            set_owner_only_dacl(&tmp_path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                StorageError::Internal(format!(
+                    "Key file owner-only DACL failed ({tmp_path:?}): {e}"
+                ))
+            })?;
+
+            // Write bytes into the now-protected temp file.
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&tmp_path)
+                    .map_err(|e| {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        StorageError::Internal(format!(
+                            "Key temp file open for write failed ({tmp_path:?}): {e}"
+                        ))
+                    })?;
+                file.write_all(&self.0).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    StorageError::Internal(format!("Key file write failed ({tmp_path:?}): {e}"))
+                })?;
             }
+
+            // Remove any existing destination then rename into place.
+            let _ = std::fs::remove_file(path);
+            std::fs::rename(&tmp_path, path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                StorageError::Internal(format!(
+                    "Key file rename failed ({tmp_path:?} -> {path:?}): {e}"
+                ))
+            })?;
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            // Fallback for exotic platforms: best-effort write (no atomicity guarantee).
+            std::fs::write(path, self.0).map_err(|e| {
+                StorageError::Internal(format!("Key file write failed ({path:?}): {e}"))
+            })?;
         }
 
         Ok(())
@@ -254,7 +366,7 @@ pub(crate) fn set_owner_only_dacl(path: &std::path::Path) -> Result<(), StorageE
     }
 }
 
-// 키가 로그에 출력되지 않도록 Debug 구현 안전하게
+// Safe Debug implementation so the key is never printed to logs.
 impl std::fmt::Debug for EncryptionKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EncryptionKey([redacted])")
@@ -269,6 +381,31 @@ mod tests {
 
     fn fixture_key(fill: u8) -> EncryptionKey {
         EncryptionKey::from_bytes(std::array::from_fn(|_| fill))
+    }
+
+    /// Regression for #6242: the master key must wipe its bytes on drop. This is
+    /// a compile-time guarantee — if the `ZeroizeOnDrop` derive is ever removed
+    /// from `EncryptionKey`, this bound fails to compile.
+    #[test]
+    fn master_key_is_zeroize_on_drop() {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<EncryptionKey>();
+    }
+
+    /// Regression for #6242: transient plaintext / hex copies of secret material
+    /// are returned inside `Zeroizing` so they wipe on drop. The explicit type
+    /// annotations pin the wrapper — dropping it back to a bare `String`/`Vec<u8>`
+    /// breaks this test.
+    #[test]
+    fn secret_outputs_are_zeroizing_wrapped() {
+        let key = fixture_key(0x42);
+
+        let hex: zeroize::Zeroizing<String> = key.as_hex();
+        assert_eq!(hex.len(), 64);
+
+        let encrypted = key.encrypt(b"top secret").unwrap();
+        let plaintext: zeroize::Zeroizing<Vec<u8>> = key.decrypt(&encrypted).unwrap();
+        assert_eq!(&plaintext[..], b"top secret");
     }
 
     #[test]
@@ -291,7 +428,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let key1 = EncryptionKey::load_or_create(dir.path()).unwrap();
         let key2 = EncryptionKey::load_or_create(dir.path()).unwrap();
-        assert_eq!(key1.as_hex(), key2.as_hex());
+        // `as_hex` returns `Zeroizing<String>`; compare the inner strings.
+        assert_eq!(key1.as_hex().as_str(), key2.as_hex().as_str());
     }
 
     #[test]
@@ -321,7 +459,8 @@ mod tests {
         assert_ne!(&encrypted[12..], plaintext);
 
         let decrypted = key.decrypt(&encrypted).unwrap();
-        assert_eq!(decrypted, plaintext);
+        // `decrypted` is `Zeroizing<Vec<u8>>`; compare as slices.
+        assert_eq!(&decrypted[..], &plaintext[..]);
     }
 
     #[test]
@@ -334,9 +473,9 @@ mod tests {
         // Different random nonces produce different ciphertexts
         assert_ne!(enc1, enc2);
 
-        // Both decrypt to the same plaintext
-        assert_eq!(key.decrypt(&enc1).unwrap(), plaintext);
-        assert_eq!(key.decrypt(&enc2).unwrap(), plaintext);
+        // Both decrypt to the same plaintext (decrypt yields Zeroizing<Vec<u8>>).
+        assert_eq!(&key.decrypt(&enc1).unwrap()[..], &plaintext[..]);
+        assert_eq!(&key.decrypt(&enc2).unwrap()[..], &plaintext[..]);
     }
 
     #[test]
@@ -401,6 +540,58 @@ mod tests {
 
         let encrypted = key.encrypt(&plaintext).unwrap();
         let decrypted = key.decrypt(&encrypted).unwrap();
-        assert_eq!(decrypted, plaintext);
+        // `decrypted` is `Zeroizing<Vec<u8>>`; compare as slices.
+        assert_eq!(&decrypted[..], &plaintext[..]);
+    }
+
+    /// Verify that the key file is created with mode 0o600 (owner read/write only),
+    /// with no world-readable window at any point (TOCTOU fix, issue #5991).
+    #[cfg(unix)]
+    #[test]
+    fn key_file_created_with_mode_0o600() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        EncryptionKey::load_or_create(dir.path()).unwrap();
+
+        let key_path = dir.path().join(".db_key");
+        let metadata = fs::metadata(&key_path).unwrap();
+        // Mask to the permission bits only (drop file type bits).
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "key file must be created with mode 0o600, got 0o{mode:o}"
+        );
+    }
+
+    /// Verify that `save_to_file` recovers when the target file already exists
+    /// (the `AlreadyExists` branch of the atomic `create_new` path) and the
+    /// recreated file still has mode 0o600 — exercised by calling `save_to_file`
+    /// directly twice on the same path (`load_or_create` cannot reach this branch
+    /// because it short-circuits on `key_path.exists()`).
+    #[cfg(unix)]
+    #[test]
+    fn key_file_save_over_existing_keeps_mode_0o600() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".db_key");
+
+        // First write creates the file via create_new(true).
+        EncryptionKey::from_bytes([1u8; 32])
+            .save_to_file(&path)
+            .unwrap();
+
+        // Second write finds the file present -> hits the AlreadyExists branch
+        // (remove + recreate). It must still land mode 0o600.
+        EncryptionKey::from_bytes([2u8; 32])
+            .save_to_file(&path)
+            .unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "key file must keep mode 0o600 after the AlreadyExists recreate branch, got 0o{mode:o}"
+        );
     }
 }

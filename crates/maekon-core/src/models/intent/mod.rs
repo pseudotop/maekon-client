@@ -203,6 +203,7 @@ mod tests {
             config: None,
             timeout_ms: Some(10000),
             policy_token: "token-abc".to_string(),
+            origin: crate::models::automation::CommandOrigin::External,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         let deser: IntentCommand = serde_json::from_str(&json).unwrap();
@@ -323,7 +324,7 @@ mod tests {
         for preset in &presets {
             assert!(
                 !preset.steps.is_empty(),
-                "프리셋 '{}'에 단계 none",
+                "preset '{}' has no steps",
                 preset.id
             );
         }
@@ -356,7 +357,7 @@ mod tests {
         assert!(has_workflow);
     }
 
-    /// F-RC-C36-05: PresetCategory serde PascalCase 라운드트립 검증.
+    /// F-RC-C36-05: verify PresetCategory serde PascalCase round-trip.
     #[test]
     fn preset_category_serde_pascal_case_roundtrip() {
         let cases = [
@@ -366,14 +367,19 @@ mod tests {
             (PresetCategory::Custom, "\"Custom\""),
         ];
         for (variant, expected_json) in &cases {
-            let json = serde_json::to_string(variant).expect("직렬화 실패");
+            let json = serde_json::to_string(variant).expect("serialization failed");
             assert_eq!(
                 json, *expected_json,
-                "PascalCase JSON 불일치: {:?}",
+                "PascalCase JSON mismatch: {:?}",
                 variant
             );
-            let restored: PresetCategory = serde_json::from_str(&json).expect("역직렬화 실패");
-            assert_eq!(restored, *variant, "역직렬화 후 값 불일치: {:?}", variant);
+            let restored: PresetCategory =
+                serde_json::from_str(&json).expect("deserialization failed");
+            assert_eq!(
+                restored, *variant,
+                "value mismatch after deserialization: {:?}",
+                variant
+            );
         }
     }
 }

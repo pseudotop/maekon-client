@@ -5,7 +5,7 @@ import i18n from '../../i18n'
 import type { PendingConfirmationDto } from '../types'
 import { AutomationConfirmModal } from './AutomationConfirmModal'
 
-// IPC invoke mock — confirm_automation_command 호출을 가로채 검증
+// IPC invoke mock — intercepts and verifies the confirm_automation_command call
 const mockInvoke = vi.fn()
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),

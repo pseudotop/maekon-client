@@ -5,6 +5,13 @@ use std::path::{Path, PathBuf};
 
 use super::super::{UpdateError, Updater};
 
+/// #6266: hard upper bound on a downloaded update artifact, before checksum /
+/// signature verification. A missing/forged Content-Length or an endless
+/// chunked body could otherwise fill the disk (streaming path) or exhaust memory
+/// (`bytes()` path). 2 GiB is far above any real installer (tar.gz/zip/dmg/msi/
+/// deb are well under 500 MB) while still bounding abuse.
+const MAX_UPDATE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 impl Updater {
     /// Apply a delta patch: read current binary, apply bsdiff patch, verify checksum.
     ///
@@ -58,7 +65,22 @@ impl Updater {
             )));
         }
 
+        // #6266: reject an oversized declared body before buffering it into memory.
+        if let Some(len) = response.content_length() {
+            if len > MAX_UPDATE_BYTES {
+                return Err(UpdateError::Download(format!(
+                    "Update artifact too large: {len} bytes exceeds cap {MAX_UPDATE_BYTES}"
+                )));
+            }
+        }
+
         let bytes = response.bytes().await?;
+        if bytes.len() as u64 > MAX_UPDATE_BYTES {
+            return Err(UpdateError::Download(format!(
+                "Update artifact too large: {} bytes exceeds cap {MAX_UPDATE_BYTES}",
+                bytes.len()
+            )));
+        }
 
         let expected_hash = self.fetch_expected_sha256(&validated_url).await?;
         let actual_hash = Self::sha256_hex(&bytes);
@@ -123,6 +145,15 @@ impl Updater {
             )));
         }
 
+        // #6266: reject an oversized declared body up front.
+        if let Some(len) = response.content_length() {
+            if len > MAX_UPDATE_BYTES {
+                return Err(UpdateError::Download(format!(
+                    "Update artifact too large: {len} bytes exceeds cap {MAX_UPDATE_BYTES}"
+                )));
+            }
+        }
+
         let total_bytes = response.content_length().unwrap_or(0);
         let mut downloaded: u64 = 0;
 
@@ -148,10 +179,19 @@ impl Updater {
         while let Some(chunk_result) = stream.next().await {
             let chunk =
                 chunk_result.map_err(|e| UpdateError::Download(format!("Stream error: {e}")))?;
+            downloaded += chunk.len() as u64;
+            // #6266: enforce the size cap mid-stream so a body with no/forged
+            // Content-Length cannot fill the disk. Delete the partial temp file.
+            if downloaded > MAX_UPDATE_BYTES {
+                drop(file);
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(UpdateError::Download(format!(
+                    "Update artifact exceeded cap {MAX_UPDATE_BYTES} bytes mid-stream; aborted"
+                )));
+            }
             file.write_all(&chunk)
                 .await
                 .map_err(|e| UpdateError::Install(format!("Chunk write error: {e}")))?;
-            downloaded += chunk.len() as u64;
             let percent = if total_bytes > 0 {
                 (downloaded as f32 / total_bytes as f32) * 100.0
             } else {

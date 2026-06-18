@@ -91,8 +91,8 @@ pub(crate) async fn handle_event_analysis(
                     info!(
                         id = %s.suggestion_id,
                         priority = ?s.priority,
-                        "event-driven suggestion: {}",
-                        s.content
+                        content = %maekon_monitor::log_privacy::content_digest(&s.content),
+                        "event-driven suggestion produced"
                     );
                     if let Err(e) = storage.save_suggestion(s).await {
                         warn!("suggestion save failure: {e}");

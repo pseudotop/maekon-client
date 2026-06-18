@@ -20,7 +20,11 @@ pub(super) fn build_audio_runtime_state(
         #[cfg(feature = "audio")]
         {
             if config.audio.enabled {
-                Some(Arc::new(maekon_audio::AudioCapture::new()))
+                // #6342: thread the configured max recording duration into the
+                // capture buffers (was silently ignored).
+                Some(Arc::new(maekon_audio::AudioCapture::new(
+                    config.audio.max_recording_secs,
+                )))
             } else {
                 tracing::debug!("audio capture disabled by config");
                 None
@@ -59,7 +63,27 @@ pub(super) fn build_audio_runtime_state(
                     } else {
                         std::path::PathBuf::from(&config.audio.whisper_model_path)
                     };
-                    if model_path.exists() {
+                    // #6344: for the download-managed default model, gate on a
+                    // verify-on-load SHA check (not bare existence), so a model
+                    // corrupted/tampered on disk after a verified download is not
+                    // loaded. A user-supplied path has no pinned SHA, so it stays
+                    // existence-gated by design.
+                    let model_loadable = if config.audio.whisper_model_path.is_empty() {
+                        #[cfg(feature = "download")]
+                        {
+                            maekon_audio::model_downloader::managed_model_verified_on_disk(
+                                config.audio.model_size,
+                                &model_dir,
+                            )
+                        }
+                        #[cfg(not(feature = "download"))]
+                        {
+                            model_path.exists()
+                        }
+                    } else {
+                        model_path.exists()
+                    };
+                    if model_loadable {
                         match maekon_audio::WhisperSttProvider::new(
                             &model_path,
                             config.audio.language,

@@ -17,8 +17,8 @@ impl SqliteStorage {
 
     pub fn get_or_create_focus_metrics(&self, date: &str) -> Result<FocusMetrics, StorageError> {
         let (skip_start, skip_end) = Self::date_to_period_range(date);
-        // 신규 행 INSERT 가능성이 있으므로 write_lock 사용. deletion_flag set 시
-        // 빈 메트릭(해당 기간)을 반환한다(erase 중 호출 시 무해).
+        // Use write_lock since this may INSERT a new row. When deletion_flag is set,
+        // return empty metrics (for the given period) — harmless if called during erase.
         let skip = FocusMetrics::new(skip_start, skip_end).map_err(|e| {
             StorageError::Internal(format!("date_to_period_range produced invalid window: {e}"))
         })?;
@@ -32,8 +32,9 @@ impl SqliteStorage {
         date: &str,
         metrics: &FocusMetrics,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, focus_metrics ∈ ALL_TABLES).
-        // analyze_periodic(bare async)에서 호출되나 parking_lot 동기 락이라 panic 없음(B2 해소).
+        // Write — write_lock (skipped when deletion_flag is set, focus_metrics ∈ ALL_TABLES).
+        // Called from analyze_periodic (bare async), but uses a parking_lot sync lock so
+        // there is no panic (B2 resolved).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE focus_metrics SET
@@ -80,7 +81,7 @@ impl SqliteStorage {
     ) -> Result<(), StorageError> {
         let _ = self.get_or_create_focus_metrics(date)?;
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE focus_metrics SET
@@ -119,8 +120,9 @@ impl SqliteStorage {
 
     /// Async `get_or_create_focus_metrics` over the write funnel.
     ///
-    /// 신규 행 INSERT 가능성이 있으므로 `with_conn`(write funnel). deletion_flag
-    /// set 시 빈 메트릭(해당 기간)을 반환한다(erase 중 호출 시 무해).
+    /// Uses `with_conn` (write funnel) since this may INSERT a new row. When
+    /// deletion_flag is set, returns empty metrics (for the given period) —
+    /// harmless if called during erase.
     pub(crate) async fn get_or_create_focus_metrics_async(
         &self,
         date: &str,
@@ -184,8 +186,8 @@ impl SqliteStorage {
 
     /// Async `increment_focus_metrics` over the write funnel.
     ///
-    /// get-or-create 와 increment 를 단일 `with_conn` 클로저(단일 락 획득) 안에서
-    /// 수행해 erase 의 wipe 에 대해 원자적이다.
+    /// Performs get-or-create and increment within a single `with_conn` closure
+    /// (one lock acquisition) so it is atomic with respect to an erase wipe.
     pub(crate) async fn increment_focus_metrics_async(
         &self,
         date: &str,
@@ -198,7 +200,8 @@ impl SqliteStorage {
         // owned move into the Send + 'static closure.
         let date = date.to_string();
         self.with_conn(move |conn| {
-            // 행 보장(없으면 INSERT) 후 누적 UPDATE — 동일 락 안에서 수행.
+            // Ensure the row exists (INSERT if missing), then accumulate via UPDATE —
+            // all within the same lock.
             Self::get_or_create_focus_metrics_inner(conn, &date)?;
             conn.execute(
                 "UPDATE focus_metrics SET
@@ -303,7 +306,7 @@ impl SqliteStorage {
         &self,
         days: usize,
     ) -> Result<Vec<(String, FocusMetrics)>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_recent_focus_metrics_inner(read.conn(), days)
     }

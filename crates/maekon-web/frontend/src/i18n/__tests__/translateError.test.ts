@@ -34,8 +34,8 @@ describe('wire-code i18n coverage', () => {
     expect(registry).toHaveLength(54)
   })
 
-  // 앱 런타임 로케일(`src/i18n/index.ts` supportedLngs)과 동일한 5개 로케일.
-  // 와이어 에러 번역은 이 전부에 대해 빠짐없이 커버되어야 한다 (#4824).
+  // The same 5 locales as the app runtime locales (`src/i18n/index.ts` supportedLngs).
+  // Wire error translations must cover all of them without gaps (#4824).
   const ALL_LOCALES = ['en', 'ko', 'ja', 'zh-CN', 'es'] as const
 
   it.each(ALL_LOCALES)('every wire code has a %s translation', (locale) => {
@@ -44,7 +44,7 @@ describe('wire-code i18n coverage', () => {
   })
 
   it('all 5 locale resource sets have identical keys (no drift between locales)', () => {
-    // en 을 기준으로 나머지 로케일의 키 집합이 정확히 일치하는지 검증한다.
+    // Using en as the baseline, verify that the key sets of the other locales match it exactly.
     const enCodes = new Set(translatedCodes('en'))
     for (const locale of ALL_LOCALES) {
       const localeCodes = new Set(translatedCodes(locale))

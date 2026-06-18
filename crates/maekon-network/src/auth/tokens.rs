@@ -14,6 +14,17 @@ use maekon_core::config::TlsConfig;
 
 use crate::error::NetworkError;
 
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/// Upper bound (in seconds) for a server-supplied token TTL (`expires_in`).
+///
+/// `expires_in` is server-controlled; feeding an adversarial/huge value (e.g.
+/// `i64::MAX`) straight into `chrono::Duration::seconds()` panics (TimeDelta
+/// out-of-range) or overflows the subsequent `Utc::now() + Duration` addition.
+/// Clamping to 30 days keeps the resulting `Duration`/`DateTime` trivially in
+/// range while remaining far longer than any realistic access-token lifetime.
+pub(super) const MAX_TOKEN_TTL_SECS: i64 = 60 * 60 * 24 * 30;
+
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, serde::Deserialize)]

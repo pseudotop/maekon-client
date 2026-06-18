@@ -18,7 +18,7 @@ const MAX_UNSENT_EVENTS_RETAINED: i64 = 10_000;
 impl SqliteStorage {
     pub fn count_events_in_range(&self, window: &TimeWindow) -> Result<u64, StorageError> {
         let (from, to) = window.to_sql_pair();
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::count_events_in_range_inner(read.conn(), &from, &to)
     }
@@ -122,25 +122,26 @@ impl SqliteStorage {
         }
     }
 
-    /// 이벤트 슬라이스를 SQLite에 일괄 저장한다. 트랜잭션 단위로 처리하여
-    /// 성능을 최적화한다.
+    /// Batch-save a slice of events to SQLite. Processed as a single transaction
+    /// to optimize performance.
     ///
     /// # Arguments
     ///
-    /// * `events` - 저장할 이벤트 슬라이스. 비어 있으면 즉시 `Ok(0)`을 반환한다.
+    /// * `events` - The slice of events to save. Returns `Ok(0)` immediately if empty.
     ///
     /// # Returns
     ///
     /// Returns `Ok(events.len())` — the count of events in the input slice.
     /// Duplicate `event_id` values are silently ignored by `INSERT OR IGNORE`,
     /// so the returned count may exceed the number of rows actually written.
-    /// 실제 삽입된 행 수가 아닌 입력 슬라이스의 길이를 반환한다는 점에 주의한다.
+    /// Note that this returns the length of the input slice, not the actual
+    /// number of rows inserted.
     pub fn save_events_batch(&self, events: &[Event]) -> Result<usize, StorageError> {
         if events.is_empty() {
             return Ok(0);
         }
 
-        // 쓰기(batch transaction) — write_lock(deletion_flag set 시 스킵 → 0건, events ∈ ALL_TABLES).
+        // Write (batch transaction) — write_lock (skip when deletion_flag is set → 0 rows; events ∈ ALL_TABLES).
         self.conn.write_lock().run_mut(0usize, |conn| {
         let tx = conn
             .transaction()

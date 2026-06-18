@@ -67,6 +67,36 @@ mod tests {
         assert_ne!(path2, path3);
     }
 
+    /// Regression: >1000 frames sharing a one-second timestamp must each get a
+    /// distinct filename. The previous `% 1000` counter wrap reused suffixes
+    /// after 1000 frames, silently overwriting earlier frames in the same second.
+    #[tokio::test]
+    async fn more_than_1000_frames_same_second_do_not_collide() {
+        let (storage, _temp) = create_test_storage().await;
+
+        let timestamp = Utc::now();
+        const N: usize = 1050;
+
+        let mut paths = std::collections::HashSet::new();
+        for i in 0..N {
+            let data = format!("frame-{i}").into_bytes();
+            let path = storage.save_frame(timestamp, &data).await.unwrap();
+            assert!(
+                paths.insert(path.clone()),
+                "frame {i} reused filename {} -- collision after >1000 frames",
+                path.display()
+            );
+        }
+        assert_eq!(paths.len(), N, "all {N} frames must have unique paths");
+
+        // Every written frame must still be loadable by its returned path,
+        // proving the read-back/lookup path is consistent with the new names.
+        for path in &paths {
+            let loaded = storage.load_frame(path).await.unwrap();
+            assert!(loaded.starts_with(b"frame-"));
+        }
+    }
+
     #[tokio::test]
     async fn save_frames_batch_parallel() {
         let (storage, _temp) = create_test_storage().await;
@@ -169,6 +199,88 @@ mod tests {
         assert_eq!(storage.frames_dir(), temp.path().join("frames"));
     }
 
+    /// Regression (retention-datedir): `enforce_retention` must classify date
+    /// directories with the same shared `list_date_dirs` recognizer that the
+    /// storage-limit and GDPR delete-all paths use. The previous inline check
+    /// only tested `name.len() == 10`, so it never confirmed the entry was a
+    /// directory and skipped the `YYYY-MM-DD` hyphen-at-index-4 shape check.
+    /// That weaker check could match a 10-char file or a 10-char non-date
+    /// directory at the frames root, classifying retention candidates
+    /// inconsistently with the other two paths.
+    #[tokio::test]
+    async fn enforce_retention_uses_shared_date_dir_recognizer() {
+        // retention_days = 7 (from create_test_storage).
+        let (storage, _temp) = create_test_storage().await;
+        let frames_dir = storage.frames_dir();
+        tokio::fs::create_dir_all(&frames_dir).await.unwrap();
+
+        // (1) Genuinely old date directory -- must be deleted (older than cutoff).
+        let old_dir = frames_dir.join("2000-01-01");
+        tokio::fs::create_dir_all(&old_dir).await.unwrap();
+        tokio::fs::write(old_dir.join("10-00-00-000.webp"), b"old")
+            .await
+            .unwrap();
+
+        // (2) Recent date directory -- newer than the 7-day cutoff, must survive.
+        let recent_name = Utc::now().format("%Y-%m-%d").to_string();
+        let recent_dir = frames_dir.join(&recent_name);
+        tokio::fs::create_dir_all(&recent_dir).await.unwrap();
+        tokio::fs::write(recent_dir.join("10-00-00-000.webp"), b"recent")
+            .await
+            .unwrap();
+
+        // (3) A 10-char *file* whose name sorts before the cutoff. The old inline
+        //     check (no is_dir guard) would have treated this as a deletable date
+        //     dir; the shared recognizer ignores non-directories.
+        let lookalike_file = frames_dir.join("1999-12-31"); // 10 chars, < cutoff
+        tokio::fs::write(&lookalike_file, b"not-a-dir")
+            .await
+            .unwrap();
+
+        // (4) A 10-char *directory* without the YYYY-MM-DD hyphen at index 4. The
+        //     old check (no hyphen-at-4 guard) would have matched on length alone.
+        let bogus_dir = frames_dir.join("abcd123456"); // 10 chars, no '-' at idx 4
+        tokio::fs::create_dir_all(&bogus_dir).await.unwrap();
+        tokio::fs::write(bogus_dir.join("payload.bin"), b"keep")
+            .await
+            .unwrap();
+
+        let deleted = storage.enforce_retention().await.unwrap();
+
+        // Only the single file in the genuinely-old date directory is deleted.
+        assert_eq!(
+            deleted, 1,
+            "only the old date directory's frame should be counted/deleted (retention-datedir)"
+        );
+
+        // The recognizer-recognized directories that survive must exactly match
+        // what list_date_dirs reports -- i.e. the recent date dir, and nothing else
+        // that the helper considers a date dir.
+        let mut remaining = list_date_dirs(&frames_dir).await.unwrap();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec![recent_name.clone()],
+            "list_date_dirs must see only the recent date dir after retention (retention-datedir)"
+        );
+
+        // The old date directory is gone.
+        assert!(
+            !old_dir.exists(),
+            "the old date directory must be removed by retention"
+        );
+        // The non-date lookalike file is untouched (never a retention candidate).
+        assert!(
+            lookalike_file.exists(),
+            "a 10-char file must not be treated as a deletable date dir (retention-datedir)"
+        );
+        // The 10-char non-date directory is untouched (fails the hyphen-at-4 shape).
+        assert!(
+            bogus_dir.join("payload.bin").exists(),
+            "a 10-char non-date directory must not be treated as a date dir (retention-datedir)"
+        );
+    }
+
     #[tokio::test]
     async fn reconcile_cache_size_counts_nested_frame_files() {
         let (storage, temp) = create_test_storage().await;
@@ -249,26 +361,26 @@ mod tests {
         assert!(remaining.is_empty());
     }
 
-    // ── #4928: deletion_flag 프레임 배리어 ──────────────────────────────
+    // ---- #4928: deletion_flag frame barrier --------------------------------
 
-    /// deletion_flag 가 set 이면 save_frame 이 파일을 쓰지 않고 빈 경로를 반환한다.
+    /// When deletion_flag is set, save_frame writes no file and returns an empty path.
     #[tokio::test]
     async fn save_frame_skips_when_deletion_flag_set() {
         let (mut storage, _temp) = create_test_storage().await;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         storage.set_deletion_flag(flag.clone());
 
-        // flag clear: 정상 저장.
+        // flag clear: normal save.
         let p1 = storage
             .save_frame(Utc::now(), b"before-revoke")
             .await
             .unwrap();
         assert!(
             !p1.as_os_str().is_empty(),
-            "flag clear 시 경로가 비어선 안 된다"
+            "path must not be empty when the flag is clear"
         );
 
-        // flag set: 스킵 (빈 경로, 파일 미생성).
+        // flag set: skip (empty path, no file created).
         flag.store(true, std::sync::atomic::Ordering::Release);
         let p2 = storage
             .save_frame(Utc::now(), b"after-revoke")
@@ -276,10 +388,10 @@ mod tests {
             .unwrap();
         assert!(
             p2.as_os_str().is_empty(),
-            "deletion_flag set 시 save_frame 은 빈 경로를 반환해야 한다 (#4928 스킵)"
+            "save_frame must return an empty path when deletion_flag is set (#4928 skip)"
         );
 
-        // 디스크에는 revoke 전 1개 프레임만 존재해야 한다.
+        // Only the single pre-revoke frame must exist on disk.
         let dirs = list_date_dirs(&storage.frames_dir()).await.unwrap();
         let mut total_files = 0usize;
         for d in dirs {
@@ -288,11 +400,11 @@ mod tests {
         }
         assert_eq!(
             total_files, 1,
-            "revoke 이후 프레임 쓰기는 스킵되어 파일이 1개(revoke 전)만 남아야 한다"
+            "frame writes after revoke must be skipped, leaving only the 1 pre-revoke file"
         );
     }
 
-    /// deletion_flag 가 set 이면 save_frames_batch 가 모두 스킵(빈 경로)한다.
+    /// When deletion_flag is set, save_frames_batch skips every entry (empty paths).
     #[tokio::test]
     async fn save_frames_batch_skips_when_deletion_flag_set() {
         let (mut storage, _temp) = create_test_storage().await;
@@ -309,20 +421,20 @@ mod tests {
             let p = r.unwrap();
             assert!(
                 p.as_os_str().is_empty(),
-                "deletion_flag set 시 batch 의 모든 항목이 빈 경로(스킵)여야 한다"
+                "every batch entry must be an empty path (skipped) when deletion_flag is set"
             );
         }
-        // 디스크에 어떤 프레임 파일도 없어야 한다.
+        // No frame file may exist on disk.
         assert!(
             list_date_dirs(&storage.frames_dir())
                 .await
                 .unwrap()
                 .is_empty(),
-            "flag set 시 batch 는 디렉터리/파일을 만들지 않아야 한다"
+            "with the flag set, the batch must not create any directory or file"
         );
     }
 
-    /// set_deletion_flag install 후 deletion_flag() 가 동일 Arc(ptr-eq)를 반환한다.
+    /// After set_deletion_flag installs a flag, deletion_flag() returns the same Arc (ptr-eq).
     #[tokio::test]
     async fn set_deletion_flag_is_ptr_eq() {
         let (mut storage, _temp) = create_test_storage().await;
@@ -331,7 +443,7 @@ mod tests {
         let observed = storage.deletion_flag();
         assert!(
             std::sync::Arc::ptr_eq(&observed, &flag),
-            "install 된 flag 와 deletion_flag() 반환값은 동일 Arc 여야 한다"
+            "the installed flag and the deletion_flag() return value must be the same Arc"
         );
     }
 
@@ -359,7 +471,7 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    // ── Encrypted frame storage tests ──────────────────────────────
+    // ---- Encrypted frame storage tests -------------------------------
 
     async fn create_encrypted_test_storage() -> (FrameFileStorage, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -458,6 +570,254 @@ mod tests {
                 StorageError::Encryption(_)
             ),
             "decrypting a frame with the wrong key must yield StorageError::Encryption"
+        );
+    }
+
+    /// Regression: a load that fails on the read+decrypt step must not deplete
+    /// the buffer pool. The decrypt failure is the fallible step that used to
+    /// sit between `acquire()` and `release()`; if the pooled buffer is dropped
+    /// on the early `?`-return the pool shrinks permanently (bounded perf
+    /// regression). The pool occupancy must be unchanged after the error.
+    #[tokio::test]
+    async fn load_error_path_does_not_deplete_buffer_pool() {
+        let temp_dir = TempDir::new().unwrap();
+        let key1 = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
+        let key2 = Arc::new(EncryptionKey::from_bytes([0x43; 32]));
+
+        let storage1 =
+            FrameFileStorage::with_encryption(temp_dir.path().to_path_buf(), 100, 7, Some(key1))
+                .await
+                .unwrap();
+        let rel_path = storage1
+            .save_frame(Utc::now(), b"secret frame data")
+            .await
+            .unwrap();
+
+        // storage2 holds the wrong key, so every decrypt below fails.
+        let storage2 =
+            FrameFileStorage::with_encryption(temp_dir.path().to_path_buf(), 100, 7, Some(key2))
+                .await
+                .unwrap();
+
+        let initial = storage2.buffer_pool.len();
+        assert_eq!(
+            initial,
+            super::super::buffer::BUFFER_POOL_SIZE,
+            "fresh pool should be full"
+        );
+
+        // Far more failing loads than the pool capacity -- a leak would drain it.
+        // Each load fails on the AES-GCM decrypt step (wrong key), so the error
+        // must be StorageError::Encryption -- proving the pool guarantee is tested
+        // against the read+decrypt failure path, not some unrelated error.
+        for _ in 0..(super::super::buffer::BUFFER_POOL_SIZE * 4) {
+            assert!(
+                matches!(
+                    storage2.load_frame(&rel_path).await.unwrap_err(),
+                    StorageError::Encryption(_)
+                ),
+                "wrong-key load must fail on decrypt with StorageError::Encryption"
+            );
+        }
+        assert_eq!(
+            storage2.buffer_pool.len(),
+            initial,
+            "single-frame load error path must not deplete the buffer pool"
+        );
+
+        // Same guarantee for the parallel batch path (shared Arc<BufferPool>).
+        let paths: Vec<_> = (0..(super::super::buffer::BUFFER_POOL_SIZE * 4))
+            .map(|_| rel_path.clone())
+            .collect();
+        let results = storage2.load_frames_batch(paths).await;
+        // Same decrypt-failure contract as the single-frame path: every batch entry
+        // must surface StorageError::Encryption (wrong key), confirming the parallel
+        // path also exercises the read+decrypt failure that could deplete the pool.
+        assert!(
+            results
+                .iter()
+                .all(|r| matches!(r, Err(StorageError::Encryption(_)))),
+            "every wrong-key batch load must fail on decrypt with StorageError::Encryption"
+        );
+        assert_eq!(
+            storage2.buffer_pool.len(),
+            initial,
+            "batch load error path must not deplete the buffer pool"
+        );
+    }
+
+    // ---- #6244: torn-frame resilience --------------------------------------
+
+    /// Regression (#6244, part 1): a write failure must not leave a torn frame
+    /// file behind under the just-claimed (highest) counter. The file is created
+    /// read-only so `write_all` fails deterministically on every platform; the
+    /// cleanup must then remove the file before the error is propagated.
+    #[tokio::test]
+    async fn write_failure_removes_torn_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("12-00-00-0000000000.webp");
+
+        // Create the target read-only so the subsequent write_all fails. We keep
+        // .write(true) so the open itself succeeds (mirroring write_frame_atomic's
+        // create_new open), but the read-only mode makes the OS reject writes.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o444);
+        }
+        // Materialize the file, then reopen read-only so writes are rejected.
+        opts.open(&file_path).unwrap();
+        let ro_file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&file_path)
+            .await
+            .unwrap();
+
+        assert!(file_path.exists(), "precondition: torn file must exist");
+
+        let result =
+            super::super::io::write_all_or_cleanup(ro_file, &file_path, b"frame payload").await;
+
+        // The write_all failure is wrapped as StorageError::Internal with a
+        // "frame file save failure" message -- assert the variant AND the message
+        // so a future refactor cannot quietly turn this into an unrelated error.
+        let err = result.expect_err("writing to a read-only handle must fail (#6244)");
+        assert!(
+            matches!(&err, StorageError::Internal(msg) if msg.contains("frame file save failure")),
+            "read-only write must surface StorageError::Internal(\"frame file save failure: ...\"), got {err:?}"
+        );
+        assert!(
+            !file_path.exists(),
+            "torn file must be removed on write failure so it cannot become the highest-counter frame (#6244)"
+        );
+    }
+
+    /// Regression (#6244, part 2): a corrupt/torn newest frame must not block
+    /// `load_latest_frame` -- it skips to the next-lower counter and returns the
+    /// prior good frame. Uses encrypted storage so an undecryptable newest file
+    /// makes `load_frame` fail (the unencrypted path reads raw bytes and would
+    /// not surface corruption).
+    #[tokio::test]
+    async fn load_latest_frame_skips_corrupt_newest_returns_prior() {
+        let (storage, _temp) = create_encrypted_test_storage().await;
+
+        // Prior good frame (lower counter).
+        let ts = Utc::now();
+        let good_path = storage.save_frame(ts, b"prior-good-frame").await.unwrap();
+        let day_dir = storage.frames_dir().join(ts.format("%Y-%m-%d").to_string());
+
+        // Inject a corrupt newest frame: a lexicographically-higher filename
+        // (higher counter suffix) than the good one, containing non-decryptable
+        // bytes. load_latest_frame sorts descending, so this is tried first.
+        let good_name = good_path.file_name().unwrap().to_str().unwrap();
+        let time_prefix = &good_name[..good_name.rfind('-').unwrap()];
+        let corrupt_name = format!("{time_prefix}-9999999999.webp");
+        tokio::fs::write(day_dir.join(&corrupt_name), b"not-encrypted-garbage")
+            .await
+            .unwrap();
+
+        let latest = storage
+            .load_latest_frame()
+            .await
+            .expect("load_latest_frame must not propagate a corrupt-newest error")
+            .expect("the prior good frame must still be returned");
+        assert_eq!(
+            latest.0, b"prior-good-frame",
+            "a corrupt newest frame must be skipped and the prior good frame returned (#6244)"
+        );
+        assert_eq!(latest.1, "webp");
+    }
+
+    /// Regression (#6244, part 2): if every frame in a day is unreadable, the
+    /// loader returns Ok(None) rather than erroring, so the caller can fall back
+    /// gracefully (e.g. to an older day) instead of failing hard.
+    #[tokio::test]
+    async fn load_latest_frame_returns_none_when_all_corrupt() {
+        let (storage, _temp) = create_encrypted_test_storage().await;
+
+        // Two undecryptable files in the same day, no good frame anywhere.
+        let day_dir = storage.frames_dir().join("2026-05-26");
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        tokio::fs::write(day_dir.join("10-00-00-0000000000.webp"), b"garbage-a")
+            .await
+            .unwrap();
+        tokio::fs::write(day_dir.join("10-00-01-0000000001.webp"), b"garbage-b")
+            .await
+            .unwrap();
+
+        let latest = storage
+            .load_latest_frame()
+            .await
+            .expect("all-corrupt day must yield Ok(None), not Err (#6244)");
+        assert!(
+            latest.is_none(),
+            "with no readable frame, load_latest_frame must return None"
+        );
+    }
+
+    // ---- #6245: storage-limit eviction must not over-delete ----------------
+
+    /// Regression (#6245): `enforce_storage_limit` must track its eviction budget
+    /// in bytes, not truncated MB. With per-directory sizes that all truncate to
+    /// the same whole MB (1.9 MB -> 1 MB), the old MB counter shrank far slower
+    /// than the real on-disk size and evicted every directory, blowing past the
+    /// limit. The byte-accurate loop evicts only the minimum oldest directories
+    /// needed to get under budget and leaves the rest intact.
+    #[tokio::test]
+    async fn enforce_storage_limit_stops_at_limit_no_over_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        // 5 MB budget. 10 oldest-first directories of ~1.9 MB each (19 MB total).
+        let storage = FrameFileStorage::new(temp_dir.path().to_path_buf(), 5, 7)
+            .await
+            .unwrap();
+
+        let frames_dir = storage.frames_dir();
+        // 1.9 MB: truncates to 1 MB, so the buggy MB accounting under-counts every
+        // directory by ~0.9 MB and never reaches the stop condition until empty.
+        const DIR_BYTES: usize = 1_992_294;
+        let payload = vec![0u8; DIR_BYTES];
+        for day in 1..=10u32 {
+            let dir_name = format!("2026-05-{day:02}");
+            let dir_path = frames_dir.join(&dir_name);
+            tokio::fs::create_dir_all(&dir_path).await.unwrap();
+            tokio::fs::write(dir_path.join("12-00-00-0000000000.webp"), &payload)
+                .await
+                .unwrap();
+        }
+
+        // cached_size_initialized starts false, so enforce_storage_limit walks the
+        // tree and uses the exact byte total -- no cache priming needed.
+        storage.enforce_storage_limit().await.unwrap();
+
+        let remaining = list_date_dirs(&frames_dir).await.unwrap();
+        // Byte-accurate: 19,922,944 bytes, limit 5 MB = 5,242,880 bytes. Removing
+        // 8 directories leaves 3,984,592 bytes (<= limit); 7 would leave 5,976,882
+        // (> limit). So exactly 8 are evicted and 2 remain. The buggy MB loop would
+        // have deleted all 10 (remaining == 0).
+        assert_eq!(
+            remaining.len(),
+            2,
+            "eviction must stop once under the byte limit, not over-delete (#6245); remaining={remaining:?}"
+        );
+
+        // The survivors must be the newest directories (oldest-first eviction).
+        let mut sorted = remaining.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec!["2026-05-09".to_string(), "2026-05-10".to_string()],
+            "the two newest directories must survive (#6245)"
+        );
+
+        // And the surviving on-disk size is genuinely within budget.
+        let remaining_bytes = super::super::util::calculate_dir_size(&frames_dir)
+            .await
+            .unwrap();
+        assert!(
+            remaining_bytes <= 5 * 1024 * 1024,
+            "remaining {remaining_bytes} bytes must be within the 5 MB limit (#6245)"
         );
     }
 }

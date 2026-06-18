@@ -207,7 +207,16 @@ impl SessionStoragePort for SqliteStorage {
                 for msg in &msgs {
                     let thinking = msg.thinking.as_ref().map(|t| {
                         if t.len() > MAX_THINKING_LEN {
-                            format!("{}... [truncated]", &t[..MAX_THINKING_LEN])
+                            // Snap the byte cutoff DOWN to a valid UTF-8 char
+                            // boundary before slicing. Slicing a raw byte index
+                            // mid-codepoint (e.g. multi-byte Korean/emoji
+                            // content) panics with "byte index N is not a char
+                            // boundary".
+                            let mut end = MAX_THINKING_LEN;
+                            while end > 0 && !t.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            format!("{}... [truncated]", &t[..end])
                         } else {
                             t.clone()
                         }
@@ -289,11 +298,28 @@ impl SessionStoragePort for SqliteStorage {
 
     async fn delete_session(&self, session_id: &str) -> Result<(), CoreError> {
         let sid = session_id.to_string();
-        self.with_conn(move |conn| {
-            conn.execute_batch("PRAGMA foreign_keys = ON;")
+        // Delete the FK child rows (ai_conversation_messages, V21 `ON DELETE
+        // CASCADE`) explicitly inside a single transaction with the parent row,
+        // instead of relying on the connection-global `PRAGMA foreign_keys`
+        // state. The PRAGMA is connection-wide and shared by every adapter on
+        // this single connection, so mutating it here would leak FK-enforcement
+        // semantics into unrelated operations. An explicit child delete is
+        // self-contained and correct regardless of the ambient FK setting.
+        self.with_conn_mut(move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| StorageError::Internal(format!("delete_session tx begin: {e}")))?;
+            // 1. Child rows first (FK child of ai_sessions).
+            tx.execute(
+                "DELETE FROM ai_conversation_messages WHERE session_id = ?1",
+                [&sid],
+            )
+            .map_err(StorageError::Sqlite)?;
+            // 2. Then the parent session row.
+            tx.execute("DELETE FROM ai_sessions WHERE session_id = ?1", [&sid])
                 .map_err(StorageError::Sqlite)?;
-            conn.execute("DELETE FROM ai_sessions WHERE session_id = ?1", [&sid])
-                .map_err(StorageError::Sqlite)?;
+            tx.commit()
+                .map_err(|e| StorageError::Internal(format!("delete_session commit: {e}")))?;
             Ok(())
         })
         .await
@@ -302,12 +328,29 @@ impl SessionStoragePort for SqliteStorage {
 
     async fn purge_expired(&self, retention_days: u32) -> Result<u32, CoreError> {
         let days = retention_days;
-        self.with_conn(move |conn| {
-            conn.execute_batch("PRAGMA foreign_keys = ON;")
-                .map_err(StorageError::Sqlite)?;
+        // Delete the FK child rows (ai_conversation_messages) for the sessions
+        // about to be removed explicitly, inside one transaction with the parent
+        // deletes, rather than flipping the connection-global `PRAGMA
+        // foreign_keys` (which is shared by every adapter on this single
+        // connection). For each parent predicate we first delete the child rows
+        // whose session matches that predicate, then delete the parent rows.
+        self.with_conn_mut(move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| StorageError::Internal(format!("purge_expired tx begin: {e}")))?;
 
-            // 1. Terminated sessions past retention
-            let deleted1: usize = conn
+            // 1. Terminated sessions past retention.
+            tx.execute(
+                "DELETE FROM ai_conversation_messages
+                 WHERE session_id IN (
+                     SELECT session_id FROM ai_sessions
+                     WHERE terminated_at IS NOT NULL
+                       AND terminated_at < datetime('now', '-' || ?1 || ' days')
+                 )",
+                [days],
+            )
+            .map_err(StorageError::Sqlite)?;
+            let deleted1: usize = tx
                 .execute(
                     "DELETE FROM ai_sessions
                      WHERE terminated_at IS NOT NULL
@@ -316,8 +359,19 @@ impl SessionStoragePort for SqliteStorage {
                 )
                 .map_err(StorageError::Sqlite)?;
 
-            // 2. Orphaned active sessions (crash recovery)
-            let deleted2: usize = conn
+            // 2. Orphaned active sessions (crash recovery).
+            tx.execute(
+                "DELETE FROM ai_conversation_messages
+                 WHERE session_id IN (
+                     SELECT session_id FROM ai_sessions
+                     WHERE terminated_at IS NULL
+                       AND state IN ('active', 'idle', 'starting', 'recovering', 'failed')
+                       AND last_active < datetime('now', '-' || ?1 || ' days')
+                 )",
+                [days * 2],
+            )
+            .map_err(StorageError::Sqlite)?;
+            let deleted2: usize = tx
                 .execute(
                     "DELETE FROM ai_sessions
                      WHERE terminated_at IS NULL
@@ -327,6 +381,8 @@ impl SessionStoragePort for SqliteStorage {
                 )
                 .map_err(StorageError::Sqlite)?;
 
+            tx.commit()
+                .map_err(|e| StorageError::Internal(format!("purge_expired commit: {e}")))?;
             Ok((deleted1 + deleted2) as u32)
         })
         .await
@@ -483,6 +539,115 @@ mod tests {
         assert!(msgs.is_empty());
     }
 
+    /// Read the connection-global `PRAGMA foreign_keys` value (0 = OFF, 1 = ON).
+    fn read_fk(storage: &SqliteStorage) -> i64 {
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        guard
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Force the connection-global `PRAGMA foreign_keys` to a known value.
+    fn set_fk(storage: &SqliteStorage, on: bool) {
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        guard
+            .execute_batch(if on {
+                "PRAGMA foreign_keys = ON;"
+            } else {
+                "PRAGMA foreign_keys = OFF;"
+            })
+            .unwrap();
+    }
+
+    /// Regression (#6240): `delete_session` must remove both the session row and
+    /// its `ai_conversation_messages` child rows via an explicit transactional
+    /// child delete, WITHOUT depending on or mutating the connection-global
+    /// `PRAGMA foreign_keys`. Forcing FK OFF beforehand proves the delete no
+    /// longer relies on `ON DELETE CASCADE`, and the PRAGMA must stay OFF after
+    /// (so other adapters sharing the single connection are unaffected).
+    #[tokio::test]
+    async fn delete_session_does_not_mutate_foreign_keys_pragma() {
+        let storage = setup().await;
+        storage.save_session(&make_session("s1")).await.unwrap();
+        storage
+            .save_messages("s1", &[make_message("s1", "user", "hello", 0)])
+            .await
+            .unwrap();
+
+        // Force FK OFF so cascade is NOT available — the explicit child delete
+        // must still remove the messages.
+        set_fk(&storage, false);
+        assert_eq!(read_fk(&storage), 0, "precondition: FK forced OFF");
+
+        storage.delete_session("s1").await.unwrap();
+
+        // Both parent and child rows gone, despite FK being OFF.
+        let sessions = storage.list_sessions(10).await.unwrap();
+        assert!(sessions.is_empty(), "session row must be deleted");
+        let msgs = storage.load_messages("s1", 10, 0).await.unwrap();
+        assert!(
+            msgs.is_empty(),
+            "child messages must be deleted by the explicit child delete, not cascade"
+        );
+
+        // The delete must NOT have flipped the connection-global PRAGMA.
+        assert_eq!(
+            read_fk(&storage),
+            0,
+            "delete_session must leave foreign_keys untouched (still OFF)"
+        );
+    }
+
+    /// Regression (#6240): same invariant for `purge_expired` — child rows of
+    /// expired sessions are deleted explicitly, and the global FK PRAGMA is left
+    /// untouched.
+    #[tokio::test]
+    async fn purge_expired_does_not_mutate_foreign_keys_pragma() {
+        let storage = setup().await;
+
+        // A terminated session older than retention, with a child message.
+        let mut s = make_session("old");
+        s.state = SessionState::Terminated;
+        storage.save_session(&s).await.unwrap();
+        storage
+            .save_messages("old", &[make_message("old", "user", "stale", 0)])
+            .await
+            .unwrap();
+        // Backdate terminated_at well past retention.
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "UPDATE ai_sessions SET terminated_at = datetime('now', '-90 days') \
+                     WHERE session_id = 'old'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        set_fk(&storage, false);
+        assert_eq!(read_fk(&storage), 0, "precondition: FK forced OFF");
+
+        let purged = storage.purge_expired(30).await.unwrap();
+        assert_eq!(purged, 1, "the terminated session must be purged");
+
+        // Child rows of the purged session must be gone even with FK OFF.
+        let msgs = storage.load_messages("old", 10, 0).await.unwrap();
+        assert!(
+            msgs.is_empty(),
+            "child messages of purged session must be deleted explicitly"
+        );
+
+        assert_eq!(
+            read_fk(&storage),
+            0,
+            "purge_expired must leave foreign_keys untouched (still OFF)"
+        );
+    }
+
     #[tokio::test]
     async fn next_seq_empty_session() {
         let storage = setup().await;
@@ -555,5 +720,32 @@ mod tests {
         let thinking = loaded[0].thinking.as_ref().unwrap();
         assert!(thinking.len() <= MAX_THINKING_LEN + 20); // + "... [truncated]"
         assert!(thinking.ends_with("[truncated]"));
+    }
+
+    /// Regression (#6239): multi-byte (e.g. Korean) thinking content longer
+    /// than the cap must truncate at a char boundary without panicking.
+    /// The repeated char U+AC01 is 3 bytes in UTF-8, so MAX_THINKING_LEN (10_240)
+    /// is NOT a char boundary (10_240 % 3 == 1) and a raw byte slice would panic.
+    #[tokio::test]
+    async fn thinking_truncation_multibyte_does_not_panic() {
+        let storage = setup().await;
+        storage.save_session(&make_session("s1")).await.unwrap();
+
+        // 8_000 * 3 bytes = 24_000 bytes > MAX_THINKING_LEN.
+        let long_thinking = "\u{ac01}".repeat(8_000);
+        assert!(long_thinking.len() > MAX_THINKING_LEN);
+        let mut msg = make_message("s1", "assistant", "response", 0);
+        msg.thinking = Some(long_thinking);
+
+        // Must not panic on the char-boundary slice.
+        storage.save_messages("s1", &[msg]).await.unwrap();
+
+        let loaded = storage.load_messages("s1", 10, 0).await.unwrap();
+        let thinking = loaded[0].thinking.as_ref().unwrap();
+        // Snapped down to a boundary, so never longer than the cap + suffix,
+        // and the stored prefix is still valid UTF-8.
+        assert!(thinking.len() <= MAX_THINKING_LEN + 20); // + "... [truncated]"
+        assert!(thinking.ends_with("... [truncated]"));
+        assert!(thinking.starts_with('\u{ac01}'));
     }
 }

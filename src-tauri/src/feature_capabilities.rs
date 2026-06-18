@@ -14,7 +14,7 @@ use maekon_api_contracts::provider_specs::{
     provider_surface_catalog, ProviderAuthScheme, ProviderSurfaceSpec, SurfaceExecutionKind,
     SurfacePlacementKind, SurfaceStability,
 };
-use maekon_api_contracts::support::ProviderCliDiagnosticSummaryDto;
+use maekon_core::models::provider_cli_diagnostics::ProviderCliDiagnosticSummary;
 use maekon_web::services::provider_cli_diagnostics::{
     ProviderCliDiagnosticsFuture, ProviderCliDiagnosticsProvider,
 };
@@ -795,14 +795,14 @@ fn surface_status_copy_key(surface_id: &str, suffix: &str) -> String {
 
 pub(crate) fn provider_cli_diagnostics_from_snapshot(
     snapshot: &FeatureCapabilitySnapshot,
-) -> Vec<ProviderCliDiagnosticSummaryDto> {
+) -> Vec<ProviderCliDiagnosticSummary> {
     snapshot
         .features
         .iter()
         .filter(|feature| feature.provider_cli_readiness.is_some())
         .map(|feature| {
             let discovery = feature.provider_cli_discovery.as_ref();
-            ProviderCliDiagnosticSummaryDto {
+            ProviderCliDiagnosticSummary {
                 surface_id: feature.feature_id.clone(),
                 tool_id: tool_id_from_requires(&feature.requires),
                 candidate_name: discovery.map(|report| report.candidate_name.clone()),

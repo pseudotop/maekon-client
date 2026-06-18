@@ -22,8 +22,28 @@ pub enum AutomationAction {
 }
 
 // ── Automation result types ──
-// 이전에는 maekon-automation::controller::types에 있었으나,
-// AutomationPort 추상화를 위해 maekon-core로 이동 (ADR-001 §7)
+// These previously lived in maekon-automation::controller::types, but were moved
+// to maekon-core to support the AutomationPort abstraction (ADR-001 §7).
+
+/// Provenance of an automation command (#6333 A20).
+///
+/// Distinguishes commands minted in-process by trusted code (`Internal`) from
+/// commands that crossed a deserialization / external boundary (`External`).
+/// The gate treats the four internal sentinel policy tokens as bypass-eligible
+/// ONLY when the command is also `Internal`, so a deserialized command carrying
+/// an internal token string (e.g. "gui-session") can never claim the bypass.
+///
+/// The marker is stored as a `#[serde(skip)]` field, so deserialization always
+/// yields the fail-safe `Default` (`External`); only explicit in-process
+/// construction sets `Internal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommandOrigin {
+    /// Minted in-process by trusted automation code.
+    Internal,
+    /// Crossed a deserialization / external boundary. Fail-safe default.
+    #[default]
+    External,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationCommand {
@@ -32,6 +52,9 @@ pub struct AutomationCommand {
     pub action: AutomationAction,
     pub timeout_ms: Option<u64>,
     pub policy_token: String,
+    /// #6333 A20: provenance marker; not serialized (deserialized commands are External).
+    #[serde(skip)]
+    pub origin: CommandOrigin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +138,7 @@ pub struct ExecutionPolicyDto {
     pub allowed_paths: Vec<String>,
     #[serde(default)]
     pub allow_network: Option<bool>,
-    #[serde(default)]
+    #[serde(default = "default_require_signed_token")]
     pub require_signed_token: bool,
     #[serde(default = "default_confirmation")]
     pub confirmation: String,
@@ -129,10 +152,45 @@ fn default_confirmation() -> String {
     // PR #4073 migrated all tokens; "Confirm" was a stale PascalCase survivor.
     "CONFIRM".to_string()
 }
+fn default_require_signed_token() -> bool {
+    // #6333 A16: fail-closed — omitted field means signed tokens are required.
+    true
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_policy_dto_requires_signed_token_by_default() {
+        // #6333 A16: an ExecutionPolicyDto that omits require_signed_token must
+        // default to fail-closed (signed tokens required).
+        let dto: ExecutionPolicyDto =
+            serde_json::from_str(r#"{"policy_id":"p","process_name":"proc"}"#)
+                .expect("must deserialize");
+        assert!(
+            dto.require_signed_token,
+            "omitted require_signed_token must default to true (#6333 A16)"
+        );
+    }
+
+    #[test]
+    fn command_origin_defaults_to_external() {
+        // #6333 A20: provenance must fail safe — anything not explicitly minted
+        // in-process (e.g. a deserialized command) is External.
+        assert_eq!(CommandOrigin::default(), CommandOrigin::External);
+    }
+
+    #[test]
+    fn deserialized_automation_command_is_external_origin() {
+        // #6333 A20: a command arriving via deserialization must default to External,
+        // even when it carries an internal sentinel token string — so it can never
+        // claim the gate bypass. `origin` is #[serde(skip)], so it is absent from the
+        // wire form and filled from Default (External).
+        let json = r#"{"command_id":"c","session_id":"s","action":{"MouseMove":{"x":0,"y":0}},"timeout_ms":null,"policy_token":"gui-session"}"#;
+        let cmd: AutomationCommand = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(cmd.origin, CommandOrigin::External);
+    }
 
     #[test]
     fn automation_action_serde_roundtrip() {

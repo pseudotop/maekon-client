@@ -66,6 +66,13 @@ pub(crate) async fn run_accept_loop(
                     Ok(x) => x,
                     Err(e) => {
                         warn!(err = %e, "external_grpc: TCP accept error");
+                        // #6281: brief backoff before retrying. A persistent
+                        // accept() error (EMFILE/ENFILE fd exhaustion, ENOBUFS)
+                        // would otherwise busy-spin this loop at ~100% CPU, flood
+                        // the log, and starve other tasks. 50ms is negligible for
+                        // the rare transient error and rate-limits the persistent
+                        // case until file descriptors free up.
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         continue;
                     }
                 };

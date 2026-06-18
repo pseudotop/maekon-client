@@ -22,6 +22,8 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 
+use crate::mutex_ext::lock_or_recover;
+
 /// A JSON-RPC error object as returned by the app-server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcError {
@@ -232,7 +234,10 @@ impl JsonRpcClient {
                     Ok(Some(line)) if line.trim().is_empty() => continue,
                     Ok(Some(line)) => match parse_incoming(&line) {
                         Ok(IncomingMessage::Response { id, outcome }) => {
-                            if let Some(tx) = read_pending.lock().unwrap().remove(&id) {
+                            if let Some(tx) =
+                                lock_or_recover(&read_pending, "codex_app_server.pending")
+                                    .remove(&id)
+                            {
                                 let _ = tx.send(outcome);
                             }
                         }
@@ -255,7 +260,7 @@ impl JsonRpcClient {
             // is rejected, then drop all pending senders so in-flight requests
             // resolve to `Closed` rather than hanging forever.
             read_closed.store(true, Ordering::SeqCst);
-            read_pending.lock().unwrap().clear();
+            lock_or_recover(&read_pending, "codex_app_server.pending").clear();
         });
 
         (
@@ -291,12 +296,12 @@ impl JsonRpcClient {
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        lock_or_recover(&self.pending, "codex_app_server.pending").insert(id, tx);
 
         // Race guard: if the read loop closed between the check and the insert,
         // remove our sender and fail closed instead of leaking it.
         if self.closed.load(Ordering::SeqCst) {
-            self.pending.lock().unwrap().remove(&id);
+            lock_or_recover(&self.pending, "codex_app_server.pending").remove(&id);
             return Err(TransportError::Closed(
                 "app-server transport closed while sending".to_string(),
             ));
@@ -306,11 +311,11 @@ impl JsonRpcClient {
         {
             let mut writer = self.writer.lock().await;
             if let Err(err) = writer.write_all(line.as_bytes()).await {
-                self.pending.lock().unwrap().remove(&id);
+                lock_or_recover(&self.pending, "codex_app_server.pending").remove(&id);
                 return Err(TransportError::Io(err.to_string()));
             }
             if let Err(err) = writer.flush().await {
-                self.pending.lock().unwrap().remove(&id);
+                lock_or_recover(&self.pending, "codex_app_server.pending").remove(&id);
                 return Err(TransportError::Io(err.to_string()));
             }
         }
@@ -323,7 +328,7 @@ impl JsonRpcClient {
             )),
             Err(_elapsed) => {
                 // Timed out: drop our pending slot so a late response is ignored.
-                self.pending.lock().unwrap().remove(&id);
+                lock_or_recover(&self.pending, "codex_app_server.pending").remove(&id);
                 Err(TransportError::Timeout {
                     timeout_ms: self.request_timeout.as_millis() as u64,
                 })
@@ -660,7 +665,7 @@ impl AppServerProcess {
     /// drop (→ group-reap) idle app-server processes — the idle-timeout
     /// graceful-shutdown policy for #4865.
     pub fn idle_for(&self) -> Duration {
-        self.last_activity.lock().unwrap().elapsed()
+        lock_or_recover(&self.last_activity, "codex_app_server.last_activity").elapsed()
     }
 
     /// The OS pid of the app-server process (group leader), if still running.
@@ -674,7 +679,8 @@ impl AppServerProcess {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, TransportError> {
-        *self.last_activity.lock().unwrap() = tokio::time::Instant::now();
+        *lock_or_recover(&self.last_activity, "codex_app_server.last_activity") =
+            tokio::time::Instant::now();
         self.client.request(method, params).await
     }
 
@@ -685,7 +691,8 @@ impl AppServerProcess {
         id: u64,
         outcome: Result<serde_json::Value, RpcError>,
     ) -> Result<(), TransportError> {
-        *self.last_activity.lock().unwrap() = tokio::time::Instant::now();
+        *lock_or_recover(&self.last_activity, "codex_app_server.last_activity") =
+            tokio::time::Instant::now();
         self.client.respond(id, outcome).await
     }
 }
@@ -711,6 +718,8 @@ mod tests {
         encode_request, encode_response, parse_incoming, parse_user_agent_version, IncomingMessage,
         RpcError,
     };
+    use crate::mutex_ext::lock_or_recover;
+    use std::sync::Mutex as StdMutex;
 
     #[test]
     fn parse_user_agent_version_extracts_three_part_token() {
@@ -720,6 +729,21 @@ mod tests {
             parse_user_agent_version("codex-app-server/1.2.3 (rust; macos)"),
             Some("1.2.3".to_string())
         );
+    }
+
+    #[test]
+    fn lock_or_recover_returns_guard_after_poison() {
+        let mutex = StdMutex::new(41_u32);
+        let _ = std::panic::catch_unwind(|| {
+            let mut guard = mutex.lock().expect("initial lock");
+            *guard = 42;
+            panic!("poison test mutex");
+        });
+
+        let mut guard = lock_or_recover(&mutex, "codex-test-mutex");
+        *guard += 1;
+
+        assert_eq!(*guard, 43);
     }
 
     #[test]

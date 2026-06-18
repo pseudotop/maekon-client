@@ -2,6 +2,7 @@ use anyhow::Result;
 use maekon_core::config::AppConfig;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::accessibility::AccessibilityExtractor;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::monitor::{ActivityMonitor, ProcessMonitor};
 #[cfg(feature = "server")]
@@ -26,6 +27,7 @@ use std::sync::atomic::AtomicBool;
 use crate::capture_services::SharedCaptureServices;
 use crate::focus_analyzer::{FocusAnalyzer, FocusStorage};
 use crate::notification_manager::NotificationManager;
+#[cfg(feature = "analysis")]
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use crate::scheduler::SchedulerConfig;
 
@@ -90,6 +92,9 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// ConfigManager shared with the composition root. When set, the BatchUploader
     /// suppression predicate uses `snapshot()` to gate uploads during mute windows.
     config_manager: Option<ConfigManager>,
+    /// Shared consent authority from capture wiring. External AI guards must use
+    /// this instance instead of reloading consent from disk.
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     /// registry from the composition root, used by the `ContextAnalyzer` analysis
     /// provider. Defaults to a fresh registry for standalone use; the composition
@@ -121,6 +126,7 @@ impl<'a> AgentSupportContextBuilder<'a> {
             few_shot_storage: None,
             analysis_health_flag: None,
             config_manager: None,
+            consent_manager: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
             #[cfg(feature = "analysis")]
             provider_secret_stores: None,
@@ -196,6 +202,11 @@ impl<'a> AgentSupportContextBuilder<'a> {
         self
     }
 
+    pub(crate) fn with_consent_manager(mut self, cm: Arc<dyn ConsentManagerPort>) -> Self {
+        self.consent_manager = Some(cm);
+        self
+    }
+
     /// Wire the provider secret stores from `ProviderRuntimeContext` so the
     /// `ContextAnalyzer` LLM provider resolves OS-keychain-backed BYOK keys at
     /// request time.  No-op in non-`analysis` builds.
@@ -231,7 +242,11 @@ impl<'a> AgentSupportContextBuilder<'a> {
                     &self.config.ai_provider,
                     self.config.privacy.pii_filter_level,
                     Some(ExternalOcrPrivacyGuard::new(
-                        self.data_dir.join("consent.json"),
+                        self.consent_manager.clone().unwrap_or_else(|| {
+                            Arc::new(maekon_core::consent::ConsentManager::new(
+                                self.data_dir.join("consent.json"),
+                            ))
+                        }),
                         self.config.privacy.pii_filter_level,
                         self.config.ai_provider.external_data_policy,
                         self.config.privacy.clone(),
@@ -308,10 +323,11 @@ impl<'a> AgentSupportContextBuilder<'a> {
             );
             let ocr_tessdata = std::env::var("MAEKON_TESSDATA").ok().map(PathBuf::from);
             let frame_processor: Arc<dyn maekon_core::ports::vision::FrameProcessor> =
-                Arc::new(EdgeFrameProcessor::new(
+                Arc::new(EdgeFrameProcessor::with_pii_level(
                     self.config.vision.thumbnail_width,
                     self.config.vision.thumbnail_height,
                     ocr_tessdata,
+                    self.config.privacy.pii_filter_level,
                 ));
             (
                 frame_storage,
@@ -621,7 +637,14 @@ impl maekon_core::ports::notifier::DesktopNotifier for LogOnlyNotifier {
         title: &str,
         body: &str,
     ) -> Result<(), maekon_core::error::CoreError> {
-        tracing::debug!(title, body, "notification (headless mode)");
+        // Log digests only — title and body may carry suggestion content derived
+        // from the user's active window; the log file persists outside the
+        // consent/erasure path (#6006).
+        tracing::debug!(
+            title = %maekon_monitor::log_privacy::title_digest(title),
+            body = %maekon_monitor::log_privacy::content_digest(body),
+            "notification (headless mode)"
+        );
         Ok(())
     }
 

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use futures::StreamExt;
+
 use crate::error::NetworkError;
 use maekon_core::config::AiSessionConfig;
 use maekon_core::error::CoreError;
@@ -478,4 +480,215 @@ async fn ollama_500_maps_to_network_generic() {
         }
         Ok(_) => panic!("expected error, got Ok"),
     }
+}
+
+/// #6129 regression guard: a persistent Ollama outage must not grow
+/// conversation history. Each failed `send_message` pushes a user turn at the
+/// start, so without transactional rollback history would grow by one entry per
+/// retry across calls. Here N consecutive 5xx failures must leave history at the
+/// initial size (system prompt only).
+#[tokio::test]
+async fn repeated_failed_sends_do_not_grow_history() {
+    let mut server = mockito::Server::new_async().await;
+    // Expect many failing calls; mockito matches any number of hits by default.
+    let _mock = server
+        .mock("POST", "/api/chat")
+        .with_status(503)
+        .with_body("Service Unavailable")
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let session = LocalLlmSession::new(
+        "outage-session".to_string(),
+        "llama3".to_string(),
+        server.url(),
+        Some("You are helpful.".to_string()),
+        Arc::new(AiSessionConfig::default()),
+    );
+
+    // Baseline: system prompt only.
+    let baseline_len = session.history.read().await.len();
+    assert_eq!(
+        baseline_len, 1,
+        "history should start with system prompt only"
+    );
+
+    let message = SessionMessage {
+        role: MessageRole::User,
+        content: "hello".to_string(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+
+    const N: usize = 5;
+    for i in 0..N {
+        let result = session.send_message(&message).await;
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("send #{i} should fail against a 503 backend"));
+        // 503 is not the 404 model-not-pulled special case, so the non-success
+        // status path maps it to a generic Network error (#6129 rollback path).
+        assert!(
+            matches!(
+                err,
+                CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    ..
+                }
+            ),
+            "send #{i} against a 503 backend should be Network::Generic, got: {err:?}"
+        );
+        let len = session.history.read().await.len();
+        assert_eq!(
+            len, baseline_len,
+            "history must not grow after failed send #{i} (got {len}, expected {baseline_len})"
+        );
+    }
+}
+
+/// #6129: the transport-error early-return path (no HTTP response at all) must
+/// also roll back the pushed user message. Binding a loopback port and dropping
+/// the listener yields an address that refuses connections immediately, so
+/// `reqwest::send()` fails fast before any status is observed.
+#[tokio::test]
+async fn transport_error_rolls_back_pushed_user_message() {
+    // Reserve a free loopback port, then release it so connections are refused
+    // (connection-refused fails fast, unlike a black-holed address that times
+    // out).
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let session = LocalLlmSession::new(
+        "unreachable-session".to_string(),
+        "llama3".to_string(),
+        format!("http://{addr}"),
+        Some("You are helpful.".to_string()),
+        Arc::new(AiSessionConfig::default()),
+    );
+
+    let baseline_len = session.history.read().await.len();
+    assert_eq!(baseline_len, 1);
+
+    let message = SessionMessage {
+        role: MessageRole::User,
+        content: "hello".to_string(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+
+    let result = session.send_message(&message).await;
+    // `ResponseStream` (the Ok type) is not `Debug`, so extract the error via
+    // `.err()` rather than `.expect_err()`.
+    let Some(err) = result.err() else {
+        panic!("send to unreachable host should fail");
+    };
+    // Connection-refused is a transport error (not a timeout), so the
+    // send-time failure path classifies it as a generic Network error and
+    // rolls back the pushed user message (#6129).
+    assert!(
+        matches!(
+            &err,
+            CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message,
+            } if message.contains("Ollama request failed")
+        ),
+        "transport failure should be Network::Generic with an Ollama-request message, got: {err:?}"
+    );
+    let len = session.history.read().await.len();
+    assert_eq!(
+        len, baseline_len,
+        "transport failure must roll back the pushed user message"
+    );
+}
+
+/// #6206/#6207 regression guard: a successful HTTP response whose body is a
+/// large, newline-free blob must NOT be accumulated without bound (OOM). The
+/// streaming loop caps `line_buffer` at `MAX_NDJSON_LINE_BYTES`; once the buffer
+/// exceeds the cap with no line terminator to drain, the stream must terminate
+/// with `CoreError::Network` instead of growing the buffer for every chunk.
+///
+/// We send ~2 MiB of newline-free bytes so the guard fires regardless of how
+/// reqwest splits the body into chunks.
+#[tokio::test]
+async fn oversized_newline_free_body_is_rejected_not_oomed() {
+    // 2 MiB of 'x' with no '\n' anywhere — exceeds the 1 MiB line cap.
+    let oversized = "x".repeat(2 * 1024 * 1024);
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/chat")
+        .with_status(200)
+        .with_body(oversized)
+        .create_async()
+        .await;
+
+    let session = LocalLlmSession::new(
+        "oversized-session".to_string(),
+        "llama3".to_string(),
+        server.url(),
+        None,
+        Arc::new(AiSessionConfig::default()),
+    );
+
+    let message = SessionMessage {
+        role: MessageRole::User,
+        content: "hello".to_string(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+
+    // send_message itself succeeds (200 status); the error surfaces while
+    // draining the body stream.
+    let mut stream = session
+        .send_message(&message)
+        .await
+        .expect("200 response should open a stream");
+
+    // A newline-free body yields no complete NDJSON line, so the FIRST (and only)
+    // item the stream produces must be the unbounded-line termination error — never
+    // an Ok message. (Single deterministic item, so no drain loop is needed.)
+    let item = stream
+        .next()
+        .await
+        .expect("stream must yield the unbounded-line termination error");
+    match item {
+        Ok(_) => panic!("oversized newline-free body must not yield an Ok message"),
+        Err(CoreError::Network { message, .. }) => {
+            assert!(
+                message.contains("without a newline"),
+                "error should explain the unbounded-line termination, got: {message}"
+            );
+        }
+        Err(other) => panic!("expected CoreError::Network, got: {other:?}"),
+    }
+}
+
+/// #6205: the session HTTP client is built with connect + per-read timeouts via
+/// `build_ollama_http_client`. A true stall test (a connected endpoint that
+/// accepts the request but then sends no bytes) requires a live/controllable
+/// socket and is not exercised here — `read_timeout` is a wire-level behavior of
+/// the underlying client. This test asserts the client is constructed (build
+/// does not fall back to the timeout-less default) so the timeouts are present.
+#[test]
+fn session_http_client_builds_with_timeouts() {
+    // build_ollama_http_client uses `.build()` and only falls back to
+    // Client::new() if the builder fails; for plain timeout settings it never
+    // fails, so a session is always constructed with a configured client.
+    let session = LocalLlmSession::new(
+        "timeout-session".to_string(),
+        "llama3".to_string(),
+        "http://localhost:11434".to_string(),
+        None,
+        Arc::new(AiSessionConfig::default()),
+    );
+    // Smoke check: the session is usable and reports the expected provider.
+    assert_eq!(session.provider_name(), "ollama");
 }

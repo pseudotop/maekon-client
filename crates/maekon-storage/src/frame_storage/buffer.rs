@@ -31,4 +31,13 @@ impl BufferPool {
             debug!("push failed: {e:?}");
         }
     }
+
+    /// Number of buffers currently available in the pool.
+    ///
+    /// Used by tests to assert that fallible load paths do not permanently
+    /// deplete the pool by dropping an acquired buffer on an early return.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.pool.len()
+    }
 }

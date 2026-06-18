@@ -1,6 +1,7 @@
 use maekon_core::error::CoreError;
 use std::process::Command;
 
+use super::command_timeout::{command_output_with_timeout, ACCESSIBILITY_COMMAND_TIMEOUT};
 use super::types::{parse_accessibility_lines, AccessibilityNode};
 
 #[cfg(target_os = "windows")]
@@ -53,19 +54,23 @@ pub(super) fn query_windows_accessibility_nodes() -> Result<Vec<AccessibilityNod
         }
     "#;
 
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    let output = command_output_with_timeout(&mut command, ACCESSIBILITY_COMMAND_TIMEOUT)
         .map_err(|e| CoreError::ServiceUnavailable {
             code: maekon_core::error_codes::ServiceCode::Unavailable,
             message: format!("Windows UIA probe launch failed: {e}"),
+        })?
+        .ok_or_else(|| CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "Windows UIA probe timed out".to_string(),
         })?;
 
     if !output.status.success() {

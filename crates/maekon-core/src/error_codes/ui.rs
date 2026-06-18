@@ -1,9 +1,9 @@
-//! UiCode — UI 요소 에러 코드. `ui.*` 접두사.
+//! UiCode — UI element error codes. `ui.*` prefix.
 
 define_code_enum! {
-    /// UI 카테고리 에러 코드.
+    /// UI category error codes.
     pub enum UiCode {
-        /// UI 요소를 찾을 수 없음.
+        /// UI element not found.
         ElementMissing => "ui.element_missing",
     }
 }

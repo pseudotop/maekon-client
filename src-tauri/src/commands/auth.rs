@@ -5,11 +5,20 @@
 //! calls server `DELETE /api/v1/auth/tokens/all` and clears local TokenManager
 //! state.
 //!
-//! State pattern: `TokenManagerState(Option<Arc<TokenManager>>)` is registered
-//! separately. When `cfg(feature = "server")` is disabled (offline / demo),
-//! this remains `None` and the command returns `IpcError` immediately.
+//! State pattern: `TokenManagerState` holds an interior-mutable slot
+//! (`Mutex<Option<Arc<TokenManager>>>`) that is registered ONCE at build time
+//! in `main.rs` and POPULATED at setup time once server bootstrap creates the
+//! token manager. When `cfg(feature = "server")` is disabled (offline / demo)
+//! or bootstrap never populates it, the slot stays `None` and the command
+//! returns `IpcError` immediately.
+//!
+//! Why a slot instead of re-`manage()`-ing? Tauri's `Manager::manage()` does
+//! NOT overwrite an already-managed type — it returns `false` and the value is
+//! discarded. Tauri's own docs recommend wrapping the state in a `Mutex` and
+//! using `Option` (rather than the deprecated/unsafe `unmanage()`) precisely so
+//! the managed slot can be populated after the builder registers it once.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::{command, State};
 
@@ -17,8 +26,8 @@ use tauri::{command, State};
 use maekon_network::auth::TokenManager;
 
 /// Placeholder type when the `server` feature is disabled. Tauri State must
-/// always be registered (`main.rs` manages `TokenManagerState(None)`), so this
-/// stub keeps non-server builds compatible.
+/// always be registered (`main.rs` manages a `TokenManagerState`), so this stub
+/// keeps non-server builds compatible.
 #[cfg(not(feature = "server"))]
 pub struct TokenManager;
 
@@ -26,12 +35,55 @@ use crate::ipc_error::IpcError;
 
 /// Tauri-managed wrapper around the optional `TokenManager`.
 ///
-/// `None` means either:
+/// Registered exactly once at build time (`main.rs`) with an empty slot, then
+/// populated at setup time once a real `TokenManager` exists. The inner slot is
+/// `None` when:
 /// - `cfg(feature = "server")` is disabled (offline / demo)
-/// - server bootstrap failed before a token manager was created
+/// - server bootstrap failed (or never ran) before a token manager was created
 ///
-/// In both cases, the Tauri command returns `IpcError` when invoked.
-pub struct TokenManagerState(pub Option<Arc<TokenManager>>);
+/// In all of those cases, the Tauri command returns `IpcError` when invoked.
+pub struct TokenManagerState(Mutex<Option<Arc<TokenManager>>>);
+
+impl TokenManagerState {
+    /// Build-time constructor: an empty slot registered once on the Tauri
+    /// builder. Setup-time wiring later calls [`TokenManagerState::set`].
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    /// Populate the slot after server bootstrap. Replaces any previous value.
+    ///
+    /// Called from `app_runtime_launch` setup wiring. Because the state is
+    /// registered ONCE at build time, this slot write is what actually makes
+    /// the real `TokenManager` reachable from `logout_all_sessions` — a second
+    /// `Manager::manage()` would be a silent no-op.
+    ///
+    /// Only the `server` build ever populates the slot; without the `server`
+    /// feature there is no `TokenManager` to write and the slot stays empty.
+    #[cfg(feature = "server")]
+    pub fn set(&self, manager: Arc<TokenManager>) {
+        // A poisoned lock here only means a prior holder panicked while the
+        // (brief, non-await) critical section was held; recover the guard so
+        // bootstrap still wires the manager rather than panicking the setup.
+        let mut slot = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(manager);
+    }
+
+    /// Read the current manager, cloning the `Arc` out of the lock so the guard
+    /// is never held across an `.await`.
+    #[must_use]
+    pub fn get(&self) -> Option<Arc<TokenManager>> {
+        let slot = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.clone()
+    }
+}
 
 /// Sign out of all devices.
 ///
@@ -51,7 +103,9 @@ pub struct TokenManagerState(pub Option<Arc<TokenManager>>);
 pub async fn logout_all_sessions(state: State<'_, TokenManagerState>) -> Result<(), IpcError> {
     #[cfg(feature = "server")]
     {
-        match state.0.as_ref() {
+        // Clone the Arc out of the slot first; never hold the lock across the
+        // `.await` below.
+        match state.get() {
             Some(tm) => tm.logout_all_sessions().await.map_err(IpcError::from),
             None => Err(IpcError::new(
                 "auth.token_manager_unavailable",
@@ -61,7 +115,7 @@ pub async fn logout_all_sessions(state: State<'_, TokenManagerState>) -> Result<
     }
     #[cfg(not(feature = "server"))]
     {
-        let _ = state.0.as_ref();
+        let _ = state.get();
         Err(IpcError::new(
             "auth.feature_disabled",
             "logout_all_sessions: server feature disabled in this build",
@@ -74,9 +128,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_manager_state_none_constructs() {
-        let state = TokenManagerState(None);
-        assert!(state.0.is_none());
+    fn token_manager_state_empty_resolves_to_none() {
+        let state = TokenManagerState::empty();
+        assert!(state.get().is_none());
+    }
+
+    // Regression (2nd-pass #22): the build-time slot is registered ONCE and
+    // populated later via `set()`. This mirrors the real wiring — `main.rs`
+    // registers `TokenManagerState::empty()`, then setup calls `set(..)` — and
+    // asserts the slot resolves to `Some` afterwards. Before the slot fix, the
+    // setup-time `Manager::manage(Some(..))` was a silent no-op, so the command
+    // always saw `None` and `DELETE /api/v1/auth/tokens/all` never ran.
+    #[cfg(feature = "server")]
+    #[test]
+    #[allow(deprecated)] // TokenManager::new used intentionally in tests
+    fn token_manager_state_set_populates_slot() {
+        let state = TokenManagerState::empty();
+        assert!(state.get().is_none(), "slot must start empty");
+
+        let tm = Arc::new(maekon_network::auth::TokenManager::new(
+            "http://127.0.0.1:19999",
+        ));
+        state.set(tm.clone());
+
+        let resolved = state
+            .get()
+            .expect("slot must resolve to Some after set() — the bootstrap wiring path");
+        assert!(
+            Arc::ptr_eq(&resolved, &tm),
+            "the populated slot must hand back the exact bootstrap TokenManager"
+        );
     }
 
     // F1 (P1): Security IPC test — `Some(tm)` path in `logout_all_sessions`.

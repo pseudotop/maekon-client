@@ -7,6 +7,80 @@ URLs, crate/package names, Cargo package names, the `maekon` CLI command,
 `MAEKON_*` environment variables, and existing config/data paths remain
 `maekon` technical identifiers for compatibility.
 
+## Public Contribution Model
+
+Maekon Client is published from a parent-internal source of truth. Public
+contributions are welcome, but accepted changes may be imported into the parent
+source tree for full validation before the public repository is regenerated.
+
+Use this model when deciding where a contribution fits.
+
+| Lane | Good public PR candidates | Extra review required |
+|------|---------------------------|-----------------------|
+| `docs-dx` | Documentation fixes, setup notes, typo fixes, clearer examples | No private paths, maintainer-only validation names, or internal roadmap references |
+| `i18n` | Locale parity and copy consistency | UI text must stay resource-driven |
+| `examples` | Synthetic examples, local-only playbooks, sample configs | No secrets, private screenshots, raw capture data, or real user content |
+| `local-ui` | Dashboard and settings refinements that do not change capture, egress, or consent semantics | UI evidence and accessibility notes are expected |
+| `provider-adapter` | Public provider metadata/spec updates | No unmanaged egress or embedded credentials |
+| `trust-core` | Consent, PII masking, capture, audio, automation policy, sandbox, updater, release signing | Maintainer security/privacy review and private validation are required |
+
+If you are unsure whether a change is `trust-core`, open an issue or discussion
+before writing a large patch. Security vulnerabilities must be reported through
+the private channel in `SECURITY.md`, not as public issues or PRs.
+
+Maintainers triage public issues and PRs with the labels, CODEOWNER rules, and
+branch protection settings documented in
+[`docs/guides/public-contribution-governance.md`](./docs/guides/public-contribution-governance.md).
+Use that guide when selecting a lane, deciding whether a hold label is needed,
+or checking whether a patch must be imported into the parent source tree before
+release.
+
+For a contributor-facing overview of the safe public PR lifecycle, evidence
+expectations, and maintainer handoff language, see
+[`docs/guides/public-contributor-path.md`](./docs/guides/public-contributor-path.md).
+
+When a public PR is accepted for parent validation, maintainers use
+[`docs/guides/hybrid-import-workflow.md`](./docs/guides/hybrid-import-workflow.md)
+to preserve public PR links, author attribution, validation status, and the
+public export handoff.
+
+## Evidence and Data Safety
+
+Every PR should explain what changed, why it changed, and how it was validated.
+
+- Use synthetic fixtures for examples and tests.
+- Do not upload secrets, tokens, private screenshots, raw screen/audio/input
+  captures, customer data, private logs, or local absolute paths.
+- For UI/runtime changes, include privacy-safe evidence such as redacted
+  screenshots, sanitized logs, command output, or before/after behavior notes.
+- For tests, prefer assertions that verify the returned value or specific error,
+  not just success/failure.
+
+## AI-Assisted Contributions
+
+AI-assisted contributions are allowed when the human author remains responsible
+for the patch.
+
+- Disclose AI assistance in the PR description when it materially shaped the
+  code, tests, or docs.
+- Review, run, and understand the generated changes before submitting.
+- Do not paste private project context, private test data, secrets, screenshots,
+  or user captures into external AI tools.
+- Do not answer maintainer review comments with unverified AI output. Reproduce,
+  test, and respond from your own understanding.
+
+## Legal Posture
+
+By contributing, you agree that your contribution is licensed under the Apache
+License 2.0, matching this repository's license.
+
+For ordinary community contributions, Maekon uses an inbound-equals-outbound
+Apache-2.0 posture. A `Signed-off-by` line following the Developer Certificate
+of Origin is welcome and may become required once the public DCO check is wired.
+Large corporate, patent-sensitive, or ownership-sensitive contributions may be
+asked to use an additional CLA path before acceptance. We do not require both
+DCO and CLA by default.
+
 ## Development Environment Setup
 
 ### Prerequisites
@@ -102,8 +176,10 @@ All code follows `cargo fmt` default settings. Run it before submitting a PR.
 cargo fmt --all
 
 # Check formatting (same as CI)
-cargo fmt --check
+cargo fmt --all -- --check
 ```
+
+> **For external contributors:** like the hedge gate below, `cargo fmt` is a house-style gate — on the public repository it runs as an **advisory** check that annotates your PR but never blocks it (it is enforced on the source-of-truth repo). A maintainer may run `cargo fmt --all` while porting your change. Running it yourself before pushing keeps the diff clean.
 
 ### Lint
 
@@ -117,9 +193,56 @@ cargo clippy --workspace
 cargo clippy --workspace --all-features
 ```
 
+### Test Assertions (hedge gate)
+
+We avoid **value-blind assertion hedges** — `assert!(x.is_ok())` / `assert!(x.is_err())` — which prove only that a call succeeded or failed without checking *what* it returned. A test that asserts an error should assert *which* error.
+
+```rust
+// ❌ hedge — passes for the wrong error too
+assert!(parse(input).is_err());
+
+// ✅ assert the specific failure
+let err = parse(input).unwrap_err();
+assert!(matches!(err, ParseError::UnexpectedToken { .. }));
+
+// ✅ for is_ok, bind the value and assert something about it
+let cfg = load(path).expect("valid config loads");
+assert_eq!(cfg.port, 8080);
+```
+
+Run the gate locally before pushing:
+
+```bash
+cargo test -p maekon-lint --test is_ok_hedge_gate --test is_err_hedge_gate
+```
+
+If a site is *genuinely* value-blind by design (e.g. the error type carries no payload, or any error is equally correct), add a one-line justification marker on the line above the assertion instead of strengthening it:
+
+```rust
+// lint:allow-is-err-hedge — justified: RecvError is a payload-less unit struct
+assert!(rx.try_recv().is_err());
+```
+
+> **For external contributors:** this is a project convention, not a correctness requirement. On the public repository the hedge gate runs as an **advisory** check — it annotates your PR but never blocks it. A maintainer may ask you to strengthen a flagged assertion, or do it while porting your change. (Internally it is enforced on the source-of-truth repo.)
+
 ### Comments and Documentation
 
-- **Code comments/docstrings should be written in English by default.**
+- **Code comments/docstrings should be written in English by default.** This is
+  checked by the `language-check` gate, which scans comments (`//`, `///`, `//!`,
+  `/* */`) in `.rs`/`.ts`/`.tsx` for non-English (non-Latin-script) letters:
+
+  ```bash
+  cargo run -p maekon-lint --bin language-check -- non-english --path crates --path src-tauri
+  ```
+
+  Only *comments* are checked — string literals (localized UI text, classifier
+  keywords matched against non-English input, test data) are out of scope and may
+  be any language. Punctuation, em-dashes, Greek/math symbols (`α`, `O(µs)`) and
+  accented Latin are allowed. A file that legitimately needs non-English in comments
+  (e.g. one documenting CJK text tokenization, where example tokens are illustrative)
+  may opt out with a justified `lint:allow-non-english-comments` marker. Like the
+  hedge gate, this is **advisory** on the public repo (annotates, never blocks) and
+  enforced on the source-of-truth repo.
 - **Public documentation is English-primary with multilingual companion docs (ko, ja, zh-CN, es) for key guides.**
 - Add `///` doc comments to all `pub` items.
 - Use inline comments (`//`) to explain intent in complex logic.
@@ -135,6 +258,34 @@ pub struct SmartCaptureTrigger {
     last_capture: Instant,
 }
 ```
+
+### Internationalization (i18n)
+
+User-facing UI copy in the frontend (`crates/maekon-web/frontend`) must go through
+react-i18next, not hardcoded literals:
+
+```tsx
+// ❌ hardcoded
+<button>Save changes</button>
+// ✅ i18n
+const { t } = useTranslation()
+<button>{t('settings.saveChanges')}</button>
+```
+
+Add the new key to **all five** locale files (`src/i18n/locales/{en,ko,ja,zh-CN,es}.json`)
+— `en` is the source string; the others must stay key-synced (a missing key is a
+build error). The gate checks this:
+
+```bash
+cargo run -p maekon-lint --bin language-check -- i18n --strict-i18n
+```
+
+`--strict-i18n` fails on hardcoded UI copy and unknown/missing keys. It does **not**
+flag dynamic `t(`ns.${expr}`)` template-literal keys (legitimate) or non-prose values
+(CSS classes, enum/wire values, format hints like `HH:MM`, code). A component whose
+text is genuinely not product copy (e.g. a dev-only debug panel) can opt out with a
+justified `lint:allow-hardcoded-ui` marker. Like the other house-style gates, this is
+**advisory** on the public repo and enforced on the source-of-truth repo.
 
 ### Error Handling
 
@@ -415,6 +566,11 @@ Include the following in your PR description:
 - Summary of the implementation approach
 - How to test the change
 - Confirmation that architecture rules are followed (especially cross-crate dependencies)
+- Contribution lane and risk class, especially if the change touches
+  `trust-core` surfaces
+- AI-assisted disclosure when applicable
+- A privacy-safe evidence summary for UI, runtime, capture, automation, or
+  release-impacting changes
 
 ### Code Review
 
@@ -425,6 +581,10 @@ Reviewers focus on:
 - `cargo clippy` warnings: 0
 - Manual mocks only (no mockall)
 - English comments
+- Public/private data safety: no secrets, private screenshots, raw capture
+  content, maintainer-only validation names, or internal-only paths
+- Trust-core risk: consent, PII, capture, audio, automation, sandbox, egress,
+  updater, and release-signing changes require stronger maintainer review
 
 ## Commit Message Convention
 

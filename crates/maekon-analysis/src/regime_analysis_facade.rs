@@ -80,9 +80,12 @@ impl RegimeAnalysisFacade {
     }
 }
 
-// Send + Sync because ClusteringStrategy requires Send + Sync
-unsafe impl Send for RegimeAnalysisFacade {}
-unsafe impl Sync for RegimeAnalysisFacade {}
+// `RegimeAnalysisFacade` auto-derives `Send + Sync` from its fields:
+// `Box<dyn ClusteringStrategy>` (the trait is declared `: Send + Sync`) and
+// `String`. The previous hand-written `unsafe impl Send/Sync` was redundant and
+// would have masked a future non-thread-safe field as silent UB instead of a
+// compile error, so it is removed to restore the compiler's auto-trait check.
+// (review4 F8)
 
 fn build_regimes(
     result: &crate::clustering_strategy::ClusteringResult,
@@ -99,11 +102,15 @@ fn build_regimes(
     cluster_points
         .iter()
         .map(|(&cluster_id, indices)| {
-            let centroid = if (cluster_id as usize) < result.centroids.len() {
-                result.centroids[cluster_id as usize].clone()
-            } else {
-                compute_centroid(features, indices)
-            };
+            // Recompute each regime centroid from its OWN member points instead
+            // of indexing `result.centroids` by the real cluster label. The
+            // detector centroid array is now stored densely (one entry per
+            // present label, not `0..=max_label`), so a real label is no longer
+            // a valid index into it: for non-contiguous labels (e.g. {0, 2, 5}
+            // produced by ForceCluster/CannotLink) label-indexing would read a
+            // different cluster's centroid or fall out of bounds. Recomputing
+            // from members is layout-independent and always correct (#6120).
+            let centroid = compute_centroid(features, indices);
 
             let auto_label = if centroid.category_coding > 0.5 {
                 "Deep Work".to_string()
@@ -176,5 +183,73 @@ mod tests {
             regimes.is_empty(),
             "no regimes can be detected from zero features"
         );
+    }
+
+    fn point(rate: f32) -> RegimeFeatures {
+        RegimeFeatures {
+            category_coding: 1.0,
+            category_communication: 0.0,
+            category_browser: 0.0,
+            avg_event_rate: rate,
+            avg_importance: 0.5,
+            context_activity_signal: 0.1,
+            communication_ratio: 0.05,
+        }
+    }
+
+    #[test]
+    fn build_regimes_centroids_use_own_members_for_noncontiguous_labels() {
+        // Regression for #6120: detector centroids are now stored DENSELY (one
+        // entry per present label, no `0..=max_label` padding), so a real
+        // cluster label is no longer a valid index into `result.centroids`.
+        //
+        // Labels {0, 2, 5} are non-contiguous (as produced by
+        // ForceCluster/CannotLink). The dense centroid array below is laid out
+        // in label-ascending order [c(label0), c(label2), c(label5)], which is
+        // exactly the layout the kmeans/hdbscan/gmm detectors now emit. If
+        // `build_regimes` indexed by the real label it would read index 2 (the
+        // label-5 centroid) for cluster 2 and fall out of bounds for cluster 5.
+        //
+        // The deliberately WRONG values stored in `result.centroids` ensure the
+        // assertion only passes when centroids are recomputed from each
+        // regime's own members.
+        let features = vec![
+            point(0.10), // cluster 0
+            point(0.20), // cluster 0  -> mean 0.15
+            point(0.50), // cluster 2
+            point(0.60), // cluster 2  -> mean 0.55
+            point(0.90), // cluster 5
+        ];
+        let labels = vec![0, 0, 2, 2, 5];
+
+        // Dense, label-ascending centroids that do NOT match the member means,
+        // so any label-indexing path would produce a detectably wrong answer.
+        let result = crate::clustering_strategy::ClusteringResult {
+            labels,
+            centroids: vec![point(0.0), point(0.0), point(0.0)],
+            cluster_count: 3,
+            noise_count: 0,
+            probabilities: None,
+        };
+
+        let regimes = build_regimes(&result, &features, Utc::now());
+        assert_eq!(regimes.len(), 3, "one regime per present label");
+
+        // Look each regime up by its cluster id and assert its centroid equals
+        // the mean of its OWN members (not another cluster's centroid).
+        let by_id: HashMap<String, &Regime> =
+            regimes.iter().map(|r| (r.regime_id.clone(), r)).collect();
+
+        let r0 = by_id.get("cluster-0").expect("cluster-0 regime present");
+        let r2 = by_id.get("cluster-2").expect("cluster-2 regime present");
+        let r5 = by_id.get("cluster-5").expect("cluster-5 regime present");
+
+        assert!((r0.centroid.avg_event_rate - 0.15).abs() < 1e-5);
+        assert!((r2.centroid.avg_event_rate - 0.55).abs() < 1e-5);
+        assert!((r5.centroid.avg_event_rate - 0.90).abs() < 1e-5);
+
+        assert_eq!(r0.sample_count, 2);
+        assert_eq!(r2.sample_count, 2);
+        assert_eq!(r5.sample_count, 1);
     }
 }

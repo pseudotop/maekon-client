@@ -2,7 +2,7 @@
 
 use super::*;
 use chrono::{DateTime, Utc};
-use maekon_core::config::TieredMemoryConfig;
+use maekon_core::config::{PiiFilterLevel, TieredMemoryConfig};
 use maekon_core::error::CoreError;
 use maekon_core::models::event::{InputActivityEvent, KeyboardActivity, MouseActivity};
 use maekon_core::models::tiered_memory::{CalibrationEntry, PresetProfile, ResolvedParams};
@@ -178,6 +178,7 @@ async fn app_switch_triggers_trigger_evaluation() {
         None,
         None,
         &storage,
+        PiiFilterLevel::Off,
     )
     .await;
 
@@ -206,6 +207,7 @@ async fn content_tracker_accumulates_on_same_app() {
             None,
             None,
             &storage,
+            PiiFilterLevel::Off,
         )
         .await;
     }
@@ -237,6 +239,7 @@ async fn regime_classification_runs() {
             None,
             None,
             &storage,
+            PiiFilterLevel::Off,
         )
         .await;
     }
@@ -262,7 +265,16 @@ async fn multiple_app_switches_populate_content() {
     for (name, title) in &apps {
         let changed = prev.as_deref() != Some(*name);
         run_analysis_tick(
-            &mut ts, name, title, &prev, changed, &input, None, None, &storage,
+            &mut ts,
+            name,
+            title,
+            &prev,
+            changed,
+            &input,
+            None,
+            None,
+            &storage,
+            PiiFilterLevel::Off,
         )
         .await;
         prev = Some(name.to_string());
@@ -297,6 +309,7 @@ async fn params_resolver_updates_on_tick() {
         None,
         None,
         &storage,
+        PiiFilterLevel::Off,
     )
     .await;
 

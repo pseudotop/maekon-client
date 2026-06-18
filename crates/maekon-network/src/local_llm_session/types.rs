@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -11,6 +11,32 @@ use maekon_core::models::ai_session::{ChatMessage, ChatRole, SessionState};
 
 pub(super) const MAX_ATTACHMENT_PREVIEW_BYTES: usize = 8 * 1024;
 pub(super) const MAX_ATTACHMENT_PREVIEW_FILES: usize = 4;
+
+/// #6205: Bound the connect phase so a black-holed Ollama endpoint (host that
+/// silently drops SYNs rather than refusing) cannot stall the turn before any
+/// bytes are exchanged. Generous because the server is normally on loopback or
+/// LAN, but finite so a turn can never hang on connect.
+pub(super) const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// #6205: Per-read idle window for the streaming NDJSON body. This is a
+/// `read_timeout`, NOT a total `.timeout()`: it resets after every successful
+/// read, so a legitimately long generation that keeps emitting tokens is never
+/// aborted. It fires only when a *connected-but-stalled* endpoint stops sending
+/// bytes (no progress within the window), which would otherwise hang the turn
+/// forever. Sized to comfortably cover slow-model first-token latency.
+pub(super) const OLLAMA_READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// #6205: Build the HTTP client used for Ollama `/api/chat` streaming with a
+/// connect timeout and a per-read idle timeout. Falls back to `Client::new()`
+/// only if the builder somehow fails (it does not for plain timeout settings),
+/// keeping the caller infallible.
+pub(super) fn build_ollama_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(OLLAMA_CONNECT_TIMEOUT)
+        .read_timeout(OLLAMA_READ_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 /// Single NDJSON line from Ollama `/api/chat` with `stream: true`.
 #[derive(Debug, Deserialize)]
@@ -79,7 +105,9 @@ impl LocalLlmSession {
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
             last_active: parking_lot::Mutex::new(Instant::now()),
-            http_client: reqwest::Client::new(),
+            // #6205: connect + per-read idle timeouts so a stalled Ollama
+            // endpoint cannot hang the turn forever (see build_ollama_http_client).
+            http_client: build_ollama_http_client(),
             config,
         }
     }

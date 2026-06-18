@@ -1,16 +1,17 @@
 /**
- * ConsentToggleSection — GDPR 동의 부여/철회 컨트롤 (#4629 A.2 task 2).
+ * ConsentToggleSection — GDPR consent grant/withdrawal control (#4629 A.2 task 2).
  *
- * design.md §3 의 동의 토글 섹션. 삭제(우-소거) ConsentSection 의 형제로, 그 위에
- * 배치된다. 모니터링 OFF(향후 수집 중단)와 철회(중단 + 소거 요청)를 구분한다.
+ * The consent toggle section from design.md §3. A sibling of the deletion (right-to-erasure)
+ * ConsentSection, placed above it. It distinguishes monitoring OFF (stop future collection) from
+ * withdrawal (stop + erasure request).
  *
- * 핵심 의미론(Task 1 검증 기준):
- *   - get_consent 는 status 가 Expired/UpdateRequired 여도 RAW 부여 권한을 반환한다.
- *     따라서 "모니터링 활성" 판정은 status === 'Valid' AND 필드 로만 한다. Expired/
- *     UpdateRequired 상태는 prominent warning 으로 노출한다(에이전트는 그 상태에서
- *     fail-closed).
- *   - set_consent 는 레코드를 통째로 교체한다. 그래서 모든 핸들러는 현재 권한 전체를
- *     spread 한 뒤 대상 필드만 뒤집어 전송한다(별도 opt-in 유실 방지).
+ * Core semantics (Task 1 verification criteria):
+ *   - get_consent returns the RAW granted permissions even when status is Expired/UpdateRequired.
+ *     Therefore the "monitoring active" decision is based solely on status === 'Valid' AND the field.
+ *     Expired/UpdateRequired states are surfaced as a prominent warning (the agent is fail-closed in
+ *     that state).
+ *   - set_consent replaces the record wholesale. So every handler spreads the entire current set of
+ *     permissions and then flips only the target field before sending (to avoid losing other opt-ins).
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -26,11 +27,11 @@ import { ConfirmModal } from './PrivacyLayout'
 
 const CONSENT_QUERY_KEY = ['consent'] as const
 
-// 마이크 클라우드-유출 disclosure Alert 의 안정적 id. 마이크 토글의 Checkbox 가
-// aria-describedby 로 이 id 를 가리켜, 스크린리더가 토글을 읽을 때 disclosure 도 읽도록 한다.
+// Stable id of the microphone cloud-egress disclosure Alert. The microphone toggle's Checkbox
+// points to this id via aria-describedby, so the screen reader also reads the disclosure when it reads the toggle.
 const MICROPHONE_DISCLOSURE_ID = 'consent-microphone-disclosure'
 
-// 모니터링 번들을 구성하는 6개 마스터 필드. ON 이면 모두 true, OFF 면 모두 false.
+// The 6 master fields that make up the monitoring bundle. All true when ON, all false when OFF.
 const MONITORING_FIELDS = [
   'screen_capture',
   'window_title_collection',
@@ -40,14 +41,14 @@ const MONITORING_FIELDS = [
   'telemetry',
 ] as const satisfies readonly (keyof ConsentPermissions)[]
 
-/** 상태가 Valid 일 때만 "활성"으로 본다. RAW 권한 true 여도 만료/갱신필요면 비활성. */
+/** Treated as "active" only when status is Valid. Inactive if expired/update-required, even when the RAW permission is true. */
 function isActive(status: ConsentStatus, granted: boolean): boolean {
   return status === 'Valid' && granted
 }
 
 /**
- * 동의 상태에 따라 열거형 토글 한 줄을 그린다. 설명 영역은 ON 시 수집되는 항목 전체를
- * 열거한다(i18n 키 기반). 토글 컨트롤 자체는 Checkbox 프리미티브를 재사용한다.
+ * Renders one enumerated toggle row according to the consent state. The description area enumerates
+ * all items collected when ON (i18n key-based). The toggle control itself reuses the Checkbox primitive.
  */
 interface EnumeratedToggleProps {
   testId: string
@@ -59,14 +60,16 @@ interface EnumeratedToggleProps {
   disabled: boolean
   onChange: (checked: boolean) => void
   /**
-   * 이 토글에만 국한된 OS 권한 안내(예: 마이크). 섹션 레벨의 화면-녹화 osNote(:255)와
-   * 달리, 토글 블록 안에 per-toggle <p> 로 렌더되어 어떤 모달리티의 OS 권한인지 명확히 한다.
+   * OS-permission note scoped to this toggle only (e.g. microphone). Unlike the section-level
+   * screen-recording osNote (:255), it renders as a per-toggle <p> inside the toggle block to make
+   * clear which modality's OS permission it refers to.
    */
   osNote?: string
   /**
-   * 이 토글 컨트롤에 보충 설명(예: 마이크 클라우드 유출 disclosure)을 aria-describedby 로
-   * 연결할 요소의 id. 정적 role="alert" 는 reliably announced 되지 않으므로(WAI-ARIA),
-   * 토글을 읽을 때 스크린리더가 보충 경고도 함께 읽도록 명시적으로 연결한다.
+   * Id of the element to associate a supplementary note (e.g. the microphone cloud-egress
+   * disclosure) with this toggle control via aria-describedby. Since a static role="alert" is not
+   * reliably announced (WAI-ARIA), associate it explicitly so the screen reader also reads the
+   * supplementary warning when it reads the toggle.
    */
   describedById?: string
 }
@@ -83,8 +86,9 @@ function EnumeratedToggle({
   osNote,
   describedById,
 }: EnumeratedToggleProps) {
-  // 접근성 이름: 가시 라벨 <span> 에 안정적 id 를 부여하고 Checkbox 에 aria-labelledby 로
-  // 연결한다. label prop 을 쓰면 Checkbox 가 라벨을 한 번 더 그려 중복되므로 사용하지 않는다.
+  // Accessible name: give the visible label <span> a stable id and associate it with the Checkbox
+  // via aria-labelledby. Don't use the label prop, since it would make the Checkbox render the label
+  // a second time (duplicating it).
   const labelId = `${testId}-label`
   return (
     <div className="flex items-start justify-between gap-4 rounded-lg border border-muted bg-surface-inset p-4">
@@ -143,8 +147,9 @@ export default function ConsentToggleSection() {
     },
   })
 
-  // demo/standalone(Tauri 부재) 모드: get_consent 가 reject 되면 영구 로딩 대신 "사용 불가"
-  // 안내를 노출한다(다른 섹션과 동일한 graceful degradation). isLoading 보다 먼저 분기한다.
+  // demo/standalone (Tauri-absent) mode: if get_consent rejects, surface an "unavailable" note
+  // instead of perpetual loading (the same graceful degradation as other sections). Branch on this
+  // before isLoading.
   if (isError) {
     return (
       <Card id="section-consent-toggle" variant="default" padding="lg">
@@ -165,7 +170,7 @@ export default function ConsentToggleSection() {
 
   const { status, permissions } = snapshot
   const monitoringOn = isActive(status, permissions.screen_capture)
-  // 고감도 opt-in 은 두 필드 중 하나라도 켜져 있으면 활성으로 본다.
+  // The high-sensitivity opt-in is considered active if either of the two fields is on.
   const clipboardOn = isActive(status, permissions.clipboard_monitoring || permissions.file_access_monitoring)
   const microphoneOn = isActive(status, permissions.microphone)
   const mutating = setMutation.isPending || withdrawMutation.isPending
@@ -178,7 +183,7 @@ export default function ConsentToggleSection() {
   }
 
   const handleMonitoring = (next: boolean) => {
-    // 현재 권한 전체를 보존(spread)하고 6개 마스터 필드만 일괄 설정한다.
+    // Preserve (spread) the entire current set of permissions and set only the 6 master fields in bulk.
     const updated: ConsentPermissions = { ...permissions }
     for (const field of MONITORING_FIELDS) {
       updated[field] = next
@@ -195,7 +200,7 @@ export default function ConsentToggleSection() {
   }
 
   const handleMicrophone = (next: boolean) => {
-    // 현재 권한 전체를 보존(spread)하고 microphone 만 뒤집는다(다른 opt-in 유실 방지).
+    // Preserve (spread) the entire current set of permissions and flip only microphone (to avoid losing other opt-ins).
     setMutation.mutate({ ...permissions, microphone: next })
   }
 
@@ -210,12 +215,12 @@ export default function ConsentToggleSection() {
       <CardTitle className="mb-2">{t('privacy.consent.title')}</CardTitle>
       <p className="mb-4 text-content-secondary text-sm">{t('privacy.consent.subtitle')}</p>
 
-      {/* 상태 라인 */}
+      {/* Status line */}
       <p className="mb-4 text-content-strong text-sm" data-testid="consent-status">
         {t('privacy.consent.status.label')}: {statusLabel[status]}
       </p>
 
-      {/* Expired / UpdateRequired → prominent warning (에이전트 fail-closed) */}
+      {/* Expired / UpdateRequired → prominent warning (agent fail-closed) */}
       {status === 'Expired' && (
         <Alert variant="warning" className="mb-4" title={t('privacy.consent.status.expiredTitle')}>
           {t('privacy.consent.status.expiredWarning')}
@@ -227,7 +232,7 @@ export default function ConsentToggleSection() {
         </Alert>
       )}
 
-      {/* IPC 에러 표시 */}
+      {/* IPC error display */}
       {lastError && (
         <Alert variant="error" className="mb-4" title={t('privacy.consent.actionFailed')}>
           {lastError}
@@ -235,7 +240,7 @@ export default function ConsentToggleSection() {
       )}
 
       <div className="space-y-4">
-        {/* 모니터링 번들 토글 */}
+        {/* Monitoring bundle toggle */}
         <EnumeratedToggle
           testId="consent-monitoring-toggle"
           label={t('privacy.consent.monitoring.label')}
@@ -260,7 +265,7 @@ export default function ConsentToggleSection() {
           onChange={handleMonitoring}
         />
 
-        {/* 고감도 클립보드 / 파일 접근 opt-in (기본 off) */}
+        {/* High-sensitivity clipboard / file-access opt-in (off by default) */}
         <EnumeratedToggle
           testId="consent-clipboard-toggle"
           label={t('privacy.consent.clipboard.label')}
@@ -275,11 +280,12 @@ export default function ConsentToggleSection() {
           onChange={handleClipboard}
         />
 
-        {/* 고감도 마이크 opt-in (기본 off). disclosure 는 클라우드 STT 시 원본 오디오가
-            제3자에 전송될 수 있음을 *무조건* 고지하는 가시 경고(role=alert)로 토글 바로 아래에
-            형제로 배치하고, aria-describedby 로 마이크 토글과 연결한다(정적 role="alert" 는
-            reliably announced 되지 않으므로 — WAI-ARIA — 토글을 읽을 때 함께 읽히도록).
-            osNote 는 화면-녹화가 아닌 마이크 OS 권한을 가리킨다. */}
+        {/* High-sensitivity microphone opt-in (off by default). The disclosure is placed as a
+            sibling right below the toggle as a visible warning (role=alert) that *unconditionally*
+            announces that, with cloud STT, the raw audio may be sent to a third party, and is
+            associated with the microphone toggle via aria-describedby (since a static role="alert"
+            is not reliably announced — WAI-ARIA — so it is read along with the toggle). The osNote
+            refers to the microphone OS permission, not screen recording. */}
         <div className="space-y-2">
           <EnumeratedToggle
             testId="consent-microphone-toggle"
@@ -303,10 +309,10 @@ export default function ConsentToggleSection() {
         </div>
       </div>
 
-      {/* 동의 ≠ OS 화면 접근 안내 (둘 다 필요) */}
+      {/* Consent ≠ OS screen-access note (both are required) */}
       <p className="mt-4 text-content-tertiary text-xs">{t('privacy.consent.osNote')}</p>
 
-      {/* 철회 + 소거 요청 (모니터링 OFF 와 시각적으로 분리) */}
+      {/* Withdrawal + erasure request (visually separated from monitoring OFF) */}
       <div className="mt-6 border-muted border-t pt-4">
         <h3 className={cn(typography.label, 'mb-1 text-content-strong')}>{t('privacy.consent.withdraw.label')}</h3>
         <p className="mb-3 text-content-secondary text-sm">{t('privacy.consent.withdraw.description')}</p>

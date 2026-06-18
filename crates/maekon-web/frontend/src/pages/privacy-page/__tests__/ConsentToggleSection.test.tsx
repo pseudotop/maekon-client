@@ -1,15 +1,15 @@
 /**
- * ConsentToggleSection 행위 테스트 (#4629 A.2 task 2).
+ * ConsentToggleSection behavior test (#4629 A.2 task 2).
  *
- * 카피(문구)가 아니라 *행위* — 즉 어떤 IPC invoke 가 어떤 인자로 호출되는지를 검증한다.
- * (실제 i18n 키 문자열은 Task 3 에서 추가되며, 키 미존재 시 i18next 는 키 자체를
- * 반환하므로 t() 가 키를 그대로 돌려줘도 green 이다.)
+ * Verifies *behavior* rather than copy (wording) — i.e. which IPC invoke is called with which
+ * arguments. (The actual i18n key strings are added in Task 3, and since i18next returns the key
+ * itself when the key is missing, the test is green even if t() returns the key verbatim.)
  *
- * 핵심 계약(Task 1 검증 기준):
- *   - get_consent 는 status 가 Expired/UpdateRequired 여도 RAW 부여 권한을 반환한다.
- *     따라서 "모니터링 ON" 판정은 status === 'Valid' AND 필드 로만 한다.
- *   - set_consent 는 레코드를 통째로 교체하므로, 모든 핸들러는 현재 권한 전체를
- *     spread 한 뒤 대상 필드만 뒤집어 전송한다 (별도 opt-in 유실 방지).
+ * Core contract (Task 1 verification criteria):
+ *   - get_consent returns the RAW granted permissions even when status is Expired/UpdateRequired.
+ *     Therefore the "monitoring ON" decision is based solely on status === 'Valid' AND the field.
+ *   - set_consent replaces the record wholesale, so every handler spreads the entire current set of
+ *     permissions and then flips only the target field before sending (to avoid losing other opt-ins).
  */
 
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
@@ -17,13 +17,13 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../../api/contracts'
-// 테스트 i18n 은 en 로 해석된다(fallbackLng='en'). Task 3 이후 키는 실제 카피로
-// 해석되므로, 키 문자열 대신 en.json 의 해석된 카피를 직접 참조한다(문구 변경에도
-// 키 경로만 유지되면 테스트가 자동 정합).
+// Test i18n resolves to en (fallbackLng='en'). After Task 3 keys resolve to actual copy, so
+// reference the resolved copy from en.json directly instead of the key string (the test stays
+// consistent across wording changes as long as the key path is preserved).
 import en from '../../../i18n/locales/en.json'
 import ConsentToggleSection from '../ConsentToggleSection'
 
-// 14개 권한 전부 false 인 기준 권한 집합.
+// Baseline permission set with all 14 permissions false.
 const ALL_FALSE: ConsentPermissions = {
   screen_capture: false,
   ocr_processing: false,
@@ -46,8 +46,8 @@ function snapshot(status: ConsentStatus, overrides: Partial<ConsentPermissions> 
 }
 
 /**
- * get_consent 는 항상 주어진 스냅샷을 반환하고, set_consent / withdraw_consent 는
- * 전달된 인자를 spy 로 기록한 뒤 적당한 스냅샷을 반환하도록 IPC 를 모킹한다.
+ * Mocks the IPC so that get_consent always returns the given snapshot, and set_consent /
+ * withdraw_consent record the passed arguments via a spy and then return a suitable snapshot.
  */
 function mockConsentIpc(initial: ConsentSnapshot) {
   const setSpy = vi.fn()
@@ -83,7 +83,7 @@ describe('ConsentToggleSection', () => {
   })
 
   it('toggling monitoring ON from a NotGranted snapshot → set_consent with the 6 master fields true (others preserved)', async () => {
-    // ocr_processing 는 별도로 이미 켜져 있다고 가정 → spread 로 보존되어야 한다.
+    // Assume ocr_processing is already separately enabled → it must be preserved by the spread.
     const { setSpy } = mockConsentIpc(snapshot('NotGranted', { ocr_processing: true }))
 
     renderWithProviders(<ConsentToggleSection />)
@@ -94,22 +94,22 @@ describe('ConsentToggleSection', () => {
 
     await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
     const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
-    // 6개 마스터 필드 ON
+    // The 6 master fields ON
     expect(sent.screen_capture).toBe(true)
     expect(sent.window_title_collection).toBe(true)
     expect(sent.app_usage_analytics).toBe(true)
     expect(sent.process_monitoring).toBe(true)
     expect(sent.input_activity).toBe(true)
     expect(sent.telemetry).toBe(true)
-    // 별도 opt-in 보존 (spread)
+    // Separate opt-in preserved (spread)
     expect(sent.ocr_processing).toBe(true)
-    // 고감도 opt-in 은 건드리지 않는다
+    // High-sensitivity opt-ins are left untouched
     expect(sent.clipboard_monitoring).toBe(false)
     expect(sent.file_access_monitoring).toBe(false)
   })
 
   it('toggling the microphone opt-in → set_consent flips microphone, all other fields preserved (full-spread)', async () => {
-    // 모니터링은 이미 Valid 로 켜져 있고 클립보드도 별도로 켜진 상태에서 마이크만 추가로 켠다.
+    // Monitoring is already on (Valid) and clipboard is also separately on; turn on only the microphone in addition.
     const { setSpy } = mockConsentIpc(
       snapshot('Valid', {
         screen_capture: true,
@@ -132,7 +132,7 @@ describe('ConsentToggleSection', () => {
     await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
     const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
     expect(sent.microphone).toBe(true)
-    // 다른 모든 필드는 spread 로 보존된다.
+    // All other fields are preserved by the spread.
     expect(sent.screen_capture).toBe(true)
     expect(sent.window_title_collection).toBe(true)
     expect(sent.telemetry).toBe(true)
@@ -146,7 +146,7 @@ describe('ConsentToggleSection', () => {
     renderWithProviders(<ConsentToggleSection />)
 
     const microphone = await screen.findByTestId('consent-microphone-toggle')
-    // status !== 'Valid' 이므로 RAW 권한이 true 여도 토글은 OFF (fail-closed 표시).
+    // Since status !== 'Valid', the toggle is OFF even if the RAW permission is true (fail-closed display).
     await waitFor(() => expect(microphone).not.toBeChecked())
   })
 
@@ -155,28 +155,29 @@ describe('ConsentToggleSection', () => {
 
     renderWithProviders(<ConsentToggleSection />)
 
-    // disclosure 는 Alert variant="warning" → role="alert" 로 가시 경고로 렌더된다.
-    // (정적 렌더 role="alert" 는 reliably announced 되지 않으므로 — WAI-ARIA: load 이후 삽입
-    // 시에만 자동 고지 — "고지(announced)" 가 아니라 가시 경고 + 토글-연결(아래 테스트)로 본다.)
+    // The disclosure renders as a visible warning via Alert variant="warning" → role="alert".
+    // (A statically-rendered role="alert" is not reliably announced — WAI-ARIA: auto-announced only
+    // when inserted after load — so it is treated as a visible warning + toggle-association (test
+    // below) rather than as something "announced".)
     const disclosure = await screen.findByText(en.privacy.consent.microphone.disclosure)
     expect(disclosure).toBeInTheDocument()
-    // 가장 가까운 role="alert" 컨테이너 안에 렌더된다(Alert 가 warning→role=alert 로 매핑).
+    // It renders inside the nearest role="alert" container (Alert maps warning→role=alert).
     expect(disclosure.closest('[role="alert"]')).not.toBeNull()
   })
 
-  // a11y: 정적 role="alert" 는 reliably announced 되지 않으므로(WAI-ARIA), disclosure 를
-  // 마이크 토글과 aria-describedby 로 *연결*한다 — 스크린리더가 마이크 토글을 읽을 때
-  // 클라우드 유출 disclosure 도 함께 읽도록. (deep review POLISH 2.)
+  // a11y: since a static role="alert" is not reliably announced (WAI-ARIA), *associate* the
+  // disclosure with the microphone toggle via aria-describedby — so the screen reader also reads
+  // the cloud-egress disclosure when it reads the microphone toggle. (deep review POLISH 2.)
   it('associates the cloud-egress disclosure with the mic toggle via aria-describedby', async () => {
     mockConsentIpc(snapshot('Valid', { screen_capture: true }))
 
     renderWithProviders(<ConsentToggleSection />)
 
     const microphone = await screen.findByTestId('consent-microphone-toggle')
-    // 마이크 체크박스는 disclosure 를 가리키는 aria-describedby 를 가져야 한다.
+    // The microphone checkbox must have an aria-describedby pointing to the disclosure.
     const describedBy = microphone.getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
-    // 그 id 로 가리켜지는 노드는 disclosure 카피를 담은 (role="alert") 요소여야 한다.
+    // The node pointed to by that id must be the (role="alert") element holding the disclosure copy.
     const described = document.getElementById(describedBy as string)
     expect(described).not.toBeNull()
     expect(described).toHaveTextContent(en.privacy.consent.microphone.disclosure)
@@ -184,7 +185,7 @@ describe('ConsentToggleSection', () => {
   })
 
   it('toggling clipboard opt-in → set_consent flips clipboard_monitoring/file_access_monitoring, other fields preserved', async () => {
-    // 모니터링은 이미 Valid 로 켜져 있는 상태에서 클립보드만 추가로 켠다.
+    // Monitoring is already on (Valid); turn on only the clipboard in addition.
     const { setSpy } = mockConsentIpc(
       snapshot('Valid', {
         screen_capture: true,
@@ -206,7 +207,7 @@ describe('ConsentToggleSection', () => {
     const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
     expect(sent.clipboard_monitoring).toBe(true)
     expect(sent.file_access_monitoring).toBe(true)
-    // 모니터링 마스터 필드는 유실되지 않는다 (spread).
+    // The monitoring master fields are not lost (spread).
     expect(sent.screen_capture).toBe(true)
     expect(sent.window_title_collection).toBe(true)
     expect(sent.telemetry).toBe(true)
@@ -217,8 +218,8 @@ describe('ConsentToggleSection', () => {
 
     renderWithProviders(<ConsentToggleSection />)
 
-    // 철회는 확인 모달을 거친다: 트리거 → 모달의 확인 버튼.
-    // 확인 버튼은 ConfirmModal 이 confirmText(해석된 카피)로 라벨링한 danger 버튼.
+    // Withdrawal goes through a confirm modal: trigger → the modal's confirm button.
+    // The confirm button is the danger button that ConfirmModal labels with confirmText (resolved copy).
     const trigger = await screen.findByTestId('consent-withdraw-trigger')
     fireEvent.click(trigger)
     const confirm = await screen.findByRole('button', {
@@ -234,7 +235,7 @@ describe('ConsentToggleSection', () => {
 
     renderWithProviders(<ConsentToggleSection />)
 
-    // Expired 경고는 Alert variant="warning" → role="alert" 로 노출된다.
+    // The Expired warning is exposed via Alert variant="warning" → role="alert".
     const warning = await screen.findByText(en.privacy.consent.status.expiredWarning)
     expect(warning).toBeInTheDocument()
   })
@@ -245,18 +246,18 @@ describe('ConsentToggleSection', () => {
     renderWithProviders(<ConsentToggleSection />)
 
     const toggle = await screen.findByTestId('consent-monitoring-toggle')
-    // status !== 'Valid' 이므로 RAW 권한이 true 여도 토글은 OFF (fail-closed 표시).
+    // Since status !== 'Valid', the toggle is OFF even if the RAW permission is true (fail-closed display).
     await waitFor(() => expect(toggle).not.toBeChecked())
   })
 
-  // F6 (a11y): 각 동의 토글은 가시 라벨과 동일한 접근성 이름을 가져야 한다 — 스크린리더가
-  // "checkbox, unchecked" 가 아니라 라벨 카피로 토글의 목적을 읽을 수 있어야 한다.
+  // F6 (a11y): each consent toggle must have an accessible name identical to its visible label — so
+  // the screen reader can read the toggle's purpose from the label copy rather than "checkbox, unchecked".
   it('exposes each consent toggle to assistive tech with its visible label as the accessible name', async () => {
     mockConsentIpc(snapshot('Valid', { screen_capture: true }))
 
     renderWithProviders(<ConsentToggleSection />)
 
-    // 역할(role=checkbox) + 접근성 이름(name=가시 라벨 카피)으로 각 토글이 해석되어야 한다.
+    // Each toggle must resolve by role (role=checkbox) + accessible name (name=visible label copy).
     const monitoring = await screen.findByRole('checkbox', {
       name: en.privacy.consent.monitoring.label,
     })
@@ -269,14 +270,14 @@ describe('ConsentToggleSection', () => {
     expect(monitoring).toBeInTheDocument()
     expect(clipboard).toBeInTheDocument()
     expect(microphone).toBeInTheDocument()
-    // 접근성 이름으로 찾은 컨트롤이 testId 로 찾은 것과 동일한 노드인지 확인(별도 input 아님).
+    // Confirm the control found by accessible name is the same node found by testId (not a separate input).
     expect(monitoring).toBe(screen.getByTestId('consent-monitoring-toggle'))
     expect(clipboard).toBe(screen.getByTestId('consent-clipboard-toggle'))
     expect(microphone).toBe(screen.getByTestId('consent-microphone-toggle'))
   })
 
-  // F7 (demo/standalone): Tauri 부재 시 get_consent 가 reject → useQuery 가 error 상태가 되고
-  // data 는 undefined 로 남는다. 영구 로딩 카드 대신 "사용 불가" 안내를 렌더해야 한다.
+  // F7 (demo/standalone): when Tauri is absent, get_consent rejects → useQuery enters the error state
+  // and data stays undefined. It must render an "unavailable" note instead of a perpetual loading card.
   it('renders an unavailable note (not a stuck loading card) when get_consent rejects', async () => {
     mockIPC((cmd) => {
       if (cmd === 'get_consent') {
@@ -287,10 +288,10 @@ describe('ConsentToggleSection', () => {
 
     renderWithProviders(<ConsentToggleSection />)
 
-    // 사용 불가 안내가 노출된다.
+    // The unavailable note is exposed.
     const unavailable = await screen.findByText(en.privacy.consent.unavailable)
     expect(unavailable).toBeInTheDocument()
-    // 영구 로딩 카드는 더 이상 보이지 않아야 한다.
+    // The perpetual loading card must no longer be visible.
     expect(screen.queryByText(en.privacy.consent.loading)).not.toBeInTheDocument()
   })
 })

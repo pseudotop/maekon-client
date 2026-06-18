@@ -21,13 +21,13 @@ pub(crate) fn resolve_report_window(
             let to = now;
             let from = to - Duration::days(7);
             let window = TimeWindow::new(from, to).expect("now - 7d <= now");
-            Ok((window, "주간 Activity Report".to_string()))
+            Ok((window, "Weekly Activity Report".to_string()))
         }
         ReportPeriod::Month => {
             let to = now;
             let from = to - Duration::days(30);
             let window = TimeWindow::new(from, to).expect("now - 30d <= now");
-            Ok((window, "월간 Activity Report".to_string()))
+            Ok((window, "Monthly Activity Report".to_string()))
         }
         ReportPeriod::Custom => {
             // ReportQuery is date-only (%Y-%m-%d) per spec — NaiveDate parsing
@@ -55,6 +55,17 @@ pub(crate) fn resolve_report_window(
                 .and_hms_opt(23, 59, 59)
                 .ok_or_else(|| ApiError::Internal("Time conversion failed: 23:59:59".to_string()))?
                 .and_utc();
+
+            // #6275: cap the custom span. build_daily_stats() allocates one
+            // HashMap entry per day across [from, to), so an unbounded span
+            // (e.g. 0001-01-01 .. 9999-12-31) is a CPU/memory DoS. Reject at
+            // resolve time so the unbounded allocation never starts.
+            const MAX_REPORT_DAYS: i64 = 731; // ~2 years
+            if (to - from).num_days() > MAX_REPORT_DAYS {
+                return Err(ApiError::BadRequest(format!(
+                    "report range too large (max {MAX_REPORT_DAYS} days)"
+                )));
+            }
 
             let window =
                 TimeWindow::new(from, to).map_err(|e| ApiError::BadRequest(e.to_string()))?;

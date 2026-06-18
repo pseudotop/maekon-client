@@ -171,11 +171,15 @@ pub(super) fn parse_bounding_vertices(
         return (0, 0, 0, 0);
     };
 
+    // Saturate raw i64 coordinates into the i32 range so an out-of-range
+    // adversarial value clamps to the boundary instead of silently
+    // truncating/wrapping via a narrowing `as i32` cast.
+    let clamp_coord = |raw: i64| raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     let points: Vec<(i32, i32)> = vertices
         .iter()
         .map(|vertex| {
-            let x = vertex.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let y = vertex.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let x = clamp_coord(vertex.get("x").and_then(|v| v.as_i64()).unwrap_or(0));
+            let y = clamp_coord(vertex.get("y").and_then(|v| v.as_i64()).unwrap_or(0));
             (x, y)
         })
         .collect();
@@ -189,12 +193,14 @@ pub(super) fn parse_bounding_vertices(
     let min_y = points.iter().map(|(_, y)| *y).min().unwrap_or(0);
     let max_y = points.iter().map(|(_, y)| *y).max().unwrap_or(0);
 
-    (
-        min_x,
-        min_y,
-        (max_x - min_x).max(0) as u32,
-        (max_y - min_y).max(0) as u32,
-    )
+    // Compute extents with widening (i64) arithmetic so adversarial
+    // coordinates (e.g. min = i32::MIN, max = i32::MAX) cannot overflow the
+    // i32 subtraction. Clamp the widened difference into the u32 range before
+    // narrowing, making the parse total (no panic, no wraparound).
+    let width = (i64::from(max_x) - i64::from(min_x)).clamp(0, u32::MAX as i64) as u32;
+    let height = (i64::from(max_y) - i64::from(min_y)).clamp(0, u32::MAX as i64) as u32;
+
+    (min_x, min_y, width, height)
 }
 
 fn value_to_text(value: &Value) -> Option<String> {
@@ -250,4 +256,71 @@ pub(super) fn parse_text_lines_to_results(text: &str) -> Vec<OcrResult> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod bounding_vertices_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn vertices(points: &[(i64, i64)]) -> Vec<serde_json::Value> {
+        points
+            .iter()
+            .map(|(x, y)| json!({ "x": x, "y": y }))
+            .collect()
+    }
+
+    #[test]
+    fn parses_normal_bounding_box() {
+        let verts = vertices(&[(10, 20), (110, 20), (110, 60), (10, 60)]);
+        let (x, y, width, height) = parse_bounding_vertices(Some(&verts));
+        assert_eq!((x, y, width, height), (10, 20, 100, 40));
+    }
+
+    /// Regression guard (ocr-vertex-overflow): adversarial Google Vision
+    /// coordinates spanning the full i32 range must not panic via an
+    /// overflowing i32 subtraction. The extent is computed with widening
+    /// i64 arithmetic and clamped into the u32 range.
+    #[test]
+    fn extreme_coordinates_do_not_panic_and_clamp_extent() {
+        let verts = vertices(&[
+            (i64::from(i32::MIN), i64::from(i32::MIN)),
+            (i64::from(i32::MAX), i64::from(i32::MAX)),
+        ]);
+        // Must not panic; full i32 span saturates the u32 extent.
+        let (x, y, width, height) = parse_bounding_vertices(Some(&verts));
+        assert_eq!(x, i32::MIN);
+        assert_eq!(y, i32::MIN);
+        // (i32::MAX - i32::MIN) == u32::MAX exactly, so the extent is u32::MAX.
+        assert_eq!(width, u32::MAX);
+        assert_eq!(height, u32::MAX);
+    }
+
+    /// Out-of-i32-range JSON numbers are saturated into the i32 range when
+    /// narrowed, instead of wrapping. The resulting extent stays clamped.
+    #[test]
+    fn out_of_range_json_coords_saturate_without_wrapping() {
+        let verts = vertices(&[(i64::MIN, i64::MIN), (i64::MAX, i64::MAX)]);
+        let (x, y, width, height) = parse_bounding_vertices(Some(&verts));
+        assert_eq!(x, i32::MIN);
+        assert_eq!(y, i32::MIN);
+        assert_eq!(width, u32::MAX);
+        assert_eq!(height, u32::MAX);
+    }
+
+    /// Inverted vertex order (max appears before min) must yield a
+    /// non-negative, clamped extent rather than a negative-then-wrapped one.
+    #[test]
+    fn inverted_extent_clamps_to_zero() {
+        let verts = vertices(&[(100, 100), (10, 10)]);
+        let (x, y, width, height) = parse_bounding_vertices(Some(&verts));
+        assert_eq!((x, y, width, height), (10, 10, 90, 90));
+    }
+
+    #[test]
+    fn missing_vertices_returns_zero_box() {
+        assert_eq!(parse_bounding_vertices(None), (0, 0, 0, 0));
+        let empty: Vec<serde_json::Value> = Vec::new();
+        assert_eq!(parse_bounding_vertices(Some(&empty)), (0, 0, 0, 0));
+    }
 }

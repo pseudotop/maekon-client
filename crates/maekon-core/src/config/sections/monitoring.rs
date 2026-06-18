@@ -1,4 +1,4 @@
-// 모니터링/스케줄 설정 — 시스템 감시, 화면 캡처, 활성 시간, 파일 접근 설정
+// Monitoring/schedule config — system monitoring, screen capture, active hours, file-access settings
 use super::super::enums::Weekday;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -26,6 +26,66 @@ pub struct MonitorConfig {
     pub upload_enabled: bool,
 }
 
+impl MonitorConfig {
+    /// Validate that monitor intervals are within acceptable bounds (#6102-4).
+    ///
+    /// The scheduler reads these intervals directly to drive its background
+    /// loops; a sub-second poll/sync interval would spin the loops and a
+    /// near-zero heartbeat would hammer the server, so enforce sane floors that
+    /// the defaults (poll 1000ms / sync 10000ms / heartbeat 30000ms) satisfy.
+    pub fn validate_bounds(&self) -> Result<(), String> {
+        if self.poll_interval_ms < MONITOR_POLL_INTERVAL_MS_FLOOR {
+            return Err(format!(
+                "monitor.poll_interval_ms must be >= {MONITOR_POLL_INTERVAL_MS_FLOOR}"
+            ));
+        }
+        if self.sync_interval_ms < MONITOR_SYNC_INTERVAL_MS_FLOOR {
+            return Err(format!(
+                "monitor.sync_interval_ms must be >= {MONITOR_SYNC_INTERVAL_MS_FLOOR}"
+            ));
+        }
+        if self.heartbeat_interval_ms < MONITOR_HEARTBEAT_INTERVAL_MS_FLOOR {
+            return Err(format!(
+                "monitor.heartbeat_interval_ms must be >= {MONITOR_HEARTBEAT_INTERVAL_MS_FLOOR}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Raise any sub-floor monitor interval to its floor in place, returning the
+    /// dotted-path identities of the fields that were clamped (#6169).
+    ///
+    /// Used by the fail-open INITIAL-LOAD path: a hand-edited / downgrade
+    /// config.json with a sub-second `poll_interval_ms` (which would hot-spin the
+    /// 1s scheduler loops) is corrected to a safe value rather than reaching the
+    /// scheduler unvalidated.
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if self.poll_interval_ms < MONITOR_POLL_INTERVAL_MS_FLOOR {
+            self.poll_interval_ms = MONITOR_POLL_INTERVAL_MS_FLOOR;
+            clamped.push("monitor.poll_interval_ms");
+        }
+        if self.sync_interval_ms < MONITOR_SYNC_INTERVAL_MS_FLOOR {
+            self.sync_interval_ms = MONITOR_SYNC_INTERVAL_MS_FLOOR;
+            clamped.push("monitor.sync_interval_ms");
+        }
+        if self.heartbeat_interval_ms < MONITOR_HEARTBEAT_INTERVAL_MS_FLOOR {
+            self.heartbeat_interval_ms = MONITOR_HEARTBEAT_INTERVAL_MS_FLOOR;
+            clamped.push("monitor.heartbeat_interval_ms");
+        }
+        clamped
+    }
+}
+
+/// Floor for `monitor.poll_interval_ms` (#6102-4 / #6169). The scheduler drives
+/// its 1s loops off this; a sub-second value would spin them.
+pub(crate) const MONITOR_POLL_INTERVAL_MS_FLOOR: u64 = 1_000;
+/// Floor for `monitor.sync_interval_ms` (#6102-4 / #6169).
+pub(crate) const MONITOR_SYNC_INTERVAL_MS_FLOOR: u64 = 1_000;
+/// Floor for `monitor.heartbeat_interval_ms` (#6102-4 / #6169). A near-zero
+/// heartbeat would hammer the server.
+pub(crate) const MONITOR_HEARTBEAT_INTERVAL_MS_FLOOR: u64 = 5_000;
+
 // ── VisionConfig ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,13 +104,29 @@ pub struct VisionConfig {
     pub privacy_mode: bool,
 }
 
+/// Floor for `vision.capture_throttle_ms` (#6169).
+pub(crate) const VISION_CAPTURE_THROTTLE_MS_FLOOR: u64 = 100;
+
 impl VisionConfig {
     /// Validate that vision configuration values are within acceptable bounds.
     pub fn validate_bounds(&self) -> Result<(), String> {
-        if self.capture_throttle_ms < 100 {
-            return Err("vision.capture_throttle_ms must be >= 100".to_string());
+        if self.capture_throttle_ms < VISION_CAPTURE_THROTTLE_MS_FLOOR {
+            return Err(format!(
+                "vision.capture_throttle_ms must be >= {VISION_CAPTURE_THROTTLE_MS_FLOOR}"
+            ));
         }
         Ok(())
+    }
+
+    /// Raise a sub-floor `capture_throttle_ms` to its floor in place, returning
+    /// the dotted-path identities of the fields that were clamped (#6169).
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if self.capture_throttle_ms < VISION_CAPTURE_THROTTLE_MS_FLOOR {
+            self.capture_throttle_ms = VISION_CAPTURE_THROTTLE_MS_FLOOR;
+            clamped.push("vision.capture_throttle_ms");
+        }
+        clamped
     }
 }
 
@@ -110,7 +186,7 @@ impl Default for FileAccessConfig {
     }
 }
 
-// ── Default / helper functions (pub(super) — config/mod.rs 에서 사용) ─
+// ── Default / helper functions (pub(super) — used by config/mod.rs) ─
 
 pub(crate) fn default_poll_interval_ms() -> u64 {
     1_000

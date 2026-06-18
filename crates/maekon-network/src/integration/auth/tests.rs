@@ -193,6 +193,37 @@ async fn ed25519_dpop_factory_builds_real_jwt_proof() {
 }
 
 #[tokio::test]
+async fn ed25519_dpop_factory_strips_query_and_fragment_from_htu() {
+    // RFC 9449 §4.2: htu must contain only scheme + authority + path, never the
+    // query or fragment components.
+    let factory = Ed25519DpopProofFactory::new(None);
+    let proof = factory
+        .build_proof(
+            &IntegrationAuthContext {
+                access_token: "access-token".to_string(),
+                scheme: IntegrationAuthScheme::DpopBearer,
+                expires_at: None,
+                resource_indicator: None,
+            },
+            "POST",
+            "https://integration.example.com/bootstrap?token=secret&page=2#section",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let parts: Vec<&str> = proof.header_value.split('.').collect();
+    assert_eq!(parts.len(), 3);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1].as_bytes()).unwrap()).unwrap();
+
+    assert_eq!(
+        payload["htu"], "https://integration.example.com/bootstrap",
+        "htu must drop query and fragment per RFC 9449 §4.2"
+    );
+}
+
+#[tokio::test]
 async fn oidc_device_flow_starts_and_polls_into_ready_auth() {
     let mut server = mockito::Server::new_async().await;
     let device_endpoint = format!("{}/oauth/device/code", server.url());
@@ -450,6 +481,163 @@ async fn current_auth_status_refreshes_expired_material_when_refresh_token_exist
             .unwrap()
             .as_deref(),
         Some("refresh-token-2b")
+    );
+    refresh_mock.assert_async().await;
+}
+
+/// Builds a port whose stored material is already expired and carries a refresh
+/// token, plus an `InMemorySecretStore` pre-seeded with that material. Used by the
+/// refresh-failure regression tests below.
+async fn port_with_expired_material(
+    server: &mockito::Server,
+) -> (OidcDeviceFlowIntegrationAuthPort, Arc<dyn SecretStore>) {
+    let secret_store = Arc::new(InMemorySecretStore::default()) as Arc<dyn SecretStore>;
+    secret_store
+        .store(
+            INTEGRATION_AUTH_SECRET_NAMESPACE,
+            INTEGRATION_ACCESS_TOKEN_SECRET_KEY,
+            "expired-access-token",
+        )
+        .await
+        .unwrap();
+    secret_store
+        .store(
+            INTEGRATION_AUTH_SECRET_NAMESPACE,
+            INTEGRATION_REFRESH_TOKEN_SECRET_KEY,
+            "refresh-token-keep",
+        )
+        .await
+        .unwrap();
+    secret_store
+        .store(
+            INTEGRATION_AUTH_SECRET_NAMESPACE,
+            INTEGRATION_EXPIRES_AT_SECRET_KEY,
+            &(Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
+
+    let port = OidcDeviceFlowIntegrationAuthPort::new(
+        OidcDeviceFlowAuthConfig {
+            client_id: "desktop-client".to_string(),
+            device_authorization_url: format!("{}/oauth/device/code", server.url()),
+            token_url: format!("{}/oauth/token", server.url()),
+            default_scopes: vec!["openid".to_string()],
+            resource_indicator: Some("https://integration.example.com".to_string()),
+            scheme: IntegrationAuthScheme::BearerToken,
+            request_timeout: Duration::from_secs(5),
+        },
+        Arc::new(NoopIntegrationRequestProofFactory),
+        Some(secret_store.clone()),
+    )
+    .unwrap();
+
+    (port, secret_store)
+}
+
+/// A transient 503 during refresh must NOT delete the persisted grant: the next
+/// scheduled refresh should be able to retry. Regression for #6199 (transient 5xx
+/// previously triggered a permanent logout).
+#[tokio::test]
+async fn refresh_transient_503_keeps_stored_material() {
+    let mut server = mockito::Server::new_async().await;
+    let refresh_mock = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::UrlEncoded(
+            "grant_type".into(),
+            "refresh_token".into(),
+        ))
+        .with_status(503)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"error":"temporarily_unavailable"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let (port, secret_store) = port_with_expired_material(&server).await;
+
+    // `current_auth_status` swallows the refresh Err into an Error status but the
+    // grant-clearing decision happens inside `refresh_access_token`, observable via
+    // the secret store.
+    let status = port.current_auth_status().await.unwrap();
+    assert_eq!(status.status, IntegrationAuthStatusKind::Error);
+    assert!(!status.authenticated);
+
+    // Material must survive a transient failure.
+    assert_eq!(
+        secret_store
+            .retrieve(
+                INTEGRATION_AUTH_SECRET_NAMESPACE,
+                INTEGRATION_ACCESS_TOKEN_SECRET_KEY
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("expired-access-token"),
+        "transient 503 must not clear the access token"
+    );
+    assert_eq!(
+        secret_store
+            .retrieve(
+                INTEGRATION_AUTH_SECRET_NAMESPACE,
+                INTEGRATION_REFRESH_TOKEN_SECRET_KEY
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("refresh-token-keep"),
+        "transient 503 must not clear the refresh token"
+    );
+    refresh_mock.assert_async().await;
+}
+
+/// A 400 with `invalid_grant` means the refresh token is permanently invalid, so
+/// the stored grant MUST be cleared (forcing re-authorization). Regression for
+/// #6199 (preserves the legitimate permanent-logout path).
+#[tokio::test]
+async fn refresh_permanent_invalid_grant_clears_stored_material() {
+    let mut server = mockito::Server::new_async().await;
+    let refresh_mock = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::UrlEncoded(
+            "grant_type".into(),
+            "refresh_token".into(),
+        ))
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"error":"invalid_grant","error_description":"refresh token revoked"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let (port, secret_store) = port_with_expired_material(&server).await;
+
+    let status = port.current_auth_status().await.unwrap();
+    assert_eq!(status.status, IntegrationAuthStatusKind::Error);
+    assert!(!status.authenticated);
+
+    // Permanent invalid_grant must wipe the persisted material.
+    assert_eq!(
+        secret_store
+            .retrieve(
+                INTEGRATION_AUTH_SECRET_NAMESPACE,
+                INTEGRATION_ACCESS_TOKEN_SECRET_KEY
+            )
+            .await
+            .unwrap(),
+        None,
+        "invalid_grant must clear the access token"
+    );
+    assert_eq!(
+        secret_store
+            .retrieve(
+                INTEGRATION_AUTH_SECRET_NAMESPACE,
+                INTEGRATION_REFRESH_TOKEN_SECRET_KEY
+            )
+            .await
+            .unwrap(),
+        None,
+        "invalid_grant must clear the refresh token"
     );
     refresh_mock.assert_async().await;
 }

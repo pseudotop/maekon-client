@@ -36,8 +36,8 @@ impl maekon_core::ports::web_storage::DashboardStreamingStorage for SqliteStorag
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<MetricBucketRecord, CoreError> {
-        // 읽기 — with_conn_read 의 read_lock(deletion_flag 무관)을 spawn_blocking 위에서
-        // 획득하므로 parking_lot 가드는 `.await` 를 가로질러 보유되지 않는다 (ADR-026 PR-9).
+        // Read — `with_conn_read` acquires its read_lock (independent of deletion_flag) on top of
+        // `spawn_blocking`, so the parking_lot guard is never held across an `.await` (ADR-026 PR-9).
         self.with_conn_read(move |conn| Ok(Self::aggregate_metrics_window_inner(conn, from, to)))
             .await
             .map_err(join_failure_to_core)?

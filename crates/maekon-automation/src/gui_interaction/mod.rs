@@ -49,6 +49,12 @@ const GUI_EVENT_CHANNEL_CAPACITY: usize = 256;
 const FOCUS_DRIFT_MAX_RETRIES: usize = 2;
 const FOCUS_DRIFT_RETRY_DELAY_MS: u64 = 500;
 const TICKET_EXPIRY_GRACE_SECS: i64 = 5;
+/// Hard cap on the number of concurrent live GUI sessions. Callers that
+/// exceed this limit receive `GuiInteractionError::BadRequest`
+/// (`gui.bad_request`). Expired sessions are purged lazily on each
+/// `create_session` call before the cap is enforced, so the effective
+/// steady-state is well below this ceiling for well-behaved callers.
+const MAX_SESSIONS: usize = 100;
 
 #[cfg(test)]
 mod tests;

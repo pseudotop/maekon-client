@@ -18,7 +18,9 @@ pub struct FrameFileStorage {
     pub(super) base_dir: PathBuf,
     pub(super) max_storage_mb: u64,
     pub(super) retention_days: u32,
-    pub(super) frame_counter: AtomicU32,
+    /// Monotonic frame sequence counter, shared (`Arc`) so the spawned batch
+    /// tasks can re-fetch a fresh value when retrying past a filename collision.
+    pub(super) frame_counter: Arc<AtomicU32>,
     pub(super) buffer_pool: Arc<BufferPool>,
     pub(super) disk_cache: DiskSpaceCache,
     pub(super) encryption_key: Option<Arc<EncryptionKey>>,
@@ -28,24 +30,28 @@ pub struct FrameFileStorage {
     pub(super) cached_size_bytes: AtomicU64,
     /// Whether `cached_size_bytes` has been initialized from a directory walk.
     pub(super) cached_size_initialized: std::sync::atomic::AtomicBool,
-    /// #4928: consent-revoke erasure 차단 신호 (SQLite 와 동일한 공유 `Arc`).
+    /// #4928: consent-revoke erasure block signal (the same shared `Arc` as SQLite).
     ///
-    /// set 이면 `save_frame`/`save_frames_batch` 가 파일을 쓰지 않고 스킵한다
-    /// (no-op `Ok`). composition root 에서 `ConsentManager::deletion_flag()` 를
-    /// install 한다. non-erase 생성자(테스트/오프라인)는 기본 `false`.
+    /// When set, `save_frame`/`save_frames_batch` skip the write rather than
+    /// writing a file (no-op `Ok`). The composition root installs
+    /// `ConsentManager::deletion_flag()` here. Non-erase constructors
+    /// (tests/offline) default to `false`.
     pub(super) deletion_flag: Arc<AtomicBool>,
-    /// #4928 round-3 (FIX B): grant_consent-during-erase TOCTOU 차단 신호 (SQLite 와 동일 Arc).
+    /// #4928 round-3 (FIX B): grant_consent-during-erase TOCTOU block signal (the same `Arc` as SQLite).
     ///
-    /// `deletion_flag` 는 재동의 시 `grant_consent` 가 `false` 로 되돌릴 수 있으나,
-    /// `erasing` 은 `erase_all_local_data` 만 RAII 로 set/clear 한다. 프레임 쓰기 skip
-    /// 술어는 `deletion_flag || erasing` 이며, erase 윈도우 안에 재동의가 끼어들어도
-    /// erase 가 끝날 때까지 프레임 쓰기가 스킵된다. composition root 가 공유 Arc 를 install.
+    /// `deletion_flag` can be flipped back to `false` by `grant_consent` on
+    /// re-consent, but `erasing` is set/cleared via RAII only by
+    /// `erase_all_local_data`. The frame-write skip predicate is
+    /// `deletion_flag || erasing`, so even if a re-consent slips into the erase
+    /// window, frame writes stay skipped until the erase completes. The
+    /// composition root installs the shared `Arc`.
     pub(super) erasing: Arc<AtomicBool>,
-    /// #4928: 프레임 쓰기 ↔ 전체삭제 직렬화 배리어 (all-async → tokio `RwLock`).
+    /// #4928: frame-write ↔ full-delete serialization barrier (all-async → tokio `RwLock`).
     ///
-    /// 쓰기 경로는 `read().await`(공유), `delete_all_files` 는 `write().await`(배타)
-    /// 를 취해, 삭제가 진행 중이면 쓰기가 대기하고 삭제가 끝나면 deletion_flag set
-    /// 으로 인해 스킵된다. frame-local 인스턴스로 충분하다(SQLite mutex 와 별개).
+    /// The write path takes `read().await` (shared) and `delete_all_files` takes
+    /// `write().await` (exclusive), so a write waits while a delete is in
+    /// progress and, once the delete finishes, is skipped because `deletion_flag`
+    /// is set. A frame-local instance is sufficient (independent of the SQLite mutex).
     pub(super) frame_barrier: Arc<RwLock<()>>,
 }
 
@@ -92,15 +98,15 @@ impl FrameFileStorage {
             base_dir,
             max_storage_mb,
             retention_days,
-            frame_counter: AtomicU32::new(0),
+            frame_counter: Arc::new(AtomicU32::new(0)),
             buffer_pool: Arc::new(BufferPool::new(BUFFER_POOL_SIZE, DEFAULT_BUFFER_SIZE)),
             disk_cache: DiskSpaceCache::new(),
             encryption_key,
             cached_size_bytes: AtomicU64::new(0),
             cached_size_initialized: std::sync::atomic::AtomicBool::new(false),
-            // #4928: 기본 false(쓰기 허용). composition root 가 공유 flag 를 install.
+            // #4928: defaults to false (writes allowed). The composition root installs the shared flag.
             deletion_flag: Arc::new(AtomicBool::new(false)),
-            // #4928 round-3: 기본 false. composition root 가 공유 `erasing` 을 install.
+            // #4928 round-3: defaults to false. The composition root installs the shared `erasing`.
             erasing: Arc::new(AtomicBool::new(false)),
             frame_barrier: Arc::new(RwLock::new(())),
         })
@@ -110,28 +116,30 @@ impl FrameFileStorage {
         self.base_dir.join("frames")
     }
 
-    /// #4928: 공유 `deletion_flag` 를 install 한다(composition-root 배선용 seam).
+    /// #4928: install the shared `deletion_flag` (composition-root wiring seam).
     ///
-    /// `SqliteStorage` 와 동일한 `Arc<AtomicBool>` (= `ConsentManager::deletion_flag()`)
-    /// 를 받아, revoke 이후 프레임 쓰기가 funnel 에서 스킵되도록 한다.
+    /// Accepts the same `Arc<AtomicBool>` as `SqliteStorage`
+    /// (= `ConsentManager::deletion_flag()`) so that, after a revoke, frame
+    /// writes are skipped at the funnel.
     pub fn set_deletion_flag(&mut self, flag: Arc<AtomicBool>) {
         self.deletion_flag = flag;
     }
 
-    /// #4928: 현재 install 된 `deletion_flag` 를 반환한다(ptr-eq 공유 검증/테스트용).
+    /// #4928: return the currently installed `deletion_flag` (for ptr-eq sharing checks/tests).
     pub fn deletion_flag(&self) -> Arc<AtomicBool> {
         self.deletion_flag.clone()
     }
 
-    /// #4928 round-3 (FIX B): 공유 `erasing` 신호를 install 한다(composition-root 배선용 seam).
+    /// #4928 round-3 (FIX B): install the shared `erasing` signal (composition-root wiring seam).
     ///
-    /// `SqliteStorage` 와 동일한 `Arc<AtomicBool>` (= `ConsentManager::erasing()`)를 받아,
-    /// erase 윈도우 안에 재동의가 끼어들어도 erase 가 끝날 때까지 프레임 쓰기가 스킵되게 한다.
+    /// Accepts the same `Arc<AtomicBool>` as `SqliteStorage`
+    /// (= `ConsentManager::erasing()`) so that, even if a re-consent slips into
+    /// the erase window, frame writes stay skipped until the erase completes.
     pub fn set_erasing(&mut self, erasing: Arc<AtomicBool>) {
         self.erasing = erasing;
     }
 
-    /// #4928 round-3: 현재 install 된 `erasing` 신호를 반환한다(ptr-eq 검증/테스트용).
+    /// #4928 round-3: return the currently installed `erasing` signal (for ptr-eq checks/tests).
     pub fn erasing(&self) -> Arc<AtomicBool> {
         self.erasing.clone()
     }

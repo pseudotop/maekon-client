@@ -5,29 +5,25 @@ use crate::services::settings_update_flow::SettingsUpdateFlow;
 use crate::services::settings_validation::validate_settings_input;
 use crate::services::web_contexts::SettingsWebContext;
 
-/// F-RR-C22-01: `SettingsUpdateFlow` is promoted to a field so the
-/// `PolicyAuditWriter` background task (and its bounded mpsc channel) is
-/// created once per service instance, not once per `update_settings` call.
+/// #6117: `SettingsCommandService` is still rebuilt per `POST /api/settings`
+/// (it is constructed from the per-request `SettingsWebContext`), but it no
+/// longer builds — and therefore no longer aborts — its own
+/// `PolicyAuditWriter`.  Instead it threads the SHARED, server-lifetime
+/// `Arc<PolicyAuditWriter>` (built once in `WebServer::build_router`, carried on
+/// `SettingsWebContext`) into the `SettingsUpdateFlow`.
 ///
-/// The previous shape called `SettingsUpdateFlow::new(...)` inside
-/// `update_settings()`, which called `PolicyAuditWriter::new` (spawning a
-/// task) and then immediately dropped `SettingsUpdateFlow` at the end of the
-/// request (aborting the task via `Drop`).  Rapid or concurrent settings saves
-/// accumulated N concurrent spawn/abort cycles with no upper bound — exactly
-/// the pattern that F-RR-38 was meant to prevent inside `SettingsUpdateFlow`
-/// itself, but which was left unaddressed at the caller layer.
-///
-/// With the field-based design:
-/// - `SettingsCommandService::new` creates one `SettingsUpdateFlow` (and one
-///   `PolicyAuditWriter` task) per Axum state clone.
-/// - `update_settings` reuses the long-lived writer via `flow.apply(settings)`.
-/// - `SettingsCommandService` derives `Clone` because `SettingsUpdateFlow`
-///   derives `Clone`; `PolicyAuditWriter` is behind `Arc` inside
-///   `SettingsUpdateFlow`, so all clones share one writer task.
+/// The previous shape (F-RR-C22-01/F-RR-38) created a fresh writer inside
+/// `SettingsUpdateFlow::new` on every request.  Because the whole context is
+/// dropped at request end, that writer's bounded-channel drain task was
+/// `abort()`ed before the just-enqueued audit event could flush — so the
+/// security-policy audit event was deterministically lost on every save.  The
+/// shared writer's drain task lives for the whole server lifetime, and the save
+/// path now AWAITS the enqueue, so the event is durably handed off before the
+/// HTTP response returns.
 #[derive(Clone)]
 pub struct SettingsCommandService {
-    /// Long-lived update flow.  `None` when no config manager is configured.
-    /// Initialized once in `new`; reused by every `update_settings` call.
+    /// Per-request update flow.  `None` when no config manager is configured.
+    /// Holds an `Arc` to the shared writer — no writer task is spawned here.
     flow: Option<SettingsUpdateFlow>,
 }
 
@@ -39,8 +35,11 @@ impl SettingsCommandService {
                 ctx.default_secret_backend_kind,
                 ctx.secret_store.clone(),
                 ctx.secret_stores.clone(),
-                ctx.audit_logger.clone(),
-                // #5707: coaching 엔진 핸들을 flow 에 전달해 hot-reload 를 활성화한다.
+                // #6117: share the single, server-lifetime writer — do NOT
+                // construct a new one per request.
+                ctx.policy_audit_writer.clone(),
+                // #5707: pass the coaching engine handle to the flow to enable
+                // hot-reload.
                 ctx.coaching_engine.clone(),
             )
         });

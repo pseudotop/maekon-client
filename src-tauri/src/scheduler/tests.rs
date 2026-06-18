@@ -94,14 +94,16 @@ fn sensitive_apps_are_skipped_from_upload() {
     assert!(policy.prepare_event_for_upload(event).is_none());
 }
 
-// ── #4803: Egress 감사 원장 write-hook 테스트 ────────────────────────────
+// ── #4803: Egress audit-ledger write-hook tests ─────────────────────────
 //
-// 루프 caller-site 의 egress 결정 흐름(소비 전 유형/크기 계산 → uploaded/blocked
-// disposition 기록)을 검증한다. 전체 Scheduler 는 16개 포트 + tokio 런타임을
-// 요구하므로 구성하지 않고, 실제 production write 경로(SqliteStorage::record_egress
-// 를 `Arc<dyn SchedulerStorage>` 트레이트 디스패치로 호출)와 실제 PlatformEgressPolicy
-// 결정을 함께 행사한다. 이는 30개 메서드 stub 보다 정직하다 — 트레이트 배선 +
-// 실제 SQLite 기록 + UNIQUE 제약까지 end-to-end 로 증명한다.
+// Verifies the egress decision flow at the loop caller-site (compute type/size
+// before consuming the event → record the uploaded/blocked disposition). The
+// full Scheduler requires 16 ports + a tokio runtime, so we do not construct it;
+// instead we exercise the real production write path (calling
+// SqliteStorage::record_egress via `Arc<dyn SchedulerStorage>` trait dispatch)
+// together with a real PlatformEgressPolicy decision. This is more honest than
+// stubbing out 30 methods — it proves the trait wiring + the real SQLite write +
+// the UNIQUE constraint end-to-end.
 mod egress_hook_tests {
     use crate::scheduler::config::{
         egress_byte_count, egress_event_type, record_event_egress, PlatformEgressPolicy,
@@ -113,9 +115,10 @@ mod egress_hook_tests {
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
 
-    /// `Arc<SqliteStorage>`(read 용 구체 핸들)과 동일 커넥션을 공유하는
-    /// `Arc<dyn SchedulerStorage>`(write hook 용 트레이트 핸들)를 함께 만든다.
-    /// 두 Arc 는 같은 내부 값을 가리키므로 trait 경유 write 가 구체 read 로 보인다.
+    /// Builds an `Arc<SqliteStorage>` (concrete handle for reads) together with an
+    /// `Arc<dyn SchedulerStorage>` (trait handle for the write hook) that share the
+    /// same connection. Both Arcs point at the same inner value, so a write made
+    /// through the trait is visible to the concrete read.
     fn storage_pair() -> (Arc<SqliteStorage>, Arc<dyn SchedulerStorage>) {
         let concrete = Arc::new(SqliteStorage::open_in_memory(30).expect("sqlite"));
         let dyn_handle: Arc<dyn SchedulerStorage> = concrete.clone();
@@ -141,8 +144,10 @@ mod egress_hook_tests {
         })
     }
 
-    /// 루프 caller-site 의 egress 결정 흐름을 그대로 재현한다.
-    fn run_egress_hook(
+    /// Reproduces the loop caller-site's egress decision flow exactly.
+    /// #6134: `record_event_egress` became async (spawn_blocking offload), so
+    /// this helper became async as well.
+    async fn run_egress_hook(
         storage: &Arc<dyn SchedulerStorage>,
         policy: &PlatformEgressPolicy,
         event: Event,
@@ -151,10 +156,10 @@ mod egress_hook_tests {
         let bytes = egress_byte_count(&event);
         let consent_state = policy.consent_state_snapshot();
         if policy.prepare_event_for_upload(event).is_some() {
-            record_event_egress(storage, etype, bytes, "uploaded", &consent_state);
+            record_event_egress(storage, etype, bytes, "uploaded", &consent_state).await;
             true
         } else {
-            record_event_egress(storage, etype, bytes, "blocked", &consent_state);
+            record_event_egress(storage, etype, bytes, "blocked", &consent_state).await;
             false
         }
     }
@@ -171,34 +176,34 @@ mod egress_hook_tests {
         concrete.recent_egress(100)
     }
 
-    /// 업로드 허용 이벤트 → disposition='uploaded' 정확히 1건.
-    #[test]
-    fn allowed_event_writes_one_uploaded_record() {
+    /// Upload-allowed event → exactly one disposition='uploaded' record.
+    #[tokio::test]
+    async fn allowed_event_writes_one_uploaded_record() {
         let (concrete, dyn_handle) = storage_pair();
         let policy = enabled_policy();
         assert!(policy.is_enabled());
 
-        let uploaded = run_egress_hook(&dyn_handle, &policy, allowed_context_event());
-        assert!(uploaded, "허용 이벤트는 업로드되어야 한다");
+        let uploaded = run_egress_hook(&dyn_handle, &policy, allowed_context_event()).await;
+        assert!(uploaded, "allowed event must be uploaded");
 
         let recorded = rows(&concrete);
-        assert_eq!(recorded.len(), 1, "정확히 1건이 기록되어야 한다");
+        assert_eq!(recorded.len(), 1, "exactly one record must be written");
         assert_eq!(recorded[0].disposition, "uploaded");
         assert_eq!(recorded[0].event_type, "Context");
         assert!(recorded[0].byte_count > 0);
     }
 
-    /// 차단 이벤트(클립보드) → disposition='blocked' 1건 + prepare 는 None.
-    #[test]
-    fn blocked_event_writes_one_blocked_record() {
+    /// Blocked event (clipboard) → one disposition='blocked' record + prepare is None.
+    #[tokio::test]
+    async fn blocked_event_writes_one_blocked_record() {
         let (concrete, dyn_handle) = storage_pair();
         let policy = enabled_policy();
 
-        // prepare_event_for_upload 는 클립보드를 None 으로 반환해야 한다(fail-closed).
+        // prepare_event_for_upload must return None for clipboard (fail-closed).
         assert!(policy.prepare_event_for_upload(clipboard_event()).is_none());
 
-        let uploaded = run_egress_hook(&dyn_handle, &policy, clipboard_event());
-        assert!(!uploaded, "클립보드 이벤트는 차단되어야 한다");
+        let uploaded = run_egress_hook(&dyn_handle, &policy, clipboard_event()).await;
+        assert!(!uploaded, "clipboard event must be blocked");
 
         let recorded = rows(&concrete);
         assert_eq!(recorded.len(), 1);
@@ -206,13 +211,13 @@ mod egress_hook_tests {
         assert_eq!(recorded[0].event_type, "Clipboard");
     }
 
-    /// 텔레메트리 동의가 없으면(is_enabled==false) 'uploaded' 레코드는 없어야 한다.
-    /// (모든 이벤트가 blocked 로 기록된다.)
-    #[test]
-    fn no_uploaded_record_when_consent_revoked() {
+    /// Without telemetry consent (is_enabled==false) there must be no 'uploaded'
+    /// record. (Every event is recorded as blocked.)
+    #[tokio::test]
+    async fn no_uploaded_record_when_consent_revoked() {
         let (concrete, dyn_handle) = storage_pair();
 
-        // upload_enabled=true 라도 telemetry 동의가 없으면 egress 비활성.
+        // Even with upload_enabled=true, egress is disabled without telemetry consent.
         let dir = tempfile::tempdir().expect("tempdir");
         let cm = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
         cm.grant_consent(
@@ -228,19 +233,22 @@ mod egress_hook_tests {
             ..Default::default()
         };
         let policy = PlatformEgressPolicy::new(&config).with_consent_manager(Some(cm));
-        assert!(!policy.is_enabled(), "동의 부재 시 egress 비활성");
+        assert!(
+            !policy.is_enabled(),
+            "egress disabled when consent is absent"
+        );
 
-        let uploaded = run_egress_hook(&dyn_handle, &policy, allowed_context_event());
-        assert!(!uploaded, "동의 부재 시 업로드되지 않아야 한다");
+        let uploaded = run_egress_hook(&dyn_handle, &policy, allowed_context_event()).await;
+        assert!(!uploaded, "must not be uploaded when consent is absent");
 
         let recorded = rows(&concrete);
         assert!(
             recorded.iter().all(|r| r.disposition != "uploaded"),
-            "동의 부재 시 'uploaded' 레코드가 없어야 한다"
+            "no 'uploaded' record when consent is absent"
         );
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].disposition, "blocked");
-        // consent_state 스냅샷에 telemetry=false 가 남아 사후 감사가 가능해야 한다.
+        // The consent_state snapshot must retain telemetry=false so a later audit is possible.
         assert!(recorded[0].consent_state.contains("telemetry=false"));
     }
 }

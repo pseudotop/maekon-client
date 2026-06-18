@@ -32,7 +32,7 @@ where
     )
 }
 
-/// Tauri setup 함수 — gui_runner.rs의 Agent + WebServer 초기화 이전
+/// Tauri setup function — runs before the Agent + WebServer initialization in gui_runner.rs.
 pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     {
@@ -85,8 +85,9 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         frontend_web_port,
         local_auth_token,
         state_builder,
-        // F-RR-C36-01: 핸들을 destructure 하여 Tauri managed state 로 등록.
-        // Tauri는 managed state 를 앱 종료 시까지 소유하므로 프로세스 수명이 보장됨.
+        // F-RR-C36-01: destructure the handles and register them as Tauri managed
+        // state. Tauri owns managed state until app shutdown, so the process
+        // lifetime is guaranteed.
         #[cfg(feature = "grpc-dashboard-external")]
         ext_grpc_supervisor,
         #[cfg(feature = "grpc-dashboard-external")]
@@ -127,9 +128,10 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         local_auth_token.clone(),
     ));
 
-    // F-RR-C36-01: 외부 gRPC 슈퍼바이저 + TLS 감시자를 Tauri managed state 에 등록.
-    // managed state 는 앱 종료 시 Drop되어 태스크가 정상 정리됨.
-    // Option 으로 감싸서 feature 미활성화 / 설정 미적용 빌드에서도 safe.
+    // F-RR-C36-01: register the external gRPC supervisor + TLS watcher as Tauri
+    // managed state. Managed state is dropped on app shutdown, so the tasks are
+    // cleaned up properly. Wrapped in Option so it stays safe in builds where the
+    // feature is disabled or the config is not applied.
     #[cfg(feature = "grpc-dashboard-external")]
     app.manage(crate::ext_grpc_handles::ExtGrpcHandles {
         supervisor: ext_grpc_supervisor,
@@ -254,8 +256,9 @@ mod tests {
         ));
     }
 
-    /// tauri.conf.json의 window 설정이 setup::init()의 show() 로직과 일관성 있는지 검증.
-    /// visible=false + setup에서 show() 호출하는 패턴이 유지되어야 함.
+    /// Verifies that the window config in tauri.conf.json is consistent with the
+    /// show() logic in setup::init(). The pattern of visible=false plus a show()
+    /// call in setup must be preserved.
     #[test]
     fn tauri_conf_window_starts_hidden_for_setup_controlled_show() {
         let conf_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
@@ -273,7 +276,7 @@ mod tests {
             .find(|w| w["label"].as_str() == Some("main"))
             .expect("main window must be defined in tauri.conf.json");
 
-        // visible=false 확인 — setup::init()에서 show()를 호출하는 패턴
+        // Verify visible=false — the pattern where setup::init() calls show()
         assert_eq!(
             main_window["visible"].as_bool(),
             Some(false),
@@ -360,8 +363,9 @@ mod tests {
         );
     }
 
-    /// desktop startup helper에 window.show() 호출이 포함되어 있는지 정적 검증.
-    /// 향후 리팩토링 시 show() 호출이 실수로 제거되는 것을 방지.
+    /// Statically verifies that the desktop startup helper contains a window.show()
+    /// call. Prevents the show() call from being accidentally removed in a future
+    /// refactor.
     #[test]
     fn desktop_startup_contains_window_show_call() {
         let setup_src = include_str!("desktop_startup.rs");
@@ -376,8 +380,8 @@ mod tests {
         );
     }
 
-    /// main.rs에 RunEvent::Reopen 핸들러가 있는지 검증.
-    /// macOS dock 아이콘 클릭 시 윈도우를 다시 표시하기 위해 필수.
+    /// Verifies that main.rs has a RunEvent::Reopen handler.
+    /// Required to re-show the window when the macOS dock icon is clicked.
     #[test]
     fn main_contains_reopen_handler() {
         let main_src = include_str!("main.rs");

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::error::AnalysisError;
 use chrono::{DateTime, Utc};
+use maekon_core::error::CoreError;
 use maekon_core::models::embedding::{EmbeddingContentType, EmbeddingMetadata};
 use maekon_core::models::tiered_memory::SegmentSummary;
 #[cfg(feature = "hnsw")]
@@ -116,22 +117,40 @@ impl EmbeddingPipeline {
         }
 
         let vectors = self.embedding_provider.embed_batch(&texts).await?;
+
+        // Guard the positional zip below: a provider that returns a different
+        // count than the inputs would otherwise silently drop or mis-bind
+        // vectors against their metadata (#6128). Fail loud instead.
+        if vectors.len() != metadata.len() {
+            return Err(AnalysisError::Core(CoreError::Analysis {
+                code: maekon_core::error_codes::ProviderCode::AnalysisFailed,
+                message: format!(
+                    "embedding provider returned {} vectors for {} content activities (count mismatch)",
+                    vectors.len(),
+                    metadata.len()
+                ),
+            }));
+        }
         let count = vectors.len();
 
         for (vector, meta) in vectors.into_iter().zip(metadata) {
             #[cfg(feature = "hnsw")]
             let vec_for_hnsw = vector.clone();
-            if self.quantization_enabled {
+            // #6113: capture the inserted rowid atomically from the same write
+            // transaction as the INSERT so the HNSW key is never associated with
+            // a different row under concurrent embedding writes.
+            #[cfg_attr(not(feature = "hnsw"), allow(unused_variables))]
+            let row_id = if self.quantization_enabled {
                 let quantized = ScalarQuantizer::quantize(&vector)?;
                 self.vector_store
-                    .store_quantized(vector, &quantized, meta, self.skip_float32)
-                    .await?;
+                    .store_quantized_returning_id(vector, &quantized, meta, self.skip_float32)
+                    .await?
             } else {
-                self.vector_store.store(vector, meta).await?;
-            }
+                self.vector_store.store_returning_id(vector, meta).await?
+            };
             // Best-effort: add the new vector to HNSW index if present.
             #[cfg(feature = "hnsw")]
-            self.try_add_to_hnsw(&vec_for_hnsw).await;
+            self.try_add_to_hnsw(row_id, &vec_for_hnsw).await;
         }
 
         Ok(count)
@@ -158,41 +177,47 @@ impl EmbeddingPipeline {
 
         #[cfg(feature = "hnsw")]
         let vec_for_hnsw = vector.clone();
-        if self.quantization_enabled {
+        // #6113: capture the inserted rowid atomically from the same write
+        // transaction as the INSERT (see process_content_activities).
+        #[cfg_attr(not(feature = "hnsw"), allow(unused_variables))]
+        let row_id = if self.quantization_enabled {
             let quantized = ScalarQuantizer::quantize(&vector)?;
             self.vector_store
-                .store_quantized(vector, &quantized, metadata, self.skip_float32)
-                .await?;
+                .store_quantized_returning_id(vector, &quantized, metadata, self.skip_float32)
+                .await?
         } else {
-            self.vector_store.store(vector, metadata).await?;
-        }
+            self.vector_store
+                .store_returning_id(vector, metadata)
+                .await?
+        };
 
         // Best-effort: add the new vector to HNSW index if present.
         #[cfg(feature = "hnsw")]
-        self.try_add_to_hnsw(&vec_for_hnsw).await;
+        self.try_add_to_hnsw(row_id, &vec_for_hnsw).await;
 
         Ok(())
     }
 
-    /// Best-effort helper: insert a vector into the HNSW index using the
-    /// last-inserted row ID from the vector store. Failures are logged
-    /// but never propagated.
+    /// Best-effort helper: insert a vector into the HNSW index under the row ID
+    /// returned atomically by the store write (#6113). The caller obtains
+    /// `row_id` from `store_returning_id` / `store_quantized_returning_id`, which
+    /// read `last_insert_rowid()` inside the same write lock as the INSERT — this
+    /// eliminates the TOCTOU window that a separate `last_insert_id()` read had,
+    /// where a concurrent write could associate the vector with the wrong row.
+    /// Failures are logged but never propagated.
     #[cfg(feature = "hnsw")]
-    async fn try_add_to_hnsw(&self, vector: &[f32]) {
+    async fn try_add_to_hnsw(&self, row_id: u64, vector: &[f32]) {
         let ann = match self.ann_index {
             Some(ref a) => a,
             None => return,
         };
-        match self.vector_store.last_insert_id().await {
-            Ok(key) if key > 0 => {
-                if let Err(e) = ann.add(key, vector).await {
-                    warn!("HNSW add failed (best-effort): {e}");
-                }
-            }
-            Ok(_) => {} // key 0 = not implemented, skip silently
-            Err(e) => {
-                warn!("last_insert_id failed for HNSW sync: {e}");
-            }
+        // row_id 0 = store skipped (e.g. consent erasure) or not-implemented;
+        // skip silently to preserve the prior best-effort semantics.
+        if row_id == 0 {
+            return;
+        }
+        if let Err(e) = ann.add(row_id, vector).await {
+            warn!("HNSW add failed (best-effort): {e}");
         }
     }
 }
@@ -333,6 +358,32 @@ mod tests {
         }
     }
 
+    /// Mock provider that returns a fixed number of vectors regardless of the
+    /// number of inputs — used to exercise the #6128 count-mismatch guard.
+    struct CountMismatchProvider {
+        dims: usize,
+        returned: usize,
+    }
+
+    #[async_trait]
+    impl EmbeddingProvider for CountMismatchProvider {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, CoreError> {
+            Ok(vec![0.5; self.dims])
+        }
+
+        async fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, CoreError> {
+            Ok((0..self.returned).map(|_| vec![0.5; self.dims]).collect())
+        }
+
+        fn dimensions(&self) -> usize {
+            self.dims
+        }
+
+        fn model_id(&self) -> &str {
+            "count-mismatch-mock"
+        }
+    }
+
     fn identity_filter() -> PiiFilter {
         Box::new(|s: &str| s.to_string())
     }
@@ -391,6 +442,32 @@ mod tests {
             EmbeddingContentType::ContentActivity
         );
         assert_eq!(stored[0].1.segment_id, "seg-embed-001");
+    }
+
+    /// #6128: when the provider returns fewer vectors than content activities,
+    /// the pipeline must fail loud instead of silently dropping inputs via the
+    /// positional zip.
+    #[tokio::test]
+    async fn content_activities_count_mismatch_errors() {
+        // 2 activities in, but the provider returns only 1 vector.
+        let provider = Arc::new(CountMismatchProvider {
+            dims: 3,
+            returned: 1,
+        });
+        let store = Arc::new(MockVectorStore::new());
+        let pipeline = EmbeddingPipeline::new(provider, identity_filter(), store.clone(), false);
+
+        let segment =
+            make_segment_with_activities(vec![make_activity("main.rs"), make_activity("lib.rs")]);
+
+        let result = pipeline.process_content_activities(&segment).await;
+        let err = result.expect_err("count mismatch must error, not silently drop");
+        assert!(
+            err.to_string().contains("mismatch"),
+            "error should mention count mismatch, got: {err}"
+        );
+        // Nothing should have been stored on the error path.
+        assert_eq!(store.stored_count(), 0);
     }
 
     #[tokio::test]

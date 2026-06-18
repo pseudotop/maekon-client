@@ -1,12 +1,13 @@
-//! Migration V36: `egress_ledger` table — egress 감사 원장.
+//! Migration V36: `egress_ledger` table — egress audit ledger.
 //!
-//! 디바이스를 떠난(또는 정책상 차단된) 이벤트를 규제 준수 증거로 기록한다(#4803, E20).
-//! 업로드 성공 경로와 차단(클립보드/파일접근/제외앱) 경로 모두를 disposition 으로
-//! 구분하여 남긴다. `record_id` 는 호출자가 생성하는 UUID 이며 UNIQUE 제약으로
-//! 재실행 시 중복을 제거한다(INSERT OR IGNORE).
+//! Records events that left the device (or were policy-blocked) as regulatory
+//! compliance evidence (#4803, E20). Both the successful-upload path and the
+//! blocked path (clipboard/file-access/excluded-app) are recorded, distinguished
+//! by `disposition`. `record_id` is a caller-generated UUID; the UNIQUE constraint
+//! deduplicates on re-execution (INSERT OR IGNORE).
 //!
-//! 인덱스: `occurred_at`(시계열 조회), `event_type`(유형별 집계),
-//! `disposition`(업로드/차단 필터)에 각각 건다.
+//! Indexes: `occurred_at` (time-series queries), `event_type` (per-type aggregation),
+//! and `disposition` (upload/blocked filter), one each.
 
 use rusqlite::Connection;
 
@@ -39,8 +40,8 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    /// v35 상당의 최소 스키마(schema_version 만)를 만들어 현실적인 직전 상태에서
-    /// 마이그레이션을 실행한다.
+    /// Build the minimal v35-equivalent schema (schema_version only) and run the
+    /// migration from a realistic immediately-prior state.
     fn setup_v35(conn: &Connection) {
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
@@ -63,9 +64,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "egress_ledger 테이블이 생성되어야 한다");
+        assert_eq!(count, 1, "egress_ledger table should be created");
 
-        // 인덱스 3종 존재 확인.
+        // Verify all three indexes exist.
         for idx in [
             "idx_egress_ledger_occurred_at",
             "idx_egress_ledger_event_type",
@@ -78,7 +79,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(c, 1, "{idx} 인덱스가 존재해야 한다");
+            assert_eq!(c, 1, "{idx} index should exist");
         }
     }
 
@@ -101,7 +102,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         setup_v35(&conn);
         migrate_v36(&conn).unwrap();
-        // 두 번째 호출은 CREATE TABLE/INDEX IF NOT EXISTS 로 인해 오류가 없어야 한다.
+        // The second call should not error, thanks to CREATE TABLE/INDEX IF NOT EXISTS.
         migrate_v36(&conn).unwrap();
     }
 }

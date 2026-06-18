@@ -277,7 +277,10 @@ mod inner {
                     };
                     AccessibilityElement {
                         role,
-                        label,
+                        // Mask the accessibility name at the configured level
+                        // (review4 V15); Strict already yields an empty label, Off
+                        // is an identity pass.
+                        label: crate::privacy::sanitize_title_with_level(&label, effective_level),
                         bounds,
                     }
                 })

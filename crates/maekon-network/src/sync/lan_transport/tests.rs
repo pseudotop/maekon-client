@@ -44,8 +44,8 @@ async fn transport_start_and_discover_empty() {
         "dev-1".to_string(),
         "Test Mac".to_string(),
         "passphrase".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp123".to_string(),
         0,
         false, // don't advertise in test
@@ -71,8 +71,8 @@ async fn push_to_no_peers_is_noop() {
         "dev-1".to_string(),
         "Test".to_string(),
         "pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -104,8 +104,8 @@ async fn pull_from_no_peers_returns_none() {
         "dev-1".to_string(),
         "Test".to_string(),
         "pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -154,8 +154,8 @@ async fn push_to_local_server_roundtrip() {
         "sender".to_string(),
         "Sender".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-send".to_string(),
         0,
         false,
@@ -229,8 +229,8 @@ async fn pull_from_peer_server() {
         "consumer".to_string(),
         "Consumer".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-cons".to_string(),
         0,
         false,
@@ -276,8 +276,8 @@ async fn pull_wrong_passphrase_returns_none() {
         "provider".to_string(),
         "Provider".to_string(),
         "server-pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -296,8 +296,8 @@ async fn pull_wrong_passphrase_returns_none() {
         "consumer".to_string(),
         "Consumer".to_string(),
         "wrong-pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -414,8 +414,8 @@ async fn push_to_offline_peer_is_graceful() {
         "dev-offline-push".to_string(),
         "Offline Push".to_string(),
         "pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -462,8 +462,8 @@ async fn pull_from_offline_peer_returns_none() {
         "dev-offline-pull".to_string(),
         "Offline Pull".to_string(),
         "pass".to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp".to_string(),
         0,
         false,
@@ -670,8 +670,8 @@ async fn watermark_filtering_skips_old_data() {
         "wm-consumer".to_string(),
         "Consumer".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-cons".to_string(),
         0,
         false,
@@ -847,8 +847,8 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "dev-a".to_string(),
         "Device A".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-a".to_string(),
         0,
         false,
@@ -869,8 +869,8 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "dev-b".to_string(),
         "Device B".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-b".to_string(),
         0,
         false,
@@ -922,8 +922,8 @@ async fn conflict_resolution_higher_hlc_wins_on_pull() {
         "consumer".to_string(),
         "Consumer".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-cons".to_string(),
         0,
         false,
@@ -1038,8 +1038,8 @@ async fn conflict_resolution_counter_tiebreaker() {
         "ctr-a".to_string(),
         "Device A".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-ctr-a".to_string(),
         0,
         false,
@@ -1060,8 +1060,8 @@ async fn conflict_resolution_counter_tiebreaker() {
         "ctr-b".to_string(),
         "Device B".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-ctr-b".to_string(),
         0,
         false,
@@ -1103,8 +1103,8 @@ async fn conflict_resolution_counter_tiebreaker() {
         "cons-ctr".to_string(),
         "Consumer".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-cons-ctr".to_string(),
         0,
         false,
@@ -1198,8 +1198,8 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "aaa".to_string(),
         "Device AAA".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-aaa".to_string(),
         0,
         false,
@@ -1220,8 +1220,8 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "zzz".to_string(),
         "Device ZZZ".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-zzz".to_string(),
         0,
         false,
@@ -1256,8 +1256,8 @@ async fn conflict_resolution_device_id_tiebreaker() {
         "cons-did".to_string(),
         "Consumer".to_string(),
         passphrase.to_string(),
-        b"cert".to_vec(),
-        b"key".to_vec(),
+        Vec::new(), // empty cert/key = TLS intentionally disabled (plain-HTTP loopback test);
+        Vec::new(), // matches the #6077 fail-closed contract (non-empty-invalid would now Err)
         "fp-cons-did".to_string(),
         0,
         false,
@@ -1342,6 +1342,124 @@ async fn forget_peer_unknown_device_is_idempotent() {
     assert_eq!(before, after, "verified_peers unchanged on unknown forget");
     a.stop();
     _b.stop();
+}
+
+#[tokio::test]
+async fn tofu_pin_mismatch_revokes_pin_and_blocks_peer() {
+    // tofu-pin-revoke regression: a peer that previously pinned fingerprint X now
+    // presents a different (real) cert. The TofuVerifier rejects the handshake with
+    // a PinMismatch, and authenticate_with_peer must revoke the stored pin so the
+    // changed key is recorded and every subsequent contact is hard-blocked.
+    let passphrase = "tofu-revoke-pass";
+
+    // Receiver serves a real self-signed cert (fingerprint = recv_fp).
+    let (recv_cert, recv_key, recv_fp) = real_tls("revoke-receiver");
+    let receiver = LanSyncTransport::start(
+        "revoke-receiver".to_string(),
+        "Receiver".to_string(),
+        passphrase.to_string(),
+        recv_cert,
+        recv_key,
+        recv_fp.clone(),
+        0,
+        false,
+        test_pin_store(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let receiver_port = receiver.server_port();
+
+    // Sender already has a STALE pin for the receiver (a different fingerprint than
+    // the cert the receiver actually presents) — simulating a changed/rotated peer
+    // key or a MITM presenting a cert that disagrees with the stored pin.
+    let sender_pins = test_pin_store();
+    sender_pins
+        .upsert_pin("revoke-receiver", "stale-fingerprint-does-not-match")
+        .await
+        .unwrap();
+    assert_eq!(
+        sender_pins.get_pin("revoke-receiver").await.unwrap(),
+        Some(("stale-fingerprint-does-not-match".to_string(), false)),
+        "precondition: a non-revoked stale pin exists"
+    );
+
+    let sender = LanSyncTransport::start(
+        "revoke-sender".to_string(),
+        "Sender".to_string(),
+        passphrase.to_string(),
+        Vec::new(),
+        Vec::new(),
+        "fp-send".to_string(),
+        0,
+        false,
+        sender_pins.clone(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Inject the receiver as a known peer. The advertised fingerprint is irrelevant
+    // here because a stored pin exists — the stored-pin branch governs the decision.
+    sender.verified_peers.write().insert(
+        "revoke-receiver".to_string(),
+        LanPeerInfo {
+            device_id: "revoke-receiver".to_string(),
+            device_name: "Receiver".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: receiver_port,
+            fingerprint: recv_fp.clone(),
+            version: "1".to_string(),
+        },
+    );
+
+    tokio::task::yield_now().await;
+
+    // Authentication must fail (the TLS handshake is refused by the verifier).
+    let receiver_peer = {
+        let peers = sender.verified_peers.read();
+        peers["revoke-receiver"].clone()
+    };
+    let result = sender
+        .authenticate_with_peer("revoke-receiver", &receiver_peer)
+        .await;
+    let err = result
+        .expect_err("handshake must fail when the presented cert does not match the stored pin");
+    // The TofuVerifier refuses the TLS handshake on the stored-pin mismatch;
+    // authenticate_with_peer surfaces this as an Auth failure that signals the
+    // pin was revoked (not a generic transport/network error).
+    assert!(
+        matches!(
+            &err,
+            CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message,
+            } if message.contains("fingerprint mismatch")
+        ),
+        "pin-mismatch handshake should be Auth::Failed reporting the revoked pin, got: {err:?}"
+    );
+
+    // The stored pin must now be revoked so future contacts are hard-blocked.
+    assert_eq!(
+        sender_pins.get_pin("revoke-receiver").await.unwrap(),
+        Some(("stale-fingerprint-does-not-match".to_string(), true)),
+        "a TOFU pin mismatch must revoke the stored pin"
+    );
+
+    // A subsequent push short-circuits at the revoked-pin guard in build_peer_client.
+    let cs = test_changeset();
+    let delivered = sender.push(&cs).await.unwrap();
+    assert_eq!(
+        delivered, 0,
+        "a revoked peer must receive nothing on subsequent pushes"
+    );
+
+    sender.stop();
+    receiver.stop();
 }
 
 #[tokio::test]
@@ -1729,4 +1847,42 @@ async fn server_accepts_relayed_tombstone_for_original_row_origin() {
             .unwrap()
     };
     assert_eq!(count, 0, "receiver converged to the relayed erasure");
+}
+
+/// #6126: IPv6 literal authorities must be bracket-wrapped per RFC 3986 so the
+/// address colons do not collide with the host:port separator. IPv4 literals
+/// and hostnames must be left untouched.
+#[test]
+fn peer_url_brackets_ipv6_authority_only() {
+    fn peer(host: &str) -> LanPeerInfo {
+        LanPeerInfo {
+            device_id: "dev".to_string(),
+            device_name: "Dev".to_string(),
+            host: host.to_string(),
+            port: 8443,
+            fingerprint: "fp".to_string(),
+            version: "1".to_string(),
+        }
+    }
+
+    // IPv6 literal: authority is bracketed, port stays outside the brackets.
+    assert_eq!(
+        LanSyncTransport::peer_url(&peer("fe80::1"), "/sync/push"),
+        "https://[fe80::1]:8443/sync/push"
+    );
+    // Full IPv6 literal is also bracketed.
+    assert_eq!(
+        LanSyncTransport::peer_url(&peer("2001:db8::ff00:42:8329"), ""),
+        "https://[2001:db8::ff00:42:8329]:8443"
+    );
+    // IPv4 literal is unchanged.
+    assert_eq!(
+        LanSyncTransport::peer_url(&peer("192.168.1.10"), "/sync/pull"),
+        "https://192.168.1.10:8443/sync/pull"
+    );
+    // Hostname is unchanged.
+    assert_eq!(
+        LanSyncTransport::peer_url(&peer("desktop.local"), ""),
+        "https://desktop.local:8443"
+    );
 }

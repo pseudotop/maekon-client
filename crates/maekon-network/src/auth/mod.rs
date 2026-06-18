@@ -21,7 +21,7 @@ pub use tokens::TokenManager;
 
 use chrono::{Duration, Utc};
 use maekon_core::error::CoreError;
-use tokens::TokenState;
+use tokens::{TokenState, MAX_TOKEN_TTL_SECS};
 use tracing::debug;
 
 impl TokenManager {
@@ -94,7 +94,16 @@ impl TokenManager {
             message: format!("Token parsing failed: {e}"),
         })?;
 
-        let expires_at = Utc::now() + Duration::seconds(token_resp.expires_in.unwrap_or(3600));
+        // Clamp the server-supplied TTL before building a chrono::Duration.
+        // `expires_in` is server-controlled; an adversarial/huge value (e.g.
+        // i64::MAX) would otherwise panic in `Duration::seconds()` (TimeDelta
+        // out-of-range) or overflow the `Utc::now() + Duration` addition. A
+        // 30-day cap is trivially in range and neutralizes both panic paths.
+        let ttl = token_resp
+            .expires_in
+            .unwrap_or(3600)
+            .clamp(0, MAX_TOKEN_TTL_SECS);
+        let expires_at = Utc::now() + Duration::seconds(ttl);
 
         let mut state = self.state.write().await;
         *state = Some(TokenState {

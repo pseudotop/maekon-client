@@ -1892,7 +1892,8 @@
     "disabledBannerDesc": "Activa el coaching para recibir sugerencias proactivas y hacer seguimiento de tus hábitos.",
     "disabledBannerButton": "Activar coaching",
     "enableMasterToggle": "Activar coaching",
-    "enableMasterToggleDesc": "Interruptor principal — activa o desactiva todos los avisos y notificaciones de coaching."
+    "enableMasterToggleDesc": "Interruptor principal — activa o desactiva todos los avisos y notificaciones de coaching.",
+    "regimeLabelPlaceholder": "p. ej., Programación intensiva"
   },
   "onboarding": {
     "step1Title": "Bienvenido a Maekon",
@@ -1968,7 +1969,8 @@
       "activeNote": "Los cambios surten efecto de inmediato — no es necesario reiniciar.",
       "monitoringMissingWarning": "El consentimiento de monitorización aún no se ha otorgado. Otórgalo en el paso anterior para que el coaching funcione.",
       "error": "No se pudo activar el coaching: {{error}}"
-    }
+    },
+    "stepIndicatorLabel": "Indicador de paso"
   },
   "chat": {
     "title": "Sesiones de IA",
@@ -2023,7 +2025,8 @@
     "request_suggestions": "Obtener sugerencias de IA",
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
-    "mic_privacy_stopped": "Micrófono detenido — barrera de privacidad activa"
+    "mic_privacy_stopped": "Micrófono detenido — barrera de privacidad activa",
+    "searchMessagesPlaceholder": "Buscar mensajes..."
   },
   "policies": {
     "title": "Políticas de ejecución",
@@ -2117,7 +2120,9 @@
     "snoozeCancel": "Cancelar",
     "panelLabel": "Panel de sugerencias",
     "closePanelLabel": "Cerrar panel de sugerencias",
-    "badgeNew": "nuevo"
+    "badgeNew": "nuevo",
+    "historyLoadError": "No se pudo cargar el historial.",
+    "badgeLabel": "{{count}} sugerencias nuevas"
   },
   "suggestionStats": {
     "acceptanceRate": "Tasa de aceptación",
@@ -2132,7 +2137,8 @@
     "dailyTrends": "Tendencias diarias (7d)",
     "acted": "Procesadas",
     "total": "Total",
-    "noData": "Aún no hay datos"
+    "noData": "Aún no hay datos",
+    "loadError": "No se pudieron cargar las estadísticas."
   },
   "trackingPanel": {
     "statusUnavailable": "Estado no disponible",
@@ -2338,5 +2344,172 @@
     "interrupt": "Interrupt",
     "steerPlaceholder": "Steer the turn…",
     "steerSend": "Send"
+  },
+  "appShell": {
+    "mainContent": "Contenido principal"
+  },
+  "spinner": {
+    "loading": "Cargando"
+  },
+  "insightCard": {
+    "noInsightAvailable": "No hay información disponible para hoy"
+  },
+  "statisticsPanel": {
+    "deepWork": "Trabajo profundo",
+    "communication": "Comunicación",
+    "meetings": "Reuniones",
+    "contextSwitches": "Cambios de contexto",
+    "regimeDistribution": "Distribución de regímenes"
+  },
+  "statusBar": {
+    "lastCaptureTimestamp": "Hora de la última captura"
+  },
+  "processList": {
+    "pid": "PID:",
+    "memory": "Memoria"
+  },
+  "coachingPopup": {
+    "thumbsUpTitle": "Me gusta",
+    "thumbsDownTitle": "No me gusta"
+  },
+  "detectionOverlay": {
+    "fieldLabel": "etiqueta",
+    "fieldRole": "rol",
+    "fieldBounds": "límites",
+    "fieldSource": "origen",
+    "fieldId": "ID",
+    "emptyValue": "(vacío)",
+    "unknownRole": "desconocido"
+  },
+  "messageBubble": {
+    "input": "Entrada",
+    "result": "Resultado"
+  },
+  "advancedTab": {
+    "maxConcurrentSessions": "Sesiones concurrentes máximas",
+    "idleTimeoutSeconds": "Tiempo de espera por inactividad (segundos)",
+    "sessionTimeoutSeconds": "Tiempo de espera de sesión (segundos)",
+    "maxRetries": "Reintentos máximos",
+    "maxHistoryTurns": "Máximo de turnos de historial",
+    "healthCheckIntervalSeconds": "Intervalo de comprobación de estado (segundos)",
+    "enableSuggestions": "Habilitar sugerencias",
+    "enableSuggestionsDescription": "Recibe sugerencias impulsadas por IA basadas en tu actividad",
+    "showBorder": "Mostrar borde",
+    "showBorderDescription": "Muestra un borde de color alrededor de la pantalla durante la monitorización",
+    "showPanel": "Mostrar panel",
+    "showPanelDescription": "Muestra el panel de estado de seguimiento",
+    "borderOpacity": "Opacidad del borde (0.0 - 1.0)",
+    "enableAnalysis": "Habilitar análisis",
+    "enableAnalysisDescription": "Ejecuta análisis con LLM en segmentos de actividad",
+    "analysisIntervalSeconds": "Intervalo de análisis (segundos)",
+    "minConfidence": "Confianza mínima (0.0 - 1.0)",
+    "maxSuggestions": "Sugerencias máximas",
+    "regimeDetectionIntervalHours": "Intervalo de detección de régimen (horas)",
+    "embedding": "Incrustación",
+    "embeddingDescription": "Habilita la incrustación vectorial para la búsqueda semántica",
+    "guiIntelligence": "Inteligencia de GUI",
+    "guiIntelligenceDescription": "Detecta y agrega patrones de interacción de la GUI",
+    "textIntelligence": "Inteligencia de texto",
+    "textIntelligenceDescription": "Extrae y clasifica patrones de texto a partir de la actividad",
+    "autoTuner": "Ajuste automático",
+    "autoTunerDescription": "Detección de deriva basada en EMA y reagrupación automática de los regímenes de comportamiento",
+    "serverBaseUrl": "URL base del servidor",
+    "requestTimeoutMs": "Tiempo de espera de solicitud (ms)",
+    "grpcEnabled": "gRPC habilitado",
+    "grpcEnabledDescription": "Usa gRPC para la comunicación con el servidor (requiere compatibilidad del servidor)",
+    "grpcEndpoint": "Punto de conexión gRPC",
+    "tlsEnabled": "TLS habilitado",
+    "tlsEnabledDescription": "Cifra las conexiones salientes con TLS",
+    "enableCoaching": "Habilitar el coaching",
+    "enableCoachingDescription": "Coaching de productividad proactivo y seguimiento de objetivos",
+    "locale": "Configuración regional",
+    "enableIntegration": "Habilitar la integración",
+    "enableIntegrationDescription": "Conecta con el centro de integración externo",
+    "integrationRequestTimeoutSeconds": "Tiempo de espera de solicitud (segundos)",
+    "integrationSyncIntervalSeconds": "Intervalo de sincronización (segundos)",
+    "enableSync": "Habilitar la sincronización",
+    "enableSyncDescription": "Sincroniza los datos entre dispositivos",
+    "deviceName": "Nombre del dispositivo",
+    "syncIntervalSeconds": "Intervalo de sincronización (segundos)",
+    "lanDiscovery": "Detección de LAN",
+    "lanDiscoveryDescription": "Anuncia este dispositivo en la red local para la sincronización entre pares",
+    "payloadCompression": "Compresión de carga útil",
+    "payloadCompressionDescription": "Comprime las cargas útiles de los conjuntos de cambios antes del cifrado para reducir el ancho de banda"
+  },
+  "segmentsSection": {
+    "heading": "Segmentos",
+    "columnTime": "Hora",
+    "columnDuration": "Duración",
+    "columnRegime": "Régimen",
+    "columnApp": "Aplicación",
+    "columnActions": "Acciones"
+  },
+  "overridesSection": {
+    "columnSegment": "Segmento",
+    "columnOriginal": "Original",
+    "columnAction": "Acción",
+    "columnCreated": "Creado"
+  },
+  "presets": {
+    "save-file": {
+      "name": "Guardar archivo",
+      "description": "Guarda el archivo actual"
+    },
+    "undo": {
+      "name": "Deshacer",
+      "description": "Deshace la última acción"
+    },
+    "select-all-copy": {
+      "name": "Seleccionar todo y copiar",
+      "description": "Selecciona todo el contenido y lo copia al portapapeles"
+    },
+    "find-replace": {
+      "name": "Buscar y reemplazar",
+      "description": "Abre el cuadro de diálogo Buscar y reemplazar"
+    },
+    "switch-next-app": {
+      "name": "Cambiar a la siguiente app",
+      "description": "Cambia el foco a la siguiente aplicación"
+    },
+    "close-window": {
+      "name": "Cerrar ventana",
+      "description": "Cierra la ventana activa actual"
+    },
+    "minimize-all": {
+      "name": "Minimizar todas las ventanas",
+      "description": "Minimiza todas las ventanas abiertas"
+    },
+    "morning-routine": {
+      "name": "Inicio del día",
+      "description": "Abre Mail, Calendar y VS Code para comenzar la jornada laboral"
+    },
+    "meeting-prep": {
+      "name": "Preparación para la reunión",
+      "description": "Abre Zoom y Notas para prepararse para una reunión"
+    },
+    "end-of-day": {
+      "name": "Fin del día",
+      "description": "Guarda el archivo actual y cierra la aplicación"
+    },
+    "daily-priority-sync": {
+      "name": "Revisión de prioridades diarias",
+      "description": "Abre Calendar, Jira y Slack en secuencia para alinear las prioridades del día"
+    },
+    "bug-triage-loop": {
+      "name": "Triaje de bugs",
+      "description": "Recorre el rastreador de incidencias, las herramientas de monitoreo y el IDE para clasificar los bugs"
+    },
+    "customer-followup": {
+      "name": "Seguimiento de clientes",
+      "description": "Abre CRM, Notion y Mail para revisar los comentarios de clientes y preparar acciones de seguimiento"
+    },
+    "release-readiness": {
+      "name": "Preparación para el lanzamiento",
+      "description": "Guarda el código, luego abre la Terminal y un navegador para iniciar las verificaciones de lanzamiento"
+    },
+    "deep-work-start": {
+      "name": "Iniciar trabajo profundo",
+      "description": "Abre VS Code y elimina distracciones para comenzar una sesión de trabajo enfocado"
+    }
   }
 }

@@ -209,8 +209,9 @@ impl From<ManualCaptureGateError> for IpcError {
 }
 
 fn manual_capture_permissions(state: &AppState) -> ConsentPermissions {
-    // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-    // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+    // effective_permissions() only returns permissions when the status is Valid —
+    // Expired/UpdateRequired return all-false, so a stale consent record is also
+    // handled fail-closed (Task 3).
     state
         .capture
         .consent_manager
@@ -219,11 +220,13 @@ fn manual_capture_permissions(state: &AppState) -> ConsentPermissions {
         .unwrap_or_default()
 }
 
-/// Own-field gate (#4802): 수동 캡처의 OCR 텍스트를 ocr_processing 동의 여부로 게이트한다.
+/// Own-field gate (#4802): gates the OCR text of a manual capture on the
+/// ocr_processing consent.
 ///
-/// `ocr_permitted` (= `permissions.ocr_processing`) 가 true 이면 추출된 OCR 텍스트를
-/// 그대로 반환하고, false 이면 None 으로 폐기한다. 이미지 캡처(screen_capture)와는
-/// 별도의 동의 필드이므로, screen_capture 만 부여된 상태에서는 OCR 텍스트가 새지 않는다.
+/// If `ocr_permitted` (= `permissions.ocr_processing`) is true, the extracted OCR
+/// text is returned as-is; if false, it is discarded as None. This is a consent
+/// field separate from image capture (screen_capture), so when only screen_capture
+/// is granted, no OCR text leaks.
 fn gate_manual_ocr_text(ocr_text: Option<String>, ocr_permitted: bool) -> Option<String> {
     if ocr_permitted {
         ocr_text
@@ -232,13 +235,15 @@ fn gate_manual_ocr_text(ocr_text: Option<String>, ocr_permitted: bool) -> Option
     }
 }
 
-/// Own-field gate (#4802): scene 분석의 OCR region 텍스트를 ocr_processing 동의로 게이트한다.
+/// Own-field gate (#4802): gates the OCR region text of scene analysis on the
+/// ocr_processing consent.
 ///
-/// `analyze_current_scene` 은 frame 의 `ocr_regions`(영역별 추출 텍스트)를 그대로
-/// 반환하며, 이 텍스트는 gui_elements 라벨과 work_type 분류 샘플로도 흘러간다.
-/// `trigger_manual_capture` 가 `gate_manual_ocr_text` 로 단일 OCR 텍스트를 게이트하는
-/// 것과 동일하게, ocr_processing 미부여 시에는 추출된 모든 OCR region 을 폐기(빈 Vec)
-/// 하여 screen_capture 만 부여된 상태에서 OCR 텍스트가 새지 않도록 한다.
+/// `analyze_current_scene` returns the frame's `ocr_regions` (per-region extracted
+/// text) as-is, and this text also flows into gui_elements labels and the work_type
+/// classification sample. Just as `trigger_manual_capture` gates the single OCR text
+/// via `gate_manual_ocr_text`, when ocr_processing is not granted all extracted OCR
+/// regions are discarded (empty Vec) so that no OCR text leaks when only
+/// screen_capture is granted.
 fn gate_scene_ocr_regions(regions: Vec<OcrRegionDto>, ocr_permitted: bool) -> Vec<OcrRegionDto> {
     if ocr_permitted {
         regions
@@ -333,9 +338,10 @@ pub async fn trigger_manual_capture(
 
     // Extract image data + OCR text via pattern matching (ImagePayload is an enum).
     // EdgeFrameProcessor encodes with base64::STANDARD — decode with the same engine.
-    // Own-field gate (#4802): OCR 텍스트 추출/저장/반환은 ocr_processing 동의가 있어야 한다.
-    // 수동 캡처는 screen_capture 동의로 이미지 자체는 허용되지만, OCR 텍스트는 별도
-    // 동의가 필요하므로 ocr_processing 미부여 시 None 으로 폐기한다 (ConsentPermissions).
+    // Own-field gate (#4802): extracting/storing/returning OCR text requires the
+    // ocr_processing consent. A manual capture allows the image itself via the
+    // screen_capture consent, but OCR text needs a separate consent, so it is
+    // discarded as None when ocr_processing is not granted (ConsentPermissions).
     let (image_bytes, ocr_text) = match &frame.image_payload {
         Some(ImagePayload::Full { data, ocr_text, .. }) => {
             let bytes = BASE64.decode(data).ok();
@@ -396,17 +402,22 @@ pub async fn extract_ax_tree(
     let max_depth = max_depth.unwrap_or(4).min(8);
     let max_elements = max_elements.unwrap_or(300).clamp(1, 1_000);
 
-    let (active_app_name, active_window_title, active_app_bundle_id) =
+    let (active_app_name, active_window_title, active_app_bundle_id, active_window_bounds) =
         if let Some(ref monitor) = state.capture.activity_monitor {
             match monitor.collect_context().await {
                 Ok(ctx) => match ctx.active_window {
-                    Some(window) => (window.app_name, window.title, window.app_bundle_id),
-                    None => ("unknown".to_string(), String::new(), None),
+                    Some(window) => (
+                        window.app_name,
+                        window.title,
+                        window.app_bundle_id,
+                        window.bounds,
+                    ),
+                    None => ("unknown".to_string(), String::new(), None, None),
                 },
-                Err(_) => ("unknown".to_string(), String::new(), None),
+                Err(_) => ("unknown".to_string(), String::new(), None, None),
             }
         } else {
-            ("unknown".to_string(), String::new(), None)
+            ("unknown".to_string(), String::new(), None, None)
         };
 
     let matches_requested_app = requested_app_matches(
@@ -460,13 +471,46 @@ pub async fn extract_ax_tree(
         });
     }
 
+    // #6260: AX-tree extraction reads on-screen accessibility content (window /
+    // menu / element titles + descriptions), so it must honor the SAME capture
+    // privacy gate as its content-capture siblings (analyze_current_scene,
+    // trigger_manual_capture): capture_enabled + screen_capture consent +
+    // not-paused + schedule/active-hours/power gate. Without it, AX content
+    // leaked even when the user had disabled capture, paused it, or withheld
+    // screen_capture consent. Return the structured Ok-wrapped failure shape
+    // (matching the extractor-unavailable / permission-denied branches) rather
+    // than `?`-propagating.
+    let permissions = manual_capture_permissions(&state);
+    if let Err(gate_err) = manual_capture_privacy_gate(
+        &state.config,
+        &permissions,
+        state.capture_paused.load(Ordering::Relaxed),
+        active_window_bounds.as_ref(),
+    ) {
+        return Ok(AccessibilityTreeSnapshotResponse {
+            ok: false,
+            requested_app_name: app_name,
+            active_app_name,
+            active_window_title,
+            active_app_bundle_id,
+            matches_requested_app,
+            permission_granted,
+            extractor_name,
+            max_depth,
+            max_elements,
+            element_count: 0,
+            elements: Vec::new(),
+            error_code: Some("permission.permission_denied".to_string()),
+            error_message: Some(gate_err.message().to_string()),
+            timestamp,
+        });
+    }
+
     let pii_level = state.config.privacy.pii_filter_level;
-    let has_consent = state
-        .capture
-        .consent_manager
-        .as_ref()
-        .map(|cm| cm.effective_permissions().full_text_extraction)
-        .unwrap_or(false);
+    // Reuse the gate-fetched permissions: full_text_extraction is a SEPARATE
+    // own-field consent that decides PII escalation inside the extractor (it does
+    // not gate access — the composite gate above does).
+    let has_consent = permissions.full_text_extraction;
 
     let extraction_result = if let Some(ref requested_app_name) = app_name {
         if requested_app_name.trim().is_empty() {
@@ -774,9 +818,10 @@ pub async fn analyze_current_scene(
                         confidence: r.confidence,
                     })
                     .collect();
-                // Own-field gate (#4802): ocr_processing 동의가 없으면 OCR region 텍스트를
-                // 폐기한다. trigger_manual_capture / handle_frame_capture 형제 경로와 동일.
-                // permissions 는 위(~:696)에서 이미 fetch 됨.
+                // Own-field gate (#4802): if the ocr_processing consent is absent,
+                // discard the OCR region text. Same as the sibling paths
+                // trigger_manual_capture / handle_frame_capture. `permissions` was
+                // already fetched above (~:696).
                 gate_scene_ocr_regions(regions, permissions.ocr_processing)
             }
             Err(_) => Vec::new(),
@@ -922,23 +967,23 @@ mod tests {
         assert_eq!(result, Ok(()));
     }
 
-    /// Own-field gate (#4802): screen_capture 만 부여(ocr_processing=false)된 상태에서
-    /// 수동 캡처의 OCR 텍스트는 폐기되어야 한다 (None).
+    /// Own-field gate (#4802): when only screen_capture is granted
+    /// (ocr_processing=false), the manual-capture OCR text must be discarded (None).
     #[test]
     fn manual_ocr_not_collected_with_only_screen_capture() {
-        // allowed_permissions() 는 screen_capture:true 이고 ocr_processing 은 기본 false.
+        // allowed_permissions() is screen_capture:true and ocr_processing defaults to false.
         let perms = allowed_permissions();
-        assert!(perms.screen_capture, "복합 게이트는 통과");
-        assert!(!perms.ocr_processing, "ocr_processing 은 기본 false");
+        assert!(perms.screen_capture, "composite gate passes");
+        assert!(!perms.ocr_processing, "ocr_processing defaults to false");
         let gated =
             gate_manual_ocr_text(Some("user@example.com".to_string()), perms.ocr_processing);
         assert!(
             gated.is_none(),
-            "ocr_processing 미부여 시 수동 캡처 OCR 텍스트는 None (누출 없음)"
+            "without ocr_processing, manual-capture OCR text is None (no leak)"
         );
     }
 
-    /// Own-field gate (#4802): ocr_processing 부여 시 수동 캡처 OCR 텍스트가 보존되어야 한다.
+    /// Own-field gate (#4802): when ocr_processing is granted, the manual-capture OCR text must be preserved.
     #[test]
     fn manual_ocr_collected_when_own_field_granted() {
         let perms = ConsentPermissions {
@@ -950,7 +995,7 @@ mod tests {
         assert_eq!(
             gated.as_deref(),
             Some("agenda 2026"),
-            "ocr_processing 부여 시 수동 캡처 OCR 텍스트 보존"
+            "with ocr_processing granted, manual-capture OCR text is preserved"
         );
     }
 
@@ -965,21 +1010,22 @@ mod tests {
         }]
     }
 
-    /// Own-field gate (#4802): screen_capture 만 부여(ocr_processing=false)된 상태에서
-    /// analyze_current_scene 의 OCR region 텍스트는 폐기되어야 한다 (빈 Vec).
+    /// Own-field gate (#4802): when only screen_capture is granted
+    /// (ocr_processing=false), the OCR region text of analyze_current_scene must be
+    /// discarded (empty Vec).
     #[test]
     fn scene_ocr_not_collected_with_only_screen_capture() {
         let perms = allowed_permissions();
-        assert!(perms.screen_capture, "복합 게이트는 통과");
-        assert!(!perms.ocr_processing, "ocr_processing 은 기본 false");
+        assert!(perms.screen_capture, "composite gate passes");
+        assert!(!perms.ocr_processing, "ocr_processing defaults to false");
         let gated = gate_scene_ocr_regions(sample_ocr_regions(), perms.ocr_processing);
         assert!(
             gated.is_empty(),
-            "ocr_processing 미부여 시 scene OCR region 은 빈 Vec (누출 없음)"
+            "without ocr_processing, scene OCR regions are an empty Vec (no leak)"
         );
     }
 
-    /// Own-field gate (#4802): ocr_processing 부여 시 analyze_current_scene 의 OCR region 보존.
+    /// Own-field gate (#4802): when ocr_processing is granted, the OCR regions of analyze_current_scene are preserved.
     #[test]
     fn scene_ocr_collected_when_own_field_granted() {
         let perms = ConsentPermissions {
@@ -991,7 +1037,7 @@ mod tests {
         assert_eq!(
             gated.len(),
             1,
-            "ocr_processing 부여 시 scene OCR region 보존"
+            "with ocr_processing granted, scene OCR regions are preserved"
         );
         assert_eq!(gated[0].text, "user@example.com");
     }

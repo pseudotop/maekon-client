@@ -40,6 +40,15 @@ pub async fn request_chat_suggestions(
         .manager()
         .ok_or_else(suggestions_not_available)?;
 
+    // Check daily token budget before sending — mirrors send_session_message
+    // (#6121) so this implicit suggestion turn cannot bypass the budget gate.
+    if !mgr.check_token_budget(&session_id).await {
+        return Err(IpcError::new(
+            "policy.denied",
+            "Daily token budget exhausted",
+        ));
+    }
+
     // Get session and send structured request
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
 
@@ -62,10 +71,16 @@ pub async fn request_chat_suggestions(
         while let Some(item) = stream.next().await {
             match item {
                 Ok(OutboundMessage::Text { content, .. }) => text.push_str(&content),
-                Ok(OutboundMessage::Result { content, .. })
-                    if !content.is_empty() && text.is_empty() =>
-                {
-                    text = content;
+                Ok(OutboundMessage::Result { content, usage, .. }) => {
+                    // Record token usage (#6121) — mirrors send_session_message
+                    // so this suggestion turn counts against the daily budget.
+                    if let Some(u) = usage {
+                        mgr.accumulate_tokens(&session_id, u.input_tokens, u.output_tokens)
+                            .await;
+                    }
+                    if !content.is_empty() && text.is_empty() {
+                        text = content;
+                    }
                 }
                 Ok(OutboundMessage::Error { message, .. }) => {
                     return Err(IpcError::new(
@@ -199,6 +214,15 @@ pub async fn explain_suggestion_in_chat(
         prompt.push_str(&format!("\n\nReasoning provided: {reasoning}"));
     }
 
+    // Check daily token budget before sending — mirrors send_session_message
+    // (#6121) so an explain turn cannot bypass the budget gate.
+    if !ai_mgr.check_token_budget(&sid).await {
+        return Err(IpcError::new(
+            "policy.denied",
+            "Daily token budget exhausted",
+        ));
+    }
+
     // Call session.send_message() directly and spawn a streaming task
     // that emits OutboundMessage events — replicating the pattern from ai_session.rs.
     let session = ai_mgr.get_session(&sid).await.map_err(IpcError::from)?;
@@ -221,6 +245,7 @@ pub async fn explain_suggestion_in_chat(
     let event_name = format!("ai-session:{sid}");
     let session_id = sid.clone();
     let app_clone = app.clone();
+    let mgr_clone = ai_mgr.clone();
     tokio::spawn(async move {
         tokio::pin!(stream);
         let mut assistant_content = String::new();
@@ -240,6 +265,12 @@ pub async fn explain_suggestion_in_chat(
                         } => {
                             total_input = u.input_tokens;
                             total_output = u.output_tokens;
+                            // Record token usage (#6121) — mirrors
+                            // send_session_message so an explain turn counts
+                            // against the daily budget.
+                            mgr_clone
+                                .accumulate_tokens(&session_id, u.input_tokens, u.output_tokens)
+                                .await;
                         }
                         _ => {}
                     }
@@ -302,4 +333,40 @@ pub async fn explain_suggestion_in_chat(
     let _ = app.emit("navigate:chat", serde_json::json!({ "sessionId": sid }));
 
     Ok(sid)
+}
+
+#[cfg(test)]
+mod tests {
+    /// #6121 regression: both chat-suggestion commands must enforce the daily
+    /// token-budget gate before calling `send_message`, and must record token
+    /// usage from streamed `Result` frames — mirroring `send_session_message`.
+    /// These commands take `tauri::State`, so they cannot be invoked directly in
+    /// a unit test; this source-guard test (same pattern as
+    /// `desktop_startup_contains_window_show_call`) fails loudly if either side
+    /// of the budget contract is silently dropped.
+    #[test]
+    fn chat_suggestion_commands_enforce_token_budget_and_record_usage() {
+        let src = include_str!("chat_suggestions.rs");
+
+        // Budget gate present in both commands (two distinct call sites).
+        let gate_calls = src.matches("check_token_budget(").count();
+        assert!(
+            gate_calls >= 2,
+            "request_chat_suggestions and explain_suggestion_in_chat must each \
+             call check_token_budget() before send_message() (#6121); found {gate_calls}"
+        );
+        assert_eq!(
+            src.matches("\"Daily token budget exhausted\"").count(),
+            2,
+            "both commands must return the policy.denied budget-exhausted error (#6121)"
+        );
+
+        // Usage recording present in both commands (two distinct call sites).
+        let record_calls = src.matches("accumulate_tokens(").count();
+        assert!(
+            record_calls >= 2,
+            "both commands must record token usage via accumulate_tokens() on \
+             OutboundMessage::Result with Some(usage) (#6121); found {record_calls}"
+        );
+    }
 }

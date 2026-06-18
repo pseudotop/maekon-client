@@ -69,11 +69,16 @@ pub fn build_server_config(
         let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
             .build()
             .map_err(|e| TlsLoadError::ParseCert(e.to_string()))?;
-        rustls::ServerConfig::builder()
+        // #6281: pin TLS 1.3 only. The default builder also permits TLS 1.2, but
+        // the audit layer records PeerInfo.tls_version as a hardcoded "TLSv1.3"
+        // (accept_loop.rs) — pinning makes that claim accurate AND hardens the
+        // internal gRPC hop. Modern tonic/rustls clients all support TLS 1.3.
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .with_client_cert_verifier(verifier)
             .with_cert_resolver(cert_resolver)
     } else {
-        rustls::ServerConfig::builder()
+        // #6281: pin TLS 1.3 only (see above).
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .with_no_client_auth()
             .with_cert_resolver(cert_resolver)
     };

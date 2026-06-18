@@ -116,7 +116,7 @@ pub enum CoreError {
     #[error("Speech-to-text error [{code}]: {message}")]
     SpeechToText { code: AudioCode, message: String },
 
-    /// F-RC-C22-03: 다운로드 파일 SHA-256 불일치 — 공급망 무결성 위반.
+    /// F-RC-C22-03: downloaded file SHA-256 mismatch — supply-chain integrity violation.
     #[error("Integrity check failed [{code}]: {message}")]
     IntegrityCheckFailed { code: AudioCode, message: String },
 
@@ -199,7 +199,7 @@ impl From<crate::types::TimeWindowError> for CoreError {
     }
 }
 
-/// GUI 상호작용 전용 에러 (AutomationPort GUI 메서드에서 사용).
+/// GUI-interaction-specific error (used by AutomationPort GUI methods).
 #[derive(Debug, Error)]
 pub enum GuiInteractionError {
     #[error("GUI session token is invalid [{code}]")]
@@ -297,20 +297,22 @@ mod tests {
         assert_eq!(err.code(), "gui.unauthorized");
     }
 
-    /// ADR-019 §1 회귀 방지: CoreError variant 의 code() 반환값이
-    /// 알려진 wire-snapshot 집합에 속하는지 구조적으로 검증 (F-RC-08).
-    /// 새 typed-code variant 추가 시 WIRE_SNAPSHOT 에도 추가해야 한다.
+    /// ADR-019 §1 regression guard: structurally verify that each CoreError
+    /// variant's code() return value belongs to the known wire-snapshot set
+    /// (F-RC-08). When a new typed-code variant is added, it must also be added
+    /// to WIRE_SNAPSHOT.
     #[test]
     fn every_core_error_variant_code_is_in_wire_snapshot() {
-        // wire-snapshot: 각 error_codes enum 의 as_str() 반환값 기준.
-        // 모든 as_str()은 `category.detail` 형식 (naming_convention 테스트 보장).
+        // wire-snapshot: based on the as_str() return value of each error_codes enum.
+        // Every as_str() uses the `category.detail` form (guaranteed by the
+        // naming_convention test).
         const WIRE_SNAPSHOT: &[&str] = &[
             // ConfigCode
             "config.invalid",
             "config.missing",
             "config.out_of_range",
             "provider.bedrock.unsupported",
-            // NetworkCode — 런타임 실제 값은 error_codes/network.rs 참조
+            // NetworkCode — for the actual runtime values see error_codes/network.rs
             // InternalCode
             "internal.generic",
             "internal.serialization",
@@ -320,14 +322,14 @@ mod tests {
             // ConsentCode
             "consent.required",
             "consent.expired",
-            // AudioCode — F-RC-C24-03: cycle 22 추가 variant 누락 보완
+            // AudioCode — F-RC-C24-03: fills the missing cycle-22-added variants
             "audio.capture_failed",
             "audio.stt_failed",
             "audio.integrity_check_failed",
         ];
         let snapshot_set: std::collections::HashSet<&str> = WIRE_SNAPSHOT.iter().copied().collect();
 
-        // 대표 variant 샘플로 검증
+        // Verify using representative variant samples
         let samples: Vec<CoreError> = vec![
             CoreError::Config {
                 code: ConfigCode::Invalid,
@@ -348,7 +350,7 @@ mod tests {
             CoreError::ConsentExpired {
                 code: ConsentCode::Expired,
             },
-            // AudioCode 대표 샘플 (F-RC-C24-03)
+            // AudioCode representative samples (F-RC-C24-03)
             CoreError::AudioCapture {
                 code: AudioCode::CaptureFailed,
                 message: String::new(),
@@ -370,7 +372,7 @@ mod tests {
                 code
             );
         }
-        // #[from] 파생 variant 코드 고정 검증
+        // Verify the fixed codes of the #[from]-derived variants
         let ser: CoreError = serde_json::from_str::<i32>("x").unwrap_err().into();
         assert_eq!(ser.code(), "internal.serialization");
         let io: CoreError = std::io::Error::other("x").into();

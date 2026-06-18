@@ -43,7 +43,7 @@ pub struct SessionResponse {
 pub struct UnifiedClient {
     config: GrpcConfig,
 
-    /// tokio::sync::Mutex を使用して ensure_* メソッドの TOCTOU 競合を防ぐ
+    /// Uses `tokio::sync::Mutex` to prevent a TOCTOU race in the `ensure_*` methods.
     grpc_auth: Mutex<Option<GrpcAuthClient>>,
     grpc_session: Mutex<Option<GrpcSessionClient>>,
     grpc_context: Mutex<Option<GrpcContextClient>>,
@@ -79,7 +79,7 @@ impl UnifiedClient {
         })
     }
 
-    /// gRPC 인증 클라이언트 초기화 — Mutex로 TOCTOU 경쟁 조건을 방지한다.
+    /// Initialize the gRPC auth client — the Mutex prevents a TOCTOU race.
     async fn ensure_grpc_auth(&self) -> Result<(), CoreError> {
         let mut guard = self.grpc_auth.lock().await;
         if guard.is_none() {
@@ -88,7 +88,7 @@ impl UnifiedClient {
         Ok(())
     }
 
-    /// gRPC 세션 클라이언트 초기화 — Mutex로 TOCTOU 경쟁 조건을 방지한다.
+    /// Initialize the gRPC session client — the Mutex prevents a TOCTOU race.
     async fn ensure_grpc_session(&self) -> Result<(), CoreError> {
         let mut guard = self.grpc_session.lock().await;
         if guard.is_none() {
@@ -97,7 +97,7 @@ impl UnifiedClient {
         Ok(())
     }
 
-    /// gRPC 컨텍스트 클라이언트 초기화 — Mutex로 TOCTOU 경쟁 조건을 방지한다.
+    /// Initialize the gRPC context client — the Mutex prevents a TOCTOU race.
     async fn ensure_grpc_context(&self) -> Result<(), CoreError> {
         let mut guard = self.grpc_context.lock().await;
         if guard.is_none() {
@@ -272,9 +272,10 @@ impl UnifiedClient {
 
     /// Subscribe to server-streamed suggestions.
     ///
-    /// F-RC-C22-04: TokenManager 에서 액세스 토큰을 읽어 tonic Request 메타데이터에
-    /// `authorization: Bearer <token>` 헤더를 주입한다. 서버 측 AuthenticatedServiceWrapper
-    /// 가 이 헤더를 요구하므로, 주입 없이 호출하면 UNAUTHENTICATED 로 거부된다.
+    /// F-RC-C22-04: reads the access token from the TokenManager and injects an
+    /// `authorization: Bearer <token>` header into the tonic Request metadata. The
+    /// server-side AuthenticatedServiceWrapper requires this header, so calling
+    /// without injecting it is rejected as UNAUTHENTICATED.
     ///
     /// # Example
     /// ```ignore
@@ -297,7 +298,8 @@ impl UnifiedClient {
             session_id,
         );
 
-        // F-RC-C22-04: 액세스 토큰 조회 — 만료 시 TokenManager 가 자동 갱신 시도.
+        // F-RC-C22-04: fetch the access token — on expiry the TokenManager attempts
+        // an automatic refresh.
         let access_token = self.token_manager.get_token().await?;
 
         self.ensure_grpc_context().await?;

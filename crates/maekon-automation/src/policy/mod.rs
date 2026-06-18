@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 
 use crate::controller::AutomationCommand;
 use crate::error::AutomationError;
+use maekon_core::models::automation::CommandOrigin;
 
 use token::{
     compute_command_scope_hash, is_valid_nonce, is_valid_signature, issue_command_token_for_policy,
@@ -59,7 +60,7 @@ impl PolicyClient {
     }
 
     pub async fn validate_command(&self, cmd: &AutomationCommand) -> Result<bool, AutomationError> {
-        // TTL이 0으로 설정된 경우 모든 캐시된 토큰을 즉시 거부한다.
+        // When TTL is configured to 0, immediately reject every cached token.
         // A configured ttl_seconds of 0 means "never cache" — every token is
         // treated as a replay to prevent stale token acceptance.
         {
@@ -114,7 +115,14 @@ impl PolicyClient {
             return Ok(false);
         };
 
-        if policy.require_signed_token {
+        // #6333 A16 (hard invariant): External-origin commands must always be signed,
+        // regardless of the per-policy flag. The `require_signed_token = false` opt-out
+        // may only relax verification for Internal-origin commands — which bypass this
+        // function entirely (gate.rs is_trusted_internal) — so a misconfigured policy can
+        // never accept an unsigned external command (Saltzer & Schroeder fail-safe defaults).
+        let require_signature =
+            policy.require_signed_token || cmd.origin == CommandOrigin::External;
+        if require_signature {
             let Some(signature) = parsed_token.signature else {
                 tracing::warn!(
                     policy_id = parsed_token.policy_id,
@@ -487,6 +495,7 @@ mod tests {
             action: crate::controller::AutomationAction::MouseMove { x: 0, y: 0 },
             timeout_ms: None,
             policy_token: policy_token.to_string(),
+            origin: maekon_core::models::automation::CommandOrigin::External,
         }
     }
 
@@ -515,6 +524,8 @@ mod tests {
 
     #[tokio::test]
     async fn validate_command_requires_existing_policy_and_valid_nonce() {
+        let env_guard = env_lock().lock().await;
+        std::env::set_var(POLICY_TOKEN_SIGNING_SECRET_ENV, "test-secret");
         let client = PolicyClient::new();
         client.update_policies(vec![make_policy("pol-1")]).await;
 
@@ -527,17 +538,40 @@ mod tests {
         let unknown_policy = make_command("pol-x:nonce_1234");
         assert!(!client.validate_command(&unknown_policy).await.unwrap());
 
-        let valid = make_command("pol-1:nonce_1234");
+        // #6333 A16: make_command defaults to External origin, which now requires a
+        // signature regardless of the policy flag — sign a valid token to exercise accept.
+        let nonce = issue_policy_nonce();
+        let sig = compute_policy_token_signature("pol-1", &nonce, None, "test-secret");
+        let valid = make_command(&format!("pol-1:{nonce}:{sig}"));
         assert!(client.validate_command(&valid).await.unwrap());
+        drop(env_guard);
     }
 
     #[tokio::test]
     async fn validate_command_rejects_replayed_policy_token() {
+        let env_guard = env_lock().lock().await;
+        std::env::set_var(POLICY_TOKEN_SIGNING_SECRET_ENV, "test-secret");
         let client = PolicyClient::new();
         client.update_policies(vec![make_policy("pol-1")]).await;
 
-        let cmd = make_command("pol-1:nonce_1234");
+        // #6333 A16: external-origin command must be signed to reach the replay check.
+        let nonce = issue_policy_nonce();
+        let sig = compute_policy_token_signature("pol-1", &nonce, None, "test-secret");
+        let cmd = make_command(&format!("pol-1:{nonce}:{sig}"));
         assert!(client.validate_command(&cmd).await.unwrap());
+        assert!(!client.validate_command(&cmd).await.unwrap());
+        drop(env_guard);
+    }
+
+    #[tokio::test]
+    async fn validate_command_requires_signature_for_external_origin_even_when_policy_allows_unsigned(
+    ) {
+        // #6333 A16 hard invariant: an External-origin command whose policy does NOT
+        // require signed tokens must still be rejected when unsigned. Closes the
+        // "misconfigured policy fails open" gap the default-flip alone leaves.
+        let client = PolicyClient::new();
+        client.update_policies(vec![make_policy("pol-1")]).await; // require_signed_token: false
+        let cmd = make_command("pol-1:nonce_aaaaaaaa"); // unsigned; make_command → External origin
         assert!(!client.validate_command(&cmd).await.unwrap());
     }
 
@@ -687,6 +721,9 @@ mod tests {
         let mut cmd = make_command("unused");
         cmd.command_id = "cmd-bound".to_string();
         cmd.session_id = "sess-bound".to_string();
+        // #6333 A16: this exercises command-scope BINDING, orthogonal to the signature
+        // requirement; Internal origin isolates the command_hash check from signing.
+        cmd.origin = CommandOrigin::Internal;
         let token = client
             .issue_command_token_for_command("pol-1", &cmd)
             .await
@@ -710,6 +747,9 @@ mod tests {
 
         let mut different_cmd = make_command(&token);
         different_cmd.command_id = "cmd-other".to_string();
+        // #6333 A16: Internal origin so this rejects for command-hash MISMATCH (the
+        // behavior under test), not for a missing signature.
+        different_cmd.origin = CommandOrigin::Internal;
         assert!(!client.validate_command(&different_cmd).await.unwrap());
     }
 

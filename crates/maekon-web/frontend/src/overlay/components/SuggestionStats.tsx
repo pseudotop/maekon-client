@@ -59,10 +59,10 @@ export function SuggestionStats() {
   const [stats, setStats] = useState<StatsData | null>(null)
   const [dailyTrends, setDailyTrends] = useState<DayAggregate[]>([])
   const [loading, setLoading] = useState(true)
-  // IPC 실패를 로딩 상태로 숨기지 않고 명시적 에러 상태로 노출 (#4823)
+  // Expose IPC failures as an explicit error state instead of hiding them behind the loading state (#4823)
   const [error, setError] = useState(false)
 
-  // 통계 로드 — 재시도 버튼에서도 재사용하기 위해 useCallback 으로 분리
+  // Load stats — extracted into useCallback so the retry button can reuse it
   const loadStats = useCallback(async () => {
     setLoading(true)
     setError(false)
@@ -104,7 +104,7 @@ export function SuggestionStats() {
   }, [loadStats])
 
   if (loading) return <p className="p-4 text-content-secondary text-xs">{t('common.loading', 'Loading...')}</p>
-  // 에러 시 SuggestionsPanel 과 동일한 에러/재시도 배너 패턴 사용
+  // On error, use the same error/retry banner pattern as SuggestionsPanel
   if (error) {
     return (
       <div className="flex items-center justify-between gap-3 p-4 text-xs">

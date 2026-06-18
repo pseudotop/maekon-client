@@ -53,9 +53,14 @@ const MAX_WINDOW_ROOT_ASCENT: usize = 32;
 /// Convert a Win32 `RECT` (left/top/right/bottom, i32) to `ElementRect`
 /// (x/y/width/height, f32). Returns `None` for zero-area rectangles.
 fn rect_to_element_rect(rect: &windows::Win32::Foundation::RECT) -> Option<ElementRect> {
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    if width > 0 || height > 0 {
+    // Clamp dimensions to non-negative so an inverted RECT (right < left or
+    // bottom < top) cannot produce a negative width/height. Both dimensions
+    // must be strictly positive to honor the documented "None for zero-area"
+    // contract — a rect with either dimension == 0 has zero area and must be
+    // rejected (previously `||` leaked such degenerate/negative rects).
+    let width = (rect.right - rect.left).max(0);
+    let height = (rect.bottom - rect.top).max(0);
+    if width > 0 && height > 0 {
         Some(ElementRect {
             x: rect.left as f32,
             y: rect.top as f32,
@@ -396,6 +401,7 @@ unsafe fn extract_current_properties(
 ///
 /// When `use_cache` is false, falls back to the original per-property
 /// `Current*` calls (3 cross-process calls per element).
+#[allow(clippy::too_many_arguments)]
 unsafe fn collect_subtree(
     walker: &IUIAutomationTreeWalker,
     element: &IUIAutomationElement,
@@ -513,5 +519,50 @@ mod tests {
             super::select_window_root_index(&focused_to_root_control_types),
             0
         );
+    }
+
+    use windows::Win32::Foundation::RECT;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn rect_to_element_rect_accepts_positive_area() {
+        let result = super::rect_to_element_rect(&rect(10, 20, 110, 70))
+            .expect("positive-area rect should convert");
+        assert_eq!(result.x, 10.0);
+        assert_eq!(result.y, 20.0);
+        assert_eq!(result.width, 100.0);
+        assert_eq!(result.height, 50.0);
+    }
+
+    #[test]
+    fn rect_to_element_rect_rejects_zero_width() {
+        // Zero width → zero area → must be None (previously leaked via `||`).
+        assert!(super::rect_to_element_rect(&rect(10, 20, 10, 70)).is_none());
+    }
+
+    #[test]
+    fn rect_to_element_rect_rejects_zero_height() {
+        // Zero height → zero area → must be None (previously leaked via `||`).
+        assert!(super::rect_to_element_rect(&rect(10, 20, 110, 20)).is_none());
+    }
+
+    #[test]
+    fn rect_to_element_rect_rejects_fully_collapsed() {
+        assert!(super::rect_to_element_rect(&rect(10, 20, 10, 20)).is_none());
+    }
+
+    #[test]
+    fn rect_to_element_rect_rejects_inverted_dimensions() {
+        // Inverted RECT (right < left, bottom < top) must not produce a
+        // negative-dimension ElementRect.
+        assert!(super::rect_to_element_rect(&rect(110, 70, 10, 20)).is_none());
     }
 }

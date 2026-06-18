@@ -11,7 +11,7 @@ use super::super::{FrameTagLinkRecord, SqliteStorage};
 // the #4928 erase barrier is preserved unchanged.
 impl SqliteStorage {
     pub fn list_backup_tags(&self) -> Result<Vec<super::super::TagRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_backup_tags_inner(read.conn())
     }
@@ -50,7 +50,7 @@ impl SqliteStorage {
     }
 
     pub fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_backup_frame_tags_inner(read.conn())
     }
@@ -97,7 +97,7 @@ impl SqliteStorage {
         color: &str,
         created_at: &str,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, tags ∈ ALL_TABLES).
+        // write — write_lock (skipped when deletion_flag is set; tags ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             Self::upsert_backup_tag_inner(conn, id, name, color, created_at)
         })
@@ -140,7 +140,7 @@ impl SqliteStorage {
         tag_id: i64,
         created_at: &str,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, frame_tags ∈ ALL_TABLES).
+        // write — write_lock (skipped when deletion_flag is set; frame_tags ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             Self::upsert_backup_frame_tag_inner(conn, frame_id, tag_id, created_at)
         })
@@ -182,7 +182,7 @@ impl SqliteStorage {
         app_name: Option<&str>,
         window_title: Option<&str>,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, events ∈ ALL_TABLES).
+        // write — write_lock (skipped when deletion_flag is set; events ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             Self::upsert_backup_event_inner(
                 conn,
@@ -254,7 +254,7 @@ impl SqliteStorage {
         height: i32,
         ocr_text: Option<&str>,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, frames ∈ ALL_TABLES).
+        // write — write_lock (skipped when deletion_flag is set; frames ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             Self::upsert_backup_frame_inner(
                 conn,

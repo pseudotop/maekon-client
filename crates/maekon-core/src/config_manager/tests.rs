@@ -322,6 +322,63 @@ fn load_corrupt_file_falls_back_to_defaults() {
     );
 }
 
+/// Finding #5 — a corrupt config must fall back FAIL-CLOSED for privacy: it must
+/// NOT silently re-enable the fresh-install default-on telemetry/capture intent
+/// over an unrecoverable user opt-out, and the reset must be surfaced to the UI.
+#[test]
+fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    // Garbage on disk -> parse failure -> fail-closed recovery default.
+    // `None` managed path keeps the platform managed policy from leaking in.
+    fs::write(&config_path, "<<<NOT JSON>>>").unwrap();
+
+    let manager = ConfigManager::with_paths(config_path.clone(), None).unwrap();
+    let config = manager.get();
+
+    // Telemetry/capture must be OFF, NOT the fresh-install default-on intent.
+    assert!(
+        !config.telemetry.enabled,
+        "corrupt config must NOT yield telemetry-enabled (fail-closed)"
+    );
+    assert!(
+        !config.monitor.upload_enabled,
+        "corrupt config must NOT re-enable upload (fail-closed)"
+    );
+    assert!(
+        !config.vision.capture_enabled,
+        "corrupt config must NOT re-enable screen capture (fail-closed)"
+    );
+    assert!(
+        !config.vision.ocr_enabled,
+        "corrupt config must NOT re-enable OCR (fail-closed)"
+    );
+
+    // The reset must be a structured, UI-readable signal (not just a log line).
+    assert!(
+        manager.config_was_reset_from_corruption(),
+        "corruption fallback must surface a reset signal the UI can read"
+    );
+
+    // The rewritten file must persist the fail-closed posture, so the next
+    // launch (loading a now-valid file) also stays opted-out.
+    let on_disk = persistence::load_from_file(&config_path).unwrap();
+    assert!(
+        !on_disk.telemetry.enabled,
+        "fail-closed recovery default must be persisted to disk"
+    );
+    let relaunched = ConfigManager::with_paths(config_path, None).unwrap();
+    assert!(
+        !relaunched.get().telemetry.enabled,
+        "relaunch from the rewritten file must remain opted-out"
+    );
+    assert!(
+        !relaunched.config_was_reset_from_corruption(),
+        "a clean relaunch (valid file) must not report a fresh corruption reset"
+    );
+}
+
 // ── X1 ConfigChangeBus tests ───────────────────────────────────────
 // Public decision record: docs/architecture/ADR-016-config-change-bus.md.
 
@@ -722,6 +779,140 @@ fn snapshot_field_reads_equal_get_field_reads() {
     assert_eq!(snap.analysis.server_coexistence_lookback_secs, 77);
 }
 
+// ── Bounds validation at the write chokepoint (#6102-4) ───────────────────────
+
+#[test]
+fn update_with_rejects_out_of_range_poll_interval() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+    let manager = ConfigManager::with_path(config_path).unwrap();
+
+    let result = manager.update_with(|c| {
+        c.monitor.poll_interval_ms = 100; // sub-second — would spin the 1s loops
+        Ok(())
+    });
+    assert!(
+        matches!(result, Err(CoreError::Config { .. })),
+        "out-of-range poll interval must be rejected on the write path"
+    );
+    // The rejected write must not have mutated the in-memory snapshot.
+    assert_eq!(manager.get().monitor.poll_interval_ms, 1_000);
+}
+
+#[test]
+fn update_rejects_out_of_range_heartbeat_interval() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+    let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+
+    let mut bad = manager.get();
+    bad.monitor.heartbeat_interval_ms = 10; // far below the 5000ms floor
+    let result = manager.update(bad);
+    assert!(
+        matches!(result, Err(CoreError::Config { .. })),
+        "out-of-range heartbeat interval must be rejected by update()"
+    );
+    // Nothing should have been persisted: a fresh manager still sees the default.
+    let manager2 = ConfigManager::with_path(config_path).unwrap();
+    assert_eq!(manager2.get().monitor.heartbeat_interval_ms, 30_000);
+}
+
+#[test]
+fn reload_rejects_out_of_range_external_edit() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+    let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+    // Seed a valid persisted config first.
+    manager.update_with(|_c| Ok(())).unwrap();
+
+    // Simulate a hand-edited config.json with a sub-second sync interval.
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    raw["monitor"]["sync_interval_ms"] = serde_json::json!(50);
+    fs::write(&config_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let result = manager.reload();
+    assert!(
+        matches!(result, Err(CoreError::Config { .. })),
+        "reload must reject an externally-edited out-of-range interval"
+    );
+}
+
+// ── #6169/#6177: INITIAL-LOAD path is fail-open bounds-clamped, not rejecting ──
+//
+// The write chokepoints reject out-of-range values, but construction must NOT
+// abort on a hand-edited / downgrade config.json — it must clamp the sub-floor
+// value up to its floor and persist the correction, so the scheduler never
+// receives a `poll_interval_ms: 0` (hot-spin) or `analysis.interval_secs: 0`
+// (tokio interval panic).
+
+#[test]
+fn with_paths_clamps_sub_floor_poll_interval_instead_of_panicking() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    // Hand-edited config with a zero poll interval (sub-floor). Mirrors a
+    // downgrade / manual edit that bypassed the write chokepoint.
+    let mut raw = serde_json::to_value(AppConfig::default_config()).unwrap();
+    raw["monitor"]["poll_interval_ms"] = serde_json::json!(0);
+    raw["analysis"]["interval_secs"] = serde_json::json!(0);
+    fs::write(&config_path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    // Construction must succeed (fail-open), not error or panic.
+    let manager = ConfigManager::with_paths(config_path.clone(), None)
+        .expect("construction must stay fail-open on a sub-floor config (clamp, not error)");
+
+    // The in-memory snapshot observed by the scheduler must already be clamped.
+    let snapshot = manager.snapshot();
+    assert!(
+        snapshot.monitor.poll_interval_ms >= 1_000,
+        "poll_interval_ms must be clamped to its floor, got {}",
+        snapshot.monitor.poll_interval_ms
+    );
+    assert!(
+        snapshot.analysis.interval_secs >= 10,
+        "analysis.interval_secs must be clamped to its floor, got {}",
+        snapshot.analysis.interval_secs
+    );
+    // The clamped snapshot must itself be in-bounds.
+    snapshot
+        .validate_bounds()
+        .expect("the clamped startup snapshot must satisfy validate_bounds");
+
+    // The correction must be persisted so a relaunch stays safe even if the
+    // file is reloaded directly.
+    let on_disk = persistence::load_from_file(&config_path).unwrap();
+    assert!(
+        on_disk.monitor.poll_interval_ms >= 1_000,
+        "bounds clamp must be written to disk, not just in-memory"
+    );
+    assert!(on_disk.analysis.interval_secs >= 10);
+
+    // A relaunch from the rewritten file must also be in-bounds.
+    let relaunched = ConfigManager::with_paths(config_path, None).unwrap();
+    assert!(relaunched.snapshot().monitor.poll_interval_ms >= 1_000);
+}
+
+#[test]
+fn with_paths_preserves_in_bounds_config_unchanged() {
+    // Regression guard: the clamp must be a no-op for an in-bounds config — it
+    // must not silently rewrite a user's valid custom intervals.
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    let mut user = AppConfig::default_config();
+    user.monitor.poll_interval_ms = 2_500; // custom but in-bounds
+    user.analysis.interval_secs = 45;
+    user.analysis.full_interval_secs = 600;
+    fs::write(&config_path, serde_json::to_string_pretty(&user).unwrap()).unwrap();
+
+    let manager = ConfigManager::with_paths(config_path, None).unwrap();
+    let snapshot = manager.snapshot();
+    assert_eq!(snapshot.monitor.poll_interval_ms, 2_500);
+    assert_eq!(snapshot.analysis.interval_secs, 45);
+    assert_eq!(snapshot.analysis.full_interval_secs, 600);
+}
+
 // ── Managed (MDM) policy enforcement at the write chokepoint (#4832) ──────────
 //
 // These tests drive the REAL `ConfigManager::with_paths` (no mock, no env), so
@@ -1067,5 +1258,53 @@ mod managed_policy {
             "user is free to toggle updates when no policy is present"
         );
         assert!(mgr.detect_managed_violations(&mgr.get()).is_empty());
+    }
+
+    /// #6175: on Unix the persisted config.json must be owner-only (0o600) after a
+    /// save, because it can hold inline plaintext API keys / secrets. A default-umask
+    /// write would leave it world/group-readable, leaking secrets to other local
+    /// users. Asserts both the initial save (via save_to_file directly) and a save
+    /// driven through the public `update_with` path.
+    #[cfg(unix)]
+    #[test]
+    fn config_file_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // Direct save_to_file path.
+        persistence::save_to_file(&config_path, &crate::config::AppConfig::default_config())
+            .unwrap();
+        let mode = fs::metadata(&config_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config.json must be 0o600 after save_to_file, got {:o}",
+            mode & 0o777
+        );
+
+        // No orphaned tmp must be left behind (atomic write committed).
+        assert!(
+            !config_path.with_extension("json.tmp").exists(),
+            "the .json.tmp must be renamed into place, not left behind"
+        );
+
+        // Public update path (ConfigManager::update_with -> save_to_file) must also
+        // land owner-only.
+        let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+        manager
+            .update_with(|c| {
+                c.web.port = 8123;
+                Ok(())
+            })
+            .unwrap();
+        let mode = fs::metadata(&config_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config.json must stay 0o600 after update_with, got {:o}",
+            mode & 0o777
+        );
     }
 }

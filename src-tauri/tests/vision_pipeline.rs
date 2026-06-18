@@ -185,16 +185,17 @@ fn full_vision_pipeline() {
 // ─────────────────────────────────────────────────────────────────────────────
 // #4830 — vision FrameProcessor wired-chain / backpressure-drop coverage
 //
-// 아래 테스트들은 (1) 실제 EdgeFrameProcessor 프로덕션 wired chain 과
-// (2) bounded ring buffer 가 backpressure 상황에서 프레임을 DROP 하는(가장 오래된
-// 프레임 축출) 실제 동작을 직접 호출하여 검증한다. theater(하드코딩 단언) 금지 —
-// 모든 단언은 프로덕션 함수 호출 결과의 관찰 가능한 동작에 대한 것이다.
+// The tests below directly invoke and verify (1) the real EdgeFrameProcessor
+// production wired chain and (2) the actual behavior where the bounded ring
+// buffer DROPs frames under backpressure (evicting the oldest frame). No theater
+// (hardcoded assertions) — every assertion is about the observable behavior of a
+// production function call.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use maekon_vision::ring_buffer::{CaptureRingBuffer, RingFrame};
 
-/// 링버퍼용 경량 프레임을 생성한다. thumbnail_data 에 식별용 시퀀스 바이트를 심어
-/// 어느 프레임이 살아남았는지/축출됐는지 확인할 수 있게 한다.
+/// Builds a lightweight frame for the ring buffer. Embeds an identifying
+/// sequence byte in thumbnail_data so we can tell which frame survived/was evicted.
 fn make_ring_frame(seq: u8, title: &str) -> RingFrame {
     RingFrame {
         timestamp: Utc::now(),
@@ -205,35 +206,37 @@ fn make_ring_frame(seq: u8, title: &str) -> RingFrame {
     }
 }
 
-/// bounded ring buffer 가 backpressure(용량 초과 push) 상황에서 프레임을 DROP 하고,
-/// 가장 오래된 프레임을 먼저 축출(FIFO)하는지 실제 프로덕션 경로로 검증한다.
+/// Verifies via the real production path that the bounded ring buffer DROPs
+/// frames under backpressure (push beyond capacity) and evicts the oldest frame
+/// first (FIFO).
 ///
-/// 검증 항목:
-/// - 용량(capacity)을 절대 초과하지 않는다 (bounded).
-/// - 초과분만큼 정확히 축출 카운트가 증가한다 (drop 발생 관찰).
-/// - 축출 후 살아남은 프레임은 가장 최근 N개이며, 가장 오래된 것이 사라진다.
-/// - check_and_flush 의 pre_event_frames 가 축출 이후의 윈도우를 그대로 반영한다.
+/// What is checked:
+/// - Capacity is never exceeded (bounded).
+/// - The eviction count increases by exactly the overflow amount (drops observed).
+/// - After eviction, the surviving frames are the most recent N, and the oldest
+///   ones are gone.
+/// - check_and_flush's pre_event_frames reflects the post-eviction window verbatim.
 #[test]
 fn ring_buffer_drops_frames_under_backpressure() {
     const CAPACITY: usize = 4;
     const PUSHED: u8 = 10;
 
-    // post_event_count=2, flush_threshold=0.5 인 실제 프로덕션 링버퍼 구성.
+    // Real production ring buffer with post_event_count=2, flush_threshold=0.5.
     let rb = CaptureRingBuffer::new(CAPACITY, 2, 0.5);
 
-    // 용량 4 인 버퍼에 10개 push → 6개가 backpressure 로 DROP 되어야 한다.
+    // Push 10 frames into a capacity-4 buffer → 6 must be DROPped by backpressure.
     for seq in 0..PUSHED {
         rb.push(make_ring_frame(seq, &format!("frame-{seq}")));
     }
 
-    // (1) bounded: len 은 절대 capacity 를 넘지 않는다.
+    // (1) bounded: len must never exceed capacity.
     assert_eq!(
         rb.len(),
         CAPACITY,
         "ring buffer must stay bounded at capacity under backpressure"
     );
 
-    // (2) drop 발생: 축출 카운트는 (push 횟수 - capacity) 와 정확히 일치한다.
+    // (2) drops occurred: the eviction count equals exactly (push count - capacity).
     let expected_evictions = (PUSHED as u64) - (CAPACITY as u64);
     assert_eq!(
         rb.evicted_count(),
@@ -241,9 +244,10 @@ fn ring_buffer_drops_frames_under_backpressure() {
         "exactly the overflow frames must be dropped (oldest-evicted)"
     );
 
-    // (3) FIFO oldest-evicted: 살아남은 프레임은 마지막 CAPACITY 개(seq 6..10).
-    //     실제 프로덕션 flush 경로(check_and_flush)로 버퍼를 드레인해
-    //     pre_event_frames 순서/내용이 축출 이후 윈도우를 반영하는지 확인한다.
+    // (3) FIFO oldest-evicted: the surviving frames are the last CAPACITY (seq 6..10).
+    //     Drain the buffer via the real production flush path (check_and_flush) and
+    //     confirm that the pre_event_frames order/content reflects the
+    //     post-eviction window.
     let flush = rb
         .check_and_flush(0.9, make_ring_frame(99, "trigger"))
         .expect("importance >= threshold must flush");
@@ -253,7 +257,7 @@ fn ring_buffer_drops_frames_under_backpressure() {
         .iter()
         .map(|f| f.thumbnail_data[0])
         .collect();
-    // seq 0..5 는 축출, seq 6..9 만 생존 (oldest-first 순서 유지).
+    // seq 0..5 are evicted; only seq 6..9 survive (oldest-first order preserved).
     assert_eq!(
         surviving,
         vec![6u8, 7, 8, 9],
@@ -261,10 +265,10 @@ fn ring_buffer_drops_frames_under_backpressure() {
     );
     assert_eq!(flush.trigger_frame.window_title, "trigger");
 
-    // flush 이후 버퍼는 비어야 한다 (드레인 확인).
+    // After flush the buffer must be empty (drain confirmed).
     assert!(rb.is_empty(), "buffer must be drained after flush");
 
-    // (4) take_evicted_count 는 카운터를 읽고 0 으로 리셋한다 (스케줄러 메트릭 경로).
+    // (4) take_evicted_count reads the counter and resets it to 0 (scheduler metrics path).
     assert_eq!(rb.take_evicted_count(), expected_evictions);
     assert_eq!(
         rb.evicted_count(),
@@ -273,16 +277,17 @@ fn ring_buffer_drops_frames_under_backpressure() {
     );
 }
 
-/// EdgeFrameProcessor 가 capture_and_process 내부에서 실제로 호출하는
-/// 프로덕션 메타데이터 빌더(build_frame_metadata)를 직접 호출하여,
-/// privacy 정제 / 해상도 / importance / trigger_type 가 wired chain 을 통해
-/// 올바르게 전달되는지 검증한다. (수동으로 만든 struct 가 아닌 실제 프로덕션 경로)
+/// Directly invokes the production metadata builder (build_frame_metadata) that
+/// EdgeFrameProcessor actually calls inside capture_and_process, verifying that
+/// privacy sanitization / resolution / importance / trigger_type are passed
+/// correctly through the wired chain. (The real production path, not a
+/// hand-built struct.)
 #[test]
 fn frame_processor_wired_chain_builds_real_metadata() {
     use maekon_vision::processor::{build_frame_metadata, CaptureMetadataInput};
 
-    // window_title 에 PII(이메일)를 포함시켜 프로덕션 정제 경로가 실제로
-    // 호출되는지 확인한다.
+    // Include PII (an email) in window_title to confirm the production
+    // sanitization path is actually invoked.
     let meta = build_frame_metadata(CaptureMetadataInput {
         trigger_type: "ErrorDetected",
         app_name: "Terminal",
@@ -291,16 +296,17 @@ fn frame_processor_wired_chain_builds_real_metadata() {
         importance: 0.85,
         monitor_id: Some(2),
         app_bundle_id: Some("com.apple.Terminal"),
+        pii_level: maekon_core::config::PiiFilterLevel::Standard,
     });
 
-    // privacy::sanitize_title 가 wired chain 안에서 실제로 적용됨.
+    // privacy::sanitize_title is actually applied within the wired chain.
     assert!(
         !meta.window_title.contains("secret@example.com"),
         "production metadata builder must sanitize PII in the wired chain"
     );
     assert!(meta.window_title.contains("[EMAIL]"));
 
-    // 나머지 필드들이 입력에서 그대로 전달되는지 확인.
+    // Confirm the remaining fields are passed through from the input verbatim.
     assert_eq!(meta.trigger_type, "ErrorDetected");
     assert_eq!(meta.app_name, "Terminal");
     assert_eq!(meta.resolution, (1920, 1080));
@@ -309,16 +315,16 @@ fn frame_processor_wired_chain_builds_real_metadata() {
     assert_eq!(meta.app_bundle_id.as_deref(), Some("com.apple.Terminal"));
 }
 
-/// 실제 EdgeFrameProcessor::capture_and_process 를 FrameProcessor 포트를 통해
-/// 호출하여 wired chain 이 끝까지 구동되는지 검증한다.
+/// Calls the real EdgeFrameProcessor::capture_and_process through the
+/// FrameProcessor port to verify the wired chain runs end to end.
 ///
-/// 화면 캡처(xcap)는 디스플레이가 필요하므로 headless CI 에서는 Err 를,
-/// 디스플레이가 있는 환경에서는 Ok 를 반환한다. 둘 다 유효한 프로덕션 결과이며,
-/// 어느 쪽이든 capture_and_process 의 실제 코드 경로가 실행된다.
-/// - Err 인 경우: 프로덕션이 명시한 capture 실패 에러(CoreError::Internal)여야 한다
-///   (패닉/행 없음).
-/// - Ok 인 경우: importance>=0.8 분기로 메타데이터가 wired chain 으로 채워지고
-///   image_payload 가 생성되어야 한다.
+/// Screen capture (xcap) requires a display, so it returns Err on headless CI and
+/// Ok in an environment with a display. Both are valid production outcomes, and
+/// either way the real code path of capture_and_process executes.
+/// - When Err: it must be the capture-failure error the production code defines
+///   (CoreError::Internal) (no panic/hang).
+/// - When Ok: the importance>=0.8 branch must fill the metadata via the wired
+///   chain and produce an image_payload.
 #[tokio::test]
 async fn frame_processor_capture_and_process_real_invocation() {
     use maekon_core::error::CoreError;
@@ -329,7 +335,7 @@ async fn frame_processor_capture_and_process_real_invocation() {
 
     let request = CaptureRequest {
         trigger_type: "ErrorDetected".to_string(),
-        importance: 0.9, // high → full-frame 인코딩 분기 구동
+        importance: 0.9, // high → drives the full-frame encoding branch
         app_name: "Terminal".to_string(),
         window_title: "Error - user@example.com".to_string(),
         monitor_id: None,
@@ -338,28 +344,29 @@ async fn frame_processor_capture_and_process_real_invocation() {
         screen_scale_factor: None,
     };
 
-    // 실제 비동기 trait 메서드 호출 — wired chain 전체 구동.
+    // Real async trait method call — drives the entire wired chain.
     let result = processor.capture_and_process(&request).await;
 
     match result {
         Ok(frame) => {
-            // 디스플레이가 있는 환경: 메타데이터가 실제로 채워져야 한다.
+            // Environment with a display: the metadata must actually be filled in.
             assert_eq!(frame.metadata.app_name, "Terminal");
             assert_eq!(frame.metadata.importance, 0.9);
-            // privacy 정제가 wired chain 에서 적용됨.
+            // Privacy sanitization is applied in the wired chain.
             assert!(!frame.metadata.window_title.contains("user@example.com"));
-            // importance>=0.8 → full-frame payload 가 존재해야 한다.
+            // importance>=0.8 → a full-frame payload must exist.
             assert!(
                 frame.image_payload.is_some(),
                 "high-importance capture must produce an image payload"
             );
-            // 해상도는 실제 캡처 프레임에서 유도된 양수 값이어야 한다.
+            // The resolution must be a positive value derived from the real captured frame.
             let (w, h) = frame.metadata.resolution;
             assert!(w > 0 && h > 0, "captured frame must have a real resolution");
         }
         Err(err) => {
-            // headless 환경: 프로덕션이 정의한 capture 실패 에러여야 한다.
-            // (패닉/무한 대기 없이 명시적 에러로 반환되는지가 핵심.)
+            // Headless environment: it must be the capture-failure error the
+            // production code defines. (The key point is that it returns an
+            // explicit error without a panic or indefinite wait.)
             assert!(
                 matches!(err, CoreError::Internal { .. }),
                 "headless capture failure must surface as a defined CoreError::Internal, got: {err:?}"

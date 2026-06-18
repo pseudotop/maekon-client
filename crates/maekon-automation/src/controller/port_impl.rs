@@ -43,6 +43,10 @@ fn dto_to_policy(d: &ExecutionPolicyDto) -> ExecutionPolicy {
     let audit_level = match d.audit_level.as_str() {
         "None" => AuditLevel::None,
         "Detailed" => AuditLevel::Detailed,
+        // review4 A15/A21: "Full" was missing, so an operator's Full setting
+        // silently round-tripped to Basic (and resolver maps Full→Strict but
+        // Basic→Standard — a latent sandbox downgrade).
+        "Full" => AuditLevel::Full,
         _ => AuditLevel::Basic,
     };
     let sandbox_profile = d.sandbox_profile.as_deref().and_then(|s| match s {
@@ -191,8 +195,12 @@ impl AutomationPort for AutomationController {
         let mut map = self.pending_confirmations.lock().await;
         if let Some((confirmation, sender)) = map.remove(command_id) {
             // Verify the nonce matches to prevent unauthorised approval from
-            // arbitrary scripts running inside the WebView.
-            if confirmation.nonce != nonce {
+            // arbitrary scripts running inside the WebView. Constant-time compare
+            // (review4 A23) to match the capability-token check's timing-safety
+            // posture (gui_interaction/service.rs); ct_eq folds a length mismatch
+            // into a non-leaking false.
+            use subtle::ConstantTimeEq;
+            if !bool::from(confirmation.nonce.as_bytes().ct_eq(nonce.as_bytes())) {
                 // Re-insert so a legitimate caller can still respond.
                 map.insert(command_id.to_string(), (confirmation, sender));
                 return Err(CoreError::PermissionDenied {

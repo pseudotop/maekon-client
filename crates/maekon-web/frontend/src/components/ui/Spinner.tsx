@@ -1,5 +1,6 @@
 /**
  */
+import { useTranslation } from 'react-i18next'
 import { spinnerVariants } from '../../styles/variants'
 import { cn } from '../../utils/cn'
 
@@ -9,8 +10,9 @@ export interface SpinnerProps {
 }
 
 export function Spinner({ className, size = 'md' }: SpinnerProps) {
+  const { t } = useTranslation()
   return (
-    <output aria-label="Loading">
+    <output aria-label={t('spinner.loading')}>
       <svg
         className={cn('animate-spin', spinnerVariants.size[size], className)}
         xmlns="http://www.w3.org/2000/svg"

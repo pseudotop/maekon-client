@@ -66,4 +66,15 @@ pub trait SyncTransport: Send + Sync {
     async fn forget_peer(&self, _device_id: &str) -> Result<(), CoreError> {
         Ok(())
     }
+
+    /// Reclaim transport-side storage that the transport accumulates over time
+    /// (e.g. consumed changeset files in a shared sync folder), returning the
+    /// number of items reclaimed. Called periodically by the cross-device sync
+    /// loop so a long-running agent does not grow the shared folder unbounded.
+    ///
+    /// Default: no-op (transports with no reclaimable local artifacts, e.g. the
+    /// remote HTTP and in-memory transports). The file transport overrides it.
+    async fn enforce_retention(&self) -> Result<usize, CoreError> {
+        Ok(0)
+    }
 }

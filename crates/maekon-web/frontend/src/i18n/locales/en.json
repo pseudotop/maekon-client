@@ -1892,7 +1892,8 @@
     "disabledBannerDesc": "Enable coaching to receive proactive nudges and track your habits.",
     "disabledBannerButton": "Enable coaching",
     "enableMasterToggle": "Enable coaching",
-    "enableMasterToggleDesc": "Master switch — enables or disables all coaching nudges and notifications."
+    "enableMasterToggleDesc": "Master switch — enables or disables all coaching nudges and notifications.",
+    "regimeLabelPlaceholder": "e.g. Deep Coding"
   },
   "onboarding": {
     "step1Title": "Welcome to Maekon",
@@ -1968,7 +1969,8 @@
       "activeNote": "Changes take effect immediately — no restart needed.",
       "monitoringMissingWarning": "Monitoring consent is not yet granted. Grant it in the previous step for coaching to work.",
       "error": "Could not enable coaching: {{error}}"
-    }
+    },
+    "stepIndicatorLabel": "Step indicator"
   },
   "chat": {
     "title": "AI Sessions",
@@ -2023,7 +2025,8 @@
     "request_suggestions": "Get AI suggestions",
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
-    "mic_privacy_stopped": "Microphone stopped — privacy gate active"
+    "mic_privacy_stopped": "Microphone stopped — privacy gate active",
+    "searchMessagesPlaceholder": "Search messages..."
   },
   "policies": {
     "title": "Execution Policies",
@@ -2117,7 +2120,9 @@
     "snoozeCancel": "Cancel",
     "panelLabel": "Suggestions panel",
     "closePanelLabel": "Close suggestions panel",
-    "badgeNew": "new"
+    "badgeNew": "new",
+    "historyLoadError": "Could not load history.",
+    "badgeLabel": "{{count}} new suggestions"
   },
   "suggestionStats": {
     "acceptanceRate": "Acceptance Rate",
@@ -2132,7 +2137,8 @@
     "dailyTrends": "Daily Trends (7d)",
     "acted": "Acted",
     "total": "Total",
-    "noData": "No data yet"
+    "noData": "No data yet",
+    "loadError": "Could not load stats."
   },
   "trackingPanel": {
     "statusUnavailable": "Status unavailable",
@@ -2338,5 +2344,172 @@
     "interrupt": "Interrupt",
     "steerPlaceholder": "Steer the turn…",
     "steerSend": "Send"
+  },
+  "appShell": {
+    "mainContent": "Main content"
+  },
+  "spinner": {
+    "loading": "Loading"
+  },
+  "insightCard": {
+    "noInsightAvailable": "No insight available for today"
+  },
+  "statisticsPanel": {
+    "deepWork": "Deep Work",
+    "communication": "Communication",
+    "meetings": "Meetings",
+    "contextSwitches": "Context Switches",
+    "regimeDistribution": "Regime Distribution"
+  },
+  "statusBar": {
+    "lastCaptureTimestamp": "Last capture timestamp"
+  },
+  "processList": {
+    "pid": "PID:",
+    "memory": "Memory"
+  },
+  "coachingPopup": {
+    "thumbsUpTitle": "Thumbs up",
+    "thumbsDownTitle": "Thumbs down"
+  },
+  "detectionOverlay": {
+    "fieldLabel": "label",
+    "fieldRole": "role",
+    "fieldBounds": "bounds",
+    "fieldSource": "source",
+    "fieldId": "id",
+    "emptyValue": "(empty)",
+    "unknownRole": "unknown"
+  },
+  "messageBubble": {
+    "input": "Input",
+    "result": "Result"
+  },
+  "advancedTab": {
+    "maxConcurrentSessions": "Max concurrent sessions",
+    "idleTimeoutSeconds": "Idle timeout (seconds)",
+    "sessionTimeoutSeconds": "Session timeout (seconds)",
+    "maxRetries": "Max retries",
+    "maxHistoryTurns": "Max history turns",
+    "healthCheckIntervalSeconds": "Health check interval (seconds)",
+    "enableSuggestions": "Enable suggestions",
+    "enableSuggestionsDescription": "Receive AI-powered suggestions based on your activity",
+    "showBorder": "Show border",
+    "showBorderDescription": "Display a colored border around the screen when monitoring",
+    "showPanel": "Show panel",
+    "showPanelDescription": "Display the tracking status panel",
+    "borderOpacity": "Border opacity (0.0 - 1.0)",
+    "enableAnalysis": "Enable analysis",
+    "enableAnalysisDescription": "Run LLM analysis on activity segments",
+    "analysisIntervalSeconds": "Analysis interval (seconds)",
+    "minConfidence": "Min confidence (0.0 - 1.0)",
+    "maxSuggestions": "Max suggestions",
+    "regimeDetectionIntervalHours": "Regime detection interval (hours)",
+    "embedding": "Embedding",
+    "embeddingDescription": "Enable vector embedding for semantic search",
+    "guiIntelligence": "GUI intelligence",
+    "guiIntelligenceDescription": "Detect and aggregate GUI interaction patterns",
+    "textIntelligence": "Text intelligence",
+    "textIntelligenceDescription": "Extract and classify text patterns from activity",
+    "autoTuner": "Auto-tuner",
+    "autoTunerDescription": "EMA-based drift detection and automatic re-clustering of behavioral regimes",
+    "serverBaseUrl": "Server base URL",
+    "requestTimeoutMs": "Request timeout (ms)",
+    "grpcEnabled": "gRPC enabled",
+    "grpcEnabledDescription": "Use gRPC for server communication (requires server support)",
+    "grpcEndpoint": "gRPC endpoint",
+    "tlsEnabled": "TLS enabled",
+    "tlsEnabledDescription": "Encrypt outbound connections with TLS",
+    "enableCoaching": "Enable coaching",
+    "enableCoachingDescription": "Proactive productivity coaching and goal tracking",
+    "locale": "Locale",
+    "enableIntegration": "Enable integration",
+    "enableIntegrationDescription": "Connect to external integration hub",
+    "integrationRequestTimeoutSeconds": "Request timeout (seconds)",
+    "integrationSyncIntervalSeconds": "Sync interval (seconds)",
+    "enableSync": "Enable sync",
+    "enableSyncDescription": "Synchronize data across devices",
+    "deviceName": "Device name",
+    "syncIntervalSeconds": "Sync interval (seconds)",
+    "lanDiscovery": "LAN discovery",
+    "lanDiscoveryDescription": "Advertise this device on the local network for peer sync",
+    "payloadCompression": "Payload compression",
+    "payloadCompressionDescription": "Compress changeset payloads before encryption to reduce bandwidth"
+  },
+  "segmentsSection": {
+    "heading": "Segments",
+    "columnTime": "Time",
+    "columnDuration": "Duration",
+    "columnRegime": "Regime",
+    "columnApp": "App",
+    "columnActions": "Actions"
+  },
+  "overridesSection": {
+    "columnSegment": "Segment",
+    "columnOriginal": "Original",
+    "columnAction": "Action",
+    "columnCreated": "Created"
+  },
+  "presets": {
+    "save-file": {
+      "name": "Save File",
+      "description": "Save the current file"
+    },
+    "undo": {
+      "name": "Undo",
+      "description": "Undo the last action"
+    },
+    "select-all-copy": {
+      "name": "Select All and Copy",
+      "description": "Select all content and copy it to the clipboard"
+    },
+    "find-replace": {
+      "name": "Find and Replace",
+      "description": "Open the Find and Replace dialog"
+    },
+    "switch-next-app": {
+      "name": "Switch to Next App",
+      "description": "Switch focus to the next application"
+    },
+    "close-window": {
+      "name": "Close Window",
+      "description": "Close the currently active window"
+    },
+    "minimize-all": {
+      "name": "Minimize All Windows",
+      "description": "Minimize all open windows"
+    },
+    "morning-routine": {
+      "name": "Start of Day",
+      "description": "Launch Mail, Calendar, and VS Code to begin your workday"
+    },
+    "meeting-prep": {
+      "name": "Meeting Prep",
+      "description": "Open Zoom and Notes to get ready for a meeting"
+    },
+    "end-of-day": {
+      "name": "End of Day",
+      "description": "Save the current file and quit the application"
+    },
+    "daily-priority-sync": {
+      "name": "Daily Priority Review",
+      "description": "Open Calendar, Jira, and Slack in sequence to align on the day's priorities"
+    },
+    "bug-triage-loop": {
+      "name": "Bug Triage",
+      "description": "Cycle through the issue tracker, monitoring tools, and IDE to triage bugs"
+    },
+    "customer-followup": {
+      "name": "Customer Follow-Up",
+      "description": "Open CRM, Notion, and Mail to review customer feedback and prepare follow-up actions"
+    },
+    "release-readiness": {
+      "name": "Release Readiness",
+      "description": "Save code, then open Terminal and a browser to kick off release checks"
+    },
+    "deep-work-start": {
+      "name": "Start Deep Work",
+      "description": "Open VS Code and dismiss distractions to begin a focused work session"
+    }
   }
 }

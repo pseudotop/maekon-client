@@ -1,9 +1,9 @@
-//! SecretCode — Secret store 카테고리 에러 코드. `secret.*` 접두사.
+//! SecretCode - Secret store category error codes. `secret.*` prefix.
 
 define_code_enum! {
-    /// Secret 카테고리 에러 코드.
+    /// Secret category error codes.
     pub enum SecretCode {
-        /// Secret store 접근 실패.
+        /// Secret store access failed.
         Failed => "secret.failed",
     }
 }

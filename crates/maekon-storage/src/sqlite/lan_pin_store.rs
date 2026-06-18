@@ -8,7 +8,7 @@ impl SqliteStorage {
     /// Get the stored pin for a peer device.
     /// Returns `Some((fingerprint, trust_revoked))` if found, `None` otherwise.
     pub fn get_lan_pin(&self, device_id: &str) -> Result<Option<(String, bool)>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
         let mut stmt = conn
@@ -36,7 +36,7 @@ impl SqliteStorage {
         device_id: &str,
         cert_fingerprint: &str,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, lan_peer_pins ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set, lan_peer_pins ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "INSERT INTO lan_peer_pins (device_id, cert_fingerprint)
@@ -54,7 +54,7 @@ impl SqliteStorage {
 
     /// Revoke trust for a peer device (TOFU violation).
     pub fn revoke_lan_pin(&self, device_id: &str) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE lan_peer_pins SET trust_revoked = 1 WHERE device_id = ?",
@@ -68,7 +68,7 @@ impl SqliteStorage {
 
     /// Remove a peer's TOFU pin entirely (recovery path).
     pub fn clear_lan_pin(&self, device_id: &str) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute("DELETE FROM lan_peer_pins WHERE device_id = ?", [device_id])
                 .map_err(|e| StorageError::Internal(format!("clear_lan_pin: {e}")))?;
@@ -122,6 +122,29 @@ mod tests {
         storage.revoke_lan_pin("dev-1").unwrap();
         let (_, revoked) = storage.get_lan_pin("dev-1").unwrap().unwrap();
         assert!(revoked);
+    }
+
+    #[test]
+    fn upsert_preserves_revoked_flag() {
+        // The `ON CONFLICT DO UPDATE` clause only touches cert_fingerprint and
+        // last_seen_at, never trust_revoked. A revoked peer presenting a changed
+        // cert must stay revoked — re-trusting requires clear_lan_pin (DELETE).
+        let storage = test_storage();
+        storage.upsert_lan_pin("dev-1", "fp-old").unwrap();
+        storage.revoke_lan_pin("dev-1").unwrap();
+        storage.upsert_lan_pin("dev-1", "fp-new").unwrap();
+        let (fp, revoked) = storage.get_lan_pin("dev-1").unwrap().unwrap();
+        assert_eq!(fp, "fp-new", "fingerprint is updated by the upsert");
+        assert!(revoked, "trust_revoked must survive the upsert");
+
+        // clear_lan_pin (recovery) removes the row; the next insert defaults to 0.
+        storage.clear_lan_pin("dev-1").unwrap();
+        storage.upsert_lan_pin("dev-1", "fp-fresh").unwrap();
+        let (_, revoked_after_clear) = storage.get_lan_pin("dev-1").unwrap().unwrap();
+        assert!(
+            !revoked_after_clear,
+            "a fresh insert after clear defaults to not-revoked"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use maekon_core::error::CoreError;
 use maekon_core::ports::secret_store::SecretStore;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
+use maekon_storage::encryption::EncryptionKey;
 use maekon_storage::env_secret_store::EnvSecretStore;
 use maekon_storage::file_secret_store::FileSecretStore;
 use maekon_storage::keychain::{KeychainOps, KeychainSecretStore};
@@ -39,8 +40,24 @@ pub fn create_os_secret_store(config_dir: &Path) -> Option<Arc<dyn SecretStore>>
     }
 }
 
+/// Load (or create) the AES-256-GCM encryption key for the file secret store
+/// from `config_dir/.db_key`.  The key file itself is stored with 0o600 /
+/// owner-only DACL permissions (handled by `EncryptionKey::load_or_create`).
+fn load_file_secret_store_key(config_dir: &Path) -> Result<Arc<EncryptionKey>, CoreError> {
+    EncryptionKey::load_or_create(config_dir)
+        .map(Arc::new)
+        .map_err(|e| CoreError::Storage {
+            code: maekon_core::error_codes::StorageCode::Failed,
+            message: format!("failed to load/create FileSecretStore encryption key: {e}"),
+        })
+}
+
 pub fn create_file_secret_store(config_dir: &Path) -> Result<Arc<dyn SecretStore>, CoreError> {
-    Ok(Arc::new(FileSecretStore::new(file_secret_store_path(config_dir))?) as Arc<dyn SecretStore>)
+    let key = load_file_secret_store_key(config_dir)?;
+    Ok(Arc::new(FileSecretStore::new(
+        file_secret_store_path(config_dir),
+        Some(key),
+    )?) as Arc<dyn SecretStore>)
 }
 
 pub fn create_env_secret_store() -> Arc<dyn SecretStore> {
@@ -70,9 +87,10 @@ pub fn resolve_provider_secret_backend(
             }
         }
         RequestedProviderSecretBackend::FileSecretStore => ProviderSecretBackendResolution {
-            secret_store: Some(Arc::new(FileSecretStore::new(file_secret_store_path(
-                config_dir,
-            ))?)),
+            secret_store: Some(Arc::new(FileSecretStore::new(
+                file_secret_store_path(config_dir),
+                Some(load_file_secret_store_key(config_dir)?),
+            )?)),
             backend_kind: CredentialBackendKind::FileSecretStore,
             fallback_backend_kind: CredentialBackendKind::Unavailable,
         },

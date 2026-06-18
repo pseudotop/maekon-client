@@ -3,7 +3,7 @@ use maekon_storage::encryption::EncryptionKey;
 use maekon_storage::sqlite::SqliteStorage;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 pub(crate) struct StorageRuntimeBundle {
     pub(crate) sqlite_storage: Arc<SqliteStorage>,
@@ -27,40 +27,81 @@ impl<'a> StorageRuntimeBuilder<'a> {
     }
 
     pub(crate) fn build(&self) -> Result<StorageRuntimeBundle> {
-        let encryption_key =
-            match maekon_storage::encryption::EncryptionKey::load_or_create(self.data_dir) {
-                Ok(key) => {
-                    info!(
-                        "DB encryption key ready ({})",
-                        self.data_dir.join(".db_key").display()
-                    );
-                    Some(key)
-                }
-                Err(error) => {
-                    warn!("DB encryption key provisioning failed (non-fatal): {error}");
-                    None
-                }
-            };
+        // #6438 (F7): at-rest encryption is unconditional here — `load_or_create`
+        // loads the existing key or generates+persists a new one, and only errors on a
+        // genuine failure (corrupt/unreadable `.db_key`, I/O on save, RNG). A failure
+        // therefore means encryption was intended but could not be provisioned; FAIL
+        // CLOSED (abort startup) rather than silently opening the SQLite DB and all
+        // screenshot files as plaintext. Mirrors the #6418 fail-closed reasoning one
+        // layer up. There is no "run unencrypted" mode today; a genuine one would need
+        // an explicit, audited opt-in, so any error here is a hard failure.
+        let encryption_key = maekon_storage::encryption::EncryptionKey::load_or_create(
+            self.data_dir,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "DB encryption key provisioning failed; refusing to start with at-rest \
+                         encryption disabled (the database and screenshots would be stored in \
+                         plaintext): {error}"
+            )
+        })?;
+        info!(
+            "DB encryption key ready ({})",
+            self.data_dir.join(".db_key").display()
+        );
 
         let sqlite_storage = Arc::new(SqliteStorage::open(
             self.db_path,
             self.retention_days,
-            encryption_key.as_ref(),
+            Some(&encryption_key),
         )?);
-        if encryption_key.is_some() {
-            info!(
-                "SQLite initialized: {} (SQLCipher encrypted)",
-                self.db_path.display()
-            );
-        } else {
-            info!("SQLite initialized: {} (plaintext)", self.db_path.display());
-        }
-
-        let encryption_key_arc = encryption_key.map(Arc::new);
+        info!(
+            "SQLite initialized: {} (SQLCipher encrypted)",
+            self.db_path.display()
+        );
 
         Ok(StorageRuntimeBundle {
             sqlite_storage,
-            encryption_key: encryption_key_arc,
+            encryption_key: Some(Arc::new(encryption_key)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #6438 (F7): if at-rest encryption-key provisioning fails, `build()` must FAIL
+    /// CLOSED — return an error and create no database — rather than silently opening the
+    /// SQLite DB (and screenshots) in plaintext.
+    #[test]
+    fn build_fails_closed_when_key_provisioning_fails() {
+        // Unique scratch dir (no tempfile dev-dep in src-tauri).
+        let base = std::env::temp_dir().join(format!("maekon-f7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("create scratch dir");
+        // Make `.db_key` unreadable as a key file (a directory) so `load_or_create`
+        // errors, simulating a corrupt/inaccessible key.
+        std::fs::create_dir(base.join(".db_key")).expect("create blocking .db_key dir");
+        let db_path = base.join("test.db");
+
+        let err_msg = match StorageRuntimeBuilder::new(&db_path, &base, 30).build() {
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&base);
+                panic!("build must fail closed on key-provisioning failure, not open plaintext");
+            }
+            Err(e) => e.to_string(),
+        };
+        let db_created = db_path.exists();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            err_msg.contains("encryption"),
+            "expected a fail-closed encryption error, got: {err_msg}"
+        );
+        assert!(
+            !db_created,
+            "no (plaintext) database must be created when encryption provisioning fails"
+        );
     }
 }

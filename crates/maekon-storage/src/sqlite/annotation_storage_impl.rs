@@ -20,7 +20,7 @@ use crate::error::StorageError;
 impl AnnotationStorage for SqliteStorage {
     /// List all annotations attached to a given frame, ordered by creation time.
     async fn list_annotations(&self, frame_id: i64) -> Result<Vec<FrameAnnotation>, CoreError> {
-        // 읽기 — with_conn_read funnel (deletion_flag 무관, 절대 스킵 안 함).
+        // Read — with_conn_read funnel (independent of deletion_flag, never skipped).
         self.with_conn_read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -65,7 +65,7 @@ impl AnnotationStorage for SqliteStorage {
         let annotation = annotation.clone();
         let created_at_str = annotation.created_at.to_rfc3339();
 
-        // 쓰기 — with_conn funnel(deletion_flag set 시 스킵, `frame_annotations` ∈ ALL_TABLES).
+        // Write — with_conn funnel (skipped when deletion_flag is set; `frame_annotations` ∈ ALL_TABLES).
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO frame_annotations
@@ -96,7 +96,7 @@ impl AnnotationStorage for SqliteStorage {
         // Move owned id into the Send + 'static write closure.
         let annotation_id = annotation_id.to_owned();
 
-        // 쓰기 — with_conn funnel(deletion_flag set 시 스킵).
+        // Write — with_conn funnel (skipped when deletion_flag is set).
         self.with_conn(move |conn| {
             conn.execute(
                 "DELETE FROM frame_annotations WHERE annotation_id = ?1",

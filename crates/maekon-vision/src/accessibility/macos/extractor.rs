@@ -4,6 +4,7 @@
 use std::process::Command;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use core_foundation::base::TCFType;
@@ -28,6 +29,17 @@ static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 /// Retry every 10 ticks (~30s at 3s poll) after circuit opens.
 const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 10;
+
+/// Per-element messaging timeout (seconds) applied to every freshly-created AX
+/// element before issuing any synchronous attribute query.
+///
+/// AX queries are blocking IPC to the target app's main thread. Without this,
+/// a hung target blocks the `spawn_blocking` thread for the multi-tens-of-seconds
+/// system default, piling up blocked threads. With a short timeout the calls
+/// return `kAXErrorCannotComplete` instead, which the existing error handling
+/// already treats as "no data" (extraction returns `None`/empty → circuit
+/// breaker records a failure).
+const AX_MESSAGING_TIMEOUT_SECS: f32 = 2.0;
 
 /// Raw data extracted from the accessibility API before PII filtering.
 struct RawFocusedElement {
@@ -85,17 +97,64 @@ impl MacOsNativeAccessibility {
         candidates
     }
 
+    /// Maximum time to wait for `pgrep` to produce output before killing it.
+    ///
+    /// Under fast-user-switch or process-table pressure, `pgrep` can stall
+    /// indefinitely. We spawn the child, poll with `try_wait` every
+    /// [`PGREP_POLL_INTERVAL`], and kill it if it has not exited by
+    /// [`PGREP_TIMEOUT`]. This avoids permanently occupying a tokio blocking
+    /// thread when this fn is called from `spawn_blocking`.
+    const PGREP_TIMEOUT: Duration = Duration::from_millis(500);
+    const PGREP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
     fn pgrep_exact(name: &str) -> Option<PidT> {
-        let output = Command::new("/usr/bin/pgrep")
+        use std::io::Read;
+
+        let mut child = Command::new("/usr/bin/pgrep")
             .args(["-x", name])
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .ok()?;
-        if !output.status.success() {
-            return None;
+
+        let deadline = Instant::now() + Self::PGREP_TIMEOUT;
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        // pgrep exits 1 when no process matched — normal, not an error.
+                        return None;
+                    }
+                    // Child exited successfully. Read stdout directly from the pipe handle
+                    // rather than calling wait_with_output(), which would call wait()
+                    // again on an already-reaped child and may return ECHILD.
+                    let mut stdout = String::new();
+                    if let Some(mut pipe) = child.stdout.take() {
+                        let _ = pipe.read_to_string(&mut stdout);
+                    }
+                    return stdout
+                        .lines()
+                        .find_map(|line| line.trim().parse::<PidT>().ok());
+                }
+                Ok(None) => {
+                    // Still running — check deadline.
+                    if Instant::now() >= deadline {
+                        warn!("pgrep_exact: timed out waiting for pgrep '{name}'; killing child");
+                        let _ = child.kill();
+                        let _ = child.wait(); // reap zombie
+                        return None;
+                    }
+                    std::thread::sleep(Self::PGREP_POLL_INTERVAL);
+                }
+                Err(_) => {
+                    // try_wait failed; kill to avoid leaking the child.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
         }
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .find_map(|line| line.trim().parse::<PidT>().ok())
     }
 
     fn is_current_process_candidate(name: &str) -> bool {
@@ -158,6 +217,25 @@ impl MacOsNativeAccessibility {
         }
     }
 
+    /// Bound the synchronous AX messaging timeout on a freshly-created element.
+    ///
+    /// Must be called before any `AXUIElementCopyAttributeValue` /
+    /// `AXUIElementCopyMultipleAttributeValues` query so that a hung target app
+    /// returns `kAXErrorCannotComplete` after [`AX_MESSAGING_TIMEOUT_SECS`]
+    /// instead of blocking the `spawn_blocking` thread for the system default.
+    ///
+    /// SAFETY: Caller must ensure `element` is a valid AXUIElementRef.
+    unsafe fn bound_messaging_timeout(element: AXUIElementRef) {
+        let err = AXUIElementSetMessagingTimeout(element, AX_MESSAGING_TIMEOUT_SECS);
+        if err != kAXErrorSuccess {
+            // Non-fatal: queries simply fall back to the system-default timeout.
+            debug!(
+                err,
+                "AXUIElementSetMessagingTimeout failed; using system default"
+            );
+        }
+    }
+
     /// Extract the focused element via AXUIElement API (synchronous).
     ///
     /// SAFETY: All CFTypeRef values are released after use. The function
@@ -168,6 +246,8 @@ impl MacOsNativeAccessibility {
             if system_wide.is_null() {
                 return None;
             }
+            // Bound IPC time so a hung app cannot stall this blocking thread.
+            Self::bound_messaging_timeout(system_wide);
 
             // Build attribute key CFStrings
             let focused_attr = ax_attr(AX_FOCUSED_UI_ELEMENT_ATTR);
@@ -224,6 +304,18 @@ impl MacOsNativeAccessibility {
         let mut value: CFTypeRef = ptr::null();
         let err = AXUIElementCopyAttributeValue(element, attr, &mut value);
         if err != kAXErrorSuccess || value.is_null() {
+            return None;
+        }
+        // Verify the value is actually a CFString before wrapping it (review4 V4).
+        // AXValue for a focused checkbox / slider / stepper / radio / progress
+        // control is a CFNumber / CFBoolean / AXValueRef, not a CFString; running
+        // CFString routines on it is type confusion (CF abort / OOB read / assert
+        // panic). Mirror the guard already used by batch_get_attributes. The value
+        // is owned (Create Rule), so release it on the type-mismatch early return.
+        if core_foundation_sys::base::CFGetTypeID(value)
+            != core_foundation_sys::string::CFStringGetTypeID()
+        {
+            CFRelease(value);
             return None;
         }
         // CFTypeRef -> CFStringRef -> CFString -> Rust String
@@ -448,7 +540,9 @@ impl MacOsNativeAccessibility {
 
         results.push(AccessibilityElement {
             role,
-            label,
+            // Mask the accessibility name at the configured level (review4 V15);
+            // Strict already yields an empty label, Off is an identity pass.
+            label: crate::privacy::sanitize_title_with_level(&label, pii_level),
             bounds,
         });
         *remaining = remaining.saturating_sub(1);
@@ -460,16 +554,31 @@ impl MacOsNativeAccessibility {
             let err =
                 AXUIElementCopyAttributeValue(element, as_cf_ref(&children_key), &mut children_ref);
             if err == kAXErrorSuccess && !children_ref.is_null() {
-                let count = CFArrayGetCount(children_ref as CFArrayRef);
-                for i in 0..count {
-                    if *remaining == 0 {
-                        break;
-                    }
-                    let child = CFArrayGetValueAtIndex(children_ref as CFArrayRef, i);
-                    if !child.is_null() {
-                        let child_elements =
-                            Self::traverse_tree(child, depth + 1, max_depth, remaining, pii_level);
-                        results.extend(child_elements);
+                // Verify the value is actually a CFArray before indexing it (review4
+                // V19). AXChildren is contractually a CFArray, but a non-conformant
+                // accessibility server returning another CFType would otherwise cause
+                // a CF type-confusion (abort / OOB read). children_ref is owned
+                // (Create Rule), so it is released regardless of its type.
+                if core_foundation_sys::base::CFGetTypeID(children_ref)
+                    == core_foundation_sys::array::CFArrayGetTypeID()
+                {
+                    let arr = children_ref as CFArrayRef;
+                    let count = CFArrayGetCount(arr);
+                    for i in 0..count {
+                        if *remaining == 0 {
+                            break;
+                        }
+                        let child = CFArrayGetValueAtIndex(arr, i);
+                        if !child.is_null() {
+                            let child_elements = Self::traverse_tree(
+                                child,
+                                depth + 1,
+                                max_depth,
+                                remaining,
+                                pii_level,
+                            );
+                            results.extend(child_elements);
+                        }
                     }
                 }
                 CFRelease(children_ref);
@@ -581,6 +690,9 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
             if system_wide.is_null() {
                 return Vec::new();
             }
+            // Setting the timeout on the system-wide element also establishes the
+            // global default for elements derived from it (focused element, window).
+            Self::bound_messaging_timeout(system_wide);
 
             // Get focused element
             let focused_window_key = ax_attr(AX_FOCUSED_UI_ELEMENT_ATTR);
@@ -609,6 +721,9 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
                 // Fallback: traverse from focused element itself
                 focused
             };
+            // Bound IPC time on the traversal root; children copied during
+            // traversal inherit the global default set above.
+            Self::bound_messaging_timeout(traverse_root);
 
             let mut remaining = max_elements;
             let elements =
@@ -667,6 +782,19 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
                     if app_ref.is_null() {
                         return Ok(Vec::new());
                     }
+                    // Bound IPC time so a hung target app cannot stall this
+                    // blocking thread for the system-default timeout. We set the
+                    // timeout on app_ref AND, via the system-wide element, on the
+                    // process-GLOBAL default — the latter is what the distinct child
+                    // AXUIElementRefs created during traverse_tree inherit (they have
+                    // no per-element override), so deep child queries on a hung app
+                    // are bounded too, not just the root app_ref query (#6089 follow-up).
+                    Self::bound_messaging_timeout(app_ref);
+                    let system_wide = AXUIElementCreateSystemWide();
+                    if !system_wide.is_null() {
+                        Self::bound_messaging_timeout(system_wide);
+                        CFRelease(system_wide);
+                    }
 
                     let mut remaining = max_elements;
                     let elements =
@@ -709,5 +837,87 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
             let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
             AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as CFTypeRef)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MacOsNativeAccessibility;
+
+    /// `pgrep_exact` must return `None` for a process name that can never exist.
+    /// Also verifies the call completes well within PGREP_TIMEOUT (i.e. the
+    /// fast-exit path does not inadvertently spin until the deadline).
+    #[test]
+    fn pgrep_exact_returns_none_for_nonexistent_process() {
+        let start = std::time::Instant::now();
+        let result =
+            MacOsNativeAccessibility::pgrep_exact("____maekon_nonexistent_sentinel_proc____");
+        let elapsed = start.elapsed();
+        assert!(
+            result.is_none(),
+            "must return None for a nonexistent process"
+        );
+        // pgrep exits immediately with code 1 when no match; the poll loop
+        // should resolve long before the 500ms deadline.
+        assert!(
+            elapsed < MacOsNativeAccessibility::PGREP_TIMEOUT,
+            "fast-exit path must not spin until the deadline (elapsed: {elapsed:?})"
+        );
+    }
+
+    /// `pgrep_exact` must find a process that is definitely running, exercising
+    /// the full happy path (spawn -> poll exit -> read stdout -> parse a PID).
+    ///
+    /// We spawn our own `/bin/sleep` child rather than relying on a system
+    /// process name (e.g. `launchd`), because the exact `comm` name matched by
+    /// `pgrep -x` is not portable across macOS versions / CI runners. The
+    /// spawned child guarantees at least one `sleep` process exists.
+    #[test]
+    fn pgrep_exact_finds_a_spawned_process() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep child");
+        // Give the OS a moment to register the new process before scanning.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let result = MacOsNativeAccessibility::pgrep_exact("sleep");
+
+        // Always clean up the child regardless of the assertion outcome.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            result.is_some(),
+            "pgrep -x sleep must find the spawned sleep child"
+        );
+    }
+
+    /// `extract_raw` must link and run the real AX FFI path — including the new
+    /// `AXUIElementSetMessagingTimeout` call — and return within a bounded wall
+    /// clock time. This both proves the timeout symbol resolves from the
+    /// ApplicationServices `.tbd` stubs (the FFI module warns this is fragile
+    /// for some `kAX*` symbols) and that the bounded synchronous path cannot
+    /// stall a blocking thread indefinitely.
+    ///
+    /// The call returns `None` when accessibility permission is not granted (the
+    /// common case in CI), so we assert only on timing, not on the payload.
+    #[test]
+    fn extract_raw_is_bounded_by_messaging_timeout() {
+        let start = std::time::Instant::now();
+        // Result is `None` without AX permission; we only care that it returns
+        // and does so well within a small multiple of the messaging timeout.
+        let _ = MacOsNativeAccessibility::extract_raw();
+        let elapsed = start.elapsed();
+
+        // A healthy or permission-denied system-wide query resolves near
+        // instantly; even a degraded one is capped by AX_MESSAGING_TIMEOUT_SECS
+        // per query. Allow generous slack for CI scheduling jitter.
+        let budget =
+            std::time::Duration::from_secs_f32(super::AX_MESSAGING_TIMEOUT_SECS * 3.0 + 2.0);
+        assert!(
+            elapsed < budget,
+            "extract_raw must be bounded by the AX messaging timeout (elapsed: {elapsed:?}, budget: {budget:?})"
+        );
     }
 }

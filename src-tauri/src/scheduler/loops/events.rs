@@ -22,7 +22,7 @@ impl Scheduler {
     ) -> tokio::task::JoinHandle<()> {
         let proc_mon9 = self.process_monitor.clone();
         let storage9 = self.storage.clone();
-        // #4803: egress 감사 원장 기록용 SchedulerStorage 핸들.
+        // #4803: SchedulerStorage handle for writing the egress audit ledger.
         let sqlite9 = self.sqlite_storage.clone();
         let uploader9 = self.batch_sink.clone();
         let input_collector9 = input_collector;
@@ -53,9 +53,17 @@ impl Scheduler {
             .as_ref()
             .map(|cm| cm.get().file_access.clone())
             .unwrap_or_default();
-        let file_watcher = Arc::new(maekon_monitor::file_access::FileAccessWatcher::new(
-            file_access_config,
-        ));
+        // review4 monitor (#6298): wire the same PII sanitizer the clipboard
+        // monitor above uses, so emitted file paths/filenames (Resume_JohnDoe.pdf,
+        // 2024_TaxReturn.xlsx) are masked before reaching SQLite/logs/upload.
+        // Previously the watcher was constructed via `new` only, so its filter had
+        // no sanitizer and emitted raw filenames.
+        let file_access_sanitizer: Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer> =
+            Arc::new(maekon_vision::privacy::VisionPiiSanitizer);
+        let file_watcher = Arc::new(
+            maekon_monitor::file_access::FileAccessWatcher::new(file_access_config)
+                .with_pii_sanitizer(file_access_sanitizer, clipboard_pii_level),
+        );
 
         tokio::spawn(async move {
             let mut process_interval =
@@ -67,24 +75,27 @@ impl Scheduler {
                 tokio::select! {
                     _ = process_interval.tick() => {
                         // Row 7: 4-term composite gate (CONS-PC02 / D13).
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // effective_permissions() returns permissions only in the Valid state —
+                        // Expired/UpdateRequired return all-false, so a stale consent record is
+                        // also fail-closed (Task 3).
                         let consent = consent9.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused9.load(Ordering::Relaxed);
                         let permitted = config9.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !permitted {
                             debug!("event_snapshot(process): capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
                         }
-                        // Own-field gate: process 스냅샷 수집은 process_monitoring 동의가 있어야 한다.
-                        // 복합 게이트(screen_capture 등 monitoring 번들)만 부여돼도 process_monitoring
-                        // 은 기본 false 이므로 프로세스는 수집되지 않는다. CRITICAL: 여기서 읽는 값은
-                        // ConsentPermissions 의 process_monitoring 이지 MonitorConfig 의 동명 토글이 아니다
-                        // (effective_permissions() 는 Valid 일 때만 true 를 반환 — 스테일 동의도 fail-closed).
+                        // Own-field gate: process-snapshot collection requires process_monitoring
+                        // consent. Even if only the composite gate (a monitoring bundle such as
+                        // screen_capture) is granted, process_monitoring defaults to false, so
+                        // processes are not collected. CRITICAL: the value read here is
+                        // ConsentPermissions.process_monitoring, not the identically named
+                        // MonitorConfig toggle (effective_permissions() returns true only when
+                        // Valid — stale consent is also fail-closed).
                         if !consent.process_monitoring {
                             debug!("event_snapshot(process): process_monitoring own-field gate closed — skipping tick");
                             continue;
@@ -109,7 +120,7 @@ impl Scheduler {
                                 }
 
                                 if let Some(ref sink) = uploader9 {
-                                    // #4803: egress 감사 (uploaded/blocked).
+                                    // #4803: egress audit (uploaded/blocked).
                                     let etype = super::super::config::egress_event_type(&event);
                                     let bytes = super::super::config::egress_byte_count(&event);
                                     let consent_state = egress9.consent_state_snapshot();
@@ -117,11 +128,11 @@ impl Scheduler {
                                         sink.enqueue(upload_event);
                                         super::super::config::record_event_egress(
                                             &sqlite9, etype, bytes, "uploaded", &consent_state,
-                                        );
+                                        ).await;
                                     } else {
                                         super::super::config::record_event_egress(
                                             &sqlite9, etype, bytes, "blocked", &consent_state,
-                                        );
+                                        ).await;
                                     }
                                 }
 
@@ -134,27 +145,29 @@ impl Scheduler {
                     }
                     _ = input_interval.tick() => {
                         // Rows 8-10: 4-term composite gate — input, clipboard, file-access
-                        // 이 블록 안의 세 하위 분기(input/clipboard/file)는 복합 게이트를 공유하지만,
-                        // 그 위에 각자 own-field 게이트(input_activity / clipboard_monitoring /
-                        // file_access_monitoring)를 추가로 얹어 per-field 로 정직하게 결정한다
-                        // (CONS-PC02 / D13).
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // The three sub-branches in this block (input/clipboard/file) share the
+                        // composite gate, but each adds its own-field gate on top
+                        // (input_activity / clipboard_monitoring / file_access_monitoring) to
+                        // decide honestly per-field (CONS-PC02 / D13).
+                        // effective_permissions() returns permissions only in the Valid state —
+                        // Expired/UpdateRequired return all-false, so a stale consent record is
+                        // also fail-closed (Task 3).
                         let consent = consent9.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused9.load(Ordering::Relaxed);
                         let permitted = config9.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !permitted {
                             debug!("event_snapshot(input/clipboard/file): capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
                         }
 
-                        // Own-field gate: 입력 활동 수집은 input_activity 동의가 있어야 한다.
-                        // CRITICAL: ConsentPermissions 의 input_activity 이지 MonitorConfig 의 동명
-                        // 토글이 아니다 (config 토글로 게이트하면 의미가 없어진다).
+                        // Own-field gate: input-activity collection requires input_activity
+                        // consent. CRITICAL: this is ConsentPermissions.input_activity, not the
+                        // identically named MonitorConfig toggle (gating on the config toggle
+                        // would be meaningless).
                         if consent.input_activity {
                             let input_event = input_collector9.take_snapshot();
 
@@ -168,7 +181,7 @@ impl Scheduler {
                                 }
 
                                 if let Some(ref sink) = uploader9 {
-                                    // #4803: egress 감사 (uploaded/blocked).
+                                    // #4803: egress audit (uploaded/blocked).
                                     let etype = super::super::config::egress_event_type(&event);
                                     let bytes = super::super::config::egress_byte_count(&event);
                                     let consent_state = egress9.consent_state_snapshot();
@@ -176,20 +189,22 @@ impl Scheduler {
                                         sink.enqueue(upload_event);
                                         super::super::config::record_event_egress(
                                             &sqlite9, etype, bytes, "uploaded", &consent_state,
-                                        );
+                                        ).await;
                                     } else {
                                         super::super::config::record_event_egress(
                                             &sqlite9, etype, bytes, "blocked", &consent_state,
-                                        );
+                                        ).await;
                                     }
                                 }
                             }
                         }
 
-                        // Own-field gate: clipboard 수집은 clipboard_monitoring 동의가 있어야 한다.
-                        // 복합 게이트(screen_capture 등 monitoring 번들)만 부여돼도 clipboard_monitoring
-                        // 은 기본 false 이므로 클립보드는 수집되지 않는다 → Clipboard 레코드 필드가 정직해진다.
-                        // (effective_permissions() 는 Valid 일 때만 true 를 반환 — 스테일 동의도 fail-closed.)
+                        // Own-field gate: clipboard collection requires clipboard_monitoring
+                        // consent. Even if only the composite gate (a monitoring bundle such as
+                        // screen_capture) is granted, clipboard_monitoring defaults to false, so
+                        // the clipboard is not collected → the Clipboard record fields stay honest.
+                        // (effective_permissions() returns true only when Valid — stale consent is
+                        // also fail-closed.)
                         if consent.clipboard_monitoring {
                             // Poll clipboard for changes (non-blocking on macOS/Linux/Windows).
                             // Runs on the same cadence as input activity collection.
@@ -209,8 +224,9 @@ impl Scheduler {
                             }
                         }
 
-                        // Own-field gate: file-access 수집은 file_access_monitoring 동의가 있어야 한다.
-                        // 기본 false 이므로 monitoring 번들만 부여된 상태에서는 파일 변경이 수집되지 않는다.
+                        // Own-field gate: file-access collection requires file_access_monitoring
+                        // consent. It defaults to false, so file changes are not collected when
+                        // only a monitoring bundle is granted.
                         if consent.file_access_monitoring {
                             // Poll monitored directories for file changes.
                             let fw = file_watcher.clone();
@@ -275,26 +291,32 @@ impl Scheduler {
     }
 }
 
-/// clipboard/file-access own-field 게이트의 동의 결정 흐름 단위 테스트.
+/// Unit tests for the consent-decision flow of the clipboard/file-access
+/// own-field gates.
 ///
-/// `spawn_event_snapshot_loop` 의 input tick 은 복합 게이트(`capture_permitted_now`)를
-/// 통과한 뒤, clipboard/file-access 수집을 각각 `consent.clipboard_monitoring` /
-/// `consent.file_access_monitoring` own-field 로 추가 게이트한다. 여기서 `consent` 는
-/// `ConsentManager::effective_permissions()` 의 반환값이다.
+/// After the input tick of `spawn_event_snapshot_loop` passes the composite
+/// gate (`capture_permitted_now`), it additionally gates clipboard/file-access
+/// collection on the `consent.clipboard_monitoring` / `consent.file_access_monitoring`
+/// own-fields. Here `consent` is the return value of
+/// `ConsentManager::effective_permissions()`.
 ///
-/// 전체 Scheduler 를 구성하는 것은 과도하므로(loop 는 16개 포트 + tokio 런타임을 요구),
-/// 분기를 직접 게이트하는 *동의 값 흐름* 을 검증한다: monitoring 번들(`screen_capture` 등)
-/// 만 부여돼도 clipboard/file own-field 는 기본 false 이므로 분기가 진입하지 않아야 하고,
-/// 명시적으로 부여하면 진입해야 한다. 이는 동어반복이 아니다 — (1) monitoring 번들이
-/// clipboard/file 필드를 암묵적으로 켜지 않음, (2) Valid 게이팅 + 필드 기본값 배선이
-/// 정직한 per-field 결정을 만들어냄을 증명한다. 실제 분기 배선
-/// (`if consent.clipboard_monitoring { poll... }`)은 컴파일 + 코드 구조로 보증된다.
+/// Constructing a full Scheduler is excessive (the loop requires 16 ports + a
+/// tokio runtime), so we verify the *consent-value flow* that directly gates
+/// the branches: even when only a monitoring bundle (e.g. `screen_capture`) is
+/// granted, the clipboard/file own-fields default to false, so the branch must
+/// not be entered; granting them explicitly must enter it. This is not a
+/// tautology — it proves (1) a monitoring bundle does not implicitly turn on
+/// the clipboard/file fields, and (2) Valid gating + the field-default wiring
+/// produce an honest per-field decision. The actual branch wiring
+/// (`if consent.clipboard_monitoring { poll... }`) is guaranteed by compilation
+/// + code structure.
 #[cfg(test)]
 mod own_field_gate_tests {
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
     use std::sync::Arc;
 
-    /// 테스트용 고유 임시 동의 파일 경로 (system.rs 의 tmp_path 패턴과 동일).
+    /// Unique temporary consent-file path for tests (same as the tmp_path
+    /// pattern in system.rs).
     fn tmp_consent_path(suffix: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -303,44 +325,47 @@ mod own_field_gate_tests {
         std::env::temp_dir().join(format!("maekon_events_test_{nonce}_{suffix}"))
     }
 
-    /// 주어진 권한으로 30일 유효 동의를 부여한 ConsentManager 를 만든다.
+    /// Build a ConsentManager that has granted 30-day-valid consent with the
+    /// given permissions.
     fn granted(perms: ConsentPermissions, suffix: &str) -> Arc<ConsentManager> {
         let mgr = Arc::new(ConsentManager::new(tmp_consent_path(suffix)));
-        mgr.grant_consent(perms, 30).expect("동의 부여 실패");
+        mgr.grant_consent(perms, 30).expect("grant_consent failed");
         mgr
     }
 
-    /// input tick 이 분기 게이트에 사용하는 값과 동일하게 effective_permissions 를 읽는다.
+    /// Read effective_permissions exactly as the input tick uses it for the
+    /// branch gates.
     fn effective(mgr: &Arc<ConsentManager>) -> ConsentPermissions {
         mgr.effective_permissions()
     }
 
-    /// monitoring 번들만(`screen_capture:true`) 부여 + `clipboard_monitoring:false`:
-    /// 복합 게이트는 통과(screen_capture=true)하지만 clipboard 분기는 진입하지 않아야 한다.
+    /// Only the monitoring bundle (`screen_capture:true`) granted +
+    /// `clipboard_monitoring:false`: the composite gate passes
+    /// (screen_capture=true), but the clipboard branch must not be entered.
     #[test]
     fn clipboard_not_collected_with_only_monitoring_bundle() {
         let mgr = granted(
             ConsentPermissions {
                 screen_capture: true,
-                // clipboard_monitoring 은 명시하지 않음 → 기본 false
+                // clipboard_monitoring not specified → defaults to false
                 ..Default::default()
             },
             "clip_off.json",
         );
         let consent = effective(&mgr);
-        // 복합 게이트 입력(monitoring 번들)은 켜져 있다.
+        // The composite-gate input (monitoring bundle) is on.
         assert!(
             consent.screen_capture,
-            "monitoring 번들은 부여됨 — 복합 게이트는 통과"
+            "monitoring bundle is granted — composite gate passes"
         );
-        // 하지만 own-field 는 꺼져 있으므로 clipboard 분기는 진입하지 않는다.
+        // But the own-field is off, so the clipboard branch is not entered.
         assert!(
             !consent.clipboard_monitoring,
-            "clipboard_monitoring 미부여 시 clipboard 분기는 게이트 닫힘 (수집 안 됨)"
+            "without clipboard_monitoring the clipboard branch is gated off (not collected)"
         );
     }
 
-    /// `clipboard_monitoring:true` 를 명시 부여하면 clipboard 분기가 진입해야 한다.
+    /// Granting `clipboard_monitoring:true` explicitly must enter the clipboard branch.
     #[test]
     fn clipboard_collected_when_own_field_granted() {
         let mgr = granted(
@@ -353,12 +378,12 @@ mod own_field_gate_tests {
         );
         assert!(
             effective(&mgr).clipboard_monitoring,
-            "clipboard_monitoring 부여 시 clipboard 분기 진입 (수집됨)"
+            "with clipboard_monitoring granted the clipboard branch is entered (collected)"
         );
     }
 
-    /// monitoring 번들만 부여 + `file_access_monitoring:false`:
-    /// file-access 분기는 진입하지 않아야 한다.
+    /// Only the monitoring bundle granted + `file_access_monitoring:false`:
+    /// the file-access branch must not be entered.
     #[test]
     fn file_access_not_collected_with_only_monitoring_bundle() {
         let mgr = granted(
@@ -369,14 +394,14 @@ mod own_field_gate_tests {
             "file_off.json",
         );
         let consent = effective(&mgr);
-        assert!(consent.screen_capture, "복합 게이트는 통과");
+        assert!(consent.screen_capture, "composite gate passes");
         assert!(
             !consent.file_access_monitoring,
-            "file_access_monitoring 미부여 시 file-access 분기는 게이트 닫힘 (수집 안 됨)"
+            "without file_access_monitoring the file-access branch is gated off (not collected)"
         );
     }
 
-    /// `file_access_monitoring:true` 를 명시 부여하면 file-access 분기가 진입해야 한다.
+    /// Granting `file_access_monitoring:true` explicitly must enter the file-access branch.
     #[test]
     fn file_access_collected_when_own_field_granted() {
         let mgr = granted(
@@ -389,31 +414,32 @@ mod own_field_gate_tests {
         );
         assert!(
             effective(&mgr).file_access_monitoring,
-            "file_access_monitoring 부여 시 file-access 분기 진입 (수집됨)"
+            "with file_access_monitoring granted the file-access branch is entered (collected)"
         );
     }
 
-    /// #4802 process_monitoring own-field 게이트: monitoring 번들만(`screen_capture:true`)
-    /// 부여돼도 process_monitoring 은 기본 false 이므로 process 분기는 진입하지 않아야 한다.
+    /// #4802 process_monitoring own-field gate: even when only the monitoring
+    /// bundle (`screen_capture:true`) is granted, process_monitoring defaults to
+    /// false, so the process branch must not be entered.
     #[test]
     fn process_not_collected_with_only_monitoring_bundle() {
         let mgr = granted(
             ConsentPermissions {
                 screen_capture: true,
-                // process_monitoring 은 명시하지 않음 → 기본 false
+                // process_monitoring not specified → defaults to false
                 ..Default::default()
             },
             "proc_off.json",
         );
         let consent = effective(&mgr);
-        assert!(consent.screen_capture, "복합 게이트는 통과");
+        assert!(consent.screen_capture, "composite gate passes");
         assert!(
             !consent.process_monitoring,
-            "process_monitoring 미부여 시 process 분기는 게이트 닫힘 (수집 안 됨)"
+            "without process_monitoring the process branch is gated off (not collected)"
         );
     }
 
-    /// #4802: `process_monitoring:true` 명시 부여 시 process 분기가 진입해야 한다.
+    /// #4802: granting `process_monitoring:true` explicitly must enter the process branch.
     #[test]
     fn process_collected_when_own_field_granted() {
         let mgr = granted(
@@ -426,12 +452,13 @@ mod own_field_gate_tests {
         );
         assert!(
             effective(&mgr).process_monitoring,
-            "process_monitoring 부여 시 process 분기 진입 (수집됨)"
+            "with process_monitoring granted the process branch is entered (collected)"
         );
     }
 
-    /// #4802 input_activity own-field 게이트: monitoring 번들만 부여돼도 input_activity
-    /// 는 기본 false 이므로 input 분기는 진입하지 않아야 한다.
+    /// #4802 input_activity own-field gate: even when only the monitoring bundle
+    /// is granted, input_activity defaults to false, so the input branch must
+    /// not be entered.
     #[test]
     fn input_not_collected_with_only_monitoring_bundle() {
         let mgr = granted(
@@ -442,14 +469,14 @@ mod own_field_gate_tests {
             "input_off.json",
         );
         let consent = effective(&mgr);
-        assert!(consent.screen_capture, "복합 게이트는 통과");
+        assert!(consent.screen_capture, "composite gate passes");
         assert!(
             !consent.input_activity,
-            "input_activity 미부여 시 input 분기는 게이트 닫힘 (수집 안 됨)"
+            "without input_activity the input branch is gated off (not collected)"
         );
     }
 
-    /// #4802: `input_activity:true` 명시 부여 시 input 분기가 진입해야 한다.
+    /// #4802: granting `input_activity:true` explicitly must enter the input branch.
     #[test]
     fn input_collected_when_own_field_granted() {
         let mgr = granted(
@@ -462,13 +489,14 @@ mod own_field_gate_tests {
         );
         assert!(
             effective(&mgr).input_activity,
-            "input_activity 부여 시 input 분기 진입 (수집됨)"
+            "with input_activity granted the input branch is entered (collected)"
         );
     }
 
-    /// #4802 스테일 동의 fail-closed: process_monitoring/input_activity 가 true 라도
-    /// 만료된 레코드는 effective_permissions() 가 all-false 를 반환하므로 두 분기 모두
-    /// 닫혀야 한다 (own-field 게이트가 Valid 게이팅 위에 올라타 있음).
+    /// #4802 stale-consent fail-closed: even if process_monitoring/input_activity
+    /// are true, an expired record makes effective_permissions() return all-false,
+    /// so both branches must be closed (the own-field gate rides on top of Valid
+    /// gating).
     #[test]
     fn expired_consent_closes_process_and_input_branches_even_if_fields_true() {
         use maekon_core::consent::{ConsentRecord, CURRENT_POLICY_VERSION};
@@ -494,17 +522,17 @@ mod own_field_gate_tests {
         let consent = effective(&mgr);
         assert!(
             !consent.process_monitoring,
-            "만료 동의는 process_monitoring:true 이더라도 fail-closed"
+            "expired consent is fail-closed even with process_monitoring:true"
         );
         assert!(
             !consent.input_activity,
-            "만료 동의는 input_activity:true 이더라도 fail-closed"
+            "expired consent is fail-closed even with input_activity:true"
         );
     }
 
-    /// 스테일 동의 fail-closed: `clipboard_monitoring:true` 이지만 만료된 레코드는
-    /// effective_permissions() 가 all-false 를 반환하므로 clipboard 분기가 닫혀야 한다.
-    /// (own-field 게이트가 Valid 게이팅 위에 올라타 있음을 증명.)
+    /// Stale-consent fail-closed: with `clipboard_monitoring:true` but an expired
+    /// record, effective_permissions() returns all-false, so the clipboard branch
+    /// must be closed. (Proves the own-field gate rides on top of Valid gating.)
     #[test]
     fn expired_consent_closes_clipboard_branch_even_if_field_true() {
         use maekon_core::consent::{ConsentRecord, CURRENT_POLICY_VERSION};
@@ -519,7 +547,7 @@ mod own_field_gate_tests {
             erasure_nonce: None,
             permissions: ConsentPermissions {
                 screen_capture: true,
-                clipboard_monitoring: true, // 필드는 켜졌으나 레코드가 만료됨
+                clipboard_monitoring: true, // field is on, but the record is expired
                 ..Default::default()
             },
             data_retention_days: 30,
@@ -528,7 +556,7 @@ mod own_field_gate_tests {
         let mgr = Arc::new(ConsentManager::new(path));
         assert!(
             !effective(&mgr).clipboard_monitoring,
-            "만료 동의는 clipboard_monitoring:true 이더라도 fail-closed (분기 닫힘)"
+            "expired consent is fail-closed even with clipboard_monitoring:true (branch closed)"
         );
     }
 }

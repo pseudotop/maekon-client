@@ -330,6 +330,81 @@ mod tests {
         assert!(!mismatched);
     }
 
+    /// Regression: a surface_id-less rule keyed on one Generic-family vendor
+    /// (`openrouter`) must NOT match a call for a different Generic-family vendor
+    /// (`together`), even though both collapse onto `AiProviderType::Generic`.
+    #[test]
+    fn generic_family_rule_does_not_match_other_generic_vendor() {
+        let openrouter_rule = warn_then_block_rule(
+            "openrouter",
+            "some-shared-model",
+            Some("2025-01-01T00:00:00Z"),
+            Some("2026-01-01T00:00:00Z"),
+            None,
+        );
+
+        // Caller is `together` (also Generic family) via its surface_id.
+        let matches_other_vendor = provider_rule_matches(
+            AiProviderType::Generic,
+            Some("provider_surface.together.direct_api"),
+            &openrouter_rule,
+        );
+        assert!(
+            !matches_other_vendor,
+            "openrouter rule must not match a together call (generic-family collapse)"
+        );
+
+        // Same rule DOES match the matching vendor's surface_id.
+        let matches_same_vendor = provider_rule_matches(
+            AiProviderType::Generic,
+            Some("provider_surface.openrouter.direct_api"),
+            &openrouter_rule,
+        );
+        assert!(
+            matches_same_vendor,
+            "openrouter rule must match an openrouter call"
+        );
+    }
+
+    /// A vendor-specific Generic-family rule cannot be confirmed against a caller
+    /// that supplies no surface_id, so it must not match.
+    #[test]
+    fn generic_family_rule_requires_surface_id_to_match() {
+        let openrouter_rule = block_rule("openrouter", "retired-model", None);
+
+        let matches_without_surface =
+            provider_rule_matches(AiProviderType::Generic, None, &openrouter_rule);
+        assert!(
+            !matches_without_surface,
+            "generic-family rule must not match when the caller vendor is unknown"
+        );
+    }
+
+    /// A vendor-precise Generic rule still matches the catch-all `generic`
+    /// vendor only when the caller's surface also resolves to `generic`, so the
+    /// family-wide rule and a sibling vendor never collide.
+    #[test]
+    fn generic_catch_all_rule_only_matches_generic_vendor() {
+        let generic_rule = block_rule("generic", "shared-model-name", None);
+
+        let matches_generic = provider_rule_matches(
+            AiProviderType::Generic,
+            Some("provider_surface.generic.direct_api"),
+            &generic_rule,
+        );
+        assert!(matches_generic, "generic rule must match a generic call");
+
+        let matches_sibling = provider_rule_matches(
+            AiProviderType::Generic,
+            Some("provider_surface.together.direct_api"),
+            &generic_rule,
+        );
+        assert!(
+            !matches_sibling,
+            "generic rule must not match a together call"
+        );
+    }
+
     #[test]
     fn unknown_model_is_allowed() {
         let decision =

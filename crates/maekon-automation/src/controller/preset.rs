@@ -1,11 +1,15 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crate::controller::gate::WORKFLOW_STEP_POLICY_TOKEN;
+use crate::controller::gate::{audit_action_label, WORKFLOW_STEP_POLICY_TOKEN};
+use crate::controller::intent::audit_intent_label;
 use crate::error::AutomationError;
 use crate::policy::AuditLevel;
+use maekon_core::config::ConfirmationRequirement;
 #[cfg(test)]
 use maekon_core::config::SandboxConfig;
+use maekon_core::models::audit::AuditStatus;
+use maekon_core::models::automation::CommandOrigin;
 use maekon_core::models::intent::{IntentCommand, WorkflowPreset};
 
 use super::types::{AutomationCommand, CommandResult, WorkflowResult, WorkflowStepResult};
@@ -17,6 +21,27 @@ impl AutomationController {
         preset: &WorkflowPreset,
     ) -> Result<WorkflowResult, AutomationError> {
         self.ensure_enabled()?;
+
+        // Honor the user's confirmation policy for the whole workflow (review4 A11):
+        // run_workflow previously ignored it, so a Block/Confirm setting was silently
+        // bypassed for custom presets that may carry arbitrary Raw input synthesis.
+        match self.confirmation_policy {
+            ConfirmationRequirement::Block => return Err(AutomationError::PolicyBlocked),
+            ConfirmationRequirement::Confirm => {
+                let action_label = format!(
+                    "workflow preset: {} ({} steps)",
+                    preset.id,
+                    preset.steps.len()
+                );
+                let approved = self
+                    .request_confirmation(&preset.id, "workflow-step", &[action_label], "CONFIRM")
+                    .await?;
+                if !approved {
+                    return Err(AutomationError::UserDenied);
+                }
+            }
+            ConfirmationRequirement::Auto => {}
+        }
 
         let total_steps = preset.steps.len();
         let mut step_results = Vec::with_capacity(total_steps);
@@ -31,7 +56,13 @@ impl AutomationController {
 
         for (idx, step) in preset.steps.iter().enumerate() {
             if idx > 0 && step.delay_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(step.delay_ms)).await;
+                // Clamp the (untrusted-config) inter-step delay so a malformed preset
+                // cannot hang a step effectively forever (review4 A19).
+                const MAX_STEP_DELAY_MS: u64 = 60_000;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    step.delay_ms.min(MAX_STEP_DELAY_MS),
+                ))
+                .await;
             }
 
             let step_cmd_id = format!("{}:step-{}", preset.id, idx);
@@ -42,6 +73,7 @@ impl AutomationController {
                 config: None,
                 timeout_ms: None,
                 policy_token: WORKFLOW_STEP_POLICY_TOKEN.to_string(),
+                origin: CommandOrigin::Internal,
             };
             let executor = self.scoped_intent_executor(&intent_command)?;
 
@@ -51,7 +83,14 @@ impl AutomationController {
                     AuditLevel::Basic,
                     &step_cmd_id,
                     &preset.id,
-                    &format!("step[{}] {}: {:?}", idx, step.name, step.intent),
+                    // text_len-redacted (review4 A5): raw step.intent Debug embeds
+                    // free-form TypeIntoElement/KeyType text (secrets).
+                    &format!(
+                        "step[{}] {}: {}",
+                        idx,
+                        step.name,
+                        audit_intent_label(&step.intent)
+                    ),
                 );
             }
 
@@ -63,10 +102,18 @@ impl AutomationController {
                 Ok(intent_result) => {
                     {
                         let mut logger = self.audit_logger.write().await;
-                        logger.log_complete_with_time(
+                        // Record the real step status (review4 A1).
+                        let (action_type, status) = if intent_result.success {
+                            ("complete", AuditStatus::Completed)
+                        } else {
+                            ("failed", AuditStatus::Failed)
+                        };
+                        logger.log_with_status_and_time(
                             AuditLevel::Basic,
                             &step_cmd_id,
                             &preset.id,
+                            action_type,
+                            status,
                             &format!(
                                 "step[{}] success={}, elapsed={}ms",
                                 idx, intent_result.success, step_elapsed
@@ -103,10 +150,12 @@ impl AutomationController {
                 Err(e) => {
                     {
                         let mut logger = self.audit_logger.write().await;
-                        logger.log_complete_with_time(
+                        logger.log_with_status_and_time(
                             AuditLevel::Basic,
                             &step_cmd_id,
                             &preset.id,
+                            "failed",
+                            AuditStatus::Failed,
                             &format!("step[{}] error: {}", idx, e),
                             step_elapsed,
                         );
@@ -190,6 +239,16 @@ impl AutomationController {
         {
             match policy.confirmation {
                 maekon_core::config::ConfirmationRequirement::Block => {
+                    // Audit the policy-level Block denial so it is observable on the
+                    // same footing as the policy-allow path (gate.rs records allows
+                    // and validate_command denials). Without this, Block denials were
+                    // silently dropped from the audit trail.
+                    let mut logger = self.audit_logger.write().await;
+                    logger.log_denied(
+                        &cmd.command_id,
+                        &cmd.session_id,
+                        &audit_action_label(&cmd.action),
+                    );
                     return Ok(CommandResult::Denied);
                 }
                 maekon_core::config::ConfirmationRequirement::Confirm => {
@@ -202,6 +261,14 @@ impl AutomationController {
                         )
                         .await?;
                     if !approved {
+                        // Audit the user-denied confirmation, mirroring the Block
+                        // branch above and the gate.rs denial path.
+                        let mut logger = self.audit_logger.write().await;
+                        logger.log_denied(
+                            &cmd.command_id,
+                            &cmd.session_id,
+                            &audit_action_label(&cmd.action),
+                        );
                         return Ok(CommandResult::Denied);
                     }
                 }

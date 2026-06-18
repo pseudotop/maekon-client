@@ -12,7 +12,6 @@ use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{Notify, RwLock};
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use maekon_api_contracts::provider_specs::{default_surface_model, provider_surface_spec};
@@ -30,7 +29,8 @@ use crate::session_adapters::prompt_payload::{
 use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
     append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
-    sanitize_subprocess_error_output, DetectedSubprocessCli, SubprocessKind,
+    sanitize_subprocess_error_output, write_prompt_and_collect_output, DetectedSubprocessCli,
+    SubprocessKind,
 };
 use tracing::debug;
 
@@ -157,28 +157,16 @@ impl GenericSubprocessSession {
         append_oneshot_flags(&mut child, &self.surface.surface_id);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
 
-        let mut child = child.spawn().map_err(|err| CoreError::Internal {
+        let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("Failed to spawn Codex session subprocess: {err}"),
         })?;
 
-        let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Internal {
-            code: maekon_core::error_codes::InternalCode::Generic,
-            message: "Failed to open stdin for Codex session subprocess".to_string(),
-        })?;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(CoreError::Io)?;
-        drop(stdin);
-
-        let output = timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        // #6266: bounded stdin write + output collection with concurrent pipe
+        // draining (avoids the stdin/stdout deadlock the prior bare write+timeout
+        // allowed; same fix as the one-shot subprocess_provider sites).
+        let output =
+            write_prompt_and_collect_output(child, prompt, "Codex session", self.timeout).await?;
 
         if !output.status.success() {
             return Err(classify_subprocess_error_with_redactions(
@@ -199,23 +187,29 @@ impl GenericSubprocessSession {
         })?;
 
         let mut command = Command::new(&self.surface.executable_path);
+        // Pass `-` as the prompt argument so the Gemini CLI reads the prompt
+        // from stdin, keeping PII (history + context + attachment previews) out
+        // of the process table (ps/Activity Monitor /proc/cmdline). Mirrors the
+        // one-shot `run_gemini` stdin contract.
         command
             .arg("-p")
-            .arg(prompt)
+            .arg("-")
             .current_dir(temp_dir.path())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_oneshot_flags(&mut command, &self.surface.surface_id);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
-        let output = timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        let child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Gemini session subprocess: {err}"),
+        })?;
+
+        // #6266: bounded stdin write + output collection (see run_codex).
+        let output =
+            write_prompt_and_collect_output(child, prompt, "Gemini session", self.timeout).await?;
 
         if !output.status.success() {
             return Err(classify_subprocess_error_with_redactions(
@@ -298,11 +292,18 @@ impl GenericSubprocessSession {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: "Failed to open stdin for Codex session subprocess".to_string(),
         })?;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(CoreError::Io)?;
-        drop(stdin);
+        // #6266: write the prompt to stdin CONCURRENTLY with the stdout/stderr
+        // draining below. Writing it inline here (before the stream loop starts
+        // consuming stdout) could deadlock if the child fills its stdout/stderr
+        // pipe before it finishes reading stdin. The writer task is moved into the
+        // stream so it lives for the stream's duration and is aborted on drop.
+        let prompt_bytes = prompt.as_bytes().to_vec();
+        let stdin_writer = AbortOnDropJoin::new(tokio::spawn(async move {
+            // Ignore write errors: an early-exiting child closes the pipe
+            // (BrokenPipe), surfaced via its exit status/stderr instead.
+            let _ = stdin.write_all(&prompt_bytes).await;
+            // `stdin` drops here, closing the pipe (EOF) so the child can finish.
+        }));
 
         let stdout = child.stdout.take().ok_or_else(|| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -324,6 +325,10 @@ impl GenericSubprocessSession {
 
         let stream: ResponseStream = Box::pin(try_stream! {
             let _temp_dir = temp_dir;
+            // #6266: keep the concurrent stdin writer alive for the stream's
+            // lifetime (aborted on drop) — it drains the prompt into the child
+            // while the loop below drains stdout, avoiding the pipe deadlock.
+            let _stdin_writer = stdin_writer;
             let mut lines = tokio::io::BufReader::new(stdout).lines();
             let deadline = tokio::time::Instant::now() + timeout;
             let stderr_task = AbortOnDropJoin::new(tokio::spawn(async move {
@@ -815,7 +820,7 @@ fn truncate_history(history: &mut Vec<ChatMessage>, max_turns: u32) {
 mod tests {
     use super::*;
     use maekon_core::models::ai_session::{MessageContext, MessageRole};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn truncate_history_keeps_latest_turns_without_system_header() {
@@ -1157,6 +1162,94 @@ mod tests {
             gemini.invocation_mode(),
             SubprocessInvocationMode::GeminiCliPrompt
         );
+    }
+
+    /// Security regression (#6084): the Gemini conversation session must
+    /// deliver the rendered prompt over stdin (`-p -`), never as a bare argv
+    /// argument visible in the process table. The fake CLI exits non-zero if
+    /// the prompt slot after `-p` is anything other than the `-` stdin
+    /// sentinel, and echoes the stdin-delivered prompt back so the test can
+    /// confirm it actually arrived there.
+    #[tokio::test]
+    async fn gemini_session_delivers_prompt_via_stdin_not_argv() {
+        let temp_dir = tempdir().expect("tempdir");
+        let executable_path = write_fake_gemini_session_cli(temp_dir.path());
+        let session = GenericSubprocessSession {
+            session_id: "test".to_string(),
+            surface: DetectedSubprocessCli {
+                surface_id: "provider_surface.google.subprocess_cli".to_string(),
+                executable_path,
+            },
+            invocation_mode:
+                maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt,
+            provider_name: "google".to_string(),
+            model: "gemini-2.5-pro".to_string(),
+            system_prompt: None,
+            default_tools: None,
+            history: Arc::new(RwLock::new(Vec::new())),
+            state: Mutex::new(SessionState::Active),
+            turn_count: AtomicU32::new(0),
+            created_at: Utc::now(),
+            last_active: Mutex::new(Instant::now()),
+            timeout: Duration::from_secs(30),
+            max_history_turns: 8,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
+        };
+
+        let prompt = "Gemini session prompt with spaces && | metacharacters via stdin";
+        let output = session
+            .run_gemini(prompt)
+            .await
+            .expect("fake Gemini CLI should receive prompt via stdin");
+        assert_eq!(output, format!("STDIN_OK:{prompt}"));
+    }
+
+    fn write_fake_gemini_session_cli(base_dir: &Path) -> PathBuf {
+        let bin_dir = base_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("fake cli dir");
+        let source_path = bin_dir.join("fake_gemini_session.rs");
+        let executable_path = bin_dir.join(if cfg!(windows) {
+            "gemini.exe"
+        } else {
+            "gemini"
+        });
+        std::fs::write(
+            &source_path,
+            r##"
+use std::io::Read;
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // The prompt slot after -p must be the "-" stdin sentinel, never the raw
+    // prompt (which would leak into the process table).
+    let prompt_slot_index = args
+        .iter()
+        .position(|arg| arg == "-p")
+        .and_then(|index| index.checked_add(1))
+        .expect("prompt index");
+    let prompt_slot = args.get(prompt_slot_index).expect("prompt slot");
+    if prompt_slot != "-" {
+        eprintln!("expected stdin sentinel '-' after -p, got: {prompt_slot}");
+        std::process::exit(10);
+    }
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt).expect("stdin");
+    print!("STDIN_OK:{prompt}");
+}
+"##,
+        )
+        .expect("fake cli source");
+
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let status = std::process::Command::new(rustc)
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&executable_path)
+            .status()
+            .expect("compile fake cli");
+        assert!(status.success(), "fake cli should compile");
+        executable_path
     }
 
     #[test]

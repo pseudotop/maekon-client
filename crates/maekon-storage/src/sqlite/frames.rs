@@ -10,7 +10,7 @@ use super::{FrameRecord, SqliteStorage};
 impl SqliteStorage {
     pub fn count_frames_in_range(&self, window: &TimeWindow) -> Result<u64, StorageError> {
         let (from, to) = window.to_sql_pair();
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::count_frames_in_range_inner(read.conn(), &from, &to)
     }
@@ -43,7 +43,7 @@ impl SqliteStorage {
     }
 
     pub fn get_frame_file_path(&self, frame_id: i64) -> Result<Option<String>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_frame_file_path_inner(read.conn(), frame_id)
     }
@@ -77,18 +77,18 @@ impl SqliteStorage {
         }
     }
 
-    /// 프레임 메타데이터를 SQLite에 저장한다 (window bounds 없음).
+    /// Saves frame metadata to SQLite (without window bounds).
     ///
     /// # PRECONDITION — GDPR Art. 25 (Privacy by Design)
     ///
-    /// 호출자는 저장 전에 PII 민감 필드를 반드시 sanitize해야 한다:
-    /// - `metadata.window_title` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
-    /// - `ocr_text` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
-    ///   (OCR 출력에는 이메일, 전화번호, 카드번호 등 raw PII가 포함될 수 있음)
+    /// The caller MUST sanitize PII-sensitive fields before saving:
+    /// - `metadata.window_title` — processed via `maekon_vision::privacy::sanitize_title_with_level()`
+    /// - `ocr_text` — processed via `maekon_vision::privacy::sanitize_title_with_level()`
+    ///   (OCR output may contain raw PII such as emails, phone numbers, and card numbers)
     ///
-    /// `maekon-storage`는 `maekon-vision`에 의존할 수 없으므로 (순환 의존성)
-    /// PII 필터링은 이 저장소 계층에서 수행되지 않는다.
-    /// 실제 sanitization 호출 위치: `src-tauri/src/scheduler/loops/helpers.rs`
+    /// Because `maekon-storage` cannot depend on `maekon-vision` (circular dependency),
+    /// PII filtering is not performed at this storage layer.
+    /// Actual sanitization call site: `src-tauri/src/scheduler/loops/helpers.rs`
     /// (F-PR-C20-06 — 2026-05-23)
     pub fn save_frame_metadata(
         &self,
@@ -99,18 +99,18 @@ impl SqliteStorage {
         self.save_frame_metadata_with_bounds(metadata, file_path, ocr_text, None)
     }
 
-    /// 프레임 메타데이터를 window bounds 포함하여 SQLite에 저장한다.
+    /// Saves frame metadata to SQLite, including window bounds.
     ///
     /// # PRECONDITION — GDPR Art. 25 (Privacy by Design)
     ///
-    /// 호출자는 저장 전에 PII 민감 필드를 반드시 sanitize해야 한다:
-    /// - `metadata.window_title` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
-    /// - `ocr_text` — `maekon_vision::privacy::sanitize_title_with_level()` 로 처리
-    ///   (OCR 출력에는 이메일, 전화번호, 카드번호 등 raw PII가 포함될 수 있음)
+    /// The caller MUST sanitize PII-sensitive fields before saving:
+    /// - `metadata.window_title` — processed via `maekon_vision::privacy::sanitize_title_with_level()`
+    /// - `ocr_text` — processed via `maekon_vision::privacy::sanitize_title_with_level()`
+    ///   (OCR output may contain raw PII such as emails, phone numbers, and card numbers)
     ///
-    /// `maekon-storage`는 `maekon-vision`에 의존할 수 없으므로 (순환 의존성)
-    /// PII 필터링은 이 저장소 계층에서 수행되지 않는다.
-    /// 실제 sanitization 호출 위치: `src-tauri/src/scheduler/loops/helpers.rs`
+    /// Because `maekon-storage` cannot depend on `maekon-vision` (circular dependency),
+    /// PII filtering is not performed at this storage layer.
+    /// Actual sanitization call site: `src-tauri/src/scheduler/loops/helpers.rs`
     /// (F-PR-C20-06 — 2026-05-23)
     pub fn save_frame_metadata_with_bounds(
         &self,
@@ -119,7 +119,7 @@ impl SqliteStorage {
         ocr_text: Option<&str>,
         bounds: Option<&WindowBounds>,
     ) -> Result<i64, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → id 0, frames ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set → id 0; frames ∈ ALL_TABLES).
         self.conn.write_lock().run(0i64, |conn| {
         conn.execute(
             "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image, file_path, ocr_text, window_x, window_y, window_width, window_height)
@@ -162,7 +162,7 @@ impl SqliteStorage {
         to: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_frames_inner(read.conn(), from, to, limit)
     }

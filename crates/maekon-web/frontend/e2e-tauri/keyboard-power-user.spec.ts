@@ -2,7 +2,7 @@
 
 describe('J3: Keyboard Power User', () => {
   beforeEach(async () => {
-    // 각 테스트 전 Dashboard로 이동
+    // Navigate to the Dashboard before each test
     await browser.url('tauri://localhost/')
     await $('nav[role="navigation"]').waitForExist({ timeout: 10000 })
   })
@@ -13,16 +13,16 @@ describe('J3: Keyboard Power User', () => {
    * @tauri_only_reason Cmd+W = close-to-tray (Tauri api.prevent_close()), not browser close
    */
   it('T120: Cmd+W hides window (close-to-tray)', async () => {
-    // Cmd+W 전 창 상태 확인
+    // Check the window state before Cmd+W
     const titleBefore = await browser.getTitle()
     expect(titleBefore).toContain('Maekon')
 
-    // Cmd+W 보내기
+    // Send Cmd+W
     await browser.keys(['Meta', 'w'])
     await browser.pause(1000)
 
-    // 프로세스가 여전히 실행 중인지 확인 (WebDriver 연결 유지 = 앱 살아있음)
-    // 창이 숨겨져도 WebDriver 세션은 유지됨
+    // Verify the process is still running (WebDriver connection alive = app alive)
+    // The WebDriver session is preserved even when the window is hidden
     const titleAfter = await browser.getTitle()
     expect(titleAfter).toBeDefined()
   })
@@ -39,11 +39,11 @@ describe('J3: Keyboard Power User', () => {
     await dialog.waitForExist({ timeout: 3000 })
     expect(await dialog.isDisplayed()).toBe(true)
 
-    // combobox input이 포커스를 받았는지 확인
+    // Verify the combobox input received focus
     const input = await $('input[role="combobox"]')
     expect(await input.isFocused()).toBe(true)
 
-    // 정리: Escape로 닫기
+    // Cleanup: close with Escape
     await browser.keys('Escape')
   })
 
@@ -56,16 +56,16 @@ describe('J3: Keyboard Power User', () => {
     await browser.keys(['Meta', 'k'])
     await $('input[role="combobox"]').waitForExist({ timeout: 3000 })
 
-    // "time" 입력 → Timeline 매치
+    // Type "time" → matches Timeline
     await browser.keys('time')
     await browser.pause(500)
 
-    // 첫 번째 옵션 선택
+    // Select the first option
     await browser.keys('ArrowDown')
     await browser.keys('Enter')
     await browser.pause(1000)
 
-    // URL에 /timeline 포함 확인
+    // Verify the URL contains /timeline
     const url = await browser.getUrl()
     expect(url).toContain('/timeline')
   })
@@ -99,12 +99,12 @@ describe('J3: Keyboard Power User', () => {
       await browser.pause(200)
     }
 
-    // 마지막 키 't' → /timeline
+    // Last key 't' → /timeline
     await browser.pause(1000)
     const url = await browser.getUrl()
     expect(url).toContain('/timeline')
 
-    // error-boundary 없음 확인
+    // Verify no error-boundary
     const source = await browser.getPageSource()
     expect(source).not.toContain('error-boundary')
     expect(source).not.toContain('Something went wrong')

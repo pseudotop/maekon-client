@@ -1,6 +1,7 @@
 use maekon_core::error::CoreError;
 use std::process::Command;
 
+use super::command_timeout::{command_output_with_timeout, ACCESSIBILITY_COMMAND_TIMEOUT};
 use super::types::{parse_accessibility_lines, AccessibilityNode};
 
 #[cfg(target_os = "macos")]
@@ -58,13 +59,16 @@ pub(super) fn query_macos_accessibility_nodes() -> Result<Vec<AccessibilityNode>
         end tell
     "#;
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
+    let mut command = Command::new("osascript");
+    command.arg("-e").arg(script);
+    let output = command_output_with_timeout(&mut command, ACCESSIBILITY_COMMAND_TIMEOUT)
         .map_err(|e| CoreError::ServiceUnavailable {
             code: maekon_core::error_codes::ServiceCode::Unavailable,
             message: format!("macOS AX probe launch failed: {e}"),
+        })?
+        .ok_or_else(|| CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "macOS AX probe timed out".to_string(),
         })?;
 
     if !output.status.success() {

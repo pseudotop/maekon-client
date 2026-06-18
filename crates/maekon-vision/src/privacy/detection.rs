@@ -29,13 +29,17 @@ pub fn sanitize_title_with_level(title: &str, level: PiiFilterLevel) -> String {
             result
         }
         PiiFilterLevel::Standard => {
-            // Run IBAN masking before Basic (phone masking) to avoid digit sequences
-            // in IBANs being consumed by the phone number detector.
-            let mut result = mask_iban(title);
-            result = sanitize_title_with_level(&result, PiiFilterLevel::Basic);
-            result = mask_credit_cards(&result);
+            // Mask longer / structured numeric PII (IBAN, Korean-ID, SSN, card)
+            // BEFORE phone numbers so the broadened phone scanner (review4 V2/V14,
+            // which now starts at any digit and accepts separator-less runs) cannot
+            // partially consume those values. Email is order-independent. Basic
+            // remains {email, phone}; Standard is a strict superset of it.
+            let mut result = mask_emails(title);
+            result = mask_iban(&result);
             result = mask_korean_id(&result);
             result = mask_ssn(&result);
+            result = mask_credit_cards(&result);
+            result = mask_phone_numbers(&result);
             result = mask_user_paths(&result);
             result
         }
@@ -100,6 +104,7 @@ fn marker_inserted(original: &str, masked: &str, marker: &str) -> bool {
 }
 
 pub const SENSITIVE_APP_KEYWORDS: &[&str] = &[
+    // Password managers
     "1password",
     "lastpass",
     "bitwarden",
@@ -107,6 +112,7 @@ pub const SENSITIVE_APP_KEYWORDS: &[&str] = &[
     "keepass",
     "enpass",
     "nordpass",
+    // Financial
     "bank",
     "banking",
     "wallet",
@@ -114,12 +120,46 @@ pub const SENSITIVE_APP_KEYWORDS: &[&str] = &[
     "crypto",
     "coinbase",
     "binance",
+    // 2FA / OTP apps
     "authenticator",
     "2fa",
     "otp",
+    "authy",
+    // Secrets storage
     "vault",
     "keychain",
+    // Encrypted-messaging apps
     "signal",
+    "telegram",
+    "whatsapp",
+    "threema",
+    "session",
+    "wire",
+    // Encrypted email clients (desktop apps / standalone windows)
+    "protonmail",
+    "proton mail",
+    "tutanota",
+];
+
+/// Window-title substrings that indicate a browser tab is showing a sensitive
+/// webmail or security service.  Checked by [`should_exclude`] when
+/// `auto_exclude_sensitive` is `true` and the *app* itself is not already
+/// flagged (e.g. the app is "Chrome" or "Firefox").
+///
+/// All entries are lowercase; comparison is done after `to_lowercase()`.
+pub const SENSITIVE_TITLE_SUBSTRINGS: &[&str] = &[
+    "proton mail",
+    "protonmail",
+    "tutanota",
+    "signal",
+    "telegram web",
+    "whatsapp web",
+    "wire web",
+    "keepass",
+    "bitwarden",
+    "1password",
+    "lastpass",
+    "authy",
 ];
 
 pub fn is_sensitive_app(app_name: &str) -> bool {
@@ -168,6 +208,18 @@ pub fn should_exclude(
 
     if auto_exclude_sensitive && is_sensitive_app(app_name) {
         return true;
+    }
+
+    // Also exclude when a browser title reveals a sensitive webmail or
+    // security service (e.g. "Proton Mail - Inbox — Mozilla Firefox").
+    if auto_exclude_sensitive {
+        let title_lower = window_title.to_lowercase();
+        if SENSITIVE_TITLE_SUBSTRINGS
+            .iter()
+            .any(|kw| title_lower.contains(kw))
+        {
+            return true;
+        }
     }
 
     false

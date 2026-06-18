@@ -4,8 +4,8 @@ use maekon_suggestion::history::SuggestionHistory;
 use maekon_suggestion::presenter;
 use maekon_suggestion::queue::SuggestionQueue;
 
-// U2-sse-e2e: mock_server 모듈을 통합 테스트 바이너리에 포함한다.
-// (`server_integration.rs` 와 동일한 axum mock 서버를 재사용)
+// U2-sse-e2e: include the mock_server module in this integration test binary.
+// (Reuses the same axum mock server as `server_integration.rs`.)
 #[cfg(feature = "analysis")]
 #[path = "mock_server.rs"]
 mod mock_server;
@@ -116,18 +116,19 @@ fn presenter_all_priorities() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// U2-sse-e2e: SSE → receiver → priority queue → notifier 라이브 e2e
+// U2-sse-e2e: SSE → receiver → priority queue → notifier live e2e
 //
-// 기존 테스트는 모두 in-memory(queue/history/presenter 직접 호출)였다. 아래 테스트는
-// 실제 HTTP/SSE 전송 경로를 통과한다:
+// The existing tests are all in-memory (calling queue/history/presenter directly).
+// The test below exercises the real HTTP/SSE transport path:
 //
-//   axum mock 서버(`/user_context/sessions/stream`)가 진짜 `suggestion` SSE 이벤트 방출
-//      → 프로덕션 `SseStreamClient`(maekon-network)가 HTTP GET + Eventsource 파싱
-//      → 프로덕션 `SuggestionReceiver::run`(maekon-suggestion)이 mpsc 채널 소비
-//      → scorer 조정 → priority queue push → notifier.show_suggestion 호출
+//   axum mock server (`/user_context/sessions/stream`) emits a real `suggestion` SSE event
+//      → production `SseStreamClient` (maekon-network) does HTTP GET + Eventsource parsing
+//      → production `SuggestionReceiver::run` (maekon-suggestion) consumes the mpsc channel
+//      → scorer adjustment → priority queue push → notifier.show_suggestion call
 //
-// 검증 대상(관찰 가능 동작): 제안이 큐에 안착(queue_size == 1, 올바른 id) +
-// notifier 가 정확히 1회 발화. 백오프 타이밍 단언은 범위에서 제외한다.
+// What is verified (observable behavior): the suggestion lands in the queue
+// (queue_size == 1, correct id) + the notifier fires exactly once. Backoff timing
+// assertions are out of scope.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "analysis")]
@@ -147,7 +148,8 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
 
     use mock_server::MockServer;
 
-    // 발화 횟수를 세는 실제 DesktopNotifier 구현(수동 mock, mockall 미사용 — ADR-001 §5).
+    // A real DesktopNotifier implementation that counts calls (manual mock, no
+    // mockall — ADR-001 §5).
     struct CountingNotifier {
         suggestion_calls: AtomicUsize,
     }
@@ -166,20 +168,23 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
         }
     }
 
-    // 1. 라이브 mock 서버 기동 (loopback, 랜덤 포트).
+    // 1. Start the live mock server (loopback, random port).
     let server = MockServer::start().await;
 
-    // 2. TokenManager 가 실제로 로그인하도록 한다 — SseStreamClient::connect 는
-    //    매 연결마다 token_manager.get_token() 을 호출하며, 인증 상태가 없으면
-    //    실패한다. mock 서버의 /api/v1/auth/tokens 가 유효 토큰을 반환한다.
-    #[allow(deprecated)] // 테스트는 non-TLS TokenManager::new 사용 (loopback)
+    // 2. Make TokenManager actually log in — SseStreamClient::connect calls
+    //    token_manager.get_token() on every connection and fails if there is no
+    //    authenticated state. The mock server's /api/v1/auth/tokens returns a
+    //    valid token.
+    #[allow(deprecated)] // test uses non-TLS TokenManager::new (loopback)
     let token_manager = Arc::new(TokenManager::new(server.url()));
     token_manager
         .login("e2e@example.com", "test-password-placeholder")
         .await
-        .expect("mock 서버 로그인 실패");
+        .expect("mock server login failed");
 
-    // 3. 프로덕션 SSE 클라이언트 + receiver 체인 구성.
+    // 3. Build the production SSE client + receiver chain.
+    // loopback mock server — TLS not needed; new_with_tls is the production path.
+    #[allow(deprecated)]
     let sse_client = Arc::new(SseStreamClient::new(
         server.url(),
         token_manager.clone(),
@@ -198,9 +203,9 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
         scorer,
     );
 
-    // 4. receiver.run 구동 — mock 스트림은 connection → suggestion → close 순서로
-    //    이벤트를 방출하므로 run() 은 close 수신 후 자연 종료한다. 무한 대기를 막기
-    //    위해 5초 타임아웃으로 감싼다.
+    // 4. Drive receiver.run — the mock stream emits events in connection →
+    //    suggestion → close order, so run() terminates naturally after receiving
+    //    close. Wrap it in a 5-second timeout to prevent an indefinite wait.
     let run_result =
         tokio::time::timeout(Duration::from_secs(5), receiver.run("u2-sse-session")).await;
 
@@ -210,37 +215,37 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
         .expect("receiver.run() did not finish within 5 s — close event handling failed")
         .expect("receiver.run() returned a SuggestionError");
 
-    // 5. 관찰 가능 동작 검증: 제안이 큐에 안착했는가?
+    // 5. Verify observable behavior: did the suggestion land in the queue?
     let queued = queue.lock().await;
     assert_eq!(
         queued.len(),
         1,
-        "라이브 SSE 제안이 priority queue 에 안착하지 않음"
+        "live SSE suggestion did not land in the priority queue"
     );
-    let top = queued.peek().expect("큐 top 제안 부재");
+    let top = queued.peek().expect("queue top suggestion missing");
     assert_eq!(
         top.suggestion_id, "u2-sse-e2e-1",
-        "큐에 안착한 제안 id 가 mock 서버가 보낸 것과 다름"
+        "queued suggestion id differs from what the mock server sent"
     );
     assert_eq!(
         top.suggestion_type,
         SuggestionType::WorkGuidance,
-        "WORK_GUIDANCE serde 매핑 실패"
+        "WORK_GUIDANCE serde mapping failed"
     );
-    assert_eq!(top.priority, Priority::High, "HIGH 우선순위 매핑 실패");
+    assert_eq!(top.priority, Priority::High, "HIGH priority mapping failed");
 
-    // 6. 관찰 가능 동작 검증: notifier 가 정확히 1회 발화했는가?
+    // 6. Verify observable behavior: did the notifier fire exactly once?
     assert_eq!(
         notifier.suggestion_calls.load(Ordering::SeqCst),
         1,
-        "notifier.show_suggestion 이 정확히 1회 발화하지 않음"
+        "notifier.show_suggestion did not fire exactly once"
     );
 
-    // 7. mock 서버가 실제 SSE 요청을 수신했는지 sanity 확인
-    //    (로그인 1회 + SSE 스트림 1회 = 최소 2회).
+    // 7. Sanity check that the mock server received the real SSE request
+    //    (1 login + 1 SSE stream = at least 2).
     assert!(
         server.request_count() >= 2,
-        "mock 서버가 로그인+SSE 요청을 수신하지 못함: {}",
+        "mock server did not receive login + SSE requests: {}",
         server.request_count()
     );
 }

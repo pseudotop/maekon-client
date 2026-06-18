@@ -49,7 +49,10 @@ mod tests {
 
     #[test]
     fn parse_malformed_response_omits_raw_private_output() {
-        let text = "not JSON: alice@example.com OTP 123456 payroll 김범준";
+        // The trailing \u{ae40}\u{bc94}\u{c900} is a Korean payroll name kept as
+        // test data (encoded via \u{} escapes so the source stays ASCII while
+        // preserving the exact bytes that PII masking must redact below).
+        let text = "not JSON: alice@example.com OTP 123456 payroll \u{ae40}\u{bc94}\u{c900}";
         let result = parse_candidates(text);
         match result.unwrap_err() {
             NetworkError::Analysis(msg) => {
@@ -57,7 +60,23 @@ mod tests {
                 assert!(!msg.contains("alice@example.com"));
                 assert!(!msg.contains("123456"));
                 assert!(!msg.contains("payroll"));
-                assert!(!msg.contains("김범준"));
+                assert!(!msg.contains("\u{ae40}\u{bc94}\u{c900}"));
+            }
+            other => panic!("Expected NetworkError::Analysis, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_reversed_bracket_bounds_returns_error_without_panicking() {
+        // Adversarial LLM output where a closing bracket precedes the first
+        // opening bracket: start=rfind(']') would be < find('['), producing a
+        // reversed inclusive-range slice that previously panicked (#6194).
+        let text = "] foo [";
+        let result = parse_candidates(text);
+        match result.unwrap_err() {
+            NetworkError::Analysis(msg) => {
+                assert!(msg.contains("malformed JSON array bounds in LLM response"));
+                assert!(msg.contains("body=omitted_for_privacy"));
             }
             other => panic!("Expected NetworkError::Analysis, got: {:?}", other),
         }
@@ -222,6 +241,42 @@ mod tests {
         };
         let client = AnalysisClient::new(&config, CircuitBreakerRegistry::new());
         let result = client.analyze("{}", "you are a test").await;
+        match result {
+            Err(CoreError::Config { code, message }) => {
+                assert_eq!(
+                    code,
+                    maekon_core::error_codes::ConfigCode::UnsupportedProviderBedrock,
+                    "expected UnsupportedProviderBedrock code, got {code:?}"
+                );
+                assert!(
+                    message.contains("Bedrock"),
+                    "expected Bedrock-mentioning message, got {message:?}"
+                );
+            }
+            other => panic!(
+                "expected CoreError::Config {{ UnsupportedProviderBedrock, .. }}, got {other:?}"
+            ),
+        }
+    }
+
+    /// ADR-019 §3 regression guard: `summarize_text()` must reject Bedrock with
+    /// the same typed code as `analyze()`. The guard lives in the shared
+    /// `dispatch` funnel, so every method inherits it; this test pins the
+    /// summarize funnel specifically, since it previously lacked any Bedrock
+    /// check and would have sent an OpenAI-shaped body to a Bedrock endpoint.
+    #[tokio::test]
+    async fn summarize_text_rejects_bedrock_provider() {
+        let config = ExternalApiEndpoint {
+            endpoint: "https://bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+            api_key: String::new(),
+            model: Some("anthropic.claude-3-5-sonnet".to_string()),
+            timeout_secs: 30,
+            provider_type: AiProviderType::Bedrock,
+            surface_id: None,
+            credential: None,
+        };
+        let client = AnalysisClient::new(&config, CircuitBreakerRegistry::new());
+        let result = client.summarize_text("{}", "you are a test").await;
         match result {
             Err(CoreError::Config { code, message }) => {
                 assert_eq!(

@@ -12,8 +12,8 @@
 
 //! Maekon Desktop Agent - Tauri v2 entry point
 //!
-//! iced GUI에서 Tauri v2로 마이그레이션된 데스크톱 에이전트.
-//! 시스템 트레이, WebView 대시보드, IPC 커맨드를 통합 관리합니다.
+//! Desktop agent migrated from the iced GUI to Tauri v2.
+//! Manages the system tray, WebView dashboard, and IPC commands together.
 
 mod agent_runtime;
 mod agent_runtime_support;
@@ -121,7 +121,8 @@ use tracing_subscriber::EnvFilter;
 
 mod cli;
 
-// cli 모듈의 모든 debug-only 심볼을 현재 크레이트 네임스페이스에서 직접 참조 가능하도록 재내보냅니다.
+// Re-export all debug-only symbols from the `cli` module so they can be referenced
+// directly in the current crate namespace.
 #[cfg(debug_assertions)]
 use cli::*;
 
@@ -677,13 +678,16 @@ fn main() {
         .manage(LogWorkerGuard(worker_guard))
         .manage(telemetry_handle)
         // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState used by the
-        // logout_all_sessions Tauri command. app_runtime_launch.rs replaces
-        // this default with TokenManagerState(Some(...)) after server bootstrap
-        // creates the token manager. Until then, None makes the command fail
-        // immediately for disabled features or bootstrap failures.
-        .manage(commands::auth::TokenManagerState(None));
+        // logout_all_sessions Tauri command. Registered ONCE here as an empty
+        // interior-mutable slot; app_runtime_launch populates it via
+        // `TokenManagerState::set(..)` after server bootstrap creates the token
+        // manager. A second `manage(..)` would be a silent no-op (Tauri does not
+        // overwrite an already-managed type), so the slot is the populate path.
+        // Until populated (or for disabled features / bootstrap failures) the
+        // slot stays empty and the command fails immediately.
+        .manage(commands::auth::TokenManagerState::empty());
 
-    // WebDriver 서버 플러그인 — E2E 테스트용 (production 빌드에 절대 포함 금지)
+    // WebDriver server plugin — for E2E tests (MUST never be included in production builds)
     #[cfg(feature = "webdriver")]
     {
         let port = std::env::var("TAURI_WEBDRIVER_PORT")
@@ -701,7 +705,7 @@ fn main() {
             setup::init(app)
         })
         .on_window_event(|window, event| {
-            // Close-to-tray: 윈도우 닫기 시 숨기기 (실제 종료 아님)
+            // Close-to-tray: hide the window on close (not an actual exit).
             match event {
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     crate::window_state::ensure_main_window_on_available_monitor(window);
@@ -948,18 +952,19 @@ fn main() {
             if let Some(state) = app_handle.try_state::<runtime_state::AppState>() {
                 // Terminate all active AI sessions before shutdown.
                 //
-                // #4345: `RunEvent::Exit` 콜백은 동기 Tauri 메인 스레드에서
-                // 실행되므로 `tokio::runtime::Handle::try_current()` 가 항상
-                // `Err` 를 반환했다 — 메인 스레드에는 진입된 tokio 런타임이
-                // 없기 때문이다. 그 결과 `shutdown_all()` 정리는 한 번도
-                // 실행되지 않는 dead code 였다.
+                // #4345: the `RunEvent::Exit` callback runs on the synchronous
+                // Tauri main thread, so `tokio::runtime::Handle::try_current()`
+                // always returned `Err` — there is no entered tokio runtime on
+                // the main thread. As a result the `shutdown_all()` cleanup was
+                // dead code that never ran.
                 //
-                // 대신 별도의 multi-thread 백그라운드 런타임 핸들에서
-                // `block_on` 한다. 이 시점에는 아래 `shutdown_blocking()`
-                // 호출 이전이라 백그라운드 런타임이 아직 살아 있고, 그 런타임의
-                // 워커 스레드가 `shutdown_all` 내부의 await/spawn 을 구동한다.
-                // 메인 스레드에서 *별도* 런타임 핸들에 `block_on` 하는 것은
-                // 유효하다 (`block_in_place`/`Handle::current` panic 위험 없음).
+                // Instead we `block_on` from a separate multi-thread background
+                // runtime handle. At this point we are still before the
+                // `shutdown_blocking()` call below, so the background runtime is
+                // still alive and its worker threads drive the await/spawn calls
+                // inside `shutdown_all`. Calling `block_on` on a *separate*
+                // runtime handle from the main thread is valid (no
+                // `block_in_place`/`Handle::current` panic risk).
                 if let Some(ai_session_state) =
                     app_handle.try_state::<runtime_state::AiSessionRuntimeState>()
                 {
@@ -1057,7 +1062,7 @@ fn main() {
                 debug_macos_notification_delegate::record_reopen_activation();
             }
 
-            // macOS dock 아이콘 클릭 시 메인 윈도우 표시
+            // Show the main window when the macOS dock icon is clicked.
             if let Some(w) = app_handle.get_webview_window("main") {
                 if let Err(e) = w.show() {
                     debug!("window show failed: {e}");

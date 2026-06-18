@@ -3,11 +3,38 @@ use maekon_api_contracts::backup::{
     BackupArchive, BackupIncludes, BackupMetadata, EventBackup, FrameBackup, FrameTagBackup,
     RestoreResult, RestoredCounts, SettingsBackup, TagBackup,
 };
+use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::storage_records::{
     EventExportRecord, FrameExportRecord, FrameTagLinkRecord, TagRecord,
 };
+use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use std::sync::Arc;
 
+use crate::error::ApiError;
 use crate::services::web_contexts::BackupWebContext;
+
+/// #6273: the backup download is a loopback no-auth surface identical to export,
+/// which masks at Standard fail-closed (export_assembler::EXPORT_SANITIZE_LEVEL).
+/// Apply the SAME floor so a backup never emits more unmasked PII than an export.
+/// Standard-configured captures are already masked at ingest (idempotent here);
+/// only sub-Standard (Off/Basic) configs see their backup brought up to Standard.
+const BACKUP_SANITIZE_LEVEL: PiiFilterLevel = PiiFilterLevel::Standard;
+
+fn require_backup_sanitizer(
+    sanitizer: &Option<Arc<dyn PiiSanitizer>>,
+) -> Result<&dyn PiiSanitizer, ApiError> {
+    sanitizer.as_deref().ok_or_else(|| {
+        ApiError::Internal("PII sanitizer not configured for backup assembly".to_string())
+    })
+}
+
+fn backup_sanitize(s: String, sanitizer: &dyn PiiSanitizer) -> String {
+    sanitizer.sanitize_text(&s, BACKUP_SANITIZE_LEVEL)
+}
+
+fn backup_sanitize_opt(s: Option<String>, sanitizer: &dyn PiiSanitizer) -> Option<String> {
+    s.map(|v| backup_sanitize(v, sanitizer))
+}
 
 pub(crate) fn new_backup_archive(includes: BackupIncludes) -> BackupArchive {
     BackupArchive {
@@ -76,28 +103,36 @@ pub(crate) fn to_frame_tag_backup(frame_tag: FrameTagLinkRecord) -> FrameTagBack
     }
 }
 
-pub(crate) fn to_event_backup(event: EventExportRecord) -> EventBackup {
-    EventBackup {
+pub(crate) fn to_event_backup(
+    event: EventExportRecord,
+    sanitizer: &Option<Arc<dyn PiiSanitizer>>,
+) -> Result<EventBackup, ApiError> {
+    let sanitizer = require_backup_sanitizer(sanitizer)?;
+    Ok(EventBackup {
         event_id: event.event_id,
         event_type: event.event_type,
         timestamp: event.timestamp,
-        app_name: event.app_name,
-        window_title: event.window_title,
-    }
+        app_name: backup_sanitize_opt(event.app_name, sanitizer),
+        window_title: backup_sanitize_opt(event.window_title, sanitizer),
+    })
 }
 
-pub(crate) fn to_frame_backup(frame: FrameExportRecord) -> FrameBackup {
-    FrameBackup {
+pub(crate) fn to_frame_backup(
+    frame: FrameExportRecord,
+    sanitizer: &Option<Arc<dyn PiiSanitizer>>,
+) -> Result<FrameBackup, ApiError> {
+    let sanitizer = require_backup_sanitizer(sanitizer)?;
+    Ok(FrameBackup {
         id: frame.id,
         timestamp: frame.timestamp,
         trigger_type: frame.trigger_type,
-        app_name: frame.app_name,
-        window_title: frame.window_title,
+        app_name: backup_sanitize(frame.app_name, sanitizer),
+        window_title: backup_sanitize(frame.window_title, sanitizer),
         importance: frame.importance,
         width: frame.resolution_w as i32,
         height: frame.resolution_h as i32,
-        ocr_text: frame.ocr_text,
-    }
+        ocr_text: backup_sanitize_opt(frame.ocr_text, sanitizer),
+    })
 }
 
 pub(crate) fn empty_restore_counts() -> RestoredCounts {

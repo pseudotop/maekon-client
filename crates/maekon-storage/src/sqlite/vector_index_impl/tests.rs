@@ -281,6 +281,74 @@ async fn centroid_cache_invalidated_on_rebuild() {
     assert!(!results.is_empty());
 }
 
+/// #12 regression: an IVF rebuild over a PRIOR index must leave the index
+/// tables consistent with the `ivf_built_at`/`ivf_vector_count` meta — the
+/// DELETE + repopulate + meta upsert now run in ONE transaction, so there is no
+/// window where the tables are empty/partial while the meta claims a built index.
+///
+/// A pure unit test cannot inject a mid-build process crash, but it can assert
+/// the post-rebuild invariant the atomic transaction guarantees: after rebuild,
+/// `COUNT(ivf_assignments) == ivf_vector_count` and `ivf_built_at` is set. (Under
+/// the old non-atomic path a crash between the auto-commit DELETEs and the insert
+/// transactions could violate this.)
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ivf_rebuild_is_atomic_and_consistent_with_meta() {
+    let conn = setup_db();
+    let index = SqliteVectorIndex::new(conn.clone());
+
+    // First build over 12 vectors.
+    for i in 0..12 {
+        let v = vec![1.0 + i as f32 * 0.01, 0.0, 0.0, 0.0];
+        store_quantized_vector(&conn, &format!("a-{i}"), &v).await;
+    }
+    index.build_ivf_index(3, 5).await.unwrap();
+
+    // Add more vectors and rebuild — this exercises the DELETE-inside-transaction
+    // path over a pre-existing (non-empty) index.
+    for i in 0..8 {
+        let v = vec![0.0, 1.0 + i as f32 * 0.01, 0.0, 0.0];
+        store_quantized_vector(&conn, &format!("b-{i}"), &v).await;
+    }
+    index.build_ivf_index(4, 5).await.unwrap();
+
+    let guard = conn.test_lock();
+    let assign_count: i64 = guard
+        .query_row("SELECT COUNT(*) FROM ivf_assignments", [], |row| row.get(0))
+        .unwrap();
+    let centroid_count: i64 = guard
+        .query_row("SELECT COUNT(*) FROM ivf_centroids", [], |row| row.get(0))
+        .unwrap();
+    let meta_vector_count: i64 = guard
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM vector_index_meta WHERE key = 'ivf_vector_count'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let built_at_present: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM vector_index_meta WHERE key = 'ivf_built_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(guard);
+
+    // All 20 vectors must be assigned, and the meta vector count must match the
+    // actual assignment count — the rebuild is all-or-nothing.
+    assert_eq!(assign_count, 20, "all vectors must be reassigned");
+    assert_eq!(
+        assign_count, meta_vector_count,
+        "ivf_vector_count meta must match the committed assignment count"
+    );
+    assert!(centroid_count > 0, "centroids must be repopulated");
+    assert_eq!(
+        built_at_present, 1,
+        "ivf_built_at must be set after rebuild"
+    );
+}
+
 /// Simple xorshift64 PRNG for deterministic test data.
 fn xorshift64(state: &mut u64) -> u64 {
     let mut s = *state;
@@ -423,22 +491,24 @@ async fn recall_validation_ivf_vs_brute_force() {
     );
 }
 
-/// F-PF-20 회귀 테스트: build_ivf_index 가 tokio 멀티스레드 런타임에서
-/// spawn_blocking 없이 executor 를 블로킹하지 않음을 확인.
-/// 10,000 벡터 미만이면 IVF 빌드가 트리거되지 않으므로 10개 기준.
-/// 핵심 검증: build_ivf_index().await 가 패닉 없이 정상 완료되어야 한다.
+/// F-PF-20 regression test: verifies that, on a tokio multi-threaded runtime,
+/// build_ivf_index does not block the executor (the k-means work runs on
+/// spawn_blocking). IVF build is not triggered below 10,000 vectors, so we use
+/// 10 vectors here.
+/// Core assertion: build_ivf_index().await must complete normally without panicking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_ivf_build_async_safe() {
     let conn = setup_db();
     let index = SqliteVectorIndex::new(conn.clone());
 
-    // 10개 벡터 삽입 후 IVF 빌드 (실제 k-means spawn_blocking 경로 실행)
+    // Insert 10 vectors, then build the IVF index (exercises the real k-means
+    // spawn_blocking path).
     for i in 0..10 {
         let v: Vec<f32> = (0..4).map(|j| i as f32 * 0.1 + j as f32 * 0.01).collect();
         store_quantized_vector(&conn, &format!("pf20-{i}"), &v).await;
     }
 
-    // spawn_blocking 이 올바르게 작동하면 패닉 없이 완료된다.
+    // If spawn_blocking works correctly, this completes without panicking.
     // Line 437: build_ivf_index returns Ok(n_clusters) on success.
     // We requested 3 clusters from 10 vectors; the implementation may clamp,
     // so only the non-error contract matters for F-PF-20 (async-safety), but
@@ -453,8 +523,9 @@ async fn test_ivf_build_async_safe() {
     );
 }
 
-/// F-PF-20 회귀 테스트: build_binary_codes 가 tokio 멀티스레드 런타임에서
-/// spawn_blocking 을 통해 async executor 를 블로킹하지 않음을 확인.
+/// F-PF-20 regression test: verifies that, on a tokio multi-threaded runtime,
+/// build_binary_codes does not block the async executor (it runs via
+/// spawn_blocking).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_binary_codes_build_async_safe() {
     let conn = setup_db();
@@ -465,7 +536,8 @@ async fn test_binary_codes_build_async_safe() {
         store_quantized_vector(&conn, &format!("bc20-{i}"), &v).await;
     }
 
-    // 벡터가 없거나 적으면 Ok(0) 반환, 있으면 실제 spawn_blocking 경로 실행.
+    // With no/few vectors this returns Ok(0); otherwise it exercises the real
+    // spawn_blocking path.
     // Line 457: build_binary_codes returns Ok(n_codes). With 10 indexed vectors
     // the implementation encodes each; result >= 0 (0 if below the threshold).
     let n_codes = index

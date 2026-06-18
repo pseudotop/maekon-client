@@ -1,8 +1,8 @@
-/// F-RR-01/02: delete_data_range + search 핸들러가 tokio 워커 스레드를 차단하지
-/// 않음을 검증하는 비동기 안전성 테스트.
+/// F-RR-01/02: async-safety tests verifying that the delete_data_range + search
+/// handlers do NOT block the tokio worker thread.
 ///
-/// spawn_blocking 래핑 후 두 서비스 메서드는 모두 진짜 async 이므로
-/// tokio::time::timeout 내에서 정상 완료해야 한다.
+/// After the spawn_blocking wrapping, both service methods are genuinely async,
+/// so they must complete normally within `tokio::time::timeout`.
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::time::Duration;
@@ -24,8 +24,8 @@ fn test_state() -> AppState {
     AppState::with_core(storage, event_tx)
 }
 
-/// F-RR-01: delete_data_range 는 spawn_blocking 으로 감싸져 있으므로
-/// tokio 워커 스레드를 차단하지 않고 5초 이내 완료되어야 한다.
+/// F-RR-01: delete_data_range is wrapped in spawn_blocking, so it must not block
+/// the tokio worker thread and must complete within 5 seconds.
 #[tokio::test]
 async fn test_delete_data_range_does_not_block_worker() {
     let service = DataCommandService::new(StorageWebContext::from_state(&test_state()));
@@ -39,14 +39,14 @@ async fn test_delete_data_range_does_not_block_worker() {
         .await
         .expect("delete_data_range timed out — possible worker thread blocking");
 
-    // 빈 DB 이므로 성공적으로 0건 삭제
+    // Empty DB, so 0 records are deleted successfully.
     let delete_result = result.expect("delete_data_range returned error");
     assert_eq!(delete_result.total(), 0);
     assert!(delete_result.success);
 }
 
-/// F-RR-02: search 는 spawn_blocking 으로 감싸져 있으므로
-/// tokio 워커 스레드를 차단하지 않고 5초 이내 완료되어야 한다.
+/// F-RR-02: search is wrapped in spawn_blocking, so it must not block the tokio
+/// worker thread and must complete within 5 seconds.
 #[tokio::test]
 async fn test_search_does_not_block_worker() {
     let service = SearchQueryService::new(StorageWebContext::from_state(&test_state()));
@@ -62,13 +62,14 @@ async fn test_search_does_not_block_worker() {
         .await
         .expect("search timed out — possible worker thread blocking");
 
-    // 빈 DB 이므로 결과 0건
+    // Empty DB, so 0 results.
     let response = result.expect("search returned error");
     assert_eq!(response.total, 0);
     assert!(response.results.is_empty());
 }
 
-/// F-RR-01: 유효하지 않은 날짜 범위 시 BadRequest 반환 (early-return 경로 검증)
+/// F-RR-01: returns BadRequest on an invalid date range (verifies the
+/// early-return path).
 #[tokio::test]
 async fn test_delete_data_range_bad_request_no_dates() {
     let service = DataCommandService::new(StorageWebContext::from_state(&test_state()));
@@ -85,7 +86,8 @@ async fn test_delete_data_range_bad_request_no_dates() {
     );
 }
 
-/// F-RR-02: 검색어와 태그 둘 다 없을 때 BadRequest 반환 (early-return 경로 검증)
+/// F-RR-02: returns BadRequest when both the query and tags are absent
+/// (verifies the early-return path).
 #[tokio::test]
 async fn test_search_bad_request_no_query() {
     let service = SearchQueryService::new(StorageWebContext::from_state(&test_state()));
@@ -104,7 +106,7 @@ async fn test_search_bad_request_no_query() {
     );
 }
 
-// ── F-RR-C30-01: get_storage_stats spawn_blocking 검증 ───────────────────────
+// ── F-RR-C30-01: get_storage_stats spawn_blocking verification ───────────────
 
 use maekon_web::services::{
     settings_query_service::SettingsQueryService, web_contexts::SettingsWebContext,
@@ -115,8 +117,8 @@ fn settings_context() -> SettingsWebContext {
     SettingsWebContext::from_state(&state)
 }
 
-/// F-RR-C30-01a: get_storage_stats 는 spawn_blocking 으로 감싸져 있으므로
-/// tokio 워커 스레드를 차단하지 않고 5초 이내 완료되어야 한다.
+/// F-RR-C30-01a: get_storage_stats is wrapped in spawn_blocking, so it must not
+/// block the tokio worker thread and must complete within 5 seconds.
 #[tokio::test]
 async fn test_get_storage_stats_does_not_block_worker() {
     let service = SettingsQueryService::new(settings_context());
@@ -125,8 +127,8 @@ async fn test_get_storage_stats_does_not_block_worker() {
         .await
         .expect("get_storage_stats timed out — possible worker thread blocking");
 
-    // 빈 DB 이므로 성공하며 레코드 카운트는 0, db_size_bytes 는 SQLite
-    // 페이지 헤더로 인해 0 이상이다.
+    // Empty DB, so it succeeds with a record count of 0; db_size_bytes is
+    // greater than 0 because of the SQLite page header.
     let stats = result.expect("get_storage_stats returned error");
     assert_eq!(stats.frame_count, 0);
     assert_eq!(stats.event_count, 0);
@@ -136,7 +138,8 @@ async fn test_get_storage_stats_does_not_block_worker() {
     );
 }
 
-/// F-RR-C30-01b: frames_dir 없는 경우 frames_size_bytes = 0 으로 정상 반환
+/// F-RR-C30-01b: when frames_dir is absent, frames_size_bytes = 0 is returned
+/// normally.
 #[tokio::test]
 async fn test_get_storage_stats_no_frames_dir() {
     let service = SettingsQueryService::new(settings_context());

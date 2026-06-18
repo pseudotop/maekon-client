@@ -13,14 +13,24 @@
 use super::classify::classify_keycode;
 use crate::input_activity::InputActivityCollector;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 /// Run the X11 XRecord key observer. Blocks until `running` becomes false.
 ///
 /// This is a best-effort implementation. If X11 or XRecord is unavailable,
 /// it logs a warning and returns immediately.
-pub fn run_x11_record_hook(collector: Arc<InputActivityCollector>, running: Arc<AtomicBool>) {
+///
+/// `child_proc` is a shared slot populated by this function after the xinput
+/// process is spawned.  `KeyHook::stop()` kills the child through this slot
+/// so that the blocking `lines()` iterator receives EOF and unblocks, allowing
+/// this thread to observe `running == false` and exit cleanly.  Both paths
+/// use `Option::take()` to avoid double-kill panics.
+pub fn run_x11_record_hook(
+    collector: Arc<InputActivityCollector>,
+    running: Arc<AtomicBool>,
+    child_proc: Arc<Mutex<Option<std::process::Child>>>,
+) {
     // Check if we can connect to X11
     let display_env = std::env::var("DISPLAY").unwrap_or_default();
     if display_env.is_empty() {
@@ -59,15 +69,36 @@ pub fn run_x11_record_hook(collector: Arc<InputActivityCollector>, running: Arc<
         }
     };
 
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            warn!("failed to capture xinput stdout");
-            if let Err(e) = child.kill() {
-                debug!("process kill failed: {e}");
+    // Publish the Child into the shared slot BEFORE taking stdout, then take
+    // stdout from the child while it is already in the slot. Storing it only
+    // AFTER the take left a startup window where the child was alive but the
+    // slot was still empty — if KeyHook::stop() ran in that window it skipped
+    // the kill and then hung forever in join() on an idle session (no keystroke
+    // ever produces the EOF that would unblock the reader). The lock is held
+    // only for the take, never across the BufReader construction/use. #5968.
+    let child_slot = child_proc;
+    let stdout = {
+        let mut guard = match child_slot.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                warn!("key-hook child slot mutex poisoned; aborting xinput observer");
+                let _ = child.kill();
+                return;
             }
-            return;
-        }
+        };
+        *guard = Some(child);
+        let stdout = match guard.as_mut().and_then(|c| c.stdout.take()) {
+            Some(s) => s,
+            None => {
+                warn!("failed to capture xinput stdout");
+                if let Some(mut c) = guard.take() {
+                    let _ = c.kill();
+                }
+                return;
+            }
+        };
+        drop(guard);
+        stdout
     };
 
     use std::io::BufRead;
@@ -117,12 +148,18 @@ pub fn run_x11_record_hook(collector: Arc<InputActivityCollector>, running: Arc<
         }
     }
 
-    // Clean up the child process
-    if let Err(e) = child.kill() {
-        debug!("process kill failed: {e}");
-    }
-    if let Err(e) = child.wait() {
-        debug!("process wait failed: {e}");
+    // Clean up the child process.  Use take() so that if KeyHook::stop()
+    // already killed and waited the child via the same shared slot, we do
+    // not double-kill (which would panic on some platforms).
+    if let Ok(mut guard) = child_slot.lock() {
+        if let Some(mut child) = guard.take() {
+            if let Err(e) = child.kill() {
+                debug!("exit-path: xinput kill failed (may have already exited): {e}");
+            }
+            if let Err(e) = child.wait() {
+                debug!("exit-path: xinput wait failed: {e}");
+            }
+        }
     }
 
     debug!("X11 key observer exited");

@@ -80,15 +80,15 @@ describe('Onboarding', () => {
     ).not.toBeInTheDocument()
   })
 
-  // Intro(0) → Permissions(1) → Consent(2). IS_TAURI=false 라 Permissions 단계는
-  // 자동으로 ready 가 되어 Next 가 막히지 않는다.
+  // Intro(0) → Permissions(1) → Consent(2). Because IS_TAURI=false, the Permissions
+  // step auto-readies, so Next is never blocked.
   function gotoConsentStep() {
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
   }
 
   it('grant CTA → calls set_consent with the 6 master fields true and the other 7 false', async () => {
-    // 동의 IPC 는 부여 스냅샷을 반환한다(다른 invoke 는 undefined).
+    // The consent IPC returns a grant snapshot (other invokes return undefined).
     mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === 'set_consent') {
         const perms = (args as { permissions: ConsentPermissions }).permissions
@@ -100,7 +100,7 @@ describe('Onboarding', () => {
     renderWithProviders(<Onboarding onComplete={vi.fn()} />)
     gotoConsentStep()
 
-    // 부여 전에는 수집 항목 열거가 보여야 한다(정보 제공형).
+    // Before granting, the enumeration of collected items must be shown (informational).
     expect(screen.getByText(en.privacy.consent.monitoring.collected.screenFrames)).toBeInTheDocument()
     expect(screen.getByText(en.privacy.consent.monitoring.collected.guiInteractions)).toBeInTheDocument()
 

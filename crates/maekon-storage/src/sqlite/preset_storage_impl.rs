@@ -8,7 +8,7 @@ use super::SqliteStorage;
 impl PresetStorage for SqliteStorage {
     /// List all custom presets from the `automation_presets` table.
     fn list_presets(&self) -> Result<Vec<WorkflowPreset>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -51,7 +51,7 @@ impl PresetStorage for SqliteStorage {
 
     /// Get a single preset by ID.
     fn get_preset(&self, id: &str) -> Result<Option<WorkflowPreset>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -98,7 +98,7 @@ impl PresetStorage for SqliteStorage {
             })?;
         let now = Utc::now().to_rfc3339();
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, automation_presets ∈ ALL_TABLES).
+        // Write — write_lock (skipped while deletion_flag is set; automation_presets ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
         conn.execute(
             "INSERT INTO automation_presets
@@ -135,7 +135,7 @@ impl PresetStorage for SqliteStorage {
     /// Delete a preset by ID. Built-in presets (builtin=1) are protected and
     /// will not be deleted. Returns true if a row was actually removed.
     fn delete_preset(&self, id: &str) -> Result<bool, CoreError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false 반환).
+        // Write — write_lock (skipped while deletion_flag is set → returns false).
         self.conn.write_lock().run(false, |conn| {
             let affected = conn
                 .execute(

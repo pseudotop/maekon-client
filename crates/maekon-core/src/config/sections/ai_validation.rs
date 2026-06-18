@@ -1,4 +1,4 @@
-// AI 검증 설정 — OCR 신뢰도, 장면 행동 오버라이드, 장면 지능 검증 설정
+// AI validation config — OCR confidence, scene-action override, scene-intelligence validation
 use super::super::enums::AiProviderType;
 use crate::error::CoreError;
 use chrono::{DateTime, Utc};

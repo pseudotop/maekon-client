@@ -4,8 +4,13 @@ use tauri::command;
 use crate::ipc_error::IpcError;
 use crate::runtime_state::AppState;
 // ADR-026 PR-6: `state.storage` is the concrete `Arc<SqliteStorage>`, so the
-// digest calls below resolve to the synchronous inherent twins — no
-// `DigestStorage` trait import (or `.await`) is needed here.
+// inherent (synchronous) digest twins would shadow the async `DigestStorage`
+// trait methods of the same name. To keep these async IPC handlers off the
+// blocking path, import the trait and dispatch via fully-qualified syntax
+// (`<SqliteStorage as DigestStorage>::...`), which routes the SQLite work
+// through the `with_conn`/`with_conn_read` `spawn_blocking` funnels.
+use maekon_core::ports::web_storage::DigestStorage;
+use maekon_storage::sqlite::SqliteStorage;
 
 // ── Semantic search IPC commands ──────────────────────────────
 
@@ -41,9 +46,10 @@ pub async fn get_weekly_digest(
         (offset.unsigned_abs() as usize) + 1
     };
 
-    let digests = state
-        .storage
-        .list_weekly_digests(limit)
+    // Fully-qualified async trait dispatch: the inherent sync twin of the same
+    // name would otherwise shadow it and run SQLite inline on the reactor (#6136).
+    let digests = <SqliteStorage as DigestStorage>::list_weekly_digests(&state.storage, limit)
+        .await
         .map_err(IpcError::from)?;
 
     let target_idx = offset.unsigned_abs() as usize;
@@ -73,13 +79,24 @@ pub async fn get_dashboard_day(
         )
     })?;
 
-    // Check cache first
-    if let Some(cached) = state
-        .storage
-        .get_daily_digest(&date_str)
-        .map_err(IpcError::from)?
-    {
-        return serde_json::to_value(&cached).map_err(IpcError::from);
+    // #6276: the CURRENT day's digest is a moving target (segments keep
+    // accumulating), so it must NOT be served from OR written to the cache —
+    // otherwise the first dashboard view freezes today's digest at its partial-
+    // day state. Treat the date as "today" if it matches the current date in
+    // EITHER UTC or Local (date_str defaults to Utc::now() while the scheduler
+    // rolls over on Local; the union avoids a near-midnight off-by-one).
+    let is_today = naive_date == chrono::Utc::now().date_naive()
+        || naive_date == chrono::Local::now().date_naive();
+
+    // Check cache first (skip for today — always regenerate fresh).
+    if !is_today {
+        if let Some(cached) =
+            <SqliteStorage as DigestStorage>::get_daily_digest(&state.storage, &date_str)
+                .await
+                .map_err(IpcError::from)?
+        {
+            return serde_json::to_value(&cached).map_err(IpcError::from);
+        }
     }
 
     // Not cached — generate from segments on-demand.
@@ -89,10 +106,10 @@ pub async fn get_dashboard_day(
     // data already collected under consent — not background collection. It does
     // not touch the "nothing collected without consent" invariant; gating it
     // would only block a user from viewing a digest of their own consented data.
-    let segment_records = state
-        .storage
-        .get_segments_for_date(&date_str)
-        .map_err(IpcError::from)?;
+    let segment_records =
+        <SqliteStorage as DigestStorage>::get_segments_for_date(&state.storage, &date_str)
+            .await
+            .map_err(IpcError::from)?;
 
     if segment_records.is_empty() {
         return Ok(serde_json::json!(null));
@@ -110,7 +127,11 @@ pub async fn get_dashboard_day(
         .unwrap_or(naive_date)
         .format("%Y-%m-%d")
         .to_string();
-    let prev_digest = state.storage.get_daily_digest(&prev_date).ok().flatten();
+    let prev_digest =
+        <SqliteStorage as DigestStorage>::get_daily_digest(&state.storage, &prev_date)
+            .await
+            .ok()
+            .flatten();
 
     let digest = maekon_analysis::DailyDigestGenerator::generate(
         &segments,
@@ -118,9 +139,13 @@ pub async fn get_dashboard_day(
         prev_digest.as_ref(),
     );
 
-    // Cache the result
-    if let Err(e) = state.storage.save_daily_digest(&digest) {
-        tracing::warn!("Failed to cache daily digest: {e}");
+    // Cache the result (skip for today — do not persist a partial-day digest).
+    if !is_today {
+        if let Err(e) =
+            <SqliteStorage as DigestStorage>::save_daily_digest(&state.storage, &digest).await
+        {
+            tracing::warn!("Failed to cache daily digest: {e}");
+        }
     }
 
     serde_json::to_value(&digest).map_err(IpcError::from)
@@ -142,10 +167,10 @@ pub async fn get_daily_digest(
         )
     })?;
 
-    if let Some(digest) = state
-        .storage
-        .get_daily_digest(&date_str)
-        .map_err(IpcError::from)?
+    if let Some(digest) =
+        <SqliteStorage as DigestStorage>::get_daily_digest(&state.storage, &date_str)
+            .await
+            .map_err(IpcError::from)?
     {
         serde_json::to_value(&digest).map_err(IpcError::from)
     } else {
@@ -243,4 +268,55 @@ pub async fn trigger_recluster(
         "ok": true,
         "message": "Re-clustering requested. It will run on the next scheduler cycle.",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maekon_core::models::daily_digest::{DailyDigest, DailyStatistics};
+    use std::sync::Arc;
+
+    fn sample_digest(date: chrono::NaiveDate) -> DailyDigest {
+        DailyDigest {
+            date,
+            insight: None,
+            timeline: vec![],
+            statistics: DailyStatistics::default(),
+            generated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Regression guard for the digest IPC handlers (`get_dashboard_day`,
+    /// `get_daily_digest`): they dispatch through the async `DigestStorage`
+    /// trait via fully-qualified syntax so the SQLite work is offloaded onto
+    /// `spawn_blocking` rather than running inline on the async reactor. This
+    /// asserts that exact async save/get round-trip resolves and persists,
+    /// catching any regression where the inherent sync twins shadow the trait.
+    #[tokio::test]
+    async fn digest_storage_async_roundtrip_via_trait_dispatch() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory storage"));
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+
+        // Save via the same async trait path the handler uses.
+        <SqliteStorage as DigestStorage>::save_daily_digest(&storage, &sample_digest(date))
+            .await
+            .expect("async save_daily_digest");
+
+        // Read it back via the async trait path.
+        let fetched = <SqliteStorage as DigestStorage>::get_daily_digest(
+            &storage,
+            &date.format("%Y-%m-%d").to_string(),
+        )
+        .await
+        .expect("async get_daily_digest");
+
+        assert!(fetched.is_some(), "saved digest should be retrievable");
+        assert_eq!(fetched.unwrap().date, date);
+
+        // A missing date returns None (not an error).
+        let missing = <SqliteStorage as DigestStorage>::get_daily_digest(&storage, "1999-01-01")
+            .await
+            .expect("async get_daily_digest (missing)");
+        assert!(missing.is_none());
+    }
 }

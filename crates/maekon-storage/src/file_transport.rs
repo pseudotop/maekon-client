@@ -10,7 +10,9 @@ use aes_gcm::{
 use argon2::Argon2;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use tracing::debug;
+use std::time::{Duration, SystemTime};
+use tracing::{debug, info, warn};
+use zeroize::Zeroizing;
 
 use crate::error::StorageError;
 use maekon_core::error::CoreError;
@@ -20,6 +22,17 @@ use maekon_core::sync::Hlc;
 
 const NONCE_SIZE: usize = 12; // AES-256-GCM nonce
 const SALT_SIZE: usize = 16; // Argon2 salt
+
+/// Default retention window for consumed changeset files, in days.
+///
+/// Mirrors the frame storage 30-day default (`frame_storage`/`retention.rs`).
+/// A changeset file older than this is assumed to have been pulled by every
+/// peer that will ever pull it, so it can be reclaimed. The window must be far
+/// larger than any plausible offline period for a peer that still needs the
+/// data — see [`FileSyncTransport::enforce_retention`].
+const DEFAULT_RETENTION_DAYS: u64 = 30;
+
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], StorageError> {
     let mut bytes: [u8; N] = std::array::from_fn(|_| u8::default());
@@ -32,8 +45,9 @@ fn random_bytes<const N: usize>() -> Result<[u8; N], StorageError> {
 pub struct FileSyncTransport {
     sync_folder: PathBuf,
     local_device_id: String,
-    /// Raw passphrase (held in memory only while SyncEngine is alive).
-    passphrase: String,
+    /// Raw passphrase. Stored as `Zeroizing<String>` so heap bytes are
+    /// overwritten with zeroes when `FileSyncTransport` is dropped.
+    passphrase: Zeroizing<String>,
 }
 
 impl FileSyncTransport {
@@ -53,19 +67,23 @@ impl FileSyncTransport {
         Ok(Self {
             sync_folder,
             local_device_id,
-            passphrase,
+            passphrase: Zeroizing::new(passphrase),
         })
     }
 
     /// Derive AES-256 key from passphrase + salt via Argon2id.
-    fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
+    ///
+    /// Returns the key wrapped in `Zeroizing<[u8; 32]>` so the heap copy of
+    /// the derived key bytes is overwritten with zeroes when the value is
+    /// dropped (after being consumed by `Aes256Gcm::new_from_slice`).
+    fn derive_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, StorageError> {
         // KDF output buffer; populated by `hash_password_into` below. Constructed
         // via `Default` (not the `[0u8; 32]` literal) to keep CodeQL's
         // `rust/hard-coded-cryptographic-value` source pattern from flagging this
         // intermediate buffer as a key.
-        let mut key: [u8; 32] = Default::default();
+        let mut key: Zeroizing<[u8; 32]> = Zeroizing::new(Default::default());
         Argon2::default()
-            .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+            .hash_password_into(passphrase.as_bytes(), salt, key.as_mut())
             .map_err(|e| StorageError::Internal(format!("Argon2 KDF failed: {e}")))?;
         Ok(key)
     }
@@ -76,7 +94,7 @@ impl FileSyncTransport {
         let salt = random_bytes::<SALT_SIZE>()?;
 
         let key = Self::derive_key(passphrase, &salt)?;
-        let cipher = Aes256Gcm::new_from_slice(&key)
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
             .map_err(|e| StorageError::Internal(format!("AES init: {e}")))?;
 
         let nonce_bytes = random_bytes::<NONCE_SIZE>()?;
@@ -105,7 +123,7 @@ impl FileSyncTransport {
         let ciphertext = &data[SALT_SIZE + NONCE_SIZE..];
 
         let key = Self::derive_key(passphrase, salt)?;
-        let cipher = Aes256Gcm::new_from_slice(&key)
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
             .map_err(|e| StorageError::Internal(format!("AES init: {e}")))?;
         let nonce = Nonce::from_slice(nonce_bytes);
 
@@ -134,6 +152,121 @@ impl FileSyncTransport {
         let device_id = parts[2].to_string();
         Some((device_id, wall_ms, counter))
     }
+
+    /// Reclaim changeset files older than the default retention window.
+    ///
+    /// See [`FileSyncTransport::enforce_retention_with_days`]. Uses
+    /// [`DEFAULT_RETENTION_DAYS`].
+    pub async fn enforce_retention(&self) -> Result<usize, CoreError> {
+        self.enforce_retention_with_days(DEFAULT_RETENTION_DAYS)
+            .await
+    }
+
+    /// Reclaim changeset files older than `retention_days`, returning the
+    /// number of files deleted.
+    ///
+    /// # Why time-based (not delete-on-consume)
+    ///
+    /// A single shared folder can serve **more than two devices**, and there is
+    /// no manifest or per-device read cursor recorded in the folder. A consumer
+    /// therefore cannot know whether a file it just pulled has also been read by
+    /// every *other* peer. Deleting on consume would silently drop data a slower
+    /// or offline peer has not yet pulled. Instead we delete only files that are
+    /// older than a long retention window, by which point every peer that will
+    /// ever pull the file is assumed to have done so.
+    ///
+    /// # Age signal: filesystem mtime, not the filename HLC
+    ///
+    /// The `wall_ms` embedded in the filename is the *writer's* wall clock, which
+    /// can be skewed or even attacker-controlled. Using it would let a peer with
+    /// a fast clock have its files reclaimed prematurely, or a far-future
+    /// timestamp pin a file forever. We use the local filesystem modification
+    /// time — "how long the file has rested in this folder on this machine" —
+    /// which is the property the retention window is actually about.
+    ///
+    /// # Fail-safe toward keeping data
+    ///
+    /// This deletes both this device's own changeset files and peers' files:
+    /// once a file is older than the window, every peer (including the writer
+    /// re-bootstrapping) has had ample time to pull it. If a file's mtime cannot
+    /// be read, or is in the future (clock skew), the file is **kept** — we never
+    /// delete a file we cannot prove is old. `.tmp` files and non-changeset files
+    /// are ignored. Individual delete failures are logged and skipped; the
+    /// returned count reflects only files actually removed.
+    pub async fn enforce_retention_with_days(
+        &self,
+        retention_days: u64,
+    ) -> Result<usize, CoreError> {
+        let folder = self.sync_folder.clone();
+
+        tokio::task::spawn_blocking(move || {
+            if !folder.exists() {
+                return Ok(0);
+            }
+
+            let now = SystemTime::now();
+            let max_age = Duration::from_secs(retention_days.saturating_mul(SECONDS_PER_DAY));
+
+            let entries = std::fs::read_dir(&folder).map_err(|e| CoreError::Storage {
+                code: maekon_core::error_codes::StorageCode::Failed,
+                message: format!("read sync folder for retention: {e}"),
+            })?;
+
+            let mut deleted = 0usize;
+            for entry in entries {
+                let entry = entry.map_err(|e| CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: format!("dir entry during retention: {e}"),
+                })?;
+                let name = entry.file_name().to_string_lossy().to_string();
+
+                // Only ever delete completed changeset files. Skip .tmp staging
+                // files and anything that is not a changeset (e.g. README).
+                if name.ends_with(".tmp") || Self::parse_filename(&name).is_none() {
+                    continue;
+                }
+
+                // Age is measured by filesystem mtime, not the filename clock.
+                // If the mtime is unreadable or in the future, keep the file:
+                // we never delete data we cannot prove is past the window.
+                let modified = match entry.metadata().and_then(|m| m.modified()) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let age = match now.duration_since(modified) {
+                    Ok(age) => age,
+                    Err(_) => continue, // mtime in the future (clock skew) → keep
+                };
+                if age <= max_age {
+                    continue;
+                }
+
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => {
+                        deleted += 1;
+                        debug!(file = %name, "reclaimed expired changeset file");
+                    }
+                    Err(e) => {
+                        // Best-effort: a single failure must not abort the sweep.
+                        warn!(file = %name, "changeset retention delete failed: {e}");
+                    }
+                }
+            }
+
+            if deleted > 0 {
+                info!(
+                    deleted,
+                    retention_days, "changeset retention policy reclaimed expired files"
+                );
+            }
+            Ok(deleted)
+        })
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("spawn_blocking join error: {e}"),
+        })?
+    }
 }
 
 #[async_trait]
@@ -141,7 +274,8 @@ impl SyncTransport for FileSyncTransport {
     async fn push(&self, changes: &ChangeSet) -> Result<usize, CoreError> {
         let folder = self.sync_folder.clone();
         let device_id = self.local_device_id.clone();
-        let passphrase = self.passphrase.clone();
+        // Clone the Zeroizing wrapper so the closure's copy is also zeroized on drop.
+        let passphrase: Zeroizing<String> = self.passphrase.clone();
         let changes = changes.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -194,7 +328,8 @@ impl SyncTransport for FileSyncTransport {
     async fn pull(&self, since: &Hlc) -> Result<Option<ChangeSet>, CoreError> {
         let folder = self.sync_folder.clone();
         let local_device_id = self.local_device_id.clone();
-        let passphrase = self.passphrase.clone();
+        // Clone the Zeroizing wrapper so the closure's copy is also zeroized on drop.
+        let passphrase: Zeroizing<String> = self.passphrase.clone();
         let since = since.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -362,6 +497,15 @@ impl SyncTransport for FileSyncTransport {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("spawn_blocking join error: {e}"),
         })?
+    }
+
+    /// Reclaim consumed changeset files older than the default retention window
+    /// so the shared folder does not grow unbounded (#6243). Delegates to the
+    /// time-based [`FileSyncTransport::enforce_retention_with_days`]; the
+    /// cross-device sync loop calls this each cycle.
+    async fn enforce_retention(&self) -> Result<usize, CoreError> {
+        self.enforce_retention_with_days(DEFAULT_RETENTION_DAYS)
+            .await
     }
 }
 
@@ -636,5 +780,120 @@ mod tests {
         )
         .unwrap();
         transport.forget_peer("nobody").await.unwrap();
+    }
+
+    /// Write a changeset file and back-date its filesystem mtime by `age`.
+    fn write_changeset_aged(dir: &std::path::Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        std::fs::write(&path, b"ciphertext").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        // `File::set_modified` is portable across macOS/Linux/Windows (stable 1.75).
+        file.set_modified(SystemTime::now() - age).unwrap();
+    }
+
+    #[tokio::test]
+    async fn retention_reclaims_old_files_keeps_recent_and_unread() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Old foreign file — well past the 1-day window → reclaimed.
+        write_changeset_aged(
+            dir.path(),
+            "changeset-dev-old-100-0.enc",
+            Duration::from_secs(5 * SECONDS_PER_DAY),
+        );
+        // Recent foreign file the local device may not have read yet → kept.
+        write_changeset_aged(
+            dir.path(),
+            "changeset-dev-new-200-0.enc",
+            Duration::from_secs(60),
+        );
+        // Old file belonging to THIS device → also reclaimed (peers had time).
+        write_changeset_aged(
+            dir.path(),
+            "changeset-local-50-0.enc",
+            Duration::from_secs(5 * SECONDS_PER_DAY),
+        );
+        // Old .tmp staging file → never touched by retention.
+        write_changeset_aged(
+            dir.path(),
+            "changeset-dev-old-100-0.enc.tmp",
+            Duration::from_secs(5 * SECONDS_PER_DAY),
+        );
+        // Old non-changeset file → ignored.
+        write_changeset_aged(
+            dir.path(),
+            "README.txt",
+            Duration::from_secs(5 * SECONDS_PER_DAY),
+        );
+
+        let transport = FileSyncTransport::new(
+            dir.path().to_path_buf(),
+            "local".to_string(),
+            test_passphrase(),
+        )
+        .unwrap();
+
+        let deleted = transport.enforce_retention_with_days(1).await.unwrap();
+        assert_eq!(
+            deleted, 2,
+            "both old changeset files (foreign + own) reclaimed"
+        );
+
+        let remaining: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+
+        // Recent unread changeset must survive — multi-reader safety.
+        assert!(
+            remaining.iter().any(|n| n == "changeset-dev-new-200-0.enc"),
+            "recent unread changeset must be kept, remaining={remaining:?}"
+        );
+        // .tmp and non-changeset files survive regardless of age.
+        assert!(remaining.iter().any(|n| n.ends_with(".tmp")));
+        assert!(remaining.iter().any(|n| n == "README.txt"));
+        // Old changeset files are gone.
+        assert!(
+            !remaining.iter().any(|n| n == "changeset-dev-old-100-0.enc"),
+            "old foreign changeset should be reclaimed, remaining={remaining:?}"
+        );
+        assert!(
+            !remaining.iter().any(|n| n == "changeset-local-50-0.enc"),
+            "old own changeset should be reclaimed, remaining={remaining:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_future_mtime_file() {
+        // A file whose mtime is in the future (clock skew) must never be
+        // deleted — the fail-safe keeps data we cannot prove is old.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changeset-dev-x-100-0.enc");
+        std::fs::write(&path, b"ciphertext").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+
+        let transport = FileSyncTransport::new(
+            dir.path().to_path_buf(),
+            "local".to_string(),
+            test_passphrase(),
+        )
+        .unwrap();
+
+        let deleted = transport.enforce_retention_with_days(1).await.unwrap();
+        assert_eq!(deleted, 0, "future-mtime file must be kept");
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn retention_ok_on_missing_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let transport =
+            FileSyncTransport::new(missing, "local".to_string(), test_passphrase()).unwrap();
+        // `new` creates the folder, so remove it to exercise the missing branch.
+        std::fs::remove_dir_all(transport.sync_folder.clone()).unwrap();
+        assert_eq!(transport.enforce_retention().await.unwrap(), 0);
     }
 }

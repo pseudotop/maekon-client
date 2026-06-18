@@ -8,7 +8,7 @@ impl SqliteStorage {
     /// Execute a PASSIVE WAL checkpoint. Non-blocking — does not wait for
     /// concurrent readers or writers to finish.
     pub fn wal_checkpoint_passive(&self) -> Result<(), StorageError> {
-        // 구조적 유지보수(사용자 데이터 mutation 아님) — retained_write_lock(항상 실행).
+        // Structural maintenance (not a user-data mutation) — retained_write_lock (always runs).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)")
                 .map_err(|e| {
@@ -24,7 +24,7 @@ impl SqliteStorage {
     /// finish, then checkpoints and truncates the WAL file to zero bytes.
     /// Intended for graceful shutdown after all background loops have stopped.
     pub fn wal_checkpoint_truncate(&self) -> Result<(), StorageError> {
-        // 구조적 유지보수 — retained_write_lock(항상 실행).
+        // Structural maintenance — retained_write_lock (always runs).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(|e| {
@@ -39,7 +39,7 @@ impl SqliteStorage {
     /// Run VACUUM if freelist_count / page_count exceeds `threshold_percent`.
     /// Returns `true` when VACUUM was actually executed.
     pub fn maybe_vacuum(&self, threshold_percent: u64) -> Result<bool, StorageError> {
-        // 구조적 유지보수 — retained_write_lock(항상 실행).
+        // Structural maintenance — retained_write_lock (always runs).
         self.conn.retained_write_lock().run(|conn| {
             let freelist_count: u64 = conn
                 .query_row("PRAGMA freelist_count", [], |row| row.get(0))
@@ -76,7 +76,7 @@ impl SqliteStorage {
             return Ok(());
         }
 
-        // FTS 인덱스 유지보수 — retained_write_lock(항상 실행, 사용자 row mutation 아님).
+        // FTS index maintenance — retained_write_lock (always runs, not a user-row mutation).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute(
                 "INSERT INTO search_fts(search_fts, rank) VALUES('merge', ?1)",
@@ -97,7 +97,7 @@ impl SqliteStorage {
             return Ok(());
         }
 
-        // FTS 인덱스 유지보수 — retained_write_lock(항상 실행).
+        // FTS index maintenance — retained_write_lock (always runs).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute("INSERT INTO search_fts(search_fts) VALUES('optimize')", [])
                 .map_err(|e| StorageError::Internal(format!("FTS5 optimize failed: {e}")))?;
@@ -109,7 +109,7 @@ impl SqliteStorage {
 
     /// Run ANALYZE to refresh query planner statistics for all tables.
     pub fn run_analyze(&self) -> Result<(), StorageError> {
-        // 구조적 유지보수 — retained_write_lock(항상 실행).
+        // Structural maintenance — retained_write_lock (always runs).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute_batch("ANALYZE")
                 .map_err(|e| StorageError::Internal(format!("ANALYZE failed: {e}")))?;

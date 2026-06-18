@@ -29,7 +29,7 @@ impl SqliteStorage {
         let now = Utc::now();
         let category_str = enum_to_sql_str(&category);
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → id 0 세션, work_sessions ∈ ALL_TABLES).
+        // Write — write_lock (skip when deletion_flag is set → id 0 session; work_sessions ∈ ALL_TABLES).
         let skip = WorkSession {
             id: 0,
             started_at: now,
@@ -70,7 +70,7 @@ impl SqliteStorage {
     }
 
     pub fn get_active_work_session(&self) -> Result<Option<WorkSession>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -130,7 +130,7 @@ impl SqliteStorage {
         let now = Utc::now();
         let now_str = now.to_rfc3339();
 
-        // 쓰기(UPDATE ... RETURNING) — write_lock(deletion_flag set 시 스킵).
+        // Write (UPDATE ... RETURNING) — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
         let duration_secs: i64 = conn
             .query_row(
@@ -154,7 +154,7 @@ impl SqliteStorage {
     }
 
     pub fn increment_work_session_interruption(&self, session_id: i64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
             "UPDATE work_sessions SET interruption_count = interruption_count + 1 WHERE id = ?1",
@@ -169,7 +169,7 @@ impl SqliteStorage {
     }
 
     pub fn add_deep_work_secs(&self, session_id: i64, secs: u64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE work_sessions SET deep_work_secs = deep_work_secs + ?1 WHERE id = ?2",
@@ -201,7 +201,7 @@ impl SqliteStorage {
         // owned move into the Send + 'static closure.
         let primary_app = primary_app.to_string();
 
-        // deletion_flag set 시 id 0 세션을 sentinel 로 반환한다(work_sessions ∈ ALL_TABLES).
+        // When deletion_flag is set, return an id 0 session as the sentinel (work_sessions ∈ ALL_TABLES).
         let skip = WorkSession {
             id: 0,
             started_at: now,
@@ -424,7 +424,7 @@ impl SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<(String, i64)>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::get_app_durations_by_date_inner(read.conn(), from, to)
     }
@@ -474,7 +474,7 @@ impl SqliteStorage {
         window: &TimeWindow,
     ) -> Result<Vec<(String, i64)>, StorageError> {
         let (from, to) = window.to_sql_pair();
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::get_daily_active_secs_inner(read.conn(), &from, &to)
     }
@@ -524,7 +524,7 @@ impl SqliteStorage {
     // --------------------------------------------------------
 
     pub fn record_interruption(&self, interruption: &Interruption) -> Result<i64, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → id 0, interruptions ∈ ALL_TABLES).
+        // Write — write_lock (skip when deletion_flag is set → id 0; interruptions ∈ ALL_TABLES).
         self.conn.write_lock().run(0i64, |conn| {
         conn.execute(
             "INSERT INTO interruptions (interrupted_at, from_app, from_category, to_app, to_category, snapshot_frame_id)
@@ -554,7 +554,7 @@ impl SqliteStorage {
         interruption_id: i64,
         resumed_to_app: &str,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE interruptions SET resumed_at = ?1, resumed_to_app = ?2 WHERE id = ?3",
@@ -569,7 +569,7 @@ impl SqliteStorage {
     }
 
     pub fn get_pending_interruption(&self) -> Result<Option<Interruption>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -630,7 +630,7 @@ impl SqliteStorage {
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusWorkSessionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::list_work_sessions_inner(read.conn(), from, to, limit)
     }
@@ -696,7 +696,7 @@ impl SqliteStorage {
         to: &str,
         limit: usize,
     ) -> Result<Vec<FocusInterruptionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::list_interruptions_inner(read.conn(), from, to, limit)
     }

@@ -41,7 +41,7 @@ pub struct AutomationStatusDto {
     pub confirmation_policy: String,
 }
 
-// serde(default = ...) 호출자가 있으나 rustc 분석에서는 비사용으로 오진됨.
+// Used by `serde(default = ...)`, but rustc misreports it as unused.
 #[allow(dead_code)]
 fn default_auto_policy() -> String {
     "AUTO".to_string()

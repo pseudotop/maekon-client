@@ -175,7 +175,15 @@ pub fn match_signatures(features: &VisualFeatures) -> Option<(GuiElementType, f3
 
     let winner = scores[0].1;
     let runner_up = scores.get(1).map_or(0.0, |s| s.1);
-    let confidence = if winner + runner_up > 0.0 {
+    // When only one signature matched, report the raw (clamped) score rather than
+    // the self-normalizing ratio (review4 V12 sibling): winner/(winner+0)=1.0 would
+    // falsely report MAXIMUM confidence for a sole match (often the catch-all),
+    // excluding the element from the <0.6 LLM-refinement queue and spuriously
+    // winning the >0.7 ML override. The contour score can exceed 1.0 (specificity
+    // bonus), so clamp.
+    let confidence = if scores.len() == 1 {
+        winner.clamp(0.0, 1.0)
+    } else if winner + runner_up > 0.0 {
         (winner / (winner + runner_up)).max(0.5)
     } else {
         0.5

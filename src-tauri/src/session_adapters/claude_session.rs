@@ -5,10 +5,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Maximum byte length accepted for the combined bare-argv arguments passed to
+/// the Claude CLI.  Windows `CreateProcess` imposes a ~32 KiB command-line
+/// limit; exceeding it causes silent truncation or `ERROR_FILENAME_EXCD_RANGE`.
+/// The threshold is conservative (32 KiB − 1 B) and is intentionally
+/// platform-agnostic so the same guard applies everywhere.
+///
+/// The rendered prompt itself is delivered via stdin (`-p -`) so it never
+/// reaches the process table; this guard therefore only bounds the remaining
+/// bare-argv values that are still sized by caller input (`--system-prompt`
+/// and `--json-schema`).
+const MAX_ARGV_PROMPT_BYTES: usize = 32_767;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use parking_lot::Mutex;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -71,9 +83,37 @@ impl ClaudeSubprocessSession {
         }
     }
 
-    fn build_command(&self, prompt: &str, response_schema: Option<&serde_json::Value>) -> Command {
+    fn build_command(
+        &self,
+        response_schema: Option<&serde_json::Value>,
+    ) -> Result<Command, CoreError> {
+        let turn = self.turn_count.load(Ordering::Relaxed);
+        let system_prompt = (turn == 0).then_some(self.system_prompt.as_ref()).flatten();
+        let schema_json = response_schema.map(serde_json::Value::to_string);
+
+        // Guard against the Windows CreateProcess command-line length limit.
+        // The rendered prompt is delivered via stdin (`-p -`), so the only
+        // remaining caller-sized bare-argv values are `--system-prompt` and
+        // `--json-schema`. Their combined length must stay under the limit or
+        // CreateProcess can silently truncate or fail to spawn on Windows.
+        let argv_bytes =
+            system_prompt.map_or(0, String::len) + schema_json.as_deref().map_or(0, str::len);
+        if argv_bytes > MAX_ARGV_PROMPT_BYTES {
+            return Err(CoreError::InvalidArguments {
+                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+                message: format!(
+                    "Claude session argv arguments exceed maximum length \
+                     ({argv_bytes} bytes > {MAX_ARGV_PROMPT_BYTES} byte limit); \
+                     shorten the system prompt or response schema before sending."
+                ),
+            });
+        }
+
         let mut cmd = Command::new(&self.surface.executable_path);
-        cmd.arg("-p");
+        // Pass `-` as the prompt argument so the Claude CLI reads the prompt
+        // from stdin, keeping PII (history + context + attachment previews) out
+        // of the process table (ps/Activity Monitor /proc/cmdline).
+        cmd.arg("-p").arg("-");
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
         cmd.arg("--include-partial-messages");
@@ -82,26 +122,23 @@ impl ClaudeSubprocessSession {
         cmd.arg("--model").arg(&self.model);
         cmd.arg("--session-id").arg(&self.cli_session_id);
 
-        let turn = self.turn_count.load(Ordering::Relaxed);
         if turn > 0 {
             cmd.arg("--continue");
         }
 
-        if turn == 0 {
-            if let Some(ref sp) = self.system_prompt {
-                cmd.arg("--system-prompt").arg(sp);
-            }
+        if let Some(sp) = system_prompt {
+            cmd.arg("--system-prompt").arg(sp);
         }
 
-        if let Some(schema) = response_schema {
-            cmd.arg("--json-schema").arg(schema.to_string());
+        if let Some(schema) = schema_json {
+            cmd.arg("--json-schema").arg(schema);
         }
 
-        cmd.arg(prompt);
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.kill_on_drop(true);
-        cmd
+        Ok(cmd)
     }
 }
 
@@ -110,7 +147,11 @@ impl ConversationSession for ClaudeSubprocessSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
         let prompt = render_message_payload(message, self.default_tools.as_deref());
         let response_schema = extract_native_response_schema(message.response_format.as_ref());
-        let mut cmd = self.build_command(&prompt, response_schema.as_ref());
+        let mut cmd = self
+            .build_command(response_schema.as_ref())
+            .inspect_err(|_err| {
+                *self.state.lock() = SessionState::Failed;
+            })?;
 
         let mut child = cmd.spawn().map_err(|err| {
             *self.state.lock() = SessionState::Failed;
@@ -119,6 +160,28 @@ impl ConversationSession for ClaudeSubprocessSession {
                 message: format!("Failed to spawn Claude session subprocess: {err}"),
             }
         })?;
+
+        // Deliver the rendered prompt over stdin so it never appears in the
+        // process table. Mirrors the one-shot `run_claude` stdin contract.
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            *self.state.lock() = SessionState::Failed;
+            CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: "Failed to open stdin for Claude session subprocess".to_string(),
+            }
+        })?;
+        // #6266 (P-3 sibling): write the prompt to stdin CONCURRENTLY with the
+        // stdout/stderr draining below, not inline before the stream loop — an
+        // inline blocking write could deadlock if the child fills its stdout/stderr
+        // pipe before it finishes reading stdin. The writer task is moved into the
+        // stream so it lives for the stream's duration and is aborted on drop; a
+        // write error (e.g. BrokenPipe from an early-exiting child) surfaces via
+        // the stream's exit/stderr handling rather than a pre-stream failure.
+        let prompt_bytes = prompt.as_bytes().to_vec();
+        let stdin_writer = AbortOnDropJoin::new(tokio::spawn(async move {
+            let _ = stdin.write_all(&prompt_bytes).await;
+            // `stdin` drops here, closing the pipe (EOF) so the child can finish.
+        }));
 
         let stdout = child.stdout.take().ok_or_else(|| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -140,6 +203,10 @@ impl ConversationSession for ClaudeSubprocessSession {
         let prompt_redaction = prompt.clone();
 
         let stream = async_stream::try_stream! {
+            // #6266 (P-3 sibling): keep the concurrent stdin writer alive for the
+            // stream's lifetime (aborted on drop) — it drains the prompt into the
+            // child while the loop below drains stdout, avoiding the pipe deadlock.
+            let _stdin_writer = stdin_writer;
             let mut lines = reader.lines();
             let deadline = tokio::time::Instant::now()
                 + tokio::time::Duration::from_secs(timeout_secs);
@@ -325,5 +392,67 @@ mod tests {
             None,
         );
         assert!(session.is_external());
+    }
+
+    fn session_with_system_prompt(system_prompt: Option<String>) -> ClaudeSubprocessSession {
+        let config = SessionConfig {
+            transport: SessionTransport::Subprocess,
+            surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
+            model: Some("sonnet".to_string()),
+            system_prompt,
+            tools_enabled: false,
+            cwd: None,
+            sandbox_policy: None,
+            approval_policy: None,
+        };
+        ClaudeSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("/usr/bin/false"),
+            },
+            &config,
+            Arc::new(AiSessionConfig::default()),
+            None,
+        )
+    }
+
+    /// The prompt travels over stdin (`-p -`), so even an enormous prompt no
+    /// longer contributes to the argv length: build_command must accept it
+    /// without rejecting on the CreateProcess limit.
+    #[test]
+    fn build_command_ignores_prompt_length_now_that_prompt_is_piped() {
+        let session = session_with_system_prompt(None);
+        // No system prompt and no schema → zero caller-sized argv bytes,
+        // regardless of how large the (stdin-delivered) prompt would be.
+        session
+            .build_command(None)
+            .expect("piped prompt must not be argv-length-bounded");
+    }
+
+    /// Regression guard: the argv-length guard must count the bare-argv values
+    /// that remain (`--system-prompt` + `--json-schema`), not just the prompt.
+    /// A previous undercount excluded these, allowing a Windows CreateProcess
+    /// spawn failure to slip through.
+    #[test]
+    fn build_command_rejects_oversized_argv_arguments() {
+        let oversized_system_prompt = "x".repeat(MAX_ARGV_PROMPT_BYTES + 1);
+        let session = session_with_system_prompt(Some(oversized_system_prompt));
+        // turn_count == 0 → the system prompt is emitted as a bare argv value.
+        let err = session
+            .build_command(None)
+            .expect_err("oversized argv arguments must be rejected");
+        assert_eq!(err.code(), "validation.invalid_arguments");
+    }
+
+    /// Regression guard: combined argv values at exactly the limit are accepted.
+    #[test]
+    fn build_command_accepts_argv_arguments_at_limit() {
+        let at_limit_system_prompt = "y".repeat(MAX_ARGV_PROMPT_BYTES);
+        let session = session_with_system_prompt(Some(at_limit_system_prompt));
+        // Unwrap panics with the CoreError diagnostic if build_command rejects
+        // the arguments, making the failure reason explicit rather than opaque.
+        session
+            .build_command(None)
+            .expect("argv arguments at exactly the limit must be accepted");
     }
 }

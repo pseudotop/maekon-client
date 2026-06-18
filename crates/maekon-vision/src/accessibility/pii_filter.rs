@@ -57,14 +57,19 @@ pub(crate) fn apply_pii_level(
         PiiFilterLevel::Standard => FocusedElementInfo {
             role,
             position,
-            label,
+            // The accessibility name/title frequently equals user content (a mail
+            // row's name is sender+subject; a contact row's is a phone/email), so
+            // mask it at the configured level — it was previously passed verbatim
+            // while `value`/extracted_text was masked, an in-function asymmetry that
+            // contradicts the model contract. (review4 V15)
+            label: label.map(|l| sanitize_title_with_level(&l, level)),
             value_length: value.map(|v| v.len() as u32),
             ..Default::default()
         },
         PiiFilterLevel::Basic => FocusedElementInfo {
             role,
             position,
-            label,
+            label: label.map(|l| sanitize_title_with_level(&l, level)),
             value_length: value.map(|v| v.len() as u32),
             extracted_text: value.map(|v| sanitize_title_with_level(v, PiiFilterLevel::Basic)),
         },
@@ -128,6 +133,28 @@ mod tests {
         assert!(
             info.extracted_text.is_none(),
             "Standard must not expose value text"
+        );
+    }
+
+    #[test]
+    fn standard_masks_pii_in_label() {
+        // review4 V15: the label (accessibility name) must be PII-masked at the
+        // configured level, not passed through verbatim.
+        let info = apply_pii_level(
+            "Row".into(),
+            Some("Re: invoice for client@example.com".into()),
+            Some("x"),
+            rect(),
+            PiiFilterLevel::Standard,
+        );
+        let label = info.label.expect("Standard exposes label");
+        assert!(
+            !label.contains("client@example.com"),
+            "label email must be masked: {label}"
+        );
+        assert!(
+            label.contains("[EMAIL]"),
+            "label must carry the [EMAIL] marker: {label}"
         );
     }
 
@@ -237,11 +264,12 @@ mod tests {
 
     #[test]
     fn value_length_counts_utf8_bytes() {
-        // len() is byte length; a 3-byte '한' value reports 3.
+        // len() is byte length; a 3-byte char (U+D55C, written as a \u escape to
+        // keep this source ASCII) reports 3.
         let info = apply_pii_level(
             "Edit".into(),
             None,
-            Some("한"),
+            Some("\u{D55C}"),
             None,
             PiiFilterLevel::Standard,
         );

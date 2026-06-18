@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { withdrawConsent } from '../../api/client'
 
-// withdraw_consent → ConsentSnapshot. 철회 후 status 는 NotGranted, 권한은 모두 false.
+// withdraw_consent → ConsentSnapshot. After withdrawal, status is NotGranted and all permissions are false.
 describe('withdraw_consent IPC contract', () => {
   afterEach(() => clearMocks())
 

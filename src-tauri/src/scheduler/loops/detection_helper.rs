@@ -8,11 +8,12 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 
-// OCR 재분석 동시 실행 상한선: 1
+// Concurrency cap for OCR re-analysis: 1
 //
-// 1초 모니터 틱마다 앱/타이틀 변경 시 OCR 작업을 spawn하면 빠른 창 전환 시
-// 태스크가 무한 누적된다. 가장 최신 씬만 의미있으므로 cap=1로 나머지는 skip.
-// segment.rs LLM_SUMMARY_SEMAPHORE(cap=4) 와 동일한 const_new + RAII 패턴 적용.
+// Spawning an OCR task on every app/title change at the 1-second monitor tick
+// would let tasks accumulate without bound during rapid window switching. Only
+// the most recent scene is meaningful, so cap=1 and skip the rest. Applies the
+// same const_new + RAII pattern as segment.rs LLM_SUMMARY_SEMAPHORE (cap=4).
 pub(super) static DETECTION_OCR_SEMAPHORE: Semaphore = Semaphore::const_new(1);
 
 use crate::magic_overlay::MagicOverlayHandle;
@@ -164,14 +165,15 @@ pub(super) fn maybe_reanalyze_detection(
         return;
     }
     if let (Some(finder), Some(overlay)) = (scene_finder, magic_overlay) {
-        // DETECTION_OCR_SEMAPHORE: 동시 OCR 1개로 제한.
-        // 이미 분석 중이면 현재 틱을 건너뜀 — 최신 씬만 의미있기 때문.
+        // DETECTION_OCR_SEMAPHORE: limit to 1 concurrent OCR.
+        // If analysis is already in progress, skip the current tick — only the
+        // latest scene is meaningful.
         match DETECTION_OCR_SEMAPHORE.try_acquire() {
             Ok(permit) => {
                 let finder = finder.clone();
                 let overlay = overlay.clone();
                 tokio::spawn(async move {
-                    // permit은 이 클로저가 종료될 때 자동 해제됨 (RAII).
+                    // The permit is released automatically when this closure ends (RAII).
                     let _permit = permit;
                     match finder.analyze_scene(None, None).await {
                         Ok(scene) => {
@@ -184,7 +186,8 @@ pub(super) fn maybe_reanalyze_detection(
                 });
             }
             Err(_) => {
-                // 이미 OCR 진행 중 — 이전 분석이 완료되면 최신 씬으로 재시도됨.
+                // OCR already in progress — once the previous analysis finishes,
+                // it will be retried with the latest scene.
                 debug!("DETECTION_OCR_SEMAPHORE exhausted, skipping reanalysis");
             }
         }
@@ -197,28 +200,30 @@ pub(super) fn maybe_reanalyze_detection(
 mod tests {
     use super::DETECTION_OCR_SEMAPHORE;
 
-    /// DETECTION_OCR_SEMAPHORE cap=1 검증.
+    /// Verify DETECTION_OCR_SEMAPHORE cap=1.
     ///
-    /// - permit 1개 획득 후 2번째 try_acquire는 Err를 반환해야 함 (skip 경로 진입).
-    /// - 첫 번째 permit drop 후 재획득 가능해야 함 (RAII 정상 해제 확인).
-    /// segment.rs llm_summary_semaphore_caps_at_four 와 동일한 패턴.
+    /// - After acquiring 1 permit, a 2nd try_acquire must return Err (enters the
+    ///   skip path).
+    /// - After dropping the first permit, re-acquisition must succeed (confirms
+    ///   RAII release).
+    /// Same pattern as segment.rs llm_summary_semaphore_caps_at_four.
     #[tokio::test]
     async fn test_detection_ocr_semaphore_skips_concurrent() {
-        // cap=1 이므로 첫 번째 permit 획득 성공.
+        // cap=1, so the first permit acquisition succeeds.
         let p1 = DETECTION_OCR_SEMAPHORE
             .try_acquire()
-            .expect("첫 번째 permit 획득 실패 — cap=1 세마포어가 비어있어야 함");
+            .expect("first permit acquisition failed — the cap=1 semaphore should be empty");
 
-        // 두 번째 획득은 실패해야 함 (OCR skip 경로).
+        // The second acquisition must fail (OCR skip path).
         assert!(
             matches!(
                 DETECTION_OCR_SEMAPHORE.try_acquire(),
                 Err(tokio::sync::TryAcquireError::NoPermits)
             ),
-            "세마포어가 소진된 상태에서 try_acquire는 TryAcquireError::NoPermits 를 반환해야 함"
+            "try_acquire on an exhausted semaphore must return TryAcquireError::NoPermits"
         );
 
-        // permit drop → RAII 해제 후 재획득 가능.
+        // Drop the permit → re-acquisition possible after RAII release.
         drop(p1);
 
         // Pin: after the permit is dropped the next try_acquire must succeed,

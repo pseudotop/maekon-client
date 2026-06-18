@@ -13,7 +13,7 @@ use crate::error::StorageError;
 
 impl SqliteStorage {
     pub fn list_session_stats(&self, limit: usize) -> Result<Vec<SessionStats>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_session_stats_inner(read.conn(), limit)
     }
@@ -85,7 +85,7 @@ impl SqliteStorage {
         &self,
         from_hour: &str,
     ) -> Result<Vec<HourlyMetricsRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_hourly_metrics_since_inner(read.conn(), from_hour)
     }
@@ -246,7 +246,9 @@ impl MetricsStorage for SqliteStorage {
             .unwrap_or(hour);
         let hour_end = hour_start + Duration::hours(1);
 
-        let hour_str = hour_start.format("%Y-%m-%dT%H:00:00Z").to_string();
+        // Same hour-bucket key used by the range-delete and scheduled-retention
+        // paths — see `super::hour_bucket_key` (single source of truth).
+        let hour_str = super::hour_bucket_key(hour_start);
         let from_str = hour_start.to_rfc3339();
         let to_str = hour_end.to_rfc3339();
 
@@ -284,10 +286,10 @@ impl MetricsStorage for SqliteStorage {
                     .map_err(|e| {
                         StorageError::Internal(format!("Failed to save hourly aggregate: {e}"))
                     })?;
-                    debug!("hour: {} ({count}items )", hour_str);
+                    debug!("hour: {} ({count} items)", hour_str);
                 }
                 Ok(_) => {
-                    debug!("hour: {} (data none)", hour_str);
+                    debug!("hour: {} (no data)", hour_str);
                 }
                 Err(e) => {
                     // Propagate genuine query errors rather than silently
@@ -319,7 +321,36 @@ impl MetricsStorage for SqliteStorage {
                 })?;
 
             if deleted > 0 {
-                info!("{deleted}items delete");
+                info!("{deleted} metrics deleted");
+            }
+            Ok(deleted)
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn cleanup_old_hourly_metrics(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
+        // The `hour` column stores an hour-truncated, Z-suffixed bucket key
+        // (`aggregate_hourly_metrics` writes `%Y-%m-%dT%H:00:00Z`). Format the
+        // cutoff the same way so the lexical string comparison matches the
+        // stored column format exactly — a `to_rfc3339()` cutoff would carry a
+        // `+00:00` offset and sub-hour precision, mismatching the bucket key.
+        // We delete strictly-older buckets (`< cutoff`) so the bucket landing
+        // on the cutoff hour itself is retained.
+        let cutoff = super::hour_bucket_key(before);
+
+        self.with_conn(move |conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM system_metrics_hourly WHERE hour < ?1",
+                    rusqlite::params![cutoff],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to delete stale hourly metrics: {e}"))
+                })?;
+
+            if deleted > 0 {
+                info!("hourly metrics: {deleted} deleted");
             }
             Ok(deleted)
         })
@@ -412,7 +443,7 @@ impl MetricsStorage for SqliteStorage {
                 })?;
 
             if deleted > 0 {
-                info!("{deleted}items delete");
+                info!("{deleted} snapshots deleted");
             }
             Ok(deleted)
         })
@@ -432,7 +463,7 @@ impl MetricsStorage for SqliteStorage {
                 rusqlite::params![start_time_str],
             )
             .map_err(|e| {
-                StorageError::Internal(format!("idle period started record failure: {e}"))
+                StorageError::Internal(format!("failed to record idle period start: {e}"))
             })?;
 
             let id = conn.last_insert_rowid();
@@ -449,16 +480,21 @@ impl MetricsStorage for SqliteStorage {
         self.with_conn(move |conn| {
             let duration_secs: i64 = conn
                 .query_row(
+                    // ROUND before the integer CAST: julianday() arithmetic is
+                    // floating-point, so a true N-second interval often lands at
+                    // N - epsilon (e.g. 59.999996). A bare CAST truncates toward
+                    // zero and systematically undercounts idle seconds by ~1.
+                    // ROUND() pins it to the nearest whole second.
                     "UPDATE idle_periods
                      SET end_time = ?1,
-                         duration_secs = CAST((julianday(?1) - julianday(start_time)) * 86400 AS INTEGER)
+                         duration_secs = CAST(ROUND((julianday(?1) - julianday(start_time)) * 86400) AS INTEGER)
                      WHERE id = ?2
                      RETURNING duration_secs",
                     rusqlite::params![end_time_str, id],
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    StorageError::Internal(format!("idle period ended record failure: {e}"))
+                    StorageError::Internal(format!("failed to record idle period end: {e}"))
                 })?;
 
             debug!("idle period ended: id={}, duration={}s", id, duration_secs);
@@ -493,7 +529,7 @@ impl MetricsStorage for SqliteStorage {
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(StorageError::Internal(format!(
-                    "진행 중 idle period query failure: {e}"
+                    "ongoing idle period query failure: {e}"
                 ))),
             }
         })
@@ -564,7 +600,7 @@ impl MetricsStorage for SqliteStorage {
                 })?;
 
             if deleted > 0 {
-                info!("idle period {deleted}items delete");
+                info!("idle periods: {deleted} deleted");
             }
             Ok(deleted)
         })
@@ -603,7 +639,7 @@ impl MetricsStorage for SqliteStorage {
             )
             .map_err(|e| StorageError::Internal(format!("Failed to save session stats: {e}")))?;
 
-            debug!("session save: {}", session_id);
+            debug!("session saved: {}", session_id);
             Ok(())
         })
         .await
@@ -674,7 +710,7 @@ impl MetricsStorage for SqliteStorage {
                 "UPDATE session_stats SET ended_at = ?1 WHERE session_id = ?2",
                 rusqlite::params![ended_at_str, session_id],
             )
-            .map_err(|e| StorageError::Internal(format!("session ended record failure: {e}")))?;
+            .map_err(|e| StorageError::Internal(format!("failed to record session end: {e}")))?;
 
             debug!("session ended: {}", session_id);
             Ok(())

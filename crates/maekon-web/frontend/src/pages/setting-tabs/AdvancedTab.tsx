@@ -88,7 +88,7 @@ export default function AdvancedTab() {
         <div className="grid grid-cols-2 gap-4">
           <NumberField
             id="ai-session-max-concurrent"
-            label="Max concurrent sessions"
+            label={t('advancedTab.maxConcurrentSessions')}
             value={formData.ai_session.max_concurrent_sessions}
             onChange={(v) => handleChange('ai_session', 'max_concurrent_sessions', v)}
             min={1}
@@ -96,21 +96,21 @@ export default function AdvancedTab() {
           />
           <NumberField
             id="ai-session-idle-timeout"
-            label="Idle timeout (seconds)"
+            label={t('advancedTab.idleTimeoutSeconds')}
             value={formData.ai_session.idle_timeout_secs}
             onChange={(v) => handleChange('ai_session', 'idle_timeout_secs', v)}
             min={30}
           />
           <NumberField
             id="ai-session-timeout"
-            label="Session timeout (seconds)"
+            label={t('advancedTab.sessionTimeoutSeconds')}
             value={formData.ai_session.session_timeout_secs}
             onChange={(v) => handleChange('ai_session', 'session_timeout_secs', v)}
             min={60}
           />
           <NumberField
             id="ai-session-retries"
-            label="Max retries"
+            label={t('advancedTab.maxRetries')}
             value={formData.ai_session.max_retries}
             onChange={(v) => handleChange('ai_session', 'max_retries', v)}
             min={0}
@@ -118,14 +118,14 @@ export default function AdvancedTab() {
           />
           <NumberField
             id="ai-session-history"
-            label="Max history turns"
+            label={t('advancedTab.maxHistoryTurns')}
             value={formData.ai_session.max_history_turns}
             onChange={(v) => handleChange('ai_session', 'max_history_turns', v)}
             min={10}
           />
           <NumberField
             id="ai-session-health"
-            label="Health check interval (seconds)"
+            label={t('advancedTab.healthCheckIntervalSeconds')}
             value={formData.ai_session.health_check_interval_secs}
             onChange={(v) => handleChange('ai_session', 'health_check_interval_secs', v)}
             min={5}
@@ -137,8 +137,8 @@ export default function AdvancedTab() {
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.advanced.suggestion', 'Suggestions')}</CardTitle>
         <ToggleRow
-          label="Enable suggestions"
-          description="Receive AI-powered suggestions based on your activity"
+          label={t('advancedTab.enableSuggestions')}
+          description={t('advancedTab.enableSuggestionsDescription')}
           checked={formData.suggestion.enabled}
           onChange={(v) => handleChange('suggestion', 'enabled', v)}
         />
@@ -149,20 +149,20 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.indicator', 'Screen Indicator')}</CardTitle>
         <div className="space-y-4">
           <ToggleRow
-            label="Show border"
-            description="Display a colored border around the screen when monitoring"
+            label={t('advancedTab.showBorder')}
+            description={t('advancedTab.showBorderDescription')}
             checked={formData.indicator.show_border}
             onChange={(v) => handleChange('indicator', 'show_border', v)}
           />
           <ToggleRow
-            label="Show panel"
-            description="Display the tracking status panel"
+            label={t('advancedTab.showPanel')}
+            description={t('advancedTab.showPanelDescription')}
             checked={formData.indicator.show_panel}
             onChange={(v) => handleChange('indicator', 'show_panel', v)}
           />
           <NumberField
             id="indicator-opacity"
-            label="Border opacity (0.0 - 1.0)"
+            label={t('advancedTab.borderOpacity')}
             value={formData.indicator.border_opacity}
             onChange={(v) => handleChange('indicator', 'border_opacity', v)}
             min={0}
@@ -176,22 +176,22 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.analysis', 'Analysis Pipeline')}</CardTitle>
         <div className="space-y-4">
           <ToggleRow
-            label="Enable analysis"
-            description="Run LLM analysis on activity segments"
+            label={t('advancedTab.enableAnalysis')}
+            description={t('advancedTab.enableAnalysisDescription')}
             checked={formData.analysis.enabled}
             onChange={(v) => handleChange('analysis', 'enabled', v)}
           />
           <div className="grid grid-cols-2 gap-4">
             <NumberField
               id="analysis-interval"
-              label="Analysis interval (seconds)"
+              label={t('advancedTab.analysisIntervalSeconds')}
               value={formData.analysis.interval_secs}
               onChange={(v) => handleChange('analysis', 'interval_secs', v)}
               min={10}
             />
             <NumberField
               id="analysis-confidence"
-              label="Min confidence (0.0 - 1.0)"
+              label={t('advancedTab.minConfidence')}
               value={formData.analysis.min_confidence}
               onChange={(v) => handleChange('analysis', 'min_confidence', v)}
               min={0}
@@ -199,7 +199,7 @@ export default function AdvancedTab() {
             />
             <NumberField
               id="analysis-max-suggestions"
-              label="Max suggestions"
+              label={t('advancedTab.maxSuggestions')}
               value={formData.analysis.max_suggestions}
               onChange={(v) => handleChange('analysis', 'max_suggestions', v)}
               min={1}
@@ -207,7 +207,7 @@ export default function AdvancedTab() {
             />
             <NumberField
               id="regime-detection-interval"
-              label="Regime detection interval (hours)"
+              label={t('advancedTab.regimeDetectionIntervalHours')}
               value={formData.analysis.tiered_memory?.regime_detection_interval_hours ?? 2}
               onChange={(v) => handleChange('analysis', 'regime_detection_interval_hours' as never, v)}
               min={1}
@@ -215,26 +215,26 @@ export default function AdvancedTab() {
             />
           </div>
           <ToggleRow
-            label="Embedding"
-            description="Enable vector embedding for semantic search"
+            label={t('advancedTab.embedding')}
+            description={t('advancedTab.embeddingDescription')}
             checked={formData.analysis.embedding_enabled}
             onChange={(v) => handleChange('analysis', 'embedding_enabled', v)}
           />
           <ToggleRow
-            label="GUI intelligence"
-            description="Detect and aggregate GUI interaction patterns"
+            label={t('advancedTab.guiIntelligence')}
+            description={t('advancedTab.guiIntelligenceDescription')}
             checked={formData.analysis.gui_intelligence_enabled}
             onChange={(v) => handleChange('analysis', 'gui_intelligence_enabled', v)}
           />
           <ToggleRow
-            label="Text intelligence"
-            description="Extract and classify text patterns from activity"
+            label={t('advancedTab.textIntelligence')}
+            description={t('advancedTab.textIntelligenceDescription')}
             checked={formData.analysis.text_intelligence_enabled}
             onChange={(v) => handleChange('analysis', 'text_intelligence_enabled', v)}
           />
           <ToggleRow
-            label="Auto-tuner"
-            description="EMA-based drift detection and automatic re-clustering of behavioral regimes"
+            label={t('advancedTab.autoTuner')}
+            description={t('advancedTab.autoTunerDescription')}
             checked={formData.analysis.auto_tuner_enabled}
             onChange={(v) => handleChange('analysis', 'auto_tuner_enabled', v)}
           />
@@ -246,7 +246,7 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.network', 'Network & Server')}</CardTitle>
         <div className="space-y-4">
           <div>
-            <SectionLabel htmlFor="network-base-url">Server base URL</SectionLabel>
+            <SectionLabel htmlFor="network-base-url">{t('advancedTab.serverBaseUrl')}</SectionLabel>
             <Input
               id="network-base-url"
               value={formData.network.server_base_url}
@@ -256,20 +256,20 @@ export default function AdvancedTab() {
           </div>
           <NumberField
             id="network-timeout"
-            label="Request timeout (ms)"
+            label={t('advancedTab.requestTimeoutMs')}
             value={formData.network.request_timeout_ms}
             onChange={(v) => handleChange('network', 'request_timeout_ms', v)}
             min={1000}
           />
           <ToggleRow
-            label="gRPC enabled"
-            description="Use gRPC for server communication (requires server support)"
+            label={t('advancedTab.grpcEnabled')}
+            description={t('advancedTab.grpcEnabledDescription')}
             checked={formData.network.grpc_enabled}
             onChange={(v) => handleChange('network', 'grpc_enabled', v)}
           />
           {formData.network.grpc_enabled && (
             <div>
-              <SectionLabel htmlFor="network-grpc-endpoint">gRPC endpoint</SectionLabel>
+              <SectionLabel htmlFor="network-grpc-endpoint">{t('advancedTab.grpcEndpoint')}</SectionLabel>
               <Input
                 id="network-grpc-endpoint"
                 value={formData.network.grpc_endpoint}
@@ -279,8 +279,8 @@ export default function AdvancedTab() {
             </div>
           )}
           <ToggleRow
-            label="TLS enabled"
-            description="Encrypt outbound connections with TLS"
+            label={t('advancedTab.tlsEnabled')}
+            description={t('advancedTab.tlsEnabledDescription')}
             checked={formData.network.tls_enabled}
             onChange={(v) => handleChange('network', 'tls_enabled', v)}
           />
@@ -292,13 +292,13 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.coaching', 'Coaching')}</CardTitle>
         <div className="space-y-4">
           <ToggleRow
-            label="Enable coaching"
-            description="Proactive productivity coaching and goal tracking"
+            label={t('advancedTab.enableCoaching')}
+            description={t('advancedTab.enableCoachingDescription')}
             checked={formData.coaching.enabled}
             onChange={(v) => handleChange('coaching', 'enabled', v)}
           />
           <div>
-            <SectionLabel htmlFor="coaching-locale">Locale</SectionLabel>
+            <SectionLabel htmlFor="coaching-locale">{t('advancedTab.locale')}</SectionLabel>
             <Input
               id="coaching-locale"
               value={formData.coaching.locale}
@@ -314,22 +314,22 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.integration', 'Integration')}</CardTitle>
         <div className="space-y-4">
           <ToggleRow
-            label="Enable integration"
-            description="Connect to external integration hub"
+            label={t('advancedTab.enableIntegration')}
+            description={t('advancedTab.enableIntegrationDescription')}
             checked={formData.integration.enabled}
             onChange={(v) => handleChange('integration', 'enabled', v)}
           />
           <div className="grid grid-cols-2 gap-4">
             <NumberField
               id="integration-timeout"
-              label="Request timeout (seconds)"
+              label={t('advancedTab.integrationRequestTimeoutSeconds')}
               value={formData.integration.request_timeout_secs}
               onChange={(v) => handleChange('integration', 'request_timeout_secs', v)}
               min={5}
             />
             <NumberField
               id="integration-sync"
-              label="Sync interval (seconds)"
+              label={t('advancedTab.integrationSyncIntervalSeconds')}
               value={formData.integration.sync_interval_secs}
               onChange={(v) => handleChange('integration', 'sync_interval_secs', v)}
               min={10}
@@ -343,15 +343,15 @@ export default function AdvancedTab() {
         <CardTitle sticky>{t('settings.advanced.sync', 'Cross-Device Sync')}</CardTitle>
         <div className="space-y-4">
           <ToggleRow
-            label="Enable sync"
-            description="Synchronize data across devices"
+            label={t('advancedTab.enableSync')}
+            description={t('advancedTab.enableSyncDescription')}
             checked={formData.sync.enabled}
             onChange={(v) => handleChange('sync', 'enabled', v)}
           />
           {formData.sync.enabled && (
             <>
               <div>
-                <SectionLabel htmlFor="sync-device-name">Device name</SectionLabel>
+                <SectionLabel htmlFor="sync-device-name">{t('advancedTab.deviceName')}</SectionLabel>
                 <Input
                   id="sync-device-name"
                   value={formData.sync.device_name}
@@ -361,20 +361,20 @@ export default function AdvancedTab() {
               </div>
               <NumberField
                 id="sync-interval"
-                label="Sync interval (seconds)"
+                label={t('advancedTab.syncIntervalSeconds')}
                 value={formData.sync.interval_secs}
                 onChange={(v) => handleChange('sync', 'interval_secs', v)}
                 min={30}
               />
               <ToggleRow
-                label="LAN discovery"
-                description="Advertise this device on the local network for peer sync"
+                label={t('advancedTab.lanDiscovery')}
+                description={t('advancedTab.lanDiscoveryDescription')}
                 checked={formData.sync.lan_advertise}
                 onChange={(v) => handleChange('sync', 'lan_advertise', v)}
               />
               <ToggleRow
-                label="Payload compression"
-                description="Compress changeset payloads before encryption to reduce bandwidth"
+                label={t('advancedTab.payloadCompression')}
+                description={t('advancedTab.payloadCompressionDescription')}
                 checked={formData.sync.compression_enabled}
                 onChange={(v) => handleChange('sync', 'compression_enabled', v)}
               />

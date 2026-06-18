@@ -103,7 +103,9 @@ impl LanSyncTransport {
             Ok(r) => {
                 let status = r.status();
                 let body = r.text().await.unwrap_or_default();
-                warn!(peer_id, %status, body, "push to LAN peer rejected");
+                // Log response length only — peer error bodies may contain
+                // echoed request fragments or internal server details (#6006).
+                warn!(peer_id, %status, response_len = body.len(), "push to LAN peer rejected");
                 Ok(false)
             }
             Err(e) => {

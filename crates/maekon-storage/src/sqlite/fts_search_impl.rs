@@ -1,3 +1,5 @@
+// lint:allow-non-english-comments — contains illustrative CJK/Korean example tokens
+// documenting CJK bigram full-text search behavior; they must remain non-English.
 use async_trait::async_trait;
 use maekon_core::error::CoreError;
 use maekon_core::ports::text_search::{TextSearchProvider, TextSearchResult};

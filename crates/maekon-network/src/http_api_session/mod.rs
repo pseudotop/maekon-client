@@ -93,6 +93,75 @@ struct PartialToolCall {
     arguments: String,
 }
 
+/// Upper bound on the number of tool-call slots a single SSE response may
+/// allocate. The `index`/`output_index` field on a `ToolCallDelta` is read
+/// verbatim from the wire, so a malicious, buggy, or MITM endpoint could send a
+/// huge index and force unbounded `Vec` growth (OOM/DoS, blowing the ~100MB
+/// budget). Deltas whose index is at or above this cap are dropped. 256 is far
+/// beyond any realistic tool-call count in one turn.
+const MAX_TOOL_CALLS: usize = 256;
+
+/// Upper bound on the total bytes a single streaming turn may accumulate across
+/// assistant text plus every tool-call's argument buffer.
+///
+/// Per-event size is already capped, and per-turn tool-call *count* is capped by
+/// [`MAX_TOOL_CALLS`], but neither bounds the *aggregate* growth: a hostile or
+/// buggy endpoint can stream an unbounded number of in-cap text/argument deltas
+/// and slowly exhaust the heap of this 24/7 process (blowing the ~100MB budget).
+/// When the running total exceeds this ceiling the turn is terminated with an
+/// error instead of accumulating further. 8 MiB is generous for any legitimate
+/// assistant turn while staying an order of magnitude under the process budget;
+/// it is intentionally larger than the 1 MiB per-event/`MAX_WS_MESSAGE_BYTES`
+/// cap so a single in-cap event never trips it.
+const MAX_TURN_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Merge a single `ToolCallDelta` into the accumulated tool-call buffer.
+///
+/// `index` is read verbatim from the wire, so it is bounds-checked against
+/// [`MAX_TOOL_CALLS`] before the buffer is grown: out-of-range deltas are
+/// dropped (with a warning) rather than forcing unbounded allocation.
+///
+/// Returns the number of argument bytes actually appended so the caller can fold
+/// them into the per-turn byte budget ([`MAX_TURN_RESPONSE_BYTES`]). A dropped
+/// (out-of-range) delta contributes 0.
+fn accumulate_tool_call_delta(
+    tool_calls: &mut Vec<PartialToolCall>,
+    index: u32,
+    id: &str,
+    name: &str,
+    arguments_chunk: &str,
+) -> usize {
+    let idx = index as usize;
+    if idx >= MAX_TOOL_CALLS {
+        warn!(
+            index = idx,
+            cap = MAX_TOOL_CALLS,
+            "dropping tool-call delta with out-of-range index"
+        );
+        return 0;
+    }
+    // Ensure the vec is large enough (bounded by MAX_TOOL_CALLS above).
+    while tool_calls.len() <= idx {
+        tool_calls.push(PartialToolCall {
+            id: String::new(),
+            name: String::new(),
+            arguments: String::new(),
+        });
+    }
+    if !id.is_empty() {
+        tool_calls[idx].id.clear();
+        tool_calls[idx].id.push_str(id);
+    }
+    if !name.is_empty() {
+        tool_calls[idx].name.clear();
+        tool_calls[idx].name.push_str(name);
+    }
+    if !arguments_chunk.is_empty() {
+        tool_calls[idx].arguments.push_str(arguments_chunk);
+    }
+    arguments_chunk.len()
+}
+
 impl HttpApiSession {
     /// Create a new HTTP API session.
     pub fn new(init: HttpApiSessionInit) -> Self {
@@ -347,14 +416,19 @@ impl ConversationSession for HttpApiSession {
 
         let user_msg = prepare_chat_message(message, &shape);
 
-        // Append user message to history
-        {
-            let mut history = self.history.write().await;
-            history.push(user_msg);
-        }
-
-        // Snapshot history for the request
-        let messages_snapshot = self.history.read().await.clone();
+        // #6125: Do NOT commit the user message into the shared `self.history`
+        // until the handshake (auth + transport + 2xx status) succeeds. The
+        // session is reused on retry (error_recovery resets transient
+        // 429/503/timeout/network errors back to Active without clearing
+        // history), so committing before the handshake means a failed send
+        // leaves the user message in history and a re-send pushes a SECOND
+        // copy — egressing two identical user messages to the provider.
+        //
+        // Instead build the request body from a local snapshot that includes
+        // the user message, and only push it into live history once the 2xx
+        // response is confirmed.
+        let mut messages_snapshot = self.history.read().await.clone();
+        messages_snapshot.push(user_msg.clone());
         let effective_tools = message
             .tools
             .as_deref()
@@ -440,6 +514,15 @@ impl ConversationSession for HttpApiSession {
             });
         }
 
+        // #6125: Handshake confirmed (2xx) — now atomically commit the user
+        // message to the shared history. Every Err path above returns before
+        // reaching here, so a failed send never mutates history and a retry
+        // cannot push a duplicate copy.
+        {
+            let mut history = self.history.write().await;
+            history.push(user_msg);
+        }
+
         let history = self.history.clone();
         let max_turns = self.config.max_history_turns;
         let turn_count = &self.turn_count;
@@ -450,6 +533,10 @@ impl ConversationSession for HttpApiSession {
         let stream: ResponseStream = Box::pin(try_stream! {
             let mut accumulated = String::new();
             let mut tool_calls: Vec<PartialToolCall> = Vec::new();
+            // Running total across accumulated assistant text + every tool-call's
+            // argument bytes. Bounds aggregate growth so a stream of individually
+            // in-cap deltas cannot exhaust the heap (see MAX_TURN_RESPONSE_BYTES).
+            let mut turn_bytes: usize = 0;
 
             let is_anthropic = matches!(
                 shape,
@@ -477,36 +564,81 @@ impl ConversationSession for HttpApiSession {
                         if let Some(msg) = parsed {
                             match &msg {
                                 OutboundMessage::ToolCallDelta { index, id, name, arguments_chunk } => {
-                                    let idx = *index as usize;
-                                    // Ensure vec is large enough
-                                    while tool_calls.len() <= idx {
-                                        tool_calls.push(PartialToolCall { id: String::new(), name: String::new(), arguments: String::new() });
-                                    }
-                                    if !id.is_empty() { tool_calls[idx].id.clone_from(id); }
-                                    if !name.is_empty() { tool_calls[idx].name.clone_from(name); }
-                                    if !arguments_chunk.is_empty() {
-                                        tool_calls[idx].arguments.push_str(arguments_chunk);
+                                    // Accumulation is guarded against unbounded `index` values
+                                    // (OOM/DoS) inside the helper.
+                                    let appended = accumulate_tool_call_delta(&mut tool_calls, *index, id, name, arguments_chunk);
+                                    turn_bytes = turn_bytes.saturating_add(appended);
+                                    if turn_bytes > MAX_TURN_RESPONSE_BYTES {
+                                        warn!(
+                                            turn_bytes,
+                                            cap_bytes = MAX_TURN_RESPONSE_BYTES,
+                                            "turn response exceeded byte cap — terminating turn"
+                                        );
+                                        Err(CoreError::Network {
+                                            code: maekon_core::error_codes::NetworkCode::Generic,
+                                            message: format!(
+                                                "streaming turn exceeded {MAX_TURN_RESPONSE_BYTES}-byte response cap"
+                                            ),
+                                        })?;
                                     }
                                     // ToolCallDelta is internal — don't yield to consumer
                                     continue;
                                 }
                                 OutboundMessage::Text { content, .. } => {
                                     accumulated.push_str(content);
-                                }
-                                OutboundMessage::Result { .. } => {
-                                    // Emit accumulated tool calls before saving text history
-                                    for tc in tool_calls.drain(..) {
-                                        if tc.name.is_empty() { continue; }
-                                        let parsed_args = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                                        yield OutboundMessage::ToolUse {
-                                            tool: tc.name,
-                                            input: Some(parsed_args),
-                                            status: ToolUseStatus::Started,
-                                            result: None,
-                                        };
+                                    turn_bytes = turn_bytes.saturating_add(content.len());
+                                    if turn_bytes > MAX_TURN_RESPONSE_BYTES {
+                                        warn!(
+                                            turn_bytes,
+                                            cap_bytes = MAX_TURN_RESPONSE_BYTES,
+                                            "turn response exceeded byte cap — terminating turn"
+                                        );
+                                        Err(CoreError::Network {
+                                            code: maekon_core::error_codes::NetworkCode::Generic,
+                                            message: format!(
+                                                "streaming turn exceeded {MAX_TURN_RESPONSE_BYTES}-byte response cap"
+                                            ),
+                                        })?;
                                     }
+                                }
+                                OutboundMessage::Result { content, done, .. } => {
+                                    // #6197: the Result arm matches BOTH the
+                                    // intermediate usage-only chunk (done=false —
+                                    // Anthropic message_delta, OpenAI-Chat usage
+                                    // chunk) AND the terminal chunk (done=true —
+                                    // message_stop, [DONE], finish_reason). Only
+                                    // the terminal chunk must mutate history;
+                                    // saving on the usage-only chunk pushed a
+                                    // SECOND identical assistant message per turn.
+                                    // The intermediate Result is still yielded
+                                    // below for live token display.
+                                    if *done {
+                                        // #6203: when a provider (Gemini) delivers
+                                        // the final text in the SAME chunk as
+                                        // usageMetadata/finishReason, that text
+                                        // arrives as Result{content,done:true} and
+                                        // was never seen by the Text arm. Fold it
+                                        // into `accumulated` before saving so the
+                                        // final text is preserved in history and
+                                        // available for suggestion extraction.
+                                        if !content.is_empty() {
+                                            accumulated.push_str(content);
+                                        }
 
-                                    save_assistant_response(&history, &accumulated, max_turns).await;
+                                        // Emit accumulated tool calls before saving text history
+                                        for tc in tool_calls.drain(..) {
+                                            if tc.name.is_empty() { continue; }
+                                            let parsed_args = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                                            yield OutboundMessage::ToolUse {
+                                                tool: tc.name,
+                                                input: Some(parsed_args),
+                                                status: ToolUseStatus::Started,
+                                                result: None,
+                                            };
+                                        }
+
+                                        save_assistant_response(&history, &accumulated, max_turns).await;
+                                    }
                                 }
                                 OutboundMessage::Thinking { .. } => {
                                     // Stream to frontend but don't accumulate in history

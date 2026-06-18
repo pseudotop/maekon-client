@@ -26,7 +26,10 @@
 //! ## TLS
 //!
 //! When valid PEM cert/key are provided, the server binds with TLS via `axum-server`.
-//! If the cert/key are invalid or empty (e.g., in tests), falls back to plain HTTP.
+//! When both cert/key are empty (e.g., in transport-level tests), it falls back to
+//! plain HTTP. Non-empty but invalid cert/key fail closed (`start()` returns `Err`)
+//! rather than silently downgrading to cleartext, which would expose device metadata
+//! and defeat TOFU certificate pinning.
 //!
 //! Requires the `lan-sync` feature flag.
 
@@ -175,8 +178,10 @@ impl LanPeerServer {
     /// ## TLS
     ///
     /// If valid PEM-encoded `cert_pem` and `key_pem` are provided, the server
-    /// binds with TLS via `axum-server` + `rustls`. Otherwise falls back to
-    /// plain HTTP (e.g., in unit tests or when cert generation fails).
+    /// binds with TLS via `axum-server` + `rustls`. If both are empty, it falls
+    /// back to plain HTTP (e.g., transport-level unit tests). If non-empty cert/key
+    /// are supplied but fail to parse or build, `start()` returns `Err` (fail
+    /// closed) -- it does NOT downgrade to cleartext HTTP.
     pub async fn start(
         &mut self,
         cert_pem: &[u8],
@@ -203,9 +208,12 @@ impl LanPeerServer {
         let app = build_router(state);
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-        // Try TLS, fall back to plain HTTP on failure
+        // Build TLS config. Empty cert/key means TLS is intentionally disabled
+        // (plain HTTP fallback). Non-empty but invalid cert/key fail closed
+        // (propagated as Err) -- never silently downgraded to cleartext HTTP,
+        // which would expose device metadata and defeat TOFU pinning.
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let tls_config = try_build_tls_config(cert_pem, key_pem).await;
+        let tls_config = try_build_tls_config(cert_pem, key_pem).await?;
         let tls_enabled = tls_config.is_some();
 
         let actual_port = if let Some(config) = tls_config {

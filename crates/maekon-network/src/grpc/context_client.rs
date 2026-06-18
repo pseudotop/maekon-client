@@ -107,7 +107,7 @@ impl GrpcContextClient {
         Ok(response.into_inner())
     }
 
-    /// Subscribe to server-streamed suggestions (인증 헤더 없음 — 내부 테스트 전용).
+    /// Subscribe to server-streamed suggestions (no auth header — internal test only).
     #[deprecated(note = "test only — use subscribe_suggestions_with_token")]
     pub async fn subscribe_suggestions(
         &mut self,
@@ -118,9 +118,9 @@ impl GrpcContextClient {
 
     /// Subscribe to server-streamed suggestions with Bearer token injection.
     ///
-    /// F-RC-C22-04: `authorization: Bearer <token>` 메타데이터를 tonic Request 에
-    /// 주입하여 서버 AuthenticatedServiceWrapper 인증을 통과한다.
-    /// token 이 비어 있으면 헤더를 생략한다 (하위 호환 / 테스트 용도).
+    /// F-RC-C22-04: injects `authorization: Bearer <token>` metadata into the tonic
+    /// Request to pass the server's AuthenticatedServiceWrapper authentication.
+    /// An empty `token` omits the header (backward compatibility / test use).
     pub async fn subscribe_suggestions_with_token(
         &mut self,
         session_id: &str,
@@ -132,7 +132,7 @@ impl GrpcContextClient {
             session_id: session_id.to_string(),
         });
 
-        // F-RC-C22-04: Authorization 헤더 주입 — 서버 JWT 인증 게이트 통과.
+        // F-RC-C22-04: inject the Authorization header — passes the server JWT auth gate.
         super::auth_meta::inject_bearer_auth(&mut request, token)?;
 
         // F-RR-C25-02/06: use the streaming client (no channel-level timeout) so that the
@@ -194,10 +194,11 @@ impl GrpcContextClient {
 
 impl Drop for GrpcContextClient {
     fn drop(&mut self) {
-        // Tonic `Channel` はArc-backed クローンハンドル — 실제 연결 종료는 마지막
-        // 클론이 drop 될 때 발생함 (refcount → 0). 이 struct 의 drop 은 이 인스턴스의
-        // Arc 참조 하나를 해제할 뿐이며, 테스트 스파이 등 다른 곳에서 클론된
-        // Channel 이 존재하면 해당 클론이 모두 drop 될 때까지 연결이 유지됨.
+        // A tonic `Channel` is an Arc-backed clone handle — the actual connection
+        // is closed only when the last clone is dropped (refcount → 0). This
+        // struct's drop merely releases this instance's single Arc reference; if a
+        // Channel was cloned elsewhere (e.g. a test spy), the connection stays alive
+        // until all of those clones are dropped.
         // No JoinHandle to abort — pattern consistent with GrpcSseAdapter and
         // ReferenceServerHandle.
         debug!("GrpcContextClient dropped — Channel refcount decremented");
@@ -218,11 +219,11 @@ mod tests {
         assert_eq!(request.session_id, "session-456");
     }
 
-    // ---------- F-RC-C22-04: subscribe_suggestions Authorization 헤더 주입 ----------
+    // ---------- F-RC-C22-04: subscribe_suggestions Authorization header injection ----------
 
-    /// subscribe_suggestions_with_token 이 비어 있지 않은 토큰을 받으면
-    /// tonic Request 메타데이터에 `authorization: Bearer <token>` 이 포함된다.
-    /// (실제 gRPC 서버 연결 없이 Request 객체만 검사)
+    /// When `subscribe_suggestions_with_token` receives a non-empty token, the tonic
+    /// Request metadata must contain `authorization: Bearer <token>`.
+    /// (Inspects only the Request object — no real gRPC server connection.)
     #[test]
     fn subscribe_with_token_injects_authorization_header() {
         use crate::proto::client_v1::SubscribeRequest;
@@ -230,8 +231,8 @@ mod tests {
         let token = "test_jwt_token_abc123";
         let session_id = "sess-xyz";
 
-        // subscribe_suggestions_with_token 내부 Request 구성 로직을 직접 재현해
-        // 메타데이터 주입 결과를 단위 검증한다.
+        // Reproduce the Request-construction logic inside
+        // subscribe_suggestions_with_token to unit-test the metadata injection result.
         let mut request = tonic::Request::new(SubscribeRequest {
             session_id: session_id.to_string(),
         });
@@ -255,37 +256,39 @@ mod tests {
         );
     }
 
-    /// 잘못된 문자(ASCII 제어 문자 등)가 포함된 토큰 → `CoreError::Auth` 반환.
+    /// A token containing invalid characters (e.g. ASCII control chars) → returns
+    /// `CoreError::Auth`.
     ///
-    /// F-QA-C23-01: bearer.parse() 실패 경로 커버리지.
-    /// tonic MetadataValue 은 HTTP/1.1 헤더 값 규격(RFC 7230)을 따르므로
-    /// 제어 문자(`\x01` 등)가 포함된 문자열 파싱은 실패한다.
+    /// F-QA-C23-01: coverage for the bearer.parse() failure path.
+    /// tonic MetadataValue follows the HTTP/1.1 header-value spec (RFC 7230), so
+    /// parsing a string containing control chars (e.g. `\x01`) fails.
     #[test]
     fn subscribe_with_invalid_token_returns_auth_error() {
-        // \u{0001} 은 ASCII 제어 문자(SOH) — HTTP 헤더 값으로 유효하지 않다.
+        // \u{0001} is the ASCII control char SOH — invalid as an HTTP header value.
         let token = "\u{0001}invalid-token-with-control-char";
         let bearer = format!("Bearer {token}");
 
-        // tonic::metadata::MetadataValue::from_str 은 RFC 7230 위반 시 Err 를 반환한다.
+        // tonic::metadata::MetadataValue::from_str returns Err on an RFC 7230 violation.
         let result: Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, _> =
             bearer.parse();
 
-        // 파싱이 실패하면 CoreError::Auth 로 변환됨을 검증한다.
+        // Verify that a parse failure is converted into CoreError::Auth.
         let _parse_err = result.unwrap_err(); // InvalidMetadataValue: control char rejected by RFC 7230
 
         let core_error = CoreError::Auth {
             code: maekon_core::error_codes::AuthCode::Failed,
             message: "authorization header value contains invalid characters".to_string(),
         };
-        // 오류 변환 자체는 subscribe_suggestions_with_token 내 map_err 에서 발생하므로
-        // 여기서는 파싱 실패 + CoreError 형식이 일치하는지만 검증한다.
+        // The error conversion itself happens in the map_err inside
+        // subscribe_suggestions_with_token, so here we only verify that the parse
+        // fails and that the CoreError shape matches.
         assert!(
             matches!(core_error, CoreError::Auth { .. }),
-            "파싱 실패 시 CoreError::Auth 로 매핑되어야 한다"
+            "a parse failure must map to CoreError::Auth"
         );
     }
 
-    /// 빈 토큰 → 헤더 미주입 (하위 호환 경로).
+    /// Empty token → header not injected (backward-compatible path).
     #[test]
     fn subscribe_with_empty_token_omits_authorization_header() {
         use crate::proto::client_v1::SubscribeRequest;
@@ -372,34 +375,37 @@ mod tests {
         );
     }
 
-    // --- F-QA-C26-01: subscribe_suggestions_with_token 은 streaming_suggestion_client 를 사용한다 ---
+    // --- F-QA-C26-01: subscribe_suggestions_with_token uses streaming_suggestion_client ---
     //
-    // Cycle 25 PR #3715 에서 unary/streaming 클라이언트 분리 이후,
-    // subscribe_suggestions_with_token 이 streaming_suggestion_client 를 통해
-    // 라우팅되는지 검증한다.  실제 gRPC 서버 없이 config 엔드포인트 URI 비교로 확인한다:
-    // streaming_suggestion_client 는 build_streaming_endpoint 가 생성한 채널(포트 50051)로
-    // 초기화되는 반면, suggestion_client 는 connect_channel(포트 50051)로 초기화된다.
-    // 두 채널은 동일 엔드포인트지만 timeout 설정이 다르므로 routing 분기를 채널 생성
-    // 계층에서 간접 검증한다.
+    // After the unary/streaming client split in cycle 25 PR #3715, verify that
+    // subscribe_suggestions_with_token routes through streaming_suggestion_client.
+    // This is checked without a real gRPC server by comparing config endpoint URIs:
+    // streaming_suggestion_client is initialized from the channel built by
+    // build_streaming_endpoint (port 50051), whereas suggestion_client is
+    // initialized from connect_channel (port 50051). Both channels target the same
+    // endpoint but differ in their timeout settings, so the routing branch is
+    // verified indirectly at the channel-construction layer.
 
-    /// F-QA-C26-01: streaming_suggestion_client 는 streaming endpoint 에서 빌드된다.
+    /// F-QA-C26-01: streaming_suggestion_client is built from the streaming endpoint.
     ///
-    /// subscribe_suggestions_with_token 이 `self.streaming_suggestion_client.subscribe()` 를
-    /// 호출함을 코드 레벨에서 보장하기 위해, streaming channel 생성 경로
-    /// (build_streaming_endpoint) 가 기본 엔드포인트와 동일한 URI 에서 성공하는지
-    /// 검증한다.  실수로 `suggestion_client`(unary)로 교체되면 이 test 와 함께
-    /// F-RR-C25-02 timeout 테스트가 동시에 실패해 회귀를 조기에 포착한다.
+    /// To guarantee at the code level that subscribe_suggestions_with_token calls
+    /// `self.streaming_suggestion_client.subscribe()`, verify that the streaming
+    /// channel construction path (build_streaming_endpoint) succeeds at the same URI
+    /// as the default endpoint. If it were accidentally swapped for
+    /// `suggestion_client` (unary), this test and the F-RR-C25-02 timeout test would
+    /// fail together, catching the regression early.
     // F-RR-C33-01: build_streaming_endpoint / build_endpoint are now async; use #[tokio::test].
     #[tokio::test]
     async fn subscribe_suggestions_routes_through_streaming_client() {
         let config = super::GrpcConfig::default();
 
-        // streaming_suggestion_client 는 build_streaming_endpoint 로 생성된 채널을
-        // 사용해야 한다 — timeout 없는 채널 빌드 성공으로 라우팅 경로를 간접 검증한다.
+        // streaming_suggestion_client must use the channel built by
+        // build_streaming_endpoint — a successful no-timeout channel build verifies
+        // the routing path indirectly.
         let streaming_ep = config
             .build_streaming_endpoint(&config.grpc_endpoint)
             .await
-            .expect("F-QA-C26-01: streaming_suggestion_client 채널 빌드 경로가 유효해야 한다");
+            .expect("F-QA-C26-01: streaming_suggestion_client channel build path must be valid");
         // Streaming endpoint must carry the correct URI and must NOT have a channel-level
         // timeout (absence of .timeout() is the defining difference from build_endpoint).
         assert_eq!(
@@ -408,12 +414,13 @@ mod tests {
             "F-QA-C26-01: streaming endpoint URI must match grpc_endpoint"
         );
 
-        // unary suggestion_client 는 build_endpoint 로 생성된 채널을 사용한다.
-        // 두 채널 빌드 경로가 모두 동일 엔드포인트에서 성공해야 분기 설계가 성립한다.
+        // The unary suggestion_client uses the channel built by build_endpoint.
+        // Both channel-build paths must succeed at the same endpoint for the branch
+        // design to hold.
         let unary_ep = config
             .build_endpoint(&config.grpc_endpoint)
             .await
-            .expect("F-QA-C26-01: suggestion_client(unary) 채널 빌드 경로가 유효해야 한다");
+            .expect("F-QA-C26-01: suggestion_client (unary) channel build path must be valid");
         // Unary endpoint URI must also round-trip correctly.
         assert_eq!(
             unary_ep.uri().to_string(),
@@ -421,53 +428,59 @@ mod tests {
             "F-QA-C26-01: unary endpoint URI must match grpc_endpoint"
         );
 
-        // 두 엔드포인트 빌드가 모두 성공하면 subscribe 경로의 채널 분기가 유효하다.
-        // 만약 subscribe_suggestions_with_token 이 실수로 suggestion_client 를 사용하면
-        // F-RR-C25-02 grpc-timeout 헤더 테스트와 F-RR-C25-06 이 함께 실패해 회귀가 드러난다.
+        // If both endpoint builds succeed, the channel branch on the subscribe path
+        // is valid. Should subscribe_suggestions_with_token accidentally use
+        // suggestion_client, the F-RR-C25-02 grpc-timeout header test and F-RR-C25-06
+        // would fail together, exposing the regression.
     }
 
-    /// F-QA-C27-04: subscribe_suggestions_with_token 소스 텍스트 라우팅 어설션.
+    /// F-QA-C27-04: source-text routing assertion for subscribe_suggestions_with_token.
     ///
-    /// F-QA-C26-01 의 채널-빌드 간접 검증은 실수로 `suggestion_client`(line 149)와
-    /// `streaming_suggestion_client` 가 스왑되어도 컴파일·빌드가 통과하는 맹점이 있다.
-    /// 두 필드는 동일 타입(`ClientSuggestionClient<Channel>`)이므로 타입 시스템이 swap 을 포착하지 못한다.
+    /// F-QA-C26-01's indirect channel-build check has a blind spot: it compiles and
+    /// builds even if `suggestion_client` (line 149) and `streaming_suggestion_client`
+    /// are accidentally swapped. Both fields share the same type
+    /// (`ClientSuggestionClient<Channel>`), so the type system cannot catch the swap.
     ///
-    /// 이 테스트는 `include_str!` 매크로로 소스 파일을 컴파일 시점에 읽어,
-    /// `subscribe_suggestions_with_token` 함수 본문에 "streaming_suggestion_client" 가
-    /// 반드시 등장함을 문자열 검색으로 단언한다.
-    /// "suggestion_client" 만 등장하고 "streaming_" 접두어가 없으면 즉시 실패한다.
+    /// This test reads the source file at compile time via the `include_str!` macro
+    /// and asserts via string search that "streaming_suggestion_client" must appear in
+    /// the body of the `subscribe_suggestions_with_token` function.
+    /// It fails immediately if only "suggestion_client" appears without the
+    /// "streaming_" prefix.
     ///
-    /// 주의: 이 테스트는 소스 파일 자체를 대상으로 하므로 리팩토링 시 함수명 변경을 추적해야 한다.
+    /// Note: this test targets the source file itself, so a function rename during
+    /// refactoring must be tracked here.
     #[test]
     fn subscribe_suggestions_with_token_body_uses_streaming_client() {
-        // 컴파일 시점에 이 소스 파일 전체를 문자열로 포함한다.
+        // Include this entire source file as a string at compile time.
         let source = include_str!("context_client.rs");
 
-        // subscribe_suggestions_with_token 함수 정의 위치 확인
+        // Locate the subscribe_suggestions_with_token function definition.
         let fn_start = source
             .find("pub async fn subscribe_suggestions_with_token")
             .expect(
-                "F-QA-C27-04: subscribe_suggestions_with_token 함수가 context_client.rs 에 없습니다 \
-                 — 함수명 변경 시 이 테스트도 갱신하세요",
+                "F-QA-C27-04: subscribe_suggestions_with_token function not found in \
+                 context_client.rs — update this test when the function is renamed",
             );
 
-        // 함수 본문 앞부분(첫 2000자)에서 streaming_suggestion_client 사용 여부 확인.
-        // 함수 시작(line 120)부터 self.streaming_suggestion_client.subscribe(request)(line 149)
-        // 까지 약 1500자 거리이므로 2000자로 충분히 커버한다.
+        // Check whether streaming_suggestion_client is used in the front of the
+        // function body (first 2000 chars). The distance from the function start
+        // (line 120) to self.streaming_suggestion_client.subscribe(request) (line 149)
+        // is roughly 1500 chars, so 2000 chars covers it comfortably.
         let fn_body_excerpt = &source[fn_start..fn_start.saturating_add(2000)];
 
         assert!(
             fn_body_excerpt.contains("streaming_suggestion_client"),
-            "F-QA-C27-04: subscribe_suggestions_with_token 본문이 \
-             streaming_suggestion_client 를 사용하지 않습니다. \
-             실수로 unary suggestion_client 로 교체되면 30초 채널 timeout 으로 \
-             인해 streaming backoff 설계가 무력화됩니다 (F-RR-C25-02)."
+            "F-QA-C27-04: the body of subscribe_suggestions_with_token does not use \
+             streaming_suggestion_client. \
+             If it were accidentally swapped for the unary suggestion_client, the 30 s \
+             channel timeout would neutralise the streaming backoff design (F-RR-C25-02)."
         );
 
-        // 추가 보호: suggestion_client 가 등장하더라도 streaming_ 접두어가 있는 것이어야 한다.
-        // "self.suggestion_client" (streaming_ 없음)가 fn_body_excerpt 에 있으면 실패.
-        // 허용 패턴: "self.streaming_suggestion_client" — streaming_ 접두어 포함
-        // 거부 패턴: "self.suggestion_client" 단독 등장 (접두어 없음)
+        // Extra guard: even if suggestion_client appears, it must carry the streaming_
+        // prefix. Fails if "self.suggestion_client" (without streaming_) is in
+        // fn_body_excerpt.
+        // Allowed pattern: "self.streaming_suggestion_client" — includes the streaming_ prefix
+        // Rejected pattern: "self.suggestion_client" appearing on its own (no prefix)
         let bare_client_count = fn_body_excerpt.matches("self.suggestion_client").count();
         let streaming_client_count = fn_body_excerpt
             .matches("self.streaming_suggestion_client")
@@ -475,10 +488,10 @@ mod tests {
 
         assert_eq!(
             bare_client_count, streaming_client_count,
-            "F-QA-C27-04: subscribe_suggestions_with_token 본문에 \
-             bare 'self.suggestion_client' 참조({bare_client_count}개)가 \
-             'self.streaming_suggestion_client'({streaming_client_count}개)를 초과합니다. \
-             unary 클라이언트로의 필드 스왑이 의심됩니다."
+            "F-QA-C27-04: the body of subscribe_suggestions_with_token has more \
+             bare 'self.suggestion_client' references ({bare_client_count}) than \
+             'self.streaming_suggestion_client' ({streaming_client_count}). \
+             A field swap to the unary client is suspected."
         );
     }
 }

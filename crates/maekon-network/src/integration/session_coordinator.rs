@@ -153,7 +153,16 @@ impl IntegrationSessionPort for IntegrationSessionCoordinator {
         &self,
         requested_scopes: Vec<IntegrationCapabilityScope>,
     ) -> Result<IntegrationSessionState, CoreError> {
+        // #6204: remember the prior session id so its transport binding (live
+        // channel + spawned read_loop task) can be evicted before a reconnect
+        // rotates the session id. Without this the superseded binding lingers
+        // in the transport's session map, leaking one read_loop task + TCP
+        // socket per reconnect over the agent's 24/7 lifetime.
+        let mut prior_session_id: Option<String> = None;
         if let Some(existing) = self.load_persisted_state().await? {
+            if !existing.session_id.is_empty() {
+                prior_session_id = Some(existing.session_id.clone());
+            }
             if Self::scopes_satisfied(&existing, &requested_scopes) {
                 match existing.status {
                     IntegrationSessionStatus::Connected => return Ok(existing),
@@ -164,6 +173,15 @@ impl IntegrationSessionPort for IntegrationSessionCoordinator {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Falling through to a fresh connect: evict the superseded binding (if
+        // any) so the old live channel/read_loop does not leak. Eviction is a
+        // local no-op when the prior session created no binding.
+        if let Some(prior) = prior_session_id {
+            if let Err(error) = self.transport.evict_binding(&prior).await {
+                debug!("evict_binding for prior session {prior} failed: {error}");
             }
         }
 
@@ -423,6 +441,11 @@ mod tests {
                 .push(format!("disconnect:{session_id}"));
             Ok(())
         }
+
+        async fn evict_binding(&self, session_id: &str) -> Result<(), CoreError> {
+            self.calls.lock().await.push(format!("evict:{session_id}"));
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -446,6 +469,95 @@ mod tests {
         assert_eq!(session.granted_scopes.len(), 1);
         assert_eq!(session.transport_kind, IntegrationTransportKind::WebSocket);
         assert_eq!(session.auth_scheme, IntegrationAuthScheme::DpopBearer);
+    }
+
+    #[tokio::test]
+    async fn reconnect_evicts_prior_binding_before_fresh_connect() {
+        // #6204: when the second connect cannot reuse the prior session (its
+        // scopes are not satisfied) it must evict the prior session's transport
+        // binding BEFORE issuing the fresh connect, so the old live channel +
+        // read_loop task do not leak. The eviction must target the prior
+        // session id, not the (not-yet-known) new one.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = IntegrationSessionCoordinator::new(
+            "device-1",
+            Arc::new(MockTransport {
+                calls: calls.clone(),
+                fail_connect: false,
+                fail_heartbeat: false,
+            }),
+        );
+
+        // First connect grants only InsightWrite.
+        let first = coordinator
+            .connect(vec![IntegrationCapabilityScope::InsightWrite])
+            .await
+            .unwrap();
+        assert_eq!(first.session_id, "integration-session-1");
+
+        // Second connect requests a scope the prior session did not grant, so
+        // the coordinator falls through to a fresh connect.
+        coordinator
+            .connect(vec![IntegrationCapabilityScope::SessionManage])
+            .await
+            .unwrap();
+
+        let recorded = calls.lock().await;
+        // Exactly one eviction, targeting the prior session id.
+        let evictions: Vec<&String> = recorded
+            .iter()
+            .filter(|entry| entry.starts_with("evict:"))
+            .collect();
+        assert_eq!(
+            evictions,
+            vec![&"evict:integration-session-1".to_string()],
+            "reconnect must evict the prior binding exactly once, by prior session id"
+        );
+
+        // Eviction must happen before the second connect (ordering matters so
+        // the old read_loop is torn down before a new binding is inserted).
+        let evict_idx = recorded
+            .iter()
+            .position(|entry| entry == "evict:integration-session-1")
+            .expect("eviction must be recorded");
+        let second_connect_idx = recorded
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.starts_with("connect:"))
+            .map(|(idx, _)| idx)
+            .nth(1)
+            .expect("second connect must be recorded");
+        assert!(
+            evict_idx < second_connect_idx,
+            "eviction must precede the fresh connect"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_connect_does_not_evict_when_no_prior_session() {
+        // #6204: a cold-start connect (no persisted prior session) must NOT
+        // issue an eviction — there is no prior binding to release, and evicting
+        // with an empty/placeholder id would be meaningless.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = IntegrationSessionCoordinator::new(
+            "device-1",
+            Arc::new(MockTransport {
+                calls: calls.clone(),
+                fail_connect: false,
+                fail_heartbeat: false,
+            }),
+        );
+
+        coordinator
+            .connect(vec![IntegrationCapabilityScope::InsightWrite])
+            .await
+            .unwrap();
+
+        let recorded = calls.lock().await;
+        assert!(
+            !recorded.iter().any(|entry| entry.starts_with("evict:")),
+            "cold-start connect must not evict any binding"
+        );
     }
 
     #[tokio::test]

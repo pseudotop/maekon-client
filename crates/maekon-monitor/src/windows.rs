@@ -69,6 +69,10 @@ fn get_window_bounds(hwnd: HWND) -> Option<WindowBounds> {
 fn get_process_name(pid: u32) -> Option<String> {
     use sysinfo::{Pid, System};
 
+    if pid == 0 {
+        return None;
+    }
+
     let mut sys = System::new();
     sys.refresh_processes(
         sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
@@ -113,4 +117,38 @@ pub fn get_mouse_position_windows() -> Option<MousePosition> {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// F-RR-C23-02: get_process_name creates a fresh sysinfo::System and calls
+    /// refresh_processes — verify that it returns None gracefully for a PID that
+    /// sysinfo cannot resolve (PID 0 = System Idle Process, not accessible via
+    /// OpenProcess). This also exercises the None-path without a live window.
+    #[test]
+    fn get_process_name_returns_none_for_pid_zero() {
+        // PID 0 is the Windows System Idle Process; sysinfo cannot open it via
+        // NtQuerySystemInformation in the regular process-refresh path, so the
+        // function must return None rather than panicking.
+        assert!(
+            get_process_name(0).is_none(),
+            "get_process_name(0) should return None for the System Idle Process"
+        );
+    }
+
+    /// F-RR-C23-02: get_process_name returns Some for the current process PID,
+    /// which is always refresh-accessible on Windows without elevated privileges.
+    #[test]
+    fn get_process_name_returns_some_for_current_pid() {
+        // SAFETY: GetCurrentProcessId has no preconditions and cannot fail.
+        let pid = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
+        let name = get_process_name(pid);
+        assert!(
+            name.is_some(),
+            "get_process_name should return Some for the current process PID {pid}"
+        );
+        assert!(
+            !name.unwrap().is_empty(),
+            "process name for current PID must not be empty"
+        );
+    }
+}

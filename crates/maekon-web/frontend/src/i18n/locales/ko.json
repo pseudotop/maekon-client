@@ -1892,7 +1892,8 @@
     "disabledBannerDesc": "코칭을 활성화하면 능동적인 넛지와 습관 추적 기능을 사용할 수 있습니다.",
     "disabledBannerButton": "코칭 활성화",
     "enableMasterToggle": "코칭 활성화",
-    "enableMasterToggleDesc": "마스터 스위치 — 모든 코칭 넛지 및 알림을 켜거나 끕니다."
+    "enableMasterToggleDesc": "마스터 스위치 — 모든 코칭 넛지 및 알림을 켜거나 끕니다.",
+    "regimeLabelPlaceholder": "예: 집중 코딩"
   },
   "onboarding": {
     "step1Title": "Maekon에 오신 것을 환영합니다",
@@ -1968,7 +1969,8 @@
       "activeNote": "변경 사항이 즉시 적용됩니다 — 재시작이 필요하지 않습니다.",
       "monitoringMissingWarning": "모니터링 동의가 아직 부여되지 않았습니다. 코칭이 작동하려면 이전 단계에서 동의를 허용하세요.",
       "error": "코칭을 활성화하지 못했습니다: {{error}}"
-    }
+    },
+    "stepIndicatorLabel": "단계 표시기"
   },
   "chat": {
     "title": "AI 세션",
@@ -2023,7 +2025,8 @@
     "request_suggestions": "AI 제안 받기",
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
-    "mic_privacy_stopped": "마이크가 중지되었습니다 — 개인정보 보호 게이트 활성"
+    "mic_privacy_stopped": "마이크가 중지되었습니다 — 개인정보 보호 게이트 활성",
+    "searchMessagesPlaceholder": "메시지 검색..."
   },
   "policies": {
     "title": "실행 정책",
@@ -2117,7 +2120,9 @@
     "snoozeCancel": "취소",
     "panelLabel": "제안 패널",
     "closePanelLabel": "제안 패널 닫기",
-    "badgeNew": "새"
+    "badgeNew": "새",
+    "historyLoadError": "기록을 불러올 수 없습니다.",
+    "badgeLabel": "새 제안 {{count}}개"
   },
   "suggestionStats": {
     "acceptanceRate": "수락률",
@@ -2132,7 +2137,8 @@
     "dailyTrends": "일별 추이 (7일)",
     "acted": "실행됨",
     "total": "전체",
-    "noData": "아직 데이터가 없습니다"
+    "noData": "아직 데이터가 없습니다",
+    "loadError": "통계를 불러올 수 없습니다."
   },
   "trackingPanel": {
     "statusUnavailable": "상태를 확인할 수 없습니다",
@@ -2338,5 +2344,172 @@
     "interrupt": "중단",
     "steerPlaceholder": "턴을 조정…",
     "steerSend": "전송"
+  },
+  "appShell": {
+    "mainContent": "주요 콘텐츠"
+  },
+  "spinner": {
+    "loading": "로딩 중"
+  },
+  "insightCard": {
+    "noInsightAvailable": "오늘의 인사이트가 없습니다"
+  },
+  "statisticsPanel": {
+    "deepWork": "집중 업무",
+    "communication": "커뮤니케이션",
+    "meetings": "회의",
+    "contextSwitches": "컨텍스트 전환",
+    "regimeDistribution": "활동 유형 분포"
+  },
+  "statusBar": {
+    "lastCaptureTimestamp": "마지막 캡처 시각"
+  },
+  "processList": {
+    "pid": "PID:",
+    "memory": "메모리"
+  },
+  "coachingPopup": {
+    "thumbsUpTitle": "좋아요",
+    "thumbsDownTitle": "싫어요"
+  },
+  "detectionOverlay": {
+    "fieldLabel": "레이블",
+    "fieldRole": "역할",
+    "fieldBounds": "경계",
+    "fieldSource": "소스",
+    "fieldId": "ID",
+    "emptyValue": "(비어 있음)",
+    "unknownRole": "알 수 없음"
+  },
+  "messageBubble": {
+    "input": "입력",
+    "result": "결과"
+  },
+  "advancedTab": {
+    "maxConcurrentSessions": "최대 동시 세션 수",
+    "idleTimeoutSeconds": "유휴 시간 제한(초)",
+    "sessionTimeoutSeconds": "세션 시간 제한(초)",
+    "maxRetries": "최대 재시도 횟수",
+    "maxHistoryTurns": "최대 대화 기록 횟수",
+    "healthCheckIntervalSeconds": "상태 점검 간격(초)",
+    "enableSuggestions": "제안 사용",
+    "enableSuggestionsDescription": "활동을 기반으로 AI 기반 제안을 받습니다",
+    "showBorder": "테두리 표시",
+    "showBorderDescription": "모니터링 중일 때 화면 주위에 색상 테두리를 표시합니다",
+    "showPanel": "패널 표시",
+    "showPanelDescription": "추적 상태 패널을 표시합니다",
+    "borderOpacity": "테두리 불투명도(0.0 - 1.0)",
+    "enableAnalysis": "분석 사용",
+    "enableAnalysisDescription": "활동 구간에 대해 LLM 분석을 실행합니다",
+    "analysisIntervalSeconds": "분석 간격(초)",
+    "minConfidence": "최소 신뢰도(0.0 - 1.0)",
+    "maxSuggestions": "최대 제안 수",
+    "regimeDetectionIntervalHours": "패턴 감지 간격(시간)",
+    "embedding": "임베딩",
+    "embeddingDescription": "의미 기반 검색을 위한 벡터 임베딩을 사용합니다",
+    "guiIntelligence": "GUI 인텔리전스",
+    "guiIntelligenceDescription": "GUI 상호작용 패턴을 감지하고 집계합니다",
+    "textIntelligence": "텍스트 인텔리전스",
+    "textIntelligenceDescription": "활동에서 텍스트 패턴을 추출하고 분류합니다",
+    "autoTuner": "자동 튜너",
+    "autoTunerDescription": "EMA 기반 드리프트 감지 및 행동 패턴의 자동 재클러스터링",
+    "serverBaseUrl": "서버 기본 URL",
+    "requestTimeoutMs": "요청 시간 제한(ms)",
+    "grpcEnabled": "gRPC 사용",
+    "grpcEnabledDescription": "서버 통신에 gRPC를 사용합니다(서버 지원 필요)",
+    "grpcEndpoint": "gRPC 엔드포인트",
+    "tlsEnabled": "TLS 사용",
+    "tlsEnabledDescription": "TLS로 외부 연결을 암호화합니다",
+    "enableCoaching": "코칭 사용",
+    "enableCoachingDescription": "선제적인 생산성 코칭 및 목표 추적",
+    "locale": "로캘",
+    "enableIntegration": "통합 사용",
+    "enableIntegrationDescription": "외부 통합 허브에 연결합니다",
+    "integrationRequestTimeoutSeconds": "요청 시간 제한(초)",
+    "integrationSyncIntervalSeconds": "동기화 간격(초)",
+    "enableSync": "동기화 사용",
+    "enableSyncDescription": "여러 기기 간에 데이터를 동기화합니다",
+    "deviceName": "기기 이름",
+    "syncIntervalSeconds": "동기화 간격(초)",
+    "lanDiscovery": "LAN 검색",
+    "lanDiscoveryDescription": "피어 동기화를 위해 로컬 네트워크에 이 기기를 알립니다",
+    "payloadCompression": "페이로드 압축",
+    "payloadCompressionDescription": "대역폭을 줄이기 위해 암호화 전에 변경 집합 페이로드를 압축합니다"
+  },
+  "segmentsSection": {
+    "heading": "세그먼트",
+    "columnTime": "시간",
+    "columnDuration": "지속 시간",
+    "columnRegime": "활동 유형",
+    "columnApp": "앱",
+    "columnActions": "작업"
+  },
+  "overridesSection": {
+    "columnSegment": "세그먼트",
+    "columnOriginal": "원본",
+    "columnAction": "작업",
+    "columnCreated": "생성됨"
+  },
+  "presets": {
+    "save-file": {
+      "name": "파일 저장",
+      "description": "현재 파일을 저장합니다"
+    },
+    "undo": {
+      "name": "실행 취소",
+      "description": "마지막 작업을 취소합니다"
+    },
+    "select-all-copy": {
+      "name": "전체 선택 후 복사",
+      "description": "모든 내용을 선택하고 클립보드에 복사합니다"
+    },
+    "find-replace": {
+      "name": "찾기 및 바꾸기",
+      "description": "찾기 및 바꾸기 대화상자를 엽니다"
+    },
+    "switch-next-app": {
+      "name": "다음 앱으로 전환",
+      "description": "포커스를 다음 애플리케이션으로 전환합니다"
+    },
+    "close-window": {
+      "name": "창 닫기",
+      "description": "현재 활성화된 창을 닫습니다"
+    },
+    "minimize-all": {
+      "name": "모든 창 최소화",
+      "description": "열려 있는 모든 창을 최소화합니다"
+    },
+    "morning-routine": {
+      "name": "하루 시작",
+      "description": "Mail, Calendar, VS Code를 순서대로 열어 업무를 시작합니다"
+    },
+    "meeting-prep": {
+      "name": "회의 준비",
+      "description": "Zoom과 Notes를 열어 회의를 준비합니다"
+    },
+    "end-of-day": {
+      "name": "업무 종료",
+      "description": "현재 파일을 저장하고 애플리케이션을 종료합니다"
+    },
+    "daily-priority-sync": {
+      "name": "일일 우선순위 점검",
+      "description": "Calendar, Jira, Slack을 순서대로 열어 당일 우선순위를 확인합니다"
+    },
+    "bug-triage-loop": {
+      "name": "버그 트리아지",
+      "description": "이슈 트래커, 모니터링 도구, IDE를 순환하며 버그를 분류합니다"
+    },
+    "customer-followup": {
+      "name": "고객 팔로업",
+      "description": "CRM, Notion, Mail을 열어 고객 피드백을 확인하고 후속 조치를 준비합니다"
+    },
+    "release-readiness": {
+      "name": "릴리스 준비",
+      "description": "코드를 저장한 후 터미널과 브라우저를 열어 릴리스 점검을 시작합니다"
+    },
+    "deep-work-start": {
+      "name": "집중 세션 시작",
+      "description": "VS Code를 열고 방해 요소를 제거하여 집중 작업 세션을 시작합니다"
+    }
   }
 }

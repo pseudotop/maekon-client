@@ -5,7 +5,8 @@ use crate::magic_overlay::MagicOverlayHandle;
 use crate::runtime_state::{
     AiSessionRuntimeState, AnalysisHealthFlags, AppState, AudioRuntimeState,
     AutomationRuntimeState, CaptureContext, CodexApprovalRuntimeState, ConfigRuntimeState,
-    ConnectionStatus, DetectionRuntimeState, ManagedStateBuilder, SuggestionRuntimeState,
+    ConnectionStatus, DetectionRuntimeState, EmbeddingRuntimeState, ManagedStateBuilder,
+    SuggestionRuntimeState, SyncRuntimeState,
 };
 use maekon_core::config::AppConfig;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
@@ -46,6 +47,12 @@ pub(super) struct ManagedStateWiringParts {
     /// Automation controller state — carries the live AutomationPort so IPC
     /// commands can execute presets and respond to confirmation requests. (#5703)
     pub(super) automation_runtime_state: AutomationRuntimeState,
+    /// Cross-device-sync IPC state — carries the shared write-once SyncEngine
+    /// slot the agent runtime populates once built. (#6264)
+    pub(super) sync_runtime_state: SyncRuntimeState,
+    /// Embedding hot-reload IPC state — carries the shared write-once
+    /// ReloadableModel slot the agent runtime populates once built. (#6266)
+    pub(super) embedding_runtime_state: EmbeddingRuntimeState,
 }
 
 pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> ManagedStateBuilder {
@@ -78,6 +85,8 @@ pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> Man
         suggestion_runtime_state,
         detection_runtime_state,
         automation_runtime_state,
+        sync_runtime_state,
+        embedding_runtime_state,
     } = parts;
 
     ManagedStateBuilder::new(
@@ -136,4 +145,11 @@ pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> Man
     // execute_automation_hint, analyze_automation_scene, get_pending_confirmations,
     // confirm_automation_command, check_automation_available).
     .with_automation_runtime(automation_runtime_state)
+    // #6264: wire sync state so the 4 cross-device-sync IPC commands reach the
+    // live SyncEngine once the agent runtime populates the shared slot
+    // (get_sync_status, trigger_sync, list_sync_peers, forget_sync_peer).
+    .with_sync_runtime(sync_runtime_state)
+    // #6266: wire embedding state so reload_embedding_model reaches the live
+    // reloadable model once the agent runtime populates the shared slot.
+    .with_embedding_runtime(embedding_runtime_state)
 }

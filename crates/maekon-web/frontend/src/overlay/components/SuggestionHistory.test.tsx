@@ -29,7 +29,7 @@ describe('SuggestionHistory error/retry path', () => {
 
     renderHistory()
 
-    // 에러 배너 노출 (빈 "No history yet" 으로 숨기지 않음)
+    // shows the error banner (does not hide it behind an empty "No history yet")
     expect(await screen.findByText('Could not load history.')).toBeInTheDocument()
     expect(screen.queryByText('No history yet')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()

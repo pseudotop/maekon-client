@@ -65,7 +65,14 @@ impl SupportDiagnosticsQueryService {
             };
 
         let provider_cli = if let Some(provider) = self.ctx.provider_cli_diagnostics.as_ref() {
-            provider.provider_cli_diagnostics().await
+            // Port returns core-owned summaries; convert to transport DTOs at the
+            // web boundary (keeps the port contract free of maekon-api-contracts).
+            provider
+                .provider_cli_diagnostics()
+                .await
+                .into_iter()
+                .map(Into::into)
+                .collect()
         } else {
             Vec::new()
         };

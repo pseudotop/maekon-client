@@ -222,14 +222,14 @@ Hope that helps!"#;
 
     #[test]
     fn explicit_extract_reports_missing_json_without_raw_response() {
-        let text = "No JSON here: alice@example.com OTP 123456 payroll 김범준";
+        let text = "No JSON here: alice@example.com OTP 123456 payroll \u{ae40}\u{bc94}\u{c900}";
         let err = extract_suggestions(text).unwrap_err().to_string();
 
         assert!(err.contains("did not include suggestion JSON"));
         assert!(!err.contains("alice@example.com"));
         assert!(!err.contains("123456"));
         assert!(!err.contains("payroll"));
-        assert!(!err.contains("김범준"));
+        assert!(!err.contains("\u{ae40}\u{bc94}\u{c900}"));
     }
 
     #[test]

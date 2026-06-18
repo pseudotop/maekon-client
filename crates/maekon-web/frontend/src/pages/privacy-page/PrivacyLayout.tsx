@@ -250,13 +250,14 @@ export default function PrivacyLayout() {
   })
 
   const deleteAllMutation = useMutation({
-    // 우-소거(revoke-first): "모든 데이터 삭제"는 먼저 동의를 철회한다. withdrawConsent 는
-    // 인메모리 current_consent 를 동기적으로 null 화하므로(fail-closed), 삭제(purge) 동안
-    // 백그라운드 틱이 끼어들어도 수집을 시도하지 않는다(design.md §2 / §0.1.d, race-free).
-    // 철회가 실패하면 throw 가 그대로 전파되어 deleteAllData 로 진행하지 않고 onError 로 떨어진다
-    // (철회 없이 조용히 지우지 않는다). 형제 ConsentToggleSection 의 철회와 동일하게 IPC 를
-    // 무조건 호출한다 — Tauri 부재(standalone 데모) 시 삭제를 우회하는 별도 경로는 두지 않는다
-    // (그 우회는 design 이 금지한 silent-delete/race 를 되살린다).
+    // Revoke-first: "delete all data" withdraws consent first. Since withdrawConsent synchronously
+    // nulls the in-memory current_consent (fail-closed), no collection is attempted even if a
+    // background tick intervenes during the purge (design.md §2 / §0.1.d, race-free). If the
+    // withdrawal fails, the throw propagates as-is, so we do not proceed to deleteAllData and instead
+    // fall into onError (no silent delete without revocation). Like the sibling ConsentToggleSection's
+    // withdrawal, we call the IPC unconditionally — we do not add a separate path that bypasses
+    // deletion when Tauri is absent (standalone demo) (that bypass would revive the silent-delete/race
+    // that the design forbids).
     mutationFn: async () => {
       await withdrawConsent()
       return deleteAllData()
@@ -481,7 +482,7 @@ export default function PrivacyLayout() {
         </Alert>
       )}
 
-      {/* GDPR 동의 부여/철회 컨트롤 — 삭제(우-소거) ConsentSection 위에 배치 */}
+      {/* GDPR consent grant/withdrawal control — placed above the deletion (right-to-erasure) ConsentSection */}
       <ConsentToggleSection />
 
       <Outlet context={ctx} />

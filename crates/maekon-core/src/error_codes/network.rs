@@ -1,13 +1,13 @@
-//! NetworkCode — Network 카테고리 에러 코드. `network.*` 접두사.
+//! NetworkCode — Network category error codes. `network.*` prefix.
 
 define_code_enum! {
-    /// Network 카테고리 에러 코드.
+    /// Network category error codes.
     pub enum NetworkCode {
-        /// 요청 타임아웃 초과.
+        /// Request timeout exceeded.
         Timeout => "network.timeout",
-        /// 서버 레이트 리밋 도달 (429).
+        /// Server rate limit reached (429).
         RateLimit => "network.rate_limit",
-        /// 세분화 미완료.
+        /// Not yet subdivided.
         Generic => "network.generic",
     }
 }

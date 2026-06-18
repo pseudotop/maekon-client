@@ -260,6 +260,46 @@ async fn cleanup_old_idle_periods_preserves_active_even_if_start_is_old() {
     assert!(ongoing.is_some(), "active period survived cleanup");
 }
 
+/// Regression (idle-julianday-round): `end_idle_period` must persist the idle
+/// duration rounded to the nearest whole second, not truncated. julianday()
+/// arithmetic is floating-point, so a true N-second interval often computes as
+/// N - epsilon; the old bare integer CAST truncated that to N-1, systematically
+/// undercounting idle seconds. With ROUND() the stored value matches the exact
+/// wall-clock delta.
+#[tokio::test]
+async fn end_idle_period_rounds_duration_to_nearest_second() {
+    let storage = open_storage();
+    let now = Utc::now();
+
+    // Several exact-second deltas. Under truncation these frequently land on
+    // delta-1 (the float product dips just below the integer boundary); ROUND
+    // must recover the exact value for every case.
+    for secs in [1_i64, 7, 59, 60, 123, 600, 3600] {
+        let start = now - Duration::seconds(secs);
+        let id = storage.start_idle_period(start).await.unwrap();
+        storage.end_idle_period(id, now).await.unwrap();
+
+        let periods = storage
+            .get_idle_periods(start - Duration::seconds(1), now + Duration::seconds(1))
+            .await
+            .unwrap();
+        let period = periods
+            .iter()
+            .find(|p| p.duration_secs == Some(secs as u64))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an idle period with duration={secs}s, got durations {:?}",
+                    periods.iter().map(|p| p.duration_secs).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            period.duration_secs,
+            Some(secs as u64),
+            "duration for a {secs}s idle interval must round to exactly {secs}, not truncate"
+        );
+    }
+}
+
 // ── sessions ───────────────────────────────────────────────────
 // upsert/get/end + increment-on-existing covered by sqlite/tests.rs:267
 // `session_stats_lifecycle`. Residual gap: increment on nonexistent.
@@ -485,17 +525,18 @@ async fn get_process_snapshots_invalid_json_in_column_silently_defaults_to_empty
     );
 }
 
-// #4928: 내부 커넥션 뮤텍스를 `parking_lot::Mutex` 로 전환하면서 poison 개념이
-// 사라졌다(parking_lot 은 패닉 시 락을 poison 하지 않음). 따라서 "poison → Err"
-// 계약은 더 이상 성립하지 않는다. 대신 패닉을 일으킨 스레드가 락을 놓은 뒤에도
-// 후속 save_metrics 가 정상 동작함을 검증한다(parking_lot 의 핵심 이점 — B2 해소).
+// #4928: switching the internal connection mutex to `parking_lot::Mutex`
+// removed the poison concept (parking_lot does not poison the lock on panic).
+// The "poison → Err" contract therefore no longer holds. Instead we verify
+// that subsequent `save_metrics` calls work correctly even after a thread
+// panics while holding the lock (parking_lot's key benefit — resolves B2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn save_metrics_succeeds_after_panicking_lock_holder() {
     let storage = open_storage();
     let conn_arc = storage.connection_arc();
 
-    // 다른 스레드에서 락을 잡은 채 패닉 — parking_lot 은 poison 하지 않으므로
-    // 락은 정상적으로 해제된다.
+    // Panic on another thread while holding the lock — parking_lot does not
+    // poison, so the lock is released normally.
     let c = conn_arc.clone();
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = c.test_lock();
@@ -503,7 +544,7 @@ async fn save_metrics_succeeds_after_panicking_lock_holder() {
     })
     .await;
 
-    // 후속 save_metrics 는 (poison 없이) 정상 성공해야 한다.
+    // The subsequent save_metrics must succeed normally (no poisoning).
     let ts = Utc::now();
     let result = storage.save_metrics(&sample_metrics(ts, 10.0)).await;
     // Line 510: parking_lot never poisons — save_metrics must return Ok(()).
@@ -608,4 +649,73 @@ async fn cleanup_old_metrics_deletes_before_cutoff_preserves_after() {
         .await
         .unwrap();
     assert_eq!(remaining.len(), 2);
+}
+
+#[tokio::test]
+async fn cleanup_old_hourly_metrics_deletes_before_cutoff_preserves_after() {
+    // Regression (#8): the hourly rollup table has a documented 30-day
+    // retention but previously had no scheduled cleanup. Verify the new
+    // `cleanup_old_hourly_metrics` deletes only buckets older than the cutoff.
+    let storage = open_storage();
+    let now = current_hour_start();
+
+    // One old rollup (45 days ago) and one recent rollup (this hour), each
+    // produced via the real aggregate round-trip so the stored `hour` key uses
+    // the canonical `%Y-%m-%dT%H:00:00Z` format.
+    let old_hour = now - Duration::days(45);
+    storage
+        .save_metrics(&sample_metrics(old_hour + Duration::minutes(5), 10.0))
+        .await
+        .unwrap();
+    storage.aggregate_hourly_metrics(old_hour).await.unwrap();
+
+    storage
+        .save_metrics(&sample_metrics(now + Duration::minutes(5), 20.0))
+        .await
+        .unwrap();
+    storage.aggregate_hourly_metrics(now).await.unwrap();
+
+    let before = storage
+        .list_hourly_metrics_since(&old_hour.format("%Y-%m-%dT%H:00:00Z").to_string())
+        .unwrap();
+    assert_eq!(before.len(), 2, "both rollups seeded");
+
+    let cutoff = now - Duration::days(30);
+    let deleted = storage.cleanup_old_hourly_metrics(cutoff).await.unwrap();
+    assert_eq!(deleted, 1, "only the 45-day-old rollup is deleted");
+
+    let remaining = storage
+        .list_hourly_metrics_since("2000-01-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(remaining.len(), 1, "recent rollup is preserved");
+    assert_eq!(
+        remaining[0].hour,
+        now.format("%Y-%m-%dT%H:00:00Z").to_string()
+    );
+}
+
+#[tokio::test]
+async fn cleanup_old_hourly_metrics_retains_bucket_on_cutoff_hour() {
+    // The cutoff bucket itself (the bucket landing exactly on the cutoff hour)
+    // is retained: deletion is strictly `< cutoff_hour_bucket`.
+    let storage = open_storage();
+    let cutoff_hour = current_hour_start() - Duration::days(40);
+
+    storage
+        .save_metrics(&sample_metrics(cutoff_hour + Duration::minutes(5), 10.0))
+        .await
+        .unwrap();
+    storage.aggregate_hourly_metrics(cutoff_hour).await.unwrap();
+
+    // cutoff == the bucket's own hour (sub-hour precision is truncated away).
+    let deleted = storage
+        .cleanup_old_hourly_metrics(cutoff_hour + Duration::minutes(30))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 0, "bucket on the cutoff hour is retained");
+
+    let remaining = storage
+        .list_hourly_metrics_since("2000-01-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
 }

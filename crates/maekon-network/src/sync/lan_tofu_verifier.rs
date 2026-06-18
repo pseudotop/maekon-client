@@ -1,9 +1,10 @@
-//! TOFU 인증서 핑거프린트 검증기 (LAN sync, rustls `ServerCertVerifier`).
+//! TOFU certificate-fingerprint verifier (LAN sync, rustls `ServerCertVerifier`).
 //!
-//! 핀 I/O 는 핸드셰이크 *주변* 의 async 코드에서 처리합니다. 이 검증기는 생성
-//! 시점에 전달받은 데이터에 대한 동기·순수 비교만 수행합니다. 계산된 핑거프린트는
-//! `captured` 에 저장되므로, 호출자는 first-contact 핸드셰이크 성공 후 `upsert_pin`
-//! 할 수 있습니다. 검증기 내부에서는 어떠한 I/O 도 async/block_on 도 수행하지 않습니다.
+//! Pin I/O is handled by the async code *around* the handshake. This verifier
+//! performs only a synchronous, pure comparison over the data handed to it at
+//! construction time. The computed fingerprint is stored in `captured`, so the
+//! caller can `upsert_pin` after a successful first-contact handshake. The
+//! verifier itself performs no I/O and no async/block_on.
 
 use std::sync::Arc;
 
@@ -13,53 +14,88 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
 use sha2::{Digest, Sha256};
 
-/// DER 바이트의 SHA-256 hex (핀으로 저장되는 핑거프린트).
-// Task 5 (per-peer reqwest client) 가 검증기를 통해 소비. 그 전까지 dead_code 허용.
+/// SHA-256 hex of the DER bytes (the fingerprint stored as the pin).
+// Consumed via the verifier by Task 5 (per-peer reqwest client). Allow dead_code until then.
 #[allow(dead_code)]
 pub(super) fn fingerprint_hex(der: &[u8]) -> String {
     hex::encode(Sha256::digest(der))
 }
 
-/// 순수 TOFU 결정. `Ok(true)` = 최초 접촉(호출자가 핀 upsert 해야 함);
-/// `Ok(false)` = 기존 핀과 일치; `Err` = 거부.
-// Task 5 (per-peer reqwest client) 가 검증기를 통해 소비. 그 전까지 dead_code 허용.
-#[allow(dead_code)]
+/// TOFU rejection cause. Distinguishes the security-significant case
+/// (presented cert differs from an *already-stored* pin = possible MITM /
+/// peer key change) from benign or already-handled cases, so the async caller
+/// can decide whether to revoke the stored pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TofuReject {
+    /// Pin already revoked (caller short-circuits before the handshake; the
+    /// verifier never normally sees this since `build_peer_client` pre-checks).
+    AlreadyRevoked,
+    /// Presented fingerprint does not match an existing, non-revoked pin.
+    /// This is the case that SHOULD revoke the stored pin.
+    PinMismatch,
+    /// First contact, but the mDNS-advertised fingerprint disagreed with the
+    /// presented cert. No stored pin exists to revoke (could be an mDNS race).
+    AdvertisedMismatch,
+}
+
+impl TofuReject {
+    /// Human-readable reason surfaced in the rustls error string.
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            TofuReject::AlreadyRevoked => "peer pin is revoked",
+            TofuReject::PinMismatch => {
+                "presented fingerprint does not match the pinned one (possible MITM)"
+            }
+            TofuReject::AdvertisedMismatch => {
+                "mDNS-advertised fingerprint does not match the presented cert"
+            }
+        }
+    }
+}
+
+/// Pure TOFU decision. `Ok(true)` = first contact (the caller must upsert the
+/// pin); `Ok(false)` = matched the existing pin; `Err(TofuReject)` = rejected
+/// (with the cause).
 pub(super) fn tofu_decision(
     presented_fp: &str,
     advertised_fp: Option<&str>,
     stored_pin: Option<(String, bool)>,
-) -> Result<bool, &'static str> {
+) -> Result<bool, TofuReject> {
     match stored_pin {
-        Some((_, true)) => Err("peer pin is revoked"),
+        Some((_, true)) => Err(TofuReject::AlreadyRevoked),
         Some((pinned, false)) => {
             if pinned == presented_fp {
                 Ok(false)
             } else {
-                Err("presented fingerprint does not match the pinned one (possible MITM)")
+                Err(TofuReject::PinMismatch)
             }
         }
         None => match advertised_fp {
-            Some(adv) if adv != presented_fp => {
-                Err("mDNS-advertised fingerprint does not match the presented cert")
-            }
+            Some(adv) if adv != presented_fp => Err(TofuReject::AdvertisedMismatch),
             _ => Ok(true),
         },
     }
 }
 
-/// LAN sync 용 TOFU 핑거프린트 핀 검증기.
+/// TOFU fingerprint-pin verifier for LAN sync.
 ///
-/// 호출자(Task 5)가 핀(async)을 읽어 `stored_pin` + `advertised_fp` 를 생성 시점에
-/// 주입하고, 핸드셰이크 성공 후 `captured` 를 읽어 최초 접촉 시 핀을 upsert 합니다.
-// Task 5 (per-peer reqwest client) 가 구성·소비. 그 전까지 dead_code 허용.
-#[allow(dead_code)]
+/// The caller (Task 5) reads the pin (async) and injects `stored_pin` +
+/// `advertised_fp` at construction time, then reads `captured` after a
+/// successful handshake to upsert the pin on first contact. On rejection — in
+/// particular a mismatch against an existing pin (`PinMismatch`) — it sets the
+/// `pin_mismatch` cell to signal that the async caller may revoke the pin after
+/// the handshake fails.
 #[derive(Debug)]
 pub(super) struct TofuVerifier {
     pub advertised_fp: Option<String>,
     pub stored_pin: Option<(String, bool)>,
-    /// 최초 접촉 accept(Ok(true)) 시 계산된 핑거프린트를 수신.
+    /// Receives the computed fingerprint on a first-contact accept (Ok(true)).
     pub captured: Arc<Mutex<Option<String>>>,
-    /// 서명 검증을 위임할 rustls 기본 provider.
+    /// Set to `true` when rejected due to a mismatch against an existing
+    /// (non-revoked) pin. The verifier cannot perform async I/O, so after the
+    /// handshake fails the caller reads this signal to `revoke_pin`.
+    pub pin_mismatch: Arc<Mutex<bool>>,
+    /// The default rustls provider to delegate signature verification to.
     pub provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
@@ -80,7 +116,17 @@ impl ServerCertVerifier for TofuVerifier {
                 }
                 Ok(ServerCertVerified::assertion())
             }
-            Err(reason) => Err(RustlsError::General(format!("LAN TOFU rejected: {reason}"))),
+            Err(reject) => {
+                // Signal a stored-pin mismatch so the async caller can revoke the
+                // pin (the verifier itself cannot perform async storage I/O).
+                if reject == TofuReject::PinMismatch {
+                    *self.pin_mismatch.lock() = true;
+                }
+                Err(RustlsError::General(format!(
+                    "LAN TOFU rejected: {}",
+                    reject.reason()
+                )))
+            }
         }
     }
 
@@ -123,17 +169,16 @@ impl ServerCertVerifier for TofuVerifier {
 mod tests {
     use super::*;
 
-    // tofu_decision(presented_fp, advertised_fp, stored_pin) -> Result<bool, &'static str>
+    // tofu_decision(presented_fp, advertised_fp, stored_pin) -> Result<bool, TofuReject>
     // Ok(true)  = first-contact pin (caller should upsert)
     // Ok(false) = matched an existing pin (no write)
-    // Err(_)    = reject
+    // Err(_)    = reject (cause carried by TofuReject)
 
     #[test]
     fn revoked_pin_is_rejected() {
-        assert_eq!(
-            tofu_decision("fp", Some("fp"), Some(("fp".into(), true))).unwrap_err(),
-            "peer pin is revoked"
-        );
+        let err = tofu_decision("fp", Some("fp"), Some(("fp".into(), true))).unwrap_err();
+        assert_eq!(err, TofuReject::AlreadyRevoked);
+        assert_eq!(err.reason(), "peer pin is revoked");
     }
     #[test]
     fn matching_pin_passes_no_write() {
@@ -144,8 +189,13 @@ mod tests {
     }
     #[test]
     fn pin_mismatch_is_rejected() {
+        // The security-significant branch: presented cert differs from an
+        // existing non-revoked pin → PinMismatch (the cause the caller revokes on).
+        let err =
+            tofu_decision("fp-new", Some("fp-new"), Some(("fp-old".into(), false))).unwrap_err();
+        assert_eq!(err, TofuReject::PinMismatch);
         assert_eq!(
-            tofu_decision("fp-new", Some("fp-new"), Some(("fp-old".into(), false))).unwrap_err(),
+            err.reason(),
             "presented fingerprint does not match the pinned one (possible MITM)"
         );
     }
@@ -155,8 +205,11 @@ mod tests {
     }
     #[test]
     fn first_contact_with_mismatched_mdns_is_rejected() {
+        // No stored pin exists, so this is NOT a PinMismatch (nothing to revoke).
+        let err = tofu_decision("fp", Some("other"), None).unwrap_err();
+        assert_eq!(err, TofuReject::AdvertisedMismatch);
         assert_eq!(
-            tofu_decision("fp", Some("other"), None).unwrap_err(),
+            err.reason(),
             "mDNS-advertised fingerprint does not match the presented cert"
         );
     }

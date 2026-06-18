@@ -1,11 +1,11 @@
-//! ProviderCode — AI provider 카테고리 에러 코드. `provider.*` 접두사.
+//! ProviderCode - AI provider category error codes. `provider.*` prefix.
 
 define_code_enum! {
-    /// Provider 카테고리 에러 코드.
+    /// Provider category error codes.
     pub enum ProviderCode {
-        /// OCR 요청 실패.
+        /// OCR request failed.
         OcrFailed => "provider.ocr_failed",
-        /// Analysis 요청 실패.
+        /// Analysis request failed.
         AnalysisFailed => "provider.analysis_failed",
     }
 }

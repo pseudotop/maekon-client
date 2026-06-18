@@ -12,15 +12,16 @@ use tracing::{debug, info, warn};
 use super::super::Scheduler;
 use super::helpers::record_to_segment_summary;
 
-/// 메트릭/프로세스 수집 루프의 동의 게이트 결정 순수 헬퍼.
+/// Pure helper for the consent-gate decision of the metrics/process collection loops.
 ///
-/// `capture_permitted_now` 4-term 복합 게이트에 위임한다:
-/// - `config_manager` 가 None 이면 → fail-closed (false)
-/// - `consent_manager` 가 None 이거나 Valid 상태가 아니면 → all-false 권한
-/// - `capture_paused` 가 true 이면 → false
+/// Delegates to the `capture_permitted_now` 4-term composite gate:
+/// - if `config_manager` is None → fail-closed (false)
+/// - if `consent_manager` is None or not in the Valid state → all-false permissions
+/// - if `capture_paused` is true → false
 ///
-/// 이 함수는 순수(side-effect 없음)이므로 단위 테스트가 Scheduler 전체를 구성하지
-/// 않고도 게이트 결정 논리를 검증할 수 있다 (should_rearm_vad 패턴 참조).
+/// This function is pure (no side effects), so unit tests can verify the gate
+/// decision logic without constructing the full Scheduler (see the should_rearm_vad
+/// pattern).
 pub(super) fn collection_permitted(
     config_manager: Option<&ConfigManager>,
     consent_manager: Option<&Arc<dyn ConsentManagerPort>>,
@@ -35,18 +36,22 @@ pub(super) fn collection_permitted(
     crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused)
 }
 
-/// 메트릭 수집 루프 전용 동의 게이트 결정 순수 헬퍼 (F1 / Option A).
+/// Pure helper for the consent-gate decision specific to the metrics collection
+/// loop (F1 / Option A).
 ///
-/// 메트릭=인프라 헬스(CONS-PM09 / spec §3.8 row 16) — 동의(telemetry)만 게이트하고
-/// TS/pause/active-hours 와 디커플한다. process/aggregation 루프는 사용자-활동 캡처라
-/// `collection_permitted`(full-composite 4-term)를 그대로 유지한다.
+/// Metrics = infrastructure health (CONS-PM09 / spec §3.8 row 16) — gate only on
+/// consent (telemetry) and decouple from TS/pause/active-hours. The
+/// process/aggregation loops are user-activity capture, so they keep
+/// `collection_permitted` (full-composite 4-term) as-is.
 ///
-/// 시스템 메트릭(CPU/메모리/디스크)은 사용자-활동 캡처가 아니라 인프라 헬스 데이터이므로
-/// Tracking-Schedule mute 창 동안에도 계속되어야 한다는 CONS-PM09 / spec §3.8 row 16
-/// 계약을 존중한다. 따라서 config(TS)·capture_paused·active-hours 를 인자로 받지 않으며,
-/// 오직 `effective_permissions().telemetry`(Valid 상태에서만 true)만 본다:
-/// - `consent_manager` 가 None 이거나 Valid 가 아니면 → false (fail-closed)
-/// - telemetry 가 false 이면 → false (own-field 게이트)
+/// System metrics (CPU/memory/disk) are infrastructure-health data, not
+/// user-activity capture, so this respects the CONS-PM09 / spec §3.8 row 16
+/// contract that they must continue even during a Tracking-Schedule mute window.
+/// Accordingly it takes neither config (TS), capture_paused, nor active-hours as
+/// arguments, and looks only at `effective_permissions().telemetry` (true only in
+/// the Valid state):
+/// - if `consent_manager` is None or not Valid → false (fail-closed)
+/// - if telemetry is false → false (own-field gate)
 pub(super) fn metrics_collection_permitted(
     consent_manager: Option<&Arc<dyn ConsentManagerPort>>,
 ) -> bool {
@@ -66,27 +71,30 @@ impl Scheduler {
         let sqlite2 = self.sqlite_storage.clone();
         let event_tx2 = self.event_tx.clone();
         let notif2 = self.notification_manager.clone();
-        // 동의 게이트 DI — 메트릭 수집/영속화는 telemetry 동의 없이 실행 불가.
-        // 메트릭=인프라 헬스(CONS-PM09 / spec §3.8 row 16)이므로 consent(telemetry)만
-        // 게이트하고 TS/pause/active-hours 와 디커플한다 (config_manager / capture_paused
-        // 클론 불필요). process/aggregation 루프는 full-composite 게이트를 유지한다.
+        // Consent-gate DI — metrics collection/persistence cannot run without
+        // telemetry consent. Metrics = infrastructure health (CONS-PM09 / spec §3.8
+        // row 16), so gate only on consent (telemetry) and decouple from
+        // TS/pause/active-hours (no config_manager / capture_paused clone needed).
+        // The process/aggregation loops keep the full-composite gate.
         let consent_manager_m = self.consent_manager.clone();
 
         tokio::spawn(async move {
             let mut interval = super::intervals::coalescing_interval(metrics_interval);
-            // 전원 상태 폴링 디커플 게이트 — pmset 는 fork/exec 비용이 있으므로 매 메트릭
-            // 틱(~5s)마다 호출하지 않고 ~60s 마다만 갱신한다. 갱신 사이에는 마지막으로
-            // 측정한 상태를 캐시해 재적용하므로 배터리 세이버 플래그는 항상 최신 측정값을
-            // 반영한다 (last_index_maintenance 의 num_minutes 게이트 패턴과 동일).
+            // Decoupled power-status polling gate — pmset has a fork/exec cost, so we
+            // refresh only every ~60s rather than calling it on every metrics tick
+            // (~5s). Between refreshes we cache and re-apply the last measured status,
+            // so the battery-saver flag always reflects the latest measurement (same
+            // num_minutes gate pattern as last_index_maintenance).
             let mut last_power_check: Option<chrono::DateTime<Utc>> = None;
             let mut cached_power_status = maekon_core::models::system::PowerStatus::default();
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // 전원 상태 갱신 — 배터리 세이버 플래그를 설정하는 운영 작업이므로
-                        // 동의 게이트와 무관하게 항상 실행한다. pmset fork/exec 비용 절감을
-                        // 위해 실제 폴링은 ~60s 마다만 수행하고, 그 사이에는 캐시를 재적용한다.
+                        // Power-status refresh — an operational task that sets the
+                        // battery-saver flag, so it always runs regardless of the
+                        // consent gate. To save pmset fork/exec cost, actual polling
+                        // happens only every ~60s; between polls we re-apply the cache.
                         let now = Utc::now();
                         let should_poll_power = last_power_check
                             .map(|last| (now - last).num_minutes() >= 1)
@@ -109,13 +117,15 @@ impl Scheduler {
                                 }
                             }
                         }
-                        // 매 틱마다 (캐시된) 최신 측정값을 스케줄러 플래그에 재적용한다.
+                        // Re-apply the latest (cached) measurement to the scheduler
+                        // flag on every tick.
                         crate::scheduler::set_battery_saver_active_for_scheduler(
                             cached_power_status.battery_saver_active,
                         );
-                        // 메트릭 수집·영속화 블록 — consent(telemetry) 단독 게이트로 보호.
-                        // 인프라 헬스 데이터(CONS-PM09 / spec §3.8 row 16)이므로 TS/pause/
-                        // active-hours 와 디커플 — telemetry 동의만 확인한다.
+                        // Metrics collection/persistence block — protected by the
+                        // consent (telemetry) gate alone. This is infrastructure-health
+                        // data (CONS-PM09 / spec §3.8 row 16), so it is decoupled from
+                        // TS/pause/active-hours — only telemetry consent is checked.
                         let permitted = metrics_collection_permitted(consent_manager_m.as_ref());
                         if permitted {
                             match sys_mon.collect_metrics().await {
@@ -172,7 +182,8 @@ impl Scheduler {
     ) -> tokio::task::JoinHandle<()> {
         let proc_mon = self.process_monitor.clone();
         let sqlite3 = self.sqlite_storage.clone();
-        // 동의 게이트 DI — 프로세스 스냅샷은 사용자 데이터이므로 동의 없이 영속화 불가
+        // Consent-gate DI — process snapshots are user data, so they cannot be
+        // persisted without consent.
         let config_manager_p = self.config_manager.clone();
         let consent_manager_p = self.consent_manager.clone();
         let capture_paused_p = self.capture_paused.clone();
@@ -183,7 +194,8 @@ impl Scheduler {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // 4-term 복합 게이트 — 동의 없으면 프로세스 목록 수집·영속화 건너뜀
+                        // 4-term composite gate — without consent, skip process-list
+                        // collection/persistence.
                         let permitted = collection_permitted(
                             config_manager_p.as_ref(),
                             consent_manager_p.as_ref(),
@@ -237,9 +249,11 @@ impl Scheduler {
         let vector_store = self.vector_store.clone();
         let embedding_provider = self.embedding_provider.clone();
         let config_manager = self.config_manager.clone();
-        // 동의 게이트 DI — 집계 루프의 데이터 파생/영속화(시간별 집계·일/주간 다이제스트·
-        // memory-graph claim·스테일 벡터 재임베딩)는 동의 없이 실행 불가 (CONS-PC02).
-        // 하우스키핑(보존 삭제·sqlite 유지보수·인덱스 정비·로그 정리)은 게이트 밖에서 항상 실행.
+        // Consent-gate DI — the aggregation loop's data derivation/persistence
+        // (hourly aggregation, daily/weekly digests, memory-graph claims, stale
+        // vector re-embedding) cannot run without consent (CONS-PC02). Housekeeping
+        // (retention deletes, sqlite maintenance, index maintenance, log cleanup)
+        // always runs outside the gate.
         let capture_paused = self.capture_paused.clone();
         let vector_index = self.vector_index.clone();
         let search_coordinator = self.search_coordinator.clone();
@@ -273,18 +287,21 @@ impl Scheduler {
                     _ = interval.tick() => {
                         let now = Utc::now();
 
-                        // 4-term 복합 동의 게이트를 tick 당 한 번 계산한다 (R4 헬퍼 재사용).
-                        // 이 함수는 같은 모듈(system.rs)의 free fn이므로 경로 접두사 없이 호출.
-                        // collect_ok == false 면 데이터 파생/영속화 블록을 건너뛰고,
-                        // 하우스키핑(보존 삭제·유지보수)은 게이트와 무관하게 계속 실행한다 —
-                        // 동의 공백 기간에도 보존 정책으로 만료 데이터를 반드시 정리해야 하기 때문.
+                        // Compute the 4-term composite consent gate once per tick
+                        // (reusing the R4 helper). This is a free fn in the same module
+                        // (system.rs), so it is called without a path prefix. When
+                        // collect_ok == false we skip the data derivation/persistence
+                        // blocks, while housekeeping (retention deletes, maintenance)
+                        // keeps running regardless of the gate — because even during a
+                        // consent gap, retention policy must still clean up expired data.
                         let collect_ok = collection_permitted(
                             config_manager.as_ref(),
                             consent_manager.as_ref(),
                             capture_paused.load(Ordering::Relaxed),
                         );
 
-                        // [COLLECT] 시간별 메트릭 집계 — raw 메트릭에서 롤업을 파생·영속화한다.
+                        // [COLLECT] Hourly metric aggregation — derive and persist
+                        // rollups from raw metrics.
                         if collect_ok {
                             let prev_hour = now - ChronoDuration::hours(1);
                             if let Err(e) = sqlite6.aggregate_hourly_metrics(prev_hour).await {
@@ -292,17 +309,30 @@ impl Scheduler {
                             }
                         }
 
-                        // [HOUSEKEEPING] 아래 3개 cleanup_* 은 보존 정책에 따라 만료 데이터를
-                        // 삭제만 한다 (수집 아님). 동의 공백에도 반드시 실행해야 하므로 게이트 밖.
+                        // [HOUSEKEEPING] The three cleanup_* calls below only delete
+                        // expired data per the retention policy (not collection). They
+                        // must run even during a consent gap, so they sit outside the gate.
                         //
-                        // #4631 MINOR-3 (의도된 갭): 롤업(aggregate_hourly_metrics)은 동의 게이트
-                        // 안이지만 cleanup_old_metrics(삭제 전용)는 밖이다. 23h+ 연속 동의 공백 시
-                        // 직전 동의 창의 raw 메트릭이 롤업되기 전에 보존 기한을 넘겨 삭제될 수 있어
-                        // 해당 시간대의 시간별 롤업이 영구 부재할 수 있다. 철회된 동의 데이터를
-                        // 파생하지 않는 fail-closed 동작이므로 수용한다 (자기-유발 withdrawal).
+                        // #4631 MINOR-3 (intentional gap): the rollup
+                        // (aggregate_hourly_metrics) is inside the consent gate, but
+                        // cleanup_old_metrics (delete-only) is outside it. During a 23h+
+                        // continuous consent gap, the raw metrics from the prior consent
+                        // window may exceed the retention deadline and be deleted before
+                        // they are rolled up, leaving the hourly rollup for that period
+                        // permanently absent. This is accepted because it is fail-closed
+                        // behavior that does not derive from withdrawn-consent data
+                        // (self-induced withdrawal).
                         let metrics_cutoff = now - ChronoDuration::hours(super::super::config::RAW_METRICS_RETENTION_HOURS);
                         if let Err(e) = sqlite6.cleanup_old_metrics(metrics_cutoff).await {
                             warn!("delete failure: {e}");
+                        }
+
+                        // Hourly rollups have a 30-day retention (V3 migration) but
+                        // previously had no scheduled cleanup, so the table grew
+                        // unbounded. Delete-only housekeeping → outside the consent gate.
+                        let hourly_cutoff = now - ChronoDuration::days(super::super::config::HOURLY_METRICS_RETENTION_DAYS);
+                        if let Err(e) = sqlite6.cleanup_old_hourly_metrics(hourly_cutoff).await {
+                            warn!("hourly metrics delete failure: {e}");
                         }
 
                         let process_cutoff = now - ChronoDuration::days(super::super::config::PROCESS_SNAPSHOT_RETENTION_DAYS);
@@ -324,9 +354,12 @@ impl Scheduler {
                             if should_check {
                                 last_reindex_check = Some(now);
 
-                                // [COLLECT] 스테일 벡터 재임베딩 — 모델 변경 시 임베딩을 다시
-                                // 파생(update_vector)해 사용자 파생 데이터를 영속화한다. 동의 게이트로 보호.
-                                // (mark_stale 자체는 플래그지만, 재임베딩 파이프라인 진입점이므로 함께 가둔다.)
+                                // [COLLECT] Stale vector re-embedding — on a model
+                                // change, re-derive embeddings (update_vector) and
+                                // persist this user-derived data. Protected by the
+                                // consent gate. (mark_stale itself is just a flag, but it
+                                // is the entry point of the re-embedding pipeline, so it
+                                // is enclosed together.)
                                 if collect_ok {
                                     let config_model = config_manager
                                         .as_ref()
@@ -380,8 +413,10 @@ impl Scheduler {
                                     }
                                 }
 
-                                // [HOUSEKEEPING] 벡터 보존 — 만료 벡터를 HNSW/SQLite 에서 삭제만 한다
-                                // (수집 아님). 동의 공백에도 보존 정책으로 정리해야 하므로 게이트 밖.
+                                // [HOUSEKEEPING] Vector retention — only deletes expired
+                                // vectors from HNSW/SQLite (not collection). Must clean up
+                                // per the retention policy even during a consent gap, so
+                                // it sits outside the gate.
                                 // Enforce vector retention (HNSW removal + SQLite deletion)
                                 let retention_days = config_manager
                                     .as_ref()
@@ -418,34 +453,57 @@ impl Scheduler {
                             }
                         }
 
-                        // [HOUSEKEEPING] 세그먼트/다이제스트/보조 테이블 보존 + memory-graph
-                        // prune/GC. 모두 만료 데이터를 삭제·정리만 한다 (수집 아님). 동의 공백에도
-                        // 보존 정책을 적용해야 하므로 게이트 밖에서 실행.
+                        // [HOUSEKEEPING] Segment/digest/auxiliary-table retention +
+                        // memory-graph prune/GC. All only delete/clean up expired data
+                        // (not collection). The retention policy must apply even during a
+                        // consent gap, so this runs outside the gate.
                         // --- Activity segment retention (default: 90 days, same as embedding) ---
                         {
                             let segment_retention_days = config_manager
                                 .as_ref()
                                 .map(|cm| cm.get().analysis.embedding.retention_days)
                                 .unwrap_or(90);
-                            if let Err(e) = sqlite6.enforce_segment_retention(segment_retention_days) {
-                                warn!("segment retention failure: {e}");
+                            // F-RR-06 (#5097/#5809 follow-up): these four sync
+                            // SchedulerStorage retention DELETEs acquire the parking_lot
+                            // write lock — offload to the blocking pool (mirror the digest
+                            // lookups above + the maintenance blocks below) so the
+                            // write-lock DELETE batch never runs on the reactor.
+                            // Best-effort: offload_storage logs failures and returns None.
+                            {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("segment retention", move || {
+                                    sqlite6.enforce_segment_retention(segment_retention_days)
+                                })
+                                .await;
                             }
 
                             // Weekly digests retention (keep 52 weeks = 1 year)
-                            if let Err(e) = sqlite6.enforce_digest_retention(52) {
-                                warn!("digest retention failure: {e}");
+                            {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("digest retention", move || {
+                                    sqlite6.enforce_digest_retention(52)
+                                })
+                                .await;
                             }
 
                             // Auxiliary table retention (work_sessions, interruptions, etc.)
-                            if let Err(e) = sqlite6.enforce_all_retention() {
-                                warn!("auxiliary table retention failure: {e}");
+                            {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("auxiliary table retention", move || {
+                                    sqlite6.enforce_all_retention()
+                                })
+                                .await;
                             }
 
                             // GDPR Art.17 erasure tombstone outbox GC (#5174 S5/R4):
                             // bound the retained sync_tombstones at max(retention, 90)
                             // days. Accepted convergence-cliff trade-off (see method doc).
-                            if let Err(e) = sqlite6.gc_sync_tombstones(segment_retention_days) {
-                                warn!("sync_tombstones GC failure: {e}");
+                            {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("sync_tombstones GC", move || {
+                                    sqlite6.gc_sync_tombstones(segment_retention_days)
+                                })
+                                .await;
                             }
 
                             // ADR-023: bound the memory-graph (same retention window as
@@ -473,8 +531,9 @@ impl Scheduler {
                             }
                         }
 
-                        // [COLLECT] 주간 다이제스트 자동 생성 — 세그먼트에서 다이제스트를
-                        // 파생해 save_weekly_digest 로 영속화한다. 동의 게이트로 보호.
+                        // [COLLECT] Weekly digest auto-generation — derive a digest from
+                        // the segments and persist it via save_weekly_digest. Protected
+                        // by the consent gate.
                         // --- Weekly digest auto-generation ---
                         if collect_ok {
                             let digest_day = config_manager
@@ -493,8 +552,9 @@ impl Scheduler {
                                 let week_start = now - ChronoDuration::days(7);
 
                                 // Check if digest already exists for this week.
-                                // #5097: sync SchedulerStorage digest 호출을 spawn_blocking
-                                // 으로 오프로드(offload_storage) — async 워커 스레드 블로킹 회피.
+                                // #5097: offload the sync SchedulerStorage digest call to
+                                // spawn_blocking (offload_storage) — avoid blocking the
+                                // async worker thread.
                                 let existing = {
                                     let sqlite6 = sqlite6.clone();
                                     offload_storage("weekly digest lookup", move || {
@@ -540,11 +600,13 @@ impl Scheduler {
                             }
                         }
 
-                        // [COLLECT] 일간 다이제스트 자동 생성 — 세그먼트에서 다이제스트를 파생
-                        // (save_daily_digest) + memory-graph claim/evidence edge 승격
-                        // (persist_digest_memory_graph) + belief revision pass. 모두 사용자 파생
-                        // 데이터를 영속화하므로 동의 게이트로 보호. (belief revision 은 내부에서
-                        // memory_graph_enrichment own-field 동의로 추가 게이트됨 — defense-in-depth.)
+                        // [COLLECT] Daily digest auto-generation — derive a digest from
+                        // the segments (save_daily_digest) + promote memory-graph
+                        // claim/evidence edges (persist_digest_memory_graph) + a belief
+                        // revision pass. All persist user-derived data, so they are
+                        // protected by the consent gate. (Belief revision is additionally
+                        // gated internally on the memory_graph_enrichment own-field
+                        // consent — defense-in-depth.)
                         // --- Daily digest auto-generation (midnight) ---
                         if collect_ok {
                             let local_now = chrono::Local::now();
@@ -685,9 +747,11 @@ impl Scheduler {
                             }
                         }
 
-                        // [HOUSEKEEPING] 벡터 인덱스 정비 (count 갱신·HNSW 저장·IVF 재구축·바이너리
-                        // 코드). 기존 벡터에 대한 인덱스 구조 유지보수일 뿐 신규 데이터 수집이 아니므로
-                        // 게이트 밖. (재임베딩과 달리 새 임베딩을 파생하지 않는다.)
+                        // [HOUSEKEEPING] Vector index maintenance (count refresh, HNSW
+                        // save, IVF rebuild, binary codes). This is just index-structure
+                        // maintenance over existing vectors, not new-data collection, so
+                        // it sits outside the gate. (Unlike re-embedding, it does not
+                        // derive new embeddings.)
                         // --- Vector index maintenance (every 5 minutes) ---
                         if let Some(ref vi) = vector_index {
                             let should_run = last_index_maintenance
@@ -899,7 +963,7 @@ impl Scheduler {
 /// inside `tokio::spawn` blocks which clone individual fields — they do not
 /// have access to `&self` (the Scheduler instance).
 ///
-/// `tokio::fs::metadata` 를 사용해 async 런타임 스레드를 블로킹하지 않습니다.
+/// Uses `tokio::fs::metadata` so the async runtime thread is not blocked.
 async fn check_config_file_changed(
     config_manager: &maekon_core::config_manager::ConfigManager,
     last_mtime: &parking_lot::Mutex<Option<std::time::SystemTime>>,
@@ -958,17 +1022,20 @@ async fn persist_digest_memory_graph(
     }
 }
 
-/// scheduler 의 sync `SchedulerStorage` digest/segment 호출을 tokio blocking 풀로
-/// 오프로드한다 (#5097 / ADR-026 follow-up).
+/// Offloads the scheduler's sync `SchedulerStorage` digest/segment calls to the
+/// tokio blocking pool (#5097 / ADR-026 follow-up).
 ///
-/// digest/segment 영속화 메서드는 `Arc<dyn SchedulerStorage>`(sync trait) 경유라
-/// 집계 루프에서 직접 호출하면 async 워커 스레드가 SQLite I/O 로 블로킹된다(다른
-/// 스토리지 호출은 async `MetricsStorage` supertrait 경유라 이미 non-blocking).
-/// 매 호출을 `spawn_blocking` 으로 감싸 블로킹을 blocking 풀로 옮긴다 — SQL/동작은
-/// sync 메서드와 동일하며 #4928 erase barrier 의 write_lock skip 도 그대로 보존된다.
+/// The digest/segment persistence methods go through `Arc<dyn SchedulerStorage>` (a
+/// sync trait), so calling them directly from the aggregation loop would block the
+/// async worker thread on SQLite I/O (other storage calls go through the async
+/// `MetricsStorage` supertrait and are already non-blocking). Wrapping each call in
+/// `spawn_blocking` moves the blocking to the blocking pool — the SQL/behavior is
+/// identical to the sync method, and #4928 erase barrier's write_lock skip is
+/// preserved as-is.
 ///
-/// 실패(스토리지 에러 또는 task panic)는 `context` 라벨로 로깅하고 `None` 을 반환해
-/// 호출부의 best-effort 시맨틱(기존 `.ok()` / `if let Err`)을 유지한다.
+/// Failures (storage error or task panic) are logged with the `context` label and
+/// `None` is returned, preserving the caller's best-effort semantics (the existing
+/// `.ok()` / `if let Err`).
 async fn offload_storage<T>(
     context: &'static str,
     job: impl FnOnce() -> Result<T, CoreError> + Send + 'static,
@@ -989,16 +1056,16 @@ where
     }
 }
 
-/// `collection_permitted` 헬퍼 단위 테스트.
+/// Unit tests for the `collection_permitted` helper.
 ///
-/// Scheduler 전체를 구성하지 않고 게이트 결정 논리만 검증한다.
-/// 다섯 가지 시나리오를 커버한다:
-///   1. config_manager 없음 → false (fail-closed)
-///   2. consent_manager 없음(None) → false
-///   3. 동의 미부여(NotGranted) → false
-///   4. 동의 만료(Expired, screen_capture:true 이지만 만료) → false
-///   5. 유효한 동의(screen_capture=true) → true
-///   6. 유효한 동의이지만 capture_paused → false
+/// Verifies only the gate decision logic without constructing the full Scheduler.
+/// Covers six scenarios:
+///   1. no config_manager → false (fail-closed)
+///   2. no consent_manager (None) → false
+///   3. consent not granted (NotGranted) → false
+///   4. expired consent (Expired, screen_capture:true but expired) → false
+///   5. valid consent (screen_capture=true) → true
+///   6. valid consent but capture_paused → false
 #[cfg(test)]
 mod collection_permitted_tests {
     use super::collection_permitted;
@@ -1007,11 +1074,12 @@ mod collection_permitted_tests {
     use maekon_core::ports::consent_manager::ConsentManagerPort;
     use std::sync::Arc;
 
-    /// 테스트용 고유 임시 파일 경로를 반환한다.
-    /// `TempDir` 대신 `std::env::temp_dir()` + 난수로 경로를 생성하면
-    /// deprecated API 경고 없이 OS 임시 디렉토리에 쓸 수 있다.
+    /// Returns a unique temporary file path for tests.
+    /// Building the path from `std::env::temp_dir()` + a random value (instead of
+    /// `TempDir`) lets us write to the OS temp directory without deprecated-API
+    /// warnings.
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
-        // nonce: 프로세스 ID + 스레드 ID 조합으로 충돌 가능성을 최소화한다.
+        // nonce: a process-ID + thread-ID combination minimizes collision likelihood.
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
@@ -1019,14 +1087,14 @@ mod collection_permitted_tests {
         std::env::temp_dir().join(format!("maekon_test_{nonce}_{suffix}"))
     }
 
-    /// ConfigManager 를 임시 파일 경로로 구성하는 헬퍼.
-    /// `ConfigManager::with_path` 는 경로가 존재하지 않으면 기본값으로 생성한다.
+    /// Helper that builds a ConfigManager from a temporary file path.
+    /// `ConfigManager::with_path` creates defaults when the path does not exist.
     fn make_config_manager() -> ConfigManager {
         let path = tmp_path("config.json");
-        ConfigManager::with_path(path).expect("ConfigManager 생성 실패")
+        ConfigManager::with_path(path).expect("ConfigManager creation failed")
     }
 
-    /// 유효한 screen_capture 동의를 부여한 ConsentManager 를 반환한다.
+    /// Returns a ConsentManager that has granted valid screen_capture consent.
     fn make_valid_consent(screen_capture: bool) -> Arc<dyn ConsentManagerPort> {
         let consent_path = tmp_path("consent_valid.json");
         let mgr = Arc::new(ConsentManager::new(consent_path));
@@ -1034,59 +1102,61 @@ mod collection_permitted_tests {
             screen_capture,
             ..Default::default()
         };
-        // 30일 유효 동의 부여
-        mgr.grant_consent(perms, 30).expect("동의 부여 실패");
+        // Grant consent valid for 30 days
+        mgr.grant_consent(perms, 30).expect("consent grant failed");
         mgr
     }
 
-    /// 동의 미부여 상태의 ConsentManager 를 반환한다.
+    /// Returns a ConsentManager in the not-granted state.
     fn make_no_consent_manager() -> Arc<dyn ConsentManagerPort> {
         let consent_path = tmp_path("consent_none.json");
         Arc::new(ConsentManager::new(consent_path))
     }
 
-    /// 시나리오 1: config_manager 가 None → fail-closed
+    /// Scenario 1: config_manager is None → fail-closed
     #[test]
     fn absent_config_manager_returns_false() {
         let consent = make_valid_consent(true);
         assert!(
             !collection_permitted(None, Some(&consent), false),
-            "config_manager 없으면 항상 false"
+            "must always be false when config_manager is absent"
         );
     }
 
-    /// 시나리오 2: 동의 없음(NotGranted) → false
+    /// Scenario 2: no consent (NotGranted) → false
     #[test]
     fn absent_consent_manager_returns_false() {
         let cm = make_config_manager();
-        // consent_manager = None → effective_permissions 는 all-false
+        // consent_manager = None → effective_permissions is all-false
         assert!(
             !collection_permitted(Some(&cm), None, false),
-            "동의 매니저 없으면 항상 false"
+            "must always be false when the consent manager is absent"
         );
     }
 
-    /// 시나리오 3: 동의 미부여(NotGranted) — grant_consent 를 한 번도 호출하지 않은
-    /// ConsentManager 인스턴스는 `check_consent() == NotGranted` 이므로
-    /// `effective_permissions()` 는 all-false 를 반환하고 게이트가 닫혀야 한다.
+    /// Scenario 3: consent not granted (NotGranted) — a ConsentManager instance on
+    /// which grant_consent has never been called has `check_consent() == NotGranted`,
+    /// so `effective_permissions()` returns all-false and the gate must be closed.
     #[test]
     fn no_consent_granted_returns_false() {
         let cm = make_config_manager();
-        let mgr = make_no_consent_manager(); // 동의 미부여 상태
+        let mgr = make_no_consent_manager(); // consent-not-granted state
         assert!(
             !collection_permitted(Some(&cm), Some(&mgr), false),
-            "동의 미부여 상태에서 항상 false"
+            "must always be false in the consent-not-granted state"
         );
     }
 
-    /// 시나리오 4: 동의 만료(Expired) — `screen_capture:true` 이지만 `expires_at` 가
-    /// 과거인 ConsentRecord 를 파일로 직접 기록한 뒤 `ConsentManager::new` 로 읽어들여
-    /// `effective_permissions()` 가 all-false 를 반환하는지 검증한다.
-    /// 스테일 동의로 수집이 재개되는 것이 이 Task 의 핵심 위험이므로 반드시 별도 케이스로 존재해야 한다.
+    /// Scenario 4: expired consent (Expired) — write a ConsentRecord with
+    /// `screen_capture:true` but an `expires_at` in the past directly to a file,
+    /// then load it via `ConsentManager::new` and verify that
+    /// `effective_permissions()` returns all-false.
+    /// Resuming collection on stale consent is the core risk of this task, so this
+    /// must exist as a dedicated case.
     #[test]
     fn expired_consent_returns_false() {
         use maekon_core::consent::{ConsentRecord, CURRENT_POLICY_VERSION};
-        // 과거 만료 날짜를 가진 ConsentRecord 를 JSON 으로 파일에 기록한다.
+        // Write a ConsentRecord with a past expiry date to a file as JSON.
         let consent_path = tmp_path("consent_expired.json");
         let expired = ConsentRecord {
             consent_id: "exp-test".to_string(),
@@ -1097,63 +1167,63 @@ mod collection_permitted_tests {
             data_deletion_requested: false,
             erasure_nonce: None,
             permissions: ConsentPermissions {
-                screen_capture: true, // 권한 자체는 부여됐으나 만료됨
+                screen_capture: true, // the permission itself was granted but has expired
                 ..Default::default()
             },
             data_retention_days: 30,
         };
         std::fs::write(
             &consent_path,
-            serde_json::to_string(&expired).expect("직렬화 실패"),
+            serde_json::to_string(&expired).expect("serialization failed"),
         )
-        .expect("파일 쓰기 실패");
-        // ConsentManager::new 는 파일을 읽어 Expired 상태로 초기화한다.
+        .expect("file write failed");
+        // ConsentManager::new reads the file and initializes into the Expired state.
         let mgr: Arc<dyn ConsentManagerPort> = Arc::new(ConsentManager::new(consent_path));
         let cm = make_config_manager();
         assert!(
             !collection_permitted(Some(&cm), Some(&mgr), false),
-            "Expired 동의는 screen_capture:true 이더라도 fail-closed 여야 한다"
+            "Expired consent must be fail-closed even with screen_capture:true"
         );
     }
 
-    /// 시나리오 5: 유효한 동의(screen_capture=true) → true
+    /// Scenario 5: valid consent (screen_capture=true) → true
     ///
-    /// AppConfig 기본값은 `vision.capture_enabled = true` 이고
-    /// active_hours_enabled = false 이므로 active-hours 게이트는 통과한다.
+    /// The AppConfig defaults have `vision.capture_enabled = true` and
+    /// active_hours_enabled = false, so the active-hours gate passes.
     #[test]
     fn valid_consent_with_screen_capture_returns_true() {
         let cm = make_config_manager();
         let consent = make_valid_consent(true);
         assert!(
             collection_permitted(Some(&cm), Some(&consent), false),
-            "유효한 동의이고 paused=false 이면 true"
+            "must be true with valid consent and paused=false"
         );
     }
 
-    /// 시나리오 6: 유효한 동의이지만 capture_paused → false
+    /// Scenario 6: valid consent but capture_paused → false
     #[test]
     fn valid_consent_but_paused_returns_false() {
         let cm = make_config_manager();
         let consent = make_valid_consent(true);
         assert!(
             !collection_permitted(Some(&cm), Some(&consent), true),
-            "paused=true 이면 동의와 무관하게 false"
+            "must be false when paused=true regardless of consent"
         );
     }
 }
 
-/// `metrics_collection_permitted` 헬퍼 단위 테스트 (F1 / Option A).
+/// Unit tests for the `metrics_collection_permitted` helper (F1 / Option A).
 ///
-/// 메트릭 루프는 인프라 헬스 데이터(CONS-PM09 / spec §3.8 row 16)이므로
-/// 동의(telemetry)만으로 게이트되고 TS/pause/active-hours 와 디커플된다.
-/// 이 모듈은 process/aggregation 의 full-composite `collection_permitted` 와
-/// 의도적으로 다른 게이트임을 고정한다:
-///   1. Valid 동의 + telemetry:true → true (TrackingScheduleConfig 입력 자체가 없음 = TS 무관)
-///   2. consent_manager 없음(None) → false (fail-closed)
-///   3. 동의 미부여(NotGranted) → false
-///   4. 동의 만료(Expired, telemetry:true 이지만 만료) → false (effective_permissions 가 마스킹)
-///   5. 정책 버전 불일치(UpdateRequired, telemetry:true) → false
-///   6. Valid 동의이지만 telemetry:false → false (own-field 게이트)
+/// The metrics loop handles infrastructure-health data (CONS-PM09 / spec §3.8 row
+/// 16), so it is gated on consent (telemetry) alone and decoupled from
+/// TS/pause/active-hours. This module pins down that it is intentionally a different
+/// gate from process/aggregation's full-composite `collection_permitted`:
+///   1. Valid consent + telemetry:true → true (no TrackingScheduleConfig input at all = TS-independent)
+///   2. no consent_manager (None) → false (fail-closed)
+///   3. consent not granted (NotGranted) → false
+///   4. expired consent (Expired, telemetry:true but expired) → false (effective_permissions masks it)
+///   5. policy version mismatch (UpdateRequired, telemetry:true) → false
+///   6. Valid consent but telemetry:false → false (own-field gate)
 #[cfg(test)]
 mod metrics_collection_permitted_tests {
     use super::metrics_collection_permitted;
@@ -1163,7 +1233,7 @@ mod metrics_collection_permitted_tests {
     use maekon_core::ports::consent_manager::ConsentManagerPort;
     use std::sync::Arc;
 
-    /// 테스트용 고유 임시 파일 경로.
+    /// Unique temporary file path for tests.
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1172,7 +1242,7 @@ mod metrics_collection_permitted_tests {
         std::env::temp_dir().join(format!("maekon_metrics_test_{nonce}_{suffix}"))
     }
 
-    /// telemetry 동의가 부여된 Valid ConsentManager.
+    /// A Valid ConsentManager that has been granted telemetry consent.
     fn make_valid_telemetry_consent() -> Arc<dyn ConsentManagerPort> {
         let mgr = Arc::new(ConsentManager::new(tmp_path("consent_telemetry.json")));
         mgr.grant_consent(
@@ -1182,47 +1252,48 @@ mod metrics_collection_permitted_tests {
             },
             30,
         )
-        .expect("동의 부여 실패");
+        .expect("consent grant failed");
         mgr
     }
 
-    /// 시나리오 1: Valid 동의 + telemetry:true → true.
+    /// Scenario 1: Valid consent + telemetry:true → true.
     ///
-    /// 이 함수는 config/TS 를 인자로 받지 않으므로(시그니처상 TS 입력 불가),
-    /// TS 활성 여부와 무관하게 telemetry 동의만 있으면 게이트가 열린다 =
-    /// CONS-PM09 (메트릭은 TS mute 중에도 계속). 이것이 process/aggregation 의
-    /// full-composite 게이트와 메트릭 게이트가 디커플되었음을 증명하는 핵심 단언.
+    /// This function takes neither config nor TS as arguments (its signature makes
+    /// TS input impossible), so the gate opens with telemetry consent alone,
+    /// regardless of whether TS is active = CONS-PM09 (metrics continue even during a
+    /// TS mute). This is the key assertion proving that the metrics gate is decoupled
+    /// from process/aggregation's full-composite gate.
     #[test]
     fn valid_telemetry_consent_returns_true_regardless_of_ts() {
         let consent = make_valid_telemetry_consent();
         assert!(
             metrics_collection_permitted(Some(&consent)),
-            "telemetry Valid 동의면 TS/pause/active-hours 와 무관하게 항상 true (CONS-PM09)"
+            "valid telemetry consent must always be true regardless of TS/pause/active-hours (CONS-PM09)"
         );
     }
 
-    /// 시나리오 2: consent_manager None → fail-closed.
+    /// Scenario 2: consent_manager None → fail-closed.
     #[test]
     fn absent_consent_manager_returns_false() {
         assert!(
             !metrics_collection_permitted(None),
-            "동의 매니저 없으면 항상 false (fail-closed)"
+            "must always be false when the consent manager is absent (fail-closed)"
         );
     }
 
-    /// 시나리오 3: 동의 미부여(NotGranted) → false.
+    /// Scenario 3: consent not granted (NotGranted) → false.
     #[test]
     fn no_consent_granted_returns_false() {
         let mgr: Arc<dyn ConsentManagerPort> =
             Arc::new(ConsentManager::new(tmp_path("consent_none.json")));
         assert!(
             !metrics_collection_permitted(Some(&mgr)),
-            "동의 미부여 상태에서 항상 false"
+            "must always be false in the consent-not-granted state"
         );
     }
 
-    /// 시나리오 4: 동의 만료(Expired) — telemetry:true 이지만 만료 → false.
-    /// effective_permissions() 가 Valid 가 아닌 상태를 all-false 로 마스킹한다.
+    /// Scenario 4: expired consent (Expired) — telemetry:true but expired → false.
+    /// effective_permissions() masks any non-Valid state to all-false.
     #[test]
     fn expired_consent_returns_false() {
         let consent_path = tmp_path("consent_expired.json");
@@ -1235,31 +1306,31 @@ mod metrics_collection_permitted_tests {
             data_deletion_requested: false,
             erasure_nonce: None,
             permissions: ConsentPermissions {
-                telemetry: true, // 권한 자체는 부여됐으나 만료됨
+                telemetry: true, // the permission itself was granted but has expired
                 ..Default::default()
             },
             data_retention_days: 30,
         };
         std::fs::write(
             &consent_path,
-            serde_json::to_string(&expired).expect("직렬화 실패"),
+            serde_json::to_string(&expired).expect("serialization failed"),
         )
-        .expect("파일 쓰기 실패");
+        .expect("file write failed");
         let mgr: Arc<dyn ConsentManagerPort> = Arc::new(ConsentManager::new(consent_path));
         assert!(
             !metrics_collection_permitted(Some(&mgr)),
-            "Expired 동의는 telemetry:true 이더라도 fail-closed 여야 한다"
+            "Expired consent must be fail-closed even with telemetry:true"
         );
     }
 
-    /// 시나리오 5: 정책 버전 불일치(UpdateRequired) — telemetry:true 이지만 → false.
-    /// expires_at=None 으로 두어 Expired 가 아닌 UpdateRequired 분기를 강제한다.
+    /// Scenario 5: policy version mismatch (UpdateRequired) — telemetry:true but → false.
+    /// Leaving expires_at=None forces the UpdateRequired branch rather than Expired.
     #[test]
     fn update_required_consent_returns_false() {
         let consent_path = tmp_path("consent_stale.json");
         let stale = ConsentRecord {
             consent_id: "stale-metrics".to_string(),
-            version: "0.0.1".to_string(), // 현 정책 버전과 불일치
+            version: "0.0.1".to_string(), // mismatched with the current policy version
             granted_at: chrono::Utc::now(),
             expires_at: None,
             revoked_at: None,
@@ -1273,34 +1344,35 @@ mod metrics_collection_permitted_tests {
         };
         std::fs::write(
             &consent_path,
-            serde_json::to_string(&stale).expect("직렬화 실패"),
+            serde_json::to_string(&stale).expect("serialization failed"),
         )
-        .expect("파일 쓰기 실패");
+        .expect("file write failed");
         let mgr: Arc<dyn ConsentManagerPort> = Arc::new(ConsentManager::new(consent_path));
         assert!(
             !metrics_collection_permitted(Some(&mgr)),
-            "UpdateRequired 동의는 telemetry:true 이더라도 fail-closed 여야 한다"
+            "UpdateRequired consent must be fail-closed even with telemetry:true"
         );
     }
 
-    /// 시나리오 6: Valid 동의이지만 telemetry:false → false (own-field 게이트).
-    /// screen_capture 등 다른 권한이 있어도 telemetry 가 꺼져 있으면 메트릭은 막힌다.
+    /// Scenario 6: Valid consent but telemetry:false → false (own-field gate).
+    /// Even with other permissions like screen_capture, metrics are blocked when
+    /// telemetry is off.
     #[test]
     fn valid_consent_without_telemetry_returns_false() {
         let mgr: Arc<dyn ConsentManagerPort> =
             Arc::new(ConsentManager::new(tmp_path("consent_no_telemetry.json")));
         mgr.grant_consent(
             ConsentPermissions {
-                screen_capture: true, // 다른 권한은 부여됐으나 telemetry 는 false
+                screen_capture: true, // other permissions granted, but telemetry is false
                 telemetry: false,
                 ..Default::default()
             },
             30,
         )
-        .expect("동의 부여 실패");
+        .expect("consent grant failed");
         assert!(
             !metrics_collection_permitted(Some(&mgr)),
-            "telemetry:false 면 다른 권한과 무관하게 메트릭 게이트는 닫혀야 한다"
+            "the metrics gate must be closed when telemetry:false regardless of other permissions"
         );
     }
 }
@@ -1362,22 +1434,26 @@ mod memory_graph_tests {
     }
 }
 
-/// `spawn_aggregation_loop` 의 collect/derive 게이트 계약 테스트.
+/// Contract tests for `spawn_aggregation_loop`'s collect/derive gate.
 ///
-/// 집계 루프는 데이터 파생/영속화 블록(시간별 집계·일/주간 다이제스트·memory-graph
-/// claim·스테일 벡터 재임베딩)을 `collect_ok` 뒤에 두고, `collect_ok` 는 R4 의
-/// `collection_permitted` free fn 으로 계산된다(= 메트릭/프로세스 루프와 동일한 게이트).
-/// `collection_permitted_tests` 가 6개 시나리오(config 없음/consent 없음/미부여/만료/
-/// 유효/paused)를 이미 망라하므로, 여기서는 *집계 컨텍스트* 의 보안 임계 속성만 명시한다:
-///   - 동의 없음(미부여) → collect_ok=false → 다이제스트/claim/재임베딩 쓰기 건너뜀
-///   - 유효 동의 → collect_ok=true → 파생 쓰기 실행
+/// The aggregation loop places its data derivation/persistence blocks (hourly
+/// aggregation, daily/weekly digests, memory-graph claims, stale vector
+/// re-embedding) behind `collect_ok`, and `collect_ok` is computed by R4's
+/// `collection_permitted` free fn (= the same gate as the metrics/process loops).
+/// Since `collection_permitted_tests` already covers all six scenarios (no config /
+/// no consent / not granted / expired / valid / paused), here we pin down only the
+/// security-critical properties of the *aggregation context*:
+///   - no consent (not granted) → collect_ok=false → skip digest/claim/re-embed writes
+///   - valid consent → collect_ok=true → run derive writes
 ///
-/// 하우스키핑(보존 삭제·sqlite 유지보수·인덱스 정비)은 게이트와 무관하게 항상 실행되며,
-/// 이는 코드 구조(게이트 밖 배치) + 컴파일로 보증된다.
+/// Housekeeping (retention deletes, sqlite maintenance, index maintenance) always
+/// runs regardless of the gate; this is guaranteed by the code structure (placed
+/// outside the gate) + compilation.
 ///
-/// 주: Scheduler 전체 + 16개 포트 + tokio 런타임 + 자정 트리거를 구성해 실제 쓰기를
-/// spy 하는 통합 테스트는 과도하다. 게이트 결정은 순수 헬퍼로 추출되어 있어
-/// 단위 테스트로 충분히 검증된다(should_rearm_vad 패턴).
+/// Note: an integration test that constructs the full Scheduler + 16 ports + the
+/// tokio runtime + a midnight trigger to spy on the actual writes would be
+/// excessive. The gate decision is extracted into a pure helper and is thus
+/// sufficiently verified by unit tests (the should_rearm_vad pattern).
 #[cfg(test)]
 mod aggregation_gate_tests {
     use super::collection_permitted;
@@ -1395,11 +1471,12 @@ mod aggregation_gate_tests {
     }
 
     fn make_config_manager() -> ConfigManager {
-        ConfigManager::with_path(tmp_path("config.json")).expect("ConfigManager 생성 실패")
+        ConfigManager::with_path(tmp_path("config.json")).expect("ConfigManager creation failed")
     }
 
-    /// 동의 미부여 상태 → 집계 루프의 collect/derive 게이트(collect_ok)가 닫혀야 한다.
-    /// 즉 일/주간 다이제스트·memory-graph claim·재임베딩 쓰기가 건너뛰어진다.
+    /// Consent-not-granted state → the aggregation loop's collect/derive gate
+    /// (collect_ok) must be closed. That is, daily/weekly digest, memory-graph claim,
+    /// and re-embedding writes are skipped.
     #[test]
     fn aggregation_derive_writes_skipped_without_consent() {
         let cm = make_config_manager();
@@ -1408,11 +1485,12 @@ mod aggregation_gate_tests {
         let collect_ok = collection_permitted(Some(&cm), Some(&no_consent), false);
         assert!(
             !collect_ok,
-            "동의 미부여 시 집계 루프의 파생/영속화 블록은 게이트가 닫혀 실행되지 않아야 한다"
+            "when consent is not granted, the aggregation loop's derive/persist blocks must not run (gate closed)"
         );
     }
 
-    /// 유효 동의(screen_capture=true, paused=false) → collect_ok=true → 파생 쓰기 실행.
+    /// Valid consent (screen_capture=true, paused=false) → collect_ok=true → run
+    /// derive writes.
     #[test]
     fn aggregation_derive_writes_run_with_valid_consent() {
         let cm = make_config_manager();
@@ -1425,16 +1503,16 @@ mod aggregation_gate_tests {
             },
             30,
         )
-        .expect("동의 부여 실패");
+        .expect("consent grant failed");
         let collect_ok = collection_permitted(Some(&cm), Some(&mgr), false);
         assert!(
             collect_ok,
-            "유효 동의 + paused=false 이면 집계 루프의 파생 블록이 실행되어야 한다"
+            "with valid consent + paused=false, the aggregation loop's derive blocks must run"
         );
     }
 
-    /// paused=true 이면 유효 동의여도 collect_ok=false (파생 쓰기 건너뜀) —
-    /// 하우스키핑은 별개로 계속 실행(코드 구조 보증)된다.
+    /// When paused=true, collect_ok=false even with valid consent (derive writes
+    /// skipped) — housekeeping continues independently (guaranteed by code structure).
     #[test]
     fn aggregation_derive_writes_skipped_when_paused() {
         let cm = make_config_manager();
@@ -1447,10 +1525,10 @@ mod aggregation_gate_tests {
             },
             30,
         )
-        .expect("동의 부여 실패");
+        .expect("consent grant failed");
         assert!(
             !collection_permitted(Some(&cm), Some(&mgr), true),
-            "paused=true 이면 파생 블록 게이트가 닫혀야 한다 (하우스키핑은 게이트 밖에서 계속)"
+            "when paused=true the derive-block gate must be closed (housekeeping continues outside the gate)"
         );
     }
 }

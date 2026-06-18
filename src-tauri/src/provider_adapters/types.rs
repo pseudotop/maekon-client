@@ -1,15 +1,14 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use maekon_automation::audit::AuditLogger;
 use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel, PrivacyConfig};
 use maekon_core::error::CoreError;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::llm_provider::{LlmProvider, ScreenContext};
 use maekon_core::ports::monitor::ProcessMonitor;
 use maekon_core::ports::ocr_provider::OcrProvider;
 use tokio::sync::RwLock;
 
-use maekon_core::consent::ConsentManager;
 use maekon_vision::privacy_gateway::{PrivacyGateway, SanitizedImage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +73,7 @@ pub(super) struct SanitizedExternalText {
 #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Clone)]
 pub struct ExternalOcrPrivacyGuard {
-    consent_path: PathBuf,
+    consent_manager: Arc<dyn ConsentManagerPort>,
     pii_filter_level: PiiFilterLevel,
     external_data_policy: ExternalDataPolicy,
     privacy_config: PrivacyConfig,
@@ -85,7 +84,7 @@ pub struct ExternalOcrPrivacyGuard {
 #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 impl ExternalOcrPrivacyGuard {
     pub fn new(
-        consent_path: PathBuf,
+        consent_manager: Arc<dyn ConsentManagerPort>,
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
         privacy_config: PrivacyConfig,
@@ -93,7 +92,7 @@ impl ExternalOcrPrivacyGuard {
         audit_logger: Option<Arc<RwLock<AuditLogger>>>,
     ) -> Self {
         Self {
-            consent_path,
+            consent_manager,
             pii_filter_level,
             external_data_policy,
             privacy_config,
@@ -125,7 +124,7 @@ impl ExternalOcrPrivacyGuard {
         };
 
         let gateway = PrivacyGateway::new(
-            Arc::new(ConsentManager::new(self.consent_path.clone())),
+            self.consent_manager.clone(),
             self.pii_filter_level,
             self.external_data_policy,
             self.privacy_config.clone(),
@@ -263,8 +262,11 @@ impl ExternalOcrPrivacyGuard {
             }
         };
 
-        let consent_manager = ConsentManager::new(self.consent_path.clone());
-        if !consent_manager.effective_permissions().full_text_extraction {
+        if !self
+            .consent_manager
+            .effective_permissions()
+            .full_text_extraction
+        {
             self.log_event(
                 "privacy.external_llm.denied",
                 &format!(

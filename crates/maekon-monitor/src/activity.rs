@@ -47,14 +47,19 @@ impl ActivityTracker {
 #[async_trait]
 impl ActivityMonitor for ActivityTracker {
     async fn collect_context(&self) -> Result<UserContext, CoreError> {
-        let active_window = self.process_monitor.get_active_window().await?;
-        let processes = self.process_monitor.get_top_processes(10).await?;
+        // #6441 (F16): collect the three independent sources concurrently so a tick
+        // waits on the slowest, not the sum.
+        let (active_window, processes, mouse_position) = tokio::join!(
+            self.process_monitor.get_active_window(),
+            self.process_monitor.get_top_processes(10),
+            self.collect_mouse_position(),
+        );
 
         let context = UserContext {
             timestamp: Utc::now(),
-            active_window,
-            processes,
-            mouse_position: self.collect_mouse_position().await,
+            active_window: active_window?,
+            processes: processes?,
+            mouse_position,
         };
 
         debug!(
@@ -67,6 +72,24 @@ impl ActivityMonitor for ActivityTracker {
         );
 
         Ok(context)
+    }
+
+    async fn collect_active_context(&self) -> Result<UserContext, CoreError> {
+        // #6441 (F13): the 1 Hz monitor loop needs only the active window + mouse; it
+        // never reads `processes`. Skip the top-process enumeration entirely (the full
+        // table walk + clone + sort that `collect_top_sync` performs on every call) and
+        // run the two remaining collectors concurrently (F16).
+        let (active_window, mouse_position) = tokio::join!(
+            self.process_monitor.get_active_window(),
+            self.collect_mouse_position(),
+        );
+
+        Ok(UserContext {
+            timestamp: Utc::now(),
+            active_window: active_window?,
+            processes: Vec::new(),
+            mouse_position,
+        })
     }
 }
 
@@ -170,6 +193,23 @@ mod tests {
         assert!(ctx.active_window.is_some());
         assert_eq!(ctx.active_window.unwrap().app_name, "Code");
         assert_eq!(ctx.processes.len(), 1);
+        let mouse_position = ctx.mouse_position.unwrap();
+        assert_eq!(mouse_position.x, 120);
+        assert_eq!(mouse_position.y, 80);
+    }
+
+    #[tokio::test]
+    async fn collect_active_context_skips_processes() {
+        let tracker = ActivityTracker::new_with_mouse_position_for_test(
+            Arc::new(MockProcessMonitor),
+            Some(MousePosition { x: 120, y: 80 }),
+        );
+        let ctx = tracker.collect_active_context().await.unwrap();
+        // #6441 (F13): active window + mouse are collected, but processes are NOT
+        // enumerated (the monitor hot-path never reads them).
+        assert!(ctx.active_window.is_some());
+        assert_eq!(ctx.active_window.unwrap().app_name, "Code");
+        assert!(ctx.processes.is_empty());
         let mouse_position = ctx.mouse_position.unwrap();
         assert_eq!(mouse_position.x, 120);
         assert_eq!(mouse_position.y, 80);

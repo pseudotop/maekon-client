@@ -2,7 +2,7 @@
 //!
 //! ADR-013 split from `capture_status/window_commands.rs`.
 //!
-//! | 서브모듈 | 담당 명령 |
+//! | Submodule | Commands handled |
 //! |---------|---------|
 //! | `mod.rs` | `show_main_window`, `debug_focus_window`, `debug_window_state`, `debug_set_window_fullscreen`, `debug_set_window_bounds`, `open_devtools` |
 //! | `normalization` | `debug_normalize_main_window_state`, `debug_normalize_main_window_bounds` |

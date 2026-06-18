@@ -72,7 +72,7 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
           setVadState(s)
           if (s === 'transcribing') setTranscribing(true)
           else setTranscribing(false)
-          // 개인정보 보호 게이트가 마이크를 강제 종료한 경우 사용자에게 알림 표시
+          // Notify the user when the privacy gate has forcibly stopped the microphone
           if (s === 'idle' && event.payload.reason === 'privacy_gate_closed') {
             addToast('warning', t('chat.mic_privacy_stopped', 'Microphone stopped — privacy gate active'), 5000)
           }

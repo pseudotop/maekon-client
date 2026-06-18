@@ -78,19 +78,35 @@ pub trait CoachingPort: Send + Sync {
 
     /// Return the label of the currently active regime (async).
     ///
-    /// async fn 핸들러에서 `_blocking` 변형 대신 이 메서드를 사용한다.
-    /// `block_in_place` + `block_on` 체인을 제거해 워커 스레드 점유를 방지한다.
-    /// (F-RR-C37-01 수정)
+    /// Default returns `None` — the same neutral value as the default
+    /// `current_regime_label_blocking`. Implementors that hold async state
+    /// (e.g. `CoachingEngine`, which wraps a `tokio::sync::RwLock`) MUST
+    /// override this method with a genuine async implementation that reads
+    /// the lock directly, without `block_in_place`.
+    ///
+    /// # Why this default does NOT delegate to `current_regime_label_blocking`
+    ///
+    /// The concrete `_blocking` override uses `block_in_place` + `block_on`
+    /// to bridge an async lock onto a sync call-site. Calling that from an
+    /// async default would route `block_in_place` back onto the async path,
+    /// which panics on a current-thread runtime (e.g. `#[tokio::test]`).
+    /// Returning the neutral value directly avoids the chain entirely while
+    /// keeping the same observable behaviour for implementations that only
+    /// override the `_blocking` variant. (Finding F-RR-C37-01 / #6007 §5)
     async fn current_regime_label(&self) -> Option<String> {
-        self.current_regime_label_blocking()
+        None
     }
 
     /// Return total minutes spent in regimes today (async).
     ///
-    /// async fn 핸들러에서 `_blocking` 변형 대신 이 메서드를 사용한다.
-    /// (F-RR-C37-01 수정)
+    /// Default returns `0` — the same neutral value as the default
+    /// `regime_minutes_today_blocking`. Implementors that hold async state
+    /// MUST override this method with a genuine async implementation.
+    ///
+    /// See `current_regime_label` for the rationale against delegating to
+    /// the `_blocking` variant from an async default. (F-RR-C37-01 / #6007 §5)
     async fn regime_minutes_today(&self) -> u32 {
-        self.regime_minutes_today_blocking()
+        0
     }
 
     /// Hot-reload the coaching config at runtime (#5707 hot-reload seam).

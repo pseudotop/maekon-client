@@ -75,6 +75,16 @@ pub(crate) fn compute_nprobe(n_clusters: usize) -> usize {
 #[async_trait]
 impl VectorStore for SqliteVectorStore {
     async fn store(&self, vector: Vec<f32>, metadata: EmbeddingMetadata) -> Result<(), CoreError> {
+        // Delegate to the returning variant and discard the row ID. The shared
+        // INSERT path keeps the two entry points byte-identical.
+        self.store_returning_id(vector, metadata).await.map(|_| ())
+    }
+
+    async fn store_returning_id(
+        &self,
+        vector: Vec<f32>,
+        metadata: EmbeddingMetadata,
+    ) -> Result<u64, CoreError> {
         if vector.is_empty() {
             return Err(CoreError::InvalidArguments {
                 code: maekon_core::error_codes::ValidationCode::InvalidArguments,
@@ -124,11 +134,16 @@ impl VectorStore for SqliteVectorStore {
             )
             .map_err(|e| StorageError::Internal(format!("Failed to store embedding vector: {e}")))?;
 
+            // #6113: read the inserted rowid INSIDE the same write lock, before it
+            // is released. A separate last_insert_id() read could observe a
+            // different rowid if another write interleaved (TOCTOU).
+            let row_id = conn.last_insert_rowid();
+
             debug!(
-                "Stored embedding vector for segment {} (type={})",
-                metadata.segment_id, content_type_str
+                "Stored embedding vector for segment {} (type={}, row_id={})",
+                metadata.segment_id, content_type_str, row_id
             );
-            Ok(())
+            Ok(row_id as u64)
         })
         .await
         .map_err(Into::into)
@@ -145,9 +160,10 @@ impl VectorStore for SqliteVectorStore {
         // match the query.  Fall back to brute-force on any IVF error so that
         // the existing safety guarantee is preserved.
         //
-        // 콜드-스타트 lazy-hydrate: 앱 재시작 시 corpus_dims_cache는 DIMS_CACHE_UNSET(0)으로
-        // 초기화된다. write 경로(store/store_quantized)가 캐시를 채우기 전까지 IVF를 우회하는
-        // 콜드-스타트 라우팅 미스를 막기 위해, 캐시가 UNSET이면 app_meta KV에서 1회 hydrate한다.
+        // Cold-start lazy-hydrate: on app restart, corpus_dims_cache is initialized to
+        // DIMS_CACHE_UNSET(0). To avoid a cold-start routing miss that bypasses IVF until a
+        // write path (store/store_quantized) populates the cache, hydrate once from the
+        // app_meta KV when the cache is UNSET.
         let mut cached_dims = self.corpus_dims_cache.load(Ordering::Relaxed);
         if cached_dims == DIMS_CACHE_UNSET {
             self.try_hydrate_dims_cache().await;
@@ -251,7 +267,7 @@ impl VectorStore for SqliteVectorStore {
         // all filter predicates (time range, content_type, regime_id, excluded
         // segment IDs) are passed through unchanged.
         //
-        // 콜드-스타트 lazy-hydrate: search()와 동일한 이유로 캐시가 UNSET이면 app_meta에서 1회 hydrate한다.
+        // Cold-start lazy-hydrate: for the same reason as search(), hydrate once from app_meta when the cache is UNSET.
         let mut cached_dims = self.corpus_dims_cache.load(Ordering::Relaxed);
         if cached_dims == DIMS_CACHE_UNSET {
             self.try_hydrate_dims_cache().await;
@@ -458,6 +474,20 @@ impl VectorStore for SqliteVectorStore {
         metadata: EmbeddingMetadata,
         skip_float32: bool,
     ) -> Result<(), CoreError> {
+        // Delegate to the returning variant and discard the row ID so both
+        // entry points share a single INSERT path.
+        self.store_quantized_returning_id(vector_f32, vector_int8, metadata, skip_float32)
+            .await
+            .map(|_| ())
+    }
+
+    async fn store_quantized_returning_id(
+        &self,
+        vector_f32: Vec<f32>,
+        vector_int8: &QuantizedVector,
+        metadata: EmbeddingMetadata,
+        skip_float32: bool,
+    ) -> Result<u64, CoreError> {
         // Validate INT8 vector is non-empty before persisting.
         if vector_int8.data.is_empty() {
             return Err(CoreError::InvalidArguments {
@@ -532,11 +562,16 @@ impl VectorStore for SqliteVectorStore {
             )
             .map_err(|e| StorageError::Internal(format!("Failed to store quantized vector: {e}")))?;
 
+            // #6113: read the inserted rowid INSIDE the same write lock, before it
+            // is released. A separate last_insert_id() read could observe a
+            // different rowid if another write interleaved (TOCTOU).
+            let row_id = conn.last_insert_rowid();
+
             debug!(
-                "Stored quantized vector for segment {} (type={}, skip_f32={})",
-                metadata.segment_id, content_type_str, skip_float32
+                "Stored quantized vector for segment {} (type={}, skip_f32={}, row_id={})",
+                metadata.segment_id, content_type_str, skip_float32, row_id
             );
-            Ok(())
+            Ok(row_id as u64)
         })
         .await
         .map_err(Into::into)
@@ -671,8 +706,15 @@ impl VectorStore for SqliteVectorStore {
                 return Ok(0);
             }
 
-            // Wrap batch updates in a transaction for performance.
-            conn.execute_batch("BEGIN")
+            // Wrap batch updates in a RAII transaction for performance AND safety.
+            // `unchecked_transaction()` issues `BEGIN` and returns a guard that emits
+            // `ROLLBACK` on drop unless `commit()` is called first. Any `?` early-return
+            // below (e.g. `ScalarQuantizer::quantize` failing on a corrupt/empty BLOB)
+            // therefore drops `tx` and auto-rolls-back, instead of leaking an open
+            // transaction on the SHARED GuardedConnection and poisoning the next writer.
+            // Matches calibration_store_impl.rs:28 + vector_index_impl/build.rs.
+            let tx = conn
+                .unchecked_transaction()
                 .map_err(|e| StorageError::Internal(format!("Backfill BEGIN failed: {e}")))?;
 
             // F0/#5186: deliberately does NOT bump the HLC. This only re-encodes existing
@@ -681,31 +723,34 @@ impl VectorStore for SqliteVectorStore {
             // synced). Stamping here would re-propagate an unchanged synced payload for a
             // local-only storage optimization — pure waste. The row already carries the HLC
             // from its store()/store_quantized() insert.
-            let mut update_stmt = conn
-                .prepare(
-                    "UPDATE embedding_vectors SET vector_int8 = ?1, quant_scale = ?2, quant_offset = ?3 WHERE id = ?4",
-                )
-                .map_err(|e| StorageError::Internal(format!("Failed to prepare backfill update: {e}")))?;
-
             let mut count: u64 = 0;
-            for (id, blob) in &rows {
-                let f32_vec = bytes_to_f32_vec(blob);
-                let quantized =
-                    maekon_core::quantization::ScalarQuantizer::quantize(&f32_vec).map_err(
-                        |e| StorageError::Internal(format!("Backfill quantize failed for id={id}: {e}")),
-                    )?;
-                let int8_blob = i8_vec_to_bytes(&quantized.data);
+            {
+                let mut update_stmt = tx
+                    .prepare(
+                        "UPDATE embedding_vectors SET vector_int8 = ?1, quant_scale = ?2, quant_offset = ?3 WHERE id = ?4",
+                    )
+                    .map_err(|e| StorageError::Internal(format!("Failed to prepare backfill update: {e}")))?;
 
-                update_stmt
-                    .execute(params![int8_blob, quantized.scale, quantized.offset, id])
-                    .map_err(|e| {
-                        StorageError::Internal(format!("Backfill update failed for id={id}: {e}"))
-                    })?;
+                for (id, blob) in &rows {
+                    let f32_vec = bytes_to_f32_vec(blob);
+                    let quantized =
+                        maekon_core::quantization::ScalarQuantizer::quantize(&f32_vec).map_err(
+                            |e| StorageError::Internal(format!("Backfill quantize failed for id={id}: {e}")),
+                        )?;
+                    let int8_blob = i8_vec_to_bytes(&quantized.data);
 
-                count += 1;
+                    update_stmt
+                        .execute(params![int8_blob, quantized.scale, quantized.offset, id])
+                        .map_err(|e| {
+                            StorageError::Internal(format!("Backfill update failed for id={id}: {e}"))
+                        })?;
+
+                    count += 1;
+                }
             }
 
-            conn.execute_batch("COMMIT")
+            // `update_stmt` is dropped (statement finalized) before commit.
+            tx.commit()
                 .map_err(|e| StorageError::Internal(format!("Backfill COMMIT failed: {e}")))?;
 
             debug!("Backfilled {count} vectors to INT8 quantized format");
@@ -1189,27 +1234,28 @@ impl SqliteVectorStore {
         .map_err(Into::into)
     }
 
-    /// 콜드-스타트 라우팅 미스 수정 (#5642).
+    /// Cold-start routing-miss fix (#5642).
     ///
-    /// `corpus_dims_cache`가 `DIMS_CACHE_UNSET`(0)인 상태에서 첫 검색이 들어오면
-    /// `app_meta` 테이블의 `CORPUS_DIMS_META_KEY` KV에서 영속화된 차원 값을 읽어
-    /// 캐시를 채운다.  성공하면 다음 gate 평가에서 IVF 경로를 정상 사용할 수 있다.
+    /// When the first search arrives while `corpus_dims_cache` is `DIMS_CACHE_UNSET`(0),
+    /// read the persisted dimension value from the `CORPUS_DIMS_META_KEY` KV in the
+    /// `app_meta` table and populate the cache. On success, the next gate evaluation can
+    /// use the IVF path normally.
     ///
-    /// # 안전성
+    /// # Safety
     ///
-    /// - `with_conn_read` 는 독립적인 `spawn_blocking` 호출이므로 다른 클로저 내부에
-    ///   중첩되지 않는다. (비재진입 mutex 데드락 방지)
-    /// - KV 없거나 파싱 실패 시 캐시를 `DIMS_CACHE_UNSET`으로 유지 → brute-force 경로.
-    /// - 이 메서드는 에러를 반환하지 않는다; 호출자는 결과를 무시한다.
+    /// - `with_conn_read` is an independent `spawn_blocking` call, so it is not nested
+    ///   inside another closure. (Prevents a non-reentrant mutex deadlock.)
+    /// - If the KV is missing or parsing fails, the cache stays `DIMS_CACHE_UNSET` → brute-force path.
+    /// - This method does not return an error; the caller ignores the result.
     async fn try_hydrate_dims_cache(&self) {
-        // `with_conn_read` 클로저 바깥에서 캐시 참조를 복제해 소유권을 전달한다.
+        // Clone the cache reference outside the `with_conn_read` closure to transfer ownership.
         let cache_ref = Arc::clone(&self.corpus_dims_cache);
         let result = self
             .with_conn_read(move |conn| {
                 let mut stmt = match conn.prepare("SELECT value FROM app_meta WHERE key = ?1") {
                     Ok(s) => s,
                     Err(e) => {
-                        // prepare 실패 시 None 반환 → 캐시 유지
+                        // On prepare failure, return None → keep the cache as-is.
                         warn!("try_hydrate_dims_cache: prepare failed ({e})");
                         return Ok(None::<u32>);
                     }
@@ -1250,7 +1296,7 @@ impl SqliteVectorStore {
                 );
             }
             Ok(None) => {
-                // KV 없거나 유효하지 않음 — 캐시를 DIMS_CACHE_UNSET으로 유지
+                // KV is missing or invalid — keep the cache as DIMS_CACHE_UNSET.
             }
             Err(e) => {
                 warn!(

@@ -1,6 +1,6 @@
-//! Contract coverage for macOS AX tree private TC IPC.
+//! Contract coverage for macOS AX tree maintainer-only validation IPC.
 //!
-//! The macOS AX hierarchy/focus observer TCs need deterministic IPC surfaces
+//! The macOS AX hierarchy/focus observer checks need deterministic IPC surfaces
 //! without relying on an external operator-only AX dumper.
 
 use std::fs;
@@ -48,7 +48,7 @@ fn crt_prv_axtree_001_has_registered_extract_ax_tree_ipc() {
     assert!(
         main_src.contains("debug_ax_tree_cli_command_from")
             && main_src.contains("MAEKON_DEBUG_AX_TREE_CLI"),
-        "AX permission-denial TC needs a gated debug CLI that can run outside the trusted GUI app"
+        "AX permission-denial validation needs a gated debug CLI that can run outside the trusted GUI app"
     );
 }
 
@@ -97,6 +97,6 @@ fn crt_prv_axtree_002_has_registered_focus_observer_ipc() {
     );
     assert!(
         main_src.contains("commands::capture_status::debug_focus_window"),
-        "AX focus observer TC needs a mouse-free debug IPC to shift focus between app windows"
+        "AX focus observer validation needs a mouse-free debug IPC to shift focus between app windows"
     );
 }

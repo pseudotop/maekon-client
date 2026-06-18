@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::multipart;
-use tracing::debug;
+use tracing::{debug, warn};
+use zeroize::Zeroizing;
 
 use maekon_core::config::{PiiFilterLevel, SttLanguage};
 use maekon_core::error::CoreError;
@@ -17,7 +18,7 @@ use maekon_core::ports::stt_provider::SttProvider;
 
 pub struct CloudSttProvider {
     client: reqwest::Client,
-    api_key: String,
+    api_key: Zeroizing<String>,
     endpoint: String,
     language: SttLanguage,
     timeout_secs: u32,
@@ -26,13 +27,48 @@ pub struct CloudSttProvider {
     pii_level: PiiFilterLevel,
 }
 
+/// True if `endpoint` is safe for transmitting a Bearer API key + raw audio:
+/// `https://` to any host, or `http://` only to an explicit loopback host (a
+/// local proxy/sidecar). A routable `http://` endpoint is rejected. (#6102-20)
+///
+/// Hand-parsed (no `url` dependency): scheme is the prefix before `://`, and the
+/// authority is everything up to the first `/`, `?`, or `#`, with userinfo and
+/// port stripped and bracketed IPv6 handled.
+fn endpoint_is_secure(endpoint: &str) -> bool {
+    let lower = endpoint.trim().to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("https://") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = lower.strip_prefix("http://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        // Drop any `user:pass@` userinfo prefix.
+        let host_port = authority.rsplit('@').next().unwrap_or(authority);
+        // Strip the port, handling bracketed IPv6 like `[::1]:8080`.
+        let host = if let Some(stripped) = host_port.strip_prefix('[') {
+            stripped.split(']').next().unwrap_or("")
+        } else {
+            host_port.split(':').next().unwrap_or("")
+        };
+        // "localhost", or any IP that parses as loopback (127.0.0.0/8, ::1).
+        // Parsing as IpAddr rejects look-alikes like "127.0.0.1.evil.com".
+        if host == "localhost" {
+            return true;
+        }
+        return host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    }
+    false
+}
+
 impl CloudSttProvider {
     pub fn new(
-        api_key: String,
+        api_key: impl Into<String>,
         endpoint: String,
         language: SttLanguage,
         timeout_secs: u32,
     ) -> Result<Self, CoreError> {
+        let api_key = Zeroizing::new(api_key.into());
         if api_key.is_empty() {
             return Err(CoreError::SpeechToText {
                 code: maekon_core::error_codes::AudioCode::SttFailed,
@@ -40,13 +76,28 @@ impl CloudSttProvider {
             });
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(u64::from(timeout_secs)))
-            .build()
-            .map_err(|e| CoreError::SpeechToText {
+        // #6102-20: a Bearer API key + raw microphone audio must never egress over
+        // cleartext http://. Require https, allowing http only for an explicit
+        // loopback host (a local proxy/sidecar), never for a routable endpoint.
+        if !endpoint_is_secure(&endpoint) {
+            return Err(CoreError::SpeechToText {
                 code: maekon_core::error_codes::AudioCode::SttFailed,
-                message: format!("build HTTP client: {e}"),
-            })?;
+                message: format!(
+                    "cloud STT endpoint must be https:// (or http:// to a loopback host); got: {endpoint}"
+                ),
+            });
+        }
+
+        // #6102-22: mirror the network helper convention — 0 means "no timeout"
+        // (unlimited), not a zero-duration deadline that would fail every request.
+        let mut builder = reqwest::Client::builder();
+        if timeout_secs > 0 {
+            builder = builder.timeout(Duration::from_secs(u64::from(timeout_secs)));
+        }
+        let client = builder.build().map_err(|e| CoreError::SpeechToText {
+            code: maekon_core::error_codes::AudioCode::SttFailed,
+            message: format!("build HTTP client: {e}"),
+        })?;
 
         Ok(Self {
             client,
@@ -68,6 +119,24 @@ impl CloudSttProvider {
         self.pii_sanitizer = Some(sanitizer);
         self.pii_level = level;
         self
+    }
+}
+
+/// Truncate `body` to at most `max_chars` Unicode scalar values in a char-boundary-safe way.
+///
+/// Returns a `&str` slice of `body`.  When the body is longer than `max_chars` the slice ends
+/// exactly at a character boundary so the caller never sees a partial multi-byte sequence.
+/// This is used to produce a bounded, frontend-safe error preview from a raw provider HTTP
+/// response body, preventing both unbounded message size and potential info-leakage of
+/// provider-internal details beyond a short diagnostic hint.
+fn truncate_provider_body(body: &str, max_chars: usize) -> &str {
+    match body.char_indices().nth(max_chars) {
+        // nth(n) returns the (byte_index, char) of the (n+1)-th character — i.e. the first
+        // character that would exceed the budget.  Slicing to that byte index gives exactly
+        // `max_chars` characters.
+        Some((byte_idx, _)) => &body[..byte_idx],
+        // Fewer than max_chars chars in the string: return the whole thing.
+        None => body,
     }
 }
 
@@ -117,7 +186,7 @@ impl SttProvider for CloudSttProvider {
         let response = self
             .client
             .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key.as_str())
             .multipart(form)
             .send()
             .await
@@ -138,7 +207,23 @@ impl SttProvider for CloudSttProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let message = format!("cloud STT error: HTTP {status} — {body}");
+
+            // Log the full provider body at warn level for server-side/debug inspection.
+            // The body is NOT embedded verbatim in the error surfaced to the frontend to
+            // prevent leaking provider internals (API plans, internal stack traces, etc.)
+            // and to bound error message size.  err.code follows ADR-019 observability
+            // convention so Loki/Grafana can group by code without regex on the body.
+            warn!(
+                http.status = status.as_u16(),
+                err.code = "stt_failed",
+                provider_body = %body,
+                "cloud STT provider returned error"
+            );
+
+            // Surface only a short, sanitised summary to the frontend.
+            let body_preview = truncate_provider_body(&body, 200);
+            let message = format!("cloud STT error: HTTP {status} — {body_preview}");
+
             // Semantic HTTP status mapping per iter-54/55/56 pattern — even STT
             // domain errors benefit from differentiating auth/timeout/rate-limit
             // from generic STT failures.
@@ -207,6 +292,87 @@ impl SttProvider for CloudSttProvider {
 mod tests {
     use super::*;
 
+    // --- truncate_provider_body ---
+
+    #[test]
+    fn truncate_short_body_is_unchanged() {
+        assert_eq!(truncate_provider_body("hello", 200), "hello");
+    }
+
+    #[test]
+    fn truncate_empty_body_is_unchanged() {
+        assert_eq!(truncate_provider_body("", 200), "");
+    }
+
+    #[test]
+    fn truncate_exact_limit_is_unchanged() {
+        let body = "a".repeat(200);
+        assert_eq!(truncate_provider_body(&body, 200), body.as_str());
+    }
+
+    #[test]
+    fn truncate_over_limit_is_capped() {
+        let body = "a".repeat(300);
+        let result = truncate_provider_body(&body, 200);
+        assert_eq!(
+            result.len(),
+            200,
+            "ASCII: truncated length must equal max_chars"
+        );
+    }
+
+    #[test]
+    fn truncate_multibyte_char_boundary_safe() {
+        // Each '\u{AC00}' (a Hangul syllable) is 3 UTF-8 bytes.  Building 100 of them gives a
+        // 300-byte string that is only 100 Unicode chars.  Requesting 50 chars must yield 50 of
+        // them (150 bytes), never splitting in the middle of a char.
+        let body: String = "\u{AC00}".repeat(100);
+        let result = truncate_provider_body(&body, 50);
+        assert_eq!(result.chars().count(), 50);
+        assert_eq!(result.len(), 150, "3 bytes x 50 chars = 150 bytes");
+        // Verify the result is valid UTF-8 and contains exactly the expected chars.
+        // `from_utf8` returns Ok(&str) — assert the decoded value equals result directly.
+        assert_eq!(
+            std::str::from_utf8(result.as_bytes()).expect("result must be valid UTF-8"),
+            "\u{AC00}".repeat(50),
+            "truncated content must be exactly 50 '\u{AC00}' characters"
+        );
+    }
+
+    #[test]
+    fn truncate_multibyte_long_body_stays_within_limit() {
+        // Mix of ASCII and multi-byte chars to ensure we never go over the char budget.
+        // Each Hangul char in "hello \u{C138}\u{ACC4} " is 3 bytes; ASCII chars are 1 byte.
+        let body: String = "hello \u{C138}\u{ACC4} ".repeat(50);
+        let result = truncate_provider_body(&body, 200);
+        assert!(result.chars().count() <= 200);
+        // Verify the result is valid UTF-8 by asserting the decoded value equals the slice itself.
+        // truncate_provider_body returns &str, so from_utf8 must succeed; expect propagates any
+        // future regression as a panic with a clear message rather than a silent is_ok() hedge.
+        assert_eq!(
+            std::str::from_utf8(result.as_bytes()).expect("result must be valid UTF-8"),
+            result,
+            "decoded UTF-8 must round-trip to the same &str"
+        );
+    }
+
+    #[test]
+    fn truncate_message_does_not_contain_excess_body() {
+        // Simulate the exact format used in the error path.
+        let long_body = "x".repeat(500);
+        let preview = truncate_provider_body(&long_body, 200);
+        let message = format!("cloud STT error: HTTP 500 — {preview}");
+        // The preview embedded in the message must be exactly 200 chars, not 500.
+        assert!(
+            message.contains(&"x".repeat(200)),
+            "message must contain the 200-char preview"
+        );
+        assert!(
+            !message.contains(&"x".repeat(201)),
+            "message must NOT contain more than 200 consecutive body chars"
+        );
+    }
+
     #[test]
     fn new_rejects_empty_api_key() {
         // `.err().expect()` instead of `.unwrap_err()`: the Ok type
@@ -222,14 +388,75 @@ mod tests {
 
     #[test]
     fn provider_name_correct() {
-        let provider = CloudSttProvider::new(
-            "sk-test".into(),
-            "http://test".into(),
+        let provider =
+            CloudSttProvider::new("sk-test", "https://test".into(), SttLanguage::Auto, 10).unwrap();
+        assert_eq!(provider.provider_name(), "openai-whisper-cloud");
+    }
+
+    #[test]
+    fn new_rejects_cleartext_http_endpoint() {
+        // #6102-20: a routable http:// endpoint must be rejected (Bearer key + audio
+        // would egress in cleartext).
+        let err = CloudSttProvider::new(
+            "sk-test",
+            "http://api.example.com/v1/transcribe".into(),
             SttLanguage::Auto,
             10,
         )
-        .unwrap();
+        .err()
+        .expect("cleartext http endpoint must be rejected");
+        assert!(matches!(err, CoreError::SpeechToText { .. }));
+    }
+
+    #[test]
+    fn new_allows_https_and_loopback_http() {
+        // https to any host is fine. `.expect()` only needs the Err type
+        // (CoreError) to be Debug; the Ok type (CloudSttProvider) intentionally
+        // is not. Bind the provider and confirm it is actually usable.
+        let provider = CloudSttProvider::new(
+            "sk-test",
+            "https://api.example.com".into(),
+            SttLanguage::Auto,
+            10,
+        )
+        .expect("https endpoint must be accepted");
         assert_eq!(provider.provider_name(), "openai-whisper-cloud");
+        // http is allowed only to an explicit loopback host (local proxy).
+        for ep in [
+            "http://localhost:8080/stt",
+            "http://127.0.0.1:9000",
+            "http://[::1]:9000/v1",
+        ] {
+            let provider = CloudSttProvider::new("sk-test", ep.into(), SttLanguage::Auto, 10)
+                .unwrap_or_else(|e| {
+                    panic!("loopback http endpoint should be allowed: {ep}; got: {e:?}")
+                });
+            assert_eq!(provider.provider_name(), "openai-whisper-cloud");
+        }
+    }
+
+    #[test]
+    fn new_zero_timeout_builds_unlimited_client() {
+        // #6102-22: 0 means "no timeout" (unlimited), not a zero-duration deadline
+        // that would fail every request. Construction must succeed and the
+        // resulting provider must be usable (not a half-built client).
+        let provider =
+            CloudSttProvider::new("sk-test", "https://test".into(), SttLanguage::Auto, 0)
+                .expect("zero timeout must build an unlimited client, not fail");
+        assert_eq!(provider.provider_name(), "openai-whisper-cloud");
+        assert_eq!(provider.timeout_secs, 0, "zero timeout must be preserved");
+    }
+
+    #[test]
+    fn endpoint_is_secure_classifies_correctly() {
+        assert!(endpoint_is_secure("https://example.com"));
+        assert!(endpoint_is_secure("http://localhost:1234"));
+        assert!(endpoint_is_secure("http://127.0.0.1"));
+        assert!(endpoint_is_secure("http://[::1]:9000"));
+        assert!(!endpoint_is_secure("http://example.com"));
+        assert!(!endpoint_is_secure("http://127.0.0.1.evil.com"));
+        assert!(!endpoint_is_secure("ftp://example.com"));
+        assert!(!endpoint_is_secure(""));
     }
 
     // iter-72 regression guards for iter-58 semantic HTTP status mapping
@@ -243,7 +470,7 @@ mod tests {
             .create_async()
             .await;
         let provider =
-            CloudSttProvider::new("sk-test".into(), server.url(), SttLanguage::Auto, 10).unwrap();
+            CloudSttProvider::new("sk-test", server.url(), SttLanguage::Auto, 10).unwrap();
         // Non-empty buffer so transcribe doesn't early-return; 1 sec silence
         // at 16kHz = 16_000 samples.
         let audio = maekon_core::models::audio::AudioBuffer::new(vec![0.0f32; 16_000]);

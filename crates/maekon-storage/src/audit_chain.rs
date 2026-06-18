@@ -1,75 +1,108 @@
-//! audit_log SHA-256 해시 체인 헬퍼 (#4834, ADR-072 client mirror).
+//! audit_log SHA-256 hash-chain helper (#4834, ADR-072 client mirror).
 //!
-//! `audit_log` 행을 tamper-**evident** 하게 만드는 해시 계산 로직을 모은다.
-//! 체인 규칙: `entry_hash = SHA256(prev_hash_bytes || canonical(record))`.
-//! - `prev_hash` 는 직전 체인 행의 `entry_hash` (genesis 는 [`GENESIS_PREV_HASH`]).
-//! - `canonical(record)` 는 불변 필드의 **길이-접두(length-prefixed) + 필드 순서
-//!   고정** 직렬화이다. serde_json 은 경계 모호성(키 순서/escape) 때문에 쓰지
-//!   않는다.
+//! Collects the hash-computation logic that makes `audit_log` rows
+//! tamper-**evident**. Chain rule: `entry_hash = SHA256(prev_hash_bytes ||
+//! canonical(record))`.
+//! - `prev_hash` is the `entry_hash` of the preceding chain row (genesis uses
+//!   [`GENESIS_PREV_HASH`]).
+//! - `canonical(record)` is a **length-prefixed + fixed-field-order**
+//!   serialization of the immutable fields. serde_json is not used because of
+//!   its boundary ambiguity (key ordering / escaping).
 //!
-//! ## canonical 직렬화 형식
-//! 각 필드는 `field_index(1바이트) || u32 len(big-endian, UTF-8 바이트 길이) ||
-//! bytes` 로 인코딩한다. `Option` 의 None 은 길이 0 의 sentinel 과 구분하기 위해
-//! 별도의 presence 바이트(0/1)를 길이 앞에 둔다. 필드 순서는 AuditEntry 의 불변
-//! 필드 순서를 고정한다:
+//! ## canonical serialization format
+//! Each field is encoded as `field_index(1 byte) || u32 len(big-endian, UTF-8
+//! byte length) || bytes`. To distinguish an `Option`'s None from a length-0
+//! sentinel, a separate presence byte (0/1) precedes the length. The field order
+//! fixes the immutable field order of AuditEntry:
 //!   0 entry_id, 1 timestamp(RFC3339), 2 session_id, 3 command_id,
 //!   4 action_type, 5 status(stable string), 6 details(Option), 7 execution_time_ms(Option).
 //!
 //! ## hash_version seam (out-of-scope)
-//! 현재 알고리즘은 plain SHA-256(서명 없음)이다. 전면 재기록 내부자 위협 방어를
-//! 위한 HMAC/Ed25519 도입 시 알고리즘을 분기할 수 있도록 [`HASH_VERSION`] 상수를
-//! 남겨둔다. 본 이슈(#4834)에서는 v1(SHA-256-only)만 구현한다.
+//! The current algorithm is plain SHA-256 (no signature). The [`HASH_VERSION`]
+//! constant is kept so the algorithm can be branched when HMAC/Ed25519 is
+//! introduced to defend against a full-rewrite insider threat. This issue
+//! (#4834) implements only v1 (SHA-256-only).
 
+use crate::error::StorageError;
 use sha2::{Digest, Sha256};
 
-/// genesis 행의 `prev_hash` — 64-char zero hex(32바이트 0).
+/// `prev_hash` of the genesis row — 64-char zero hex (32 zero bytes).
 pub const GENESIS_PREV_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
-/// 현재 해시 알고리즘 버전. v1 = plain SHA-256 (서명 없음).
-/// 향후 HMAC/Ed25519 도입 시 분기점(seam)으로 사용한다(#4834 out-of-scope).
+/// Current hash-algorithm version. v1 = plain SHA-256 (no signature).
+/// Used as the seam for branching when HMAC/Ed25519 is introduced later
+/// (#4834 out-of-scope).
 pub const HASH_VERSION: u8 = 1;
 
-/// 해시 체인 계산에 쓰이는 불변 감사 레코드 뷰.
+/// Immutable view of an audit record used for hash-chain computation.
 ///
-/// [`AuditEntry`](maekon_core::models::audit::AuditEntry) 의 불변 필드만 빌려와
-/// canonical 직렬화한다. 소유권 없이 참조만 받으므로 write/verify 양쪽에서 동일
-/// 입력을 보장한다.
+/// Borrows only the immutable fields of
+/// [`AuditEntry`](maekon_core::models::audit::AuditEntry) for canonical
+/// serialization. It takes references rather than ownership, which guarantees
+/// identical input on both the write and verify sides.
 pub struct CanonicalRecord<'a> {
     pub entry_id: &'a str,
     pub timestamp_rfc3339: &'a str,
     pub session_id: &'a str,
     pub command_id: &'a str,
     pub action_type: &'a str,
-    /// status 의 stable string(예: "Completed") — DB 저장 문자열과 동일.
+    /// Stable string for the status (e.g. "Completed") — identical to the string
+    /// stored in the DB.
     pub status: &'a str,
     pub details: Option<&'a str>,
     pub execution_time_ms: Option<u64>,
 }
 
-/// 문자열 필드를 `index || u32 len(BE) || bytes` 로 buffer 에 push 한다.
-fn push_str_field(buf: &mut Vec<u8>, index: u8, value: &str) {
-    buf.push(index);
-    let bytes = value.as_bytes();
-    buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-    buf.extend_from_slice(bytes);
+/// Encode a `u32` big-endian length prefix WITHOUT a truncating cast.
+///
+/// The canonical format uses a `u32` length prefix per field. A field longer
+/// than `u32::MAX` (≈4 GiB) would silently wrap under `as u32`, producing a
+/// shorter declared length while the full bytes are still appended — which
+/// collides distinct records and breaks the tamper-evident chain. Since this
+/// is a security-critical hash chain we REJECT (return an error) instead of
+/// truncating, mirroring the `u32::try_from` precedent in
+/// `sync_merger::extract_hlc_counter`.
+fn push_len_prefix(buf: &mut Vec<u8>, index: u8, len: usize) -> Result<(), StorageError> {
+    let len = u32::try_from(len).map_err(|_| StorageError::Validation {
+        field: format!("audit_chain.field[{index}]"),
+        message: format!("canonical field exceeds u32 length prefix ({len} bytes)"),
+    })?;
+    buf.extend_from_slice(&len.to_be_bytes());
+    Ok(())
 }
 
-/// Option<str> 필드를 `index || presence(0/1) || (있으면) u32 len(BE) || bytes` 로 push.
-fn push_opt_str_field(buf: &mut Vec<u8>, index: u8, value: Option<&str>) {
+/// Pushes a string field onto the buffer as `index || u32 len(BE) || bytes`.
+fn push_str_field(buf: &mut Vec<u8>, index: u8, value: &str) -> Result<(), StorageError> {
+    buf.push(index);
+    let bytes = value.as_bytes();
+    push_len_prefix(buf, index, bytes.len())?;
+    buf.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// Pushes an `Option<str>` field as `index || presence(0/1) || (if present)
+/// u32 len(BE) || bytes`.
+fn push_opt_str_field(
+    buf: &mut Vec<u8>,
+    index: u8,
+    value: Option<&str>,
+) -> Result<(), StorageError> {
     buf.push(index);
     match value {
         Some(v) => {
             buf.push(1);
             let bytes = v.as_bytes();
-            buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            push_len_prefix(buf, index, bytes.len())?;
             buf.extend_from_slice(bytes);
         }
         None => buf.push(0),
     }
+    Ok(())
 }
 
-/// Option<u64> 필드를 `index || presence(0/1) || (있으면) u64 value(BE)` 로 push.
+/// Pushes an `Option<u64>` field as `index || presence(0/1) || (if present)
+/// u64 value(BE)`.
 fn push_opt_u64_field(buf: &mut Vec<u8>, index: u8, value: Option<u64>) {
     buf.push(index);
     match value {
@@ -81,36 +114,46 @@ fn push_opt_u64_field(buf: &mut Vec<u8>, index: u8, value: Option<u64>) {
     }
 }
 
-/// 레코드의 결정적 canonical 바이트열을 만든다.
+/// Builds the deterministic canonical byte string for a record.
 ///
-/// 동일 입력은 항상 동일 출력을 낸다(키 순서/escape 모호성 없음). 필드 순서는
-/// 모듈 doc 의 0..=7 인덱스를 따른다.
-pub fn canonical_bytes(record: &CanonicalRecord<'_>) -> Vec<u8> {
+/// Identical input always yields identical output (no key-ordering / escaping
+/// ambiguity). The field order follows the 0..=7 indices in the module doc.
+///
+/// Returns an error (never truncates) when any single field exceeds the `u32`
+/// length prefix — see [`push_len_prefix`].
+pub fn canonical_bytes(record: &CanonicalRecord<'_>) -> Result<Vec<u8>, StorageError> {
     let mut buf = Vec::with_capacity(256);
-    // 알고리즘 버전을 prefix 해 향후 형식 분기를 무결성에 결속한다.
+    // Prefix the algorithm version to bind any future format branching to the integrity.
     buf.push(HASH_VERSION);
-    push_str_field(&mut buf, 0, record.entry_id);
-    push_str_field(&mut buf, 1, record.timestamp_rfc3339);
-    push_str_field(&mut buf, 2, record.session_id);
-    push_str_field(&mut buf, 3, record.command_id);
-    push_str_field(&mut buf, 4, record.action_type);
-    push_str_field(&mut buf, 5, record.status);
-    push_opt_str_field(&mut buf, 6, record.details);
+    push_str_field(&mut buf, 0, record.entry_id)?;
+    push_str_field(&mut buf, 1, record.timestamp_rfc3339)?;
+    push_str_field(&mut buf, 2, record.session_id)?;
+    push_str_field(&mut buf, 3, record.command_id)?;
+    push_str_field(&mut buf, 4, record.action_type)?;
+    push_str_field(&mut buf, 5, record.status)?;
+    push_opt_str_field(&mut buf, 6, record.details)?;
     push_opt_u64_field(&mut buf, 7, record.execution_time_ms);
-    buf
+    Ok(buf)
 }
 
-/// `entry_hash = hex(SHA256(prev_hash_bytes || canonical(record)))` 를 계산한다.
+/// Computes `entry_hash = hex(SHA256(prev_hash_bytes || canonical(record)))`.
 ///
-/// `prev_hash_hex` 는 직전 체인 행의 `entry_hash`(genesis 는 [`GENESIS_PREV_HASH`]).
-/// hex 문자열을 그대로 바이트열로 흡수하여 해시에 섞는다(hex→raw 디코드가 아니라
-/// 문자열 바이트를 쓰므로 prev_hash 형식이 잘못돼도 결정적이다).
-pub fn compute_entry_hash(prev_hash_hex: &str, record: &CanonicalRecord<'_>) -> String {
+/// `prev_hash_hex` is the `entry_hash` of the preceding chain row (genesis uses
+/// [`GENESIS_PREV_HASH`]). The hex string is absorbed into the hash as-is, byte
+/// for byte (it uses the string bytes rather than a hex→raw decode, so the
+/// result is deterministic even if `prev_hash` has a malformed format).
+///
+/// Returns an error (never truncates) when a record field exceeds the `u32`
+/// length prefix — see [`canonical_bytes`].
+pub fn compute_entry_hash(
+    prev_hash_hex: &str,
+    record: &CanonicalRecord<'_>,
+) -> Result<String, StorageError> {
     let mut hasher = Sha256::new();
     hasher.update(prev_hash_hex.as_bytes());
-    hasher.update(canonical_bytes(record));
+    hasher.update(canonical_bytes(record)?);
     let digest = hasher.finalize();
-    hex::encode(digest)
+    Ok(hex::encode(digest))
 }
 
 #[cfg(test)]
@@ -139,14 +182,17 @@ mod tests {
     #[test]
     fn canonical_is_deterministic() {
         let r = sample();
-        assert_eq!(canonical_bytes(&r), canonical_bytes(&sample()));
+        assert_eq!(
+            canonical_bytes(&r).unwrap(),
+            canonical_bytes(&sample()).unwrap()
+        );
     }
 
     #[test]
     fn entry_hash_is_deterministic_and_hex64() {
         let r = sample();
-        let h1 = compute_entry_hash(GENESIS_PREV_HASH, &r);
-        let h2 = compute_entry_hash(GENESIS_PREV_HASH, &sample());
+        let h1 = compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap();
+        let h2 = compute_entry_hash(GENESIS_PREV_HASH, &sample()).unwrap();
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64);
         assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
@@ -154,49 +200,49 @@ mod tests {
 
     #[test]
     fn changing_any_field_changes_hash() {
-        let base = compute_entry_hash(GENESIS_PREV_HASH, &sample());
+        let base = compute_entry_hash(GENESIS_PREV_HASH, &sample()).unwrap();
 
         let mut r = sample();
         r.details = Some("tampered");
-        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r), base);
+        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap(), base);
 
         let mut r = sample();
         r.timestamp_rfc3339 = "2026-06-03T00:00:01+00:00";
-        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r), base);
+        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap(), base);
 
         let mut r = sample();
         r.status = "Failed";
-        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r), base);
+        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap(), base);
 
         let mut r = sample();
         r.execution_time_ms = None;
-        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r), base);
+        assert_ne!(compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap(), base);
     }
 
     #[test]
     fn changing_prev_hash_changes_hash() {
         let r = sample();
-        let g = compute_entry_hash(GENESIS_PREV_HASH, &r);
-        let other = compute_entry_hash(&"a".repeat(64), &r);
+        let g = compute_entry_hash(GENESIS_PREV_HASH, &r).unwrap();
+        let other = compute_entry_hash(&"a".repeat(64), &r).unwrap();
         assert_ne!(g, other);
     }
 
     #[test]
     fn none_details_differs_from_empty_details() {
-        // None 과 Some("") 는 presence 바이트로 구분되어야 한다.
+        // None and Some("") must be distinguished by the presence byte.
         let mut none = sample();
         none.details = None;
         let mut empty = sample();
         empty.details = Some("");
         assert_ne!(
-            compute_entry_hash(GENESIS_PREV_HASH, &none),
-            compute_entry_hash(GENESIS_PREV_HASH, &empty)
+            compute_entry_hash(GENESIS_PREV_HASH, &none).unwrap(),
+            compute_entry_hash(GENESIS_PREV_HASH, &empty).unwrap()
         );
     }
 
     #[test]
     fn length_prefix_prevents_field_boundary_ambiguity() {
-        // ("ab","c") 와 ("a","bc") 가 같은 해시를 내면 안 된다.
+        // ("ab","c") and ("a","bc") must not produce the same hash.
         let mut r1 = sample();
         r1.entry_id = "ab";
         r1.session_id = "c";
@@ -204,8 +250,33 @@ mod tests {
         r2.entry_id = "a";
         r2.session_id = "bc";
         assert_ne!(
-            compute_entry_hash(GENESIS_PREV_HASH, &r1),
-            compute_entry_hash(GENESIS_PREV_HASH, &r2)
+            compute_entry_hash(GENESIS_PREV_HASH, &r1).unwrap(),
+            compute_entry_hash(GENESIS_PREV_HASH, &r2).unwrap()
         );
+    }
+
+    /// Drive the `u32` length-prefix overflow guard directly (a real >4 GiB
+    /// field is infeasible to allocate in a unit test). `push_len_prefix`
+    /// MUST reject `u32::MAX + 1` rather than silently truncate to `0`, which
+    /// would otherwise corrupt the tamper-evident chain.
+    #[test]
+    fn length_prefix_rejects_overflow_instead_of_truncating() {
+        let mut buf = Vec::new();
+        // u32::MAX exactly is the largest accepted length: it must be accepted AND
+        // emit the full 4-byte big-endian prefix (0xFFFF_FFFF), not silently drop it.
+        push_len_prefix(&mut buf, 0, u32::MAX as usize)
+            .expect("u32::MAX is the largest accepted length and must not be rejected");
+        assert_eq!(
+            buf,
+            u32::MAX.to_be_bytes(),
+            "the boundary length must be written as its 4-byte big-endian prefix"
+        );
+
+        // One byte past u32::MAX must error (only reachable on 64-bit usize).
+        if let Some(overflow) = (u32::MAX as usize).checked_add(1) {
+            let err = push_len_prefix(&mut buf, 3, overflow)
+                .expect_err("length past u32::MAX must be rejected, not truncated");
+            assert!(matches!(err, StorageError::Validation { .. }));
+        }
     }
 }

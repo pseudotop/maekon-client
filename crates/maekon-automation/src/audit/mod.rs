@@ -1,10 +1,12 @@
 // ADR-013: audit module split (was 1418 lines)
 // Responsibilities:
-//   traits.rs  — AuditPersistence + AuditQuery port traits
-//   logger.rs  — AuditLogger struct, all logging methods, PII sanitization helpers
-//   adapter.rs — AuditLogAdapter (AuditLogPort impl, bridges tokio RwLock to port)
+//   traits.rs              — AuditPersistence + AuditQuery port traits
+//   logger.rs              — AuditLogger struct, all logging methods, PII sanitization helpers
+//   adapter.rs             — AuditLogAdapter (AuditLogPort impl, bridges tokio RwLock to port)
+//   channel_persistence.rs — ChannelAuditPersistence (off-reactor blocking-SQLite drain, #6123)
 
 mod adapter;
+mod channel_persistence;
 mod logger;
 mod traits;
 
@@ -13,8 +15,9 @@ pub use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStats, AuditSt
 
 // Public surface — all callers use `maekon_automation::audit::{...}`
 pub use adapter::AuditLogAdapter;
+pub use channel_persistence::ChannelAuditPersistence;
 pub use logger::AuditLogger;
-pub use traits::{AuditPersistence, AuditQuery};
+pub use traits::{AuditPersistence, AuditQuery, SessionAuditPersistence};
 
 #[cfg(test)]
 mod tests {

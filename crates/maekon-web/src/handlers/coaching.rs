@@ -4,6 +4,7 @@ use maekon_api_contracts::coaching::{
     CoachingEventResponse, CoachingHistoryQuery, CoachingStatsTodayResponse, GoalProgressResponse,
     HabitStreakQuery, HabitStreakResponse, UpdateGoalsRequest,
 };
+use tracing::warn;
 
 use crate::error::ApiError;
 use crate::AppState;
@@ -68,18 +69,31 @@ pub async fn get_coaching_stats_today(
     let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     // ADR-026 PR-8: `query_coaching_events_since` is now async and offloads the
     // SQLite read onto `spawn_blocking` internally — await it directly.
-    let today_count = state
+    //
+    // Best-effort: a storage failure (DB locked, schema mismatch, I/O error) must
+    // not surface as an HTTP 500 for this stats endpoint — callers tolerate a stale
+    // zero. Log at WARN with a structured err.code field (ADR-019) so operators can
+    // detect persistent storage degradation without parsing the Display body.
+    let today_count = match state
         .core
         .storage
         .query_coaching_events_since(&today_str)
         .await
-        .ok()
-        .map(|events| events.len() as u32)
-        .unwrap_or(0);
+    {
+        Ok(events) => events.len() as u32,
+        Err(e) => {
+            warn!(
+                err.code = %e.code(),
+                "coaching stats: storage read failed, returning 0 as best-effort: {e}"
+            );
+            0
+        }
+    };
 
-    // F-RR-C37-01: `_blocking` 변형 대신 async 변형을 사용한다.
-    // `block_in_place` + `block_on` 체인은 async fn 핸들러에서 워커 스레드를 점유하므로
-    // Tokio 단일 스레드 런타임(#[tokio::test] 기본값)에서 패닉을 유발한다.
+    // F-RR-C37-01: use the async variant instead of the `_blocking` variant.
+    // A `block_in_place` + `block_on` chain occupies a worker thread inside an
+    // async fn handler, which panics on Tokio's single-threaded runtime
+    // (the `#[tokio::test]` default).
     let current_regime = if let Some(ref engine) = state.analysis.coaching_engine {
         engine.current_regime_label().await
     } else {
@@ -166,7 +180,8 @@ mod tests {
         fn regime_minutes_today_blocking(&self) -> u32 {
             90
         }
-        // F-RR-C37-01: async 변형 — MockCoachingEngine은 _blocking 기본 위임 대신 직접 구현.
+        // F-RR-C37-01: async variant — MockCoachingEngine implements it directly
+        // instead of delegating to the `_blocking` default.
         async fn current_regime_label(&self) -> Option<String> {
             Some("deep_work".to_string())
         }
@@ -386,13 +401,14 @@ mod tests {
         assert_eq!(parsed["regime_minutes_today"], 90);
     }
 
-    /// F-RR-C37-01 회귀 방지: async 포트 메서드가 단일 스레드 런타임(#[tokio::test] 기본값)에서
-    /// 패닉 없이 동작함을 검증한다. 이 테스트가 존재하는 동안 `block_in_place` 회귀는
-    /// `cannot block_in_place inside a current-thread runtime` 패닉으로 즉시 감지된다.
+    /// F-RR-C37-01 regression guard: verifies the async port methods run without
+    /// panicking on a single-threaded runtime (the `#[tokio::test]` default). While
+    /// this test exists, a `block_in_place` regression is caught immediately by the
+    /// `cannot block_in_place inside a current-thread runtime` panic.
     #[tokio::test]
     async fn coaching_stats_async_port_methods_do_not_block_in_place() {
         let engine = MockCoachingEngine;
-        // async 변형이 단일 스레드 컨텍스트에서 패닉 없이 값을 반환해야 한다.
+        // The async variants must return values without panicking in a single-threaded context.
         let label = engine.current_regime_label().await;
         let minutes = engine.regime_minutes_today().await;
         assert_eq!(label, Some("deep_work".to_string()));

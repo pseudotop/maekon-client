@@ -2,7 +2,7 @@
 //!
 //! ADR-013 split: 1,129-line `capture_status.rs` → focused submodules.
 //!
-//! | 서브모듈 | 담당 명령 |
+//! | Submodule | Commands |
 //! |---------|---------|
 //! | `mod.rs` | `get_capture_status`, `toggle_capture_pause`, `set_indicator_visible`, `get_connection_status`, `save_panel_position`, `get_panel_position` |
 //! | `window_commands` | `show_main_window`, `debug_focus_window`, `debug_window_state`, `debug_set_window_fullscreen`, `debug_set_window_bounds`, `debug_normalize_main_window_state`, `debug_normalize_main_window_bounds`, `debug_place_overlay_for_window`, `open_devtools` |
@@ -242,15 +242,16 @@ pub async fn get_panel_position(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, IpcError> {
     let storage = state.storage.clone();
-    let raw_opt = tokio::task::spawn_blocking(move || storage.get_meta("tracking_panel_position"))
-        .await
-        .map_err(|join_err| {
-            IpcError::new(
-                "internal.generic",
-                format!("get_panel_position task join failed: {join_err}"),
-            )
-        })?;
-    let raw = match raw_opt {
+    let raw_opt: Option<String> =
+        tokio::task::spawn_blocking(move || storage.get_meta("tracking_panel_position"))
+            .await
+            .map_err(|join_err| {
+                IpcError::new(
+                    "internal.generic",
+                    format!("get_panel_position task join failed: {join_err}"),
+                )
+            })?;
+    let raw: String = match raw_opt {
         Some(v) => v,
         None => return Ok(None),
     };

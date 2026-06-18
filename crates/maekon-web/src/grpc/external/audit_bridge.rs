@@ -48,9 +48,10 @@ impl AuditBridge {
 
     /// Record one external gRPC request. Returns the command_id (for response header).
     ///
-    /// Uses `log_complete_with_time` so that `command_id`, `session_id`,
-    /// `details`, and `execution_time_ms` are all preserved in the stored entry.
-    /// The `status` and `failure_reason` are encoded inside the JSON details blob.
+    /// #6277: uses `log_with_status_and_time` so the durable entry carries the
+    /// REAL `status` + `action_type` (not the hardcoded `Completed`/`"complete"`),
+    /// alongside `command_id`, `session_id`, `details`, and `execution_time_ms`.
+    /// `failure_reason` is additionally encoded inside the JSON details blob.
     ///
     /// # Parameters (new in Task 0.6, per spec §5.5 + U5)
     /// - `command_id`: when `Some`, overrides `ctx.command_id` in the stored entry
@@ -98,19 +99,23 @@ impl AuditBridge {
             AuditStatus::Started => "external_grpc_started",
             AuditStatus::Timeout => "external_grpc_timeout",
         };
+        // #6277: record ONE durable row carrying the REAL status + action_type.
+        // The prior code wrote a `log_complete_with_time` row (status hardcoded to
+        // Completed, action_type "complete") PLUS a separate `log_event`, so the
+        // correlatable durable row misreported every Denied/Failed/Timeout/Started
+        // outcome as Completed. log_with_status_and_time preserves the true status
+        // AND sets the queryable action_type prefix, so entries_by_status and
+        // entries_by_action_prefix both return correct results from the one row.
         self.port
-            .log_complete_with_time(
+            .log_with_status_and_time(
                 AuditLevel::Full,
                 effective_cmd_id,
                 &ctx.client_id,
+                action_type,
+                status,
                 &details_json,
                 duration.as_millis() as u64,
             )
-            .await;
-        // Also emit a plain log_event so that the AuditLogger's action_type-prefix
-        // query surface returns results for callers using `entries_by_action_prefix`.
-        self.port
-            .log_event(action_type, &ctx.client_id, &details_json)
             .await;
         command_id.unwrap_or_else(|| ctx.command_id.clone())
     }
@@ -176,17 +181,17 @@ impl AuditBridge {
             AuditStatus::Timeout => "external_grpc_timeout",
             AuditStatus::Started => "external_grpc_started",
         };
+        // #6277: one durable row with the REAL status + action_type (see record()).
         self.port
-            .log_complete_with_time(
+            .log_with_status_and_time(
                 AuditLevel::Full,
                 effective_cmd_id,
                 &ctx.client_id,
+                action_type,
+                status,
                 &details_json,
                 duration.as_millis() as u64,
             )
-            .await;
-        self.port
-            .log_event(action_type, &ctx.client_id, &details_json)
             .await;
         command_id.unwrap_or_else(|| ctx.command_id.clone())
     }

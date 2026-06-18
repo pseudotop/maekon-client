@@ -1,0 +1,48 @@
+# Maekon Client public contribution ownership.
+#
+# Branch protection should require CODEOWNER review on public `main` before
+# merge. Sensitive paths still need the labels and private validation described
+# in docs/guides/public-contribution-governance.md.
+
+# Default owner until dedicated maintainer teams are created.
+* @pseudotop
+
+# Public community and governance surfaces.
+/CODE_OF_CONDUCT.md @pseudotop
+/CONTRIBUTING.md @pseudotop
+/SECURITY.md @pseudotop
+/.github/** @pseudotop
+/docs/** @pseudotop
+
+# Release, update, signing, and supply-chain surfaces.
+/CHANGELOG.md @pseudotop
+/deny.toml @pseudotop
+/supply-chain/** @pseudotop
+/scripts/notary-submit-and-poll.sh @pseudotop
+/scripts/pre-release-check.sh @pseudotop
+/scripts/prepare-release.sh @pseudotop
+/scripts/promote-stable.sh @pseudotop
+/scripts/publish-rc-tag.sh @pseudotop
+/scripts/publish-stable-tag.sh @pseudotop
+/scripts/rehearse-key-rotation.sh @pseudotop
+/scripts/release-common.sh @pseudotop
+/scripts/release-reliability-smoke.ps1 @pseudotop
+/scripts/release-reliability-smoke.sh @pseudotop
+/scripts/release.sh @pseudotop
+/scripts/verify-integrity.sh @pseudotop
+/src-tauri/src/updater/** @pseudotop
+/src-tauri/tauri.conf.json @pseudotop
+
+# Trust-core runtime surfaces.
+/api/proto/** @pseudotop
+/crates/maekon-audio/** @pseudotop
+/crates/maekon-automation/** @pseudotop
+/crates/maekon-core/** @pseudotop
+/crates/maekon-monitor/** @pseudotop
+/crates/maekon-network/** @pseudotop
+/crates/maekon-sandbox-worker/** @pseudotop
+/crates/maekon-storage/** @pseudotop
+/crates/maekon-vision/** @pseudotop
+/policy/** @pseudotop
+/specs/providers/** @pseudotop
+/src-tauri/** @pseudotop

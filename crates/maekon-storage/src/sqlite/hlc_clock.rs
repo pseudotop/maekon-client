@@ -240,10 +240,10 @@ mod tests {
 
         assert!(
             b > a && c > b,
-            "연속 next() 는 엄격 증가해야 한다: {a:?} {b:?} {c:?}"
+            "consecutive next() calls must be strictly increasing: {a:?} {b:?} {c:?}"
         );
-        assert_eq!(a.device_id, "dev-a", "device_id 를 스탬프해야 한다");
-        // durable floor 가 마지막 값과 일치.
+        assert_eq!(a.device_id, "dev-a", "must stamp the device_id");
+        // durable floor matches the last value.
         assert_eq!(floor(&conn), (c.wall_ms, c.counter));
     }
 
@@ -251,7 +251,7 @@ mod tests {
     fn next_dominates_seeded_floor_even_if_wall_unchanged() {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);
-        // 미래 wall 로 시드 → 같은 ms 내 호출은 counter 로 증가.
+        // Seed with a future wall → calls within the same ms advance via the counter.
         let future = u64::try_from(4_000_000_000_000i64).unwrap();
         seed_to_floor(&conn, future, 7).unwrap();
         let clock = HlcClock::new();
@@ -259,7 +259,7 @@ mod tests {
         let a = clock.next(&conn).unwrap();
         assert!(
             a.wall_ms > future || (a.wall_ms == future && a.counter > 7),
-            "시드된 floor 를 반드시 dominate: {a:?} vs ({future},7)"
+            "must dominate the seeded floor: {a:?} vs ({future},7)"
         );
     }
 
@@ -267,14 +267,17 @@ mod tests {
     fn next_self_heals_when_singleton_missing() {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);
-        conn.execute("DELETE FROM hlc_clock", []).unwrap(); // 세션내 erase 모사
+        conn.execute("DELETE FROM hlc_clock", []).unwrap(); // simulate an in-session erase
         let clock = HlcClock::new();
         let a = clock.next(&conn).unwrap();
-        assert!(a.wall_ms > 0, "빈 테이블에서도 wall-clock 기반으로 스탬프");
+        assert!(
+            a.wall_ms > 0,
+            "stamps from the wall-clock even with an empty table"
+        );
         assert_eq!(
             floor(&conn),
             (a.wall_ms, a.counter),
-            "UPSERT 로 싱글톤 복구"
+            "singleton recovered via UPSERT"
         );
     }
 
@@ -282,14 +285,14 @@ mod tests {
     fn seed_from_db_takes_max_of_tables_and_erasure_anchor() {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);
-        // 테이블 최대 HLC = (500, 2).
+        // Per-table max HLC = (500, 2).
         conn.execute(
             "INSERT INTO activity_segments (id, hlc_wall_ms, hlc_counter, origin_device_id) \
              VALUES ('s1', 500, 2, 'dev-a')",
             [],
         )
         .unwrap();
-        // retained erasure anchor = (900, 0) > 테이블.
+        // retained erasure anchor = (900, 0) > table.
         conn.execute(
             "INSERT INTO app_meta (key, value) VALUES (?1, ?2)",
             params![
@@ -308,10 +311,10 @@ mod tests {
         assert_eq!(
             floor(&conn),
             (900, 0),
-            "floor 는 테이블·anchor 중 최대여야 한다"
+            "floor must be the max of the table and the anchor"
         );
 
-        // 후속 next() 는 anchor 를 dominate.
+        // A subsequent next() dominates the anchor.
         let a = HlcClock::new().next(&conn).unwrap();
         assert!(
             a.wall_ms > 900 || (a.wall_ms == 900 && a.counter > 0),
@@ -324,8 +327,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);
         seed_to_floor(&conn, 1000, 5).unwrap();
-        seed_to_floor(&conn, 10, 0).unwrap(); // 더 낮은 값
-        assert_eq!(floor(&conn), (1000, 5), "시드는 floor 를 낮추지 않는다");
+        seed_to_floor(&conn, 10, 0).unwrap(); // a lower value
+        assert_eq!(floor(&conn), (1000, 5), "seeding never lowers the floor");
     }
 
     #[test]
@@ -346,7 +349,7 @@ mod tests {
         assert_eq!(
             floor(&conn),
             (700, 9),
-            "동일 max wall 에서 더 큰 counter 를 floor 로 선택해야 한다"
+            "must pick the larger counter as the floor at an equal max wall"
         );
     }
 
@@ -354,19 +357,19 @@ mod tests {
     fn next_reanchors_wall_instead_of_wrapping_counter_at_saturation() {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);
-        // 미래 wall + counter=MAX 로 시드 → now 가 wall 보다 작으므로 tick 경로가
-        // counter+1 을 시도하지만, 포화 시 wall 을 전진(랩 금지)해야 한다.
+        // Seed with a future wall + counter=MAX → since now is less than wall, the tick
+        // path attempts counter+1, but on saturation it must advance the wall (no wrap).
         let future = 4_000_000_000_000u64;
         seed_to_floor(&conn, future, u32::MAX).unwrap();
         let a = HlcClock::new().next(&conn).unwrap();
         assert_eq!(
             (a.wall_ms, a.counter),
             (future + 1, 0),
-            "counter 포화 시 0 으로 랩하지 않고 wall 을 전진해야 한다: {a:?}"
+            "on counter saturation it must advance the wall instead of wrapping to 0: {a:?}"
         );
         assert!(
             (a.wall_ms, a.counter) > (future, u32::MAX),
-            "재앵커 결과는 이전 floor 보다 엄격히 커야 한다"
+            "the re-anchored result must be strictly greater than the previous floor"
         );
     }
 }

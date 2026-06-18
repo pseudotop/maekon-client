@@ -1,9 +1,9 @@
-//! AuthCode — Auth 카테고리 에러 코드. `auth.*` 접두사.
+//! AuthCode — Auth category error codes. `auth.*` prefix.
 
 define_code_enum! {
-    /// Auth 카테고리 에러 코드.
+    /// Auth category error codes.
     pub enum AuthCode {
-        /// 인증 실패 (잘못된 credential 등).
+        /// Authentication failed (e.g. invalid credentials).
         Failed => "auth.failed",
     }
 }

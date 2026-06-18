@@ -58,7 +58,16 @@ impl KeychainRegistry {
         }
     }
 
-    /// Atomic write: temp file + rename.
+    /// Persist the registry to `path` using the tmp-file + 0o600/DACL + atomic-rename
+    /// hardening pattern (mirrors `FileSecretRegistry::save` /
+    /// `integration_state_store::save`).
+    ///
+    /// This enumeration cache lists which namespace/key combinations exist in
+    /// the OS keychain (e.g. OAuth provider names). The values themselves live
+    /// in the OS keychain, but the namespace/key inventory is still privacy-
+    /// sensitive, so the persisted file is created owner-only: mode 0o600 on
+    /// Unix (atomic `create_new` + `mode`, no world-readable window) and an
+    /// owner-only DACL on Windows before the rename.
     pub fn save(&self, path: &std::path::Path) -> Result<(), StorageError> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| StorageError::SecretStore(format!("registry serialization: {e}")))?;
@@ -66,7 +75,57 @@ impl KeychainRegistry {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json)?;
+        // Remove any orphaned tmp from a previously aborted save so the atomic
+        // create below starts clean (no stale contents / inherited permissions).
+        let _ = std::fs::remove_file(&tmp);
+
+        // Unix: create the tmp file with mode 0o600 ATOMICALLY (O_CREAT|O_EXCL +
+        // mode in a single open) so the registry is never world-readable —
+        // mirrors FileSecretRegistry::save. On any write error the tmp is
+        // cleaned up.
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| {
+                    StorageError::SecretStore(format!("keychain registry tmp create: {e}"))
+                })?;
+            f.write_all(json.as_bytes()).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                StorageError::SecretStore(format!("keychain registry tmp write: {e}"))
+            })?;
+        }
+
+        // Windows: write the payload, then apply an owner-only DACL so the file
+        // is not readable via inherited parent-directory ACLs (reuses the shared
+        // helper in `encryption.rs`). DACL failure is non-fatal (warn and continue).
+        #[cfg(windows)]
+        {
+            if let Err(e) = std::fs::write(&tmp, json.as_bytes()) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(StorageError::SecretStore(format!(
+                    "keychain registry tmp write: {e}"
+                )));
+            }
+            if let Err(e) = crate::encryption::set_owner_only_dacl(&tmp) {
+                warn!("keychain registry: failed to set owner-only DACL: {e}");
+            }
+        }
+
+        // Exotic targets without unix/windows permission models: plain write.
+        #[cfg(not(any(unix, windows)))]
+        {
+            std::fs::write(&tmp, json.as_bytes()).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                StorageError::SecretStore(format!("keychain registry tmp write: {e}"))
+            })?;
+        }
+
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
@@ -387,6 +446,54 @@ mod tests {
 
         let loaded = KeychainRegistry::load_or_default(&path);
         assert_eq!(loaded.keys_for("openai").len(), 2);
+    }
+
+    /// keychain-perms: on Unix the persisted enumeration registry file must be
+    /// owner-only (0o600) so the namespace/key inventory is not world-readable.
+    /// Mirrors `file_secret_store::file_secret_store_is_owner_only_on_unix`.
+    #[cfg(unix)]
+    #[test]
+    fn registry_save_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+
+        let mut reg = KeychainRegistry::new();
+        reg.add_key("openai", "access_token");
+        reg.save(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        // Only the owner rw bits may be set; group/other must be clear.
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "keychain registry file must be 0o600, got {:o}",
+            mode & 0o777
+        );
+    }
+
+    /// keychain-perms: an orphaned `.tmp` from a previously aborted save must
+    /// not block the next save (the atomic `create_new` would otherwise fail
+    /// with `AlreadyExists`). The pre-rename `remove_file` clears it.
+    #[test]
+    fn registry_save_overwrites_orphaned_tmp() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+        let tmp = path.with_extension("tmp");
+        // Simulate a stale tmp left by an aborted save.
+        std::fs::write(&tmp, "STALE ORPHANED CONTENTS").unwrap();
+
+        let mut reg = KeychainRegistry::new();
+        reg.add_key("openai", "access_token");
+        reg.save(&path).unwrap();
+
+        // Save succeeded, produced the real file, and consumed the orphaned tmp.
+        let loaded = KeychainRegistry::load_or_default(&path);
+        assert_eq!(loaded.keys_for("openai").len(), 1);
+        assert!(
+            !tmp.exists(),
+            "orphaned tmp must be gone after a successful save"
+        );
     }
 
     #[test]

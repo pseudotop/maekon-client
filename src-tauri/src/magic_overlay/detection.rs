@@ -33,7 +33,9 @@ pub(super) fn build_detection_payload(
                 y: el.bbox_abs.y,
                 width: el.bbox_abs.width,
                 height: el.bbox_abs.height,
-                label: el.label.clone(),
+                // Overlay IPC egresses to the WebView; surface only the masked
+                // copy, never the raw `label` (which carries unredacted OCR text).
+                label: el.text_masked.clone().unwrap_or_default(),
                 role: el.role.clone(),
                 confidence: confidence.clamp(0.0, 1.0),
                 source: "composite".to_string(),

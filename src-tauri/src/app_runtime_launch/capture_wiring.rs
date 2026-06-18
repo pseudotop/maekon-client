@@ -52,14 +52,17 @@ pub(super) fn build_capture_wiring(
     }
 }
 
-/// 스토리지 준비 직후(스케줄러/에이전트/웹 어댑터 기동 전) erasure 배선을 마무리한다.
+/// Finalizes the erasure wiring right after storage is ready (before the
+/// scheduler / agent / web adapters start).
 ///
-/// (1) #4928: ConsentManager 의 공유 `deletion_flag` 를 LIVE `SqliteStorage` 에 install 한다.
-///     `set_deletion_flag(&self)` 는 ArcSwap 셀을 교체하므로 이미 Arc 로 공유된 storage
-///     (및 `connection_arc()` 를 공유하는 모든 어댑터)에 즉시 적용된다. 프레임 스토리지에는
-///     `capture_services::build` 에서 동일 Arc 가 install 되어 있어, 셋(consent ↔ SQLite ↔
-///     frames)이 동일 flag 를 공유한다. 이 시점은 모든 쓰기 어댑터 기동 전이다.
-/// (2) #4801 GDPR Art. 17: 이전 기동에서 완료되지 않은 로컬 삭제 마커가 있으면 재시도한다.
+/// (1) #4928: installs the ConsentManager's shared `deletion_flag` into the LIVE
+///     `SqliteStorage`. `set_deletion_flag(&self)` swaps the ArcSwap cell, so it
+///     applies immediately to the already-Arc-shared storage (and to every
+///     adapter that shares `connection_arc()`). The same Arc is installed into
+///     frame storage by `capture_services::build`, so the trio (consent ↔ SQLite
+///     ↔ frames) shares one flag. This happens before any write adapter starts.
+/// (2) #4801 GDPR Art. 17: retries any local deletion marker that did not
+///     complete in a previous launch.
 pub(super) fn install_erasure_wiring(
     handle: &tokio::runtime::Handle,
     sqlite_storage: &Arc<maekon_storage::sqlite::SqliteStorage>,
@@ -67,9 +70,10 @@ pub(super) fn install_erasure_wiring(
     shared_capture_services: &Option<Arc<SharedCaptureServices>>,
 ) {
     sqlite_storage.set_deletion_flag(consent_manager.deletion_flag());
-    // #4928 round-3 (FIX B): erase-window 차단 신호 `erasing` 도 동일 Arc 로 install 한다.
-    // 프레임 스토리지에는 `capture_services::build` 에서 동일 Arc 가 install 되어, 셋
-    // (consent ↔ SQLite ↔ frames)이 동일 `erasing` 을 공유한다(ptr-eq).
+    // #4928 round-3 (FIX B): install the erase-window blocking signal `erasing`
+    // via the same Arc. The same Arc is installed into frame storage by
+    // `capture_services::build`, so the trio (consent ↔ SQLite ↔ frames) shares
+    // one `erasing` flag (ptr-eq).
     sqlite_storage.set_erasing(consent_manager.erasing());
     let retry_frame_storage = shared_capture_services
         .as_ref()

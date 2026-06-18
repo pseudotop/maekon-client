@@ -33,6 +33,7 @@ pub mod error_codes;
 pub mod id_generation;
 pub mod ivf_index;
 pub mod models;
+pub mod path_redaction;
 pub mod ports;
 pub mod provider_surface;
 pub mod quantization;

@@ -15,10 +15,11 @@ pub(super) const MAX_OUTBOX_ITEMS: usize = 512;
 /// insight summaries while bounding worst-case memory/HTTP body size.
 pub(super) const MAX_OUTBOX_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
 
-/// 단일 메시지의 직렬화 바이트 크기를 추정합니다.
+/// Estimates the serialized byte size of a single message.
 ///
-/// `serde_json::to_vec` 을 사용하므로 실제 전송 크기와 정확하게 일치합니다.
-/// 직렬화 실패 시 보수적 추정값(64 KiB)을 반환하여 cap 우회를 방지합니다.
+/// Uses `serde_json::to_vec`, so it matches the actual transmitted size exactly.
+/// On serialization failure it returns a conservative estimate (64 KiB) to
+/// prevent the cap from being bypassed.
 pub(super) fn estimate_message_bytes(
     envelope: &IntegrationEnvelope,
     payload: &IntegrationOutboundPayload,
@@ -32,9 +33,10 @@ pub(super) fn estimate_message_bytes(
     env_bytes + pay_bytes
 }
 
-/// 이미 큐에 있는 메시지 목록의 누적 바이트 크기를 계산합니다.
-/// flush 후 ack된 항목 만큼 pending_bytes 카운터를 감소시킬 때 사용합니다.
-/// F-RR-C27-02: 테스트 전용 함수 — non-test 빌드에서 dead_code 경고 방지.
+/// Computes the cumulative byte size of a list of messages already in the queue.
+/// Used to decrement the `pending_bytes` counter by the amount of items acked
+/// after a flush.
+/// F-RR-C27-02: test-only function — prevents the dead_code warning in non-test builds.
 #[cfg(test)]
 pub(super) fn estimate_queued_bytes(
     items: &[maekon_core::models::integration::QueuedIntegrationEgressMessage],

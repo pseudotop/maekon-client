@@ -62,6 +62,17 @@ async fn in_memory_storage() -> Arc<dyn WebStorage> {
     Arc::new(storage) as Arc<dyn WebStorage>
 }
 
+// Identity PII sanitizer for tests (#6421): production wiring always provides a
+// sanitizer, so a `None` would (correctly, per the fail-closed fix) redact dashboard
+// text. Tests that assert on real streamed frame content use this pass-through so the
+// redaction does not mask the value under test.
+struct PassthroughPiiSanitizer;
+impl maekon_core::ports::pii_sanitizer::PiiSanitizer for PassthroughPiiSanitizer {
+    fn sanitize_text(&self, text: &str, _level: maekon_core::config::PiiFilterLevel) -> String {
+        text.to_string()
+    }
+}
+
 /// Build a `GrpcSpawnConfig` with sensible test defaults (deterministic
 /// `MockSystemMonitor`, 16-slot broadcast, no auth token, default
 /// `LoadThresholds`, streaming enabled, cap 50). Callers that need to
@@ -77,7 +88,9 @@ fn test_spawn_config(port: u16, storage: Arc<dyn WebStorage>) -> maekon_web::grp
         system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
         event_tx,
         integration_auth_token: None,
-        pii_sanitizer: None,
+        local_auth_token: None,
+        pii_sanitizer: Some(Arc::new(PassthroughPiiSanitizer)
+            as Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer>),
         ai_runtime_status_snapshot: None,
         load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
         streaming_enabled: true,
@@ -128,6 +141,46 @@ async fn grpc_dashboard_get_agent_info_end_to_end() {
         "uptime_secs must be non-negative — got {}",
         response.uptime_secs
     );
+
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+/// #6420: when a per-session local-auth token is configured, the loopback gRPC
+/// dashboard must reject RPCs that omit it and accept RPCs that present it —
+/// matching the REST `/api` surface (defense in depth on multi-user hosts).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grpc_dashboard_local_auth_gate_rejects_unauthenticated_and_accepts_token() {
+    let port = pick_free_port();
+    let storage = in_memory_storage().await;
+
+    let mut cfg = test_spawn_config(port, storage);
+    cfg.local_auth_token = Some(std::sync::Arc::from("sess-token-xyz"));
+    let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
+    wait_for_server_ready(port, Duration::from_secs(5)).await;
+
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut client = DashboardServiceClient::connect(endpoint)
+        .await
+        .expect("connect to dashboard gRPC server");
+
+    // No token → Unauthenticated.
+    let err = client
+        .get_agent_info(GetAgentInfoRequest {})
+        .await
+        .expect_err("RPC without the local-auth token must be rejected");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+    // Correct token via `x-local-auth` metadata → accepted.
+    let mut req = tonic::Request::new(GetAgentInfoRequest {});
+    let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
+        "x-local-auth".parse().expect("valid metadata key");
+    req.metadata_mut()
+        .insert(key, "sess-token-xyz".parse().expect("valid metadata value"));
+    client
+        .get_agent_info(req)
+        .await
+        .expect("RPC with the correct local-auth token must succeed");
 
     server_task.abort();
     let _ = server_task.await;
@@ -669,6 +722,7 @@ async fn grpc_dashboard_subscribe_metrics_realtime_emits_on_event_tx_tick() {
         system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
         event_tx: event_tx.clone(),
         integration_auth_token: None,
+        local_auth_token: None,
         pii_sanitizer: None,
         ai_runtime_status_snapshot: None,
         load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
@@ -942,7 +996,8 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(cpu_pct, mem_used_mb, mem_total_mb),
             event_tx,
             integration_auth_token: None,
-            pii_sanitizer: None,
+            local_auth_token: None,
+            pii_sanitizer: Some(Arc::new(PassthroughPiiSanitizer) as Arc<dyn PiiSanitizer>),
             ai_runtime_status_snapshot: None,
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
             streaming_enabled: true,
@@ -1641,6 +1696,7 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
             event_tx,
             integration_auth_token: None,
+            local_auth_token: None,
             pii_sanitizer: Some(Arc::new(RedactingSanitizer)),
             ai_runtime_status_snapshot: Some(AiRuntimeStatus {
                 ocr_source: "local".to_string(),
@@ -1728,6 +1784,7 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
             event_tx: event_tx.clone(),
             integration_auth_token: None,
+            local_auth_token: None,
             pii_sanitizer: None,
             ai_runtime_status_snapshot: None,
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),

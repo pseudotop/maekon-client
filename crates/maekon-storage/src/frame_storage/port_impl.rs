@@ -38,10 +38,10 @@ impl FrameStoragePort for FrameFileStorage {
         self.enforce_storage_limit().await.map_err(Into::into)
     }
 
-    /// GDPR Art. 17: 모든 프레임 파일을 삭제한다.
+    /// GDPR Art. 17: delete all frame files.
     ///
-    /// `FrameFileStorage::delete_all_files`를 위임하고 `StorageError`를
-    /// `CoreError`로 변환한다.
+    /// Delegates to `FrameFileStorage::delete_all_files` and converts
+    /// `StorageError` into `CoreError`.
     async fn delete_all_frames(&self) -> Result<usize, CoreError> {
         self.delete_all_files().await.map_err(Into::into)
     }

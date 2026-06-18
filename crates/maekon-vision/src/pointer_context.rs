@@ -273,11 +273,13 @@ fn is_deictic_instruction(instruction: &str) -> bool {
 }
 
 fn bounds_contains_bounds(container: &ElementBounds, child: &ElementBounds) -> bool {
-    let child_right = child.x + child.width as i32;
-    let child_bottom = child.y + child.height as i32;
+    // i64-widen extents (review4 V11 sibling): x:i32 + width:u32 can overflow i32 on
+    // adversarial scene/OCR-derived coordinates (panic in debug, wrap in release).
+    let child_right = i64::from(child.x) + i64::from(child.width);
+    let child_bottom = i64::from(child.y) + i64::from(child.height);
     container.contains(child.x, child.y)
-        && child_right <= container.x + container.width as i32
-        && child_bottom <= container.y + container.height as i32
+        && child_right <= i64::from(container.x) + i64::from(container.width)
+        && child_bottom <= i64::from(container.y) + i64::from(container.height)
 }
 
 #[cfg(test)]

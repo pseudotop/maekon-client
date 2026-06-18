@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 use maekon_core::error::CoreError;
 use tracing::warn;
 
-use super::tokens::{TokenManager, TokenState};
+use super::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
 
 /// Parse a `Retry-After` header value (integer seconds only).
 ///
@@ -74,8 +74,16 @@ impl TokenManager {
                                 message: format!("refresh Token parsing failed: {e}"),
                             })?;
 
-                        let expires_at = chrono::Utc::now()
-                            + chrono::Duration::seconds(token_resp.expires_in.unwrap_or(3600));
+                        // Clamp the server-supplied TTL before building a
+                        // chrono::Duration — see MAX_TOKEN_TTL_SECS. An
+                        // adversarial/huge `expires_in` would otherwise panic in
+                        // `Duration::seconds()` or overflow the `Utc::now() +
+                        // Duration` addition.
+                        let ttl = token_resp
+                            .expires_in
+                            .unwrap_or(3600)
+                            .clamp(0, MAX_TOKEN_TTL_SECS);
+                        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
                         let mut state = self.state.write().await;
                         *state = Some(TokenState {

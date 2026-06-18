@@ -797,6 +797,97 @@ async fn backfill_quantized_converts_existing() {
     assert_eq!(results.len(), 3);
 }
 
+/// Regression (#backfill-tx): a `?` early-return inside `backfill_quantized` must
+/// NOT leak an open transaction on the SHARED GuardedConnection. Previously the
+/// raw `conn.execute_batch("BEGIN")` had a matching `COMMIT` only on the happy
+/// path; an error arm (e.g. a corrupt/empty vector BLOB that fails
+/// `ScalarQuantizer::quantize`) returned via `?` while the transaction was still
+/// open, poisoning the next writer with "cannot start a transaction within a
+/// transaction". The RAII `unchecked_transaction()` guard now auto-rolls-back on
+/// drop, so the connection is left clean.
+#[tokio::test]
+async fn backfill_quantized_error_does_not_leak_open_transaction() {
+    let conn = setup_db();
+    let store = SqliteVectorStore::new(conn.clone());
+
+    // Seed a corrupt row (empty `vector` BLOB → empty Vec<f32> → quantize() errors)
+    // at a LOW id so it is processed first, then a valid row. Direct SQL inserts
+    // bypass store()'s own validation, which is the point: we are simulating a row
+    // already on disk that fails re-quantization during backfill.
+    {
+        let g = conn.test_lock();
+        let empty_blob: Vec<u8> = Vec::new();
+        g.execute(
+            "INSERT INTO embedding_vectors \
+             (id, segment_id, content_type, content_label, original_text, \
+              vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+             VALUES (1, 'corrupt', 'CONTENT_ACTIVITY', NULL, 'bad', ?1, 'm', \
+                     datetime('now'), 0, 0, 'test')",
+            rusqlite::params![empty_blob],
+        )
+        .unwrap();
+
+        let good_blob: Vec<u8> = f32_vec_to_bytes(&[1.0_f32, 0.0, 0.0]);
+        g.execute(
+            "INSERT INTO embedding_vectors \
+             (id, segment_id, content_type, content_label, original_text, \
+              vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+             VALUES (2, 'good', 'CONTENT_ACTIVITY', NULL, 'ok', ?1, 'm', \
+                     datetime('now'), 0, 0, 'test')",
+            rusqlite::params![good_blob],
+        )
+        .unwrap();
+    }
+
+    // backfill must FAIL on the corrupt row (zero-length vector cannot be quantized).
+    // The quantize failure is wrapped as StorageError::Internal("Backfill quantize
+    // failed …") and surfaces as CoreError::Storage; assert the variant AND message
+    // so the test proves the failure is the quantize step (the path that used to
+    // leak an open transaction), not an unrelated query/prepare error.
+    let err = store
+        .backfill_quantized(10)
+        .await
+        .expect_err("backfill_quantized must error on a corrupt (empty) vector BLOB");
+    assert!(
+        matches!(
+            &err,
+            maekon_core::error::CoreError::Storage { message, .. }
+                if message.contains("Backfill quantize failed")
+        ),
+        "corrupt-BLOB backfill must surface CoreError::Storage from the failed quantize, got {err:?}"
+    );
+
+    // CRITICAL: the SHARED connection must NOT be left inside an open transaction.
+    // A leaked `BEGIN` would make this fresh `BEGIN` fail with
+    // "cannot start a transaction within a transaction". With the RAII fix the
+    // failed backfill rolled back, so a subsequent write transaction succeeds.
+    {
+        let g = conn.test_lock();
+        g.execute_batch("BEGIN")
+            .expect("connection left in open-tx state: BEGIN should succeed after failed backfill");
+        g.execute(
+            "INSERT INTO embedding_vectors \
+             (id, segment_id, content_type, content_label, original_text, \
+              vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+             VALUES (3, 'after', 'CONTENT_ACTIVITY', NULL, 'post', ?1, 'm', \
+                     datetime('now'), 0, 0, 'test')",
+            rusqlite::params![f32_vec_to_bytes(&[0.5_f32, 0.5, 0.0])],
+        )
+        .expect("write after failed backfill should succeed");
+        g.execute_batch("COMMIT")
+            .expect("COMMIT of the post-backfill write should succeed");
+    }
+
+    // The rollback also means the *valid* row (id=2) was NOT quantized — the whole
+    // batch is atomic. count_unquantized still sees both original rows (the new
+    // id=3 row also has no INT8 columns), confirming nothing partial committed.
+    let unquantized = store.count_unquantized().await.unwrap();
+    assert_eq!(
+        unquantized, 3,
+        "failed backfill must be atomic: no INT8 columns written for any row"
+    );
+}
+
 #[tokio::test]
 async fn count_unquantized_empty_table() {
     let conn = setup_db();
@@ -1692,6 +1783,93 @@ async fn corpus_dims_quantized_first_write_recorded() {
     );
 }
 
+/// F (#5987): Batched bulk stale-mark — corpus_dims_guard marks ALL rows stale
+/// when the dimension transitions, even when the row count exceeds the batch size.
+///
+/// Inserts rows whose count is larger than STALE_BATCH_SIZE (1000) to confirm
+/// that the loop runs multiple iterations and still marks every non-stale row.
+/// Uses direct SQL inserts (bypassing store()) to avoid the per-row HLC overhead
+/// while still exercising the guard logic under realistic volume.
+#[tokio::test]
+async fn corpus_dims_transition_batched_marks_all_stale() {
+    let conn = setup_db();
+    let store = SqliteVectorStore::new(conn.clone());
+
+    // Seed BATCH_SIZE + 1 rows directly at is_stale=0 with 3-dim model.
+    // This forces at least two iterations of the batch loop (1000 + 1 rows).
+    const ROW_COUNT: usize = 1001;
+    {
+        let g = conn.test_lock();
+        // Use a transaction for bulk insert speed.
+        g.execute_batch("BEGIN").unwrap();
+        let blob: Vec<u8> = f32_vec_to_bytes(&[1.0_f32, 0.0, 0.0]);
+        for i in 0..ROW_COUNT {
+            g.execute(
+                "INSERT INTO embedding_vectors \
+                 (segment_id, content_type, content_label, original_text, \
+                  vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES (?1, 'CONTENT_ACTIVITY', NULL, 'bulk', ?2, 'm-3', \
+                         datetime('now'), 0, 0, 'test')",
+                rusqlite::params![format!("bulk-{i}"), blob],
+            )
+            .unwrap();
+        }
+        g.execute_batch("COMMIT").unwrap();
+        // Seed the corpus dims key so the guard sees a transition (3 → 5).
+        g.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('embedding_corpus_dims', '3')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Trigger a dimension transition by storing a 5-dim row.
+    store
+        .store(
+            vec![0.1, 0.2, 0.3, 0.4, 0.5],
+            EmbeddingMetadata {
+                segment_id: "new-5d".to_string(),
+                content_type: EmbeddingContentType::ContentActivity,
+                content_label: None,
+                timestamp: Utc::now(),
+                original_text: "t".to_string(),
+                model_id: "m-5".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    // All ROW_COUNT bulk rows must now be stale.
+    let stale_count: i64 = {
+        let g = conn.test_lock();
+        g.query_row(
+            "SELECT COUNT(*) FROM embedding_vectors WHERE is_stale = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        stale_count as usize, ROW_COUNT,
+        "batched stale-mark must cover all {ROW_COUNT} rows, got {stale_count}"
+    );
+
+    // The newly inserted 5-dim row must be active.
+    let active_count: i64 = {
+        let g = conn.test_lock();
+        g.query_row(
+            "SELECT COUNT(*) FROM embedding_vectors WHERE is_stale = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        active_count, 1,
+        "new-dim row must remain active after batched transition"
+    );
+}
+
 // ── #5642 IVF routing tests ───────────────────────────────────────────────────
 
 use crate::sqlite::vector_index_impl::SqliteVectorIndex;
@@ -2005,15 +2183,16 @@ async fn ivf_routing_dim_mismatch_falls_back_gracefully() {
     let _ = hits;
 }
 
-/// R-IVF-6: 콜드-스타트 라우팅 회귀 방지 (#5642).
+/// R-IVF-6: cold-start routing regression guard (#5642).
 ///
-/// 기존 코퍼스 + 빌드된 IVF 인덱스가 있는 DB에서 앱이 재시작되면 새
-/// `SqliteVectorStore` 인스턴스의 `corpus_dims_cache`는 `DIMS_CACHE_UNSET`(0)으로
-/// 초기화된다. write 경로가 없어도 `search()` 첫 호출 시 `try_hydrate_dims_cache`가
-/// `app_meta`에서 영속화된 dims를 읽어 IVF 경로를 활성화해야 한다.
+/// When the app restarts against a DB that already has a corpus + a built IVF
+/// index, a new `SqliteVectorStore` instance initializes `corpus_dims_cache` to
+/// `DIMS_CACHE_UNSET`(0). Even with no write path, the first `search()` call must
+/// have `try_hydrate_dims_cache` read the persisted dims from `app_meta` and
+/// activate the IVF path.
 ///
-/// 검증: store2(쓰기 없음)의 top-1이 brute-force top-1과 일치
-/// → IVF 경로가 정상 활성화됐거나 동일 정답을 반환했음을 증명.
+/// Assertion: store2's top-1 (no writes) matches the brute-force top-1
+/// → proves the IVF path activated correctly or returned the same answer.
 #[tokio::test]
 async fn ivf_routing_cold_start_hydrates_cache_from_app_meta() {
     use maekon_core::quantization::ScalarQuantizer;
@@ -2022,15 +2201,15 @@ async fn ivf_routing_cold_start_hydrates_cache_from_app_meta() {
     let n_vectors = 30;
     let conn = setup_db();
 
-    // store1: 벡터 삽입 (corpus_dims_cache + app_meta 모두 채움).
+    // store1: insert vectors (populates both corpus_dims_cache + app_meta).
     store_quantized_n(&conn, n_vectors, dims, "cs").await;
 
-    // IVF 인덱스 빌드.
+    // Build the IVF index.
     let index = SqliteVectorIndex::new(conn.clone());
     index.build_ivf_index(3, 10).await.unwrap();
 
-    // store2: 동일 DB 연결, write 없음 → corpus_dims_cache = DIMS_CACHE_UNSET.
-    // "콜드-스타트 재시작" 시나리오 시뮬레이션.
+    // store2: same DB connection, no writes → corpus_dims_cache = DIMS_CACHE_UNSET.
+    // Simulates the "cold-start restart" scenario.
     let store2 = SqliteVectorStore::new(conn.clone());
 
     let query: Vec<f32> = {
@@ -2039,10 +2218,10 @@ async fn ivf_routing_cold_start_hydrates_cache_from_app_meta() {
         v
     };
 
-    // store2.search() → try_hydrate_dims_cache() → app_meta 읽기 → IVF 경로 활성화.
+    // store2.search() → try_hydrate_dims_cache() → read app_meta → activate IVF path.
     let cold_results = store2.search(&query, 5, 0.0).await.unwrap();
 
-    // brute-force 베이스라인 (search_quantized 사용).
+    // brute-force baseline (using search_quantized).
     let store_bf = SqliteVectorStore::new(conn.clone());
     let q_query = ScalarQuantizer::quantize(&query).unwrap();
     let bf_results = store_bf
@@ -2052,18 +2231,18 @@ async fn ivf_routing_cold_start_hydrates_cache_from_app_meta() {
 
     assert!(
         !cold_results.is_empty(),
-        "콜드-스타트 search는 결과를 반환해야 함 (IVF 또는 brute-force)"
+        "cold-start search must return results (IVF or brute-force)"
     );
     assert!(
         !bf_results.is_empty(),
-        "brute-force 베이스라인 결과가 비어 있으면 안 됨"
+        "brute-force baseline results must not be empty"
     );
 
-    // top-1 일치: IVF가 활성화됐거나 brute-force가 동일한 정답을 반환한 것.
-    // 두 경우 모두 정확성 회귀 없음을 증명한다.
+    // top-1 match: either IVF activated or brute-force returned the same answer.
+    // Both cases prove there is no accuracy regression.
     assert_eq!(
         cold_results[0].segment_id, bf_results[0].segment_id,
-        "콜드-스타트 top-1 ({}) 이 brute-force top-1 ({}) 과 일치해야 함",
+        "cold-start top-1 ({}) must match brute-force top-1 ({})",
         cold_results[0].segment_id, bf_results[0].segment_id,
     );
 }
@@ -2134,4 +2313,133 @@ fn nprobe_never_exceeds_n_clusters() {
 #[test]
 fn nprobe_11_clusters_hits_min_floor() {
     assert_eq!(compute_nprobe(11), 10);
+}
+
+// ── #6113: atomic rowid return (HNSW TOCTOU fix) ──────────────────────────────
+
+fn meta_for(seg: &str) -> EmbeddingMetadata {
+    EmbeddingMetadata {
+        segment_id: seg.to_string(),
+        content_type: EmbeddingContentType::ContentActivity,
+        content_label: Some(seg.to_string()),
+        timestamp: Utc::now(),
+        original_text: seg.to_string(),
+        model_id: "test-model".to_string(),
+    }
+}
+
+/// `store_returning_id` must return the rowid of the row it just inserted, read
+/// inside the same write lock as the INSERT. With interleaved writes the IDs
+/// must be distinct and strictly increasing — never the same value that a
+/// separate `last_insert_id()` could observe after another write raced in.
+#[tokio::test]
+async fn store_returning_id_matches_inserted_row() {
+    let conn = setup_db();
+    let store = SqliteVectorStore::new(conn.clone());
+
+    let id1 = store
+        .store_returning_id(vec![1.0, 0.0, 0.0], meta_for("seg-a"))
+        .await
+        .unwrap();
+    let id2 = store
+        .store_returning_id(vec![0.0, 1.0, 0.0], meta_for("seg-b"))
+        .await
+        .unwrap();
+    let id3 = store
+        .store_returning_id(vec![0.0, 0.0, 1.0], meta_for("seg-c"))
+        .await
+        .unwrap();
+
+    // Strictly increasing, distinct rowids.
+    assert!(id1 >= 1, "first rowid must be a real id, got {id1}");
+    assert!(id2 > id1, "rowids must increase: {id1} -> {id2}");
+    assert!(id3 > id2, "rowids must increase: {id2} -> {id3}");
+
+    // Each returned id must map back to the correct segment in the table.
+    let guard = conn.test_lock();
+    let seg_for = |id: u64| -> String {
+        guard
+            .query_row(
+                "SELECT segment_id FROM embedding_vectors WHERE id = ?1",
+                params![id as i64],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(seg_for(id1), "seg-a");
+    assert_eq!(seg_for(id2), "seg-b");
+    assert_eq!(seg_for(id3), "seg-c");
+}
+
+/// `store_quantized_returning_id` carries the same atomic-rowid contract on the
+/// quantized write path used by the embedding pipeline's HNSW sync.
+#[tokio::test]
+async fn store_quantized_returning_id_matches_inserted_row() {
+    use maekon_core::quantization::ScalarQuantizer;
+
+    let conn = setup_db();
+    let store = SqliteVectorStore::new(conn.clone());
+
+    let v1 = vec![0.1, 0.5, 0.9];
+    let v2 = vec![0.9, 0.5, 0.1];
+    let q1 = ScalarQuantizer::quantize(&v1).unwrap();
+    let q2 = ScalarQuantizer::quantize(&v2).unwrap();
+
+    let id1 = store
+        .store_quantized_returning_id(v1.clone(), &q1, meta_for("q-a"), false)
+        .await
+        .unwrap();
+    let id2 = store
+        .store_quantized_returning_id(v2.clone(), &q2, meta_for("q-b"), false)
+        .await
+        .unwrap();
+
+    assert!(id1 >= 1, "first quantized rowid must be real, got {id1}");
+    assert!(id2 > id1, "quantized rowids must increase: {id1} -> {id2}");
+
+    let guard = conn.test_lock();
+    let seg_for = |id: u64| -> String {
+        guard
+            .query_row(
+                "SELECT segment_id FROM embedding_vectors WHERE id = ?1",
+                params![id as i64],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(seg_for(id1), "q-a");
+    assert_eq!(seg_for(id2), "q-b");
+}
+
+/// Concurrent writers must each receive their own rowid. This is the core of
+/// the #6113 TOCTOU fix: the rowid is read under the same lock as the INSERT,
+/// so no two interleaved writes can be handed the same `last_insert_rowid()`.
+#[tokio::test]
+async fn concurrent_store_returning_id_yields_distinct_ids() {
+    let conn = setup_db();
+    let store = Arc::new(SqliteVectorStore::new(conn.clone()));
+
+    let mut handles = Vec::new();
+    for i in 0..16u32 {
+        let s = store.clone();
+        handles.push(tokio::spawn(async move {
+            let mut v = vec![0.0f32; 4];
+            v[(i % 4) as usize] = 1.0 + i as f32 * 0.01;
+            s.store_returning_id(v, meta_for(&format!("c-{i}")))
+                .await
+                .unwrap()
+        }));
+    }
+
+    let mut ids = Vec::new();
+    for h in handles {
+        ids.push(h.await.unwrap());
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        16,
+        "all 16 concurrent writes must return distinct rowids"
+    );
 }

@@ -7,12 +7,12 @@ use maekon_core::error::CoreError;
 use maekon_core::models::integration::{
     IntegrationAckCursor, IntegrationCapabilityScope, IntegrationEnvelope,
     IntegrationInboxItemStatus, IntegrationMessageType, IntegrationOrigin,
-    IntegrationPromptReceipt, IntegrationPromptReceiptAction, IntegrationSessionState,
-    IntegrationSessionStatus, ProactivePrompt, StoredProactivePrompt,
+    IntegrationOutboundPayload, IntegrationPromptReceipt, IntegrationPromptReceiptAction,
+    IntegrationSessionState, IntegrationSessionStatus, ProactivePrompt, StoredProactivePrompt,
 };
 use maekon_core::ports::integration::{
-    IntegrationInboxPort, IntegrationInboxSignalPort, IntegrationInboxStorePort,
-    IntegrationPromptReceiptStorePort, IntegrationSessionPort,
+    IntegrationEgressPort, IntegrationInboxPort, IntegrationInboxSignalPort,
+    IntegrationInboxStorePort, IntegrationSessionPort,
 };
 use uuid::Uuid;
 
@@ -22,7 +22,14 @@ pub struct IntegrationInboxCoordinator {
     device_id: String,
     session_port: Arc<dyn IntegrationSessionPort>,
     inbox_store: Arc<dyn IntegrationInboxStorePort>,
-    receipt_store: Arc<dyn IntegrationPromptReceiptStorePort>,
+    /// #6198: the prompt-receipt egress path (acknowledge/dismiss, including the
+    /// free-text dismiss reason) MUST flow through the egress port so the
+    /// `PolicyAwareIntegrationEgressCoordinator` can apply PII sanitization and
+    /// egress-policy authorization, exactly like every other outbound
+    /// integration payload. Writing the receipt straight to a receipt store
+    /// bypassed both controls and could leak unsanitized user text to an
+    /// external integration backend (ERP/MES/CRM).
+    egress: Arc<dyn IntegrationEgressPort>,
     transport: Arc<dyn IntegrationInboxTransportClient>,
     max_batch_size: usize,
 }
@@ -32,7 +39,7 @@ impl IntegrationInboxCoordinator {
         device_id: impl Into<String>,
         session_port: Arc<dyn IntegrationSessionPort>,
         inbox_store: Arc<dyn IntegrationInboxStorePort>,
-        receipt_store: Arc<dyn IntegrationPromptReceiptStorePort>,
+        egress: Arc<dyn IntegrationEgressPort>,
         transport: Arc<dyn IntegrationInboxTransportClient>,
         max_batch_size: usize,
     ) -> Self {
@@ -40,7 +47,7 @@ impl IntegrationInboxCoordinator {
             device_id: device_id.into(),
             session_port,
             inbox_store,
-            receipt_store,
+            egress,
             transport,
             max_batch_size: max_batch_size.max(1),
         }
@@ -122,6 +129,14 @@ impl IntegrationInboxCoordinator {
         reason: Option<String>,
     ) -> Result<(), CoreError> {
         let envelope = self.build_receipt_envelope(action.clone()).await?;
+        let local_status = action.to_inbox_status();
+        // #6198: a dismiss reason is device-local free text that is retained
+        // verbatim for the local inbox UI; only the outbound copy that crosses
+        // the device boundary is sanitized (below, via the egress port).
+        let local_reason = match action {
+            IntegrationPromptReceiptAction::Acknowledged => None,
+            IntegrationPromptReceiptAction::Dismissed => reason.clone(),
+        };
         let receipt = IntegrationPromptReceipt {
             receipt_id: maekon_core::generate_id("rcpt"),
             prompt_id: prompt_id.to_string(),
@@ -129,8 +144,20 @@ impl IntegrationInboxCoordinator {
             occurred_at: Utc::now(),
             reason,
         };
-        self.receipt_store
-            .record_prompt_receipt(prompt_id, envelope, receipt)
+
+        // #6198: route the outbound receipt through the egress port FIRST so PII
+        // sanitization + egress-policy authorization are applied before anything
+        // leaves the device. Sending first also means a policy denial leaves the
+        // prompt pending (the local lifecycle is only transitioned once the
+        // receipt is accepted for egress), so the user can retry.
+        self.egress
+            .enqueue_message(envelope, IntegrationOutboundPayload::PromptReceipt(receipt))
+            .await?;
+
+        // Mirror the receipt onto the local inbox lifecycle (Pending ->
+        // Acknowledged/Dismissed) so list_pending reflects the user's action.
+        self.inbox_store
+            .update_status(prompt_id, local_status, local_reason)
             .await?;
         Ok(())
     }
@@ -219,10 +246,42 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::{Duration, Utc};
+    use maekon_core::config::PiiFilterLevel;
+    use maekon_core::ports::integration::{
+        IntegrationAuditPort, IntegrationEgressDecision, IntegrationEgressPolicyPort,
+    };
+    use maekon_core::ports::pii_sanitizer::PiiSanitizer;
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::integration::policy_egress::PolicyAwareIntegrationEgressCoordinator;
     use crate::integration::transport::IntegrationInboxTransportResponse;
+
+    /// In-memory egress capturing every enqueued (envelope, payload). Used both
+    /// directly and as the inner sink of a `PolicyAwareIntegrationEgressCoordinator`.
+    struct MockEgress {
+        enqueued: Arc<Mutex<Vec<(IntegrationEnvelope, IntegrationOutboundPayload)>>>,
+    }
+
+    #[async_trait]
+    impl IntegrationEgressPort for MockEgress {
+        async fn enqueue_message(
+            &self,
+            envelope: IntegrationEnvelope,
+            payload: IntegrationOutboundPayload,
+        ) -> Result<(), CoreError> {
+            self.enqueued.lock().await.push((envelope, payload));
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+
+        async fn last_ack_cursor(&self) -> Result<Option<IntegrationAckCursor>, CoreError> {
+            Ok(None)
+        }
+    }
 
     struct MockSessionPort {
         state: Arc<Mutex<Option<IntegrationSessionState>>>,
@@ -298,7 +357,6 @@ mod tests {
     struct MockInboxStore {
         prompts: Arc<Mutex<BTreeMap<String, StoredProactivePrompt>>>,
         last_cursor: Arc<Mutex<Option<IntegrationAckCursor>>>,
-        receipts: Arc<Mutex<Vec<IntegrationPromptReceipt>>>,
     }
 
     #[async_trait]
@@ -425,27 +483,57 @@ mod tests {
         }
     }
 
+    struct MockPolicy {
+        decision: IntegrationEgressDecision,
+    }
+
     #[async_trait]
-    impl IntegrationPromptReceiptStorePort for MockInboxStore {
-        async fn record_prompt_receipt(
+    impl IntegrationEgressPolicyPort for MockPolicy {
+        async fn authorize_insight(
             &self,
-            prompt_id: &str,
-            _envelope: IntegrationEnvelope,
-            receipt: IntegrationPromptReceipt,
-        ) -> Result<String, CoreError> {
-            let mut prompts = self.prompts.lock().await;
-            let prompt = prompts
-                .get_mut(prompt_id)
-                .ok_or_else(|| CoreError::NotFound {
-                    code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
-                    resource_type: "integration_prompt".to_string(),
-                    id: prompt_id.to_string(),
-                })?;
-            prompt.status = receipt.action.to_inbox_status();
-            prompt.status_updated_at = receipt.occurred_at;
-            prompt.dismiss_reason = receipt.reason.clone();
-            self.receipts.lock().await.push(receipt);
-            Ok(format!("queue-{prompt_id}"))
+            _envelope: &IntegrationEnvelope,
+            _packet: &maekon_core::models::integration::InsightPacket,
+        ) -> Result<IntegrationEgressDecision, CoreError> {
+            Ok(self.decision.clone())
+        }
+
+        async fn authorize_prompt_receipt(
+            &self,
+            _envelope: &IntegrationEnvelope,
+            _receipt: &IntegrationPromptReceipt,
+        ) -> Result<IntegrationEgressDecision, CoreError> {
+            Ok(self.decision.clone())
+        }
+    }
+
+    struct MockAudit;
+
+    #[async_trait]
+    impl IntegrationAuditPort for MockAudit {
+        async fn record_insight_decision(
+            &self,
+            _record: maekon_core::models::integration::IntegrationInsightAuditRecord,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn recent_insight_decisions(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<maekon_core::models::integration::IntegrationInsightAuditRecord>, CoreError>
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Replaces every occurrence of `secret@example.com` with `[EMAIL]` so the
+    /// regression tests can assert that the dismiss reason was sanitized on the
+    /// egress path rather than queued verbatim.
+    struct MockSanitizer;
+
+    impl PiiSanitizer for MockSanitizer {
+        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
+            text.replace("secret@example.com", "[EMAIL]")
         }
     }
 
@@ -509,13 +597,15 @@ mod tests {
         let store = Arc::new(MockInboxStore {
             prompts: Arc::new(Mutex::new(BTreeMap::new())),
             last_cursor: Arc::new(Mutex::new(None)),
-            receipts: Arc::new(Mutex::new(Vec::new())),
+        });
+        let egress = Arc::new(MockEgress {
+            enqueued: Arc::new(Mutex::new(Vec::new())),
         });
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
             session_port.clone(),
             store.clone(),
-            store.clone(),
+            egress,
             Arc::new(MockInboxTransport {
                 prompts: vec![prompt("1", None), prompt("2", None)],
                 ack_cursor: Some(IntegrationAckCursor {
@@ -569,12 +659,9 @@ mod tests {
             Arc::new(MockInboxStore {
                 prompts: Arc::new(Mutex::new(BTreeMap::new())),
                 last_cursor: Arc::new(Mutex::new(None)),
-                receipts: Arc::new(Mutex::new(Vec::new())),
             }),
-            Arc::new(MockInboxStore {
-                prompts: Arc::new(Mutex::new(BTreeMap::new())),
-                last_cursor: Arc::new(Mutex::new(None)),
-                receipts: Arc::new(Mutex::new(Vec::new())),
+            Arc::new(MockEgress {
+                enqueued: Arc::new(Mutex::new(Vec::new())),
             }),
             Arc::new(MockInboxTransport {
                 prompts: vec![prompt("1", None)],
@@ -619,15 +706,17 @@ mod tests {
                 ),
             ]))),
             last_cursor: Arc::new(Mutex::new(None)),
-            receipts: Arc::new(Mutex::new(Vec::new())),
         });
+        let enqueued = Arc::new(Mutex::new(Vec::new()));
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
             Arc::new(MockSessionPort {
                 state: Arc::new(Mutex::new(Some(prompt_read_session()))),
             }),
             store.clone(),
-            store.clone(),
+            Arc::new(MockEgress {
+                enqueued: enqueued.clone(),
+            }),
             Arc::new(MockInboxTransport {
                 prompts: Vec::new(),
                 ack_cursor: None,
@@ -656,16 +745,21 @@ mod tests {
             prompts.get("prompt-2").unwrap().status,
             IntegrationInboxItemStatus::Expired
         );
-        let receipts = store.receipts.lock().await;
-        assert_eq!(receipts.len(), 2);
-        assert_eq!(
-            receipts[0].action,
-            IntegrationPromptReceiptAction::Acknowledged
-        );
-        assert_eq!(
-            receipts[1].action,
-            IntegrationPromptReceiptAction::Dismissed
-        );
+
+        // #6198: both the acknowledge and dismiss receipts flow through the
+        // egress port (not a direct receipt-store write), so they are subject to
+        // PII sanitization + egress-policy authorization.
+        let enqueued = enqueued.lock().await;
+        assert_eq!(enqueued.len(), 2);
+        let IntegrationOutboundPayload::PromptReceipt(ack) = &enqueued[0].1 else {
+            panic!("expected prompt receipt payload for acknowledge");
+        };
+        assert_eq!(ack.action, IntegrationPromptReceiptAction::Acknowledged);
+        let IntegrationOutboundPayload::PromptReceipt(dismiss) = &enqueued[1].1 else {
+            panic!("expected prompt receipt payload for dismiss");
+        };
+        assert_eq!(dismiss.action, IntegrationPromptReceiptAction::Dismissed);
+        assert_eq!(dismiss.reason.as_deref(), Some("user dismissed"));
     }
 
     #[tokio::test]
@@ -683,7 +777,6 @@ mod tests {
                 },
             )]))),
             last_cursor: Arc::new(Mutex::new(None)),
-            receipts: Arc::new(Mutex::new(Vec::new())),
         });
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
@@ -691,7 +784,9 @@ mod tests {
                 state: Arc::new(Mutex::new(Some(prompt_read_session()))),
             }),
             store.clone(),
-            store.clone(),
+            Arc::new(MockEgress {
+                enqueued: Arc::new(Mutex::new(Vec::new())),
+            }),
             Arc::new(MockInboxTransport {
                 prompts: vec![prompt("prompt-1", None)],
                 ack_cursor: Some(IntegrationAckCursor {
@@ -711,5 +806,141 @@ mod tests {
         let prompt = prompts.get("prompt-1").unwrap();
         assert_eq!(prompt.status, IntegrationInboxItemStatus::Dismissed);
         assert_eq!(prompt.dismiss_reason.as_deref(), Some("already handled"));
+    }
+
+    /// #6198 regression: a dismiss reason routed through the inbox coordinator
+    /// when the egress is a `PolicyAwareIntegrationEgressCoordinator` is
+    /// PII-sanitized before it is queued for egress, and the local inbox copy
+    /// retains the verbatim reason for the local UI.
+    #[tokio::test]
+    async fn dismiss_reason_is_sanitized_on_policy_aware_egress_path() {
+        let store = Arc::new(MockInboxStore {
+            prompts: Arc::new(Mutex::new(BTreeMap::from([(
+                "prompt-1".to_string(),
+                StoredProactivePrompt {
+                    prompt: prompt("prompt-1", None),
+                    received_at: Utc::now(),
+                    status: IntegrationInboxItemStatus::Pending,
+                    status_updated_at: Utc::now(),
+                    presented_at: None,
+                    dismiss_reason: None,
+                },
+            )]))),
+            last_cursor: Arc::new(Mutex::new(None)),
+        });
+        // Inner sink captures what actually leaves the policy-aware coordinator.
+        let sink_enqueued = Arc::new(Mutex::new(Vec::new()));
+        let policy_egress = Arc::new(
+            PolicyAwareIntegrationEgressCoordinator::new(
+                Arc::new(MockEgress {
+                    enqueued: sink_enqueued.clone(),
+                }),
+                Arc::new(MockPolicy {
+                    decision: IntegrationEgressDecision::allow(),
+                }),
+                Arc::new(MockAudit),
+            )
+            .with_pii_sanitizer(Arc::new(MockSanitizer), PiiFilterLevel::Strict),
+        ) as Arc<dyn IntegrationEgressPort>;
+        let coordinator = IntegrationInboxCoordinator::new(
+            "device-1",
+            Arc::new(MockSessionPort {
+                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
+            }),
+            store.clone(),
+            policy_egress,
+            Arc::new(MockInboxTransport {
+                prompts: Vec::new(),
+                ack_cursor: None,
+            }),
+            10,
+        );
+
+        coordinator
+            .dismiss(
+                "prompt-1",
+                Some("contact secret@example.com to follow up".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // The reason that crossed the device boundary is sanitized.
+        let sink = sink_enqueued.lock().await;
+        assert_eq!(sink.len(), 1);
+        let IntegrationOutboundPayload::PromptReceipt(receipt) = &sink[0].1 else {
+            panic!("expected prompt receipt payload");
+        };
+        assert_eq!(
+            receipt.reason.as_deref(),
+            Some("contact [EMAIL] to follow up"),
+            "egress reason must be PII-sanitized"
+        );
+
+        // The local inbox copy keeps the verbatim reason for the local UI.
+        let prompts = store.prompts.lock().await;
+        let local = prompts.get("prompt-1").unwrap();
+        assert_eq!(local.status, IntegrationInboxItemStatus::Dismissed);
+        assert_eq!(
+            local.dismiss_reason.as_deref(),
+            Some("contact secret@example.com to follow up")
+        );
+    }
+
+    /// #6198 regression: when the egress policy denies the prompt receipt, the
+    /// local inbox lifecycle is NOT transitioned (the prompt stays pending so
+    /// the user can retry), and nothing is queued for egress.
+    #[tokio::test]
+    async fn dismiss_denied_by_egress_policy_leaves_prompt_pending() {
+        let store = Arc::new(MockInboxStore {
+            prompts: Arc::new(Mutex::new(BTreeMap::from([(
+                "prompt-1".to_string(),
+                StoredProactivePrompt {
+                    prompt: prompt("prompt-1", None),
+                    received_at: Utc::now(),
+                    status: IntegrationInboxItemStatus::Pending,
+                    status_updated_at: Utc::now(),
+                    presented_at: None,
+                    dismiss_reason: None,
+                },
+            )]))),
+            last_cursor: Arc::new(Mutex::new(None)),
+        });
+        let sink_enqueued = Arc::new(Mutex::new(Vec::new()));
+        let policy_egress = Arc::new(PolicyAwareIntegrationEgressCoordinator::new(
+            Arc::new(MockEgress {
+                enqueued: sink_enqueued.clone(),
+            }),
+            Arc::new(MockPolicy {
+                decision: IntegrationEgressDecision::deny("egress blocked by policy"),
+            }),
+            Arc::new(MockAudit),
+        )) as Arc<dyn IntegrationEgressPort>;
+        let coordinator = IntegrationInboxCoordinator::new(
+            "device-1",
+            Arc::new(MockSessionPort {
+                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
+            }),
+            store.clone(),
+            policy_egress,
+            Arc::new(MockInboxTransport {
+                prompts: Vec::new(),
+                ack_cursor: None,
+            }),
+            10,
+        );
+
+        let err = coordinator
+            .dismiss("prompt-1", Some("user dismissed".to_string()))
+            .await
+            .expect_err("policy denial should surface as an error");
+        assert!(matches!(err, CoreError::PolicyDenied { .. }));
+
+        // Local lifecycle untouched and nothing queued for egress.
+        assert!(sink_enqueued.lock().await.is_empty());
+        let prompts = store.prompts.lock().await;
+        assert_eq!(
+            prompts.get("prompt-1").unwrap().status,
+            IntegrationInboxItemStatus::Pending
+        );
     }
 }

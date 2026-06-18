@@ -55,14 +55,14 @@ pub(super) fn parse_google_response(body: &str) -> Result<InterpretedAction, Cor
 }
 
 fn parse_action_json(text: &str) -> Result<InterpretedAction, CoreError> {
-    let json_str = if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            &text[start..=end]
-        } else {
-            text
-        }
-    } else {
-        text
+    // Guard end >= start before the inclusive-range slice: adversarial model
+    // output with a '}' before the first '{' (e.g. "} foo {") would otherwise
+    // produce a reversed range and PANIC. Same panic class as the #6194
+    // analysis_client::parse_candidates fix; fall back to the whole text so
+    // serde_json surfaces a clean parse error instead of crashing.
+    let json_str = match (text.find('{'), text.rfind('}')) {
+        (Some(start), Some(end)) if end >= start => &text[start..=end],
+        _ => text,
     };
 
     serde_json::from_str(json_str).map_err(|e| CoreError::Validation {

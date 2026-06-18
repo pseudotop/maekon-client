@@ -4,36 +4,48 @@ use maekon_core::error_codes::InternalCode;
 use maekon_core::models::system::{NetworkInfo, PowerStatus, SystemMetrics};
 use maekon_core::ports::monitor::SystemMonitor;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use sysinfo::{Disks, Networks, System};
 use tracing::debug;
+
+/// #6441 (F15): minimum interval between disk statfs refreshes. Disk usage changes
+/// slowly, so refreshing it on every 5s metrics tick is wasteful; serve cached values
+/// between refreshes.
+const DISK_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub struct SysInfoMonitor {
     sys: Arc<Mutex<System>>,
     disks: Arc<Mutex<Disks>>,
     networks: Arc<Mutex<Networks>>,
+    /// #6441 (F15): timestamp of the last disk statfs refresh (gates the cooldown).
+    last_disk_refresh: Arc<Mutex<Instant>>,
 }
 
 impl SysInfoMonitor {
     pub fn new() -> Self {
-        // F-PF-18: System::new_all() 은 프로세스 테이블 전체를 즉시 할당한다.
-        // System::new() 로 교체하여 초기화 비용을 절감하고,
-        // collect_metrics 호출 시 필요한 항목만 refresh_cpu_usage/refresh_memory 로 갱신한다.
-        // 프로세스 테이블은 이 어댑터에서 사용하지 않으므로 refresh 하지 않는다.
+        // F-PF-18: System::new_all() eagerly allocates the entire process table.
+        // Replace it with System::new() to cut initialization cost, and refresh
+        // only the items we need via refresh_cpu_usage/refresh_memory when
+        // collect_metrics is called.
+        // The process table is not used by this adapter, so it is never refreshed.
         Self {
             sys: Arc::new(Mutex::new(System::new())),
             disks: Arc::new(Mutex::new(Disks::new_with_refreshed_list())),
             networks: Arc::new(Mutex::new(Networks::new_with_refreshed_list())),
+            // Disks were just refreshed above, so the next refresh is one cooldown out.
+            last_disk_refresh: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
-    /// 동기 메트릭 수집 — `spawn_blocking` 내에서 호출됨.
+    /// Synchronous metric collection — invoked inside `spawn_blocking`.
     ///
-    /// F-PF-C20-03: sysinfo I/O (statfs per FS, getifaddrs) 가 tokio worker 스레드를
-    /// 점유하지 않도록 blocking 전용 스레드 풀로 격리한다.
+    /// F-PF-C20-03: isolate sysinfo I/O (statfs per FS, getifaddrs) on the
+    /// blocking-only thread pool so it never occupies a tokio worker thread.
     fn collect_metrics_sync(
         sys: Arc<Mutex<System>>,
         disks: Arc<Mutex<Disks>>,
         networks: Arc<Mutex<Networks>>,
+        last_disk_refresh: Arc<Mutex<Instant>>,
     ) -> Result<SystemMetrics, CoreError> {
         {
             let mut sys = sys.lock().map_err(|e| CoreError::Internal {
@@ -45,11 +57,22 @@ impl SysInfoMonitor {
         }
 
         {
-            let mut disks = disks.lock().map_err(|e| CoreError::Internal {
-                code: InternalCode::Generic,
-                message: format!("Failed to acquire disk lock: {e}"),
-            })?;
-            disks.refresh(true);
+            // #6441 (F15): refresh disk statfs at most once per DISK_REFRESH_COOLDOWN
+            // (vs every 5s metrics tick). The cached Disks list still serves reads below.
+            // Network counters are cumulative-rate, so they stay per-tick.
+            let mut last = last_disk_refresh
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if last.elapsed() >= DISK_REFRESH_COOLDOWN {
+                disks
+                    .lock()
+                    .map_err(|e| CoreError::Internal {
+                        code: InternalCode::Generic,
+                        message: format!("Failed to acquire disk lock: {e}"),
+                    })?
+                    .refresh(true);
+                *last = Instant::now();
+            }
         }
 
         {
@@ -75,8 +98,11 @@ impl SysInfoMonitor {
             message: format!("Failed to acquire disk lock: {e}"),
         })?;
         let (disk_used, disk_total) = disks.list().iter().fold((0u64, 0u64), |(used, total), d| {
+            // saturating_sub: some filesystems (e.g. macOS APFS with purgeable
+            // space) report available_space() > total_space(); a raw subtraction
+            // would underflow → debug panic / release garbage metric (review4 monitor).
             (
-                used + d.total_space() - d.available_space(),
+                used + d.total_space().saturating_sub(d.available_space()),
                 total + d.total_space(),
             )
         });
@@ -130,20 +156,23 @@ impl Default for SysInfoMonitor {
 
 #[async_trait]
 impl SystemMonitor for SysInfoMonitor {
-    // F-PF-C20-03: sysinfo I/O (statfs per FS, getifaddrs/proc/net/dev) 가
-    // tokio worker 스레드를 최대 5초 간격으로 점유하지 않도록 spawn_blocking 으로 격리.
-    // Arc<Mutex<T>> 로 내부 필드를 래핑하여 'static + Send 요구를 충족.
+    // F-PF-C20-03: isolate sysinfo I/O (statfs per FS, getifaddrs/proc/net/dev)
+    // via spawn_blocking so it never occupies a tokio worker thread for up to 5s.
+    // Wrap the inner fields in Arc<Mutex<T>> to satisfy the 'static + Send bound.
     async fn collect_metrics(&self) -> Result<SystemMetrics, CoreError> {
         let sys = Arc::clone(&self.sys);
         let disks = Arc::clone(&self.disks);
         let networks = Arc::clone(&self.networks);
+        let last_disk_refresh = Arc::clone(&self.last_disk_refresh);
 
-        tokio::task::spawn_blocking(move || Self::collect_metrics_sync(sys, disks, networks))
-            .await
-            .map_err(|e| CoreError::Internal {
-                code: InternalCode::Generic,
-                message: format!("spawn_blocking join error: {e}"),
-            })?
+        tokio::task::spawn_blocking(move || {
+            Self::collect_metrics_sync(sys, disks, networks, last_disk_refresh)
+        })
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: format!("spawn_blocking join error: {e}"),
+        })?
     }
 
     async fn current_power_status(&self) -> Result<PowerStatus, CoreError> {
@@ -180,9 +209,9 @@ mod tests {
 
     #[tokio::test]
     async fn collect_metrics_runs_in_spawn_blocking() {
-        // F-PF-C20-03: spawn_blocking 이 tokio::task::block_in_place 가 아닌
-        // 별도 blocking thread pool 에서 실행됨을 확인한다.
-        // 반환 타입이 Result<SystemMetrics> 이면 충분 (regression test).
+        // F-PF-C20-03: confirm that the work runs on a separate blocking thread
+        // pool via spawn_blocking, not tokio::task::block_in_place.
+        // A return type of Result<SystemMetrics> is sufficient (regression test).
         let monitor = SysInfoMonitor::new();
         let metrics = monitor
             .collect_metrics()
@@ -201,40 +230,41 @@ mod tests {
 
     #[tokio::test]
     async fn collect_metrics_propagates_join_error() {
-        // F-QA-C21-06: spawn_blocking JoinError → CoreError::Internal 매핑 검증.
+        // F-QA-C21-06: verify the spawn_blocking JoinError → CoreError::Internal mapping.
         //
-        // collect_metrics() 의 map_err(|e| CoreError::Internal { ... }) 경로는
-        // 정상 실행에서 도달하지 않으므로 직접 spawn_blocking panic 시나리오로 검증한다.
+        // The map_err(|e| CoreError::Internal { ... }) path in collect_metrics() is
+        // unreachable under normal execution, so we verify it directly with a
+        // spawn_blocking panic scenario.
         //
-        // JoinError 는 spawn_blocking 태스크가 panic 하거나 취소될 때 발생한다.
-        // 여기서는 panic closure 를 spawn_blocking 에 직접 전달하여 JoinError 생성 후
-        // CoreError::Internal 으로의 매핑을 어서션한다.
+        // A JoinError occurs when a spawn_blocking task panics or is cancelled.
+        // Here we hand a panicking closure straight to spawn_blocking to produce a
+        // JoinError, then assert the mapping into CoreError::Internal.
         let join_result: Result<(), tokio::task::JoinError> =
             tokio::task::spawn_blocking(|| panic!("F-QA-C21-06 test panic")).await;
 
         let join_err = join_result.unwrap_err();
         assert!(
             join_err.is_panic(),
-            "panic 한 spawn_blocking 의 JoinError 는 is_panic() 이어야 한다"
+            "the JoinError of a panicking spawn_blocking must be is_panic()"
         );
 
-        // JoinError → CoreError::Internal 매핑 재현 (collect_metrics 내부와 동일 패턴)
+        // Reproduce the JoinError → CoreError::Internal mapping (same pattern as inside collect_metrics)
         let core_err: Result<(), CoreError> = Err(join_err).map_err(|e| CoreError::Internal {
             code: InternalCode::Generic,
             message: format!("spawn_blocking join error: {e}"),
         });
 
         let err = core_err.unwrap_err();
-        // CoreError::Internal 변형인지 확인
+        // Confirm it is the CoreError::Internal variant
         assert!(
             matches!(err, CoreError::Internal { .. }),
-            "JoinError 는 CoreError::Internal 변형으로 매핑되어야 한다: {err:?}"
+            "a JoinError must map to the CoreError::Internal variant: {err:?}"
         );
-        // message 에 식별 문자열 포함 여부 확인
+        // Confirm the message contains the identifying string
         if let CoreError::Internal { message, .. } = err {
             assert!(
                 message.contains("spawn_blocking join error"),
-                "message 가 'spawn_blocking join error' 를 포함해야 한다: {message}"
+                "message must contain 'spawn_blocking join error': {message}"
             );
         }
     }

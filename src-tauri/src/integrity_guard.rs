@@ -3,12 +3,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use maekon_core::config::AppConfig;
 use std::path::Path;
+use tracing::warn;
 
+/// Boot-time integrity preflight. Returns `Err` for conditions that MUST block
+/// startup; the caller (`BootstrapPreflightCoordinator::run`) propagates that
+/// error so the integration wiring matches this unit-level fail-closed contract
+/// (#6257 — the previous caller swallowed the `Err` into a warning, rendering
+/// the gate fail-open at runtime).
 pub fn run_preflight(config: &AppConfig, offline_mode: bool) -> Result<()> {
     if !config.integrity.enabled {
         return Ok(());
     }
 
+    // Updater signature-verification downgrade gate (fatal). This passes on the
+    // default config (verification on) and the policy is satisfied unless
+    // `update.enabled` is paired with `require_signature_verification=false`,
+    // i.e. an on-disk downgrade of the updater trust chain. Skipped in offline
+    // mode (no updates are fetched, so there is nothing to verify).
     if !offline_mode {
         config
             .update
@@ -16,45 +27,77 @@ pub fn run_preflight(config: &AppConfig, offline_mode: bool) -> Result<()> {
             .map_err(|e| anyhow!("Update integrity policy validation failed: {}", e))?;
     }
 
+    // Signed-policy-bundle gate. When `require_signed_policy_bundle` is set, the
+    // enforcement depends on whether a bundle is actually PROVISIONED:
+    //   - both paths configured  -> verify; missing/unreadable/tampered/forged
+    //                                bundle is a HARD start-blocking error.
+    //   - exactly one path set    -> half-provisioned misconfiguration -> fatal.
+    //   - neither path set        -> NOT provisioned -> warn + skip (do NOT
+    //                                block boot). The shipped default sets
+    //                                `require_signed_policy_bundle=true` without
+    //                                bundling a policy file, so a hard failure
+    //                                here would brick every default install.
+    // This split is what makes #6257 safe to make fatal: a genuinely tampered
+    // provisioned bundle now blocks startup, while the unprovisioned default
+    // still boots (with a warning).
     if config.integrity.require_signed_policy_bundle {
-        verify_signed_policy_bundle(config)?;
+        match resolve_policy_bundle_paths(config)? {
+            Some((policy_path, signature_path)) => {
+                verify_signed_policy_bundle(config, policy_path, signature_path)?;
+            }
+            None => {
+                warn!(
+                    "integrity.require_signed_policy_bundle is enabled but no policy bundle is \
+                     provisioned (policy_file_path / policy_signature_path unset); skipping bundle \
+                     verification. Provision a signed policy bundle to enforce this gate."
+                );
+            }
+        }
     }
 
     Ok(())
 }
 
-fn verify_signed_policy_bundle(config: &AppConfig) -> Result<()> {
-    let policy_path = match config
+/// Resolve the configured policy/signature paths into an enforcement decision.
+///
+/// `Ok(None)` = not provisioned (skip); `Ok(Some((policy, sig)))` = both
+/// configured (verify); `Err` = exactly one configured (half-provisioned
+/// misconfiguration — fail closed rather than silently skipping). Mirrors the
+/// Landlock precedent in maekon-automation's Linux sandbox: a partial isolation
+/// request refuses to exec rather than downgrading to an unverified path.
+fn resolve_policy_bundle_paths(config: &AppConfig) -> Result<Option<(&str, &str)>> {
+    let policy_path = config
         .integrity
         .policy_file_path
         .as_deref()
-        .filter(|p| !p.trim().is_empty())
-    {
-        Some(p) => p,
-        None => {
-            tracing::warn!(
-                "integrity.require_signed_policy_bundle is enabled but policy_file_path is not configured; \
-                 skipping policy bundle verification"
-            );
-            return Ok(());
-        }
-    };
-    let signature_path = match config
+        .filter(|p| !p.trim().is_empty());
+    let signature_path = config
         .integrity
         .policy_signature_path
         .as_deref()
-        .filter(|p| !p.trim().is_empty())
-    {
-        Some(p) => p,
-        None => {
-            tracing::warn!(
-                "integrity.require_signed_policy_bundle is enabled but policy_signature_path is not configured; \
-                 skipping policy bundle verification"
-            );
-            return Ok(());
-        }
-    };
+        .filter(|p| !p.trim().is_empty());
 
+    match (policy_path, signature_path) {
+        (None, None) => Ok(None),
+        (Some(policy), Some(signature)) => Ok(Some((policy, signature))),
+        (Some(_), None) => Err(anyhow!(
+            "integrity.require_signed_policy_bundle is enabled and policy_file_path is set, but \
+             policy_signature_path is not configured — refusing to start with a half-provisioned \
+             policy bundle"
+        )),
+        (None, Some(_)) => Err(anyhow!(
+            "integrity.require_signed_policy_bundle is enabled and policy_signature_path is set, but \
+             policy_file_path is not configured — refusing to start with a half-provisioned \
+             policy bundle"
+        )),
+    }
+}
+
+fn verify_signed_policy_bundle(
+    config: &AppConfig,
+    policy_path: &str,
+    signature_path: &str,
+) -> Result<()> {
     let policy_bytes = std::fs::read(Path::new(policy_path))
         .map_err(|e| anyhow!("Failed to read policy file ({}): {}", policy_path, e))?;
     let signature_text = std::fs::read_to_string(Path::new(signature_path)).map_err(|e| {
@@ -118,14 +161,40 @@ mod tests {
     }
 
     #[test]
-    fn preflight_skips_when_policy_paths_not_configured() {
+    fn preflight_skips_when_policy_bundle_not_provisioned() {
         let mut config = config_for_test();
         config.integrity.require_signed_policy_bundle = true;
-        // policy_file_path and policy_signature_path are None by default.
-        // verify_signed_policy_bundle logs a warning and returns Ok(()) — the
-        // preflight must not treat a missing-but-not-configured path as an error.
-        run_preflight(&config, false)
-            .expect("preflight must silently skip when policy paths are not configured");
+        // #6257: policy_file_path and policy_signature_path are None (the shipped
+        // default). require_signed_policy_bundle=true is the fail-closed BASELINE,
+        // but with NO bundle provisioned the preflight must NOT block boot — a
+        // hard failure here would brick every default install. It warns and skips.
+        run_preflight(&config, false).expect(
+            "an unprovisioned policy bundle (both paths unset) must not block startup — \
+             default installs ship require_signed_policy_bundle=true without a bundle",
+        );
+    }
+
+    #[test]
+    fn preflight_fails_closed_when_bundle_half_provisioned() {
+        let dir = tempdir().expect("tempdir");
+        let policy_path = dir.path().join("policy.json");
+        std::fs::write(&policy_path, br#"{"policy":"strict"}"#).expect("write policy");
+
+        let mut config = config_for_test();
+        config.integrity.require_signed_policy_bundle = true;
+        config.integrity.policy_file_path = Some(policy_path.to_string_lossy().to_string());
+        // #6257: policy_signature_path remains unset. A HALF-provisioned bundle
+        // (exactly one path set) is a misconfiguration and must fail-closed —
+        // distinct from the unprovisioned default, which skips.
+        let err = run_preflight(&config, false)
+            .expect_err("preflight must fail-closed when the bundle is half-provisioned");
+        assert!(
+            err.to_string().contains("half-provisioned")
+                && err
+                    .to_string()
+                    .contains("policy_signature_path is not configured"),
+            "half-provisioned bundle (missing signature) must be reported; got: {err}"
+        );
     }
 
     #[test]

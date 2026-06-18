@@ -26,9 +26,21 @@ pub async fn get_or_generate_digest(
     date_str: &str,
     date: NaiveDate,
 ) -> Result<DailyDigest, CoreError> {
-    // 1. Check cache
-    if let Some(cached) = state.core.storage.get_daily_digest(date_str).await? {
-        return Ok(cached);
+    // #6276: the CURRENT day's digest is a moving target (segments keep
+    // accumulating), so it must NOT be served from OR written to the cache —
+    // otherwise the first view of "today" freezes the digest at its partial-day
+    // state for the rest of the day. Treat the date as "today" if it matches the
+    // current date in EITHER UTC or Local: handlers derive date_str from
+    // Utc::now() while the scheduler rolls digests over on Local, so the union
+    // conservatively avoids a near-midnight off-by-one that would cache a still-
+    // accumulating day. Past days remain cacheable (finalized).
+    let is_today = date == Utc::now().date_naive() || date == chrono::Local::now().date_naive();
+
+    // 1. Check cache (skip for today — always regenerate fresh).
+    if !is_today {
+        if let Some(cached) = state.core.storage.get_daily_digest(date_str).await? {
+            return Ok(cached);
+        }
     }
 
     // 2. Generate from segments
@@ -36,9 +48,11 @@ pub async fn get_or_generate_digest(
 
     let digest = build_daily_digest(&segment_records, date, state).await;
 
-    // 3. Cache the result
-    if let Err(e) = state.core.storage.save_daily_digest(&digest).await {
-        warn!("Failed to cache daily digest: {e}");
+    // 3. Cache the result (skip for today — do not persist a partial-day digest).
+    if !is_today {
+        if let Err(e) = state.core.storage.save_daily_digest(&digest).await {
+            warn!("Failed to cache daily digest: {e}");
+        }
     }
 
     Ok(digest)

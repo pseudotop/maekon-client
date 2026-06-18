@@ -72,8 +72,8 @@ impl AutomationQueryService {
                 external_data_policy: config.ai_provider.external_data_policy.to_string(),
                 pending_audit_entries: pending,
                 llm_healthy,
-                // ConfirmationRequirement의 Display impl이 SCREAMING_SNAKE_CASE 토큰을 반환함
-                // (예: "AUTO" / "CONFIRM" / "BLOCK") — 프론트엔드 캡션 분기에 사용됨.
+                // ConfirmationRequirement's Display impl returns a SCREAMING_SNAKE_CASE token
+                // (e.g. "AUTO" / "CONFIRM" / "BLOCK") — used for frontend caption branching.
                 confirmation_policy: config.automation.confirmation_policy.to_string(),
             })
         } else {

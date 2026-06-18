@@ -282,18 +282,34 @@ fn pick_frontmost_layer_zero(windows: &[RawCgWindow]) -> Option<&RawCgWindow> {
         .find(|w| w.on_screen && w.layer == 0 && w.owner_pid > 0)
 }
 
-/// Legacy osascript-based active-window detection. KEPT VERBATIM as the
-/// fallback for when the native path returns `None` (e.g. Accessibility
-/// permission missing → no AX title, or no usable native foreground window).
-/// Carries the LIVE circuit breaker so a missing permission can't make us fork
-/// `osascript` every cycle.
-async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, MonitorError> {
+/// Circuit-breaker retry gate for the osascript fallback. Returns `true` if the
+/// caller may proceed to spawn osascript, `false` if it must short-circuit.
+///
+/// When the breaker is open (>= THRESHOLD consecutive timeouts) only the caller
+/// that atomically claims the retry slot at a RETRY_INTERVAL boundary proceeds;
+/// every other caller increments-and-skips. The `compare_exchange` prevents two
+/// concurrent callers that read the same boundary value from both spawning
+/// osascript (#6007 finding 17). Extracted from `get_active_window_via_osascript`
+/// so the atomic-claim logic is unit-testable without forking a subprocess.
+fn circuit_breaker_should_proceed() -> bool {
     let timeouts = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
     if timeouts >= CIRCUIT_BREAKER_THRESHOLD {
-        // Circuit breaker is open — periodically retry to detect permission grant
+        // Circuit breaker is open — periodically retry to detect permission grant.
         if !timeouts.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
             CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-            return Ok(None);
+            return false;
+        }
+        // Atomically claim the retry slot: only the caller that successfully
+        // transitions the counter from `timeouts` to `timeouts + 1` may proceed.
+        // Concurrent callers that lose the CAS observe the incremented value on
+        // their next load — no longer a multiple of CIRCUIT_BREAKER_RETRY_INTERVAL
+        // — so they short-circuit without spawning a redundant osascript.
+        if CONSECUTIVE_TIMEOUTS
+            .compare_exchange(timeouts, timeouts + 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            // Another concurrent caller claimed this retry slot first.
+            return false;
         }
         warn!(
             "osascript circuit breaker: retrying after {} skipped calls \
@@ -301,10 +317,25 @@ async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, Monitor
             timeouts - CIRCUIT_BREAKER_THRESHOLD
         );
     }
+    true
+}
+
+/// Legacy osascript-based active-window detection. KEPT VERBATIM as the
+/// fallback for when the native path returns `None` (e.g. Accessibility
+/// permission missing → no AX title, or no usable native foreground window).
+/// Carries the LIVE circuit breaker so a missing permission can't make us fork
+/// `osascript` every cycle.
+async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, MonitorError> {
+    // Circuit-breaker retry gate (extracted so the atomic-claim logic is
+    // unit-testable without forking osascript — see circuit_breaker_should_proceed).
+    if !circuit_breaker_should_proceed() {
+        return Ok(None);
+    }
 
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("osascript")
+            .kill_on_drop(true)
             .arg("-e")
             .arg(
                 r#"tell application "System Events"
@@ -454,6 +485,7 @@ pub async fn current_power_status_macos() -> Result<PowerStatus, MonitorError> {
     let output = timeout(
         Duration::from_secs(2),
         Command::new("/usr/bin/pmset")
+            .kill_on_drop(true)
             .arg("-g")
             .arg("batt")
             .output(),
@@ -478,6 +510,7 @@ pub async fn get_idle_time_macos() -> Option<u64> {
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("ioreg")
+            .kill_on_drop(true)
             .args(["-c", "IOHIDSystem", "-d", "4"])
             .output(),
     )
@@ -735,5 +768,83 @@ mod tests {
     #[test]
     fn pick_frontmost_empty_is_none() {
         assert!(pick_frontmost_layer_zero(&[]).is_none());
+    }
+
+    /// Verify that when the counter is exactly at a retry boundary, only ONE
+    /// concurrent caller is allowed to proceed (the CAS winner); all subsequent
+    /// callers that arrive while the counter still reads the same multiple-of-N
+    /// value lose the CAS and short-circuit to Ok(None).
+    ///
+    /// This tests the atomic-claim logic introduced to fix the double-spawn race
+    /// (finding #6007): without the CAS, two callers that both read the same
+    /// multiple-of-CIRCUIT_BREAKER_RETRY_INTERVAL value would both pass the
+    /// `is_multiple_of` gate and both spawn `osascript`.
+    #[test]
+    #[serial]
+    fn circuit_breaker_retry_slot_claimed_only_once() {
+        // Exercise the pure gate decision directly (no osascript fork): this avoids
+        // the environment dependency where a real osascript call SUCCEEDS on a GUI
+        // host and resets the counter to 0, and it isolates the atomic-claim logic.
+        let retry_boundary = CIRCUIT_BREAKER_RETRY_INTERVAL;
+        assert!(
+            retry_boundary >= CIRCUIT_BREAKER_THRESHOLD,
+            "test precondition: retry interval must be >= threshold"
+        );
+
+        // First caller at the boundary claims the slot (proceeds) and advances the
+        // counter exactly one past the boundary.
+        CONSECUTIVE_TIMEOUTS.store(retry_boundary, Ordering::Relaxed);
+        assert!(
+            circuit_breaker_should_proceed(),
+            "first caller at the retry boundary must claim the slot and proceed"
+        );
+        let after_first = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
+        assert_eq!(
+            after_first,
+            retry_boundary + 1,
+            "counter must advance exactly one past the retry boundary"
+        );
+        assert!(
+            !after_first.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL),
+            "counter ({after_first}) must not be a multiple of the retry interval \
+             ({CIRCUIT_BREAKER_RETRY_INTERVAL}) after the slot is claimed"
+        );
+
+        // A caller arriving after the slot was claimed (counter past the boundary)
+        // must skip rather than spawn a second osascript.
+        assert!(
+            !circuit_breaker_should_proceed(),
+            "a caller arriving after the slot was claimed must short-circuit"
+        );
+
+        // Directly prove the atomic claim: two callers that both read the SAME
+        // boundary value — exactly one CAS succeeds, the other loses.
+        CONSECUTIVE_TIMEOUTS.store(retry_boundary, Ordering::Relaxed);
+        let a = CONSECUTIVE_TIMEOUTS.compare_exchange(
+            retry_boundary,
+            retry_boundary + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        let b = CONSECUTIVE_TIMEOUTS.compare_exchange(
+            retry_boundary,
+            retry_boundary + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        // The winning CAS returns Ok(old_value) — the value that was replaced.
+        // The losing CAS returns Err(current_value) — what it found instead.
+        assert_eq!(
+            a,
+            Ok(retry_boundary),
+            "CAS winner must return Ok(old value) == Ok(retry_boundary)"
+        );
+        assert_eq!(
+            b,
+            Err(retry_boundary + 1),
+            "CAS loser must return Err(current value) == Err(retry_boundary + 1)"
+        );
+
+        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
     }
 }

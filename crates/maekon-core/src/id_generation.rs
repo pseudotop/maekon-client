@@ -1,19 +1,21 @@
 //! ADR-022 (client) prefix+ULID entity ID generation.
 //!
-//! 클라이언트 ID 생성 규약은 maekon-client 레지스트리의 ADR-022 가 정본이며,
-//! prefix+ULID 형태(shape)는 server ADR-055 와 동일하다.
+//! The client ID generation convention is canonically defined by ADR-022 in the
+//! maekon-client registry, and the prefix+ULID shape is identical to server
+//! ADR-055.
 
 use thiserror::Error;
 
-/// `generate_id_checked` 의 prefix 검증 실패 사유.
+/// Reason a `generate_id_checked` prefix validation failed.
 ///
-/// 동적(런타임) prefix 를 다루는 호출자가 panic 없이 오류를 처리할 수 있도록
-/// 제공된다. 정적 리터럴 prefix 만 쓰는 기존 호출자들은 [`generate_id`] 를
-/// 그대로 사용한다 (#4344).
+/// Provided so callers handling dynamic (runtime) prefixes can deal with the
+/// error without panicking. Existing callers that only use static literal
+/// prefixes keep using [`generate_id`] as-is (#4344).
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IdError {
-    /// ADR-022 id prefix 가 규칙을 위반함 (비어 있음 / 63바이트 초과 /
-    /// 소문자 ASCII 로 시작하지 않음 / `a-z`,`0-9`,`_` 외 문자 포함).
+    /// The ADR-022 id prefix violates the rules (empty / longer than 63 bytes /
+    /// does not start with a lowercase ASCII letter / contains characters
+    /// outside `a-z`, `0-9`, `_`).
     #[error("invalid ADR-022 id prefix `{prefix}`")]
     InvalidPrefix { prefix: String },
 }
@@ -24,12 +26,12 @@ pub enum IdError {
 /// server-side ADR-055 shape) while allowing client-local prefixes that are
 /// not part of the server domain registry.
 ///
-/// # 정적 prefix 전용 (#4344)
+/// # Static-prefix only (#4344)
 ///
-/// 이 함수는 **컴파일 타임에 알려진 정적 리터럴 prefix** 전용이다. 모든
-/// 호출자는 `"sug"`, `"req"` 등 검증된 정적 리터럴을 넘기므로 실제 panic
-/// 가능성이 없다. 런타임에 결정되는 동적 prefix 를 다뤄야 한다면 panic 하지
-/// 않는 [`generate_id_checked`] 를 사용하라.
+/// This function is **only for static literal prefixes known at compile time**.
+/// Every caller passes a verified static literal such as `"sug"` or `"req"`, so
+/// there is no real possibility of a panic. If you need to handle a dynamic
+/// prefix decided at runtime, use the non-panicking [`generate_id_checked`].
 ///
 /// # Panics
 ///
@@ -45,17 +47,17 @@ pub fn generate_id(prefix: &str) -> String {
     format!("{prefix}_{}", ulid::Ulid::new())
 }
 
-/// [`generate_id`] 의 panic 하지 않는 변형 (#4344).
+/// Non-panicking variant of [`generate_id`] (#4344).
 ///
-/// 런타임에 결정되는 동적 prefix 를 다루는 미래 호출자를 위해 제공된다.
-/// prefix 가 ADR-022 규칙을 위반하면 panic 대신 [`IdError::InvalidPrefix`] 를
-/// 반환한다.
+/// Provided for future callers that handle dynamic prefixes decided at runtime.
+/// If the prefix violates the ADR-022 rules, it returns
+/// [`IdError::InvalidPrefix`] instead of panicking.
 ///
 /// # Errors
 ///
-/// `prefix` 가 비어 있거나, 63바이트를 초과하거나, 소문자 ASCII 로 시작하지
-/// 않거나, `a-z`/`0-9`/`_` 외 문자를 포함하면 [`IdError::InvalidPrefix`] 를
-/// 반환한다.
+/// Returns [`IdError::InvalidPrefix`] if `prefix` is empty, longer than 63
+/// bytes, does not start with a lowercase ASCII letter, or contains characters
+/// outside `a-z`/`0-9`/`_`.
 pub fn generate_id_checked(prefix: &str) -> Result<String, IdError> {
     if is_valid_prefix(prefix) {
         Ok(format!("{prefix}_{}", ulid::Ulid::new()))
@@ -66,7 +68,8 @@ pub fn generate_id_checked(prefix: &str) -> Result<String, IdError> {
     }
 }
 
-/// ADR-022 prefix 규칙 검증 (panic/Result 양쪽에서 공유하는 순수 함수).
+/// ADR-022 prefix rule validation (pure function shared by both the panic and
+/// Result paths).
 fn is_valid_prefix(prefix: &str) -> bool {
     let starts_with_lowercase = prefix
         .as_bytes()
@@ -83,16 +86,16 @@ fn is_valid_prefix(prefix: &str) -> bool {
 mod tests {
     use super::{generate_id, generate_id_checked, IdError};
 
-    /// 워크스페이스 전역에서 `generate_id(prefix)` 에 실제로 전달되는 정적
-    /// 리터럴 prefix 전체 목록 (#4344).
+    /// The complete list of static literal prefixes actually passed to
+    /// `generate_id(prefix)` across the entire workspace (#4344).
     ///
-    /// `grep -rhoE 'generate_id\("[^"]+"\)'` 로 추출한 등록/사용 prefix 집합.
-    /// 신규 prefix 도입 시 이 목록도 갱신해 registry 가 panic 으로 drift 하지
-    /// 않도록 보장한다.
+    /// The set of registered/used prefixes extracted via
+    /// `grep -rhoE 'generate_id\("[^"]+"\)'`. When introducing a new prefix,
+    /// update this list too so the registry does not drift into a panic.
     const USED_PREFIXES: &[&str] = &[
-        "ann", "aud", "cch", "clip", "clm", "consent", "ctx", "edg", "env", "evt", "fa", "flow",
-        "hl", "input", "ovr", "pomo", "proc", "ptr", "q", "rcpt", "rect", "req", "scene", "ses",
-        "sug", "tkt", "win",
+        "ann", "aud", "audit", "cch", "clip", "clm", "consent", "ctx", "edg", "env", "erasure",
+        "evt", "fa", "flow", "hl", "input", "ovr", "pomo", "proc", "ptr", "q", "rcpt", "rect",
+        "req", "scene", "ses", "sug", "tkt", "win",
     ];
 
     #[test]
@@ -122,8 +125,8 @@ mod tests {
         let _ = generate_id("Sug");
     }
 
-    /// #4344 회귀 방지: 실제 사용 중인 모든 정적 prefix 는 `generate_id` 에서
-    /// panic 하지 않아야 한다 (registry 가 panic 으로 drift 하는 것을 차단).
+    /// #4344 regression guard: every static prefix actually in use must not
+    /// panic in `generate_id` (blocks the registry from drifting into a panic).
     #[test]
     fn generate_id_does_not_panic_on_any_used_prefix() {
         for &prefix in USED_PREFIXES {
@@ -140,8 +143,8 @@ mod tests {
         }
     }
 
-    /// #4344: `generate_id_checked` 는 모든 사용 중 prefix 에 대해 Ok 를
-    /// 반환하고, `generate_id` 와 동일한 형태의 id 를 만들어야 한다.
+    /// #4344: `generate_id_checked` must return Ok for every prefix in use and
+    /// produce an id of the same shape as `generate_id`.
     #[test]
     fn generate_id_checked_accepts_all_used_prefixes() {
         for &prefix in USED_PREFIXES {
@@ -152,8 +155,8 @@ mod tests {
         }
     }
 
-    /// #4344: `generate_id_checked` 는 잘못된 prefix 에 panic 하지 않고
-    /// [`IdError::InvalidPrefix`] 를 반환한다.
+    /// #4344: `generate_id_checked` does not panic on a bad prefix and returns
+    /// [`IdError::InvalidPrefix`] instead.
     #[test]
     fn generate_id_checked_rejects_invalid_prefixes_without_panic() {
         for bad in [
@@ -173,8 +176,9 @@ mod tests {
         }
     }
 
-    /// #4344: 검증 통과 prefix 에 대해 panic 변형과 checked 변형이 동일하게
-    /// 동작함을 명시 (양쪽이 동일한 `is_valid_prefix` 를 공유).
+    /// #4344: asserts that for a prefix that passes validation the panic variant
+    /// and the checked variant behave identically (both share the same
+    /// `is_valid_prefix`).
     #[test]
     fn generate_id_checked_uniqueness() {
         let a = generate_id_checked("req").expect("valid prefix");

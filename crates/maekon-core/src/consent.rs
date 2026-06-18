@@ -1,10 +1,50 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::CoreError;
+
+/// Write `bytes` to `tmp_path` so the file is owner-only the instant any bytes
+/// exist on disk, then leave it ready for an atomic rename into place.
+///
+/// `tmp_path` is removed first so a stale tmp from a previously aborted write is
+/// not re-opened with inherited/too-open permissions.
+///
+/// #6175: consent.json records user identity / consent metadata (privacy
+/// sensitive) and was written via the default umask (typically 0o644 →
+/// world/group-readable). On Unix this creates the tmp with `O_CREAT | O_EXCL` +
+/// mode `0o600` in a single `open(2)`, so the published file is never
+/// world/group-readable. On Windows the owner-only DACL helper lives in
+/// `maekon-storage` and is not reachable from `maekon-core` without inverting the
+/// hexagonal dependency direction; the bytes are written plainly there and the
+/// DACL tightening is tracked as a follow-up. Mirrors
+/// `config_manager::persistence::write_tmp_owner_only`.
+fn write_tmp_owner_only(tmp_path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+    let _ = std::fs::remove_file(tmp_path);
+
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp_path)?;
+        file.write_all(bytes).inspect_err(|_| {
+            let _ = std::fs::remove_file(tmp_path);
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(tmp_path, bytes)?;
+    }
+
+    Ok(())
+}
 
 pub const CURRENT_POLICY_VERSION: &str = "1.0.0";
 
@@ -133,20 +173,23 @@ pub struct DeletionResult {
 
 // ConsentManager
 
-/// 내부 가변 상태. `ConsentManager`가 공유 불변 `Arc`로 배포되더라도 쓰기가
-/// 가능하도록 `RwLock`으로 감싼다 (writers는 `&self`).
+/// Internal mutable state. Wrapped in a `RwLock` so writes are possible even
+/// though `ConsentManager` is distributed as a shared immutable `Arc` (writers
+/// take `&self`).
 struct ConsentState {
     current_consent: Option<ConsentRecord>,
-    /// revoke_consent() 호출 후 데이터 소거가 완료되기 전까지 true를 유지한다.
-    /// current_consent = None 이후에도 GDPR Article 17 신호가 소실되지 않도록
-    /// 별도 in-memory 플래그로 관리한다.
+    /// Stays true after a revoke_consent() call until data erasure completes.
+    /// Managed as a separate in-memory flag so the GDPR Article 17 signal is not
+    /// lost even after current_consent = None.
     pending_deletion: bool,
-    /// #5156: 현재 대기 중인 Art. 17 erasure 의 시각(= 영속화된
-    /// `ConsentRecord.revoked_at` 미러). revoke 마다 변하는 restart-stable,
-    /// per-erasure-distinct 식별자를 제공한다. load 시 영속 record 에서 복구되어
-    /// REMOTE 전파 신호가 restart 를 견딘다. `pending_deletion` 과 함께 clear 되며,
-    /// grant 는 건드리지 않는다(#4630-b). LOCAL 쓰기 게이트(`deletion_flag`)와는
-    /// 별개 — restart 시 deletion_flag 는 false 유지(로컬 소거는 revoke 세션에서 완료).
+    /// #5156: the instant of the currently pending Art. 17 erasure (a mirror of
+    /// the persisted `ConsentRecord.revoked_at`). Provides a restart-stable,
+    /// per-erasure-distinct identifier that changes on every revoke. Recovered
+    /// from the persisted record on load so the REMOTE propagation signal
+    /// survives restart. Cleared together with `pending_deletion`, and left
+    /// untouched by grant (#4630-b). Distinct from the LOCAL write gate
+    /// (`deletion_flag`) — on restart `deletion_flag` stays false (local erasure
+    /// completes within the revoke session).
     pending_erasure_at: Option<DateTime<Utc>>,
     /// #5165: collision-proof per-revoke nonce (mirror of `ConsentRecord.erasure_nonce`),
     /// the preferred per-erasure id. Set/cleared in lockstep with `pending_erasure_at`;
@@ -158,24 +201,28 @@ struct ConsentState {
 pub struct ConsentManager {
     storage_path: PathBuf,
     state: parking_lot::RwLock<ConsentState>,
-    /// #4928: consent-revoke erasure 차단 chokepoint 의 LIVE 신호.
+    /// #4928: the LIVE signal of the consent-revoke erasure chokepoint.
     ///
-    /// `pending_deletion` 을 미러링한다 — revoke → `true`, grant/clear → `false`.
-    /// composition root 에서 이 동일 `Arc` 를 `SqliteStorage::set_deletion_flag` 와
-    /// `FrameFileStorage::set_deletion_flag` 에 install 하면, revoke 이후 진입한
-    /// in-flight writer 가 funnel(`write_lock`/frame 배리어)에서 자동으로 스킵된다.
-    /// consent 게이트가 steady-state 보호이고, 이 flag 는 erase-window in-flight
-    /// race 의 backstop 이다 (스펙 §2/§3bis).
+    /// Mirrors `pending_deletion` — revoke → `true`, grant/clear → `false`. When
+    /// the composition root installs this same `Arc` into
+    /// `SqliteStorage::set_deletion_flag` and
+    /// `FrameFileStorage::set_deletion_flag`, any in-flight writer that entered
+    /// after a revoke is automatically skipped at the funnel (`write_lock` / the
+    /// frame barrier). The consent gate is the steady-state protection, and this
+    /// flag is the backstop for the in-flight race during the erase window
+    /// (spec §2/§3bis).
     deletion_flag: Arc<AtomicBool>,
-    /// #4928 round-3 (FIX B): grant_consent-during-erase TOCTOU 차단 신호.
+    /// #4928 round-3 (FIX B): the signal that blocks the grant_consent-during-erase TOCTOU.
     ///
-    /// `deletion_flag` 는 `grant_consent` 가 `false` 로 되돌릴 수 있어, erase 윈도우
-    /// (Phase-1 커밋 후 ~ Phase-2 진행 중) 안에 재동의가 끼어들면 in-flight writer 가
-    /// flag clear 를 보고 wipe 이후 잔존 행을 쓸 수 있다. `erasing` 은
-    /// `erase_all_local_data` 가 RAII 로 set/clear 하며 `grant_consent`/`clear_pending_deletion`
-    /// 은 절대 건드리지 못한다. composition root 가 이 동일 `Arc` 를
-    /// `SqliteStorage::set_erasing` / `FrameFileStorage::set_erasing` 에 install 한다.
-    /// write skip 술어는 `deletion_flag || erasing` 이다.
+    /// `grant_consent` can flip `deletion_flag` back to `false`, so if a re-grant
+    /// slips into the erase window (after the Phase-1 commit, while Phase-2 is in
+    /// progress) an in-flight writer could see the flag cleared and write rows
+    /// that survive the wipe. `erasing` is set/cleared via RAII by
+    /// `erase_all_local_data` and is NEVER touched by
+    /// `grant_consent`/`clear_pending_deletion`. The composition root installs
+    /// this same `Arc` into `SqliteStorage::set_erasing` /
+    /// `FrameFileStorage::set_erasing`. The write-skip predicate is
+    /// `deletion_flag || erasing`.
     erasing: Arc<AtomicBool>,
 }
 
@@ -206,36 +253,39 @@ impl ConsentManager {
                 pending_erasure_at,
                 pending_erasure_nonce,
             }),
-            // #4928: erasure 차단 flag 는 false(쓰기 허용)로 초기화한다. restart 시
-            // pending erasure 가 있어도 LOCAL 소거는 revoke 세션에서 이미 완료됐으므로
-            // 로컬 쓰기를 다시 막지 않는다(REMOTE 전파만 미완일 수 있음).
+            // #4928: initialize the erasure-blocking flag to false (writes
+            // allowed). Even if a pending erasure exists on restart, LOCAL erasure
+            // already completed within the revoke session, so we do not re-block
+            // local writes (only REMOTE propagation may still be incomplete).
             deletion_flag: Arc::new(AtomicBool::new(false)),
-            // #4928 round-3: erase-window 차단 신호도 false 로 초기화한다.
+            // #4928 round-3: initialize the erase-window blocking signal to false too.
             erasing: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// #4928: erasure 차단 chokepoint 의 공유 `deletion_flag` 를 반환한다.
+    /// #4928: returns the shared `deletion_flag` of the erasure-blocking chokepoint.
     ///
-    /// composition root 가 이 `Arc` 를 `SqliteStorage`/`FrameFileStorage` 에
-    /// install 해 동일 신호를 공유한다 (ptr-eq). revoke 시 `true`, grant/clear 시
-    /// `false` 로 미러링된다.
+    /// The composition root installs this `Arc` into
+    /// `SqliteStorage`/`FrameFileStorage` so the same signal is shared (ptr-eq).
+    /// Mirrored to `true` on revoke and `false` on grant/clear.
     pub fn deletion_flag(&self) -> Arc<AtomicBool> {
         self.deletion_flag.clone()
     }
 
-    /// #4928 round-3 (FIX B): erase-window 차단 신호 `erasing` 을 반환한다.
+    /// #4928 round-3 (FIX B): returns the erase-window blocking signal `erasing`.
     ///
-    /// composition root 가 이 `Arc` 를 `SqliteStorage::set_erasing` /
-    /// `FrameFileStorage::set_erasing` 에 install 해 동일 신호를 공유한다 (ptr-eq).
-    /// `erase_all_local_data` 만 RAII 로 set/clear 하며 `grant_consent` 는 clear 하지 못한다.
+    /// The composition root installs this `Arc` into
+    /// `SqliteStorage::set_erasing` / `FrameFileStorage::set_erasing` so the same
+    /// signal is shared (ptr-eq). Only `erase_all_local_data` sets/clears it via
+    /// RAII; `grant_consent` cannot clear it.
     pub fn erasing(&self) -> Arc<AtomicBool> {
         self.erasing.clone()
     }
 
-    /// 이미 획득된 가드의 상태에 대해 동의 유효성을 평가한다 (락 재진입 없음).
-    /// `check_consent`와 `effective_permissions` 양쪽이 공유하는 단일 유효성 판단
-    /// 로직이다 — 한 가드 내에서 평가하므로 두 메서드 간 TOCTOU 창이 없다.
+    /// Evaluates consent validity against an already-acquired guard's state (no
+    /// lock re-entry). This is the single validity-determination logic shared by
+    /// both `check_consent` and `effective_permissions` — evaluating within one
+    /// guard means there is no TOCTOU window between the two methods.
     fn check_consent_locked(st: &ConsentState) -> ConsentStatus {
         match &st.current_consent {
             None => ConsentStatus::NotGranted,
@@ -257,20 +307,20 @@ impl ConsentManager {
         Self::check_consent_locked(&self.state.read())
     }
 
-    /// 현재 동의 레코드의 소유 스냅샷 (이전 시그니처는 `Option<&ConsentRecord>`).
-    /// 읽기 락 하에서 clone 하여 반환한다.
+    /// An owned snapshot of the current consent record (the previous signature
+    /// was `Option<&ConsentRecord>`). Cloned and returned under the read lock.
     pub fn current_consent(&self) -> Option<ConsentRecord> {
         self.state.read().current_consent.clone()
     }
 
-    /// 동의가 현재 Valid일 때만 권한을 반환하고, 그 외에는 모두 false를 반환한다.
-    /// 모든 게이트에서 이 메서드를 사용해 Expired/UpdateRequired/부재 상태가
-    /// fail-closed 되도록 한다.
+    /// Returns the permissions only when consent is currently Valid, and returns
+    /// all-false otherwise. Every gate uses this method so that the
+    /// Expired/UpdateRequired/absent states fail closed.
     ///
-    /// 단일 읽기 가드 하에서 유효성 검사와 권한 추출을 수행하므로 두 연산 사이에
-    /// torn-state 창이 없다.
+    /// Validity check and permission extraction happen under a single read guard,
+    /// so there is no torn-state window between the two operations.
     pub fn effective_permissions(&self) -> ConsentPermissions {
-        let st = self.state.read(); // 단일 가드 — 유효성 검사와 권한 추출 모두 이 가드 내에서
+        let st = self.state.read(); // single guard — both validity check and permission extraction within it
         if Self::check_consent_locked(&st) == ConsentStatus::Valid {
             st.current_consent
                 .as_ref()
@@ -281,18 +331,21 @@ impl ConsentManager {
         }
     }
 
-    /// 단일 read 가드로 상태와 (원본) 권한 집합을 원자적으로 읽는다 (UI 스냅샷용, TOCTOU 제거).
+    /// Atomically reads the status and the (raw) permission set under a single
+    /// read guard (for UI snapshots, removing the TOCTOU).
     ///
-    /// `check_consent()` + `current_consent()`를 별도 호출하면 두 read 락 사이에
-    /// grant/revoke가 끼어들어 status와 permissions가 불일치하는 스냅샷이 나올 수
-    /// 있다. 이 메서드는 한 가드 안에서 둘 다 읽어 그 창을 제거한다.
+    /// Calling `check_consent()` + `current_consent()` separately lets a
+    /// grant/revoke slip in between the two read locks, yielding a snapshot where
+    /// status and permissions disagree. This method reads both within one guard
+    /// to remove that window.
     ///
-    /// `effective_permissions`와 달리 비-Valid 상태에서도 권한을 0으로 만들지 않고
-    /// **원본 부여 권한**(`current_consent.permissions`)을 그대로 반환한다 — UI는
-    /// 상태(예: Expired)와 함께 "무엇이 부여되었는지"를 보여줘야 하기 때문이다.
-    /// 게이트 판정에는 절대 이 권한을 쓰면 안 된다 (fail-closed는 `effective_permissions`).
+    /// Unlike `effective_permissions`, it does NOT zero the permissions in a
+    /// non-Valid state; it returns the **raw granted permissions**
+    /// (`current_consent.permissions`) as-is — because the UI must show "what was
+    /// granted" alongside the status (e.g. Expired). Never use these permissions
+    /// for gate decisions (fail-closed is `effective_permissions`).
     pub fn status_and_permissions(&self) -> (ConsentStatus, ConsentPermissions) {
-        let st = self.state.read(); // 단일 가드 — 상태 판정과 원본 권한 추출을 함께
+        let st = self.state.read(); // single guard — status determination and raw permission extraction together
         let status = Self::check_consent_locked(&st);
         let permissions = st
             .current_consent
@@ -322,7 +375,14 @@ impl ConsentManager {
             data_retention_days,
         };
 
-        // 파일 저장은 불변 storage_path만 읽으므로 락 획득 전에 수행한다.
+        // #6102-2: acquire the writer guard FIRST and persist while holding it, mirroring
+        // revoke_consent, so the on-disk rename and the in-memory transition are atomic
+        // with respect to other writers. Previously save_to_file ran OUTSIDE the lock and
+        // could interleave with revoke_consent's locked tmp+rename, diverging disk from
+        // in-memory state. save_to_file only reads the immutable storage_path (no
+        // self.state access — verified), so holding the guard across it cannot deadlock,
+        // and grant_consent is synchronous so no .await is crossed under the guard.
+        let mut st = self.state.write();
         self.save_to_file(&record)?;
         // #4630 (decision b — erasure is irrevocable): we intentionally do NOT clear
         // `pending_deletion` here. If the user revoked (requesting an Art. 17 erasure)
@@ -330,11 +390,12 @@ impl ConsentManager {
         // stands — it still fires the cross-device DeletionEvent on the next sync — and
         // this grant only opens a fresh local collection window. Retracting a pending
         // erasure here is the rejected option (a) in #4630.
-        self.state.write().current_consent = Some(record);
-        // #4928: 재동의는 LOCAL 수집 윈도우를 새로 연다 — erasure 차단 flag 를 clear
-        // 하여 funnel 쓰기를 재개한다. (REMOTE 전파 신호인 `pending_deletion` 은
-        // #4630(b) 에 따라 grant 가 건드리지 않는다 — 둘은 별개의 신호다: flag 는
-        // in-flight 로컬 쓰기 게이트, pending_deletion 은 미전파 erasure 마커.)
+        st.current_consent = Some(record);
+        // #4928: a re-grant opens a fresh LOCAL collection window — clear the
+        // erasure-blocking flag to resume funnel writes. (The REMOTE propagation
+        // signal `pending_deletion` is left untouched by grant per #4630(b) — the
+        // two are distinct signals: the flag is the in-flight local write gate,
+        // and pending_deletion is the not-yet-propagated erasure marker.)
         self.deletion_flag.store(false, Ordering::Release);
         Ok(())
     }
@@ -347,8 +408,9 @@ impl ConsentManager {
     /// or deleted file.  `load_from_file()` treats `data_deletion_requested =
     /// true` as revoked, so the file's presence does not re-activate consent.
     pub fn revoke_consent(&self) -> Result<(), CoreError> {
-        // read-mutate-persist-clear 전 구간을 단일 write 가드로 보호한다.
-        // (중간에 가드를 놓았다 다시 잡으면 readers에게 torn state 윈도우가 생긴다.)
+        // Guard the entire read-mutate-persist-clear span under a single write
+        // guard. (Releasing and re-acquiring the guard mid-way would open a torn-
+        // state window for readers.)
         // #5156: capture the revocation instant once so the persisted `revoked_at`
         // and the in-memory per-erasure id are the SAME value (restart recovery
         // must round-trip to an identical id).
@@ -358,29 +420,44 @@ impl ConsentManager {
         // collide. Persisted on the record so it round-trips across restart.
         let nonce = crate::id_generation::generate_id("erasure");
         let mut st = self.state.write();
+        // #6114: persist-then-commit, mirroring grant_consent. Build the revoked
+        // record into a LOCAL clone WITHOUT mutating st.current_consent, persist it
+        // first, and only commit the in-memory transition AFTER the write succeeds.
+        // Previously the in-memory record was mutated (revoked_at /
+        // data_deletion_requested / erasure_nonce) BEFORE the tmp+rename, so a `?`
+        // failure on the write returned Err while leaving consent FAIL-OPEN:
+        // check_consent_locked only inspects expires_at/version (not revoked_at /
+        // data_deletion_requested), so the still-Some record reported Valid and
+        // effective_permissions returned the full granted set, while the un-revoked
+        // record stayed on disk (a restart reloaded it as Valid, losing the revoke).
         let mut revoked_active_consent = false;
-        if let Some(record) = st.current_consent.as_mut() {
-            record.revoked_at = Some(now);
-            record.data_deletion_requested = true;
-            record.erasure_nonce = Some(nonce.clone());
+        if let Some(record) = st.current_consent.as_ref() {
+            // Build the revoked record from a clone; do NOT touch st.current_consent.
+            let mut revoked = record.clone();
+            revoked.revoked_at = Some(now);
+            revoked.data_deletion_requested = true;
+            revoked.erasure_nonce = Some(nonce.clone());
             revoked_active_consent = true;
-        }
-        // Clone to release the mutable borrow before writing.
-        if let Some(record) = st.current_consent.clone() {
             // Atomic write: serialize to a .tmp file, then rename into place.
             // This eliminates the TOCTOU window that existed when we saved and
-            // then deleted the file in two separate syscalls.
+            // then deleted the file in two separate syscalls. On any `?` failure
+            // here we return Err with the in-memory state UNCHANGED (still the
+            // pre-revoke Some(record)), so the gate stays fail-closed at its prior
+            // verdict, and disk still holds the pre-revoke record.
             let tmp_path = self.consent_file_path().with_extension("tmp");
             if let Some(parent) = tmp_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let json = serde_json::to_string_pretty(&record)?;
-            std::fs::write(&tmp_path, &json)?;
+            let json = serde_json::to_string_pretty(&revoked)?;
+            // #6175: owner-only tmp before the rename so the published consent.json
+            // is never world/group-readable.
+            write_tmp_owner_only(&tmp_path, json.as_bytes())?;
             std::fs::rename(&tmp_path, self.consent_file_path())?;
         }
+        // The write (if any) succeeded — commit the in-memory transition.
         st.current_consent = None;
-        // current_consent를 None으로 설정한 뒤에도 소거 요청 신호가 소실되지
-        // 않도록 in-memory 플래그를 true로 유지한다 (GDPR Article 17).
+        // Keep the in-memory flag true so the erasure-request signal is not lost
+        // even after current_consent is set to None (GDPR Article 17).
         st.pending_deletion = true;
         // #5156: advance the per-erasure id ONLY when an ACTIVE consent was revoked
         // (a genuinely new erasure of newly-collected data). A repeat revoke with no
@@ -390,9 +467,9 @@ impl ConsentManager {
             st.pending_erasure_at = Some(now);
             st.pending_erasure_nonce = Some(nonce);
         }
-        // #4928: erase 직전에 erasure 차단 flag 를 set 한다 (erase 전에 set 되어야
-        // in-flight writer 가 wipe 와 race 하지 않는다). 이 시점 이후 funnel 에
-        // 진입한 쓰기는 모두 no-op 으로 스킵된다.
+        // #4928: set the erasure-blocking flag right before erase (it must be set
+        // before erase so an in-flight writer does not race the wipe). Any write
+        // that enters the funnel after this point is skipped as a no-op.
         self.deletion_flag.store(true, Ordering::Release);
         Ok(())
     }
@@ -401,12 +478,12 @@ impl ConsentManager {
     /// pending erasure (GDPR Article 17).  Callers should purge stored events,
     /// frames, and metrics before the next server sync when this returns true.
     ///
-    /// `pending_deletion` 플래그는 `revoke_consent()` 이후 `current_consent`가
-    /// None으로 바뀌더라도 true를 유지한다. 데이터 소거 완료 후에는
-    /// `clear_pending_deletion()`을 호출해 플래그를 초기화해야 한다.
+    /// The `pending_deletion` flag stays true even after `current_consent`
+    /// becomes None following `revoke_consent()`. Once data erasure completes,
+    /// `clear_pending_deletion()` must be called to reset the flag.
     pub fn has_pending_deletion(&self) -> bool {
-        // in-memory 플래그 우선 확인 — revoke 이후 current_consent가 None이어도
-        // 소거 신호가 보존된다.
+        // Check the in-memory flag first — the erasure signal is preserved even
+        // when current_consent is None after a revoke.
         let st = self.state.read();
         st.pending_deletion
             // Defensive/legacy branch: since #5156, `load_from_file` never yields a
@@ -436,10 +513,10 @@ impl ConsentManager {
             .or_else(|| st.pending_erasure_at.map(|at| at.to_rfc3339()))
     }
 
-    /// 데이터 소거 완료 후 호출한다. GDPR Article 17 소거 신호를 초기화한다.
+    /// Call after data erasure completes. Resets the GDPR Article 17 erasure signal.
     ///
-    /// 이 메서드는 실제 데이터 소거가 완료된 직후에만 호출해야 한다.
-    /// 소거 전에 호출하면 삭제 요청이 누락된다.
+    /// This method must be called only right after actual data erasure has
+    /// completed. Calling it before erasure would drop the deletion request.
     pub fn clear_pending_deletion(&self) {
         {
             let mut st = self.state.write();
@@ -449,8 +526,9 @@ impl ConsentManager {
             st.pending_erasure_at = None;
             st.pending_erasure_nonce = None;
         }
-        // #4928: 소거 완료(또는 원격 전파 완료) 후 차단 flag 를 clear 하여 이후
-        // 쓰기를 재개한다. erase 가 끝났으므로 in-flight race 윈도우도 닫혔다.
+        // #4928: after erasure completes (or remote propagation completes), clear
+        // the blocking flag to resume subsequent writes. Since erase is done, the
+        // in-flight race window has also closed.
         self.deletion_flag.store(false, Ordering::Release);
     }
 
@@ -481,10 +559,25 @@ impl ConsentManager {
         let Ok(data) = std::fs::read_to_string(path) else {
             return (None, None, None);
         };
-        let Ok(record) = serde_json::from_str::<ConsentRecord>(&data) else {
-            return (None, None, None);
+        let record = match serde_json::from_str::<ConsentRecord>(&data) {
+            Ok(record) => record,
+            Err(e) => {
+                // #5978: the file EXISTS but is corrupt or schema-drifted. Failing
+                // closed to "no consent" is the safe default for a privacy product,
+                // but the corruption must be VISIBLE in telemetry — silently
+                // discarding a user's GDPR grant on a transient disk/parse fault is
+                // the actual defect. (The absent-file case above stays silent: that
+                // is a legitimate first-run.)
+                tracing::error!(
+                    err.code = "internal.serialization",
+                    path = %path.display(),
+                    error = %e,
+                    "consent.json present but failed to parse — treating as no-consent; grant not recoverable, investigate corruption"
+                );
+                return (None, None, None);
+            }
         };
-        // データ削除要求が設定されている場合は同意なしとして扱う。
+        // When the data-deletion request is set, treat it as no consent.
         // Treat a revoked-but-not-yet-erased record as absent consent so that a
         // process restart after revoke_consent() does not re-activate consent —
         // but recover `revoked_at` + the erasure nonce so the pending erasure id is
@@ -505,7 +598,9 @@ impl ConsentManager {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(record)?;
-        std::fs::write(&tmp_path, &json)?;
+        // #6175: owner-only tmp before the rename so the published consent.json is
+        // never world/group-readable (it carries user consent metadata).
+        write_tmp_owner_only(&tmp_path, json.as_bytes())?;
         std::fs::rename(&tmp_path, &self.storage_path)?;
         Ok(())
     }
@@ -716,6 +811,89 @@ mod tests {
         assert_eq!(manager.check_consent(), ConsentStatus::NotGranted);
     }
 
+    /// #6114: a revoke whose persist (tmp+rename) FAILS must NOT fail-open.
+    /// Regression for the prior bug: revoke_consent mutated the in-memory record
+    /// (revoked_at / data_deletion_requested / erasure_nonce) BEFORE persisting,
+    /// so a `?` failure on the write returned Err while check_consent stayed Valid
+    /// and effective_permissions returned the full granted set (consent FAIL-OPEN),
+    /// with the un-revoked record still on disk. After the persist-then-commit fix,
+    /// a failed revoke leaves the in-memory state exactly as it was before.
+    #[test]
+    fn revoke_persist_failure_does_not_fail_open() {
+        // Grant against a writable dir, then sabotage the path so the subsequent
+        // revoke's atomic write (tmp+rename) fails via `?`. The consent file's
+        // PARENT is replaced by a regular file so create_dir_all(parent) fails —
+        // portable across macOS/Linux/Windows (no permission-bit or root needed).
+        let live = tempfile::tempdir().unwrap();
+        let consent_dir = live.path().join("consent_dir");
+        std::fs::create_dir_all(&consent_dir).unwrap();
+        let consent_path = consent_dir.join("consent.json");
+        let mgr = ConsentManager::new(consent_path.clone());
+        mgr.grant_consent(
+            ConsentPermissions {
+                screen_capture: true,
+                clipboard_monitoring: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .expect("grant must succeed in a writable dir");
+        assert_eq!(mgr.check_consent(), ConsentStatus::Valid);
+        assert!(mgr.effective_permissions().screen_capture);
+
+        // Sabotage: delete the consent file + its directory, then recreate the
+        // directory path component AS A FILE so the revoke's create_dir_all(parent)
+        // (and thus the whole tmp+rename) fails with `?`.
+        std::fs::remove_file(&consent_path).unwrap();
+        std::fs::remove_dir(&consent_dir).unwrap();
+        std::fs::write(&consent_dir, b"now a file").unwrap();
+
+        // The sabotaged parent (a regular file where a directory must be) makes the
+        // revoke's `create_dir_all(parent)` / tmp-write / rename fail with a
+        // std::io::Error, which is wrapped into CoreError::Io. Assert that specific
+        // variant so the test proves the *persist* path failed (not some unrelated
+        // error) and that the io failure is surfaced rather than swallowed.
+        let err = mgr
+            .revoke_consent()
+            .expect_err("revoke must surface the persist (tmp+rename) failure as Err");
+        assert!(
+            matches!(err, CoreError::Io(_)),
+            "revoke's persist failure must surface as CoreError::Io, got: {err:?}"
+        );
+
+        // The whole point: state must NOT have fail-opened. The in-memory consent is
+        // UNCHANGED — still Valid with the full granted permission set — because the
+        // write failed before any commit.
+        assert_eq!(
+            mgr.check_consent(),
+            ConsentStatus::Valid,
+            "failed revoke must not leave a torn/Valid-but-revoked in-memory record"
+        );
+        let eff = mgr.effective_permissions();
+        assert!(
+            eff.screen_capture && eff.clipboard_monitoring,
+            "failed revoke must keep the original effective permissions (no fail-open, \
+             no silent permission grant/denial mismatch)"
+        );
+        assert!(
+            !mgr.has_pending_deletion(),
+            "failed revoke must not arm the GDPR Art.17 erasure signal"
+        );
+        assert_eq!(
+            mgr.pending_erasure_id(),
+            None,
+            "failed revoke must not mint a pending erasure id"
+        );
+        // The current_consent snapshot must still carry the un-revoked record.
+        let snapshot = mgr
+            .current_consent()
+            .expect("consent must still be present");
+        assert!(
+            snapshot.revoked_at.is_none() && !snapshot.data_deletion_requested,
+            "in-memory record must be byte-for-byte un-revoked after a failed write"
+        );
+    }
+
     #[test]
     fn consent_expired() {
         let dir = tempfile::tempdir().unwrap();
@@ -825,8 +1003,9 @@ mod tests {
 
     #[test]
     fn consent_revoke_records_audit_trail() {
-        // 동의 철회 후 has_pending_deletion()은 true를 반환해야 한다
-        // (GDPR Article 17 소거 신호가 current_consent = None 이후에도 보존되는지 검증).
+        // After revoking consent, has_pending_deletion() must return true
+        // (verifies the GDPR Article 17 erasure signal is preserved even after
+        // current_consent = None).
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("consent.json");
         let manager = ConsentManager::new(path);
@@ -836,41 +1015,41 @@ mod tests {
         assert_eq!(manager.check_consent(), ConsentStatus::Valid);
 
         manager.revoke_consent().unwrap();
-        // 철회 후: 활성 동의 없음
+        // After revoke: no active consent.
         assert_eq!(manager.check_consent(), ConsentStatus::NotGranted);
-        // pending_deletion 플래그는 revoke 이후 true를 유지해야 한다
+        // The pending_deletion flag must stay true after revoke.
         assert!(manager.has_pending_deletion());
     }
 
     #[test]
     fn has_pending_deletion_true_after_revoke() {
-        // revoke_consent() → has_pending_deletion() == true →
-        // clear_pending_deletion() → has_pending_deletion() == false 전체 라이프사이클 검증.
+        // Verifies the full lifecycle: revoke_consent() → has_pending_deletion() ==
+        // true → clear_pending_deletion() → has_pending_deletion() == false.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("consent.json");
         let manager = ConsentManager::new(path);
 
-        // 동의 부여
+        // Grant consent.
         manager
             .grant_consent(ConsentPermissions::default(), 30)
             .unwrap();
         assert!(
             !manager.has_pending_deletion(),
-            "동의 부여 직후에는 소거 대기가 없어야 한다"
+            "there must be no pending erasure right after granting consent"
         );
 
-        // 동의 철회
+        // Revoke consent.
         manager.revoke_consent().unwrap();
         assert!(
             manager.has_pending_deletion(),
-            "revoke_consent() 이후 has_pending_deletion()은 true이어야 한다 (GDPR Article 17)"
+            "has_pending_deletion() must be true after revoke_consent() (GDPR Article 17)"
         );
 
-        // 소거 완료 후 플래그 초기화
+        // Reset the flag after erasure completes.
         manager.clear_pending_deletion();
         assert!(
             !manager.has_pending_deletion(),
-            "clear_pending_deletion() 이후 has_pending_deletion()은 false이어야 한다"
+            "has_pending_deletion() must be false after clear_pending_deletion()"
         );
     }
 
@@ -1094,7 +1273,7 @@ mod tests {
         manager.revoke_consent().unwrap();
         assert!(
             manager.has_pending_deletion(),
-            "revoke 직후 소거 대기여야 한다 (GDPR Article 17)"
+            "must be pending erasure right after revoke (GDPR Article 17)"
         );
 
         // Re-grant BEFORE the erasure has propagated (e.g. no LAN peer online / sync off).
@@ -1113,7 +1292,7 @@ mod tests {
         // …but the prior erasure is irrevocable: still pending (decision b, not a).
         assert!(
             manager.has_pending_deletion(),
-            "#4630(b): 재동의는 미전파 erasure를 철회하지 않는다 — has_pending_deletion()은 true 유지"
+            "#4630(b): a re-grant does not retract a not-yet-propagated erasure — has_pending_deletion() stays true"
         );
     }
 
@@ -1329,8 +1508,8 @@ mod tests {
         );
     }
 
-    /// #4928: deletion_flag 가 revoke→true / grant→false / clear→false 로
-    /// pending_deletion 라이프사이클을 미러링하는지 검증한다.
+    /// #4928: verifies that deletion_flag mirrors the pending_deletion lifecycle
+    /// as revoke→true / grant→false / clear→false.
     #[test]
     fn deletion_flag_mirrors_revoke_grant_clear_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
@@ -1338,38 +1517,38 @@ mod tests {
         let mgr = ConsentManager::new(path);
         let flag = mgr.deletion_flag();
 
-        // 초기: false (쓰기 허용).
+        // Initial: false (writes allowed).
         assert!(
             !flag.load(Ordering::Acquire),
-            "신규 ConsentManager 의 deletion_flag 는 false 여야 한다"
+            "a new ConsentManager's deletion_flag must be false"
         );
 
-        // grant: false 유지.
+        // grant: stays false.
         mgr.grant_consent(ConsentPermissions::default(), 30)
             .unwrap();
         assert!(
             !flag.load(Ordering::Acquire),
-            "grant 후 deletion_flag 는 false 여야 한다"
+            "deletion_flag must be false after grant"
         );
 
-        // revoke: true (erase 직전 set).
+        // revoke: true (set right before erase).
         mgr.revoke_consent().unwrap();
         assert!(
             flag.load(Ordering::Acquire),
-            "revoke 후 deletion_flag 는 true 여야 한다 (#4928 erasure backstop)"
+            "deletion_flag must be true after revoke (#4928 erasure backstop)"
         );
 
-        // clear_pending_deletion: false (소거 완료 후 쓰기 재개).
+        // clear_pending_deletion: false (writes resume after erasure completes).
         mgr.clear_pending_deletion();
         assert!(
             !flag.load(Ordering::Acquire),
-            "clear_pending_deletion 후 deletion_flag 는 false 여야 한다"
+            "deletion_flag must be false after clear_pending_deletion"
         );
     }
 
-    /// #4928: revoke 후 재동의(grant)는 LOCAL deletion_flag 를 clear 해 쓰기를
-    /// 재개하지만, REMOTE 전파 신호 `pending_deletion` 은 #4630(b) 에 따라 true 를
-    /// 유지한다 — 두 신호가 별개임을 단언한다.
+    /// #4928: a re-grant after revoke clears the LOCAL deletion_flag to resume
+    /// writes, but the REMOTE propagation signal `pending_deletion` stays true per
+    /// #4630(b) — asserts that the two signals are distinct.
     #[test]
     fn deletion_flag_clears_on_regrant_but_pending_deletion_survives() {
         let dir = tempfile::tempdir().unwrap();
@@ -1383,7 +1562,7 @@ mod tests {
         assert!(flag.load(Ordering::Acquire));
         assert!(mgr.has_pending_deletion());
 
-        // 재동의: 로컬 쓰기 게이트는 열리고…
+        // Re-grant: the local write gate opens…
         mgr.grant_consent(
             ConsentPermissions {
                 screen_capture: true,
@@ -1394,19 +1573,20 @@ mod tests {
         .unwrap();
         assert!(
             !flag.load(Ordering::Acquire),
-            "재동의 후 deletion_flag 는 false — 로컬 수집 윈도우 재개"
+            "deletion_flag is false after re-grant — local collection window resumes"
         );
-        // …미전파 erasure 는 여전히 살아있다 (#4630 b).
+        // …but the not-yet-propagated erasure is still alive (#4630 b).
         assert!(
             mgr.has_pending_deletion(),
-            "재동의는 미전파 erasure(pending_deletion)를 철회하지 않는다"
+            "a re-grant does not retract the not-yet-propagated erasure (pending_deletion)"
         );
     }
 
-    /// #4928 round-3 (FIX B): `grant_consent`/`clear_pending_deletion`/`revoke_consent`
-    /// 는 모두 `erasing` 신호를 건드리지 못한다 — `erasing` 은 erase 만 set/clear 한다.
-    /// 따라서 erase 윈도우(`erasing=true`) 안에 재동의가 끼어들어도 `erasing` 은 true 를
-    /// 유지하고, write funnel 의 `deletion_flag || erasing` 술어가 쓰기를 계속 스킵한다.
+    /// #4928 round-3 (FIX B): none of
+    /// `grant_consent`/`clear_pending_deletion`/`revoke_consent` may touch the
+    /// `erasing` signal — only erase sets/clears `erasing`. So even if a re-grant
+    /// slips into the erase window (`erasing=true`), `erasing` stays true and the
+    /// write funnel's `deletion_flag || erasing` predicate keeps skipping writes.
     #[test]
     fn erasing_is_not_cleared_by_grant_or_clear_or_revoke() {
         let dir = tempfile::tempdir().unwrap();
@@ -1415,56 +1595,54 @@ mod tests {
         let erasing = mgr.erasing();
         let deletion = mgr.deletion_flag();
 
-        // erase 가 시작된 것을 시뮬레이션: erasing=true (RAII 가드가 set 하는 신호).
+        // Simulate erase having started: erasing=true (the signal the RAII guard sets).
         erasing.store(true, Ordering::Release);
 
-        // 재동의: deletion_flag 는 clear 되지만 erasing 은 그대로여야 한다.
+        // Re-grant: deletion_flag is cleared but erasing must stay as-is.
         mgr.grant_consent(ConsentPermissions::default(), 30)
             .unwrap();
         assert!(
             !deletion.load(Ordering::Acquire),
-            "grant 후 deletion_flag 는 clear 된다"
+            "deletion_flag is cleared after grant"
         );
         assert!(
             erasing.load(Ordering::Acquire),
-            "grant_consent 는 erasing 을 clear 하지 못한다 (TOCTOU 차단)"
+            "grant_consent cannot clear erasing (blocks the TOCTOU)"
         );
 
-        // clear_pending_deletion 도 erasing 을 건드리지 않는다.
+        // clear_pending_deletion does not touch erasing either.
         mgr.clear_pending_deletion();
         assert!(
             erasing.load(Ordering::Acquire),
-            "clear_pending_deletion 는 erasing 을 clear 하지 못한다"
+            "clear_pending_deletion cannot clear erasing"
         );
 
-        // revoke 도 erasing 을 set 하지 않는다(erase 만 set). 이미 true 이므로 그대로.
+        // revoke does not set erasing either (only erase sets it). Already true, so unchanged.
         mgr.revoke_consent().unwrap();
         assert!(
             erasing.load(Ordering::Acquire),
-            "revoke 는 erasing 을 건드리지 않는다 (값 유지)"
+            "revoke does not touch erasing (value preserved)"
         );
     }
 
-    /// #4928 round-3: 신규 ConsentManager 의 `erasing` 은 false 이며, `erasing()` 은
-    /// 동일 Arc 를 반환한다(composition root 가 SQLite/frames 에 install 할 공유 셀).
+    /// #4928 round-3: a new ConsentManager's `erasing` is false, and `erasing()`
+    /// returns the same Arc (the shared cell the composition root installs into
+    /// SQLite/frames).
     #[test]
     fn erasing_default_false_and_shared_ptr_eq() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConsentManager::new(dir.path().join("consent.json"));
         let a = mgr.erasing();
         let b = mgr.erasing();
-        assert!(
-            !a.load(Ordering::Acquire),
-            "신규 erasing 은 false 여야 한다"
-        );
+        assert!(!a.load(Ordering::Acquire), "a new erasing must be false");
         assert!(
             Arc::ptr_eq(&a, &b),
-            "erasing() 는 동일 Arc 를 반환해야 한다 (ptr-eq)"
+            "erasing() must return the same Arc (ptr-eq)"
         );
     }
 
-    /// #4928: 공유 Arc 를 통해 한 clone 이 set 한 flag 를 다른 clone 이 관측한다
-    /// (deletion_flag() 가 동일 셀을 가리키는지 — ptr-eq).
+    /// #4928: through the shared Arc, a flag set by one clone is observed by
+    /// another clone (verifies deletion_flag() points to the same cell — ptr-eq).
     #[test]
     fn deletion_flag_shared_through_arc_clones() {
         let dir = tempfile::tempdir().unwrap();
@@ -1474,22 +1652,23 @@ mod tests {
         let flag_b = Arc::clone(&mgr).deletion_flag();
         assert!(
             Arc::ptr_eq(&flag_a, &flag_b),
-            "deletion_flag() 는 동일 Arc 를 반환해야 한다 (ptr-eq)"
+            "deletion_flag() must return the same Arc (ptr-eq)"
         );
         mgr.grant_consent(ConsentPermissions::default(), 30)
             .unwrap();
         mgr.revoke_consent().unwrap();
         assert!(
             flag_b.load(Ordering::Acquire),
-            "한 핸들의 revoke 가 다른 핸들이 보유한 동일 flag 에 반영되어야 한다"
+            "a revoke through one handle must be reflected in the same flag held by another handle"
         );
     }
 
     #[test]
     fn status_and_permissions_atomic_returns_raw_not_effective() {
-        // status_and_permissions()는 한 가드 안에서 상태 + 원본 권한을 반환한다.
-        // 핵심 단언: 비-Valid(Expired) 상태에서도 권한을 0으로 만들지 않고
-        // 원본 부여 권한을 그대로 돌려줘야 한다 (effective_permissions와 대비).
+        // status_and_permissions() returns the status + raw permissions within a
+        // single guard. Key assertion: even in a non-Valid (Expired) state it must
+        // NOT zero the permissions and must return the raw granted permissions
+        // as-is (in contrast to effective_permissions).
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("consent.json");
 

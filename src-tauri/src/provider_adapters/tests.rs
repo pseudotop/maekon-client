@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::guarded_ocr;
@@ -12,12 +13,13 @@ use maekon_core::config::{
     CredentialBinding, ExternalApiEndpoint, ExternalDataPolicy, LlmProviderType, OcrProviderType,
     OcrValidationConfig, PiiFilterLevel, PrivacyConfig, SecretRef,
 };
-use maekon_core::consent::{ConsentManager, ConsentPermissions};
+use maekon_core::consent::{ConsentManager, ConsentPermissions, ConsentRecord, ConsentStatus};
 use maekon_core::error::CoreError;
 use maekon_core::models::context::{ProcessInfo, WindowInfo};
 use maekon_core::models::event::ProcessDetail;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::ports::analysis_provider::AnalysisProvider;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::llm_provider::{
     InterpretedAction, LlmProvider, ScreenContext, SkillContext,
 };
@@ -106,6 +108,73 @@ impl ProcessMonitor for StaticProcessMonitor {
     }
 }
 
+struct TrackingConsentManager {
+    permissions: ConsentPermissions,
+    effective_called: Arc<AtomicBool>,
+    deletion_flag: Arc<AtomicBool>,
+    erasing: Arc<AtomicBool>,
+}
+
+impl TrackingConsentManager {
+    fn new(permissions: ConsentPermissions, effective_called: Arc<AtomicBool>) -> Self {
+        Self {
+            permissions,
+            effective_called,
+            deletion_flag: Arc::new(AtomicBool::new(false)),
+            erasing: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl ConsentManagerPort for TrackingConsentManager {
+    fn check_consent(&self) -> ConsentStatus {
+        ConsentStatus::Valid
+    }
+
+    fn current_consent(&self) -> Option<ConsentRecord> {
+        None
+    }
+
+    fn effective_permissions(&self) -> ConsentPermissions {
+        self.effective_called.store(true, Ordering::SeqCst);
+        self.permissions.clone()
+    }
+
+    fn status_and_permissions(&self) -> (ConsentStatus, ConsentPermissions) {
+        (ConsentStatus::Valid, self.permissions.clone())
+    }
+
+    fn grant_consent(
+        &self,
+        _permissions: ConsentPermissions,
+        _data_retention_days: u32,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn revoke_consent(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn has_pending_deletion(&self) -> bool {
+        false
+    }
+
+    fn pending_erasure_id(&self) -> Option<String> {
+        None
+    }
+
+    fn clear_pending_deletion(&self) {}
+
+    fn deletion_flag(&self) -> Arc<AtomicBool> {
+        self.deletion_flag.clone()
+    }
+
+    fn erasing(&self) -> Arc<AtomicBool> {
+        self.erasing.clone()
+    }
+}
+
 fn write_consent_permissions(path: &std::path::Path, permissions: ConsentPermissions) {
     let consent_manager = ConsentManager::new(path.to_path_buf());
     consent_manager
@@ -123,10 +192,11 @@ fn make_external_privacy_guard_with_permissions(
     if let Some(permissions) = permissions {
         write_consent_permissions(&consent_path, permissions);
     }
+    let consent_manager: Arc<dyn ConsentManagerPort> = Arc::new(ConsentManager::new(consent_path));
 
     (
         ExternalOcrPrivacyGuard::new(
-            consent_path,
+            consent_manager,
             PiiFilterLevel::Standard,
             ExternalDataPolicy::PiiFilterStandard,
             PrivacyConfig::default(),
@@ -170,6 +240,49 @@ fn make_external_llm_guard() -> (ExternalOcrPrivacyGuard, TempDir) {
     )
 }
 
+#[tokio::test]
+async fn external_llm_guard_uses_injected_consent_manager() {
+    let effective_called = Arc::new(AtomicBool::new(false));
+    let consent_manager: Arc<dyn ConsentManagerPort> = Arc::new(TrackingConsentManager::new(
+        ConsentPermissions {
+            full_text_extraction: true,
+            ..Default::default()
+        },
+        effective_called.clone(),
+    ));
+    let guard = ExternalOcrPrivacyGuard::new(
+        consent_manager,
+        PiiFilterLevel::Standard,
+        ExternalDataPolicy::PiiFilterStandard,
+        PrivacyConfig::default(),
+        Arc::new(StaticProcessMonitor {
+            active_window: Some(WindowInfo {
+                title: "main.rs".to_string(),
+                app_name: "Code".to_string(),
+                app_bundle_id: None,
+                pid: 8,
+                bounds: None,
+            }),
+        }),
+        None,
+    );
+
+    let context = ScreenContext {
+        visible_texts: vec!["hello".to_string()],
+        active_app: "Code".to_string(),
+        active_window_title: "main.rs".to_string(),
+        layout_description: None,
+    };
+
+    let sanitized = guard
+        .prepare_screen_context_for_external_llm(&context, "remote-test")
+        .await
+        .expect("injected consent manager should permit external LLM");
+
+    assert!(effective_called.load(Ordering::SeqCst));
+    assert_eq!(sanitized.visible_texts, vec!["hello".to_string()]);
+}
+
 #[test]
 fn resolves_local_providers_by_default() {
     // Default config: access_mode=ProviderApiKey (not LocalModel), llm_provider=Local.
@@ -197,7 +310,7 @@ fn resolves_local_providers_by_default() {
     assert!(
         matches!(
             adapters.ocr.provider_name(),
-            // #5857: Windows 는 네이티브 OCR(windows-media-ocr)로 해석된다.
+            // #5857: Windows resolves to native OCR (windows-media-ocr).
             "local-tesseract" | "macos-vision" | "windows-media-ocr"
         ),
         "unexpected local OCR provider: {}",

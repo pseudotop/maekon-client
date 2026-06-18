@@ -28,6 +28,15 @@ const SERVICE_TYPE: &str = "_maekon-sync._tcp.local.";
 /// Version advertised in TXT records for protocol compatibility checks.
 const PROTOCOL_VERSION: &str = "1";
 
+/// Maximum number of discovered LAN peers held in memory.
+///
+/// The peer map is populated directly from attacker-controllable multicast
+/// (mDNS) traffic, so it must be bounded to prevent memory exhaustion. When
+/// the map is at capacity, newly resolved peers with an unseen `device_id`
+/// are dropped (updates to already-known peers are still accepted). Mirrors
+/// the `MAX_SESSIONS`/`MAX_PENDING_NONCES` bounds in `lan_server`.
+const MAX_LAN_PEERS: usize = 256;
+
 /// Peer information discovered via mDNS.
 #[derive(Debug, Clone)]
 pub struct LanPeerInfo {
@@ -200,6 +209,35 @@ impl LanDiscovery {
         }
     }
 
+    /// Insert a discovered peer into the bounded peer map.
+    ///
+    /// The map is populated directly from attacker-controllable multicast
+    /// (mDNS), so it is capped at [`MAX_LAN_PEERS`]. When the map is full,
+    /// updates to an already-tracked `device_id` are still applied (so live
+    /// peers keep refreshing), but a brand-new `device_id` is dropped — an
+    /// unauthenticated attacker on the LAN cannot otherwise grow the map
+    /// without bound by advertising unlimited distinct services.
+    ///
+    /// Returns `true` if the peer was inserted/updated, `false` if it was
+    /// dropped because the map was at capacity.
+    fn insert_peer_bounded(
+        peers: &Arc<RwLock<HashMap<String, LanPeerInfo>>>,
+        device_id: String,
+        peer: LanPeerInfo,
+    ) -> bool {
+        let mut guard = peers.write();
+        if guard.len() >= MAX_LAN_PEERS && !guard.contains_key(&device_id) {
+            warn!(
+                device_id = %device_id,
+                max_peers = MAX_LAN_PEERS,
+                "LAN peer map at capacity, dropping newly discovered peer"
+            );
+            return false;
+        }
+        guard.insert(device_id, peer);
+        true
+    }
+
     /// Process a single mDNS browse event, updating the peer map.
     fn handle_browse_event(
         event: &ServiceEvent,
@@ -235,11 +273,14 @@ impl LanDiscovery {
                     .unwrap_or_default()
                     .to_string();
 
-                // Pick the first address advertised
-                let host = info
-                    .get_addresses()
+                // Prefer an IPv4 address; only fall back to IPv6 when no IPv4
+                // address is advertised. IPv4 is broadly reachable and avoids
+                // link-local scope/bracketing pitfalls on dual-stack networks.
+                let addresses = info.get_addresses();
+                let host = addresses
                     .iter()
-                    .next()
+                    .find(|addr| addr.is_ipv4())
+                    .or_else(|| addresses.iter().next())
                     .map(|addr| addr.to_string())
                     .unwrap_or_default();
                 let port = info.get_port();
@@ -264,14 +305,14 @@ impl LanDiscovery {
                     version,
                 };
 
-                info!(
-                    device_id = %device_id,
-                    device_name = %device_name,
-                    port,
-                    "LAN peer discovered"
-                );
-
-                peers.write().insert(device_id, peer);
+                if Self::insert_peer_bounded(peers, device_id.clone(), peer) {
+                    info!(
+                        device_id = %device_id,
+                        device_name = %device_name,
+                        port,
+                        "LAN peer discovered"
+                    );
+                }
             }
             ServiceEvent::ServiceRemoved(_, fullname) => {
                 // Try to extract device_id from the removed fullname.
@@ -403,6 +444,68 @@ mod tests {
         // Simulate removal
         peers.write().remove("peer-1");
         assert!(peers.read().is_empty());
+    }
+
+    fn make_peer(id: &str) -> LanPeerInfo {
+        LanPeerInfo {
+            device_id: id.to_string(),
+            device_name: format!("name-{id}"),
+            host: "192.168.1.10".to_string(),
+            port: 19090,
+            fingerprint: format!("fp-{id}"),
+            version: PROTOCOL_VERSION.to_string(),
+        }
+    }
+
+    #[test]
+    fn insert_peer_bounded_caps_new_peers() {
+        let peers = Arc::new(RwLock::new(HashMap::new()));
+
+        // Fill exactly to capacity with distinct device_ids.
+        for i in 0..MAX_LAN_PEERS {
+            let id = format!("peer-{i}");
+            assert!(
+                LanDiscovery::insert_peer_bounded(&peers, id.clone(), make_peer(&id)),
+                "insert below capacity should succeed"
+            );
+        }
+        assert_eq!(peers.read().len(), MAX_LAN_PEERS);
+
+        // A brand-new device_id past the cap must be dropped, leaving the map
+        // size unchanged (multicast cannot grow the map without bound).
+        let overflow_id = "peer-overflow".to_string();
+        assert!(
+            !LanDiscovery::insert_peer_bounded(
+                &peers,
+                overflow_id.clone(),
+                make_peer(&overflow_id)
+            ),
+            "insert at capacity with a new device_id should be dropped"
+        );
+        assert_eq!(peers.read().len(), MAX_LAN_PEERS);
+        assert!(!peers.read().contains_key(&overflow_id));
+    }
+
+    #[test]
+    fn insert_peer_bounded_allows_updates_at_capacity() {
+        let peers = Arc::new(RwLock::new(HashMap::new()));
+        for i in 0..MAX_LAN_PEERS {
+            let id = format!("peer-{i}");
+            LanDiscovery::insert_peer_bounded(&peers, id.clone(), make_peer(&id));
+        }
+        assert_eq!(peers.read().len(), MAX_LAN_PEERS);
+
+        // Updating an already-tracked peer at capacity must still apply so live
+        // peers keep refreshing their advertised host/port.
+        let existing = "peer-0".to_string();
+        let mut updated = make_peer(&existing);
+        updated.port = 29090;
+        assert!(
+            LanDiscovery::insert_peer_bounded(&peers, existing.clone(), updated),
+            "update of an existing peer at capacity should succeed"
+        );
+        assert_eq!(peers.read().len(), MAX_LAN_PEERS);
+        assert_eq!(peers.read().get(&existing).map(|p| p.port), Some(29090));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// contain provider-specific values not yet in any enum variant.  Callers should treat
 /// these fields as open-coded strings and validate at the application boundary.
 /// Migration to typed enums requires a schema migration — tracked in issue #3399.
-// F-RC-06: String 유지 의도적 결정 — 스키마 마이그레이션 선행 필요 (#3399)
+// F-RC-06: keeping `String` is a deliberate decision — requires a prior schema migration (#3399)
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SuggestionDto {

@@ -31,7 +31,7 @@ pub fn enable_autostart() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        return windows::enable();
+        windows::enable()
     }
 
     #[cfg(target_os = "linux")]
@@ -54,7 +54,7 @@ pub fn disable_autostart() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        return windows::disable();
+        windows::disable()
     }
 
     #[cfg(target_os = "linux")]
@@ -77,7 +77,7 @@ pub fn is_autostart_enabled() -> Result<bool, String> {
 
     #[cfg(target_os = "windows")]
     {
-        return windows::is_enabled();
+        windows::is_enabled()
     }
 
     #[cfg(target_os = "linux")]

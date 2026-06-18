@@ -258,17 +258,17 @@ fn filter_preserves_position_across_all_levels() {
         PiiFilterLevel::Basic,
         PiiFilterLevel::Off,
     ] {
-        let info = apply_test_filter("Button", None, None, Some(rect.clone()), level);
+        let info = apply_test_filter("Button", None, None, Some(rect), level);
         assert_eq!(
             info.position,
-            Some(rect.clone()),
+            Some(rect),
             "level {level:?} dropped position"
         );
     }
 }
 
 #[test]
-fn filter_basic_masks_credit_card_pattern() {
+fn filter_basic_masks_phone_shaped_numeric_pattern() {
     let info = apply_test_filter(
         "Edit",
         None,
@@ -277,9 +277,17 @@ fn filter_basic_masks_credit_card_pattern() {
         PiiFilterLevel::Basic,
     );
     let text = info.extracted_text.expect("Basic produces text");
-    // Basic level masks email + phone. Credit card is Standard+.
-    // Verify Basic does NOT mask cards (correct per 4-tier cascade).
-    assert!(text.contains("4111-1111-1111-1111") || text.contains("[CARD]"));
+    // Basic level masks email + phone. A separator-bearing card-shaped numeric
+    // value overlaps the phone scanner, so the Basic contract is no raw value
+    // leak; the dedicated [CARD] marker remains Standard+.
+    assert!(
+        text.contains("[PHONE]") || text.contains("[CARD]"),
+        "numeric PII must be masked at Basic when it matches the phone scanner: {text}"
+    );
+    assert!(
+        !text.contains("4111-1111-1111-1111"),
+        "raw numeric PII must not survive Basic phone-pattern masking: {text}"
+    );
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────

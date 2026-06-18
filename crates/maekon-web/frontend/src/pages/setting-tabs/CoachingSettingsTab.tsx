@@ -171,7 +171,7 @@ export default function CoachingSettingsTab() {
                 id="coaching-regime-label"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
-                placeholder="e.g. Deep Coding"
+                placeholder={t('coaching.regimeLabelPlaceholder', 'e.g. Deep Coding')}
                 className="w-40"
               />
             </div>

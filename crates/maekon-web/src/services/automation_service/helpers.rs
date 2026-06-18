@@ -45,7 +45,7 @@ pub(crate) fn default_automation_status(pending: usize) -> AutomationStatusDto {
         pending_audit_entries: pending,
         // #5734: no health signal in the unconfigured path.
         llm_healthy: None,
-        // 설정 관리자 미설정 시 기본값 "AUTO" (AutomationConfig::default()와 일치).
+        // Default to "AUTO" when no config manager is set (matches AutomationConfig::default()).
         confirmation_policy: "AUTO".to_string(),
     }
 }

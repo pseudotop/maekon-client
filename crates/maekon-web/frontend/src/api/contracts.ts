@@ -1839,10 +1839,10 @@ export interface TrackingScheduleStatus {
 }
 
 // ── Consent (GDPR) types ─────────────────────────────────────────────────────
-// maekon-core/src/consent.rs 의 와이어 계약을 그대로 미러링한다:
-//   - ConsentStatus: #[serde(rename_all = "PascalCase")] → PascalCase 문자열.
-//   - ConsentPermissions: struct 에 rename_all 없음 → 필드는 snake_case 직렬화.
-//   - ConsentSnapshot: src-tauri/src/commands/consent.rs 의 DTO.
+// Mirrors the wire contract of maekon-core/src/consent.rs verbatim:
+//   - ConsentStatus: #[serde(rename_all = "PascalCase")] → PascalCase strings.
+//   - ConsentPermissions: the struct has no rename_all → fields serialize as snake_case.
+//   - ConsentSnapshot: the DTO from src-tauri/src/commands/consent.rs.
 
 /** Matches Rust's `ConsentStatus` enum serialized as PascalCase (serde rename_all). */
 export type ConsentStatus = 'NotGranted' | 'Valid' | 'Expired' | 'UpdateRequired'

@@ -48,6 +48,11 @@ impl RegimeGoalTracker {
     ///
     /// Each threshold fires exactly once per day per regime.
     pub fn check_threshold(&mut self, regime_label: &str) -> Option<u8> {
+        // Apply any pending date rollover before reading, so a check that lands
+        // after local midnight (but before the next `record_minutes`) does not
+        // fire thresholds against stale prior-day minutes.
+        self.ensure_date_rollover();
+
         let target = match self.goals.get(regime_label) {
             Some(&t) if t > 0 => t,
             _ => return None,
@@ -78,7 +83,15 @@ impl RegimeGoalTracker {
         if target == 0 {
             return None;
         }
-        let current = self.today_minutes.get(regime_label).copied().unwrap_or(0);
+        // Read paths cannot mutate `&self`, so a pending rollover (between local
+        // midnight and the next `record_minutes`) is not yet applied. Treat the
+        // accumulated minutes as zero for the current day when the stored date is
+        // stale, instead of surfacing prior-day minutes for display.
+        let current = if self.is_tracking_date_stale() {
+            0
+        } else {
+            self.today_minutes.get(regime_label).copied().unwrap_or(0)
+        };
         let percentage = ((current as f64 / target as f64) * 100.0).min(u16::MAX as f64) as u16;
 
         Some(GoalProgress {
@@ -97,13 +110,20 @@ impl RegimeGoalTracker {
             .collect()
     }
 
+    /// Returns `true` when `tracking_date` is no longer today's local date,
+    /// i.e. a date rollover is pending and the accumulated minutes belong to a
+    /// prior day. Shared by the read paths (which cannot mutate) and the
+    /// mutating rollover so the staleness check stays in one place.
+    fn is_tracking_date_stale(&self) -> bool {
+        Local::now().date_naive() != self.tracking_date
+    }
+
     /// Clears counters and notified thresholds if the date has changed.
     fn ensure_date_rollover(&mut self) {
-        let today = Local::now().date_naive();
-        if today != self.tracking_date {
+        if self.is_tracking_date_stale() {
             self.today_minutes.clear();
             self.notified_thresholds.clear();
-            self.tracking_date = today;
+            self.tracking_date = Local::now().date_naive();
         }
     }
 }
@@ -184,6 +204,32 @@ mod tests {
         assert_eq!(progress.current_minutes, 10);
 
         // Thresholds are reset — 10% should not fire any threshold
+        assert_eq!(tracker.check_threshold("Deep Work"), None);
+    }
+
+    #[test]
+    fn stale_date_reads_yield_zeroed_current_without_recording() {
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+        tracker.record_minutes("Deep Work", 80);
+        assert_eq!(tracker.progress("Deep Work").unwrap().current_minutes, 80);
+
+        // Simulate crossing local midnight: the stored date is now stale, but no
+        // `record_minutes` (which would trigger the mutating rollover) has run yet.
+        tracker.tracking_date = Local::now().date_naive().pred_opt().unwrap();
+
+        // `&self` read paths must surface zeroed current values, not the stale
+        // prior-day minutes.
+        let progress = tracker.progress("Deep Work").unwrap();
+        assert_eq!(progress.current_minutes, 0);
+        assert_eq!(progress.percentage, 0);
+
+        let all = tracker.all_progress();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].current_minutes, 0);
+        assert_eq!(all[0].percentage, 0);
+
+        // `check_threshold` (mutating) applies the rollover and must not fire a
+        // threshold against the stale prior-day minutes.
         assert_eq!(tracker.check_threshold("Deep Work"), None);
     }
 

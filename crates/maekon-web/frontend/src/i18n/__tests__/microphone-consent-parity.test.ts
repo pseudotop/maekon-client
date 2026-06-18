@@ -1,10 +1,11 @@
 /**
- * 마이크 동의 i18n 5-로케일 패리티 테스트 (#4568 Phase B, design §4/§7).
+ * Microphone-consent i18n 5-locale parity test (#4568 Phase B, design §4/§7).
  *
- * ConsentToggleSection 행위 테스트(A.2 suite)는 fallbackLng='en' 이라 en 으로만 해석되어
- * 비-en 로케일의 키 누락을 잡지 못한다. 이 테스트는 5개 JSON 을 *직접* 로드해
- * `privacy.consent.microphone.*` 의 (중첩 포함) 키-셋이 5 로케일 전부 동일한지 단언한다.
- * 어느 한 로케일에서 키를 빠뜨리면(또는 오타) 이 테스트가 실패한다.
+ * The ConsentToggleSection behavior tests (A.2 suite) use fallbackLng='en', so they
+ * resolve through en only and cannot catch missing keys in non-en locales. This test
+ * loads all 5 JSON files *directly* and asserts that the (nested-inclusive) key set of
+ * `privacy.consent.microphone.*` is identical across all 5 locales.
+ * If any locale omits a key (or has a typo), this test fails.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -18,7 +19,7 @@ const LOCALES = { en, ko, ja, 'zh-CN': zhCN, es } as const
 
 type JsonRecord = Record<string, unknown>
 
-/** privacy.consent.microphone 블록을 꺼낸다. 없으면 테스트가 명시적으로 실패하도록 한다. */
+/** Extracts the privacy.consent.microphone block. If absent, makes the test fail explicitly. */
 function micBlock(locale: JsonRecord): JsonRecord {
   const privacy = locale.privacy as JsonRecord | undefined
   const consent = privacy?.consent as JsonRecord | undefined
@@ -29,7 +30,7 @@ function micBlock(locale: JsonRecord): JsonRecord {
   return microphone
 }
 
-/** 중첩 객체를 점-구분 경로의 정렬된 키 목록으로 평탄화한다(리프 키만). */
+/** Flattens a nested object into a sorted list of dot-separated path keys (leaf keys only). */
 function flatKeys(obj: JsonRecord, prefix = ''): string[] {
   const out: string[] = []
   for (const [k, v] of Object.entries(obj)) {
@@ -44,11 +45,11 @@ function flatKeys(obj: JsonRecord, prefix = ''): string[] {
 }
 
 describe('privacy.consent.microphone i18n parity (5 locales)', () => {
-  // en 을 기준 키-셋으로 삼는다.
+  // Use en as the baseline key set.
   const reference = flatKeys(micBlock(en as JsonRecord))
 
   it('en defines the full expected microphone key-set', () => {
-    // 설계가 요구하는 정확한 리프 키 목록(회귀 방지용 명시적 단언).
+    // The exact leaf-key list required by the design (explicit assertion to prevent regressions).
     expect(reference).toEqual([
       'collected.audioCapture',
       'collected.cloudEgress',

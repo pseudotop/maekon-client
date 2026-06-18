@@ -1,11 +1,11 @@
-//! ServiceCode — Service availability 카테고리 에러 코드. `service.*` 접두사.
+//! ServiceCode — Service availability category error codes. `service.*` prefix.
 
 define_code_enum! {
-    /// Service 카테고리 에러 코드.
+    /// Service category error codes.
     pub enum ServiceCode {
-        /// 로컬 서킷 브레이커가 열려 fast-fail 상태 (서버 측 장애와 구별).
+        /// Local circuit breaker is open, so fast-fail state (distinct from server-side failure).
         CircuitOpen => "service.circuit_open",
-        /// 서비스 일시 사용 불가.
+        /// Service temporarily unavailable.
         Unavailable => "service.unavailable",
     }
 }

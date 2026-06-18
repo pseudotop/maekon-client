@@ -1,9 +1,9 @@
-//! PolicyCode — Policy 카테고리 에러 코드. `policy.*` 접두사.
+//! PolicyCode - Policy category error codes. `policy.*` prefix.
 
 define_code_enum! {
-    /// Policy 카테고리 에러 코드.
+    /// Policy category error codes.
     pub enum PolicyCode {
-        /// 정책 거부.
+        /// Policy denied.
         Denied => "policy.denied",
     }
 }

@@ -133,7 +133,11 @@ impl BootstrapRuntimeBuilder {
         let runtime_handle = background_runtime.handle();
         let config = config_manager.get();
         let web_port = Arc::new(AtomicU16::new(config.web.port));
-        BootstrapPreflightCoordinator::run(&config, &data_dir_path, self.offline_mode);
+        // #6257: fail-closed — an integrity preflight failure (updater
+        // signature-verification downgrade, or a tampered/half-provisioned
+        // signed policy bundle) aborts startup rather than being downgraded to
+        // a warning. An unprovisioned default bundle still boots (warn+skip).
+        BootstrapPreflightCoordinator::run(&config, &data_dir_path, self.offline_mode)?;
 
         // C1: Build provider context unconditionally under 'analysis' so BYOK/OAuth
         // adapters are available in default (analysis-only) builds.
@@ -290,29 +294,32 @@ mod tests {
         runtime.shutdown_blocking();
     }
 
-    /// #4345 회귀 방지: `RunEvent::Exit` 콜백은 동기 메인 스레드(진입된 tokio
-    /// 런타임 없음)에서 실행되므로 `Handle::try_current()` 가 `Err` 를 반환해
-    /// AI 세션 `shutdown_all()` 정리가 dead code 였다. 수정된 exit 핸들러는
-    /// 대신 `background_runtime.handle().block_on(...)` 를 사용한다.
+    /// #4345 regression guard: the `RunEvent::Exit` callback runs on the
+    /// synchronous main thread (no entered tokio runtime), so
+    /// `Handle::try_current()` returns `Err` and the AI-session
+    /// `shutdown_all()` cleanup was dead code. The fixed exit handler instead
+    /// uses `background_runtime.handle().block_on(...)`.
     ///
-    /// 이 테스트는 그 핵심 불변식을 검증한다:
-    ///   1. 런타임이 진입되지 않은 (메인 스레드와 동등한) 스레드에서
-    ///      `Handle::try_current()` 는 `Err` 다 (원래 dead-code 조건).
-    ///   2. 동일 스레드에서 `ManagedBackgroundRuntime::handle().block_on(..)`
-    ///      는 async future 를 panic 없이 정상 구동한다 (수정된 경로).
+    /// This test verifies that core invariant:
+    ///   1. On a thread with no entered runtime (equivalent to the main
+    ///      thread), `Handle::try_current()` is `Err` (the original dead-code
+    ///      condition).
+    ///   2. On the same thread, `ManagedBackgroundRuntime::handle().block_on(..)`
+    ///      drives an async future to completion without panicking (the fixed
+    ///      path).
     #[test]
     fn background_runtime_handle_block_on_runs_from_non_runtime_thread() {
         let runtime = spawn_background_runtime().expect("background runtime");
 
-        // 별도 std 스레드(진입된 tokio 런타임 없음 — exit 콜백과 동등한 환경)
-        // 에서 검증한다.
+        // Verify on a separate std thread (no entered tokio runtime —
+        // equivalent to the exit-callback environment).
         let handle = runtime.handle();
         let outcome = std::thread::spawn(move || {
-            // (1) 원래 dead-code 가드 재현: 런타임 미진입 → Err.
+            // (1) Reproduce the original dead-code guard: runtime not entered → Err.
             let no_current = Handle::try_current().is_err();
 
-            // (2) 수정된 경로: 별도 멀티스레드 런타임 핸들에서 block_on.
-            //     block_in_place/Handle::current panic 없이 future 가 완료된다.
+            // (2) Fixed path: block_on via a separate multi-threaded runtime handle.
+            //     The future completes without a block_in_place/Handle::current panic.
             let value = handle.block_on(async {
                 tokio::task::yield_now().await;
                 42_u8

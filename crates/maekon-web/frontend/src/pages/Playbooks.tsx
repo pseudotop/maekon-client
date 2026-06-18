@@ -181,7 +181,7 @@ function PresetCard({ preset }: PresetCardProps) {
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
           <CardTitle className={cn(typography.body, typography.weight.semibold, colors.text.primary, 'text-sm')}>
-            {preset.name}
+            {preset.builtin ? t(`presets.${preset.id}.name`, preset.name) : preset.name}
           </CardTitle>
           <div className="flex shrink-0 items-center gap-1.5">
             {preset.builtin && (
@@ -198,7 +198,9 @@ function PresetCard({ preset }: PresetCardProps) {
       <CardContent>
         <div className="flex items-start gap-2">
           <Layers className={cn(iconSize.sm, 'mt-0.5 shrink-0 text-content-muted')} aria-hidden="true" />
-          <p className={cn('text-sm leading-relaxed', colors.text.secondary)}>{preset.description}</p>
+          <p className={cn('text-sm leading-relaxed', colors.text.secondary)}>
+            {preset.builtin ? t(`presets.${preset.id}.description`, preset.description) : preset.description}
+          </p>
         </div>
         <p className={cn('mt-2 text-xs', colors.text.tertiary)}>{t('playbooks.steps', { count: preset.step_count })}</p>
       </CardContent>

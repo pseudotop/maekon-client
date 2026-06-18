@@ -153,8 +153,8 @@ pub struct GuiInteractionSession {
 }
 
 // ── GUI Interaction request/response types ──
-// 이전에는 maekon-automation::gui_interaction에 있었으나, AutomationPort 추상화를 위해
-// maekon-core로 이동 (ADR-001 §7)
+// Previously lived in maekon-automation::gui_interaction, but moved to
+// maekon-core to abstract over AutomationPort (ADR-001 §7).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuiCreateSessionRequest {

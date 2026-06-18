@@ -228,7 +228,7 @@ impl FeaturePerfUploader {
             occurred_at: Utc::now().to_rfc3339(),
         };
         if let Err(e) = egress.record_egress(&record) {
-            warn!(err.code = %e.code(), "feature-perf egress ledger 기록 실패: {e}");
+            warn!(err.code = %e.code(), "feature-perf egress ledger write failure: {e}");
         }
     }
 }

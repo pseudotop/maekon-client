@@ -28,10 +28,11 @@ impl SharedCaptureServices {
         config: &AppConfig,
         encryption_key: Option<Arc<EncryptionKey>>,
     ) -> Result<Self> {
-        // #4928: ConsentManager 를 먼저 생성해 공유 erasure 차단 flag 를 확보한 뒤,
-        // FrameFileStorage 가 Arc 로 감싸지기 *전에* install 한다 (set_deletion_flag
-        // 는 &mut self). 동일 Arc 를 SqliteStorage 에도 install 하는 것은 상위
-        // composition root(app_runtime_launch)가 담당한다.
+        // #4928: create the ConsentManager first to obtain the shared
+        // erasure-blocking flag, then install it *before* FrameFileStorage is
+        // wrapped in an Arc (set_deletion_flag takes &mut self). Installing the
+        // same Arc into SqliteStorage is handled by the upper composition root
+        // (app_runtime_launch).
         let consent_manager = Arc::new(ConsentManager::new(data_dir.join("consent.json")));
 
         let mut frame_storage_concrete = FrameFileStorage::with_encryption(
@@ -41,10 +42,11 @@ impl SharedCaptureServices {
             encryption_key,
         )
         .await?;
-        // 공유 flag install (ptr-eq 로 ConsentManager / SQLite 와 연결됨).
+        // Install the shared flag (linked to ConsentManager / SQLite via ptr-eq).
         frame_storage_concrete.set_deletion_flag(consent_manager.deletion_flag());
-        // #4928 round-3 (FIX B): 동일하게 `erasing` 신호도 install 한다(grant_consent 가
-        // clear 할 수 없는 erase-window 차단 신호 — SQLite 와 동일 Arc).
+        // #4928 round-3 (FIX B): likewise install the `erasing` signal (an
+        // erase-window blocking signal that grant_consent cannot clear — same
+        // Arc as SQLite).
         frame_storage_concrete.set_erasing(consent_manager.erasing());
         let frame_storage = Arc::new(frame_storage_concrete);
 
@@ -55,11 +57,13 @@ impl SharedCaptureServices {
         );
 
         let ocr_tessdata = std::env::var("MAEKON_TESSDATA").ok().map(PathBuf::from);
-        let frame_processor: Arc<dyn FrameProcessor> = Arc::new(EdgeFrameProcessor::new(
-            config.vision.thumbnail_width,
-            config.vision.thumbnail_height,
-            ocr_tessdata,
-        ));
+        let frame_processor: Arc<dyn FrameProcessor> =
+            Arc::new(EdgeFrameProcessor::with_pii_level(
+                config.vision.thumbnail_width,
+                config.vision.thumbnail_height,
+                ocr_tessdata,
+                config.privacy.pii_filter_level,
+            ));
 
         Ok(Self {
             frame_storage,
@@ -67,7 +71,7 @@ impl SharedCaptureServices {
             activity_monitor,
             frame_processor,
             accessibility_extractor: maekon_vision::accessibility::create_extractor(),
-            // #4928: 위에서 frame_storage 에 flag 를 install 한 것과 동일 인스턴스.
+            // #4928: same instance whose flag was installed into frame_storage above.
             consent_manager,
         })
     }

@@ -163,7 +163,12 @@ pub(crate) fn mask_api_key(key: &str) -> String {
 }
 
 pub(crate) fn is_masked_key(value: &str) -> bool {
-    value.contains("...") && value.len() <= 12
+    // #6281: mask_api_key produces "***" for short keys (<= 8 chars) and
+    // "{2}...{4}" for longer ones. Recognize BOTH sentinels so an unchanged
+    // resubmit of a SHORT key (masked to "***") is not mistaken for a new
+    // plaintext key and clobber the stored secret. Invariant:
+    // is_masked_key(mask_api_key(k)) holds for every non-empty k.
+    value == "***" || (value.contains("...") && value.len() <= 12)
 }
 
 fn endpoint_to_api_settings(

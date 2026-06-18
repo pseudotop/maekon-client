@@ -13,6 +13,20 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Normalize a URL into an RFC 9449 §4.2 `htu` value: scheme + authority + path,
+/// with any query and fragment components removed. If the URL cannot be parsed,
+/// the original string is returned unchanged so DPoP signing is never broken.
+fn normalize_htu(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.to_string()
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
 pub struct NoopIntegrationRequestProofFactory;
 
 #[async_trait]
@@ -135,11 +149,15 @@ impl IntegrationRequestProofFactory for Ed25519DpopProofFactory {
             "jwk": jwk,
         });
 
+        // RFC 9449 §4.2: the `htu` claim is the HTTP target URI without query or
+        // fragment components (scheme + authority + path only). We normalize a copy
+        // here purely for the proof claim; the caller still uses the full unmodified
+        // `url` for the actual request. On parse failure we fall back to the original
+        // string so signing never breaks.
+        let htu = normalize_htu(url);
+
         let mut claims = serde_json::Map::from_iter([
-            (
-                "htu".to_string(),
-                serde_json::Value::String(url.to_string()),
-            ),
+            ("htu".to_string(), serde_json::Value::String(htu)),
             (
                 "htm".to_string(),
                 serde_json::Value::String(method.to_ascii_uppercase()),

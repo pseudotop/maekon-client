@@ -69,6 +69,28 @@ pub(super) fn require_endpoint_config<'a>(
             message: format!("`{field_name}.endpoint` must be an http:// or https:// URL."),
         });
     }
+    // #6259: fail-closed cleartext gate. This is THE chokepoint for the BYOK
+    // direct-API resolver (resolve_llm_provider / resolve_ocr_provider Remote
+    // arms + resolve_ocr_provider_oauth). A remote `http://` endpoint would send
+    // the Bearer API key + screen-context/image payload in cleartext to a
+    // non-loopback host — the same exposure that `build_reqwest_client_for_url`
+    // (REST) and `SseStreamClient::validated_base_url` (SSE) already reject, and
+    // that the sibling Ollama LocalModel arm gates via loopback. `http://` is
+    // permitted only for loopback (local self-hosted models); HTTPS is always
+    // allowed. `endpoint_is_loopback` is fail-closed: an unparseable/missing host
+    // is treated as external.
+    if endpoint.endpoint.starts_with("http://")
+        && !super::types::endpoint_is_loopback(&endpoint.endpoint)
+    {
+        return Err(CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "`{field_name}.endpoint` uses cleartext http:// to a non-loopback host; \
+                 a remote AI endpoint must use https:// (cleartext is allowed only for \
+                 loopback/local providers) to avoid leaking the API key and screen context."
+            ),
+        });
+    }
     if endpoint.timeout_secs == 0 {
         return Err(CoreError::Config {
             code: maekon_core::error_codes::ConfigCode::OutOfRange,

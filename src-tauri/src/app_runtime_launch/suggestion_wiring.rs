@@ -106,10 +106,12 @@ fn build_suggestion_manager(
     let history = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::history::SuggestionHistory::new(100),
     ));
-    let feedback = Arc::new(maekon_suggestion::feedback::FeedbackSender::new_with_sink(
-        api,
-        Some(feedback_sink),
-    ));
+    let feedback = Arc::new(
+        maekon_suggestion::feedback::FeedbackSender::new_with_sink(api, Some(feedback_sink))
+            // #6442 (F9): record feedback egress in the audit ledger (SqliteStorage impls
+            // EgressLedgerSink); captures the initial send + retry re-sends.
+            .with_egress_ledger(sqlite_storage.clone()),
+    );
     let deferred = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::deferred::DeferredManager::new(50),
     ));
@@ -168,9 +170,15 @@ fn build_suggestion_manager(
         },
     );
 
-    app_handle.manage(crate::commands::auth::TokenManagerState(Some(
-        token_manager.clone(),
-    )));
+    // Populate the build-time slot registered once in `main.rs`. We MUST write
+    // through the slot (via the already-imported `tauri::Manager::state`) rather
+    // than calling `app_handle.manage(..)` again — Tauri's `manage()` does not
+    // overwrite an already-managed type (it returns `false` and discards the
+    // value), which previously left `logout_all_sessions` permanently reading
+    // `None` (2nd-pass #22).
+    app_handle
+        .state::<crate::commands::auth::TokenManagerState>()
+        .set(token_manager.clone());
 
     #[cfg(feature = "grpc")]
     let api_result: anyhow::Result<Arc<dyn maekon_core::ports::api_client::ApiClient>> = {
@@ -212,10 +220,15 @@ fn build_suggestion_manager(
             let history = Arc::new(tokio::sync::Mutex::new(
                 maekon_suggestion::history::SuggestionHistory::new(100),
             ));
-            let feedback = Arc::new(maekon_suggestion::feedback::FeedbackSender::new_with_sink(
-                api,
-                Some(feedback_sink),
-            ));
+            let feedback = Arc::new(
+                maekon_suggestion::feedback::FeedbackSender::new_with_sink(
+                    api,
+                    Some(feedback_sink),
+                )
+                // #6442 (F9): record feedback egress in the audit ledger (SqliteStorage
+                // impls EgressLedgerSink); captures the initial send + retry re-sends.
+                .with_egress_ledger(sqlite_storage.clone()),
+            );
             let deferred = Arc::new(tokio::sync::Mutex::new(
                 maekon_suggestion::deferred::DeferredManager::new(50),
             ));
@@ -317,13 +330,17 @@ fn restore_deferred_suggestions_and_feedbacks(
             continue;
         }
         if let Some((sid, ft, comment, attempts, next_retry)) = record.into_domain_parts() {
-            retry_queue.enqueue(maekon_suggestion::feedback_retry::PendingFeedback {
-                suggestion_id: sid,
-                feedback_type: ft,
-                comment,
-                attempts,
-                next_retry_at: next_retry,
-            });
+            // Restore path: records come FROM SQLite, so an evicted entry's durable
+            // row is the source of truth (retried on a later restart), not an
+            // orphan — intentionally do not delete it here (review4).
+            let _evicted =
+                retry_queue.enqueue(maekon_suggestion::feedback_retry::PendingFeedback {
+                    suggestion_id: sid,
+                    feedback_type: ft,
+                    comment,
+                    attempts,
+                    next_retry_at: next_retry,
+                });
             feedback_count += 1;
         }
     }

@@ -5,7 +5,7 @@ use super::super::{SqliteStorage, StorageStatsSummaryRecord};
 
 impl SqliteStorage {
     pub fn get_storage_stats_summary(&self) -> Result<StorageStatsSummaryRecord, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_storage_stats_summary_inner(read.conn())
     }
@@ -82,7 +82,7 @@ impl SqliteStorage {
         window: &TimeWindow,
     ) -> Result<Vec<String>, StorageError> {
         let (from, to) = window.to_sql_pair();
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_frame_file_paths_in_range_inner(read.conn(), &from, &to)
     }
@@ -128,7 +128,7 @@ impl SqliteStorage {
     }
 
     pub fn list_all_frame_file_paths(&self) -> Result<Vec<String>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_all_frame_file_paths_inner(read.conn())
     }

@@ -1,12 +1,12 @@
-//! 배치 이벤트 전송 포트 — 서버 동기화 추상화
+//! Batch event upload port — server synchronization abstraction.
 
 use async_trait::async_trait;
 
 use crate::error::CoreError;
 use crate::models::event::Event;
 
-/// 이벤트를 배치로 서버에 전송하는 포트.
-/// `maekon-network::BatchUploader`가 구현체.
+/// Port for uploading events to the server in batches.
+/// Implemented by `maekon-network::BatchUploader`.
 ///
 /// # Errors
 /// - `CoreError::Network` (wire: `network.*`) — connection failure,
@@ -22,16 +22,16 @@ use crate::models::event::Event;
 ///   `take_dropped_since_last()` rather than an error variant.
 #[async_trait]
 pub trait BatchSink: Send + Sync {
-    /// 이벤트를 전송 큐에 추가
+    /// Add an event to the upload queue.
     fn enqueue(&self, event: Event);
 
-    /// 복수 이벤트를 전송 큐에 추가
+    /// Add multiple events to the upload queue.
     fn enqueue_many(&self, events: Vec<Event>);
 
-    /// 큐에 쌓인 이벤트를 서버로 플러시. 전송된 건수 반환.
+    /// Flush queued events to the server. Returns the number of events sent.
     async fn flush(&self) -> Result<usize, CoreError>;
 
-    /// 마지막 호출 이후 드롭된 이벤트 수를 반환하고 카운터 리셋.
+    /// Return the number of events dropped since the last call and reset the counter.
     fn take_dropped_since_last(&self) -> usize {
         0
     }

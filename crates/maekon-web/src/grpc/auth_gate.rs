@@ -75,6 +75,48 @@ pub fn honor_opt_out(
     true
 }
 
+/// #6420: per-session local-auth gate for the loopback gRPC dashboard, mirroring the
+/// REST `require_local_auth` middleware (`crates/maekon-web/src/lib.rs`). On a multi-user
+/// host a loopback bind alone does not isolate other local users, so the gRPC surface must
+/// require the same per-session token the REST `/api` surface does.
+///
+/// Returns `Ok(())` when no token is configured (mirrors REST's "no token → no gate" for
+/// test / unconfigured builds). Otherwise the request must present the token via the
+/// `x-local-auth` metadata key or `authorization: Bearer <token>`; compared in constant
+/// time (subtle) to avoid a timing side channel.
+pub fn check_local_auth(
+    metadata: &tonic::metadata::MetadataMap,
+    configured_token: Option<&str>,
+) -> Result<(), Status> {
+    let Some(expected) = configured_token.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(());
+    };
+    let presented = metadata
+        .get("x-local-auth")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            metadata
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| strip_prefix_ignore_ascii_case(h.trim(), "Bearer "))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+        });
+    match presented {
+        Some(p) => {
+            use subtle::ConstantTimeEq;
+            if bool::from(p.as_bytes().ct_eq(expected.as_bytes())) {
+                Ok(())
+            } else {
+                Err(Status::unauthenticated("invalid local-auth token"))
+            }
+        }
+        None => Err(Status::unauthenticated("missing local-auth token")),
+    }
+}
+
 /// `IpAddr::is_loopback` but with explicit IPv4-mapped-v6 handling. Spec IMP-V2-H.
 pub(super) fn is_local_loopback(ip: &IpAddr) -> bool {
     match ip {
@@ -297,5 +339,67 @@ mod tests {
     fn validate_authority_missing_returns_invalid_argument() {
         let err = validate_authority(None).expect_err("None must reject");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn validate_authority_absent_host_is_rejected_not_bypassed() {
+        // Finding #28: SubscribeEvents/SubscribeMetrics must pass the `"host"`
+        // metadata straight through (Option<&str>) so an ABSENT authority hits
+        // this missing-authority rejection branch on the external/routable
+        // instance, instead of silently skipping the allowlist guard. An empty
+        // string is an explicit-but-empty authority, which is treated as a
+        // non-allowlisted host (PermissionDenied), distinct from absence (None).
+        assert_eq!(
+            validate_authority(None).unwrap_err().code(),
+            tonic::Code::InvalidArgument,
+            "absent authority must be rejected, never bypassed"
+        );
+        assert_eq!(
+            validate_authority(Some("")).unwrap_err().code(),
+            tonic::Code::PermissionDenied,
+            "empty authority is not allowlisted"
+        );
+    }
+
+    // ── check_local_auth tests (#6420) ──────────────────────────
+    fn md_with(key: &str, val: &str) -> tonic::metadata::MetadataMap {
+        let mut m = tonic::metadata::MetadataMap::new();
+        let k: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
+            key.parse().expect("valid metadata key");
+        m.insert(k, val.parse().expect("valid metadata value"));
+        m
+    }
+
+    #[test]
+    fn local_auth_no_token_configured_allows() {
+        // Mirrors REST: when no per-session token is configured there is no gate.
+        check_local_auth(&tonic::metadata::MetadataMap::new(), None)
+            .expect("no configured token must allow");
+        check_local_auth(&tonic::metadata::MetadataMap::new(), Some("   "))
+            .expect("whitespace-only configured token normalizes to no-gate");
+    }
+
+    #[test]
+    fn local_auth_accepts_matching_token_via_either_channel() {
+        check_local_auth(&md_with("x-local-auth", "tok123"), Some("tok123"))
+            .expect("matching x-local-auth must pass");
+        check_local_auth(&md_with("authorization", "Bearer tok123"), Some("tok123"))
+            .expect("matching authorization bearer must pass");
+        check_local_auth(&md_with("authorization", "bearer tok123"), Some("tok123"))
+            .expect("bearer scheme is case-insensitive (RFC 7235)");
+    }
+
+    #[test]
+    fn local_auth_rejects_missing_token() {
+        let err = check_local_auth(&tonic::metadata::MetadataMap::new(), Some("tok123"))
+            .expect_err("a configured token with no presented token must reject");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn local_auth_rejects_wrong_token() {
+        let err = check_local_auth(&md_with("x-local-auth", "wrong"), Some("tok123"))
+            .expect_err("wrong token must reject");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 }

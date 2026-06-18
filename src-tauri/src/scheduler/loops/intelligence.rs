@@ -76,24 +76,31 @@ impl Scheduler {
             // are read dynamically from ConfigManager on each tick so that
             // changes via the Tauri `update_analysis_config` command propagate
             // immediately without an agent restart.
-            let mut interval =
-                super::intervals::coalescing_interval(Duration::from_secs(config.interval_secs));
-            let full_interval = Duration::from_secs(config.full_interval_secs);
+            //
+            // #6177: defense-in-depth — `tokio::time::interval` panics on a zero
+            // period. ConfigManager already clamps `interval_secs` to its floor at
+            // load (AppConfig::clamp_bounds), but `.max(1)` here guarantees a
+            // non-zero period even if this loop is spawned with a config that
+            // bypassed that path.
+            let mut interval = super::intervals::coalescing_interval(Duration::from_secs(
+                config.interval_secs.max(1),
+            ));
+            let full_interval = Duration::from_secs(config.full_interval_secs.max(1));
             let mut last_full = std::time::Instant::now();
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
+                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
                         let consent = consent_mgr_a.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_a.load(Ordering::Relaxed);
                         let permitted = config_manager.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !permitted {
                             debug!("analysis loop: capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
@@ -113,19 +120,32 @@ impl Scheduler {
 
                         // Server coexistence: skip local LLM analysis when
                         // the server has recently sent suggestions via SSE.
-                        match sqlite_ref.has_recent_server_suggestions(
-                            current_config.server_coexistence_lookback_secs,
-                        ) {
-                            Ok(true) => {
+                        // #6083: `has_recent_server_suggestions` is a SYNCHRONOUS
+                        // SqliteStorage read that takes the shared connection mutex;
+                        // calling it inline parks the tokio worker on the 1s loop
+                        // (and can stall under a concurrent VACUUM/optimize pass).
+                        // Offload to the blocking pool — mirrors the sibling
+                        // spawn_blocking offloads in this scheduler.
+                        let coexist_lookback = current_config.server_coexistence_lookback_secs;
+                        let sqlite_coexist = sqlite_ref.clone();
+                        let coexist_result = tokio::task::spawn_blocking(move || {
+                            sqlite_coexist.has_recent_server_suggestions(coexist_lookback)
+                        })
+                        .await;
+                        match coexist_result {
+                            Ok(Ok(true)) => {
                                 debug!(
-                                    "server suggestions active (last {}s) — skipping local analysis",
-                                    current_config.server_coexistence_lookback_secs,
+                                    "server suggestions active (last {coexist_lookback}s) — skipping local analysis",
                                 );
                                 continue;
                             }
-                            Ok(false) => { /* proceed with local analysis */ }
-                            Err(e) => {
+                            Ok(Ok(false)) => { /* proceed with local analysis */ }
+                            Ok(Err(e)) => {
                                 warn!(err.code = %e.code(), "server coexistence check failed: {e}");
+                                // Proceed anyway — fail-open
+                            }
+                            Err(join_err) => {
+                                warn!("server coexistence check task panicked: {join_err}");
                                 // Proceed anyway — fail-open
                             }
                         }
@@ -166,8 +186,10 @@ impl Scheduler {
                                     info!(
                                         id = %suggestion.suggestion_id,
                                         priority = ?suggestion.priority,
-                                        "suggestion: {}",
-                                        suggestion.content
+                                        content = %maekon_monitor::log_privacy::content_digest(
+                                            &suggestion.content
+                                        ),
+                                        "suggestion produced"
                                     );
                                     if let Err(e) = storage_ref.save_suggestion(suggestion).await {
                                         warn!(err.code = %e.code(), "suggestion save failure: {e}");
@@ -267,15 +289,15 @@ impl Scheduler {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
+                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
                         let consent = consent_mgr_f.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_f.load(Ordering::Relaxed);
                         let permitted = config_mgr_f.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !permitted {
                             debug!("focus loop: capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
@@ -289,18 +311,29 @@ impl Scheduler {
                         #[cfg(feature = "local-suggestions")]
                         if let Some(ref q) = focus_queue {
                             if !rule_suggestions.is_empty() {
-                                let coexist = sqlite_f
-                                    .has_recent_server_suggestions(
-                                        config_mgr_f
-                                            .as_ref()
-                                            .map(|cm| {
-                                                cm.get()
-                                                    .analysis
-                                                    .server_coexistence_lookback_secs
-                                            })
-                                            .unwrap_or(300),
-                                    )
-                                    .unwrap_or(false);
+                                let coexist_lookback = config_mgr_f
+                                    .as_ref()
+                                    .map(|cm| {
+                                        cm.get().analysis.server_coexistence_lookback_secs
+                                    })
+                                    .unwrap_or(300);
+                                // #6083: offload the SYNCHRONOUS SqliteStorage read
+                                // off the focus loop's tokio worker — it takes the
+                                // shared connection mutex and can park under a
+                                // concurrent VACUUM/optimize pass.
+                                let sqlite_coexist = sqlite_f.clone();
+                                let coexist = tokio::task::spawn_blocking(move || {
+                                    sqlite_coexist
+                                        .has_recent_server_suggestions(coexist_lookback)
+                                })
+                                .await
+                                .unwrap_or_else(|join_err| {
+                                    warn!(
+                                        "focus coexistence check task panicked: {join_err}"
+                                    );
+                                    Ok(false) // fail-open
+                                })
+                                .unwrap_or(false);
                                 if !coexist {
                                     let mut to_enqueue = rule_suggestions;
                                     let regime = shared_regime_f.snapshot().regime;
@@ -373,15 +406,15 @@ impl Scheduler {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
                         // Coaching during an opt-out window is invasive (R3.I4).
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
+                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
                         let consent = consent_mgr_c.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused_c.load(Ordering::Relaxed);
                         let permitted = config_mgr_c.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !permitted {
                             debug!("coaching loop: capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
@@ -401,5 +434,62 @@ impl Scheduler {
                 }
             }
         })
+    }
+}
+
+/// #6083: server-coexistence offload fail-open contract tests.
+///
+/// The analysis/focus/event loops offload the SYNCHRONOUS
+/// `has_recent_server_suggestions` SqliteStorage read via `spawn_blocking` so it
+/// never parks the scheduler's tokio worker on the 1s hot path. This module pins
+/// the fail-open mapping the call sites rely on: when the offloaded read panics
+/// (JoinError) or returns an error, the loops must treat the result as
+/// "no recent server suggestions" (`false`) and proceed with local analysis
+/// rather than silently skipping it.
+#[cfg(test)]
+mod coexistence_offload_tests {
+    use maekon_core::error::CoreError;
+
+    /// A panicking offload closure surfaces as a JoinError on `.await`; the
+    /// `unwrap_or(Ok(false))` + `unwrap_or(false)` chain used at the
+    /// focus/event call sites must collapse it to fail-open `false`.
+    #[tokio::test]
+    async fn panicking_offload_fails_open_to_false() {
+        let handle = tokio::task::spawn_blocking(|| -> Result<bool, CoreError> {
+            panic!("intentional coexistence read panic");
+        });
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
+        assert!(
+            !coexist,
+            "a panicking coexistence offload must fail open to false (proceed with local analysis)"
+        );
+    }
+
+    /// A storage error from the offloaded read must also fail open to `false`.
+    #[tokio::test]
+    async fn errored_offload_fails_open_to_false() {
+        let handle = tokio::task::spawn_blocking(|| -> Result<bool, CoreError> {
+            Err(CoreError::Storage {
+                message: "simulated sqlite read failure".to_string(),
+                code: maekon_core::error_codes::StorageCode::Failed,
+            })
+        });
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
+        assert!(
+            !coexist,
+            "an errored coexistence offload must fail open to false"
+        );
+    }
+
+    /// A successful `true` read is preserved through the mapping chain so the
+    /// loops correctly suppress local analysis when the server is active.
+    #[tokio::test]
+    async fn successful_true_offload_is_preserved() {
+        let handle = tokio::task::spawn_blocking(|| -> Result<bool, CoreError> { Ok(true) });
+        let coexist = handle.await.unwrap_or(Ok(false)).unwrap_or(false);
+        assert!(
+            coexist,
+            "a successful true coexistence read must be preserved (skip local analysis)"
+        );
     }
 }

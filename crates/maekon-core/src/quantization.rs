@@ -32,6 +32,9 @@ impl ScalarQuantizer {
     /// - Constant vector (all same value): scale=1.0, offset=min, all INT8=0
     /// - NaN/Inf: rejected via `f32::is_finite()` pre-scan, returns
     ///   `CoreError::InvalidArguments`
+    /// - Finite-but-huge values whose `max - min` overflows f32 to Inf:
+    ///   rejected after the range is computed, returns
+    ///   `CoreError::InvalidArguments` (prevents a corrupt `scale = Inf`)
     pub fn quantize(vector: &[f32]) -> Result<QuantizedVector, CoreError> {
         // Iter-95: input-validation errors use InvalidArguments consistent with
         // cosine_similarity_int8 below (wire code `validation.invalid_arguments`).
@@ -56,6 +59,18 @@ impl ScalarQuantizer {
         let max = vector.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
         let range = max - min;
+        // Reject a non-finite range before deriving `scale`. Each element is
+        // finite (checked above), but for finite-but-huge magnitudes
+        // `max - min` can still overflow f32 to +Inf (e.g. `f32::MAX -
+        // f32::MIN`). Persisting `scale = Inf / 255.0 = Inf` would corrupt
+        // every quantized code and silently poison downstream similarity.
+        if !range.is_finite() {
+            return Err(CoreError::InvalidArguments {
+                code: crate::error_codes::ValidationCode::InvalidArguments,
+                message: "vector value range overflows f32 (values too large in magnitude)"
+                    .to_string(),
+            });
+        }
         let scale = if range < f32::EPSILON {
             1.0
         } else {
@@ -110,8 +125,11 @@ impl ScalarQuantizer {
             .collect()
     }
 
-    /// Compute approximate cosine similarity between two quantized vectors
-    /// using INT8 dot product (avoids full dequantization).
+    /// Compute approximate cosine similarity between two quantized vectors.
+    ///
+    /// Each component is dequantized to f32 (`(code + 128) * scale + offset`)
+    /// before the dot product and norms are accumulated, so the result equals
+    /// the true f32 cosine up to quantization rounding error.
     ///
     /// Returns `Err(CoreError::InvalidArguments)` on dimension mismatch or
     /// empty vectors.
@@ -135,33 +153,44 @@ impl ScalarQuantizer {
         Ok(Self::cosine_similarity_int8_unchecked(a, b))
     }
 
-    /// Compute approximate cosine similarity without dimension validation.
+    /// Compute cosine similarity without dimension validation.
     ///
     /// Intended for hot-path loops where dimensions have been pre-validated.
     /// Caller is responsible for ensuring `a.data.len() == b.data.len()` and
     /// both are non-empty. Behavior on mismatched lengths is unspecified
     /// (may silently truncate).
+    ///
+    /// Each int8 code is dequantized to its f32 value
+    /// (`(code + 128) * scale + offset`) before accumulating the dot product
+    /// and norms. Computing cosine directly over the raw int8 codes would be
+    /// wrong for asymmetric (non-zero-`offset`) quantization: the `+ 128`
+    /// recentering and per-vector `scale`/`offset` terms do not cancel, so the
+    /// code-domain ranking diverges from the true f32 ranking for non-zero-mean
+    /// embeddings.
     pub fn cosine_similarity_int8_unchecked(a: &QuantizedVector, b: &QuantizedVector) -> f32 {
-        // i32 accumulator: max possible value for 384 dims of i8 is
-        // 384 * 127 * 127 = 6,193,152, well within i32 max (2,147,483,647).
-        // Using i32 enables LLVM auto-vectorization with SIMD (SDOT on ARM, SSSE3 on x86).
-        let mut dot: i32 = 0;
-        let mut norm_a: i32 = 0;
-        let mut norm_b: i32 = 0;
+        // f64 accumulators: dequantized values are real-valued, and f64
+        // keeps the dot/norm sums accurate across high-dimensional vectors.
+        let mut dot: f64 = 0.0;
+        let mut norm_a: f64 = 0.0;
+        let mut norm_b: f64 = 0.0;
+
+        let (sa, oa) = (a.scale as f64, a.offset as f64);
+        let (sb, ob) = (b.scale as f64, b.offset as f64);
 
         for (va, vb) in a.data.iter().zip(b.data.iter()) {
-            let a_val = *va as i32;
-            let b_val = *vb as i32;
+            // Dequantize: real = (code + 128) * scale + offset.
+            let a_val = (*va as f64 + 128.0) * sa + oa;
+            let b_val = (*vb as f64 + 128.0) * sb + ob;
             dot += a_val * b_val;
             norm_a += a_val * a_val;
             norm_b += b_val * b_val;
         }
 
-        let denom = ((norm_a as f64).sqrt() * (norm_b as f64).sqrt()) as f32;
+        let denom = (norm_a.sqrt() * norm_b.sqrt()) as f32;
         if denom < f32::EPSILON {
             0.0
         } else {
-            dot as f32 / denom
+            (dot / (norm_a.sqrt() * norm_b.sqrt())) as f32
         }
     }
 }
@@ -223,6 +252,40 @@ mod tests {
         );
     }
 
+    /// #6170 regression guard: finite-but-huge magnitudes whose `max - min`
+    /// overflows f32 to Inf must be rejected. Each element passes the
+    /// NaN/Inf pre-scan, but `f32::MAX - f32::MIN == 2 * f32::MAX` overflows
+    /// to +Inf, which would otherwise persist as `scale = Inf` and corrupt
+    /// every quantized code.
+    #[test]
+    fn quantize_overflowing_range_rejected() {
+        let v = vec![f32::MAX, f32::MIN];
+        // Sanity: both inputs are finite, so the NaN/Inf pre-scan passes and
+        // the overflow guard is the one doing the rejecting.
+        assert!(v.iter().all(|x| x.is_finite()));
+        let err = ScalarQuantizer::quantize(&v).unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "overflowing range must produce InvalidArguments, got: {err:?}"
+        );
+        assert_eq!(err.code(), "validation.invalid_arguments");
+    }
+
+    /// A vector with large-but-non-overflowing magnitudes must still quantize
+    /// successfully and produce a finite `scale` — the #6170 guard must not be
+    /// over-eager and reject ordinary large vectors.
+    #[test]
+    fn quantize_large_finite_range_still_ok() {
+        let v = vec![-1.0e30_f32, 0.0, 1.0e30_f32];
+        let qv = ScalarQuantizer::quantize(&v).expect("large finite range must quantize");
+        assert!(
+            qv.scale.is_finite() && qv.scale > 0.0,
+            "scale must be finite and positive, got: {}",
+            qv.scale
+        );
+        assert_eq!(qv.data.len(), 3);
+    }
+
     #[test]
     fn cosine_similarity_identical() {
         let v = vec![0.1, 0.5, 0.9, -0.3, 0.7];
@@ -248,6 +311,75 @@ mod tests {
         let sim = ScalarQuantizer::cosine_similarity_int8(&qa, &qb).unwrap();
         // Quantized orthogonal vectors — similarity should be low
         assert!(sim < 0.3, "expected low similarity, got {sim}");
+    }
+
+    /// Cosine of a quantized vector against itself must be ~1.0 even when the
+    /// embedding is strongly non-zero-mean (large `offset`). Computing cosine
+    /// over the raw int8 codes would not yield 1.0 here, since recentering the
+    /// dequantized vector around its true mean changes the angle.
+    #[test]
+    fn cosine_similarity_identical_nonzero_mean() {
+        let v = vec![10.0, 10.5, 9.8, 10.2, 11.0, 9.5];
+        let qv = ScalarQuantizer::quantize(&v).unwrap();
+        let sim = ScalarQuantizer::cosine_similarity_int8(&qv, &qv).unwrap();
+        assert!(
+            (sim - 1.0).abs() < 0.01,
+            "self-similarity of a non-zero-mean vector must be ~1.0, got {sim}"
+        );
+    }
+
+    /// #6097 regression guard: for non-zero-mean embeddings the int8 cosine
+    /// must rank candidates the same way the true f32 cosine does.
+    ///
+    /// These exact vectors produce a ranking *inversion* under the old
+    /// code-domain cosine (which accumulated dot/norm directly over the raw
+    /// int8 codes): true f32 cosine ranks `cand1` above `cand2`, but the
+    /// code-domain cosine ranked `cand2` above `cand1`. Dequantizing each code
+    /// to `(code + 128) * scale + offset` before accumulating restores the
+    /// correct order.
+    #[test]
+    fn cosine_similarity_ranking_matches_f32_for_nonzero_mean() {
+        let query = vec![0.7, 0.6, 3.0, 2.1];
+        let cand1 = vec![2.4, 2.6, 2.3, 2.3];
+        let cand2 = vec![3.0, 0.7, 0.6, 0.9];
+
+        // True f32 cosine — the ground truth ranking.
+        let f32_cosine = |a: &[f32], b: &[f32]| -> f32 {
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = b.iter().map(|y| y * y).sum::<f32>().sqrt();
+            dot / (na * nb)
+        };
+        let true1 = f32_cosine(&query, &cand1);
+        let true2 = f32_cosine(&query, &cand2);
+        assert!(
+            true1 > true2,
+            "fixture invariant: f32 cosine must prefer cand1 ({true1}) over cand2 ({true2})"
+        );
+
+        let q = ScalarQuantizer::quantize(&query).unwrap();
+        let c1 = ScalarQuantizer::quantize(&cand1).unwrap();
+        let c2 = ScalarQuantizer::quantize(&cand2).unwrap();
+
+        let sim1 = ScalarQuantizer::cosine_similarity_int8(&q, &c1).unwrap();
+        let sim2 = ScalarQuantizer::cosine_similarity_int8(&q, &c2).unwrap();
+
+        // The int8 cosine must agree with the f32 ranking (cand1 preferred).
+        assert!(
+            sim1 > sim2,
+            "int8 cosine ranking must match f32: cand1 ({sim1}) must beat cand2 ({sim2})"
+        );
+
+        // And it must be numerically close to the true cosine, not merely
+        // ordered correctly.
+        assert!(
+            (sim1 - true1).abs() < 0.02,
+            "int8 cosine ({sim1}) must approximate true f32 cosine ({true1})"
+        );
+        assert!(
+            (sim2 - true2).abs() < 0.02,
+            "int8 cosine ({sim2}) must approximate true f32 cosine ({true2})"
+        );
     }
 
     #[test]

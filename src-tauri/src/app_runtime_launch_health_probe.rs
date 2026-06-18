@@ -24,6 +24,16 @@ pub(crate) fn execute_startup_probe(
     handle: &tokio::runtime::Handle,
     update_control: UpdateControl,
 ) -> Option<HealthProbe> {
+    // #5988: surface the Windows auto-rollback limitation once per boot so operators
+    // see it proactively — not only at the point a crash-loop rollback is attempted
+    // (where execute_rollback also logs at error level). Full Windows rollback is Task 12.
+    #[cfg(windows)]
+    tracing::warn!(
+        "update auto-rollback is NOT implemented on Windows (Task 12 / #5988): if this \
+         version repeatedly fails to start, the agent cannot self-restore the previous \
+         version — manual reinstall or backup restore would be required."
+    );
+
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {

@@ -16,7 +16,10 @@ use crate::gui_interaction::{
 use crate::policy::AuditLevel;
 use maekon_core::config::ConfirmationRequirement;
 use maekon_core::error::CoreError;
-use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
+use maekon_core::models::audit::AuditStatus;
+use maekon_core::models::automation::{
+    AutomationAction, AutomationCommand, CommandOrigin, CommandResult,
+};
 use maekon_core::models::gui::{GuiExecutionTicket, GuiInteractionSession, GuiSessionEvent};
 use maekon_core::models::intent::{AutomationIntent, IntentCommand, IntentResult};
 use maekon_core::models::ui_scene::UiScene;
@@ -30,6 +33,7 @@ struct GatedInputDriver {
     command_id_prefix: String,
     session_id: String,
     policy_token: String,
+    origin: CommandOrigin,
     timeout_ms: Option<u64>,
     next_action_index: AtomicUsize,
 }
@@ -40,6 +44,7 @@ impl GatedInputDriver {
         command_id_prefix: String,
         session_id: String,
         policy_token: String,
+        origin: CommandOrigin,
         timeout_ms: Option<u64>,
     ) -> Self {
         Self {
@@ -47,6 +52,7 @@ impl GatedInputDriver {
             command_id_prefix,
             session_id,
             policy_token,
+            origin,
             timeout_ms,
             next_action_index: AtomicUsize::new(0),
         }
@@ -60,6 +66,7 @@ impl GatedInputDriver {
             action,
             timeout_ms: self.timeout_ms,
             policy_token: self.policy_token.clone(),
+            origin: self.origin,
         }
     }
 
@@ -140,7 +147,7 @@ impl AutomationController {
         cmd: &IntentCommand,
     ) -> Result<crate::intent_resolver::IntentExecutor, AutomationError> {
         let template = self.require_intent_executor()?;
-        if !CommandExecutionGate::uses_internal_policy_token(&cmd.policy_token) {
+        if !CommandExecutionGate::is_trusted_internal(cmd.origin, &cmd.policy_token) {
             // Intent-scoped external policy tokens do not have a stable low-level action scope,
             // so retain the template executor until intent-native policy tokens exist.
             return Ok(template.with_overrides(None, cmd.config.clone()));
@@ -151,6 +158,7 @@ impl AutomationController {
             cmd.command_id.clone(),
             cmd.session_id.clone(),
             cmd.policy_token.clone(),
+            cmd.origin,
             cmd.timeout_ms,
         ));
         Ok(template.with_overrides(Some(input_driver), cmd.config.clone()))
@@ -179,10 +187,18 @@ impl AutomationController {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Record the real outcome status (review4 A1).
+            let (action_type, status) = if result.success {
+                ("complete", AuditStatus::Completed)
+            } else {
+                ("failed", AuditStatus::Failed)
+            };
+            logger.log_with_status_and_time(
                 AuditLevel::Basic,
                 &cmd.command_id,
                 &cmd.session_id,
+                action_type,
+                status,
                 &format!("success={}, elapsed={}ms", result.success, elapsed_ms),
                 elapsed_ms,
             );
@@ -206,7 +222,8 @@ impl AutomationController {
                 AuditLevel::Basic,
                 command_id,
                 session_id,
-                &format!("intent_hint={intent_hint}"),
+                // Payload-free: the raw NL hint can carry secrets (review4 A12).
+                &format!("intent_hint_len={}", intent_hint.chars().count()),
             );
         }
 
@@ -245,6 +262,7 @@ impl AutomationController {
             config: None,
             timeout_ms: None,
             policy_token: INTENT_HINT_POLICY_TOKEN.to_string(),
+            origin: CommandOrigin::Internal,
         };
         let executor = self.scoped_intent_executor(&intent_command)?;
         let result = executor.execute(&planned_intent).await?;
@@ -252,13 +270,25 @@ impl AutomationController {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Mask the planned intent via audit_intent_label (text_len form) and
+            // record the real status (review4 A1/A12): the raw Debug of an
+            // AutomationIntent embeds free-form TypeIntoElement/KeyType text.
+            let (action_type, status) = if result.success {
+                ("complete", AuditStatus::Completed)
+            } else {
+                ("failed", AuditStatus::Failed)
+            };
+            logger.log_with_status_and_time(
                 AuditLevel::Basic,
                 command_id,
                 session_id,
+                action_type,
+                status,
                 &format!(
-                    "planned_intent={:?}, success={}, elapsed={}ms",
-                    planned_intent, result.success, elapsed_ms
+                    "{}, success={}, elapsed={}ms",
+                    audit_intent_label(&planned_intent),
+                    result.success,
+                    elapsed_ms
                 ),
                 elapsed_ms,
             );
@@ -410,6 +440,7 @@ impl AutomationController {
                     config: None,
                     timeout_ms: None,
                     policy_token: GUI_SESSION_POLICY_TOKEN.to_string(),
+                    origin: CommandOrigin::Internal,
                 };
 
                 match tokio::time::timeout(action_timeout, self.execute_intent(&intent_command))
@@ -554,7 +585,7 @@ impl AutomationController {
     }
 }
 
-fn audit_intent_label(intent: &AutomationIntent) -> String {
+pub(super) fn audit_intent_label(intent: &AutomationIntent) -> String {
     match intent {
         AutomationIntent::ClickElement {
             text,

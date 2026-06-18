@@ -177,9 +177,9 @@ async fn concurrent_save_event_across_tasks_serialises_via_mutex() {
     }
 }
 
-/// F-PF-19 회귀 테스트: save_gui_interaction 을 tokio::task::spawn_blocking 으로
-/// 래핑하면 tokio 멀티스레드 런타임에서 패닉 없이 실행되어야 한다.
-/// 핵심 검증: sync SQLite 쓰기가 async executor 워커를 블로킹하지 않는다.
+/// F-PF-19 regression test: wrapping `save_gui_interaction` in `tokio::task::spawn_blocking`
+/// must run without panicking on the tokio multi-threaded runtime.
+/// Key assertion: the synchronous SQLite write does not block an async executor worker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_save_gui_interaction_async_safe() {
     let dir = TempDir::new().unwrap();
@@ -191,7 +191,7 @@ async fn test_save_gui_interaction_async_safe() {
     let app_name = "TestApp".to_string();
     let storage_clone = Arc::clone(&storage);
 
-    // spawn_blocking 패턴을 직접 재현: owned String 을 클로저로 이동.
+    // Reproduce the spawn_blocking pattern directly: move owned Strings into the closure.
     let result = tokio::task::spawn_blocking(move || {
         let input = NewGuiInteraction {
             event_id: &event_id,

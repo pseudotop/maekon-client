@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::automation::AutomationIntent;
 use super::elements::UiElement;
+use crate::models::automation::CommandOrigin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentResult {
@@ -31,6 +32,9 @@ pub struct IntentCommand {
     pub config: Option<IntentConfig>,
     pub timeout_ms: Option<u64>,
     pub policy_token: String,
+    /// #6333 A20: provenance marker; not serialized (deserialized commands are External).
+    #[serde(skip)]
+    pub origin: CommandOrigin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

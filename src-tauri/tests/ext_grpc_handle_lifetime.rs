@@ -1,22 +1,25 @@
-//! Regression test — F-RR-C36-01: ext_grpc_supervisor + ext_cert_watcher 핸들 수명 보장.
+//! Regression test — F-RR-C36-01: guarantee the lifetime of the
+//! ext_grpc_supervisor + ext_cert_watcher handles.
 //!
-//! 문제: 두 핸들이 `if config.web.enabled { ... }` 블록 끝에서 Drop 되어
-//! `build_and_spawn` 반환 직후 외부 gRPC 서버와 TLS 감시 태스크가 조용히 중단됨
-//! (F-RR-C28-02 의도 무력화).
+//! Problem: both handles were dropped at the end of the
+//! `if config.web.enabled { ... }` block, so right after `build_and_spawn`
+//! returned the external gRPC server and TLS watch tasks were silently aborted
+//! (defeating the intent of F-RR-C28-02).
 //!
-//! 수정: 핸들을 `AppRuntimeLaunchResult` 구조체 필드로 반환하고,
-//! `setup.rs` 에서 `app.manage()` 로 Tauri 앱 수명에 바인딩.
+//! Fix: return the handles as fields of the `AppRuntimeLaunchResult` struct and
+//! bind them to the Tauri app lifetime via `app.manage()` in `setup.rs`.
 //!
 //! Run: `cargo test -p maekon-app --test ext_grpc_handle_lifetime`
 
-/// `_`-접두사 로컬 바인딩 패턴이 mod.rs 에서 제거됐는지 확인.
-/// `let _ext_grpc_supervisor = ...` 또는 `let _ext_cert_watcher = ...` 형태가
-/// 존재하면 해당 변수는 블록 끝에서 Drop 되어 F-RR-C36-01 regression 재발.
+/// Check that the `_`-prefixed local binding pattern has been removed from
+/// mod.rs. If `let _ext_grpc_supervisor = ...` or `let _ext_cert_watcher = ...`
+/// is present, that variable is dropped at the end of the block, re-introducing
+/// the F-RR-C36-01 regression.
 #[test]
 fn ext_grpc_handles_not_dropped_at_block_end() {
     let src = include_str!("../src/app_runtime_launch/mod.rs");
 
-    // `_`-접두사 로컬로 핸들을 바인딩하는 잘못된 패턴이 없어야 함.
+    // There must be no incorrect pattern binding the handles to a `_`-prefixed local.
     assert!(
         !src.contains("let _ext_grpc_supervisor"),
         "F-RR-C36-01 regression: `let _ext_grpc_supervisor` found in mod.rs — \
@@ -31,8 +34,9 @@ fn ext_grpc_handles_not_dropped_at_block_end() {
     );
 }
 
-/// `AppRuntimeLaunchResult` 구조체에 두 핸들 필드가 선언됐는지 확인.
-/// 필드 누락 시 핸들이 `build_and_spawn` 반환 전에 Drop 됨.
+/// Check that both handle fields are declared on the `AppRuntimeLaunchResult`
+/// struct. If a field is missing, the handle is dropped before `build_and_spawn`
+/// returns.
 #[test]
 fn app_runtime_launch_result_carries_ext_grpc_fields() {
     let src = include_str!("../src/app_runtime_launch/launch_result.rs");
@@ -47,13 +51,14 @@ fn app_runtime_launch_result_carries_ext_grpc_fields() {
     );
 }
 
-/// if 블록 밖 외부 선언 패턴이 존재하는지 확인.
-/// 핸들을 먼저 `None` 으로 초기화 후 if 블록 내에서 채워야 함.
+/// Check that the outer declaration pattern (outside the if block) is present.
+/// The handles must first be initialized to `None`, then filled in inside the
+/// if block.
 #[test]
 fn ext_grpc_handles_declared_before_if_block() {
     let src = include_str!("../src/app_runtime_launch/mod.rs");
 
-    // 외부 선언 패턴: `let mut ext_grpc_supervisor: Option<...> = None;`
+    // Outer declaration pattern: `let mut ext_grpc_supervisor: Option<...> = None;`
     assert!(
         src.contains("let mut ext_grpc_supervisor"),
         "F-RR-C36-01: outer `let mut ext_grpc_supervisor` declaration not found in mod.rs — \
@@ -66,8 +71,9 @@ fn ext_grpc_handles_declared_before_if_block() {
     );
 }
 
-/// setup.rs 에서 `app.manage` 로 핸들을 Tauri managed state 에 등록하는지 확인.
-/// managed state 에 등록하지 않으면 AppRuntimeLaunchResult 가 drop 된 후 핸들도 사라짐.
+/// Check that setup.rs registers the handles into Tauri managed state via
+/// `app.manage`. Without registering them in managed state, the handles vanish
+/// once AppRuntimeLaunchResult is dropped.
 #[test]
 fn setup_registers_ext_grpc_handles_as_managed_state() {
     let src = include_str!("../src/setup.rs");
@@ -79,7 +85,7 @@ fn setup_registers_ext_grpc_handles_as_managed_state() {
     );
 }
 
-/// 테스트 하네스 발견 앵커.
+/// Test-harness discovery anchor.
 #[test]
 fn ext_grpc_handle_lifetime_harness_is_wired() {
     let path =

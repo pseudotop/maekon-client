@@ -734,4 +734,127 @@ mod tests {
         let remaining_frames = storage.count_frames_in_range(&window).unwrap();
         assert_eq!(remaining_frames, 1);
     }
+
+    // ── range-delete transaction atomicity (#6) ─────────────────────
+
+    /// Insert a single `system_metrics_hourly` rollup row directly.
+    fn insert_hourly(storage: &SqliteStorage, hour_key: &str) {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO system_metrics_hourly (hour, cpu_avg, cpu_max, memory_avg, memory_max, sample_count)
+             VALUES (?1, 10.0, 20.0, 1000, 2000, 5)",
+            rusqlite::params![hour_key],
+        )
+        .unwrap();
+    }
+
+    fn count_hourly(storage: &SqliteStorage) -> i64 {
+        let conn = storage.conn.test_lock();
+        conn.query_row("SELECT COUNT(*) FROM system_metrics_hourly", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn delete_data_in_range_rolls_back_on_midway_failure() {
+        // Regression (#6): the multi-table range-delete must run inside ONE
+        // transaction so a mid-way failure does not leave the DB partially
+        // deleted. We force the LAST delete (idle_periods) to abort via a
+        // trigger; the earlier events/frames/metrics deletes must then roll back.
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let middle = "2026-04-15T00:00:00+00:00";
+        insert_events(&storage, &[middle]);
+        insert_frame(&storage, 1, middle);
+        insert_metric(&storage, middle);
+        {
+            // Seed one idle_periods row so the aborting DELETE has a target row,
+            // and install a trigger that raises on any DELETE from idle_periods.
+            let conn = storage.conn.test_lock();
+            conn.execute(
+                "INSERT INTO idle_periods (start_time, end_time, duration_secs) VALUES (?1, ?1, 0)",
+                rusqlite::params![middle],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER abort_idle_delete BEFORE DELETE ON idle_periods
+                 BEGIN SELECT RAISE(ABORT, 'forced delete failure'); END;",
+            )
+            .unwrap();
+        }
+
+        let window =
+            TimeWindow::from_rfc3339_pair("2026-04-01T00:00:00+00:00", "2026-04-25T00:00:00+00:00")
+                .expect("trusted test bounds");
+
+        // All flags true → events/frames/metrics deletes succeed, idle delete aborts.
+        // The RAISE(ABORT) on idle_periods is mapped to
+        // StorageError::Internal("idle record delete failure: …"); assert the
+        // variant AND message so the rollback is proven to be triggered by the
+        // forced idle-delete failure, not some earlier unrelated error.
+        let result = storage.delete_data_in_range(&window, true, true, true, true, true);
+        let err = result.expect_err("aborting idle_periods delete must surface as an error");
+        assert!(
+            matches!(&err, crate::error::StorageError::Internal(msg) if msg.contains("idle record delete failure")),
+            "aborted idle delete must surface StorageError::Internal(\"idle record delete failure: …\"), got {err:?}"
+        );
+
+        // Everything must be intact — the transaction rolled back atomically.
+        assert_eq!(
+            storage.count_events_in_range(&window).unwrap(),
+            1,
+            "events must be rolled back (not partially deleted)"
+        );
+        assert_eq!(
+            storage.count_frames_in_range(&window).unwrap(),
+            1,
+            "frames must be rolled back"
+        );
+        let metrics = storage
+            .list_metric_exports("2026-01-01T00:00:00Z", "2026-12-31T23:59:59Z")
+            .unwrap();
+        assert_eq!(metrics.len(), 1, "metrics must be rolled back");
+    }
+
+    // ── hourly-rollup boundary row (#7) ─────────────────────────────
+
+    #[test]
+    fn delete_data_in_range_deletes_boundary_hourly_rollup() {
+        // Regression (#7): the rollup-delete bounds must match the stored
+        // hour-bucket key format (`%Y-%m-%dT%H:00:00Z`). Previously the raw
+        // RFC3339 bound (`...+00:00`) sorted differently from the stored `Z`
+        // key, so when the window `to` landed on an hour boundary the boundary
+        // rollup row was orphaned ('Z' > '+' lexically).
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+        // Bucket at the exact upper boundary hour, and one inside the window.
+        insert_hourly(&storage, "2026-04-15T10:00:00Z");
+        insert_hourly(&storage, "2026-04-15T12:00:00Z"); // == window `to` hour
+                                                         // A bucket strictly after the window — must survive.
+        insert_hourly(&storage, "2026-04-15T13:00:00Z");
+        assert_eq!(count_hourly(&storage), 3);
+
+        // `to` lands exactly on the 12:00 hour boundary (the orphan trigger case):
+        // to_rfc3339() => "2026-04-15T12:00:00+00:00", stored key "…12:00:00Z".
+        let window =
+            TimeWindow::from_rfc3339_pair("2026-04-15T09:00:00+00:00", "2026-04-15T12:00:00+00:00")
+                .expect("trusted test bounds");
+
+        storage
+            .delete_data_in_range(&window, false, false, true, false, false)
+            .unwrap();
+
+        // The 10:00 + the 12:00 boundary buckets are deleted; only the 13:00
+        // bucket (strictly after the window) survives.
+        assert_eq!(
+            count_hourly(&storage),
+            1,
+            "boundary rollup row at the `to` hour must be deleted, not orphaned"
+        );
+        let remaining = storage
+            .list_hourly_metrics_since("2026-04-15T00:00:00Z")
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].hour, "2026-04-15T13:00:00Z");
+    }
 }

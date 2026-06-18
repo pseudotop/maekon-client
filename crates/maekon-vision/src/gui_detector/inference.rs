@@ -106,9 +106,15 @@ impl GuiElementDetector {
 
         let winner_score = scores[0].1;
         let runner_up_score = scores.get(1).map_or(0.0, |s| s.1);
-        // Confidence: how dominant the winner is over the runner-up.
-        // Range: 0.5 (barely won) to 1.0 (no competition).
-        let confidence = if winner_score + runner_up_score > 0.0 {
+        // Confidence: how dominant the winner is over the runner-up. When the only
+        // candidate is the always-present Unknown baseline (no real signal fired),
+        // report the raw (low) score instead of the ratio (review4 V12) — otherwise
+        // 0.1/(0.1+0.0)=1.0 would report the LEAST-certain classification with the
+        // MAXIMUM confidence, excluding exactly those elements from the
+        // LLM-refinement queue (gated at type_confidence < 0.6).
+        let confidence = if scores.len() == 1 {
+            winner_score
+        } else if winner_score + runner_up_score > 0.0 {
             (winner_score / (winner_score + runner_up_score)).max(0.5)
         } else {
             0.5

@@ -305,26 +305,35 @@ impl SuggestionRuntimeState {
 
 /// Feature-scoped Tauri managed state for embedding model hot-reloading.
 ///
-/// Holds a `ReloadableModel` so that `reload()` and `model_version()` are
-/// accessible from IPC commands without depending on the concrete embedding
-/// crate (which may be feature-gated).
-#[derive(Default)]
+/// #6266: like [`SyncRuntimeState`], the `ReloadableModel` (the
+/// `LocalEmbeddingProvider` facet) is built ASYNCHRONOUSLY inside the agent
+/// runtime's embedding setup, so it does not exist at app-launch time when this
+/// managed state is registered. It therefore lives in a shared write-once slot:
+/// the runtime populates it via `slot()` once the local embedding provider is
+/// built, and the `reload_embedding_model` IPC reads it via `reloadable()`
+/// (returning `service.unavailable` until populated — which is also the honest
+/// steady state in builds without the `embedding` feature / a local provider).
+/// Cloning shares the same `Arc<OnceLock<..>>`.
+#[derive(Clone, Default)]
 pub struct EmbeddingRuntimeState {
-    reloadable: Option<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>,
+    reloadable:
+        Arc<std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>>,
 }
 
-#[allow(dead_code)] // wired when embedding provider is available
 impl EmbeddingRuntimeState {
-    pub(crate) fn new(
-        reloadable: Option<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>,
-    ) -> Self {
-        Self { reloadable }
-    }
-
     pub(crate) fn reloadable(
         &self,
-    ) -> Option<&Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>> {
-        self.reloadable.as_ref()
+    ) -> Option<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>> {
+        self.reloadable.get().cloned()
+    }
+
+    /// Shared write-once slot handle for the agent runtime to populate once the
+    /// reloadable embedding model has been built (#6266).
+    pub(crate) fn slot(
+        &self,
+    ) -> Arc<std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>>
+    {
+        self.reloadable.clone()
     }
 }
 
@@ -351,18 +360,28 @@ impl AutomationRuntimeState {
 }
 
 /// Feature-scoped Tauri managed state for cross-device sync IPC commands.
-#[derive(Default)]
+///
+/// #6264: the `SyncEngine` is built ASYNCHRONOUSLY inside the agent runtime's
+/// background task (it needs the device identity from SQLite plus transport
+/// setup), so it does not yet exist at app-launch time when this managed state
+/// is registered. The engine therefore lives in a shared write-once slot: the
+/// runtime populates it via `slot()` once built, and the 4 sync IPC commands
+/// read it via `engine()` (returning `service.unavailable` until populated).
+/// Cloning shares the same `Arc<OnceLock<..>>`, so the registered managed-state
+/// instance and the runtime's populating handle observe the same cell.
+#[derive(Clone, Default)]
 pub struct SyncRuntimeState {
-    engine: Option<Arc<crate::sync_engine::SyncEngine>>,
+    engine: Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>,
 }
 
-#[allow(dead_code)] // wired when sync feature enabled in agent_runtime
 impl SyncRuntimeState {
-    pub(crate) fn new(engine: Option<Arc<crate::sync_engine::SyncEngine>>) -> Self {
-        Self { engine }
+    pub(crate) fn engine(&self) -> Option<Arc<crate::sync_engine::SyncEngine>> {
+        self.engine.get().cloned()
     }
 
-    pub(crate) fn engine(&self) -> Option<Arc<crate::sync_engine::SyncEngine>> {
+    /// Shared write-once slot handle for the agent runtime to populate once the
+    /// `SyncEngine` has been built (#6264).
+    pub(crate) fn slot(&self) -> Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>> {
         self.engine.clone()
     }
 }
@@ -621,7 +640,17 @@ impl ManagedStateBuilder {
         self
     }
 
-    #[allow(dead_code)] // wired when embedding provider is available
+    /// Wire the SyncRuntimeState so the 4 cross-device-sync IPC commands (status,
+    /// trigger, peers) gain a live engine once the agent runtime populates the
+    /// shared slot. Without this call the state defaults to an empty slot and
+    /// every IPC returns service.unavailable. (#6264)
+    pub(crate) fn with_sync_runtime(mut self, sync_runtime_state: SyncRuntimeState) -> Self {
+        self.sync_runtime_state = sync_runtime_state;
+        self
+    }
+
+    /// Wire the EmbeddingRuntimeState so `reload_embedding_model` reaches the live
+    /// reloadable model once the agent runtime populates the shared slot (#6266).
     pub(crate) fn with_embedding_runtime(
         mut self,
         embedding_runtime_state: EmbeddingRuntimeState,

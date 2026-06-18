@@ -12,8 +12,8 @@ use maekon_core::ports::integration::{
     IntegrationAuditPort, IntegrationAuthPort, IntegrationCheckpointStorePort,
     IntegrationEgressPort, IntegrationEgressSignalPort, IntegrationInboxPort,
     IntegrationInboxSignalPort, IntegrationInboxStorePort, IntegrationInsightProducerPort,
-    IntegrationOutboxPort, IntegrationPromptPresenterPort, IntegrationPromptReceiptStorePort,
-    IntegrationRuntimeTelemetryPort, IntegrationSessionPort, LocalSuggestionQueryPort,
+    IntegrationOutboxPort, IntegrationPromptPresenterPort, IntegrationRuntimeTelemetryPort,
+    IntegrationSessionPort, LocalSuggestionQueryPort,
 };
 use maekon_core::ports::secret_store::SecretStore;
 use maekon_network::integration::{
@@ -329,6 +329,10 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             IntegrationStateStorePolicy {
                 max_stored_prompts: integration.max_stored_prompts,
                 redact_completed_prompt_bodies: integration.redact_completed_prompt_bodies,
+                // Inherit the store-layer outbox cap default (drop-oldest bound
+                // that keeps the persisted outbox bounded over long-running
+                // sessions even when egress is enqueued directly at the store).
+                ..Default::default()
             },
         )?;
         let session_store = Arc::new(integration_state_store.session_store())
@@ -362,8 +366,6 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             Arc::new(integration_state_store.outbox_store()) as Arc<dyn IntegrationOutboxPort>;
         let inbox_store =
             Arc::new(integration_state_store.inbox_store()) as Arc<dyn IntegrationInboxStorePort>;
-        let receipt_store = Arc::new(integration_state_store.inbox_store())
-            as Arc<dyn IntegrationPromptReceiptStorePort>;
         let checkpoint_store = Arc::new(integration_state_store.checkpoint_store())
             as Arc<dyn IntegrationCheckpointStorePort>;
         let audit =
@@ -388,11 +390,15 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
                 self.config.privacy.pii_filter_level,
             ),
         ) as Arc<dyn IntegrationEgressPort>;
+        // #6198: thread the policy-aware egress coordinator into the inbox so
+        // acknowledge/dismiss prompt receipts (including free-text reasons) are
+        // PII-sanitized and egress-policy-authorized like every other outbound
+        // payload, instead of being written straight to the receipt store.
         let base_inbox = Arc::new(IntegrationInboxCoordinator::new(
             device_id.clone(),
             session.clone(),
             inbox_store.clone(),
-            receipt_store,
+            egress.clone(),
             inbox_transport,
             integration.max_batch_size,
         ));

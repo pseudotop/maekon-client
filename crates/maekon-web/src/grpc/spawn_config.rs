@@ -24,6 +24,11 @@ pub struct GrpcSpawnConfig {
     /// Forward-compat trust signal; under v2b's loopback-only bind the
     /// token branch of `honor_opt_out` is unreachable (see spec §4.3).
     pub integration_auth_token: Option<String>,
+    /// #6420: per-session local-auth token — the same token the REST `/api` surface
+    /// requires via `require_local_auth`. When `Some`, the loopback gRPC dashboard
+    /// requires it on every RPC (via `x-local-auth` or `Bearer` metadata); `None`
+    /// disables the gate (test / unconfigured builds), matching REST.
+    pub local_auth_token: Option<Arc<str>>,
     /// PII sanitisation port; applied to AiRuntimeStatus.*_fallback_reason
     /// before snapshot emission on SubscribeEvents. `None` → pass-through
     /// (acceptable for test builds; prod wiring always sets Some).
@@ -52,6 +57,10 @@ impl std::fmt::Debug for GrpcSpawnConfig {
                     "[REDACTED; present={}]",
                     self.integration_auth_token.is_some()
                 ),
+            )
+            .field(
+                "local_auth_token",
+                &format_args!("[REDACTED; present={}]", self.local_auth_token.is_some()),
             )
             .field("pii_sanitizer_present", &self.pii_sanitizer.is_some())
             .field(
@@ -82,6 +91,7 @@ mod tests {
             system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
             event_tx,
             integration_auth_token: Some("super-secret-token-xyz".to_string()),
+            local_auth_token: None,
             pii_sanitizer: None,
             ai_runtime_status_snapshot: None,
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),

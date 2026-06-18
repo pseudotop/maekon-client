@@ -49,15 +49,17 @@ impl FocusAnalyzer {
 
     #[allow(dead_code)] // convenience wrapper used in tests
     pub async fn on_app_switch(&self, new_app: &str) {
-        // 테스트 편의 래퍼: app_usage_analytics 동의 부여(true)로 전체 경로 활성.
+        // Test convenience wrapper: grants app_usage_analytics consent (true) so the
+        // full path is active.
         self.on_app_switch_with_context(new_app, "", None, true)
             .await;
     }
 
-    /// 앱 전환 처리. `app_usage_permitted` 는 ConsentPermissions 의 app_usage_analytics
-    /// own-field 게이트로, WorkflowIntelligence 앱-사용 집계(update_usage/touch_app/
-    /// advance_workflow)만 게이트한다. 포커스 세션/방해 추적(focus metrics)은 별도
-    /// 복합 게이트(screen_capture)로 이미 보호되므로 여기서 끄지 않는다.
+    /// Handle an app switch. `app_usage_permitted` is the app_usage_analytics
+    /// own-field gate from ConsentPermissions; it gates only the WorkflowIntelligence
+    /// app-usage aggregation (update_usage/touch_app/advance_workflow). Focus
+    /// session / interruption tracking (focus metrics) is already protected by a
+    /// separate composite gate (screen_capture), so it is not disabled here.
     pub async fn on_app_switch_with_context(
         &self,
         new_app: &str,
@@ -84,7 +86,7 @@ impl FocusAnalyzer {
             }
 
             debug!(
-                "앱 전환: {:?} ({:?}) → {} ({:?})",
+                "app switch: {:?} ({:?}) → {} ({:?})",
                 prev_app, prev_category, new_app, new_category
             );
 
@@ -204,9 +206,10 @@ impl FocusAnalyzer {
             tracker.current_app_start = Some(now);
         }
 
-        // Own-field gate (#4802): app_usage_analytics 동의가 없으면 앱-사용 집계 경로를
-        // 통째로 건너뛴다 (update_usage/touch_app/advance_workflow). 동의가 없으면
-        // WorkflowIntelligence 의 usage 맵·workflow 세그먼트에 아무것도 쌓이지 않는다.
+        // Own-field gate (#4802): if app_usage_analytics consent is absent, skip the
+        // entire app-usage aggregation path (update_usage/touch_app/advance_workflow).
+        // Without consent, nothing accumulates in WorkflowIntelligence's usage map or
+        // workflow segments.
         let playbook_signal = if app_usage_permitted {
             let mut intelligence = self.workflow_intelligence.write().await;
 
@@ -217,7 +220,7 @@ impl FocusAnalyzer {
                     category = ?prev_cat,
                     duration_secs,
                     relevance = score,
-                    "앱 relevance update"
+                    "app relevance update"
                 );
             }
 
@@ -298,7 +301,7 @@ impl FocusAnalyzer {
         }
 
         debug!(
-            "집중도 분석: score={:.2}, deep_work={}초, comm={}초, interruptions={}",
+            "focus analysis: score={:.2}, deep_work={}s, comm={}s, interruptions={}",
             focus_score,
             metrics.deep_work_secs,
             metrics.communication_secs,
@@ -411,15 +414,18 @@ mod tests {
         assert_eq!(tracker.current_category, Some(AppCategory::Development));
     }
 
-    /// Own-field gate (#4802): app_usage_analytics 동의가 없으면(=false) 앱-사용 집계
-    /// (WorkflowIntelligence usage/segment)에 아무것도 쌓이지 않아야 한다.
-    /// 포커스 세션 추적(tracker)은 별도 복합 게이트 소관이므로 여기서 끄지 않는다 —
-    /// tracker 는 갱신되지만 usage 집계는 비어 있어야 한다.
+    /// Own-field gate (#4802): when app_usage_analytics consent is absent (=false),
+    /// nothing should accumulate in the app-usage aggregation
+    /// (WorkflowIntelligence usage/segment).
+    /// Focus session tracking (tracker) is governed by a separate composite gate, so
+    /// it is not disabled here — the tracker is still updated, but usage aggregation
+    /// must remain empty.
     #[tokio::test]
     async fn app_usage_not_aggregated_with_only_monitoring_bundle() {
         let (analyzer, _temp, _notifier) = create_test_analyzer().await;
 
-        // app_usage_permitted=false (monitoring 번들만 부여된 상태를 모사).
+        // app_usage_permitted=false (simulates a state where only the monitoring
+        // bundle is granted).
         analyzer
             .on_app_switch_with_context("Visual Studio Code", "main.rs", None, false)
             .await;
@@ -432,16 +438,16 @@ mod tests {
         assert_eq!(
             intelligence.usage_len(),
             0,
-            "app_usage_analytics 미부여 시 usage 집계는 비어야 함"
+            "usage aggregation must be empty when app_usage_analytics is not granted"
         );
         assert!(
             !intelligence.has_active_segment(),
-            "app_usage_analytics 미부여 시 workflow 세그먼트가 시작되지 않아야 함"
+            "no workflow segment must start when app_usage_analytics is not granted"
         );
     }
 
-    /// Own-field gate (#4802): app_usage_analytics 동의가 있으면(=true) 앱-사용 집계가
-    /// 정상 동작해야 한다.
+    /// Own-field gate (#4802): when app_usage_analytics consent is present (=true),
+    /// app-usage aggregation must work normally.
     #[tokio::test]
     async fn app_usage_aggregated_when_own_field_granted() {
         let (analyzer, _temp, _notifier) = create_test_analyzer().await;
@@ -457,11 +463,11 @@ mod tests {
         let intelligence = analyzer.workflow_intelligence.read().await;
         assert!(
             intelligence.usage_len() > 0,
-            "app_usage_analytics 부여 시 usage 집계가 채워져야 함"
+            "usage aggregation must be populated when app_usage_analytics is granted"
         );
         assert!(
             intelligence.has_active_segment(),
-            "app_usage_analytics 부여 시 workflow 세그먼트가 진행되어야 함"
+            "workflow segment must advance when app_usage_analytics is granted"
         );
     }
 

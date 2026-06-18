@@ -13,7 +13,7 @@ mod tests {
     use maekon_core::error::CoreError;
 
     use crate::auth::refresh::parse_retry_after;
-    use crate::auth::tokens::{TokenManager, TokenState};
+    use crate::auth::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
 
     // ── Password fixtures ─────────────────────────────────────────────────────
 
@@ -170,6 +170,101 @@ mod tests {
             "is_authenticated must return true after successful login"
         );
         mock.assert_async().await;
+    }
+
+    /// #6201 regression: a server-controlled `expires_in` of `i64::MAX` must
+    /// not panic the login path (`Duration::seconds()` overflow / `Utc::now() +
+    /// Duration` overflow) and must clamp the stored expiry to `MAX_TOKEN_TTL_SECS`.
+    #[tokio::test]
+    async fn login_clamps_adversarial_expires_in() {
+        let mut server = mockito::Server::new_async().await;
+        let body = format!(
+            r#"{{"access_token":"jwt_abc","refresh_token":"ref_xyz","expires_in":{}}}"#,
+            i64::MAX
+        );
+        let mock = server
+            .mock("POST", "/api/v1/auth/tokens")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let tm = TokenManager::new(&server.url());
+        let password = primary_password();
+        let before = Utc::now();
+        // Must not panic on the overflowing TTL.
+        tm.login("user@test.com", &password)
+            .await
+            .expect("login must succeed even with an adversarial expires_in");
+
+        // Expiry must be clamped to the 30-day cap, not the overflowing value.
+        let expires_at = {
+            let state = tm.state.read().await;
+            state
+                .as_ref()
+                .expect("state populated after login")
+                .expires_at
+        };
+        let upper = before + Duration::seconds(MAX_TOKEN_TTL_SECS) + Duration::seconds(5);
+        assert!(
+            expires_at <= upper,
+            "expires_at {expires_at} must be clamped to the {MAX_TOKEN_TTL_SECS}s cap"
+        );
+        assert!(
+            tm.is_authenticated().await,
+            "clamped token must still be valid"
+        );
+        mock.assert_async().await;
+    }
+
+    /// #6201 regression: the refresh path must apply the same TTL clamp as login
+    /// so an adversarial `expires_in` cannot panic `Duration::seconds()`.
+    #[tokio::test]
+    async fn refresh_clamps_adversarial_expires_in() {
+        let mut server = mockito::Server::new_async().await;
+        let body = format!(
+            r#"{{"access_token":"new_jwt","refresh_token":"new_ref","expires_in":{}}}"#,
+            i64::MAX
+        );
+        let refresh_mock = server
+            .mock("POST", "/api/v1/auth/tokens/refresh")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let tm = TokenManager::new(&server.url());
+        // Seed state directly so we don't need a login round-trip.
+        {
+            let mut state = tm.state.write().await;
+            *state = Some(TokenState {
+                access_token: "old_jwt".to_string(),
+                refresh_token: Some("ref_tok".to_string()),
+                expires_at: Utc::now() + Duration::hours(1),
+            });
+        }
+
+        let before = Utc::now();
+        // Must not panic on the overflowing TTL.
+        tm.refresh()
+            .await
+            .expect("refresh must succeed even with an adversarial expires_in");
+
+        let expires_at = {
+            let state = tm.state.read().await;
+            state
+                .as_ref()
+                .expect("state populated after refresh")
+                .expires_at
+        };
+        let upper = before + Duration::seconds(MAX_TOKEN_TTL_SECS) + Duration::seconds(5);
+        assert!(
+            expires_at <= upper,
+            "refresh expires_at {expires_at} must be clamped to the {MAX_TOKEN_TTL_SECS}s cap"
+        );
+        refresh_mock.assert_async().await;
     }
 
     #[tokio::test]

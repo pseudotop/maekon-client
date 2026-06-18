@@ -49,6 +49,9 @@ mod tests {
     struct MockSchedulerStorage {
         saved_ocr_texts: Mutex<Vec<Option<String>>>,
         saved_metadata: Mutex<Vec<FrameMetadata>>,
+        // #6133: capture the window bounds passed to the offloaded write so the
+        // regression test can assert owned data survives the spawn_blocking move.
+        saved_bounds: Mutex<Vec<Option<maekon_core::models::context::WindowBounds>>>,
         incremented_frames: AtomicU64,
     }
 
@@ -82,6 +85,13 @@ mod tests {
             _: chrono::DateTime<chrono::Utc>,
         ) -> Result<usize, maekon_core::error::CoreError> {
             unimplemented!("handle_idle_tick should not call cleanup_old_metrics")
+        }
+
+        async fn cleanup_old_hourly_metrics(
+            &self,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> Result<usize, maekon_core::error::CoreError> {
+            unimplemented!("handle_idle_tick should not call cleanup_old_hourly_metrics")
         }
 
         async fn save_process_snapshot(
@@ -185,7 +195,7 @@ mod tests {
             metadata: &maekon_core::models::frame::FrameMetadata,
             _: Option<&str>,
             ocr_text: Option<&str>,
-            _: Option<&maekon_core::models::context::WindowBounds>,
+            bounds: Option<&maekon_core::models::context::WindowBounds>,
         ) -> Result<i64, maekon_core::error::CoreError> {
             let mut metadata_rows = self.saved_metadata.lock().expect("metadata lock poisoned");
             metadata_rows.push(metadata.clone());
@@ -194,6 +204,10 @@ mod tests {
                 .lock()
                 .expect("ocr lock poisoned")
                 .push(ocr_text.map(str::to_string));
+            self.saved_bounds
+                .lock()
+                .expect("bounds lock poisoned")
+                .push(bounds.cloned());
             Ok(row_id)
         }
 
@@ -376,7 +390,7 @@ mod tests {
             &sqlite,
             "test-session",
             maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing 동의 부여됨 → OCR 텍스트 경로 활성 (기존 sanitize 동작 유지).
+            // ocr_processing consent granted -> OCR text path active (existing sanitize behavior preserved).
             true,
             &None,
         )
@@ -401,7 +415,7 @@ mod tests {
         assert_eq!(storage.incremented_frames.load(Ordering::Relaxed), 1);
     }
 
-    /// 주어진 OCR 텍스트를 가진 Full 페이로드 ProcessedFrame 을 만든다 (OCR 게이트 테스트용).
+    /// Builds a Full-payload ProcessedFrame carrying the given OCR text (for OCR-gate tests).
     fn frame_with_ocr(raw_ocr: &str) -> ProcessedFrame {
         ProcessedFrame {
             metadata: FrameMetadata {
@@ -433,9 +447,9 @@ mod tests {
         }
     }
 
-    /// Own-field gate (#4802): ocr_processing 동의가 없으면 OCR 텍스트/영역이 폐기되어야 한다.
-    /// 프레임은 캡처되지만(frame counter 증가) OCR 힌트는 None, 영역은 비고,
-    /// frames.ocr_text 에 저장되는 값도 None 이어야 한다 (텍스트 경로 전체 차단).
+    /// Own-field gate (#4802): without ocr_processing consent, OCR text/regions must be discarded.
+    /// The frame is still captured (frame counter increments) but the OCR hint is None, regions are
+    /// empty, and the value stored in frames.ocr_text must also be None (entire text path blocked).
     #[tokio::test]
     async fn ocr_not_extracted_when_own_field_denied() {
         let raw_ocr = "contact user@example.com";
@@ -462,7 +476,7 @@ mod tests {
             &sqlite,
             "test-session",
             maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing 동의 미부여 → OCR 텍스트 경로 전체 차단.
+            // ocr_processing consent not granted -> entire OCR text path blocked.
             false,
             &None,
         )
@@ -470,15 +484,15 @@ mod tests {
 
         assert!(
             ocr_hint.is_none(),
-            "ocr_processing 미부여 시 OCR 힌트는 None"
+            "OCR hint must be None when ocr_processing is not granted"
         );
         assert!(
             regions.is_empty(),
-            "ocr_processing 미부여 시 OCR 영역은 비어야 함"
+            "OCR regions must be empty when ocr_processing is not granted"
         );
-        // 프레임 자체는 캡처/저장됨 (screen_capture 동의 경로).
+        // The frame itself is still captured/stored (screen_capture consent path).
         assert_eq!(storage.incremented_frames.load(Ordering::Relaxed), 1);
-        // frames.ocr_text 에 저장된 값은 None (텍스트가 새지 않음).
+        // The value stored in frames.ocr_text is None (text does not leak).
         let saved = storage
             .saved_ocr_texts
             .lock()
@@ -488,11 +502,11 @@ mod tests {
             .flatten();
         assert!(
             saved.is_none(),
-            "ocr_processing 미부여 시 frames.ocr_text 는 None 이어야 함 (텍스트 누출 없음)"
+            "frames.ocr_text must be None when ocr_processing is not granted (no text leak)"
         );
     }
 
-    /// Own-field gate (#4802): ocr_processing 동의가 있으면 OCR 텍스트/영역이 추출되어야 한다.
+    /// Own-field gate (#4802): with ocr_processing consent, OCR text/regions must be extracted.
     #[tokio::test]
     async fn ocr_extracted_when_own_field_granted() {
         let raw_ocr = "meeting agenda 2026";
@@ -519,7 +533,7 @@ mod tests {
             &sqlite,
             "test-session",
             maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing 동의 부여 → OCR 텍스트/영역 추출됨.
+            // ocr_processing consent granted -> OCR text/regions extracted.
             true,
             &None,
         )
@@ -528,31 +542,121 @@ mod tests {
         assert_eq!(
             ocr_hint.as_deref(),
             Some(raw_ocr),
-            "동의 부여 시 OCR 힌트 반환"
+            "OCR hint returned when consent is granted"
         );
-        assert_eq!(regions.len(), 1, "동의 부여 시 OCR 영역 반환");
+        assert_eq!(
+            regions.len(),
+            1,
+            "OCR regions returned when consent is granted"
+        );
     }
 
-    /// Own-field gate (#4802): window_title_collection 동의가 없으면(=false) 윈도우
-    /// 제목이 redact(빈 문자열)되어야 한다 — monitor 루프가 다운스트림에 넘기는 값.
+    /// #6133 regression: the frame-metadata SQLite write is offloaded to the
+    /// blocking pool via `spawn_blocking`. This test asserts the offloaded write
+    /// still persists the metadata, OCR text, and (critically) the `window_bounds`
+    /// — proving the owned data moved into the closure survives the move and the
+    /// FrameUpdate is still emitted after the awaited save succeeds.
+    #[tokio::test]
+    async fn frame_metadata_write_offloaded_preserves_bounds_and_emits() {
+        use maekon_core::models::context::WindowBounds;
+
+        let raw_ocr = "offloaded write payload";
+        let processor: Arc<dyn FrameProcessor> = Arc::new(StaticFrameProcessor {
+            frame: frame_with_ocr(raw_ocr),
+        });
+        let storage = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let bounds = WindowBounds {
+            x: 11,
+            y: 22,
+            width: 800,
+            height: 600,
+        };
+        let capture_req = CaptureRequest {
+            trigger_type: "active_window_change".to_string(),
+            importance: 1.0,
+            app_name: "Notes".to_string(),
+            window_title: "meeting notes".to_string(),
+            monitor_id: None,
+            app_bundle_id: None,
+            window_bounds: Some(bounds),
+            screen_scale_factor: None,
+        };
+
+        let (tx, mut rx) = broadcast::channel::<RealtimeEvent>(8);
+        let event_tx: Option<broadcast::Sender<RealtimeEvent>> = Some(tx);
+
+        handle_frame_capture(
+            &capture_req,
+            &processor,
+            &None,
+            &sqlite,
+            "test-session",
+            maekon_core::config::PiiFilterLevel::Standard,
+            true,
+            &event_tx,
+        )
+        .await;
+
+        // The offloaded write persisted exactly one metadata row.
+        assert_eq!(
+            storage.saved_metadata.lock().expect("metadata lock").len(),
+            1,
+            "offloaded write must persist the frame metadata"
+        );
+        // The owned window bounds survived the spawn_blocking move intact.
+        let saved_bounds = storage
+            .saved_bounds
+            .lock()
+            .expect("bounds lock")
+            .first()
+            .cloned()
+            .flatten()
+            .expect("window bounds row");
+        assert_eq!(saved_bounds.x, 11);
+        assert_eq!(saved_bounds.y, 22);
+        assert_eq!(saved_bounds.width, 800);
+        assert_eq!(saved_bounds.height, 600);
+        // The OCR text moved into the closure was persisted.
+        let saved_ocr = storage
+            .saved_ocr_texts
+            .lock()
+            .expect("ocr lock")
+            .first()
+            .cloned()
+            .flatten()
+            .expect("ocr row");
+        assert_eq!(saved_ocr, raw_ocr);
+        // FrameUpdate is emitted only after the awaited save succeeds.
+        match rx.try_recv() {
+            Ok(RealtimeEvent::Frame(update)) => {
+                assert_eq!(update.app_name, "Notes");
+            }
+            other => panic!("expected RealtimeEvent::Frame after offloaded save, got {other:?}"),
+        }
+        assert_eq!(storage.incremented_frames.load(Ordering::Relaxed), 1);
+    }
+
+    /// Own-field gate (#4802): without window_title_collection consent (=false), the window title
+    /// must be redacted (empty string) — this is the value the monitor loop passes downstream.
     #[test]
     fn window_title_not_collected_with_only_monitoring_bundle() {
         let redacted = redact_window_title("secret document.docx".to_string(), false);
         assert_eq!(
             redacted, "",
-            "window_title_collection 미부여 시 제목은 빈 문자열로 redact"
+            "title must be redacted to an empty string when window_title_collection is not granted"
         );
     }
 
-    /// Own-field gate (#4802): window_title_collection 동의가 있으면(=true) 원본 제목을
-    /// 그대로 보존해야 한다.
+    /// Own-field gate (#4802): with window_title_collection consent (=true), the original title
+    /// must be preserved as-is.
     #[test]
     fn window_title_collected_when_own_field_granted() {
         let title = "meeting notes — agenda".to_string();
         let kept = redact_window_title(title.clone(), true);
         assert_eq!(
             kept, title,
-            "window_title_collection 부여 시 원본 제목 보존"
+            "original title preserved when window_title_collection is granted"
         );
     }
 

@@ -22,7 +22,7 @@ impl CalibrationWriter for SqliteStorage {
             return Ok(());
         }
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, calibration_log/trigger_params_snapshots ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; calibration_log/trigger_params_snapshots ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             let tx = conn
                 .unchecked_transaction()
@@ -135,7 +135,7 @@ impl CalibrationWriter for SqliteStorage {
         let from = window.start;
         let to = window.end;
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → 0건 갱신 반환).
+        // Write — write_lock (skipped when deletion_flag is set → returns 0 rows updated).
         self.conn.write_lock().run(0u64, |conn| {
             let updated = conn
                 .execute(
@@ -296,10 +296,22 @@ impl CalibrationReader for SqliteStorage {
                 let end = DateTime::parse_from_rfc3339(&end_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .map_err(|e| StorageError::Internal(format!("invalid segment end: {e}")))?;
-                // Phase 2 iter-2 N-C4: consolidate two DateTime<Utc> into TimeWindow.
-                // DB-stored segment ranges are trusted (start <= end invariant).
-                let segment_window = TimeWindow::new(start, end)
-                    .expect("DB-stored segment ranges satisfy start <= end invariant");
+                // Remote rows arriving via sync_merger may carry clock-skewed
+                // start > end timestamps (no DB CHECK constraint enforces ordering).
+                // Skip such rows with a warning rather than panicking inside
+                // spawn_blocking — mirrors the RFC3339 parse-error skip pattern
+                // used in adjacent callers.
+                let segment_window = match TimeWindow::new(start, end) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        warn!(
+                            segment.id = %id,
+                            "skipping activity_segment with inverted time bounds \
+                             (clock-skew from remote sync?): {e}"
+                        );
+                        continue;
+                    }
+                };
                 result.push((id, segment_window));
             }
             Ok(result)
@@ -507,5 +519,69 @@ mod tests {
         let window = TimeWindow::new(from, to).expect("trusted test bounds");
         let remaining = storage.get_entries(&window, false).await.unwrap();
         assert_eq!(remaining.len(), 3);
+    }
+
+    /// #5995: a remote-synced activity_segment whose start > end must be skipped
+    /// (warn + continue), not panicked, and valid rows in the same query must
+    /// still be returned.
+    #[tokio::test]
+    async fn list_segment_time_ranges_skips_inverted_row() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+        // Insert directly via test_lock to bypass the normal write path —
+        // this simulates a clock-skewed row that arrived through sync_merger.
+        {
+            let conn = storage.conn.test_lock();
+
+            // Bad row: end_time < start_time (inverted, would panic with .expect()).
+            conn.execute(
+                "INSERT INTO activity_segments \
+                 (id, start_time, end_time, duration_secs, trigger_reason, dominant_category) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "seg-bad",
+                    "2026-01-01T10:00:00Z", // start
+                    "2026-01-01T09:00:00Z", // end  < start  ← inverted
+                    0i64,
+                    "ScoreHigh",
+                    "Development",
+                ],
+            )
+            .unwrap();
+
+            // Good row: start <= end (must appear in the result).
+            conn.execute(
+                "INSERT INTO activity_segments \
+                 (id, start_time, end_time, duration_secs, trigger_reason, dominant_category) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "seg-good",
+                    "2026-01-01T10:00:00Z",
+                    "2026-01-01T11:00:00Z",
+                    3600i64,
+                    "ScoreHigh",
+                    "Development",
+                ],
+            )
+            .unwrap();
+        }
+
+        // Query a wide window that covers both rows.
+        let wide_start = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let wide_end = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let window = TimeWindow::new(wide_start, wide_end).expect("trusted test bounds");
+
+        // Must not panic; must return only the valid row.
+        let ranges = storage.list_segment_time_ranges(&window).await.unwrap();
+        assert_eq!(
+            ranges.len(),
+            1,
+            "inverted row must be skipped, not panicked"
+        );
+        assert_eq!(ranges[0].0, "seg-good");
     }
 }

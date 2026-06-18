@@ -12,7 +12,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// IMPORTANT: Does NOT store the autostart enabled/disabled state. That state
 /// lives in OS-native locations. Use `autostart::is_autostart_enabled()` to query.
+///
+/// Struct-level `#[serde(default)]`: a partial `autostart` section (object present
+/// but missing one or more fields) deserializes by falling back to the manual
+/// `Default` impl for the absent fields, instead of failing the whole-config load
+/// (which would trigger a full privacy-reset fallback). See finding
+/// `indicator-autostart-serde`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct AutostartConfig {
     /// State machine for one-time onboarding prompt.
     pub prompt_state: AutostartPromptState,
@@ -181,6 +188,46 @@ mod tests {
         // Simulate deserialization from old config without `autostart` field
         let parsed: AutostartConfig = serde_json::from_str(r#"{}"#).unwrap_or_default();
         assert_eq!(parsed, AutostartConfig::default());
+    }
+
+    #[test]
+    fn partial_section_deserializes_with_defaults_for_missing_fields() {
+        // Only `productive_session_count` is provided; the remaining fields must
+        // fall back to the manual Default impl instead of failing deserialization.
+        let parsed: AutostartConfig = serde_json::from_str(r#"{"productive_session_count":3}"#)
+            .expect("partial autostart section must deserialize");
+
+        let defaults = AutostartConfig::default();
+        assert_eq!(parsed.productive_session_count, 3, "explicit field honored");
+        assert_eq!(parsed.prompt_state, defaults.prompt_state);
+        assert_eq!(parsed.last_session_id, defaults.last_session_id);
+    }
+
+    #[test]
+    fn partial_autostart_section_in_app_config_does_not_fail_whole_load() {
+        // Regression: a partial `autostart` section embedded in an otherwise-valid
+        // config file must NOT fail the WHOLE-config load (which would trigger a
+        // full privacy-reset fallback). See finding `indicator-autostart-serde`.
+        //
+        // Start from a full default config, then drop two of the three autostart
+        // fields, keeping only an explicitly-set `productive_session_count` — this
+        // is exactly the "object present, fields missing" partial-section shape.
+        use crate::config::AppConfig;
+
+        let mut value =
+            serde_json::to_value(AppConfig::default_config()).expect("default config serializes");
+        value["autostart"] = serde_json::json!({ "productive_session_count": 3 });
+
+        let config: AppConfig =
+            serde_json::from_value(value).expect("partial autostart section must not fail load");
+
+        let defaults = AutostartConfig::default();
+        assert_eq!(
+            config.autostart.productive_session_count, 3,
+            "explicit field honored"
+        );
+        assert_eq!(config.autostart.prompt_state, defaults.prompt_state);
+        assert_eq!(config.autostart.last_session_id, defaults.last_session_id);
     }
 
     #[test]

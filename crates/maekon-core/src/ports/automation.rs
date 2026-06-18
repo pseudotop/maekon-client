@@ -17,11 +17,13 @@ use crate::models::gui::{
 use crate::models::intent::{IntentCommand, IntentResult, WorkflowPreset};
 use crate::models::ui_scene::UiScene;
 
-/// 자동화 실행 포트 — maekon-web 핸들러가 사용하는 자동화 컨트롤러 인터페이스
+/// Automation execution port — the automation controller interface used by
+/// maekon-web handlers.
 ///
-/// 이 trait은 `maekon-automation::AutomationController`의 퍼블릭 API를
-/// 추상화합니다. maekon-web이 maekon-automation에 직접 의존하지 않고
-/// 이 포트를 통해 자동화 기능에 접근합니다. (ADR-001 §7)
+/// This trait abstracts the public API of
+/// `maekon-automation::AutomationController`. maekon-web accesses automation
+/// functionality through this port rather than depending on maekon-automation
+/// directly. (ADR-001 §7)
 ///
 /// # Errors
 /// - `CoreError::PolicyDenied` (wire: `policy.denied`) when PolicyClient
@@ -45,13 +47,13 @@ use crate::models::ui_scene::UiScene;
 pub trait AutomationPort: Send + Sync {
     // ── Core automation ──
 
-    /// 저수준 커맨드 실행 (policy 검증 + sandbox)
+    /// Execute a low-level command (policy validation + sandbox).
     async fn execute_command(&self, cmd: &AutomationCommand) -> Result<CommandResult, CoreError>;
 
-    /// 인텐트 기반 실행 (직접 인텐트 지정)
+    /// Execute an intent (intent specified directly).
     async fn execute_intent(&self, cmd: &IntentCommand) -> Result<IntentResult, CoreError>;
 
-    /// 자연어 힌트 기반 인텐트 실행 (IntentPlanner → IntentExecutor)
+    /// Execute an intent from a natural-language hint (IntentPlanner → IntentExecutor).
     async fn execute_intent_hint(
         &self,
         command_id: &str,
@@ -59,19 +61,19 @@ pub trait AutomationPort: Send + Sync {
         intent_hint: &str,
     ) -> Result<PlannedIntentResult, CoreError>;
 
-    /// 워크플로우 프리셋 실행
+    /// Run a workflow preset.
     async fn run_workflow(&self, preset: &WorkflowPreset) -> Result<WorkflowResult, CoreError>;
 
     // ── Scene analysis ──
 
-    /// 화면 장면 분석 (현재 포커스 또는 특정 앱)
+    /// Analyze the on-screen scene (current focus or a specific app).
     async fn analyze_scene(
         &self,
         app_name: Option<&str>,
         screen_id: Option<&str>,
     ) -> Result<UiScene, CoreError>;
 
-    /// 이미지 데이터로부터 장면 분석
+    /// Analyze a scene from image data.
     async fn analyze_scene_from_image(
         &self,
         image_data: Vec<u8>,
@@ -82,20 +84,20 @@ pub trait AutomationPort: Send + Sync {
 
     // ── GUI interaction ──
 
-    /// GUI 상호작용 세션 생성
+    /// Create a GUI interaction session.
     async fn gui_create_session(
         &self,
         req: GuiCreateSessionRequest,
     ) -> Result<GuiCreateSessionResponse, GuiInteractionError>;
 
-    /// GUI 세션 조회
+    /// Get a GUI session.
     async fn gui_get_session(
         &self,
         session_id: &str,
         capability_token: &str,
     ) -> Result<GuiInteractionSession, GuiInteractionError>;
 
-    /// GUI 후보 하이라이트
+    /// Highlight GUI candidates.
     async fn gui_highlight_session(
         &self,
         session_id: &str,
@@ -103,7 +105,7 @@ pub trait AutomationPort: Send + Sync {
         req: GuiHighlightRequest,
     ) -> Result<GuiInteractionSession, GuiInteractionError>;
 
-    /// GUI 후보 확인 → 실행 티켓 발급
+    /// Confirm a GUI candidate → issue an execution ticket.
     async fn gui_confirm_candidate(
         &self,
         session_id: &str,
@@ -111,7 +113,7 @@ pub trait AutomationPort: Send + Sync {
         req: GuiConfirmRequest,
     ) -> Result<GuiExecutionTicket, GuiInteractionError>;
 
-    /// GUI 실행 (티켓 기반)
+    /// Execute a GUI action (ticket-based).
     async fn gui_execute(
         &self,
         session_id: &str,
@@ -119,14 +121,14 @@ pub trait AutomationPort: Send + Sync {
         req: GuiExecutionRequest,
     ) -> Result<GuiExecutionResult, GuiInteractionError>;
 
-    /// GUI 세션 취소
+    /// Cancel a GUI session.
     async fn gui_cancel_session(
         &self,
         session_id: &str,
         capability_token: &str,
     ) -> Result<GuiInteractionSession, GuiInteractionError>;
 
-    /// GUI 세션 이벤트 구독
+    /// Subscribe to GUI session events.
     async fn gui_subscribe_events(
         &self,
         session_id: &str,
@@ -135,11 +137,12 @@ pub trait AutomationPort: Send + Sync {
 
     // ── Confirmation flow ──
 
-    /// 사용자 승인 대기 중인 자동화 확인 목록 조회
+    /// List automation confirmations awaiting user approval.
     async fn list_pending_confirmations(&self) -> Result<Vec<PendingConfirmation>, CoreError>;
 
-    /// 사용자의 자동화 확인 ���답 제출 (승인/거부).
-    /// `nonce`는 확인 생성 시 발급된 일회용 토큰으로, ���일치 시 거부됩니다.
+    /// Submit the user's response to an automation confirmation (approve/deny).
+    /// `nonce` is the single-use token issued when the confirmation was created;
+    /// a mismatch results in denial.
     async fn submit_confirmation(
         &self,
         command_id: &str,
@@ -149,15 +152,15 @@ pub trait AutomationPort: Send + Sync {
 
     // ── Policy CRUD ──
 
-    /// 실행 정책 목록 조회
+    /// List execution policies.
     async fn list_execution_policies(&self) -> Result<Vec<ExecutionPolicyDto>, CoreError>;
 
-    /// 실행 정책 추가/교체 (같은 policy_id가 있으면 교체)
+    /// Add or replace an execution policy (replaces an existing one with the same `policy_id`).
     async fn add_execution_policy(
         &self,
         policy: ExecutionPolicyDto,
     ) -> Result<ExecutionPolicyDto, CoreError>;
 
-    /// 실행 정책 삭제
+    /// Remove an execution policy.
     async fn remove_execution_policy(&self, policy_id: &str) -> Result<bool, CoreError>;
 }

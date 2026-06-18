@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(msg.display_text(), "template fallback text");
     }
 
-    /// F-RC-C36-05: CoachingProfile serde PascalCase 라운드트립 검증.
+    /// F-RC-C36-05: verify CoachingProfile serde PascalCase round-trip.
     #[test]
     fn coaching_profile_serde_pascal_case_roundtrip() {
         let cases = [
@@ -265,14 +265,19 @@ mod tests {
             (CoachingProfile::GoalTracker, "\"GoalTracker\""),
         ];
         for (variant, expected_json) in &cases {
-            let json = serde_json::to_string(variant).expect("직렬화 실패");
+            let json = serde_json::to_string(variant).expect("serialize failed");
             assert_eq!(
                 json, *expected_json,
-                "PascalCase JSON 불일치: {:?}",
+                "PascalCase JSON mismatch: {:?}",
                 variant
             );
-            let restored: CoachingProfile = serde_json::from_str(&json).expect("역직렬화 실패");
-            assert_eq!(restored, *variant, "역직렬화 후 값 불일치: {:?}", variant);
+            let restored: CoachingProfile =
+                serde_json::from_str(&json).expect("deserialize failed");
+            assert_eq!(
+                restored, *variant,
+                "value mismatch after deserialize: {:?}",
+                variant
+            );
         }
     }
 

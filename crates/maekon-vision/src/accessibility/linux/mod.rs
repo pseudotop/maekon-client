@@ -66,6 +66,21 @@ use tracing::debug;
 #[cfg(feature = "linux-atspi")]
 use crate::error::VisionError;
 
+#[cfg(feature = "linux-atspi")]
+use std::time::Duration;
+
+/// Timeout budget for establishing an AT-SPI2 `AccessibilityConnection`.
+///
+/// `AccessibilityConnection::new()` performs a D-Bus `Hello` handshake against
+/// the session bus. A wedged `dbus-daemon` (or a session bus that never
+/// finishes authenticating) makes this await hang indefinitely, which would
+/// stall the 1 s scheduler tick — the very failure mode the per-call
+/// `DBUS_CALL_TIMEOUT` guards in `extractor.rs` exist to prevent. We mirror
+/// that invariant here so connection (re)establishment is also bounded. Three
+/// seconds is generous for a healthy bus yet tight enough to protect the loop.
+#[cfg(feature = "linux-atspi")]
+const ATSPI_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 // ── Public extractor struct ───────────────────────────────────────────────────
 
 /// Linux AT-SPI2 accessibility extractor.
@@ -127,12 +142,25 @@ impl AccessibilityExtractor for LinuxAccessibility {
             pii_level
         };
 
-        // AT-SPI is async-native — no spawn_blocking needed
-        let conn = match AccessibilityConnection::new().await {
-            Ok(c) => c,
-            Err(e) => {
+        // AT-SPI is async-native — no spawn_blocking needed, but the D-Bus
+        // Hello handshake must still be timeout-guarded so a wedged dbus-daemon
+        // cannot stall the scheduler tick (mirrors DBUS_CALL_TIMEOUT).
+        let conn = match tokio::time::timeout(ATSPI_CONNECT_TIMEOUT, AccessibilityConnection::new())
+            .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
                 circuit::record_failure();
                 debug!("AT-SPI2 connection failed: {e}");
+                return Ok(None); // graceful degradation, not an error
+            }
+            Err(_elapsed) => {
+                circuit::record_failure();
+                debug!(
+                    timeout_secs = ATSPI_CONNECT_TIMEOUT.as_secs(),
+                    "AT-SPI2 connection timed out — wedged dbus-daemon; \
+                     returning None to protect the scheduler loop"
+                );
                 return Ok(None); // graceful degradation, not an error
             }
         };
@@ -190,18 +218,34 @@ impl AccessibilityExtractor for LinuxAccessibility {
             pii_level
         };
 
-        // AT-SPI is async-native, no spawn_blocking needed.
+        // AT-SPI is async-native, no spawn_blocking needed. The D-Bus Hello
+        // handshake is timeout-guarded (mirrors DBUS_CALL_TIMEOUT) so a wedged
+        // dbus-daemon cannot stall the scheduler tick.
         // Explicit type annotation avoids E0282 inference errors with zbus 5.x.
-        let conn: AccessibilityConnection = AccessibilityConnection::new().await.map_err(|e| {
-            circuit::record_failure();
-            CoreError::PermissionDenied {
-                code: maekon_core::error_codes::PermissionCode::PermissionDenied,
-                message: format!(
-                    "AT-SPI2 D-Bus connection failed. \
-                         Ensure at-spi2-core is installed: {e}"
-                ),
-            }
-        })?;
+        let conn: AccessibilityConnection =
+            match tokio::time::timeout(ATSPI_CONNECT_TIMEOUT, AccessibilityConnection::new()).await
+            {
+                Ok(Ok(c)) => c,
+                Ok(Err(e)) => {
+                    circuit::record_failure();
+                    return Err(CoreError::PermissionDenied {
+                        code: maekon_core::error_codes::PermissionCode::PermissionDenied,
+                        message: format!(
+                            "AT-SPI2 D-Bus connection failed. \
+                             Ensure at-spi2-core is installed: {e}"
+                        ),
+                    });
+                }
+                Err(_elapsed) => {
+                    circuit::record_failure();
+                    debug!(
+                        timeout_secs = ATSPI_CONNECT_TIMEOUT.as_secs(),
+                        "AT-SPI2 connection timed out — wedged dbus-daemon; \
+                         returning empty to protect the scheduler loop"
+                    );
+                    return Ok(Vec::new()); // graceful degradation, not an error
+                }
+            };
 
         let active_window = match extractor::find_active_window(&conn).await {
             Some(w) => w,

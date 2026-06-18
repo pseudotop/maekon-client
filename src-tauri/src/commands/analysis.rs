@@ -13,7 +13,7 @@ use super::deep_merge;
 // — then From<CoreError> for IpcError produces `{code: "config.invalid", ...}`.
 // No local helper wrapper needed.
 
-/// 분석 설정 조회
+/// Get the analysis configuration.
 ///
 /// AnalysisConfig contains no sensitive fields (no API keys, credentials).
 /// If sensitive fields are added in the future, apply redact_sensitive_fields().
@@ -47,7 +47,7 @@ pub(crate) fn validate_analysis_config(
     Ok(())
 }
 
-/// 분석 설정 부분 업데이트 (patch merge)
+/// Partially update the analysis configuration (patch merge).
 ///
 /// Uses `update_with` to hold the write lock for the entire read-modify-write
 /// cycle, preventing TOCTOU races between concurrent callers.
@@ -78,7 +78,7 @@ pub async fn update_analysis_config(
     Ok(updated.analysis)
 }
 
-/// 분석 파이프라인 상태 응답
+/// Analysis pipeline status response.
 #[derive(Serialize)]
 pub struct AnalysisStatusResponse {
     pub enabled: bool,
@@ -91,7 +91,7 @@ pub struct AnalysisStatusResponse {
     pub max_suggestions: usize,
 }
 
-/// 분석 파이프라인 상태 조회 (enabled, provider 설정 여부 등)
+/// Query the analysis pipeline status (enabled, whether a provider is configured, etc.).
 #[command]
 pub async fn get_analysis_status(
     state: tauri::State<'_, ConfigRuntimeState>,

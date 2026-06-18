@@ -32,10 +32,10 @@ export default function OverridesSection() {
           <table className="w-full min-w-[600px] text-left text-sm">
             <thead>
               <tr className={cn('border-DEFAULT border-b', colors.text.tertiary)}>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Segment</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Original</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Action</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Created</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnSegment')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnOriginal')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnAction')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnCreated')}</th>
                 <th className={`pb-2 ${typography.weight.medium}`} />
               </tr>
             </thead>

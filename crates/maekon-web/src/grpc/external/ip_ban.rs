@@ -62,7 +62,7 @@ impl IpBan {
         Self::with_capacity(DEFAULT_CAPACITY)
     }
     pub fn with_capacity(cap: usize) -> Self {
-        // cap=0 은 패닉을 유발하므로 최소 1로 보정 (F-RR-13)
+        // cap=0 would trigger a panic, so clamp it to a minimum of 1 (F-RR-13)
         Self {
             cache: RwLock::new(LruCache::new(NonZeroUsize::new(cap.max(1)).unwrap())),
         }

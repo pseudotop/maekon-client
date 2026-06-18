@@ -29,14 +29,20 @@ fn sanitize_runtime_log_snapshot(
         return snapshot;
     };
 
+    // #6261: this snapshot is a support/share surface — it is rendered in the UI
+    // and copied to the clipboard verbatim. Sanitize at Strict (not Standard) so
+    // mask_api_keys (sk-/pk-/ghp_/AKIA/xoxb-/"Bearer <token>"/PEM PRIVATE KEY
+    // blocks), mask_ip_addresses, and mask_passport run before any secret that
+    // landed in a logged endpoint URL / structured field can be exfiltrated.
+    // Standard masks only IBAN/email/phone/card/KR-ID/SSN/user-path.
     RuntimeLogSnapshotDto {
         generated_at: snapshot.generated_at,
-        log_dir: sanitizer.sanitize_text(&snapshot.log_dir, PiiFilterLevel::Standard),
+        log_dir: sanitizer.sanitize_text(&snapshot.log_dir, PiiFilterLevel::Strict),
         log_file: snapshot
             .log_file
-            .map(|file| sanitizer.sanitize_text(&file, PiiFilterLevel::Standard)),
+            .map(|file| sanitizer.sanitize_text(&file, PiiFilterLevel::Strict)),
         line_count: snapshot.line_count,
-        recent_text: sanitizer.sanitize_text(&snapshot.recent_text, PiiFilterLevel::Standard),
+        recent_text: sanitizer.sanitize_text(&snapshot.recent_text, PiiFilterLevel::Strict),
     }
 }
 
@@ -174,7 +180,7 @@ fn emit_frontend_log(level: &str, surface: &str, message: String, context: Optio
     }
 }
 
-/// 자동화 상태 조회 — 사용자 설정 기반 반환
+/// Query automation status — returns the value derived from user settings.
 #[command]
 pub async fn get_automation_status(
     state: tauri::State<'_, ConfigRuntimeState>,
@@ -245,10 +251,20 @@ pub async fn record_frontend_log(
     } else {
         surface
     };
+    // #6266: sanitize frontend-supplied strings for PII before they reach the
+    // log, matching report_frontend_error (error_report.rs). The frontend log
+    // bridge forwards raw console.error/onerror/unhandledrejection payloads,
+    // which can carry emails / tokens / file paths. Run the same Standard-level
+    // masking, after trim+truncate, on each non-empty field.
     let message = truncate_log_field(message.trim().to_string(), MAX_FRONTEND_LOG_MESSAGE_LEN);
+    let message =
+        maekon_vision::privacy::sanitize_title_with_level(&message, PiiFilterLevel::Standard);
     let context = context
         .map(|value| truncate_log_field(value.trim().to_string(), MAX_FRONTEND_LOG_CONTEXT_LEN))
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            maekon_vision::privacy::sanitize_title_with_level(&value, PiiFilterLevel::Standard)
+        });
 
     let level = match level.trim().to_ascii_lowercase().as_str() {
         "trace" => "trace",
@@ -292,15 +308,27 @@ mod tests {
     struct MarkerSanitizer;
 
     impl PiiSanitizer for MarkerSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            // #5857: Windows 경로 구분자는 '\\' — POSIX 하드코딩("/Users/alice")은
-            // tempdir 가 만든 실제 경로와 불일치해 마커를 만들지 못한다. OS separator 로
-            // 조립해 양 플랫폼에서 동일한 배선 검증 의미를 갖게 한다.
+        fn sanitize_text(&self, text: &str, level: PiiFilterLevel) -> String {
+            // #5857: the Windows path separator is '\\' — a hardcoded POSIX path
+            // ("/Users/alice") would not match the real path that tempdir creates,
+            // so it would fail to produce the marker. Assemble it from the OS
+            // separator so the wiring check carries the same meaning on both platforms.
             let sep = std::path::MAIN_SEPARATOR;
             let user_path = format!("{sep}Users{sep}alice");
-            text.replace("alice@example.com", "[EMAIL]")
-                .replace(&user_path, "[USER]")
-                .replace("sk-ant-secret", "[PROVIDER_SECRET]")
+            // Email + user-path mask at Standard and above.
+            let mut out = text
+                .replace("alice@example.com", "[EMAIL]")
+                .replace(&user_path, "[USER]");
+            // #6261: API-key/secret masking mirrors the real VisionPiiSanitizer
+            // cascade — mask_api_keys runs ONLY at Strict. This makes the test a
+            // genuine regression guard: if the snapshot sanitizer regresses to
+            // Standard, the provider secret survives and the assertion below
+            // fails (the previous level-agnostic mock masked unconditionally,
+            // giving false confidence).
+            if level == PiiFilterLevel::Strict {
+                out = out.replace("sk-ant-secret", "[PROVIDER_SECRET]");
+            }
+            out
         }
     }
 

@@ -2,6 +2,7 @@
  * InsightCard — displays AI-generated daily narrative and highlight chips.
  */
 
+import { useTranslation } from 'react-i18next'
 import { colors, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { Card } from './ui'
@@ -26,10 +27,12 @@ const highlightConfig: Record<string, { icon: string; bg: string; text: string }
 }
 
 export default function InsightCard({ insight }: InsightCardProps) {
+  const { t } = useTranslation()
+
   if (!insight) {
     return (
       <Card variant="accent" padding="md">
-        <p className={cn(typography.body, colors.text.secondary)}>No insight available for today</p>
+        <p className={cn(typography.body, colors.text.secondary)}>{t('insightCard.noInsightAvailable')}</p>
       </Card>
     )
   }

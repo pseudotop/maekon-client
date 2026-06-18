@@ -355,7 +355,7 @@ describe('Settings guidance copy', () => {
       },
     })
 
-    // onChange トリガーで handleAiProviderChange('access_mode', 'LocalModel') が呼ばれることを確認
+    // Verify the onChange trigger calls handleAiProviderChange('access_mode', 'LocalModel')
     const { getByTestId } = renderWithProviders(<AiAutomationTab />)
     const select = getByTestId('settings-ai-access-mode') as HTMLSelectElement
 

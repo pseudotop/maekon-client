@@ -15,7 +15,7 @@ impl SqliteStorage {
     pub fn save_local_suggestion(&self, suggestion: &LocalSuggestion) -> Result<i64, StorageError> {
         let (suggestion_type, payload) = Self::serialize_suggestion(suggestion);
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → id 0, local_suggestions ∈ ALL_TABLES).
+        // Write — write_lock (skip when deletion_flag is set → id 0; local_suggestions ∈ ALL_TABLES).
         self.conn.write_lock().run(0i64, |conn| {
             conn.execute(
                 "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
@@ -30,7 +30,7 @@ impl SqliteStorage {
     }
 
     pub fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             Self::mark_suggestion_shown_inner(conn, suggestion_id)
         })
@@ -59,7 +59,7 @@ impl SqliteStorage {
     }
 
     pub fn mark_suggestion_dismissed(&self, suggestion_id: i64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             Self::mark_suggestion_dismissed_inner(conn, suggestion_id)
         })
@@ -90,7 +90,7 @@ impl SqliteStorage {
     }
 
     pub fn mark_suggestion_acted(&self, suggestion_id: i64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             Self::mark_suggestion_acted_inner(conn, suggestion_id)
         })
@@ -123,7 +123,7 @@ impl SqliteStorage {
         cutoff: &str,
         limit: usize,
     ) -> Result<Vec<LocalSuggestionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::list_recent_local_suggestions_inner(read.conn(), cutoff, limit)
     }
@@ -177,7 +177,7 @@ impl SqliteStorage {
         after_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<LocalSuggestionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
 

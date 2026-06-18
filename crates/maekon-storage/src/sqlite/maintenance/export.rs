@@ -11,7 +11,7 @@ impl SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<EventExportRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_event_exports_inner(read.conn(), from, to)
     }
@@ -70,7 +70,7 @@ impl SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<MetricExportRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_metric_exports_inner(read.conn(), from, to)
     }
@@ -131,7 +131,7 @@ impl SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<FrameExportRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_frame_exports_inner(read.conn(), from, to)
     }
@@ -193,7 +193,7 @@ impl SqliteStorage {
         count_sql: &str,
         pattern: Option<&str>,
     ) -> Result<u64, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::count_search_frames_inner(read.conn(), count_sql, pattern)
     }
@@ -241,7 +241,7 @@ impl SqliteStorage {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<SearchFrameRow>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::search_frames_with_sql_inner(read.conn(), select_sql, pattern, limit, offset)
     }
@@ -328,7 +328,7 @@ impl SqliteStorage {
     }
 
     pub fn count_search_events(&self, pattern: &str) -> Result<u64, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::count_search_events_inner(read.conn(), pattern)
     }
@@ -368,7 +368,7 @@ impl SqliteStorage {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<SearchEventRow>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::search_events_inner(read.conn(), pattern, limit, offset)
     }

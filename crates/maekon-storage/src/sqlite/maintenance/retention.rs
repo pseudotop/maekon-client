@@ -16,11 +16,13 @@ impl SqliteStorage {
     ) -> Result<DeletedRangeCounts, StorageError> {
         let (from, to) = window.to_sql_pair();
 
-        // 사용자 지정 범위 삭제는 ALL_TABLES 쓰기이므로 write_lock 을 통과한다
-        // (deletion_flag set 시 스킵 — erase 가 이미 전량 wipe 하므로 무해).
+        // A user-specified range delete is an ALL_TABLES write, so it goes through
+        // write_lock (skipped when deletion_flag is set — harmless because erase
+        // already wipes everything).
+        // `run_mut` so the multi-table delete runs inside a single transaction.
         self.conn
             .write_lock()
-            .run(DeletedRangeCounts::default(), |conn| {
+            .run_mut(DeletedRangeCounts::default(), |conn| {
                 Self::delete_data_in_range_inner(
                     conn,
                     &from,
@@ -51,7 +53,9 @@ impl SqliteStorage {
     ) -> Result<DeletedRangeCounts, StorageError> {
         // owned move into the Send + 'static closure.
         let (from, to) = window.to_sql_pair();
-        self.with_conn(move |conn| {
+        // `with_conn_mut` so the multi-table delete runs inside a single
+        // transaction (mirrors the sync `run_mut` path above).
+        self.with_conn_mut(move |conn| {
             Self::delete_data_in_range_inner(
                 conn,
                 &from,
@@ -68,7 +72,7 @@ impl SqliteStorage {
 
     #[allow(clippy::too_many_arguments)]
     fn delete_data_in_range_inner(
-        conn: &rusqlite::Connection,
+        conn: &mut rusqlite::Connection,
         from: &str,
         to: &str,
         delete_events: bool,
@@ -77,78 +81,116 @@ impl SqliteStorage {
         delete_processes: bool,
         delete_idle: bool,
     ) -> Result<DeletedRangeCounts, StorageError> {
-        {
-            let mut counts = DeletedRangeCounts::default();
+        let mut counts = DeletedRangeCounts::default();
 
-            if delete_events {
-                counts.events_deleted = conn
-                    .execute(
-                        "DELETE FROM events WHERE timestamp >= ?1 AND timestamp <= ?2",
-                        rusqlite::params![from, to],
-                    )
-                    .map_err(|e| StorageError::Internal(format!("event delete failure: {e}")))?
-                    as u64;
-            }
+        // Wrap the multi-table (up to 6 statements) delete in ONE transaction so a
+        // mid-way failure rolls the whole range-delete back instead of leaving the
+        // database partially deleted. Mirrors `delete_all_data_inner`'s tx pattern.
+        let tx = conn
+            .transaction()
+            .map_err(|e| StorageError::Internal(format!("Failed to begin transaction: {e}")))?;
 
-            if delete_frames {
-                counts.frames_deleted = conn
-                    .execute(
-                        "DELETE FROM frames WHERE timestamp >= ?1 AND timestamp <= ?2",
-                        rusqlite::params![from, to],
-                    )
-                    .map_err(|e| StorageError::Internal(format!("frame delete failure: {e}")))?
-                    as u64;
-            }
-
-            if delete_metrics {
-                counts.metrics_deleted = conn
-                    .execute(
-                        "DELETE FROM system_metrics WHERE timestamp >= ?1 AND timestamp <= ?2",
-                        rusqlite::params![from, to],
-                    )
-                    .map_err(|e| StorageError::Internal(format!("Failed to delete metrics: {e}")))?
-                    as u64;
-
-                let _ = conn.execute(
-                    "DELETE FROM system_metrics_hourly WHERE hour >= ?1 AND hour <= ?2",
+        if delete_events {
+            counts.events_deleted = tx
+                .execute(
+                    "DELETE FROM events WHERE timestamp >= ?1 AND timestamp <= ?2",
                     rusqlite::params![from, to],
-                );
-            }
-
-            if delete_processes {
-                counts.process_snapshots_deleted = conn
-                    .execute(
-                        "DELETE FROM process_snapshots WHERE timestamp >= ?1 AND timestamp <= ?2",
-                        rusqlite::params![from, to],
-                    )
-                    .map_err(|e| {
-                        StorageError::Internal(format!("Failed to delete process snapshots: {e}"))
-                    })? as u64;
-            }
-
-            if delete_idle {
-                counts.idle_periods_deleted = conn
-                    .execute(
-                        "DELETE FROM idle_periods WHERE start_time >= ?1 AND start_time <= ?2",
-                        rusqlite::params![from, to],
-                    )
-                    .map_err(|e| {
-                        StorageError::Internal(format!("idle record delete failure: {e}"))
-                    })? as u64;
-            }
-
-            Ok(counts)
+                )
+                .map_err(|e| StorageError::Internal(format!("event delete failure: {e}")))?
+                as u64;
         }
+
+        if delete_frames {
+            counts.frames_deleted = tx
+                .execute(
+                    "DELETE FROM frames WHERE timestamp >= ?1 AND timestamp <= ?2",
+                    rusqlite::params![from, to],
+                )
+                .map_err(|e| StorageError::Internal(format!("frame delete failure: {e}")))?
+                as u64;
+        }
+
+        if delete_metrics {
+            counts.metrics_deleted = tx
+                .execute(
+                    "DELETE FROM system_metrics WHERE timestamp >= ?1 AND timestamp <= ?2",
+                    rusqlite::params![from, to],
+                )
+                .map_err(|e| StorageError::Internal(format!("Failed to delete metrics: {e}")))?
+                as u64;
+
+            // `system_metrics_hourly.hour` is stored as an hour-truncated,
+            // Z-suffixed bucket key (`%Y-%m-%dT%H:00:00Z`), NOT a full RFC3339
+            // timestamp. Re-formatting the parsed bounds to that exact key makes
+            // the lexical comparison match the stored column format. The previous
+            // raw `from`/`to` (RFC3339, `+00:00` offset) sorted differently from
+            // the `Z` key — e.g. when `to` landed on an hour boundary, the boundary
+            // rollup row (`...HH:00:00Z`) compared GREATER than the bound
+            // (`...HH:00:00+00:00`, since 'Z' > '+') and was orphaned. We truncate
+            // both bounds DOWN to the hour: the lower bucket covering `from` and the
+            // upper bucket covering `to` are both inclusive (the bucket at the `to`
+            // hour aggregates samples up to `to`), matching the closed-closed
+            // `[from, to]` raw-metric delete above.
+            let (hour_from, hour_to) = Self::hourly_bucket_bounds(from, to);
+            tx.execute(
+                "DELETE FROM system_metrics_hourly WHERE hour >= ?1 AND hour <= ?2",
+                rusqlite::params![hour_from, hour_to],
+            )
+            .map_err(|e| StorageError::Internal(format!("Failed to delete hourly metrics: {e}")))?;
+        }
+
+        if delete_processes {
+            counts.process_snapshots_deleted = tx
+                .execute(
+                    "DELETE FROM process_snapshots WHERE timestamp >= ?1 AND timestamp <= ?2",
+                    rusqlite::params![from, to],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to delete process snapshots: {e}"))
+                })? as u64;
+        }
+
+        if delete_idle {
+            counts.idle_periods_deleted = tx
+                .execute(
+                    "DELETE FROM idle_periods WHERE start_time >= ?1 AND start_time <= ?2",
+                    rusqlite::params![from, to],
+                )
+                .map_err(|e| StorageError::Internal(format!("idle record delete failure: {e}")))?
+                as u64;
+        }
+
+        tx.commit()
+            .map_err(|e| StorageError::Internal(format!("Failed to commit range deletion: {e}")))?;
+
+        Ok(counts)
+    }
+
+    /// Map the RFC3339 range bounds (`from`, `to`) to the hour-bucket key range
+    /// used by `system_metrics_hourly.hour`. Both bounds are truncated DOWN to
+    /// the start of their hour and Z-suffixed via [`super::super::hour_bucket_key`]
+    /// so the comparison matches the stored column format exactly. On a parse
+    /// failure the raw bound is returned unchanged (best-effort; the raw-metric
+    /// delete already used the same string).
+    fn hourly_bucket_bounds(from: &str, to: &str) -> (String, String) {
+        use chrono::{DateTime, Utc};
+        let bucket = |s: &str| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| super::super::hour_bucket_key(dt.with_timezone(&Utc)))
+                .unwrap_or_else(|_| s.to_string())
+        };
+        (bucket(from), bucket(to))
     }
 
     /// Atomically delete all user data from every known table inside a single
     /// SQLite transaction. On any failure the transaction auto-rolls-back so
     /// the database is never left in a partially-deleted state (GDPR compliance).
     pub fn delete_all_data(&self) -> Result<(), StorageError> {
-        // erase 본체 — `lock_for_erase`(deletion_flag 재검사 없음). flag 가 set 인
-        // 상태에서 호출되므로 write_lock 을 쓰면 자기 자신이 스킵되어 wipe 가 일어나지
-        // 않는다. 보존 테이블(audit_log/egress_ledger/app_meta/schema_version)은
-        // ALL_TABLES 에서 의도적으로 제외된다.
+        // The erase body itself — `lock_for_erase` (no deletion_flag re-check). It is
+        // called while the flag is already set, so using write_lock would skip itself
+        // and the wipe would never happen. The retained tables
+        // (audit_log/egress_ledger/app_meta/schema_version) are deliberately excluded
+        // from ALL_TABLES.
         self.conn
             .lock_for_erase()
             .run_mut(|conn| Self::delete_all_data_inner(conn, &self.clock))

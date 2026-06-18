@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
 use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow, Window};
 use tracing::{debug, warn};
 
@@ -8,6 +10,51 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const WINDOW_STATE_FILE: &str = "window-state-main.json";
 const MIN_RESTORABLE_WIDTH: u32 = 400;
 const MIN_RESTORABLE_HEIGHT: u32 = 300;
+
+/// Background writer for main-window geometry persistence.
+///
+/// Moved/Resized fire many times per second while dragging, so doing a
+/// synchronous `fs::write` inline on the Tauri event thread (the main UI
+/// thread) blocks it on disk I/O for every event. Instead we compute the
+/// geometry on the event thread (cheap window queries) and hand the latest
+/// `(path, state)` to a dedicated background thread over a channel. The
+/// writer coalesces by draining the channel and only writing the most
+/// recent state, so a burst of move/resize events collapses to a single
+/// disk write.
+static STATE_WRITER: OnceLock<Sender<(PathBuf, MainWindowState)>> = OnceLock::new();
+
+fn state_writer() -> &'static Sender<(PathBuf, MainWindowState)> {
+    STATE_WRITER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<(PathBuf, MainWindowState)>();
+        std::thread::Builder::new()
+            .name("window-state-writer".into())
+            .spawn(move || {
+                // Block on the first message, then coalesce any others already
+                // queued so only the newest geometry is written to disk.
+                while let Ok(mut latest) = rx.recv() {
+                    while let Ok(next) = rx.try_recv() {
+                        latest = next;
+                    }
+                    let (path, state) = latest;
+                    match save_state_to_path(&path, state) {
+                        Ok(()) => debug!(
+                            path = %path.display(),
+                            x = state.x,
+                            y = state.y,
+                            width = state.width,
+                            height = state.height,
+                            "main window state persisted"
+                        ),
+                        Err(error) => {
+                            debug!(error = %error, "main window state persist skipped")
+                        }
+                    }
+                }
+            })
+            .expect("spawn window-state-writer thread");
+        tx
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct MonitorBounds {
@@ -36,18 +83,16 @@ pub(crate) fn persist_main_window_state(window: &Window) {
         return;
     }
 
-    match state_from_window(window).and_then(|state| {
-        window_state_path()
-            .and_then(|path| save_state_to_path(&path, state).map(|()| (path, state)))
-    }) {
-        Ok((path, state)) => debug!(
-            path = %path.display(),
-            x = state.x,
-            y = state.y,
-            width = state.width,
-            height = state.height,
-            "main window state persisted"
-        ),
+    // Compute geometry + path on the event thread (cheap window queries), then
+    // hand the disk write to the background writer so the main UI thread is
+    // never blocked on `fs::write` while the window is being moved/resized.
+    match state_from_window(window).and_then(|state| window_state_path().map(|path| (path, state)))
+    {
+        Ok((path, state)) => {
+            if state_writer().send((path, state)).is_err() {
+                debug!("main window state persist skipped: writer channel closed");
+            }
+        }
         Err(error) => debug!(error = %error, "main window state persist skipped"),
     }
 }

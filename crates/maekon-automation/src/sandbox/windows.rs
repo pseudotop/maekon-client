@@ -4,8 +4,8 @@
 //! The sandbox spawns the `maekon-sandbox-worker` binary as a child process
 //! inside a Win32 Job Object with configured resource limits. A restricted
 //! token is created via `CreateRestrictedToken`; the current worker launch
-//! path still uses `tokio::process::Command`, so the token is not applied to
-//! the child process yet.
+//! path still uses `tokio::process::Command`, so the token is **not applied**
+//! to the child process yet (see TODO in `create_restricted_token`).
 //!
 //! **Dual code paths (`windows-sandbox` feature):**
 //! - **Enabled**: Real Win32 API calls — `CreateJobObjectW`, `SetInformationJobObject`,
@@ -15,7 +15,9 @@
 //! **Enforcement status:**
 //! - **Resource limits**: Enforced via Job Object (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
 //! - **Process isolation**: Enforced via subprocess model (child inherits Job Object).
-//! - **Token restriction**: Token setup is verified; child-token application is not implemented.
+//! - **Token restriction**: NOT enforced — token is created but never applied to spawned
+//!   processes. Full enforcement requires `CreateProcessAsUserW` / `CreateProcessWithTokenW`
+//!   (tracked as TODO in `create_restricted_token`).
 //! - **Filesystem isolation**: Not enforced (Job Objects do not isolate FS).
 //! - **Syscall filtering**: Not available on Windows.
 //! - **Network isolation**: Not enforced (would require Windows Firewall rules).
@@ -109,6 +111,26 @@ impl Sandbox for WindowsSandbox {
             });
         }
 
+        // #6422: Windows enforces ONLY Job Object resource limits — it has no
+        // filesystem/network/syscall containment (no Landlock/seccomp equivalent; the
+        // restricted token is built but not yet applied — see module docs). A
+        // Standard/Strict profile advertises that containment. The Linux sibling fails
+        // CLOSED here, but doing so literally on Windows would refuse the DEFAULT profile
+        // (Standard) and disable Windows automation wholesale. Instead, make the gap LOUD
+        // and observable rather than silent: the action runs resource-limited but its
+        // requested isolation is NOT enforced. (Full Windows containment is a tracked TODO.)
+        if matches!(
+            config.profile,
+            maekon_core::config::SandboxProfile::Standard
+                | maekon_core::config::SandboxProfile::Strict
+        ) {
+            tracing::warn!(
+                profile = ?config.profile,
+                "Windows sandbox does NOT enforce filesystem/network/syscall isolation for this \
+                 profile — running with Job Object resource limits only (containment unenforced)"
+            );
+        }
+
         let worker_path = ipc::resolve_worker_path()?;
         let request = ipc::SandboxRequest {
             action: action.clone(),
@@ -134,7 +156,7 @@ impl Sandbox for WindowsSandbox {
             max_processes = job_limits.max_processes,
             disable_admin = token_restrictions.disable_admin_sid,
             timeout_ms,
-            action = ?action,
+            action = %super::redact_action(action),
             "Windows sandbox spawning worker subprocess"
         );
 
@@ -142,6 +164,10 @@ impl Sandbox for WindowsSandbox {
         #[cfg(feature = "windows-sandbox")]
         let (job, _token) = tokio::task::spawn_blocking(move || {
             let job = create_job_object(&job_limits)?;
+            // `_token` is held alive until this function returns so the handle
+            // is not prematurely closed, but the token is NOT passed to the
+            // child process (tokio::process::Command has no token-injection API).
+            // The warn! inside create_restricted_token documents this gap.
             let token = create_restricted_token(&token_restrictions)?;
             Ok::<_, AutomationError>((job, token))
         })
@@ -161,7 +187,12 @@ impl Sandbox for WindowsSandbox {
         // Spawn the worker subprocess via tokio::process::Command.
         // On Windows without `windows-sandbox`, this spawns a plain child
         // without Job Object or restricted token enforcement.
+        //
+        // `kill_on_drop(true)` ensures that if this `Child` value is dropped
+        // (e.g. scope exit after a timeout) tokio sends SIGKILL / TerminateProcess
+        // automatically, preventing orphan worker processes.
         let mut cmd = tokio::process::Command::new(worker_path);
+        cmd.kill_on_drop(true);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -209,19 +240,31 @@ impl Sandbox for WindowsSandbox {
             drop(stdin);
         }
 
-        let output = tokio::time::timeout(
+        let output = match tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
             child.wait_with_output(),
         )
         .await
-        .map_err(|_| CoreError::ExecutionTimeout {
-            code: maekon_core::error_codes::SandboxCode::Timeout,
-            timeout_ms,
-        })?
-        .map_err(|e| CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("wait failed: {e}"),
-        })?;
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!("wait failed: {e}"),
+                })
+            }
+            Err(_elapsed) => {
+                // Timeout fired. `child` was moved into the timeout future and
+                // is no longer addressable here. `kill_on_drop(true)` set above
+                // ensures tokio calls `TerminateProcess` when that future is
+                // dropped at the end of this match arm, so the worker tree is
+                // reaped promptly rather than running until natural exit.
+                return Err(CoreError::ExecutionTimeout {
+                    code: maekon_core::error_codes::SandboxCode::Timeout,
+                    timeout_ms,
+                });
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -246,7 +289,7 @@ impl Sandbox for WindowsSandbox {
             });
         }
 
-        tracing::info!(action = ?action, "Windows sandbox execution completed via worker");
+        tracing::info!(action = %super::redact_action(action), "Windows sandbox execution completed via worker");
         Ok(())
     }
 
@@ -273,7 +316,13 @@ impl Sandbox for WindowsSandbox {
 // consumes them via the import at the top of this file.
 
 fn check_windows_sandbox_support() -> bool {
-    cfg!(target_os = "windows")
+    // review4 A2: the Job-Object enforcement below is gated behind the
+    // `windows-sandbox` cargo feature. Without it the adapter compiles only the
+    // no-op execution path, so reporting "available" on any Windows build let an
+    // enabled sandbox run actions uncontained while claiming success. Require the
+    // feature so a feature-less build reports unavailable → the factory fails
+    // closed instead of silently degrading.
+    cfg!(target_os = "windows") && cfg!(feature = "windows-sandbox")
 }
 
 // ── Win32 enforcement (feature = "windows-sandbox") ─────────────────
@@ -296,10 +345,14 @@ fn create_job_object(limits: &JobObjectLimits) -> Result<OwnedHandle, Automation
     }
     let job = OwnedHandle(handle);
 
-    // Configure limits only when at least one is non-zero
-    if limits.max_memory_bytes > 0 || limits.max_cpu_time_ms > 0 || limits.max_processes > 0 {
+    // Always configure at minimum JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so that
+    // closing this Job Object handle (on scope-drop or process exit) sends
+    // TerminateProcess to every process still assigned to the job. This prevents
+    // orphaned worker trees when the parent crashes or the timeout fires.
+    {
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        let mut limit_flags: u32 = 0;
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is always set unconditionally.
+        let mut limit_flags: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 
         if limits.max_memory_bytes > 0 {
             info.ProcessMemoryLimit = limits.max_memory_bytes as usize;
@@ -412,18 +465,40 @@ fn create_restricted_token(
     tracing::debug!(
         disable_admin = restrictions.disable_admin_sid,
         remove_privs = restrictions.remove_privileges,
-        "Restricted token created"
+        "Restricted token created (NOT applied to child process — see TODO below)"
     );
+
+    // SAFETY-WARNING: the restricted token is created successfully but is
+    // never applied to the spawned subprocess. `tokio::process::Command`
+    // does not expose a token-injection API, so the child inherits the
+    // parent's unrestricted token.
+    //
+    // TODO: Replace `tokio::process::Command` with a raw `CreateProcessAsUserW`
+    // or `CreateProcessWithTokenW` call (wrapped in `spawn_blocking`) to launch
+    // the worker under the restricted token. Until that is done, token
+    // restriction enforcement is UNENFORCED at the process level.
+    tracing::warn!(
+        "Windows restricted token created but NOT applied to spawned subprocess; \
+         token restriction is unenforced. \
+         Full enforcement requires CreateProcessAsUserW / CreateProcessWithTokenW."
+    );
+
+    // The caller binds this to `_token`; it is retained only to keep the
+    // handle alive until scope exit, not to enforce anything.
     Ok(OwnedHandle(restricted_token))
 }
 
 /// Log-only stub when `windows-sandbox` feature is disabled.
+///
+/// Token restriction is unenforced in this path regardless: even when the
+/// feature is enabled, the restricted token is not applied to spawned processes
+/// (see the full Win32 implementation above for the TODO).
 #[cfg(not(feature = "windows-sandbox"))]
 fn create_restricted_token(restrictions: &TokenRestrictions) -> Result<(), AutomationError> {
     tracing::debug!(
         disable_admin = restrictions.disable_admin_sid,
         remove_privs = restrictions.remove_privileges,
-        "Restricted Token (enforcement requires windows-sandbox feature)"
+        "Restricted Token stub (windows-sandbox feature disabled; token restriction unenforced)"
     );
     Ok(())
 }
@@ -493,6 +568,30 @@ mod tests {
         assert!(!caps.filesystem_isolation);
         assert!(!caps.syscall_filtering);
         assert!(!caps.network_isolation);
+        // Token restriction is intentionally absent from SandboxCapabilities:
+        // the restricted token is created but never applied to spawned processes
+        // (see #5986). SandboxCapabilities has no `token_restriction` field, so
+        // callers cannot observe a false "enforced" claim.
+    }
+
+    /// Verify that the non-`windows-sandbox` stub for `create_restricted_token`
+    /// returns `Ok(())` without panicking. This path runs on every OS, ensuring
+    /// the stub does not claim enforcement it cannot provide.
+    #[test]
+    #[cfg(not(feature = "windows-sandbox"))]
+    fn restricted_token_stub_does_not_panic() {
+        use crate::sandbox::win_limits::build_token_restrictions;
+
+        let config = SandboxConfig {
+            profile: SandboxProfile::Standard,
+            ..Default::default()
+        };
+        let restrictions = build_token_restrictions(&config);
+        // The stub must succeed silently; it must NOT imply enforcement.
+        // Unwrap panics with the AutomationError if the stub unexpectedly fails,
+        // which is more diagnostic than a value-blind is_ok() assertion.
+        create_restricted_token(&restrictions)
+            .expect("restricted_token stub must return Ok(()) without panicking");
     }
 
     #[test]

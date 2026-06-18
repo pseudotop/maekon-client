@@ -15,9 +15,10 @@ impl SqliteStorage {
         &self,
         device_name: &str,
     ) -> Result<(String, String), StorageError> {
-        // device_identity 는 ALL_TABLES 이며 신규 INSERT 를 포함하므로 write_lock 을
-        // 사용한다(앱 시작 시 호출되며 erase 경로와 겹치지 않는다). deletion_flag set
-        // 시 스킵되면 빈 식별자가 반환되나, erase 중에는 이 경로가 호출되지 않는다.
+        // device_identity ∈ ALL_TABLES and this path performs a new INSERT, so it uses
+        // write_lock (called at app startup; never overlaps the erase path). If skipped
+        // when deletion_flag is set an empty identity would be returned, but this path is
+        // never invoked during erase.
         self.conn
             .write_lock()
             .run((String::new(), String::new()), |conn| {
@@ -65,8 +66,8 @@ impl SqliteStorage {
         &self,
         device_name: &str,
     ) -> Result<(String, String), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵). 삭제 후 락이 해제되면
-        // ensure_device_identity 가 새 식별자를 생성한다.
+        // Write — write_lock (skipped when deletion_flag is set). Once the lock is released
+        // after the delete, ensure_device_identity generates a fresh identity.
         self.conn
             .write_lock()
             .run::<_, (), StorageError>((), |conn| {

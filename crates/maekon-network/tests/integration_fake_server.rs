@@ -1028,18 +1028,22 @@ async fn build_connected_runtime_with_scopes(
 
     let inbox_store = Arc::new(store.inbox_store());
     let outbox_store = Arc::new(store.outbox_store());
-    let inbox = Arc::new(IntegrationInboxCoordinator::new(
-        "device-compat-001",
-        session.clone(),
-        inbox_store.clone(),
-        inbox_store,
-        Arc::new(transport.inbox_transport()),
-        10,
-    ));
     let egress = Arc::new(IntegrationEgressCoordinator::new(
         session.clone(),
         outbox_store,
         Arc::new(transport.egress_transport()),
+        10,
+    ));
+    // #6198: the inbox coordinator now routes prompt receipts through the egress
+    // port (shared outbox) instead of writing a receipt store directly, so the
+    // acknowledge/dismiss -> outbox -> flush round-trip below exercises the
+    // unified egress path.
+    let inbox = Arc::new(IntegrationInboxCoordinator::new(
+        "device-compat-001",
+        session.clone(),
+        inbox_store,
+        egress.clone() as Arc<dyn maekon_core::ports::integration::IntegrationEgressPort>,
+        Arc::new(transport.inbox_transport()),
         10,
     ));
 

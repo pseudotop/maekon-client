@@ -1,5 +1,19 @@
 use reqwest::StatusCode;
 
+/// Privacy-safe marker describing a remote response body without echoing it.
+///
+/// Remote bodies can carry prompts, OCR text, queries, secrets, or PII. This
+/// returns only the *state* of the body (`body=empty`, `body=omitted_for_privacy`,
+/// `body=unavailable`), never the body itself, so it is safe to embed in any
+/// error field that is logged or persisted.
+pub(crate) fn provider_error_body_state(body: Option<&str>) -> &'static str {
+    match body {
+        Some(body) if body.trim().is_empty() => "body=empty",
+        Some(_) => "body=omitted_for_privacy",
+        None => "body=unavailable",
+    }
+}
+
 /// Build a privacy-safe provider error message for local propagation.
 ///
 /// Remote provider error bodies can echo prompts, OCR text, embedding queries,
@@ -10,11 +24,7 @@ pub(crate) fn provider_error_message(
     status: StatusCode,
     body: Option<&str>,
 ) -> String {
-    let body_state = match body {
-        Some(body) if body.trim().is_empty() => "body=empty",
-        Some(_) => "body=omitted_for_privacy",
-        None => "body=unavailable",
-    };
+    let body_state = provider_error_body_state(body);
     format!("{provider} error ({status}): provider response {body_state}")
 }
 

@@ -56,4 +56,13 @@ pub trait ProcessMonitor: Send + Sync {
 #[async_trait]
 pub trait ActivityMonitor: Send + Sync {
     async fn collect_context(&self) -> Result<UserContext, CoreError>;
+
+    /// Collect only the lightweight context the monitor hot-path needs — active
+    /// window + mouse, WITHOUT the (expensive) top-process enumeration (#6441 F13).
+    /// The 1 Hz monitor loop never reads [`UserContext::processes`], so walking the
+    /// full process table every tick is wasted work. The default delegates to
+    /// [`collect_context`](Self::collect_context) so non-hot-path impls need no change.
+    async fn collect_active_context(&self) -> Result<UserContext, CoreError> {
+        self.collect_context().await
+    }
 }

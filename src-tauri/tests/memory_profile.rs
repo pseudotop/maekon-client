@@ -22,12 +22,13 @@ struct MemorySnapshot {
     timestamp: Instant,
 }
 
-/// 현재 프로세스의 RSS(Resident Set Size, 바이트)를 sysinfo 로 측정한다.
+/// Measures the current process RSS (Resident Set Size, in bytes) via sysinfo.
 ///
-/// 기존 구현은 `ps -o rss=` 외부 프로세스에 의존하여 Windows 에서 동작하지
-/// 않았다. 프로덕션 `src/memory_profiler.rs` 가 sysinfo 기반(`process.memory()`)
-/// 으로 RSS 를 측정하므로, 테스트도 동일한 측정 경로(sysinfo)로 통일한다.
-/// 측정 실패(미지원 플랫폼 등) 시 0 을 반환한다.
+/// The previous implementation relied on the external `ps -o rss=` process and
+/// did not work on Windows. Since production `src/memory_profiler.rs` measures
+/// RSS via sysinfo (`process.memory()`), the test uses the same measurement path
+/// (sysinfo) for consistency. Returns 0 on measurement failure (e.g. unsupported
+/// platform).
 fn get_rss() -> u64 {
     use sysinfo::{Pid, ProcessesToUpdate, System};
 
@@ -37,39 +38,41 @@ fn get_rss() -> u64 {
     system.process(pid).map(|p| p.memory()).unwrap_or(0)
 }
 
-/// 현재 프로세스의 CPU 사용률(%)을 sysinfo 로 측정한다.
+/// Measures the current process CPU usage (%) via sysinfo.
 ///
-/// sysinfo 의 CPU 사용률은 두 번의 refresh 사이 간격으로 계산되므로,
-/// `MINIMUM_CPU_UPDATE_INTERVAL` 이상 대기 후 두 번째 refresh 를 수행한다.
-/// 측정 실패 시 0.0 을 반환한다. 반환값은 단일 코어 기준 100% 를 초과할 수 있다
-/// (멀티스레드 프로세스).
+/// sysinfo computes CPU usage from the interval between two refreshes, so this
+/// performs the second refresh after waiting at least `MINIMUM_CPU_UPDATE_INTERVAL`.
+/// Returns 0.0 on measurement failure. The return value can exceed 100% relative
+/// to a single core (multi-threaded process).
 fn sample_cpu_percent() -> f32 {
     use sysinfo::{Pid, ProcessesToUpdate, System, MINIMUM_CPU_UPDATE_INTERVAL};
 
     let pid = Pid::from_u32(std::process::id());
     let mut system = System::new();
-    // 1차 refresh — CPU 사용률 계산 기준점 확보.
+    // 1st refresh — establish the baseline for CPU-usage calculation.
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
-    // 2차 refresh — 경과 시간 기준 CPU 사용률 산출.
+    // 2nd refresh — derive CPU usage based on elapsed time.
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     system.process(pid).map(|p| p.cpu_usage()).unwrap_or(0.0)
 }
 
 // ============================================================================
-// #4829: 절대(absolute) 리소스 예산 단언 (RSS / CPU)
+// #4829: absolute resource-budget assertions (RSS / CPU)
 // ----------------------------------------------------------------------------
-// 주의: 아래 100MB RSS / 200% CPU 수치는 확정된 제품 SSOT 가 아닌 **잠정값**이다.
-// 누수 회귀(leak regression)를 잡되 CI 에서 flaky 하지 않도록 의도적으로 넉넉하게
-// 설정했다. 제품 차원의 공식 리소스 예산(SSOT)이 확정되면 그 상수로 교체해야 한다.
-// 프로덕션에 RSS/CPU 예산 상수가 존재하지 않아(grep 확인) 테스트 로컬 상수로 둔다.
+// NOTE: the 100MB RSS / 200% CPU numbers below are **provisional**, not a
+// confirmed product SSOT. They are intentionally set generously so they catch
+// leak regressions without being flaky in CI. Once the official product-level
+// resource budget (SSOT) is confirmed, replace these with that constant.
+// No RSS/CPU budget constant exists in production (verified via grep), so these
+// are kept as test-local constants.
 // ============================================================================
 
-/// 잠정 RSS 상한 (바이트). 200MB — 확정 SSOT 아님(provisional).
+/// Provisional RSS upper bound (bytes). 200MB — not a confirmed SSOT (provisional).
 const PROVISIONAL_RSS_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
 
-/// 잠정 CPU 사용률 상한 (%). 멀티코어 합산 기준이므로 200%(2코어 풀 가동) 로 둔다.
-/// 확정 SSOT 아님(provisional).
+/// Provisional CPU-usage upper bound (%). This is a multi-core aggregate, so it is
+/// set to 200% (two cores fully utilized). Not a confirmed SSOT (provisional).
 const PROVISIONAL_CPU_BUDGET_PERCENT: f32 = 200.0;
 
 fn create_test_image(width: u32, height: u32, seed: u8) -> DynamicImage {
@@ -441,16 +444,20 @@ fn test_combined_memory() {
     );
 }
 
-/// #4829: 절대 리소스 예산(RSS / CPU) 단언 테스트.
+/// #4829: absolute resource-budget (RSS / CPU) assertion test.
 ///
-/// 기존 테스트들은 모두 *상대적* 누수(증가율/분산)만 검증했다. 이 테스트는
-/// 실제 vision + storage 워크로드를 돌린 직후의 프로세스 RSS(peak)와 CPU 사용률을
-/// **절대 상한**과 비교하여, 워크로드가 잠정 예산을 초과하지 않음을 검증한다.
+/// All existing tests only verified *relative* leaks (growth rate / variance).
+/// This test compares the process RSS (peak) and CPU usage right after running a
+/// real vision + storage workload against an **absolute upper bound**, verifying
+/// that the workload does not exceed the provisional budget.
 ///
-/// - 측정은 REAL 이다: `get_rss()`/`sample_cpu_percent()` 는 sysinfo 로 실행 중인
-///   현재 프로세스의 실제 RSS/CPU 를 샘플링한다(하드코딩 값 단언 아님).
-/// - 예산 수치는 잠정값이다(상수 정의부 주석 참조). 확정 SSOT 로 교체 필요.
-/// - long-running + 환경 의존적이므로 `#[ignore]` 로 opt-in 유지 (`--ignored`).
+/// - The measurement is REAL: `get_rss()`/`sample_cpu_percent()` sample the actual
+///   RSS/CPU of the currently running process via sysinfo (not a hardcoded-value
+///   assertion).
+/// - The budget numbers are provisional (see the constant-definition comment).
+///   They must be replaced with the confirmed SSOT.
+/// - Long-running + environment-dependent, so it stays opt-in via `#[ignore]`
+///   (`--ignored`).
 #[test]
 #[ignore = "absolute resource-budget assertion - run with cargo test --ignored"]
 fn test_absolute_resource_budget() {
@@ -458,18 +465,21 @@ fn test_absolute_resource_budget() {
 
     println!("\n=== #4829 absolute resource-budget test ===");
 
-    // --- 측정 가능 여부 가드 ---
-    // 미지원 플랫폼(또는 CI 컨테이너에서 프로세스 가시성 제한)에서 get_rss() 가 0 을
-    // 반환하면 절대 단언을 신뢰할 수 없으므로 의미 있는 메시지와 함께 패닉한다.
-    // (지원 플랫폼: macOS/Linux/Windows. ignore 테스트라 일반 CI 는 영향 없음.)
+    // --- measurability guard ---
+    // If get_rss() returns 0 on an unsupported platform (or where process
+    // visibility is restricted in a CI container), the absolute assertion cannot
+    // be trusted, so panic with a meaningful message.
+    // (Supported platforms: macOS/Linux/Windows. This is an ignored test, so
+    // regular CI is unaffected.)
     let baseline_rss = get_rss();
     assert!(
         baseline_rss > 0,
-        "RSS 측정 실패(0 반환) — sysinfo 가 현재 프로세스를 볼 수 없는 환경. \
-         지원 플랫폼(macOS/Linux/Windows)에서 실행해야 한다."
+        "RSS measurement failed (returned 0) — sysinfo cannot see the current \
+         process in this environment. Run on a supported platform \
+         (macOS/Linux/Windows)."
     );
 
-    // --- 실제 워크로드 실행 ---
+    // --- run the real workload ---
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("budget.db");
     let storage = SqliteStorage::open(&db_path, 30, None).unwrap();
@@ -481,12 +491,12 @@ fn test_absolute_resource_budget() {
     let start = Instant::now();
 
     for i in 0..ITERATIONS {
-        // vision 파이프라인 (delta + thumbnail + webp 인코딩)
+        // vision pipeline (delta + thumbnail + webp encoding)
         let _delta = delta::compute_delta(&img1, &img2);
         let thumb = thumbnail::fast_resize(&img2, 480, 270).unwrap();
         let _encoded = encoder::encode_webp(&thumb, WebPQuality::Medium).unwrap();
 
-        // storage 파이프라인 (이벤트 배치 저장)
+        // storage pipeline (batch event save)
         let events: Vec<Event> = (0..5)
             .map(|j| {
                 Event::User(UserEvent {
@@ -502,13 +512,13 @@ fn test_absolute_resource_budget() {
             debug!("save_events_batch failed: {e}");
         }
 
-        // 매 10회 실제 RSS 샘플링하여 peak 갱신 (REAL measurement)
+        // Sample the real RSS every 10 iterations to update the peak (REAL measurement)
         if i.is_multiple_of(10) {
             peak_rss = peak_rss.max(get_rss());
         }
     }
 
-    // 워크로드 종료 직후 최종 RSS / CPU 샘플 (REAL measurement)
+    // Final RSS / CPU sample right after the workload ends (REAL measurement)
     peak_rss = peak_rss.max(get_rss());
     let cpu_percent = sample_cpu_percent();
     let elapsed = start.elapsed();
@@ -526,26 +536,28 @@ fn test_absolute_resource_budget() {
         PROVISIONAL_CPU_BUDGET_PERCENT,
     );
 
-    // --- 절대 예산 단언 (잠정값) ---
+    // --- absolute budget assertion (provisional) ---
     assert!(
         peak_rss <= PROVISIONAL_RSS_BUDGET_BYTES,
-        "peak RSS {:.2} MB 가 잠정 예산 {:.0} MB 를 초과. \
-         (실제 회귀이거나 잠정 예산이 너무 빡빡할 수 있음 — SSOT 확정 시 재조정)",
+        "peak RSS {:.2} MB exceeds the provisional budget of {:.0} MB. \
+         (Could be a real regression or an overly tight provisional budget — \
+         re-tune once the SSOT is confirmed)",
         peak_rss as f64 / 1024.0 / 1024.0,
         PROVISIONAL_RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
     );
 
-    // CPU 측정값이 0.0 이면(일부 환경에서 발생) 단언을 건너뛴다 — false-pass 방지보다
-    // false-fail 회피 우선. 0.0 초과일 때만 상한을 검증한다.
+    // If the CPU measurement is 0.0 (happens in some environments), skip the
+    // assertion — prefer avoiding a false-fail over preventing a false-pass. Only
+    // verify the upper bound when it is greater than 0.0.
     if cpu_percent > 0.0 {
         assert!(
             cpu_percent <= PROVISIONAL_CPU_BUDGET_PERCENT,
-            "CPU {:.1}% 가 잠정 예산 {:.0}% 를 초과. \
-             (SSOT 확정 시 재조정)",
+            "CPU {:.1}% exceeds the provisional budget of {:.0}%. \
+             (Re-tune once the SSOT is confirmed)",
             cpu_percent,
             PROVISIONAL_CPU_BUDGET_PERCENT,
         );
     } else {
-        println!("[INFO] CPU 측정값 0.0 — 이 환경에서 CPU 단언 생략");
+        println!("[INFO] CPU measurement is 0.0 — skipping the CPU assertion in this environment");
     }
 }

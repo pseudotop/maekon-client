@@ -47,6 +47,20 @@ struct InnerState {
     status: CircuitState,
     consecutive_failures: u32,
     current_cooldown: Duration,
+    /// Number of half-open probe callers currently admitted but not yet
+    /// resolved via `record_success`/`record_failure`. Bounded by
+    /// `config.half_open_probes` so a shared registry breaker cannot emit a
+    /// probe storm when many adapters hit the same endpoint at once. Reset to
+    /// `0` whenever the breaker (re)enters HalfOpen or leaves it.
+    half_open_in_flight: u32,
+    /// When the current half-open probe window opened (first probe admitted).
+    /// `check()` self-heals from a leaked `half_open_in_flight`: an admitted
+    /// probe that never reports an outcome (e.g. a caller that takes a
+    /// `BreakerSignal::Neutral` or `?` early-return path between `check()` and
+    /// `record_*`) would otherwise pin the budget and brick the breaker forever.
+    /// Once a window has been open for `current_cooldown` without resolving, the
+    /// budget is reset so probing can resume. `None` when not in a probe window.
+    half_open_window_start: Option<Instant>,
 }
 
 // ── CircuitBreaker ──────────────────────────────────────────────────
@@ -65,19 +79,61 @@ impl CircuitBreaker {
                 status: CircuitState::Closed,
                 consecutive_failures: 0,
                 current_cooldown: cooldown,
+                half_open_in_flight: 0,
+                half_open_window_start: None,
             }),
         }
     }
 
     /// Check current state, transitioning Open→HalfOpen if cooldown elapsed.
+    ///
+    /// HalfOpen admits at most `config.half_open_probes` concurrent probe
+    /// callers: the first N callers observe `HalfOpen` (and must report the
+    /// outcome via `record_success`/`record_failure`), while overflow callers
+    /// are turned away with `Open { until }` so they fast-fail just like a
+    /// tripped breaker. This bounds probe load on a shared-registry breaker,
+    /// where many adapters can race into the same endpoint at once.
     pub fn check(&self) -> CircuitState {
         let mut inner = self.state.lock();
+        let now = Instant::now();
         if let CircuitState::Open { until } = &inner.status {
-            if Instant::now() >= *until {
+            if now >= *until {
                 inner.status = CircuitState::HalfOpen;
+                // Fresh probe window: no probes admitted yet.
+                inner.half_open_in_flight = 0;
+                inner.half_open_window_start = None;
                 warn!("circuit breaker: Open → HalfOpen (cooldown elapsed)");
             }
         }
+
+        if matches!(inner.status, CircuitState::HalfOpen) {
+            // Self-heal a leaked budget: if the probe window has been open for a
+            // full cooldown without any probe resolving (a caller that took a
+            // Neutral/early-return path and never called record_*), reset it so
+            // the breaker can re-probe instead of being permanently stuck Open.
+            if let Some(started) = inner.half_open_window_start {
+                if now.duration_since(started) >= inner.current_cooldown {
+                    inner.half_open_in_flight = 0;
+                    inner.half_open_window_start = None;
+                }
+            }
+            if inner.half_open_in_flight < self.config.half_open_probes {
+                // Admit this caller as a probe; open the window on the first one.
+                if inner.half_open_in_flight == 0 {
+                    inner.half_open_window_start = Some(now);
+                }
+                inner.half_open_in_flight += 1;
+                return CircuitState::HalfOpen;
+            }
+            // Probe budget exhausted — deny overflow callers. We surface
+            // `Open` (rather than a new state) so existing consumers, which
+            // fast-fail on `CircuitState::Open { .. }`, reject the overflow
+            // without needing to know about probe limiting. The `until` is the
+            // current cooldown horizon so callers back off sensibly.
+            let until = now + inner.current_cooldown;
+            return CircuitState::Open { until };
+        }
+
         inner.status.clone()
     }
 
@@ -87,6 +143,10 @@ impl CircuitBreaker {
         inner.consecutive_failures = 0;
         inner.current_cooldown = self.config.initial_cooldown;
         inner.status = CircuitState::Closed;
+        // Leaving HalfOpen: clear the probe budget so a future probe window
+        // starts fresh.
+        inner.half_open_in_flight = 0;
+        inner.half_open_window_start = None;
         if was_half_open {
             warn!("circuit breaker: HalfOpen → Closed (probe success)");
         }
@@ -117,6 +177,9 @@ impl CircuitBreaker {
                     "circuit breaker: HalfOpen → Open (probe failed, cooldown doubled)"
                 );
                 inner.status = CircuitState::Open { until };
+                // Leaving HalfOpen: clear the probe budget for the next window.
+                inner.half_open_in_flight = 0;
+                inner.half_open_window_start = None;
             }
             CircuitState::Open { .. } => {
                 // Already open — just count the failure
@@ -302,6 +365,117 @@ mod tests {
         cb.record_failure();
         // Only 1 failure after reset, threshold is 3
         assert!(matches!(cb.check(), CircuitState::Closed));
+    }
+
+    #[test]
+    fn half_open_admits_only_configured_probe_budget() {
+        // With half_open_probes = 1, the first check() in HalfOpen is admitted
+        // as a probe (HalfOpen), but the 2nd concurrent check() is denied (Open).
+        let cb = CircuitBreaker::new(fast_config());
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        // 1st probe admitted.
+        assert!(matches!(cb.check(), CircuitState::HalfOpen));
+        // 2nd concurrent probe (budget exhausted) denied → Open.
+        assert!(matches!(cb.check(), CircuitState::Open { .. }));
+        // A 3rd is likewise denied while the probe is unresolved.
+        assert!(matches!(cb.check(), CircuitState::Open { .. }));
+    }
+
+    #[test]
+    fn half_open_admits_multiple_probes_when_configured() {
+        // With half_open_probes = 2, the first two checks are admitted and the
+        // third (n+1) is denied.
+        let config = CircuitBreakerConfig {
+            half_open_probes: 2,
+            ..fast_config()
+        };
+        let cb = CircuitBreaker::new(config);
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(matches!(cb.check(), CircuitState::HalfOpen)); // probe 1
+        assert!(matches!(cb.check(), CircuitState::HalfOpen)); // probe 2
+                                                               // (n+1)-th probe denied.
+        assert!(matches!(cb.check(), CircuitState::Open { .. }));
+    }
+
+    #[test]
+    fn half_open_probe_budget_resets_after_success() {
+        // After a probe resolves successfully (→ Closed) and the breaker trips
+        // again, the next HalfOpen window admits a fresh probe.
+        let cb = CircuitBreaker::new(fast_config());
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(matches!(cb.check(), CircuitState::HalfOpen)); // probe admitted
+        cb.record_success(); // resolves probe → Closed, budget reset
+
+        // Trip again and re-enter HalfOpen — budget should be available again.
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(matches!(cb.check(), CircuitState::HalfOpen));
+    }
+
+    #[test]
+    fn half_open_budget_self_heals_when_probe_never_resolves() {
+        // A probe admitted in HalfOpen that NEVER calls record_success/
+        // record_failure (e.g. a BreakerSignal::Neutral or a `?` early-return
+        // between check() and record_*) must NOT permanently brick the breaker.
+        // After the probe window (one cooldown) elapses, check() resets the
+        // budget and re-admits a probe instead of returning Open forever.
+        let cb = CircuitBreaker::new(fast_config()); // cooldown 50ms, budget 1
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60)); // cooldown elapsed → HalfOpen
+                                                       // First probe admitted, but the caller never resolves it.
+        assert!(matches!(cb.check(), CircuitState::HalfOpen));
+        // Budget exhausted: an immediate second check is denied.
+        assert!(matches!(cb.check(), CircuitState::Open { .. }));
+        // Wait out the probe window WITHOUT ever calling record_*.
+        std::thread::sleep(Duration::from_millis(60));
+        // Self-heal: the breaker re-admits a fresh probe rather than staying stuck.
+        assert!(
+            matches!(cb.check(), CircuitState::HalfOpen),
+            "breaker must self-heal a leaked probe budget, not brick permanently"
+        );
+    }
+
+    #[test]
+    fn concurrent_half_open_probes_bounded_to_budget() {
+        // Many threads racing check() in HalfOpen: exactly half_open_probes
+        // observe HalfOpen, the rest are turned away with Open.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cb = std::sync::Arc::new(CircuitBreaker::new(fast_config())); // budget = 1
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+
+        let admitted = std::sync::Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..32)
+            .map(|_| {
+                let cb = std::sync::Arc::clone(&cb);
+                let admitted = std::sync::Arc::clone(&admitted);
+                std::thread::spawn(move || {
+                    if matches!(cb.check(), CircuitState::HalfOpen) {
+                        admitted.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(admitted.load(Ordering::Relaxed), 1);
     }
 
     #[test]

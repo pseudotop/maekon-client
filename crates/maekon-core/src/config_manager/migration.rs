@@ -11,16 +11,16 @@ use super::persistence;
 /// immediately so that the next launch reads the already-migrated file. A
 /// persist failure is logged as a warning and does not abort the load.
 ///
-/// #4807 (U3): 로드된 파일의 `schema_version`이 현재 클라이언트가 지원하는
-/// `CONFIG_SCHEMA_VERSION`보다 크면(= 더 새로운 클라이언트가 기록한 설정)
-/// 다운그레이드 가드가 작동해 로드를 거부한다. (`maekon-storage`의
-/// `run_migrations` future-version 가드 패턴 미러링.)
+/// #4807 (U3): if the loaded file's `schema_version` is greater than the
+/// `CONFIG_SCHEMA_VERSION` this client supports (i.e. a config written by a
+/// newer client), the downgrade guard kicks in and refuses to load it. (Mirrors
+/// the `run_migrations` future-version guard pattern in `maekon-storage`.)
 pub(super) fn load_and_migrate_from_file(path: &Path) -> Result<AppConfig, CoreError> {
     let mut config = persistence::load_from_file(path)?;
 
-    // 다운그레이드 가드: 미래(더 큰) 스키마 버전은 거부한다.
-    // 마이그레이션 ladder는 의도적으로 만들지 않는다 — 실제 breaking change가
-    // 생기기 전까지는 단방향 가드만 둔다.
+    // Downgrade guard: refuse future (larger) schema versions.
+    // We deliberately do not build a migration ladder — until an actual breaking
+    // change occurs, we keep only the one-way guard.
     if config.schema_version > AppConfig::SCHEMA_VERSION {
         error!(
             path = %path.display(),
@@ -74,29 +74,29 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// #4807 (U3): schema_version 필드가 없는 (레거시) 설정 파일은
-    /// 다운그레이드 가드에 걸리지 않고 정상 로드되어야 한다.
+    /// #4807 (U3): a (legacy) config file without a `schema_version` field must
+    /// not trip the downgrade guard and must load normally.
     #[test]
     fn legacy_config_without_schema_version_loads_ok() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("config.json");
 
-        // 기본 설정을 직렬화한 뒤 schema_version 키를 제거해 레거시 파일을 흉내낸다.
+        // Serialize the default config and remove the schema_version key to mimic a legacy file.
         let mut value = serde_json::to_value(AppConfig::default_config()).unwrap();
         value.as_object_mut().unwrap().remove("schema_version");
         std::fs::write(&cfg_path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
         let loaded =
-            load_and_migrate_from_file(&cfg_path).expect("레거시 설정은 정상 로드되어야 함");
+            load_and_migrate_from_file(&cfg_path).expect("legacy config must load normally");
         assert_eq!(
             loaded.schema_version,
             AppConfig::SCHEMA_VERSION,
-            "버전 필드가 없는 설정은 baseline 버전으로 로드되어야 함"
+            "config without a version field must load as the baseline version"
         );
     }
 
-    /// #4807 (U3): 현재 클라이언트가 지원하는 버전보다 큰 schema_version을
-    /// 가진 설정 파일은 다운그레이드 가드에 의해 거부되어야 한다.
+    /// #4807 (U3): a config file whose `schema_version` is greater than the
+    /// version this client supports must be refused by the downgrade guard.
     #[test]
     fn future_schema_version_is_refused() {
         let tmp = TempDir::new().unwrap();
@@ -111,14 +111,14 @@ mod tests {
             CoreError::Config { message, .. } => {
                 assert!(
                     message.contains("newer than this client supports"),
-                    "에러 메시지는 다운그레이드 사유를 설명해야 함, got: {message}"
+                    "error message must explain the downgrade reason, got: {message}"
                 );
             }
             other => panic!("expected CoreError::Config, got {other:?}"),
         }
     }
 
-    /// 현재 버전과 동일한 schema_version은 정상 로드되어야 한다(가드 미작동).
+    /// A schema_version equal to the current version must load normally (guard inactive).
     #[test]
     fn current_schema_version_loads_ok() {
         let tmp = TempDir::new().unwrap();
@@ -128,8 +128,8 @@ mod tests {
         assert_eq!(config.schema_version, AppConfig::SCHEMA_VERSION);
         std::fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-        let loaded =
-            load_and_migrate_from_file(&cfg_path).expect("현재 버전 설정은 정상 로드되어야 함");
+        let loaded = load_and_migrate_from_file(&cfg_path)
+            .expect("config at the current version must load normally");
         assert_eq!(loaded.schema_version, AppConfig::SCHEMA_VERSION);
     }
 }

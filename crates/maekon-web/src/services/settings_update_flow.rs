@@ -1,7 +1,6 @@
 use maekon_api_contracts::settings::AppSettings;
 use maekon_core::config::CredentialBackendKind;
 use maekon_core::config_manager::ConfigManager;
-use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::coaching::CoachingPort;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use std::sync::Arc;
@@ -11,26 +10,33 @@ use crate::services::settings_policy_service::{emit_policy_change_events, Policy
 use crate::services::settings_secret_persistence::persist_api_key_bindings;
 use crate::services::settings_service::apply_settings_to_config;
 
-/// F-RR-38: `PolicyAuditWriter` is promoted to a long-lived field, created
-/// once per `SettingsUpdateFlow` instance and reused across all `apply()`
-/// calls.  The previous design called `emit_policy_change_events` with a raw
-/// `Option<Arc<dyn AuditLogPort>>`, which constructed a new
-/// `(mpsc::channel, tokio::spawn)` pair on every invocation.  Rapid settings
-/// saves (e.g. slider drags) could accumulate N concurrent writer tasks with
-/// no bound.
+/// #6117: `SettingsUpdateFlow` no longer *constructs* a `PolicyAuditWriter`.
+/// It receives the single, server-lifetime `Arc<PolicyAuditWriter>` that
+/// `WebServer::build_router` built once and stashed in
+/// `AppState.automation.policy_audit_writer`.
 ///
-/// `Arc<PolicyAuditWriter>` allows `Clone` on `SettingsUpdateFlow` (required
-/// by Axum state sharing) while sharing a single writer task across all clones.
+/// The previous shape (F-RR-38) created the writer in `SettingsUpdateFlow::new`,
+/// but because `SettingsWebContext` — and therefore `SettingsCommandService`
+/// and `SettingsUpdateFlow` — is rebuilt on **every** request and dropped at
+/// request end, the writer's bounded-channel drain task was spawned and then
+/// `abort()`ed per `POST /api/settings`, dropping the just-enqueued audit event
+/// before it could flush.  Sharing one long-lived writer fixes that: the drain
+/// task lives for the whole server lifetime.
+///
+/// `Arc<PolicyAuditWriter>` still allows `Clone` on `SettingsUpdateFlow`
+/// (required by Axum state sharing) while sharing the single writer task across
+/// all clones.
 #[derive(Clone)]
 pub(crate) struct SettingsUpdateFlow {
     config_manager: ConfigManager,
     default_secret_backend_kind: CredentialBackendKind,
     secret_store: Option<Arc<dyn SecretStore>>,
     secret_stores: Option<SecretStoreSet>,
-    /// Long-lived audit writer.  `None` when no `AuditLogPort` is configured.
-    /// Wrapped in `Arc` so `SettingsUpdateFlow` can derive `Clone`.
+    /// Shared, server-lifetime audit writer (owned by `AppState`).  `None` when
+    /// no `AuditLogPort` is configured (tests / standalone builds).
     policy_audit_writer: Option<Arc<PolicyAuditWriter>>,
-    /// #5707: coaching 엔진 hot-reload 핸들. `None`이면 연결 없음(테스트/스탠드얼론).
+    /// #5707: coaching engine hot-reload handle. `None` means no connection
+    /// (tests / standalone).
     coaching_engine: Option<Arc<dyn CoachingPort>>,
 }
 
@@ -40,13 +46,9 @@ impl SettingsUpdateFlow {
         default_secret_backend_kind: CredentialBackendKind,
         secret_store: Option<Arc<dyn SecretStore>>,
         secret_stores: Option<SecretStoreSet>,
-        audit_logger: Option<Arc<dyn AuditLogPort>>,
+        policy_audit_writer: Option<Arc<PolicyAuditWriter>>,
         coaching_engine: Option<Arc<dyn CoachingPort>>,
     ) -> Self {
-        // Create the writer eagerly so the background task is running before
-        // any apply() call.  If no audit logger is configured, skip the spawn.
-        let policy_audit_writer =
-            audit_logger.map(|logger| Arc::new(PolicyAuditWriter::new(logger)));
         Self {
             config_manager,
             default_secret_backend_kind,
@@ -62,14 +64,17 @@ impl SettingsUpdateFlow {
         let mut next_config = previous_config.clone();
 
         apply_settings_to_config(&mut next_config, settings)?;
-        persist_api_key_bindings(
-            &mut next_config,
-            self.secret_store.clone(),
-            self.secret_stores.as_ref(),
-            self.default_secret_backend_kind,
-        )
-        .await?;
 
+        // #6274: validate the config (endpoint cleartext/blocked-model/timeout
+        // gates + managed-policy) BEFORE writing any secret to the OS keystore.
+        // persist_api_key_bindings is a true keystore upsert keyed only by
+        // provider+profile, so running it first meant a save rejected by these
+        // checks had already clobbered the live credential slot with no rollback
+        // (config rolls back, keystore does not). These validations are all
+        // config-level — the endpoint URL/model/timeout are set by
+        // apply_settings_to_config above, and a remote provider with no key/binding
+        // is correctly rejected here regardless of order — so they are safe to run
+        // before the binding is persisted.
         next_config
             .ai_provider
             .validate_selected_remote_endpoints()
@@ -87,19 +92,35 @@ impl SettingsUpdateFlow {
             )));
         }
 
+        // Validation passed — now persist the API key(s) to the keystore and
+        // commit the config. (Persist mutates next_config's inline keys into
+        // secret_ref bindings.)
+        persist_api_key_bindings(
+            &mut next_config,
+            self.secret_store.clone(),
+            self.secret_stores.as_ref(),
+            self.default_secret_backend_kind,
+        )
+        .await?;
+
         self.config_manager
             .update(next_config.clone())
             .map_err(ApiError::from)?;
 
-        // Reuse the long-lived writer — no new channel or task is spawned here.
+        // #6117: enqueue policy-change audit events into the long-lived,
+        // server-lifetime writer and AWAIT the hand-off so the event is durably
+        // queued before this request returns — no fire-and-forget into a task
+        // that is dropped at request end.  No new channel or task is spawned.
         emit_policy_change_events(
             self.policy_audit_writer.as_deref(),
             &previous_config,
             &next_config,
-        );
+        )
+        .await;
 
-        // #5707: coaching 설정이 바뀐 경우 엔진에 즉시 hot-reload 신호를 보낸다.
-        // serde_json Value 비교로 변경 감지 — false-positive 없이 apply 를 최소화한다.
+        // #5707: when the coaching config changed, signal the engine to hot-reload
+        // immediately. Change detection uses a serde_json Value comparison —
+        // minimizing applies with no false positives.
         let coaching_changed = serde_json::to_value(&previous_config.coaching)
             .ok()
             .zip(serde_json::to_value(&next_config.coaching).ok())
@@ -135,7 +156,7 @@ mod tests {
     }
 
     fn flow_for(cm: ConfigManager) -> SettingsUpdateFlow {
-        // #5707: coaching_engine=None → テスト環境 (엔진 없음)
+        // #5707: coaching_engine=None → test environment (no engine)
         SettingsUpdateFlow::new(cm, CredentialBackendKind::Env, None, None, None, None)
     }
 

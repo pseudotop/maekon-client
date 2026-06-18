@@ -16,6 +16,7 @@ mod segment;
 mod tests;
 
 use chrono::Utc;
+use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::app_registry::AppSubcategory;
 use maekon_core::models::event::InputActivityEvent;
 use maekon_core::models::focused_element::FocusedElementInfo;
@@ -50,15 +51,21 @@ pub(super) async fn run_analysis_tick(
     gui_summary: Option<&GuiActivitySummary>,
     focused_element: Option<&FocusedElementInfo>,
     storage: &Arc<dyn StorageService>,
+    content_pii_level: PiiFilterLevel,
 ) {
     let now = Utc::now();
+
+    // #6441 (F17): app_name is constant for this tick; classify its category once and
+    // reuse it (avoids re-running AppCategory::from_app_name's substring match at 3 sites
+    // on the 1 Hz analysis hot path).
+    let app_category = AppCategory::from_app_name(app_name);
 
     // 1. Classify event → TriggerInput
     let trigger_input = if app_changed {
         TriggerInput::AppSwitchNew {
             app_name: app_name.to_string(),
             prev_app: prev_app.clone().unwrap_or_default(),
-            category: AppCategory::from_app_name(app_name),
+            category: app_category,
         }
     } else {
         TriggerInput::AppPoll {
@@ -77,7 +84,7 @@ pub(super) async fn run_analysis_tick(
             &input_snap.keyboard,
             &input_snap.mouse,
             &content.content_label,
-            AppCategory::from_app_name(app_name),
+            app_category,
         )
     } else {
         (
@@ -191,9 +198,12 @@ pub(super) async fn run_analysis_tick(
     // summarizer and eventually the LLM context (via ContentSummaryEntry).
     if let Some(ref content) = parsed_content {
         let enriched_label = if let Some(ref cmd_info) = terminal_command {
-            // Append the detected terminal command to the content label
-            // so the LLM knows what command the user is running.
-            format!("{} [$ {}]", content.content_label, cmd_info.command_line)
+            // Append only the bare command verb (not the full command line) to the
+            // content label so the LLM and digests learn which command the user runs
+            // without ingesting argument-borne secrets (API keys, bearer tokens,
+            // passwords, connection strings). The full command_line is never
+            // propagated downstream. (review4 F4)
+            format!("{} [$ {}]", content.content_label, cmd_info.command)
         } else if let Some(ref heading) = doc_heading {
             // Append the document heading to help the LLM understand
             // which section the user is working on.
@@ -201,6 +211,34 @@ pub(super) async fn run_analysis_tick(
         } else {
             content.content_label.clone()
         };
+
+        // Mask the user-derived content label at the configured PII level BEFORE it
+        // enters the content tracker. This is the single source point every
+        // downstream sink inherits — persisted activity segments, daily/weekly
+        // digests, the dashboard JSON, and the Markdown export — matching the floor
+        // the embedding pipeline / LLM summarizer / insight generator already apply.
+        // (review4 F6) The ContextAssembler additionally re-masks for the LLM path
+        // (F1); masking is idempotent so the double pass is safe.
+        let enriched_label =
+            maekon_vision::privacy::sanitize_title_with_level(&enriched_label, content_pii_level);
+
+        // review4 F6 sibling: also mask the nested GUI summary's raw app_name /
+        // window_title / content_label before they enter the content tracker — they
+        // are persisted verbatim inside the segment content_activities JSON at rest
+        // (top_elements is already detector-masked; summary_line is count-only).
+        let gui_summary_masked = gui_summary.cloned().map(|mut gs| {
+            gs.app_name =
+                maekon_vision::privacy::sanitize_title_with_level(&gs.app_name, content_pii_level);
+            gs.window_title = maekon_vision::privacy::sanitize_title_with_level(
+                &gs.window_title,
+                content_pii_level,
+            );
+            gs.content_label = maekon_vision::privacy::sanitize_title_with_level(
+                &gs.content_label,
+                content_pii_level,
+            );
+            gs
+        });
 
         ts.content_tracker
             .update(maekon_analysis::content_tracker::ContentUpdateInput {
@@ -210,7 +248,7 @@ pub(super) async fn run_analysis_tick(
                 engagement: engagement.clone(),
                 confidence: content.confidence,
                 timestamp: now,
-                gui_summary: gui_summary.cloned(),
+                gui_summary: gui_summary_masked,
             });
     }
 
@@ -220,7 +258,6 @@ pub(super) async fn run_analysis_tick(
     // can be passed to `param_resolver.resolve` below without holding the
     // classifier lock across `param_resolver` — smaller critical section,
     // no lock-ordering concern.
-    let app_category = AppCategory::from_app_name(app_name);
     let current_regime_owned: Option<maekon_core::models::tiered_memory::Regime> = {
         let cls = ts.regime_classifier.lock();
         cls.classify(&maekon_core::models::tiered_memory::RegimeFeatures {

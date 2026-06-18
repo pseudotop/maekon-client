@@ -249,9 +249,9 @@ fn build_google_managed_oauth_provider(
     google_oauth_client_id(surface).map(OAuthProviderConfig::google_cloud_vision)
 }
 
-// ToS 불변식: managed_oauth_provider_factories는 openai+google만 등록한다.
-// Anthropic 구독 OAuth relay는 ADR-025/#4884 ToS 정책상 금지.
-// 이 배열에 "anthropic" vendor를 추가하기 전에 ADR-019 §5 8-step 체크리스트를 따르라.
+// ToS invariant: managed_oauth_provider_factories registers only openai + google.
+// Anthropic subscription OAuth relay is prohibited under the ADR-025/#4884 ToS policy.
+// Before adding an "anthropic" vendor to this array, follow the ADR-019 §5 8-step checklist.
 #[cfg(all(test, feature = "analysis"))]
 mod tests {
     use super::*;

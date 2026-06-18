@@ -1,4 +1,4 @@
-// AI 프로바이더 설정 — AiProviderConfig 및 외부 엔드포인트 검증 오케스트레이터
+// AI provider config — AiProviderConfig and external-endpoint validation orchestrator
 use super::super::enums::*;
 use super::ai_validation::{
     CredentialAuthMode, ExternalApiEndpoint, OcrValidationConfig, SceneActionOverrideConfig,
@@ -202,7 +202,53 @@ impl AiProviderConfig {
     }
 }
 
-// ── validate_remote_endpoint (모듈-내부 헬퍼) ─────────────────────
+// ── validate_remote_endpoint (module-internal helpers) ────────────
+
+/// #6259: std-only "confidently-remote IP" classifier for the config-load
+/// cleartext gate.
+///
+/// maekon-core must not depend on maekon-network/url, so a perfect parity with
+/// the authoritative url-based runtime gate
+/// (`provider_adapters::require_endpoint_config` →
+/// `maekon_network::http_client::host_is_loopback`) is not achievable here.
+/// To avoid FALSE-REJECTING a genuinely-loopback endpoint (e.g. exotic-but-valid
+/// encodings `http://127.1`, decimal/octal/hex IPs) at config-load, this check
+/// only reports `true` when the host parses as a NON-loopback IP literal — i.e.
+/// a host we are confident is remote. Anything we cannot classify in std (DNS
+/// names, alternate IP encodings, userinfo tricks) returns `false` and is
+/// deferred to the authoritative runtime gate, which makes the real decision.
+/// This keeps any divergence strictly in the safe direction (config-load never
+/// blocks a valid loopback config, and never wrongly waves through remote
+/// cleartext — the runtime gate is the fail-closed boundary).
+fn endpoint_is_confident_remote_ip(url: &str) -> bool {
+    // Strip scheme (`http://` / `https://`).
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    // Authority ends at the first '/', '?', or '#'.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop any `userinfo@` prefix (take the part after the last '@').
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, hp)| hp)
+        .unwrap_or(authority);
+    // Extract host, handling `[ipv6]:port`, `host:port`, and bare host.
+    let host = if let Some(after_bracket) = host_port.strip_prefix('[') {
+        match after_bracket.split_once(']') {
+            Some((h, _)) => h,
+            None => return false, // malformed bracket form → defer to runtime
+        }
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    // Only a parseable, non-loopback IP literal is "confidently remote". A
+    // loopback IP, `localhost`, a DNS name, or any form std cannot parse is NOT
+    // confidently remote (→ false), so it is never false-rejected here.
+    match host.trim().parse::<std::net::IpAddr>() {
+        Ok(addr) => !addr.is_loopback(),
+        Err(_) => false,
+    }
+}
 
 fn validate_remote_endpoint(
     endpoint: Option<&ExternalApiEndpoint>,
@@ -224,6 +270,24 @@ fn validate_remote_endpoint(
         return Err(CoreError::Config {
             code: crate::error_codes::ConfigCode::Invalid,
             message: format!("`{field_name}.endpoint` must be an http:// or https:// URL."),
+        });
+    }
+    // #6259: reject remote cleartext at config-load time (early feedback ahead of
+    // the authoritative runtime gate `provider_adapters::require_endpoint_config`).
+    // A remote `http://` endpoint would egress the Bearer API key + screen context
+    // in cleartext. We only reject when the host is CONFIDENTLY a remote IP literal
+    // (parseable, non-loopback) so this std-only check never false-rejects a valid
+    // loopback config (`http://localhost`, `http://127.0.0.1`, and exotic-but-valid
+    // forms are deferred to the url-based runtime gate, which is the fail-closed
+    // boundary). `https://` is always allowed.
+    if endpoint_url.starts_with("http://") && endpoint_is_confident_remote_ip(endpoint_url) {
+        return Err(CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "`{field_name}.endpoint` uses cleartext http:// to a non-loopback host; \
+                 use https:// for a remote endpoint (cleartext is allowed only for \
+                 loopback/local providers) to avoid leaking the API key and screen context."
+            ),
         });
     }
 
@@ -253,25 +317,40 @@ fn validate_remote_endpoint(
         });
     }
 
-    if let Some(model) = endpoint
+    reject_blocked_model(endpoint)?;
+
+    Ok(())
+}
+
+/// Rejects an endpoint whose configured model is past its lifecycle `block_at`.
+///
+/// This is the single enforcement point for the model-lifecycle `Block`
+/// decision at config-validation time. It must be called from *every* surface
+/// validation path (remote HTTP, managed OAuth, subprocess CLI) so a retired
+/// model cannot be configured via any surface — not just the remote HTTP one.
+/// An empty/whitespace model is treated as "no model selected" and allowed.
+fn reject_blocked_model(endpoint: &ExternalApiEndpoint) -> Result<(), CoreError> {
+    let Some(model) = endpoint
         .model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let decision = crate::ai_model_lifecycle_policy::evaluate_model_lifecycle_now_for_surface(
+        endpoint.provider_type,
+        endpoint.surface_id.as_deref(),
+        model,
+    )?;
+    if let crate::ai_model_lifecycle_policy::ModelLifecycleDecision::Block { message, .. } =
+        decision
     {
-        let decision = crate::ai_model_lifecycle_policy::evaluate_model_lifecycle_now_for_surface(
-            endpoint.provider_type,
-            endpoint.surface_id.as_deref(),
-            model,
-        )?;
-        if let crate::ai_model_lifecycle_policy::ModelLifecycleDecision::Block { message, .. } =
-            decision
-        {
-            return Err(CoreError::PolicyDenied {
-                code: crate::error_codes::PolicyCode::Denied,
-                message,
-            });
-        }
+        return Err(CoreError::PolicyDenied {
+            code: crate::error_codes::PolicyCode::Denied,
+            message,
+        });
     }
 
     Ok(())
@@ -329,6 +408,11 @@ fn validate_non_http_surface_endpoint(
             ),
         });
     }
+
+    // Managed OAuth / subprocess-CLI surfaces must enforce the model-lifecycle
+    // Block decision too — otherwise a retired model could be configured via
+    // these surfaces while `validate_remote_endpoint` only guards the HTTP path.
+    reject_blocked_model(endpoint)?;
 
     Ok(())
 }
@@ -405,4 +489,82 @@ fn validate_managed_or_remote_endpoint(
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod cleartext_gate_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_is_confident_remote_ip_table() {
+        // Confidently remote (parseable non-loopback IP) → rejected at config-load.
+        assert!(endpoint_is_confident_remote_ip("http://10.0.0.5:8080"));
+        assert!(endpoint_is_confident_remote_ip("http://192.168.1.10/api"));
+        assert!(endpoint_is_confident_remote_ip(
+            "http://203.0.113.7/path?q=1"
+        ));
+        assert!(endpoint_is_confident_remote_ip("http://[2001:db8::1]:443"));
+        // NOT confidently remote (loopback IP / localhost) → never false-rejected.
+        assert!(!endpoint_is_confident_remote_ip(
+            "http://localhost:11434/v1"
+        ));
+        assert!(!endpoint_is_confident_remote_ip("http://LocalHost/api"));
+        assert!(!endpoint_is_confident_remote_ip("http://127.0.0.1:8080"));
+        assert!(!endpoint_is_confident_remote_ip("http://127.5.6.7/path"));
+        assert!(!endpoint_is_confident_remote_ip("http://[::1]:9000/v1"));
+        assert!(!endpoint_is_confident_remote_ip(
+            "http://user:pass@127.0.0.1:1234"
+        ));
+        // DNS names + forms std cannot classify → deferred to the runtime gate
+        // (NOT confidently remote here, so never false-rejected at config-load).
+        assert!(!endpoint_is_confident_remote_ip("http://api.openai.com/v1"));
+        assert!(!endpoint_is_confident_remote_ip("http://127.1")); // exotic-but-valid loopback
+        assert!(!endpoint_is_confident_remote_ip("not-a-url"));
+        assert!(!endpoint_is_confident_remote_ip("http://"));
+    }
+
+    fn remote_endpoint(url: &str) -> ExternalApiEndpoint {
+        ExternalApiEndpoint {
+            endpoint: url.to_string(),
+            api_key: "sk-test".to_string(),
+            model: Some("m".to_string()),
+            timeout_secs: 30,
+            provider_type: AiProviderType::OpenAi,
+            surface_id: None,
+            credential: None,
+        }
+    }
+
+    #[test]
+    fn validate_remote_endpoint_rejects_remote_cleartext_ip() {
+        // A confidently-remote IP literal over cleartext is rejected at config-load.
+        let ep = remote_endpoint("http://10.0.0.5:8080/v1");
+        let err = validate_remote_endpoint(Some(&ep), "llm_api")
+            .expect_err("remote http:// IP must be rejected as cleartext");
+        assert!(format!("{err}").contains("cleartext http://"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_remote_endpoint_defers_remote_cleartext_dns_to_runtime() {
+        // #6259: a DNS host cannot be classified in std-only core, so config-load
+        // does NOT reject it (the url-based runtime gate is the fail-closed
+        // boundary). Documents the intentional safe-direction divergence:
+        // config-load never false-rejects; the runtime gate makes the real call.
+        let ep = remote_endpoint("http://api.openai.com/v1");
+        validate_remote_endpoint(Some(&ep), "llm_api")
+            .expect("DNS cleartext is deferred to the runtime gate, not rejected at config-load");
+    }
+
+    #[test]
+    fn validate_remote_endpoint_allows_loopback_cleartext() {
+        let ep = remote_endpoint("http://127.0.0.1:11434/v1");
+        validate_remote_endpoint(Some(&ep), "llm_api")
+            .expect("loopback http:// (local provider) must be allowed");
+    }
+
+    #[test]
+    fn validate_remote_endpoint_allows_remote_https() {
+        let ep = remote_endpoint("https://api.openai.com/v1");
+        validate_remote_endpoint(Some(&ep), "llm_api").expect("remote https:// must be allowed");
+    }
 }

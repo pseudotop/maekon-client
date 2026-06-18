@@ -95,7 +95,7 @@ fn require_oauth(
     })
 }
 
-/// OAuth 인증 플로우 시작 — auth_url을 프론트엔드에 반환
+/// Start the OAuth authentication flow — returns the auth_url to the frontend.
 #[command]
 pub async fn oauth_start_flow(
     provider_id: String,
@@ -105,7 +105,7 @@ pub async fn oauth_start_flow(
     port.start_flow(&provider_id).await.map_err(IpcError::from)
 }
 
-/// OAuth 플로우 상태 조회 — 프론트엔드 폴링용
+/// Query OAuth flow status — for frontend polling.
 ///
 /// When the flow completes successfully, the coordinator's backoff state
 /// is reset so background refresh resumes immediately.
@@ -131,7 +131,7 @@ pub async fn oauth_flow_status(
     Ok(status)
 }
 
-/// OAuth 플로우 취소
+/// Cancel the OAuth flow.
 #[command]
 pub async fn oauth_cancel_flow(
     flow_id: String,
@@ -141,7 +141,7 @@ pub async fn oauth_cancel_flow(
     port.cancel_flow(&flow_id).await.map_err(IpcError::from)
 }
 
-/// OAuth 연결 해제 — stored credentials 삭제
+/// Disconnect OAuth — deletes stored credentials.
 #[command]
 pub async fn oauth_revoke(
     provider_id: String,
@@ -151,7 +151,7 @@ pub async fn oauth_revoke(
     port.revoke(&provider_id).await.map_err(IpcError::from)
 }
 
-/// OAuth 연결 상태 조회
+/// Query OAuth connection status.
 #[command]
 pub async fn oauth_connection_status(
     provider_id: String,

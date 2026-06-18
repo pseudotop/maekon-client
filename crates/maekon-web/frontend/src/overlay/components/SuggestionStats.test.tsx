@@ -43,16 +43,16 @@ describe('SuggestionStats error/retry path', () => {
 
     renderStats()
 
-    // 에러 배너 노출 (무한 "Loading..." 으로 숨기지 않음)
+    // Error banner is shown (not hidden behind an infinite "Loading...")
     expect(await screen.findByText('Could not load stats.')).toBeInTheDocument()
     expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('재시도 버튼 클릭 시 IPC 를 다시 호출하고 복구된 통계를 렌더링한다', async () => {
-    // 1차 호출(stats + daily) 둘 다 실패 → 에러 상태
+    // First call (stats + daily) both fail -> error state
     mockInvoke.mockRejectedValueOnce(new Error('ipc boom')).mockRejectedValueOnce(new Error('ipc boom'))
-    // 재시도: stats 성공 + daily 성공
+    // Retry: stats succeeds + daily succeeds
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_suggestion_stats') return Promise.resolve(statsFixture)
       if (cmd === 'get_suggestion_daily_stats') return Promise.resolve([])
@@ -64,7 +64,7 @@ describe('SuggestionStats error/retry path', () => {
     const retry = await screen.findByRole('button', { name: 'Retry' })
     await userEvent.click(retry)
 
-    // acceptance_rate 0.6667 → Math.round(0.6667 * 100) = 67%
+    // acceptance_rate 0.6667 -> Math.round(0.6667 * 100) = 67%
     await waitFor(() => expect(screen.getByText('67%')).toBeInTheDocument())
     expect(mockInvoke).toHaveBeenCalledWith('get_suggestion_stats')
   })

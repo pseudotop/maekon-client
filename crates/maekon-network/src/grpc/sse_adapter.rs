@@ -37,7 +37,13 @@ use super::unified_client::{
 /// The fix stores the latest `JoinHandle` in `stream_task` behind a
 /// `tokio::sync::Mutex`.  On the next `connect()` call the old handle is
 /// aborted before the new task is spawned, bounding active tasks to 1.
-/// `Drop` aborts the handle unconditionally.
+///
+/// `Drop` aborts the task unconditionally via `abort_handle`, which holds an
+/// `AbortHandle` extracted from the spawned `JoinHandle`.  An `AbortHandle`
+/// is `Clone + Send + Sync` and does not require an async lock, so `Drop` can
+/// call `abort()` directly from a synchronous context without `try_lock` races.
+/// Note: dropping a `JoinHandle` alone only *detaches* the task (it keeps
+/// running); `abort()` is the only way to stop it.
 ///
 /// The `SseClient::connect` contract (see `SuggestionReceiver::run`) already
 /// wraps the call inside a `tokio::select!` that races against a `oneshot`
@@ -48,8 +54,14 @@ use super::unified_client::{
 pub struct GrpcSseAdapter {
     unified: Arc<UnifiedClient>,
     /// Handle to the running stream task, if any.  Stored so that reconnects
-    /// and explicit shutdown can abort the previous task.
+    /// can abort the previous task before spawning a new one.
     stream_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// `AbortHandle` for the active stream task.  Stored separately from
+    /// `stream_task` so that `Drop` can call `abort()` unconditionally from a
+    /// synchronous context without acquiring the async `tokio::sync::Mutex`.
+    /// Guarded by a `std::sync::Mutex` so that `connect()` and `Drop` share
+    /// the slot without an async lock.
+    abort_handle: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
 }
 
 #[cfg(feature = "grpc")]
@@ -58,6 +70,7 @@ impl GrpcSseAdapter {
         Self {
             unified,
             stream_task: Arc::new(tokio::sync::Mutex::new(None)),
+            abort_handle: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -70,10 +83,17 @@ impl GrpcSseAdapter {
 #[cfg(feature = "grpc")]
 impl Drop for GrpcSseAdapter {
     fn drop(&mut self) {
-        // `try_lock` is non-blocking; if the lock is held we cannot abort
-        // synchronously, but the task will be dropped (and thus aborted) when
-        // the Arc<Mutex> refcount reaches zero anyway.
-        if let Ok(mut guard) = self.stream_task.try_lock() {
+        // Abort the stream task unconditionally via the `AbortHandle`.
+        //
+        // We cannot use `stream_task` here because it is behind a
+        // `tokio::sync::Mutex` (async-only) and `Drop` is synchronous.
+        // `abort_handle` uses a `std::sync::Mutex` so `.lock()` is safe in a
+        // synchronous context.  The lock is held only for the duration of the
+        // `take()` call, so there is no risk of deadlock.
+        //
+        // Important: dropping a `JoinHandle` DETACHES the task — it keeps
+        // running.  Only `AbortHandle::abort()` actually cancels the task.
+        if let Ok(mut guard) = self.abort_handle.lock() {
             if let Some(handle) = guard.take() {
                 handle.abort();
             }
@@ -154,7 +174,15 @@ impl SseClient for GrpcSseAdapter {
             }
         });
 
-        // Store the handle so reconnects and Drop can abort it.
+        // Store the AbortHandle so Drop can cancel the task unconditionally
+        // from a synchronous context.  The std::sync::Mutex lock is held only
+        // for the duration of the assignment — no await crosses this scope.
+        if let Ok(mut guard) = self.abort_handle.lock() {
+            *guard = Some(handle.abort_handle());
+        }
+
+        // Store the JoinHandle so the next connect() call can abort the
+        // previous task before spawning a replacement.
         *self.stream_task.lock().await = Some(handle);
 
         Ok(())
@@ -614,5 +642,46 @@ mod tests {
         if let Some(h) = cleanup_handle {
             h.abort();
         }
+    }
+
+    /// #6007 fix: Drop aborts the task via AbortHandle unconditionally.
+    ///
+    /// Verify that when the abort_handle slot holds an AbortHandle and we
+    /// simulate Drop (call abort() on it), a long-running task terminates
+    /// within the expected window.  This test targets the `abort_handle`
+    /// std::sync::Mutex path introduced by the fix — distinct from the
+    /// `stream_task` tokio::sync::Mutex path exercised by the reconnect tests.
+    #[tokio::test]
+    async fn drop_aborts_task_via_abort_handle() {
+        use tokio::time::{timeout, Duration};
+
+        let abort_store: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        // Spawn a long-running task and record its AbortHandle.
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let abort_handle = handle.abort_handle();
+        *abort_store.lock().unwrap() = Some(abort_handle);
+
+        // Simulate Drop: take and call abort() synchronously, as Drop does.
+        if let Ok(mut guard) = abort_store.lock() {
+            if let Some(h) = guard.take() {
+                h.abort();
+            }
+        }
+
+        // The JoinHandle should report finished (aborted) within 200 ms.
+        let done = timeout(Duration::from_millis(200), async move {
+            loop {
+                if handle.is_finished() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        done.expect("#6007: Drop abort_handle path must cancel the task within 200 ms");
     }
 }

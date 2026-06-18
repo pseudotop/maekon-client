@@ -14,8 +14,9 @@ use maekon_core::models::gui::{HighlightHandle, HighlightRequest};
 use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::overlay_driver::OverlayDriver;
 
-/// F-PF-C23-03: 동시 활성 오버레이 프로세스 상한 (unbounded HashMap 방지).
-/// 8시간 세션에서 480개 이상 좀비 항목 누적 방지.
+/// F-PF-C23-03: cap on concurrently active overlay processes (prevents an
+/// unbounded HashMap). Prevents accumulating 480+ zombie entries over an
+/// 8-hour session.
 const MAX_ACTIVE_OVERLAYS: usize = 10;
 
 #[derive(Debug)]
@@ -39,19 +40,20 @@ impl PlatformOverlayDriver {
         }
     }
 
-    /// F-PF-C23-03: 종료된 자식 프로세스 항목 제거 — IPC 단절/충돌로 인한 좀비 방지.
-    /// `try_wait` 는 non-blocking; 아직 실행 중인 프로세스는 건드리지 않는다.
+    /// F-PF-C23-03: remove exited child-process entries — prevents zombies from
+    /// IPC disconnects/crashes. `try_wait` is non-blocking; it does not touch
+    /// processes that are still running.
     fn sweep_orphaned_processes(active: &mut HashMap<String, OverlayProcess>) {
         active.retain(|_handle_id, proc| {
             match proc.child.try_wait() {
-                // 이미 종료됨 → 제거
+                // Already exited → remove
                 Ok(Some(_status)) => {
                     debug!("sweep_orphaned_processes: exited child removed");
                     false
                 }
-                // 아직 실행 중 → 유지
+                // Still running → keep
                 Ok(None) => true,
-                // try_wait 오류 → 보수적으로 유지
+                // try_wait error → keep conservatively
                 Err(e) => {
                     debug!("sweep_orphaned_processes: try_wait error: {e}");
                     true
@@ -73,17 +75,41 @@ impl OverlayDriver for PlatformOverlayDriver {
 
         let handle_id = Uuid::new_v4().to_string();
         let payload_path = write_overlay_payload(&handle_id, &req).await?;
-        let child = spawn_overlay_process(&payload_path)?;
+        let mut child = spawn_overlay_process(&payload_path)?;
 
         {
             let mut active = self.active_processes.lock().await;
 
-            // F-PF-C23-03: 삽입 전 종료된 좀비 프로세스 먼저 정리
+            // F-PF-C23-03: sweep exited zombie processes first, before inserting
             Self::sweep_orphaned_processes(&mut active);
 
-            // F-PF-C23-03: 상한 초과 시 새 오버레이 거부 (fail-fast)
+            // F-PF-C23-03: reject the new overlay once the cap is exceeded (fail-fast)
             if active.len() >= MAX_ACTIVE_OVERLAYS {
-                // 방금 생성한 페이로드 파일 정리 후 에러 반환
+                // #6265: the child was already spawned, so we must REAP it before
+                // returning — `std::process::Child::drop` detaches (does NOT kill)
+                // the process, so simply dropping it on this error path orphans a
+                // live overlay GUI process. Kill+wait it the same way
+                // clear_highlights does (spawn_blocking + 5 s timeout so a hung
+                // child cannot stall the executor), then remove the payload file.
+                let reap = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = child.kill() {
+                            debug!("overlay limit reap: kill failed: {e}");
+                        }
+                        if let Err(e) = child.wait() {
+                            debug!("overlay limit reap: wait failed: {e}");
+                        }
+                    }),
+                )
+                .await;
+                if let Err(_elapsed) = reap {
+                    debug!(
+                        "overlay limit reap: child did not exit within 5 s timeout; \
+                         OS will reap at process exit"
+                    );
+                }
+                // Clean up the payload file we just created, then return the error
                 let _ = tokio::fs::remove_file(&payload_path).await;
                 return Err(CoreError::ServiceUnavailable {
                     code: maekon_core::error_codes::ServiceCode::Unavailable,
@@ -481,15 +507,16 @@ mod tests {
         );
     }
 
-    // ===== F-PF-C23-03: HashMap 상한 + 좀비 프로세스 sweep 테스트 =====
+    // ===== F-PF-C23-03: HashMap cap + zombie-process sweep tests =====
 
-    /// F-PF-C23-03: sweep_orphaned_processes 가 종료된 자식 항목을 제거하는지 검증.
-    /// std::process::Command 로 즉시 종료하는 더미 프로세스를 삽입 후 sweep 실행.
+    /// F-PF-C23-03: verify sweep_orphaned_processes removes exited child entries.
+    /// Insert a dummy process that exits immediately via std::process::Command,
+    /// then run the sweep.
     #[tokio::test]
     async fn sweep_removes_exited_processes() {
         use std::process::Command;
 
-        // 즉시 종료하는 더미 프로세스 생성 (플랫폼별 noop 명령어)
+        // Create a dummy process that exits immediately (per-platform no-op command)
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let child = Command::new("true").spawn();
         #[cfg(target_os = "windows")]
@@ -498,15 +525,15 @@ mod tests {
         let child: Result<_, _> = Err(std::io::Error::other("unsupported platform"));
 
         let Ok(mut child) = child else {
-            // CI 환경에서 프로세스 생성이 불가한 경우 건너뜀
+            // Skip when spawning a process is not possible in the CI environment
             return;
         };
 
-        // 프로세스가 실제로 종료될 때까지 짧게 대기
+        // Wait briefly until the process actually exits
         let _ = child.wait();
 
-        // 실제 삽입은 Child 재사용 불가 (wait 이후 double-wait 미지원)
-        // 대신 빈 맵에 sweep 적용 → panic 없음 확인
+        // We cannot actually insert it because Child is not reusable (no double-wait
+        // after wait). Instead, apply the sweep to an empty map → verify no panic.
         let mut empty: HashMap<String, OverlayProcess> = HashMap::new();
         PlatformOverlayDriver::sweep_orphaned_processes(&mut empty);
         assert!(empty.is_empty());
@@ -525,19 +552,20 @@ mod tests {
         result.expect("F-RR-C24-03: clear_highlights must return Ok(()) for unknown handle (early-return path)");
     }
 
-    /// F-PF-C23-03: MAX_ACTIVE_OVERLAYS 상수가 양수 값임을 검증.
+    /// F-PF-C23-03: verify the MAX_ACTIVE_OVERLAYS constant is a positive value.
     #[test]
     fn max_active_overlays_is_positive() {
         let max_active_overlays = std::hint::black_box(MAX_ACTIVE_OVERLAYS);
         assert!(max_active_overlays > 0);
         assert!(
             max_active_overlays <= 100,
-            "상한이 지나치게 크면 leak 방지 효과 없음"
+            "a cap that is too large defeats the leak-prevention purpose"
         );
     }
 
-    /// F-PF-C23-03: sweep_orphaned_processes 가 살아있는(None) 프로세스는 유지하는지 검증.
-    /// HashMap 에 직접 접근할 수 없으므로 빈 맵 경계 케이스만 검증.
+    /// F-PF-C23-03: verify sweep_orphaned_processes keeps live (None) processes.
+    /// Since the HashMap cannot be accessed directly, only the empty-map edge case
+    /// is verified.
     #[test]
     fn sweep_empty_map_is_noop() {
         let mut map: HashMap<String, OverlayProcess> = HashMap::new();

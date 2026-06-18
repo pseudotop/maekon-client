@@ -8,6 +8,7 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 type HmacSha256 = Hmac<Sha256>;
 use crate::controller::AutomationCommand;
@@ -83,12 +84,12 @@ pub(super) fn issue_command_token_for_policy(
 ) -> Result<String, AutomationError> {
     if !is_valid_nonce(nonce) {
         return Err(AutomationError::InvalidArguments(
-            "policy token nonce 형식이 유효하지 않습니다".to_string(),
+            "policy token nonce format is invalid".to_string(),
         ));
     }
     if command_hash.is_some_and(|hash| !is_valid_hash(hash)) {
         return Err(AutomationError::InvalidArguments(
-            "policy token command hash 형식이 유효하지 않습니다".to_string(),
+            "policy token command hash format is invalid".to_string(),
         ));
     }
 
@@ -108,7 +109,7 @@ pub(super) fn issue_command_token_for_policy(
             AutomationError::Core(maekon_core::error::CoreError::Config {
                 code: maekon_core::error_codes::ConfigCode::Missing,
                 message: format!(
-                    "서명 policy이 active화되어 있지만 {} 환경 변수가 비어 있습니다.",
+                    "signature policy is enabled but the {} environment variable is empty.",
                     POLICY_TOKEN_SIGNING_SECRET_ENV
                 ),
             })
@@ -193,20 +194,27 @@ pub(super) fn verify_policy_token_signature(
 }
 
 /// Decode a lowercase hex string into bytes. Returns `None` on invalid input.
+///
+/// Self-defending against non-ASCII input: `&hex[i..i+2]` would panic on a
+/// non-char-boundary slice for a multi-byte even-length string. Operate on
+/// bytes and reject non-ASCII up front so a hostile/garbled token can never
+/// panic the caller, regardless of upstream validation (review4 re-verify:
+/// sibling of the crypto.rs decode_hex A3/A14 fix).
 fn hex_decode(hex: &str) -> Option<Vec<u8>> {
-    if !hex.len().is_multiple_of(2) {
+    let bytes = hex.as_bytes();
+    if !hex.is_ascii() || !bytes.len().is_multiple_of(2) {
         return None;
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
 
-pub(super) fn load_signing_secret() -> Option<String> {
+pub(super) fn load_signing_secret() -> Option<Zeroizing<String>> {
     std::env::var(POLICY_TOKEN_SIGNING_SECRET_ENV)
         .ok()
-        .map(|v| v.trim().to_string())
+        .map(|v| Zeroizing::new(v.trim().to_string()))
         .filter(|v| !v.is_empty())
 }
 

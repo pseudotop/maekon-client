@@ -100,6 +100,19 @@ pub struct AutomationState {
     /// `AutomationStatusDto.llm_healthy` by reading `as_option_bool()` at request
     /// time (live value, not the build-time SSE snapshot).
     pub llm_call_health: Option<Arc<maekon_core::ports::llm_provider::LlmCallHealth>>,
+    /// #6117: single, server-lifetime settings-policy audit writer.
+    ///
+    /// Built ONCE in `WebServer::build_router` (from `audit_logger`) and shared
+    /// by reference through every per-request `SettingsWebContext` clone, so the
+    /// bounded-channel drain task lives for the whole server lifetime instead of
+    /// being spawned and aborted per `POST /api/settings`. The prior per-request
+    /// writer was dropped at request end, aborting its drain task before the
+    /// fire-and-forget audit event was flushed, so security-policy audit events
+    /// were lost on every settings save.
+    ///
+    /// `pub(crate)` because `PolicyAuditWriter` is a crate-internal type.
+    pub(crate) policy_audit_writer:
+        Option<Arc<crate::services::settings_policy_service::PolicyAuditWriter>>,
 }
 
 /// External system integration — 8 port fields.
