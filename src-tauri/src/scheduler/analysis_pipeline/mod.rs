@@ -55,12 +55,17 @@ pub(super) async fn run_analysis_tick(
 ) {
     let now = Utc::now();
 
+    // #6441 (F17): app_name is constant for this tick; classify its category once and
+    // reuse it (avoids re-running AppCategory::from_app_name's substring match at 3 sites
+    // on the 1 Hz analysis hot path).
+    let app_category = AppCategory::from_app_name(app_name);
+
     // 1. Classify event → TriggerInput
     let trigger_input = if app_changed {
         TriggerInput::AppSwitchNew {
             app_name: app_name.to_string(),
             prev_app: prev_app.clone().unwrap_or_default(),
-            category: AppCategory::from_app_name(app_name),
+            category: app_category,
         }
     } else {
         TriggerInput::AppPoll {
@@ -79,7 +84,7 @@ pub(super) async fn run_analysis_tick(
             &input_snap.keyboard,
             &input_snap.mouse,
             &content.content_label,
-            AppCategory::from_app_name(app_name),
+            app_category,
         )
     } else {
         (
@@ -253,7 +258,6 @@ pub(super) async fn run_analysis_tick(
     // can be passed to `param_resolver.resolve` below without holding the
     // classifier lock across `param_resolver` — smaller critical section,
     // no lock-ordering concern.
-    let app_category = AppCategory::from_app_name(app_name);
     let current_regime_owned: Option<maekon_core::models::tiered_memory::Regime> = {
         let cls = ts.regime_classifier.lock();
         cls.classify(&maekon_core::models::tiered_memory::RegimeFeatures {

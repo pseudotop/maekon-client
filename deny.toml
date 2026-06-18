@@ -36,9 +36,11 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 # F-SC-C41-05: deny.toml 의 5개 Review-by 약속은 config.toml(cargo-vet) 의 분산(stagger)
 # 창(2026-10-01..2026-12-31)에 맞춰 5개 서로 다른 날짜로 분산했다(이전: 전부 2026-09-01 단일
 # cliff). 이 advisories 검토는 분산 스케줄의 첫 버킷(2026-10-01)에 배정한다.
-# 추적 격차(보고됨): verify_exemption_expiry.py 는 config.toml 만 스캔하므로 이 5개 날짜는
-# 어떤 게이트도 검사하지 않는다. 검증기에 --deny-file 옵션을 추가하는 정식 해소는
-# 본 번들 범위(deny.toml/config.toml/Dockerfile/workflow) 밖이라 needs-design 으로 보고한다.
+# 추적 격차 해소(#6443 F20): verify_exemption_expiry.py 가 이제 --deny-file 옵션으로
+# deny.toml 주석의 Review-by: 날짜를 스캔하며, .github/workflows/cargo-supply-chain.yml 이
+# `--deny-file clients/maekon-client/deny.toml` 를 전달한다. 따라서 이 5개 Review-by 날짜는
+# PR 게이트에서 실제로 검사된다 — 이전의 "config.toml 만 스캔 / 어떤 게이트도 검사하지 않음
+# / needs-design" 주석은 stale 였다.
 unmaintained = "workspace"
 yanked = "deny"
 # F-SC-C31-01: `unsound` is intentionally left at the cargo-deny default ("warn")

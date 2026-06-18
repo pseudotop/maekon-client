@@ -10,6 +10,7 @@ mod cua_safe_mode;
 #[cfg(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external"))]
 mod external_grpc;
 mod launch_result;
+mod regime_wiring;
 mod session_wiring;
 mod state_wiring;
 #[cfg(feature = "local-suggestions")]
@@ -21,6 +22,7 @@ use self::capture_wiring::build_capture_wiring;
 pub(crate) use self::cua_safe_mode::cua_safe_mode_enabled;
 use self::launch_result::generate_local_auth_token;
 pub(crate) use self::launch_result::AppRuntimeLaunchResult;
+use self::regime_wiring::build_regime_wiring;
 use self::session_wiring::{build_session_manager, spawn_idle_reaper};
 use self::state_wiring::{build_managed_state_builder, ManagedStateWiringParts};
 #[cfg(feature = "local-suggestions")]
@@ -171,32 +173,8 @@ impl AppRuntimeLaunchBuilder {
                 config.privacy.pii_filter_level,
             ),
         );
-        let regime_manager_arc = Arc::new(parking_lot::Mutex::new(
-            maekon_analysis::RegimeManager::new(&config.analysis.tiered_memory),
-        ));
-        let regime_classifier_arc = Arc::new(parking_lot::Mutex::new(
-            maekon_analysis::RegimeClassifier::new(1.5),
-        ));
-        let regime_storage: Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort> =
-            Arc::new(
-                maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
-                    sqlite_storage.connection_arc(),
-                ),
-            );
-        {
-            match handle.block_on(regime_storage.load_all()) {
-                Ok(regimes) if !regimes.is_empty() => {
-                    let count = regimes.len();
-                    regime_manager_arc.lock().hydrate_from(regimes);
-                    tracing::info!(count, "regime manager hydrated from storage");
-                }
-                Ok(_) => tracing::info!("regime manager: no persisted state, starting fresh"),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "regime manager hydrate failed; starting fresh"
-                ),
-            }
-        }
+        let (regime_manager_arc, regime_classifier_arc, regime_storage) =
+            build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
         // E20-24 (#4816): local learning sink + pipeline are gated on
         // `local-suggestions` (default-on), not `server`, so OSS builds get the

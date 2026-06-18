@@ -4,13 +4,21 @@ use maekon_core::error_codes::InternalCode;
 use maekon_core::models::system::{NetworkInfo, PowerStatus, SystemMetrics};
 use maekon_core::ports::monitor::SystemMonitor;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use sysinfo::{Disks, Networks, System};
 use tracing::debug;
+
+/// #6441 (F15): minimum interval between disk statfs refreshes. Disk usage changes
+/// slowly, so refreshing it on every 5s metrics tick is wasteful; serve cached values
+/// between refreshes.
+const DISK_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub struct SysInfoMonitor {
     sys: Arc<Mutex<System>>,
     disks: Arc<Mutex<Disks>>,
     networks: Arc<Mutex<Networks>>,
+    /// #6441 (F15): timestamp of the last disk statfs refresh (gates the cooldown).
+    last_disk_refresh: Arc<Mutex<Instant>>,
 }
 
 impl SysInfoMonitor {
@@ -24,6 +32,8 @@ impl SysInfoMonitor {
             sys: Arc::new(Mutex::new(System::new())),
             disks: Arc::new(Mutex::new(Disks::new_with_refreshed_list())),
             networks: Arc::new(Mutex::new(Networks::new_with_refreshed_list())),
+            // Disks were just refreshed above, so the next refresh is one cooldown out.
+            last_disk_refresh: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -35,6 +45,7 @@ impl SysInfoMonitor {
         sys: Arc<Mutex<System>>,
         disks: Arc<Mutex<Disks>>,
         networks: Arc<Mutex<Networks>>,
+        last_disk_refresh: Arc<Mutex<Instant>>,
     ) -> Result<SystemMetrics, CoreError> {
         {
             let mut sys = sys.lock().map_err(|e| CoreError::Internal {
@@ -46,11 +57,22 @@ impl SysInfoMonitor {
         }
 
         {
-            let mut disks = disks.lock().map_err(|e| CoreError::Internal {
-                code: InternalCode::Generic,
-                message: format!("Failed to acquire disk lock: {e}"),
-            })?;
-            disks.refresh(true);
+            // #6441 (F15): refresh disk statfs at most once per DISK_REFRESH_COOLDOWN
+            // (vs every 5s metrics tick). The cached Disks list still serves reads below.
+            // Network counters are cumulative-rate, so they stay per-tick.
+            let mut last = last_disk_refresh
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if last.elapsed() >= DISK_REFRESH_COOLDOWN {
+                disks
+                    .lock()
+                    .map_err(|e| CoreError::Internal {
+                        code: InternalCode::Generic,
+                        message: format!("Failed to acquire disk lock: {e}"),
+                    })?
+                    .refresh(true);
+                *last = Instant::now();
+            }
         }
 
         {
@@ -141,13 +163,16 @@ impl SystemMonitor for SysInfoMonitor {
         let sys = Arc::clone(&self.sys);
         let disks = Arc::clone(&self.disks);
         let networks = Arc::clone(&self.networks);
+        let last_disk_refresh = Arc::clone(&self.last_disk_refresh);
 
-        tokio::task::spawn_blocking(move || Self::collect_metrics_sync(sys, disks, networks))
-            .await
-            .map_err(|e| CoreError::Internal {
-                code: InternalCode::Generic,
-                message: format!("spawn_blocking join error: {e}"),
-            })?
+        tokio::task::spawn_blocking(move || {
+            Self::collect_metrics_sync(sys, disks, networks, last_disk_refresh)
+        })
+        .await
+        .map_err(|e| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: format!("spawn_blocking join error: {e}"),
+        })?
     }
 
     async fn current_power_status(&self) -> Result<PowerStatus, CoreError> {
