@@ -22,24 +22,19 @@ impl FrameFileStorage {
             .format("%Y-%m-%d")
             .to_string();
 
-        let mut entries = fs::read_dir(&frames_dir)
-            .await
-            .map_err(|e| StorageError::Internal(format!("Failed to read frames directory: {e}")))?;
-
-        let mut dirs_to_delete = Vec::new();
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| StorageError::Internal(format!("Failed to read directory entry: {e}")))?
-        {
-            let path = entry.path();
-
-            if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                if dir_name.len() == 10 && dir_name < cutoff_date.as_str() {
-                    dirs_to_delete.push(path);
-                }
-            }
-        }
+        // Classify date directories with the shared `list_date_dirs` recognizer so
+        // all three retention paths (retention, storage-limit, GDPR delete-all) treat
+        // the same set of entries as date dirs. The previous inline `len() == 10`
+        // check was weaker than the helper: it never confirmed the entry was a
+        // directory and skipped the `YYYY-MM-DD` hyphen-at-index-4 shape check, so a
+        // 10-char file (or 10-char non-date dir) could be misclassified here while
+        // being ignored by the other two paths.
+        let dirs_to_delete: Vec<_> = list_date_dirs(&frames_dir)
+            .await?
+            .into_iter()
+            .filter(|dir_name| dir_name.as_str() < cutoff_date.as_str())
+            .map(|dir_name| frames_dir.join(dir_name))
+            .collect();
 
         if dirs_to_delete.is_empty() {
             return Ok(0);
@@ -120,9 +115,20 @@ impl FrameFileStorage {
             self.cached_size_initialized.store(true, Ordering::Release);
             size
         };
-        let mut current_mb = total_bytes / 1024 / 1024;
+        // Track the eviction budget in BYTES, not truncated MB (#6245). Comparing
+        // `total_bytes / 1024 / 1024` against the limit and subtracting a per-dir
+        // `dir_size_bytes / 1024 / 1024` truncates each directory's contribution
+        // downward (e.g. a 1.9 MB dir counts as 1 MB), so the running counter shrinks
+        // slower than the real on-disk size and the loop over-deletes past the limit.
+        // Comparing exact bytes against `max_storage_mb * 1024 * 1024` evicts the
+        // minimal number of oldest directories needed to get under budget.
+        let limit_bytes = self
+            .max_storage_mb
+            .saturating_mul(1024)
+            .saturating_mul(1024);
+        let mut current_bytes = total_bytes;
 
-        if current_mb <= self.max_storage_mb {
+        if current_bytes <= limit_bytes {
             return Ok(0);
         }
 
@@ -132,7 +138,7 @@ impl FrameFileStorage {
         let mut dirs = list_date_dirs(&frames_dir).await?;
         dirs.sort(); // YYYY-MM-DD ascending (oldest first)
         for dir_name in dirs {
-            if current_mb <= self.max_storage_mb {
+            if current_bytes <= limit_bytes {
                 break;
             }
 
@@ -144,8 +150,7 @@ impl FrameFileStorage {
             if let Err(e) = fs::remove_dir_all(&dir_path).await {
                 warn!("frame folder delete failure: {e}");
             } else {
-                let dir_size_mb = dir_size_bytes / 1024 / 1024;
-                current_mb = current_mb.saturating_sub(dir_size_mb);
+                current_bytes = current_bytes.saturating_sub(dir_size_bytes);
                 total_deleted_bytes += dir_size_bytes;
                 info!("frame folder delete: {} ({count} files)", dir_name);
             }
@@ -173,10 +178,11 @@ impl FrameFileStorage {
     /// abort the overall operation, and the returned count reflects only the
     /// directories that were successfully removed.
     pub async fn delete_all_files(&self) -> Result<usize, StorageError> {
-        // #4928: 프레임 배리어(배타 write) 획득 — 진행 중인 save_frame(read) 들이
-        // 모두 끝난 뒤에야 삭제가 시작되고, 삭제 도중 새 save 가 끼어들 수 없다.
-        // (erase 직전 deletion_flag 가 이미 set 되었으므로, 배리어 해제 후 진입하는
-        // 쓰기는 funnel 에서 스킵된다 — 잔존 프레임이 남지 않는다.)
+        // #4928: acquire the frame barrier (exclusive write). Deletion only begins
+        // after all in-flight save_frame (read) holders have finished, and no new
+        // save can slip in while the deletion is running. (deletion_flag is already
+        // set just before erase, so any write that enters after the barrier is
+        // released is skipped at the funnel -- no leftover frames remain.)
         let _barrier = self.frame_barrier.write().await;
         let frames_dir = self.base_dir.join("frames");
         if !frames_dir.exists() {

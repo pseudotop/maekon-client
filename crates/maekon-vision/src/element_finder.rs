@@ -7,6 +7,7 @@ use maekon_core::models::intent::{ElementBounds, FinderSource, UiElement};
 use tracing::debug;
 
 use crate::error::VisionError;
+use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::ui_scene::{
     NormalizedBounds, UiScene, UiSceneElement, UI_SCENE_SCHEMA_VERSION,
 };
@@ -18,6 +19,11 @@ pub struct OcrElementFinder {
     ocr_provider: Arc<dyn OcrProvider>,
     rectangle_detector: Option<Arc<dyn RectangleDetector>>,
     last_image: tokio::sync::RwLock<Option<(Vec<u8>, String)>>,
+    /// PII level applied to scene-element `text_masked` (review4 V10). Was a
+    /// hardcoded Standard, which silently downgraded a Strict-configured user
+    /// (leaving API key / IP / passport in OCR'd scene text on the localhost REST
+    /// scene surface + the overlay WebView).
+    pii_level: PiiFilterLevel,
 }
 
 impl OcrElementFinder {
@@ -26,7 +32,14 @@ impl OcrElementFinder {
             ocr_provider,
             rectangle_detector: None,
             last_image: tokio::sync::RwLock::new(None),
+            pii_level: PiiFilterLevel::Standard,
         }
+    }
+
+    /// Set the configured PII level used to mask scene-element text (review4 V10).
+    pub fn with_pii_level(mut self, level: PiiFilterLevel) -> Self {
+        self.pii_level = level;
+        self
     }
 
     pub fn with_rectangle_detector(mut self, detector: Arc<dyn RectangleDetector>) -> Self {
@@ -49,10 +62,14 @@ impl OcrElementFinder {
             .iter()
             .filter(|r| {
                 if let Some(bounds) = region {
-                    let in_region = r.x >= bounds.x
-                        && r.y >= bounds.y
-                        && (r.x + r.width as i32) <= (bounds.x + bounds.width as i32)
-                        && (r.y + r.height as i32) <= (bounds.y + bounds.height as i32);
+                    // i64-widen extents to avoid i32 overflow on large OCR coords
+                    // (review4 V11).
+                    let in_region = i64::from(r.x) >= i64::from(bounds.x)
+                        && i64::from(r.y) >= i64::from(bounds.y)
+                        && (i64::from(r.x) + i64::from(r.width))
+                            <= (i64::from(bounds.x) + i64::from(bounds.width))
+                        && (i64::from(r.y) + i64::from(r.height))
+                            <= (i64::from(bounds.y) + i64::from(bounds.height));
                     if !in_region {
                         return false;
                     }
@@ -140,6 +157,7 @@ impl OcrElementFinder {
             screen_height,
             app_name,
             screen_id,
+            self.pii_level,
         );
 
         // Run rectangle detection if available
@@ -181,6 +199,7 @@ impl OcrElementFinder {
         screen_height: u32,
         app_name: Option<&str>,
         screen_id: Option<&str>,
+        pii_level: PiiFilterLevel,
     ) -> Vec<UiSceneElement> {
         let width = screen_width.max(1) as f32;
         let height = screen_height.max(1) as f32;
@@ -197,7 +216,7 @@ impl OcrElementFinder {
                 } else {
                     text_trimmed.to_string()
                 };
-                let text_masked = crate::privacy::sanitize_title(&label);
+                let text_masked = crate::privacy::sanitize_title_with_level(&label, pii_level);
 
                 let bbox_abs = ElementBounds {
                     x: r.x.max(0),
@@ -459,10 +478,14 @@ fn merge_rectangles(
 }
 
 fn compute_iou(a: &ElementBounds, b: &ElementBounds) -> f32 {
-    let x1 = a.x.max(b.x);
-    let y1 = a.y.max(b.y);
-    let x2 = (a.x + a.width as i32).min(b.x + b.width as i32);
-    let y2 = (a.y + a.height as i32).min(b.y + b.height as i32);
+    // Widen to i64 before computing right/bottom extents (review4 V11): x is i32 and
+    // width is u32, so `x + width as i32` overflows i32 on adversarially-large OCR
+    // coordinates (panic in debug/tests, two's-complement wrap in release → garbage
+    // IoU). Mirrors the i64-widening already used in the OCR parser's vertex path.
+    let x1 = i64::from(a.x).max(i64::from(b.x));
+    let y1 = i64::from(a.y).max(i64::from(b.y));
+    let x2 = (i64::from(a.x) + i64::from(a.width)).min(i64::from(b.x) + i64::from(b.width));
+    let y2 = (i64::from(a.y) + i64::from(a.height)).min(i64::from(b.y) + i64::from(b.height));
 
     if x2 <= x1 || y2 <= y1 {
         return 0.0;
@@ -536,6 +559,7 @@ mod tests {
             1080,
             Some("VSCode"),
             Some("m1"),
+            PiiFilterLevel::Standard,
         );
         assert_eq!(scene_elements.len(), 1);
         let first = &scene_elements[0];

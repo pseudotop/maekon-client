@@ -487,6 +487,16 @@ pub async fn steer_session_turn(
         ));
     }
     let mgr = require_session_manager_impl(&state)?;
+
+    // Check daily token budget before steering — mirrors send_session_message
+    // so a course-correction turn cannot bypass the budget gate.
+    if !mgr.check_token_budget(&session_id).await {
+        return Err(IpcError::new(
+            "policy.denied",
+            "Daily token budget exhausted",
+        ));
+    }
+
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
     let msg = SessionMessage {
         role: MessageRole::User,

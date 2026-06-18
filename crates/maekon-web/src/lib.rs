@@ -396,18 +396,48 @@ impl WebServer {
         if let Some(model_catalog_client) = analysis.model_catalog_client {
             self.state.analysis.model_catalog_client = Some(model_catalog_client);
         }
+        // #6279: wire the text-search provider so /api/semantic-search is no
+        // longer permanently inert (keyword + hybrid-degraded modes).
+        if let Some(text_search) = analysis.text_search {
+            self.state.analysis.text_search = Some(text_search);
+        }
         if let Some(session_manager) = session.session_manager {
             self.state.session.manager = Some(session_manager);
         }
         self
     }
 
-    /// TCP 바인딩 없이 Router만 반환 — Tauri 커스텀 프로토콜 등에서 사용
-    pub fn build_router(state: AppState) -> Router {
+    /// Return only the Router without binding TCP — used by the Tauri custom
+    /// protocol handler and similar callers.
+    pub fn build_router(mut state: AppState) -> Router {
         use axum::http::HeaderValue;
         use tower_http::cors::AllowOrigin;
 
-        // localhost origin만 허용 (tauri:// + http://127.0.0.1:{port range})
+        // #6117: construct the SINGLE, server-lifetime settings-policy audit
+        // writer here — the one place every server-construction path (the
+        // `run` loop, the Tauri custom-protocol handler, and tests) converges,
+        // and which always runs inside a Tokio runtime so the writer's
+        // background drain task can be spawned. Storing the `Arc` on `AppState`
+        // means every per-request `SettingsWebContext` clone shares this one
+        // writer, instead of the prior per-request spawn/abort cycle that
+        // dropped security-policy audit events on every settings save.
+        if state.automation.policy_audit_writer.is_none() {
+            if let Some(audit_logger) = state.automation.audit_logger.clone() {
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    state.automation.policy_audit_writer = Some(std::sync::Arc::new(
+                        crate::services::settings_policy_service::PolicyAuditWriter::new(
+                            audit_logger,
+                        ),
+                    ));
+                } else {
+                    warn!(
+                        "build_router called outside a Tokio runtime — settings-policy audit writer not started (#6117)"
+                    );
+                }
+            }
+        }
+
+        // Allow localhost origins only (tauri:// + http://127.0.0.1:{port range})
         let allowed_origins: Vec<HeaderValue> = (10090..=10099)
             .flat_map(|port| {
                 [
@@ -564,7 +594,7 @@ impl WebServer {
             std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
                 format!(
-                    "port {}-{} 모두 사용 not-available",
+                    "ports {}-{} are all in use, none available",
                     base_port,
                     base_port.saturating_add(MAX_PORT_ATTEMPTS - 1)
                 ),

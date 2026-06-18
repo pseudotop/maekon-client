@@ -18,22 +18,68 @@ use crate::auth::TokenManager;
 use crate::error::NetworkError;
 use crate::http_client::build_reqwest_client_for_url;
 
-/// SSE 활동 타임아웃 기본값 — 5분 동안 메시지가 없으면 재연결을 트리거한다.
+/// Default SSE activity timeout — triggers a reconnect when no message arrives
+/// for 5 minutes.
 const ACTIVITY_TIMEOUT_SECS: u64 = 300;
 
-/// 연속 재연결 시도 상한 — 이 횟수만큼 연속 실패하면 재연결을 포기한다.
-/// 성공적으로 스트림이 연결되면 카운터는 0으로 초기화된다.
+/// Ceiling on consecutive reconnect attempts — gives up reconnecting after this
+/// many consecutive failures. The counter is only reset to 0 once the stream has
+/// delivered at least one real event. (A 200 handshake alone does NOT reset it —
+/// this prevents an unbounded reconnect loop caused by a server that drops the
+/// connection right after the handshake.)
 const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 
-/// HTTP 상태 코드가 영구적(재시도 무의미) 실패인지 판별한다.
+/// Maximum byte size accepted for a single SSE event (data + event-name + id).
 ///
-/// 401(인증 실패)·403(권한 없음)은 토큰/권한 문제이므로 재연결을 반복해도
-/// 동일하게 실패한다. 즉시 포기하여 무한 재시도를 방지한다.
+/// `eventsource-stream` accumulates server bytes into an internal buffer and
+/// only yields an `Event` once an event boundary (blank line) is seen, with no
+/// upper bound of its own. A malformed or hostile server can therefore deliver
+/// one enormous event whose `data` field is many MiB/GiB, which would balloon
+/// the heap of this 24/7 process. We cap each delivered event at 1 MiB; any
+/// event exceeding the cap is treated as a transient stream error (the inner
+/// read loop breaks to force a reconnect) rather than being processed or
+/// accumulated. Legitimate suggestion/heartbeat payloads are well under 1 MiB.
+const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
+
+/// Determines whether an HTTP status code is a permanent (not-worth-retrying) failure.
+///
+/// 401 (authentication failure) and 403 (forbidden) are token/permission issues,
+/// so repeated reconnects would fail identically. Give up immediately to avoid
+/// an infinite retry loop.
 fn is_permanent_failure(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
     )
+}
+
+/// Returns the total server-controlled byte size of a parsed SSE event.
+///
+/// Sums the three server-supplied string fields (`data`, `event`, `id`) that
+/// hold attacker-influenced payload bytes, so the cap covers an oversized event
+/// regardless of which field the bytes land in (e.g. a giant `data` block or an
+/// abusive event-name/id).
+fn sse_event_byte_len(msg: &eventsource_stream::Event) -> usize {
+    msg.data
+        .len()
+        .saturating_add(msg.event.len())
+        .saturating_add(msg.id.len())
+}
+
+/// Returns true when a parsed SSE event exceeds [`MAX_SSE_EVENT_BYTES`].
+fn sse_event_exceeds_cap(msg: &eventsource_stream::Event) -> bool {
+    sse_event_byte_len(msg) > MAX_SSE_EVENT_BYTES
+}
+
+/// Number of skipped event IDs between two consecutive numeric SSE IDs.
+///
+/// Both IDs are server-controlled `u64`s, so the gap is computed with
+/// saturating arithmetic: a naive `new - last - 1` panics in debug and wraps to
+/// garbage in release when a hostile or buggy server sends `last == u64::MAX`
+/// (or any non-increasing pair). Returns 0 for adjacent, equal, or decreasing
+/// IDs — i.e. only a genuine forward skip yields a positive count.
+fn sse_id_gap(last_n: u64, new_n: u64) -> u64 {
+    new_n.saturating_sub(last_n).saturating_sub(1)
 }
 
 pub struct SseStreamClient {
@@ -43,12 +89,17 @@ pub struct SseStreamClient {
     http_client: reqwest::Client,
     /// Tracks the last SSE event ID for automatic resume on reconnect (RFC 9110 §9.3.4)
     last_event_id: Mutex<Option<String>>,
-    /// 누적 이벤트 ID 갭 카운터 — 수신 누락 추정치
+    /// Cumulative event-ID gap counter — an estimate of missed deliveries.
     gap_count: Arc<AtomicU64>,
 }
 
 impl SseStreamClient {
-    /// 기존 생성자 — TLS 미적용 (역호환성 보장, 테스트 전용)
+    /// Legacy constructor — no TLS (test-only; permitted only for loopback addresses).
+    ///
+    /// Production callers must use [`SseStreamClient::new_with_tls`] to enforce
+    /// the HTTPS-only policy.  This constructor is retained only for unit/integration
+    /// tests that connect to in-process loopback servers.
+    #[deprecated(note = "Use new_with_tls() for TLS enforcement; this constructor is test-only")]
     pub fn new(base_url: &str, token_manager: Arc<TokenManager>, max_retry_secs: u64) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -60,10 +111,10 @@ impl SseStreamClient {
         }
     }
 
-    /// TLS 설정 적용 생성자 — 운영 환경 표준 진입점
+    /// TLS-enabled constructor — the standard production entry point.
     ///
-    /// `tls.enabled=true` 이면 HTTPS 전용을 강제한다.
-    /// `tls.allow_self_signed=true` 는 인증서 검증 우회로 처리하지 않는다.
+    /// When `tls.enabled=true`, HTTPS is enforced.
+    /// `tls.allow_self_signed=true` is NOT treated as a certificate-verification bypass.
     pub fn new_with_tls(
         base_url: &str,
         token_manager: Arc<TokenManager>,
@@ -71,8 +122,9 @@ impl SseStreamClient {
         tls: &TlsConfig,
     ) -> Result<Self, crate::error::NetworkError> {
         let base_url = Self::validated_base_url(base_url, tls)?;
-        // SSE 스트림에도 HTTP 클라이언트와 동일한 TLS 정책 적용
-        // 전역 타임아웃 미적용(None): SSE는 장기 스트림 연결이므로 단일 타임아웃으로 끊기면 안 됨
+        // Apply the same TLS policy to the SSE stream as the HTTP client uses.
+        // No global timeout (None): SSE is a long-lived stream connection, so it
+        // must not be torn down by a single overall timeout.
         let http_client = build_reqwest_client_for_url(tls, None, Some(&base_url))?;
         Ok(Self {
             base_url,
@@ -117,7 +169,8 @@ impl SseStreamClient {
         self.last_event_id.lock().clone()
     }
 
-    /// 누적 이벤트 ID 갭 수 반환 — 연결 유지 중 수신 누락 추정치
+    /// Returns the cumulative event-ID gap count — an estimate of deliveries
+    /// missed while the connection was held open.
     pub fn gap_count(&self) -> u64 {
         self.gap_count.load(Ordering::Relaxed)
     }
@@ -185,7 +238,8 @@ impl SseClient for SseStreamClient {
         info!("SSE connection started");
 
         let mut retry_delay = 1u64;
-        // 연속 재연결 시도 횟수 — 스트림이 성공적으로 열리면 0으로 초기화된다.
+        // Consecutive reconnect-attempt count — only reset to 0 once the stream
+        // has delivered at least one real event.
         let mut reconnect_attempts = 0u32;
 
         loop {
@@ -238,7 +292,8 @@ impl SseClient for SseStreamClient {
                     "SSE connection failure"
                 );
 
-                // 401/403 등 영구 실패는 재시도해도 동일하게 실패하므로 즉시 포기한다.
+                // Permanent failures (401/403 etc.) would fail identically on
+                // retry, so give up immediately.
                 if is_permanent_failure(status) {
                     warn!(
                         status = %status,
@@ -276,15 +331,43 @@ impl SseClient for SseStreamClient {
 
             let mut stream = response.bytes_stream().eventsource();
             debug!("SSE connection established");
-            // 연결 성공 — 백오프와 give-up 카운터를 모두 초기화한다.
-            retry_delay = 1;
-            reconnect_attempts = 0;
+
+            // The 200 handshake alone is NOT proof of a healthy stream: a server
+            // that accepts the handshake then immediately drops the connection
+            // would otherwise reset the backoff/give-up counters on every loop,
+            // causing an unbounded tight reconnect loop that never reaches
+            // MAX_RECONNECT_ATTEMPTS. We only reset the counters once the
+            // connection has produced at least one real event (`made_progress`).
+            let mut made_progress = false;
 
             let activity_timeout = Duration::from_secs(ACTIVITY_TIMEOUT_SECS);
 
             loop {
                 match timeout(activity_timeout, stream.next()).await {
                     Ok(Some(Ok(msg))) => {
+                        // Bound the SSE body: a malformed or hostile server can
+                        // emit a single enormous event that would OOM this
+                        // long-running process. Reject any event over the cap as
+                        // a transient stream error — break out of the inner loop
+                        // to force a reconnect (do NOT process or accumulate it,
+                        // and do NOT reset the backoff/give-up budget for it).
+                        if sse_event_exceeds_cap(&msg) {
+                            warn!(
+                                event_bytes = sse_event_byte_len(&msg),
+                                cap_bytes = MAX_SSE_EVENT_BYTES,
+                                "SSE event exceeds byte cap — dropping and reconnecting"
+                            );
+                            break;
+                        }
+
+                        // A real event arrived — the connection is genuinely
+                        // healthy, so the backoff/give-up budget can reset.
+                        if !made_progress {
+                            made_progress = true;
+                            retry_delay = 1;
+                            reconnect_attempts = 0;
+                        }
+
                         let event_id = if msg.id.is_empty() {
                             None
                         } else {
@@ -298,8 +381,12 @@ impl SseClient for SseStreamClient {
                             if let (Ok(last_n), Ok(new_n)) =
                                 (last_str.parse::<u64>(), new_str.parse::<u64>())
                             {
-                                if new_n > last_n + 1 {
-                                    let gap = new_n - last_n - 1;
+                                // Event IDs are server-controlled u64s, so the
+                                // gap is computed with saturating arithmetic to
+                                // avoid an overflow (debug panic / release
+                                // garbage) on a hostile `last_n == u64::MAX`.
+                                let gap = sse_id_gap(last_n, new_n);
+                                if gap > 0 {
                                     self.gap_count.fetch_add(gap, Ordering::Relaxed);
                                     warn!(
                                         gap,
@@ -486,14 +573,15 @@ mod tests {
 
     #[test]
     fn permanent_failure_detects_auth_statuses() {
-        // 401·403 은 영구 실패로 분류되어 재시도하지 않아야 한다.
+        // 401 and 403 must be classified as permanent failures and not retried.
         assert!(is_permanent_failure(reqwest::StatusCode::UNAUTHORIZED));
         assert!(is_permanent_failure(reqwest::StatusCode::FORBIDDEN));
     }
 
     #[test]
     fn permanent_failure_excludes_transient_statuses() {
-        // 5xx·429·404 등은 일시적일 수 있으므로 재시도 대상(영구 실패 아님)이다.
+        // 5xx/429/404 etc. may be transient, so they are retry candidates (not
+        // permanent failures).
         assert!(!is_permanent_failure(
             reqwest::StatusCode::INTERNAL_SERVER_ERROR
         ));
@@ -517,7 +605,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let base = format!("http://127.0.0.1:{}", addr.port());
 
-        // stub: 1) login 요청에 유효 토큰 응답, 2) SSE 요청에 401 응답
+        // stub: 1) respond to the login request with a valid token, 2) respond to
+        // the SSE request with 401
         let server_task = tokio::spawn(async move {
             // login (POST /api/v1/auth/tokens)
             if let Ok((mut socket, _)) = listener.accept().await {
@@ -532,7 +621,7 @@ mod tests {
                 let _ = socket.write_all(resp.as_bytes()).await;
                 let _ = socket.flush().await;
             }
-            // SSE stream → 401 Unauthorized (영구 실패)
+            // SSE stream → 401 Unauthorized (permanent failure)
             if let Ok((mut socket, _)) = listener.accept().await {
                 let mut buf = [0u8; 2048];
                 let _ = socket.read(&mut buf).await;
@@ -556,7 +645,7 @@ mod tests {
 
         server_task.abort();
 
-        // 무한 재시도 대신 Auth 에러로 즉시 종료되어야 한다.
+        // Must terminate immediately with an Auth error instead of retrying forever.
         assert!(
             matches!(result, Err(CoreError::Auth { .. })),
             "401 should map to a permanent Auth error, got: {result:?}"
@@ -572,7 +661,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let base = format!("http://127.0.0.1:{}", addr.port());
 
-        // stub: login 요청 1회만 처리하고 종료 → 이후 SSE 연결은 모두 거부(연결 실패)
+        // stub: handle a single login request then exit → all subsequent SSE
+        // connections are refused (connection failure)
         let server_task = tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
                 let mut buf = [0u8; 2048];
@@ -586,27 +676,163 @@ mod tests {
                 let _ = socket.write_all(resp.as_bytes()).await;
                 let _ = socket.flush().await;
             }
-            // listener drop → 이후 연결 거부됨
+            // listener drop → subsequent connections are refused
         });
 
         let tm = TokenManager::new(&base);
         tm.login("user@example.com", &primary_password())
             .await
             .unwrap();
-        // login 응답이 처리되도록 서버 태스크 완료를 기다린다(listener drop 보장).
+        // Wait for the server task to finish so the login response is handled
+        // (guarantees the listener has been dropped).
         let _ = server_task.await;
 
-        // max_retry_secs=0 이므로 백오프 sleep 없이 빠르게 give-up 상한에 도달한다.
+        // With max_retry_secs=0 there are no backoff sleeps, so the give-up
+        // ceiling is reached quickly.
         let client = SseStreamClient::new(&base, Arc::new(tm), 0);
 
         let (tx, _rx) = mpsc::channel::<SseEvent>(8);
         let result = client.connect("sess_giveup", tx).await;
 
-        // 무한 재시도 대신 give-up 상한에서 Network 에러로 종료되어야 한다.
+        // Must terminate with a Network error at the give-up ceiling instead of
+        // retrying forever.
         assert!(
             matches!(result, Err(CoreError::Network { .. })),
             "exhausted reconnects should map to a Network error, got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn handshake_then_immediate_drop_reaches_give_up_ceiling() {
+        // Regression (review2 #6079): a server that accepts the 200 handshake then
+        // immediately drops the stream (delivering zero events) must NOT reset the
+        // give-up budget on the handshake alone. Otherwise the client tight-loops
+        // reconnecting forever and MAX_RECONNECT_ATTEMPTS is never reached. The
+        // reset is now gated on at least one real event (`made_progress`), so this
+        // sequence must terminate with a Network give-up error.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+
+        // stub: after a single login response, every SSE request gets only a
+        // 200 + event-stream handshake and then the connection is dropped
+        // immediately with no events (simulates a server-side handshake-then-drop).
+        let server_task = tokio::spawn(async move {
+            // login (POST /api/v1/auth/tokens)
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"{"access_token":"tok","refresh_token":"ref","expires_in":3600}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+            // Every subsequent SSE connection: 200 handshake + 0-byte body →
+            // immediate close. Accept forever — with the bug present the client
+            // would reconnect endlessly, so this loop must never end and shut the
+            // client down; that way the test exercises the give-up logic itself
+            // (and avoids an accidental termination caused by the server exiting).
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.flush().await;
+                // socket drop → from the client's view the stream ends (zero events)
+            }
+        });
+
+        let tm = TokenManager::new(&base);
+        tm.login("user@example.com", &primary_password())
+            .await
+            .unwrap();
+
+        // max_retry_secs=0 → no backoff sleeps, so the give-up ceiling is reached quickly.
+        let client = SseStreamClient::new(&base, Arc::new(tm), 0);
+
+        let (tx, _rx) = mpsc::channel::<SseEvent>(8);
+        // Bound the call: with the bug present the client would reconnect forever,
+        // so a timeout here surfaces the regression as a test failure instead of a
+        // hang. The fixed client reaches the give-up ceiling near-instantly
+        // (max_retry_secs=0 → no backoff sleeps).
+        let result = timeout(
+            Duration::from_secs(10),
+            client.connect("sess_handshake_drop", tx),
+        )
+        .await
+        .expect("handshake-then-drop must terminate via give-up, not loop forever");
+
+        server_task.abort();
+
+        // The handshake alone does not reset the counter, so this must terminate
+        // at the give-up ceiling.
+        assert!(
+            matches!(result, Err(CoreError::Network { .. })),
+            "handshake-then-drop must reach the give-up ceiling (Network error), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn sse_event_within_cap_is_accepted() {
+        // A normal-sized event (well under 1 MiB) must not be flagged.
+        let msg = eventsource_stream::Event {
+            event: "suggestion".to_string(),
+            data: "x".repeat(4096),
+            id: "42".to_string(),
+            retry: None,
+        };
+        assert!(!sse_event_exceeds_cap(&msg));
+    }
+
+    #[test]
+    fn sse_event_at_cap_boundary_is_accepted() {
+        // Exactly MAX_SSE_EVENT_BYTES is allowed; only strictly-greater is rejected.
+        let msg = eventsource_stream::Event {
+            event: String::new(),
+            data: "y".repeat(MAX_SSE_EVENT_BYTES),
+            id: String::new(),
+            retry: None,
+        };
+        assert_eq!(sse_event_byte_len(&msg), MAX_SSE_EVENT_BYTES);
+        assert!(!sse_event_exceeds_cap(&msg));
+    }
+
+    #[test]
+    fn sse_event_over_cap_is_rejected() {
+        // A single oversized `data` payload (the OOM vector) must be rejected so
+        // the connect loop drops it and reconnects instead of accumulating it.
+        let msg = eventsource_stream::Event {
+            event: String::new(),
+            data: "z".repeat(MAX_SSE_EVENT_BYTES + 1),
+            id: String::new(),
+            retry: None,
+        };
+        assert!(sse_event_exceeds_cap(&msg));
+    }
+
+    #[test]
+    fn sse_event_cap_counts_all_server_fields() {
+        // The cap sums data + event + id so bytes are bounded regardless of which
+        // server-controlled field carries them (here split across all three).
+        let third = MAX_SSE_EVENT_BYTES / 3 + 1;
+        let msg = eventsource_stream::Event {
+            event: "e".repeat(third),
+            data: "d".repeat(third),
+            id: "i".repeat(third),
+            retry: None,
+        };
+        assert!(sse_event_byte_len(&msg) > MAX_SSE_EVENT_BYTES);
+        assert!(sse_event_exceeds_cap(&msg));
     }
 
     #[test]
@@ -614,7 +840,7 @@ mod tests {
     fn gap_count_increments_atomically() {
         let tm = TokenManager::new("http://localhost");
         let client = SseStreamClient::new("http://localhost", Arc::new(tm), 30);
-        // 직접 AtomicU64 조작으로 카운터 동작 검증
+        // Verify counter behavior by manipulating the AtomicU64 directly.
         client
             .gap_count
             .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
@@ -623,5 +849,30 @@ mod tests {
             .gap_count
             .fetch_add(5, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(client.gap_count(), 8);
+    }
+
+    #[test]
+    fn sse_id_gap_counts_forward_skips() {
+        // Adjacent IDs => no gap.
+        assert_eq!(sse_id_gap(10, 11), 0);
+        // One skipped ID (10 -> 12 means 11 was dropped).
+        assert_eq!(sse_id_gap(10, 12), 1);
+        // Several skipped IDs.
+        assert_eq!(sse_id_gap(10, 15), 4);
+        // Equal or decreasing IDs => no gap (never negative/underflow).
+        assert_eq!(sse_id_gap(10, 10), 0);
+        assert_eq!(sse_id_gap(10, 5), 0);
+    }
+
+    #[test]
+    fn sse_id_gap_does_not_overflow_on_max_last_id() {
+        // Regression: a server-controlled `last == u64::MAX` previously caused
+        // `last + 1` to overflow (debug panic / release garbage). Saturating
+        // arithmetic must keep this finite and panic-free for every new id.
+        assert_eq!(sse_id_gap(u64::MAX, u64::MAX), 0);
+        assert_eq!(sse_id_gap(u64::MAX, 0), 0);
+        assert_eq!(sse_id_gap(u64::MAX, u64::MAX - 1), 0);
+        // Symmetric extreme: huge new id off a small last id stays bounded.
+        assert_eq!(sse_id_gap(0, u64::MAX), u64::MAX - 1);
     }
 }

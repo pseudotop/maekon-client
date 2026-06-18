@@ -10,7 +10,6 @@ pub mod refresh_coordinator;
 pub mod token_exchange;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -45,13 +44,46 @@ const KEY_REFRESH_TOKEN: &str = "refresh_token";
 const KEY_EXPIRES_AT: &str = "expires_at";
 const KEY_SCOPES: &str = "scopes";
 
+/// Upper bound (30 days) on a server-supplied OAuth `expires_in` before it is
+/// turned into a `chrono::Duration`. A hostile/buggy provider value (u64::MAX
+/// casts to -1; a huge-but-positive value overflows `TimeDelta`/`DateTime`)
+/// would otherwise panic or yield a nonsense expiry. 30 days is far longer than
+/// any realistic access-token lifetime and is trivially within range (#6201 sibling).
+const MAX_OAUTH_TTL_SECS: u64 = 60 * 60 * 24 * 30;
+
+/// Outcome of a `try_refresh` attempt.
+///
+/// Distinguishes a contention skip (another refresh for the **same provider**
+/// already holds that provider's refresh lock) from a genuine refresh failure.
+/// A contention skip must NOT be reported as unauthenticated: the caller's
+/// previously-read access token is within the 60s safety buffer and may still
+/// be valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshOutcome {
+    /// A fresh access token was successfully stored.
+    Refreshed,
+    /// A concurrent refresh for the same provider held that provider's lock, so
+    /// this attempt was skipped. No conclusion about authentication can be drawn
+    /// from this.
+    SkippedContention,
+    /// The refresh was attempted (or precluded) and did not yield a new token
+    /// (e.g. no stored refresh token, or the network exchange failed).
+    Failed,
+}
+
 /// OAuth client implementing `OAuthPort`.
 pub struct OAuthClient {
     http: reqwest::Client,
     secret_store: Arc<dyn SecretStore>,
     providers: HashMap<String, OAuthProviderConfig>,
     active_flows: Arc<Mutex<HashMap<String, ActiveFlow>>>,
-    refresh_in_progress: AtomicBool,
+    /// Per-provider refresh serialization. Each provider gets its own
+    /// `tokio::sync::Mutex<()>` so a slow refresh of provider A no longer blocks
+    /// (or skips) a refresh of provider B. Previously a single process-global
+    /// `AtomicBool` guarded all providers, which serialized refreshes across
+    /// unrelated providers. The outer `Mutex<HashMap<..>>` is only held briefly
+    /// to look up / lazily create a provider's lock — never across a refresh.
+    refresh_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl OAuthClient {
@@ -67,8 +99,18 @@ impl OAuthClient {
             secret_store,
             providers: provider_map,
             active_flows: Arc::new(Mutex::new(HashMap::new())),
-            refresh_in_progress: AtomicBool::new(false),
+            refresh_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Fetch (or lazily create) the per-provider refresh lock. The outer map
+    /// lock is held only for the lookup/insert, never across a refresh.
+    async fn refresh_lock_for(&self, provider_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.refresh_locks.lock().await;
+        locks
+            .entry(provider_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     fn get_provider(&self, provider_id: &str) -> Result<&OAuthProviderConfig, CoreError> {
@@ -98,23 +140,23 @@ impl OAuthClient {
 
     /// Try to refresh the access token using the stored refresh token.
     ///
-    /// Uses an `AtomicBool` guard to prevent concurrent refresh attempts.
-    async fn try_refresh(&self, provider_id: &str) -> Result<bool, CoreError> {
-        if self
-            .refresh_in_progress
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+    /// Uses a **per-provider** `tokio::sync::Mutex` (via `try_lock`) to prevent
+    /// concurrent refresh attempts for the *same* provider while allowing
+    /// different providers to refresh independently. Returns a tri-state
+    /// [`RefreshOutcome`] so callers can distinguish a contention skip (this
+    /// provider's lock is held by a concurrent refresh) from a genuine failure
+    /// (missing refresh token or failed exchange).
+    async fn try_refresh(&self, provider_id: &str) -> Result<RefreshOutcome, CoreError> {
+        let lock = self.refresh_lock_for(provider_id).await;
+        // `try_lock_owned` (not `lock`) preserves the skip-on-contention
+        // semantics: a refresh already running for THIS provider yields a
+        // contention skip instead of blocking. The owned guard releases the
+        // provider's lock on drop. Other providers are unaffected because each
+        // has its own lock.
+        let Ok(_guard) = lock.try_lock_owned() else {
             debug!("Refresh already in progress for {provider_id}, skipping");
-            return Ok(false);
-        }
-        struct RefreshGuard<'a>(&'a AtomicBool);
-        impl<'a> Drop for RefreshGuard<'a> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
-            }
-        }
-        let _guard = RefreshGuard(&self.refresh_in_progress);
+            return Ok(RefreshOutcome::SkippedContention);
+        };
 
         let config = self.get_provider(provider_id)?;
         let refresh_tok = self
@@ -124,18 +166,18 @@ impl OAuthClient {
 
         let Some(refresh_tok) = refresh_tok else {
             debug!("no refresh token stored for {provider_id}");
-            return Ok(false);
+            return Ok(RefreshOutcome::Failed);
         };
 
         match token_exchange::refresh_token(&self.http, config, &refresh_tok).await {
             Ok(result) => {
                 self.store_tokens(provider_id, &result).await?;
                 info!("access token refreshed for {provider_id}");
-                Ok(true)
+                Ok(RefreshOutcome::Refreshed)
             }
             Err(e) => {
                 warn!("token refresh failed for {provider_id}: {e}");
-                Ok(false)
+                Ok(RefreshOutcome::Failed)
             }
         }
     }
@@ -210,42 +252,44 @@ impl OAuthPort for OAuthClient {
         let verifier = pkce.verifier.clone();
 
         let handle = tokio::spawn(async move {
+            // --- Phase 1: wait for the loopback callback (no lock held) ---
             let result =
                 callback_server::wait_for_callback(config.callback_port, state, cancel_rx).await;
 
-            let mut flows = flows_ref.lock().await;
-            let flow = flows.get_mut(&flow_id_bg);
-
-            match result {
+            // --- Phase 2: token exchange + storage WITHOUT holding flows_ref ---
+            // The token exchange is an untimed network round-trip against the
+            // OAuth provider. Holding the `active_flows` mutex across it would
+            // block every other flow operation (flow_status, cancel_flow,
+            // revoke, start_flow) for the entire duration of a slow or hung
+            // provider. We therefore compute the resulting status into a local
+            // and only re-acquire the lock briefly in Phase 3 to write it.
+            // This mirrors the Phase-1/2/3 no-lock-across-await pattern used by
+            // `refresh_coordinator::check_and_refresh`.
+            let new_status = match result {
                 Ok(callback) => {
-                    // Exchange code for tokens
                     match token_exchange::exchange_code(&http, &config, &callback.code, &verifier)
                         .await
                     {
                         Ok(tokens) => {
-                            // Store tokens
-                            if let Err(e) =
-                                store_tokens_static(&*secret_store, &provider_id_bg, &tokens).await
+                            match store_tokens_static(&*secret_store, &provider_id_bg, &tokens)
+                                .await
                             {
-                                warn!("failed to store tokens: {e}");
-                                if let Some(f) = flow {
-                                    f.status = OAuthFlowStatus::Failed {
-                                        error: format!("token storage failed: {e}"),
-                                    };
+                                Ok(()) => {
+                                    info!("OAuth flow completed for {provider_id_bg}");
+                                    OAuthFlowStatus::Completed
                                 }
-                                return;
-                            }
-                            info!("OAuth flow completed for {provider_id_bg}");
-                            if let Some(f) = flow {
-                                f.status = OAuthFlowStatus::Completed;
+                                Err(e) => {
+                                    warn!("failed to store tokens: {e}");
+                                    OAuthFlowStatus::Failed {
+                                        error: format!("token storage failed: {e}"),
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
                             warn!("token exchange failed: {e}");
-                            if let Some(f) = flow {
-                                f.status = OAuthFlowStatus::Failed {
-                                    error: e.to_string(),
-                                };
+                            OAuthFlowStatus::Failed {
+                                error: e.to_string(),
                             }
                         }
                     }
@@ -253,20 +297,30 @@ impl OAuthPort for OAuthClient {
                 Err(e) => {
                     let msg = e.to_string();
                     if msg.contains("cancelled") {
-                        if let Some(f) = flow {
-                            f.status = OAuthFlowStatus::Cancelled;
-                        }
-                    } else if let Some(f) = flow {
-                        f.status = OAuthFlowStatus::Failed { error: msg };
+                        OAuthFlowStatus::Cancelled
+                    } else {
+                        OAuthFlowStatus::Failed { error: msg }
                     }
+                }
+            };
+
+            // --- Phase 3: briefly re-acquire the lock only to write status ---
+            // No `.await` other than the lock acquisition itself occurs while
+            // the guard is held, so contention is bounded to a map lookup.
+            {
+                let mut flows = flows_ref.lock().await;
+                if let Some(f) = flows.get_mut(&flow_id_bg) {
+                    f.status = new_status;
                 }
             }
         });
 
         // Store active flow — inserted AFTER spawn so the JoinHandle is
-        // available immediately. The background task holds `flows_ref` and
-        // updates status in-place; inserting post-spawn is safe because the
-        // task acquires the lock only after `wait_for_callback` returns.
+        // available immediately. The background task updates status in-place
+        // under the lock only in its Phase 3 (after the callback wait AND the
+        // token exchange), so inserting post-spawn is safe: this insert always
+        // wins the lock first and registers the `Pending` entry before the task
+        // can reach Phase 3.
         {
             let mut flows = self.active_flows.lock().await;
             flows.insert(
@@ -340,15 +394,25 @@ impl OAuthPort for OAuthClient {
         }
 
         // 3. Try to refresh
-        if self.try_refresh(provider_id).await? {
-            return self
-                .secret_store
-                .retrieve(provider_id, KEY_ACCESS_TOKEN)
-                .await;
+        match self.try_refresh(provider_id).await? {
+            RefreshOutcome::Refreshed => {
+                self.secret_store
+                    .retrieve(provider_id, KEY_ACCESS_TOKEN)
+                    .await
+            }
+            // A concurrent refresh held the guard. Do NOT report unauthenticated:
+            // the token captured in step 1 is still within the 60s safety buffer
+            // and may remain valid, so fall back to it rather than returning None.
+            RefreshOutcome::SkippedContention => {
+                debug!(
+                    "refresh skipped due to contention for {provider_id}, \
+                     returning previously-stored token"
+                );
+                Ok(token)
+            }
+            // 4. Token expired and refresh genuinely failed.
+            RefreshOutcome::Failed => Ok(None),
         }
-
-        // 4. Token expired and refresh failed
-        Ok(None)
     }
 
     async fn revoke(&self, provider_id: &str) -> Result<(), CoreError> {
@@ -437,24 +501,16 @@ impl OAuthPort for OAuthClient {
             return Ok(RefreshResult::NotAuthenticated);
         }
 
-        // Prevent concurrent refresh attempts (shared with try_refresh).
-        if self
-            .refresh_in_progress
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        // Prevent concurrent refresh attempts for THIS provider (per-provider
+        // lock shared with try_refresh). A refresh in flight for a *different*
+        // provider does not block this one.
+        let lock = self.refresh_lock_for(provider_id).await;
+        let Ok(_guard) = lock.try_lock_owned() else {
             debug!("Refresh already in progress for {provider_id}, skipping");
             return Ok(RefreshResult::AlreadyFresh {
                 expires_at: String::new(),
             });
-        }
-        struct RefreshGuard<'a>(&'a AtomicBool);
-        impl<'a> Drop for RefreshGuard<'a> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
-            }
-        }
-        let _guard = RefreshGuard(&self.refresh_in_progress);
+        };
 
         // 2. Check if the token is still valid for the requested duration.
         if let Ok(Some(expires_str)) = self
@@ -545,7 +601,8 @@ async fn store_tokens_static(
             .await?;
     }
     if let Some(expires_in) = result.expires_in {
-        let expires_at = Utc::now() + chrono::Duration::seconds(expires_in as i64);
+        let ttl = expires_in.min(MAX_OAUTH_TTL_SECS) as i64;
+        let expires_at = Utc::now() + chrono::Duration::seconds(ttl);
         secret_store
             .store(provider_id, KEY_EXPIRES_AT, &expires_at.to_rfc3339())
             .await?;
@@ -618,6 +675,15 @@ mod tests {
         let mut config = OAuthProviderConfig::openai_codex();
         config.callback_port = next_test_port();
         OAuthClient::new(secret_store, vec![config])
+    }
+
+    /// Build a provider config with a custom `provider_id` (and a unique
+    /// callback port) for multi-provider tests.
+    fn provider_with_id(provider_id: &str) -> OAuthProviderConfig {
+        let mut config = OAuthProviderConfig::openai_codex();
+        config.provider_id = provider_id.to_string();
+        config.callback_port = next_test_port();
+        config
     }
 
     #[tokio::test]
@@ -775,16 +841,116 @@ mod tests {
         let store = Arc::new(TestSecretStore::new());
         let client = make_client(store);
 
-        // Manually set the guard to simulate an in-progress refresh.
-        client.refresh_in_progress.store(true, Ordering::Release);
+        // Hold the provider's per-provider refresh lock to simulate an
+        // in-progress refresh for "openai".
+        let held = client.refresh_lock_for("openai").await;
+        let _held_guard = held.lock_owned().await;
+
         let result = client.try_refresh("openai").await.unwrap();
-        assert!(
-            !result,
-            "try_refresh should return false when guard is held"
+        assert_eq!(
+            result,
+            RefreshOutcome::SkippedContention,
+            "try_refresh should report a contention skip when the provider's lock is held"
         );
 
-        // Release the guard.
-        client.refresh_in_progress.store(false, Ordering::Release);
+        // _held_guard releases the lock on drop at end of scope.
+    }
+
+    /// Regression test for finding #12: the per-provider refresh lock must NOT
+    /// serialize refreshes across DIFFERENT providers. A refresh in flight for
+    /// provider A must not cause provider B's refresh to skip on contention.
+    #[tokio::test]
+    async fn refresh_lock_is_independent_per_provider() {
+        let store = Arc::new(TestSecretStore::new());
+        // Two distinct providers, each with a stored refresh token so
+        // try_refresh proceeds past the "no refresh token" early return.
+        let client = OAuthClient::new(
+            store,
+            vec![
+                OAuthProviderConfig::openai_codex(),
+                provider_with_id("other"),
+            ],
+        );
+
+        // Simulate provider "openai" being mid-refresh by holding ITS lock.
+        let openai_lock = client.refresh_lock_for("openai").await;
+        let _openai_held = openai_lock.lock_owned().await;
+
+        // Provider "openai" must report contention...
+        assert_eq!(
+            client.try_refresh("openai").await.unwrap(),
+            RefreshOutcome::SkippedContention,
+            "the provider whose lock is held must skip on contention"
+        );
+
+        // ...but provider "other" must be free to proceed. With no refresh
+        // token stored it ends in Failed (NOT SkippedContention), proving its
+        // lock was acquired independently of "openai".
+        assert_eq!(
+            client.try_refresh("other").await.unwrap(),
+            RefreshOutcome::Failed,
+            "a different provider must refresh independently, not skip on contention"
+        );
+    }
+
+    /// Regression test for the OAuth refresh-contention bug (#6132), now
+    /// per-provider: when a concurrent refresh holds the provider's refresh
+    /// lock, `get_access_token` must fall back to the previously-stored token
+    /// (still within the 60s safety buffer) instead of spuriously reporting
+    /// `Ok(None)` ("not authenticated").
+    #[tokio::test]
+    async fn get_access_token_returns_stored_token_on_refresh_contention() {
+        let store = Arc::new(TestSecretStore::new());
+        // Store a token that is past the 60s safety buffer (so step 2's
+        // `is_token_valid` returns false and step 3 attempts a refresh) but is
+        // not yet actually expired — i.e. it may still be usable by the server.
+        let expires = (Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
+        store
+            .store("openai", KEY_ACCESS_TOKEN, "tok_buffer")
+            .await
+            .unwrap();
+        store
+            .store("openai", KEY_EXPIRES_AT, &expires)
+            .await
+            .unwrap();
+
+        let client = make_client(store);
+
+        // Simulate a concurrent refresh already holding the provider's lock.
+        let held = client.refresh_lock_for("openai").await;
+        let _held_guard = held.lock_owned().await;
+
+        let token = client.get_access_token("openai").await.unwrap();
+        assert_eq!(
+            token,
+            Some("tok_buffer".to_string()),
+            "contention skip must fall back to the stored token, not return None"
+        );
+    }
+
+    /// Confirms the genuine-unauthenticated path is preserved: when the token
+    /// is past the safety buffer, no refresh token is stored, and there is no
+    /// contention, `get_access_token` still returns `None`.
+    #[tokio::test]
+    async fn get_access_token_returns_none_when_refresh_genuinely_fails() {
+        let store = Arc::new(TestSecretStore::new());
+        let expires = (Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
+        store
+            .store("openai", KEY_ACCESS_TOKEN, "tok_expired")
+            .await
+            .unwrap();
+        store
+            .store("openai", KEY_EXPIRES_AT, &expires)
+            .await
+            .unwrap();
+        // No refresh token stored → try_refresh returns Failed (not contention).
+
+        let client = make_client(store);
+        let token = client.get_access_token("openai").await.unwrap();
+        assert!(
+            token.is_none(),
+            "genuine refresh failure (no refresh token) must return None"
+        );
     }
 
     #[tokio::test]
@@ -854,6 +1020,96 @@ mod tests {
         // Give the runtime one yield to process the abort signal.
         tokio::task::yield_now().await;
         // If we reach here without panic the Drop impl is correct.
+    }
+
+    /// Regression test for finding #6208: the OAuth `start_flow` background
+    /// task must NOT hold the `active_flows` mutex across the untimed
+    /// token-exchange `.await`. A slow or hung OAuth provider previously froze
+    /// every other `active_flows` operation (flow_status, cancel_flow, revoke,
+    /// start_flow) for the entire exchange duration.
+    ///
+    /// This test reproduces the fixed Phase-1/2/3 lock discipline directly on
+    /// the real `OAuthClient::active_flows` map and `ActiveFlow` type: a
+    /// background task performs a slow await (standing in for the network
+    /// round-trip) while holding NO lock, then briefly re-acquires the lock
+    /// only to write the terminal status. We assert that, while the slow phase
+    /// is still pending, another task can acquire the lock and read the flow
+    /// status promptly — which is only possible if the lock is not held across
+    /// the await.
+    #[tokio::test]
+    async fn start_flow_task_does_not_hold_lock_across_exchange() {
+        use std::sync::Arc as StdArc;
+        use tokio::sync::Notify;
+
+        let store = Arc::new(TestSecretStore::new());
+        let client = make_client(store);
+        let flow_id = "flow-test-6208".to_string();
+
+        // Register a Pending flow as `start_flow` would, but without a real
+        // callback server (we only exercise the lock-discipline of the
+        // status write-back phase).
+        {
+            let mut flows = client.active_flows.lock().await;
+            flows.insert(
+                flow_id.clone(),
+                ActiveFlow {
+                    provider_id: "openai".into(),
+                    pkce_verifier: "verifier".into(),
+                    cancel_tx: None,
+                    handle: None,
+                    status: OAuthFlowStatus::Pending,
+                },
+            );
+        }
+
+        // `gate` stands in for the slow/hung token exchange: the background
+        // task awaits it WITHOUT holding `flows_ref` (Phase 2), exactly as the
+        // fixed code does between `wait_for_callback` and the status write.
+        let gate = StdArc::new(Notify::new());
+        let flows_ref = client.active_flows.clone();
+        let flow_id_bg = flow_id.clone();
+        let gate_bg = gate.clone();
+
+        let handle = tokio::spawn(async move {
+            // Phase 2: slow exchange — no lock held.
+            gate_bg.notified().await;
+            // Phase 3: briefly re-acquire the lock only to write status.
+            let mut flows = flows_ref.lock().await;
+            if let Some(f) = flows.get_mut(&flow_id_bg) {
+                f.status = OAuthFlowStatus::Completed;
+            }
+        });
+
+        // Yield so the spawned task reaches `gate_bg.notified().await` (its
+        // Phase-2 slow wait) before we probe the lock.
+        tokio::task::yield_now().await;
+
+        // While the simulated exchange is still pending, acquiring the lock and
+        // reading status must succeed promptly. A short timeout guards against
+        // the pre-fix regression where the lock would be held for the whole
+        // exchange. If the lock were held across the await this would time out.
+        let probe = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let flows = client.active_flows.lock().await;
+            flows.get(&flow_id).map(|f| f.status.clone())
+        })
+        .await
+        .expect("active_flows lock must be available during a slow exchange");
+        assert_eq!(
+            probe,
+            Some(OAuthFlowStatus::Pending),
+            "flow must still be Pending while the exchange is in flight"
+        );
+
+        // Complete the simulated exchange and let Phase 3 write the status.
+        gate.notify_one();
+        handle.await.expect("background task must finish");
+
+        let status = client.flow_status(&flow_id).await.unwrap();
+        assert_eq!(
+            status,
+            OAuthFlowStatus::Completed,
+            "Phase 3 must write the terminal status after the exchange completes"
+        );
     }
 
     #[tokio::test]

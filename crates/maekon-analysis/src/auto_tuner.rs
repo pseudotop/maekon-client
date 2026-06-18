@@ -1,7 +1,7 @@
 //! Auto-tuning: per-category EMA statistics tracking and drift detection.
 //!
 //! `EmaStatsTracker` maintains running EMA of event rate and importance per
-//! category/process, and generates per-category `TriggerParams` overrides.
+//! category, and generates per-category `TriggerParams` overrides.
 //!
 //! `DriftDetector` monitors an EWMA of a signal and flags when the signal
 //! deviates beyond a configurable number of sigma (concept drift detection).
@@ -43,30 +43,10 @@ impl CategoryStats {
     }
 }
 
-/// Per-process running statistics (lighter weight).
-#[derive(Debug, Clone)]
-pub struct ProcessStats {
-    /// Exponential moving average of event rate.
-    pub ema_event_rate: f32,
-    /// Total number of observations.
-    pub sample_count: u64,
-}
-
-impl ProcessStats {
-    fn new() -> Self {
-        Self {
-            ema_event_rate: 0.0,
-            sample_count: 0,
-        }
-    }
-}
-
-/// Tracks per-category and per-process EMA statistics for auto-tuning
-/// trigger parameters.
+/// Tracks per-category EMA statistics for auto-tuning trigger parameters.
 #[derive(Debug, Clone)]
 pub struct EmaStatsTracker {
     category_stats: HashMap<String, CategoryStats>,
-    process_stats: HashMap<String, ProcessStats>,
     alpha: f32,
 }
 
@@ -77,13 +57,16 @@ impl EmaStatsTracker {
     pub fn new(alpha: f32) -> Self {
         Self {
             category_stats: HashMap::new(),
-            process_stats: HashMap::new(),
             alpha: alpha.clamp(0.001, 0.999),
         }
     }
 
     /// Update statistics with a new observation.
-    pub fn update(&mut self, category: &str, process: &str, event_rate: f32, importance: f32) {
+    ///
+    /// `_process` is accepted for call-site compatibility but is intentionally
+    /// not tracked: per-process stats were never read for any output and grew
+    /// unbounded (one entry per unique process name, never evicted).
+    pub fn update(&mut self, category: &str, _process: &str, event_rate: f32, importance: f32) {
         // --- Category stats ---
         let cat = self
             .category_stats
@@ -115,19 +98,6 @@ impl EmaStatsTracker {
             } else {
                 0.0
             };
-        }
-
-        // --- Process stats ---
-        let proc = self
-            .process_stats
-            .entry(process.to_string())
-            .or_insert_with(ProcessStats::new);
-
-        proc.sample_count += 1;
-        if proc.sample_count == 1 {
-            proc.ema_event_rate = event_rate;
-        } else {
-            proc.ema_event_rate += self.alpha * (event_rate - proc.ema_event_rate);
         }
     }
 
@@ -192,11 +162,6 @@ impl EmaStatsTracker {
     pub fn category_stats(&self) -> &HashMap<String, CategoryStats> {
         &self.category_stats
     }
-
-    /// Read-only access to process stats.
-    pub fn process_stats(&self) -> &HashMap<String, ProcessStats> {
-        &self.process_stats
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +191,11 @@ impl DriftDetector {
             ewma: 0.0,
             ewma_variance: 0.0,
             alpha: alpha.clamp(0.001, 0.999),
-            threshold_sigma,
+            // Clamp to a sane positive floor (review4 F13). The user-config
+            // `auto_tuning.drift_threshold` is unbounded at every other layer; a
+            // 0 / negative value makes `deviation.abs() > threshold_sigma * sigma`
+            // fire on every observation, forcing continuous re-clustering.
+            threshold_sigma: threshold_sigma.max(0.5),
             initialized: false,
         }
     }
@@ -398,22 +367,6 @@ mod tests {
             !overrides.contains_key("constant"),
             "should skip categories with near-zero variance"
         );
-    }
-
-    #[test]
-    fn process_stats_tracked() {
-        let mut tracker = EmaStatsTracker::new(0.1);
-
-        for _ in 0..20 {
-            tracker.update("dev", "vscode", 0.6, 0.7);
-        }
-        for _ in 0..20 {
-            tracker.update("dev", "terminal", 0.8, 0.5);
-        }
-
-        assert!(tracker.process_stats.contains_key("vscode"));
-        assert!(tracker.process_stats.contains_key("terminal"));
-        assert!((tracker.process_stats["vscode"].ema_event_rate - 0.6).abs() < 0.05);
     }
 
     // ---- DriftDetector tests ----

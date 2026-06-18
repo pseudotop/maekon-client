@@ -1,24 +1,26 @@
-//! ConfigCode — Config 카테고리 에러 코드.
+//! ConfigCode — Config category error codes.
 //!
-//! 네이밍: `config.*` 접두사가 기본. 신규 코드 추가 시 ADR-019 §2 컨벤션 준수.
+//! Naming: the `config.*` prefix is the default. When adding new codes, follow
+//! the ADR-019 §2 convention.
 //!
-//! 예외: `UnsupportedProviderBedrock`은 의도적으로 `provider.bedrock.unsupported`
-//! 와이어 코드를 사용 — 관측성 대시보드가 provider-unsupported를 단일 `provider.*`
-//! 네임스페이스로 그룹핑할 수 있게 함. 이 exception은 ADR-019 §3에서 명시.
+//! Exception: `UnsupportedProviderBedrock` intentionally uses the
+//! `provider.bedrock.unsupported` wire code so that the observability dashboard
+//! can group provider-unsupported errors under a single `provider.*` namespace.
+//! This exception is documented in ADR-019 §3.
 
 // `define_code_enum!` is re-exported at crate root via `#[macro_export]` in
 // `error_codes/macros.rs`; no explicit `use` needed within the same crate.
 
 define_code_enum! {
-    /// Config 카테고리 에러 코드.
+    /// Config category error codes.
     pub enum ConfigCode {
-        /// 설정 파일 파싱 실패 또는 스키마 불일치.
+        /// Config file parse failure or schema mismatch.
         Invalid => "config.invalid",
-        /// 필수 설정 필드 누락.
+        /// Required config field missing.
         Missing => "config.missing",
-        /// 설정 값이 허용 범위 밖.
+        /// Config value outside the allowed range.
         OutOfRange => "config.out_of_range",
-        /// AWS Bedrock 의도적 미지원 (ADR-019 §5 재도입 체크리스트 참조).
+        /// AWS Bedrock intentionally unsupported (see ADR-019 §5 re-introduction checklist).
         UnsupportedProviderBedrock => "provider.bedrock.unsupported",
     }
 }

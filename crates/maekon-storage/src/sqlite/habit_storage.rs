@@ -30,7 +30,7 @@ impl SqliteStorage {
         target_minutes: u32,
         met: bool,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, habit_streaks ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set, habit_streaks ∈ ALL_TABLES).
         let params = OwnedHabitStreak {
             regime_label: regime_label.to_owned(),
             date: date.to_owned(),
@@ -94,7 +94,7 @@ impl SqliteStorage {
     /// Synchronous inherent twin — see [`Self::upsert_habit_streak`]. The async
     /// trait method routes through [`Self::query_habit_streaks_async`].
     pub fn query_habit_streaks(&self, days: u32) -> Result<Vec<HabitStreakRow>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::query_habit_streaks_inner(read.conn(), days)
     }

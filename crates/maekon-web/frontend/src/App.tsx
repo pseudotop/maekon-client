@@ -86,7 +86,7 @@ function AppShell() {
         <main
           id="main-content"
           className={cn('min-w-0 overflow-y-auto', layout.mainContent.bg)}
-          aria-label="Main content"
+          aria-label={t('appShell.mainContent', 'Main content')}
         >
           <MicrophoneUpgradeNotice />
           <ErrorBoundary>

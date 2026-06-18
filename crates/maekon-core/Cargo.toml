@@ -24,6 +24,7 @@ base64 = { workspace = true }
 semver = { workspace = true }
 gethostname = { workspace = true }
 parking_lot = { workspace = true }
+sha2 = { workspace = true }
 futures-core = "0.3"
 
 [dev-dependencies]

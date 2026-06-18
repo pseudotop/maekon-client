@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 
 use crate::auth::TokenManager;
 use crate::error::NetworkError;
-use crate::resilience::{extract_retry_after, jittered_backoff_delay};
+use crate::resilience::{extract_retry_after, jittered_backoff_delay, MAX_RETRY_AFTER_SECS};
 
 const DEFAULT_MAX_RETRIES: u32 = 3;
 
@@ -40,11 +40,11 @@ pub struct HttpApiClient {
     timeout_ms: u64,
 }
 
-/// TLS 설정을 적용하여 reqwest 클라이언트를 생성하는 헬퍼 함수
+/// Helper function that builds a reqwest client with the given TLS settings.
 ///
-/// `tls.enabled=true` 이면 HTTPS 전용 모드(`https_only`)를 강제한다.
-/// `tls.allow_self_signed=true` 는 더 이상 인증서 검증 우회로 처리하지 않는다.
-/// `timeout=None` 이면 전역 타임아웃 미적용 — SSE 등 장기 스트림 연결에 사용.
+/// `tls.enabled=true` enforces HTTPS-only mode (`https_only`).
+/// `tls.allow_self_signed=true` is no longer treated as a certificate-validation bypass.
+/// `timeout=None` applies no global timeout — used for long-lived stream connections such as SSE.
 /// Check if a URL refers to a loopback / localhost address.
 fn is_localhost(url: &str) -> bool {
     // Strip scheme if present to get the host portion
@@ -116,8 +116,25 @@ pub fn build_reqwest_client_for_url(
     }
 
     if tls.enabled {
-        // 운영 환경: HTTPS 전용 강제
+        // Production environment: enforce HTTPS-only.
         builder = builder.https_only(true);
+    } else if let Some(target) = base_url {
+        // TLS disabled: cleartext `http://` is permitted ONLY to a loopback
+        // endpoint (local development). Mirror the SSE client invariant
+        // (`SseStreamClient::validated_base_url`) so a misconfigured `[tls]`
+        // block cannot ship plaintext credentials/payloads to a REMOTE host.
+        // `https://` targets are always allowed; only a non-loopback `http://`
+        // target is rejected. Reuse the public strict-loopback helper.
+        if target
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("http://")
+            && !host_is_loopback(target)
+        {
+            return Err(NetworkError::Config(format!(
+                "remote cleartext HTTP base URL `{target}` is not allowed; cleartext HTTP is permitted only for loopback development endpoints with TLS disabled — enable TLS or use https://"
+            )));
+        }
     }
 
     if tls.allow_self_signed {
@@ -139,7 +156,7 @@ pub fn build_reqwest_client_for_url(
 }
 
 impl HttpApiClient {
-    /// 기존 생성자 — TLS 미적용 (역호환성 보장, 테스트 전용)
+    /// Legacy constructor — no TLS applied (kept for backward compatibility, test-only).
     #[deprecated(note = "Use new_with_tls() for TLS enforcement")]
     pub fn new(
         base_url: &str,
@@ -160,9 +177,9 @@ impl HttpApiClient {
         })
     }
 
-    /// TLS 설정 적용 생성자 — 운영 환경 표준 진입점
+    /// Constructor that applies TLS settings — the standard entry point for production.
     ///
-    /// `tls.enabled=true` 이면 HTTPS 전용을 강제한다.
+    /// `tls.enabled=true` enforces HTTPS-only.
     pub fn new_with_tls(
         base_url: &str,
         token_manager: Arc<TokenManager>,
@@ -238,6 +255,16 @@ impl HttpApiClient {
             // #5069 feature-perf emitter (which then dropped the batch instead
             // of backing off). (iter-54 / #5069)
             500..=599 => Err(NetworkError::ServiceUnavailable(text)),
+            // Remaining 4xx (400, 409, 410, 413, 422, …) are PERMANENT client
+            // errors — the same request will not succeed on retry. Map them to a
+            // non-retryable Validation error rather than the (conservatively
+            // retryable) Internal catch-all, so a permanent 400/422 cannot become a
+            // poison pill in the BatchUploader retry/requeue loop (#6078). The
+            // 401/403/404/408/429 client codes are handled by the specific arms above.
+            400..=499 => Err(NetworkError::Validation {
+                field: "request".to_string(),
+                message: format!("client error ({status}): {text}"),
+            }),
             _ => Err(NetworkError::Internal(format!(
                 "API error ({status}): {text}"
             ))),
@@ -260,7 +287,9 @@ impl HttpApiClient {
 
                     let delay = match &e {
                         NetworkError::RateLimited { retry_after_secs } => {
-                            Duration::from_secs(*retry_after_secs)
+                            // Defensive clamp in case the value bypassed
+                            // `extract_retry_after` — never block for years.
+                            Duration::from_secs((*retry_after_secs).min(MAX_RETRY_AFTER_SECS))
                         }
                         _ => jittered_backoff_delay(
                             attempt,
@@ -336,14 +365,28 @@ impl ApiClient for HttpApiClient {
     async fn upload_batch(&self, batch: &EventBatch) -> Result<(), CoreError> {
         debug!("batch upload: {} event", batch.events.len());
 
+        // Generate ONE idempotency key for this upload attempt set.  All retry
+        // attempts of the same logical batch share this key so the server can
+        // detect and discard duplicates that arrive after a lost response (e.g.
+        // client timeout or proxy 502 after the server has already committed).
+        // The key is derived outside the retry closure so it is constant across
+        // every attempt — moving it inside the closure would produce a new UUID
+        // per attempt and defeat the idempotency guarantee.
+        let idempotency_key = uuid::Uuid::new_v4().to_string();
+
         self.execute_with_retry(|| async {
             let req = self
                 .authorized_request(reqwest::Method::POST, "/user_context/batches")
                 .await?;
 
-            let resp = req.json(batch).send().await.map_err(|e| {
-                map_reqwest_error(e, "batch upload request failure", self.timeout_ms)
-            })?;
+            let resp = req
+                .header("Idempotency-Key", &idempotency_key)
+                .json(batch)
+                .send()
+                .await
+                .map_err(|e| {
+                    map_reqwest_error(e, "batch upload request failure", self.timeout_ms)
+                })?;
 
             self.check_response(resp).await?;
             debug!("batch upload success");
@@ -472,7 +515,7 @@ mod tests {
 
     #[test]
     fn build_reqwest_client_tls_disabled_succeeds() {
-        // TLS 비활성화 시 http:// 요청 허용 — 개발/테스트 환경
+        // With TLS disabled, http:// requests are allowed — development/test environment.
         let tls = TlsConfig {
             enabled: false,
             allow_self_signed: false,
@@ -489,7 +532,7 @@ mod tests {
 
     #[test]
     fn build_reqwest_client_tls_enabled_succeeds() {
-        // TLS 활성화 시 클라이언트 생성 자체는 성공 (요청 시점에 https 강제)
+        // With TLS enabled, client construction itself succeeds (https is enforced at request time).
         let tls = TlsConfig::default();
         let client = build_reqwest_client(&tls, Some(Duration::from_secs(5)))
             .expect("TLS enabled: client construction succeeds (https_only enforcement deferred to request time)");
@@ -516,7 +559,7 @@ mod tests {
     #[test]
     fn new_with_tls_returns_client() {
         let tls = TlsConfig {
-            enabled: false, // 테스트: http:// URL 허용
+            enabled: false, // test: allow http:// URL
             allow_self_signed: false,
         };
         let tm = Arc::new(TokenManager::new("http://localhost:8000"));
@@ -525,6 +568,79 @@ mod tests {
                 .expect("TLS disabled + http:// URL must construct without error");
         assert_eq!(client.base_url, "http://localhost:8000");
         assert_eq!(client.max_retries, DEFAULT_MAX_RETRIES);
+    }
+
+    /// Regression (http-cleartext-guard): with TLS disabled, a REMOTE cleartext
+    /// `http://` base URL must be rejected at construction — mirroring the SSE
+    /// client invariant (`SseStreamClient::new_with_tls`). Only loopback http is
+    /// allowed when TLS is disabled; a misconfigured `[tls]` block must never
+    /// fail open and ship plaintext credentials to a remote host.
+    #[test]
+    fn new_with_tls_rejects_remote_cleartext_when_tls_disabled() {
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        let tm = Arc::new(TokenManager::new("https://auth.example.com"));
+        let result =
+            HttpApiClient::new_with_tls("http://api.example.com", tm, Duration::from_secs(5), &tls);
+        assert!(
+            matches!(result, Err(NetworkError::Config(_))),
+            "remote cleartext HTTP with TLS disabled must yield NetworkError::Config"
+        );
+    }
+
+    /// Companion to the guard test: loopback cleartext http is the one allowed
+    /// case when TLS is disabled (local development), so construction succeeds
+    /// for both `localhost` and a `127.0.0.0/8` literal.
+    #[test]
+    fn new_with_tls_allows_loopback_cleartext_when_tls_disabled() {
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        for url in ["http://localhost:8000", "http://127.0.0.1:9090"] {
+            let tm = Arc::new(TokenManager::new(url));
+            let client = HttpApiClient::new_with_tls(url, tm, Duration::from_secs(5), &tls)
+                .expect("loopback cleartext http must be allowed when TLS is disabled");
+            assert_eq!(client.base_url, url);
+        }
+    }
+
+    /// Unit-level guard coverage at the helper boundary: `build_reqwest_client_for_url`
+    /// rejects a remote `http://` target when TLS is disabled, but still accepts
+    /// `https://` remote targets (https_only is enforced at request time).
+    #[test]
+    fn build_reqwest_client_for_url_rejects_remote_cleartext_when_tls_disabled() {
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        let remote_http = build_reqwest_client_for_url(
+            &tls,
+            Some(Duration::from_secs(5)),
+            Some("http://api.example.com"),
+        );
+        assert!(
+            matches!(remote_http, Err(NetworkError::Config(_))),
+            "remote cleartext http must be rejected with TLS disabled"
+        );
+
+        // https remote target is fine even with TLS disabled in config.
+        let remote_https = build_reqwest_client_for_url(
+            &tls,
+            Some(Duration::from_secs(5)),
+            Some("https://api.example.com"),
+        );
+        // `expect` surfaces the actual NetworkError on regression instead of a
+        // bare "is_err" failure; the returned reqwest::Client has no inspectable
+        // config, so building successfully is the meaningful outcome.
+        let _https_client = remote_https.expect("https remote target must build successfully");
+
+        // base_url=None (e.g. TokenManager path) keeps prior behavior — no rejection.
+        let no_base = build_reqwest_client_for_url(&tls, Some(Duration::from_secs(5)), None);
+        let _no_base_client =
+            no_base.expect("base_url=None must not be rejected (TokenManager-compatible path)");
     }
 
     #[test]
@@ -876,5 +992,67 @@ mod tests {
             matches!(err, CoreError::NotFound { .. }),
             "404 must map to CoreError::NotFound (permanent/drop), got: {err:?}"
         );
+    }
+
+    /// Verify that `upload_batch` sends an `Idempotency-Key` header on every
+    /// attempt and that the header contains a well-formed UUID v4.
+    ///
+    /// The mock is configured to respond with 503 (retryable) on the first
+    /// attempt and 200 on the second.  `expect(2)` asserts the mock is reached
+    /// exactly twice, proving the header is present on both the initial attempt
+    /// and the retry.  Because the key is generated once *outside* the retry
+    /// closure, both attempts necessarily carry the same key — the test pins
+    /// that the header is present and well-formed on every attempt.
+    #[tokio::test]
+    async fn upload_batch_sends_idempotency_key_on_retries() {
+        let mut server = mockito::Server::new_async().await;
+        let (client, _login_mock) = setup_authed_client(&mut server).await;
+        // Allow exactly one retry so the closure runs twice.
+        let client = client.with_max_retries(1);
+
+        // UUID v4 canonical form: 8-4-4-4-12 hex digits separated by hyphens.
+        let uuid_regex = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+
+        // First call → 503 (retryable); second call → 200.
+        // Both must carry a well-formed Idempotency-Key header.
+        let mock = server
+            .mock("POST", "/user_context/batches")
+            .match_header(
+                "idempotency-key",
+                mockito::Matcher::Regex(uuid_regex.to_string()),
+            )
+            .with_status(503)
+            .with_body("Service Unavailable")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mock_ok = server
+            .mock("POST", "/user_context/batches")
+            .match_header(
+                "idempotency-key",
+                mockito::Matcher::Regex(uuid_regex.to_string()),
+            )
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let batch = maekon_core::models::event::EventBatch {
+            session_id: "sess_idem".to_string(),
+            events: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        // Should succeed after one retry (503 → 200).
+        client
+            .upload_batch(&batch)
+            .await
+            .expect("upload_batch must succeed after one 503 retry");
+
+        // Both mock endpoints must have been reached exactly once, confirming
+        // the Idempotency-Key header matched the UUID regex on every attempt.
+        mock.assert_async().await;
+        mock_ok.assert_async().await;
     }
 }

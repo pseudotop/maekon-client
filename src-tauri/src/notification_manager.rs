@@ -182,10 +182,10 @@ impl NotificationManager {
 
         let hours = session_mins / 60;
         let mins = session_mins % 60;
-        let title = "⏰ 휴식 시간 notification";
+        let title = "⏰ break time notification";
         let body = if hours > 0 {
             format!(
-                "{}시간 Working for {} minutes. Consider taking a short break!",
+                "Working for {}h {} minutes. Consider taking a short break!",
                 hours, mins
             )
         } else {
@@ -223,10 +223,10 @@ impl NotificationManager {
             }
         }
 
-        let title = "⚠️ 시스템 리소스 경고";
+        let title = "⚠️ system resource warning";
         let body = if cpu_percent >= threshold && memory_percent >= threshold {
             format!(
-                "CPU {:.1}%, 메모리 {:.1}% 사용 중입니다.",
+                "CPU {:.1}% and memory {:.1}% in use.",
                 cpu_percent, memory_percent
             )
         } else if cpu_percent >= threshold {
@@ -240,7 +240,7 @@ impl NotificationManager {
         } else {
             state.last_high_usage_notification = Some(now);
             info!(
-                "고사용량 notification 발송: CPU {:.1}%, Memory {:.1}%",
+                "high-usage notification sent: CPU {:.1}%, Memory {:.1}%",
                 cpu_percent, memory_percent
             );
         }

@@ -1,25 +1,25 @@
-//! AutostartCode — Autostart 카테고리 에러 코드. `autostart.*` 접두사.
+//! AutostartCode — Autostart category error codes. `autostart.*` prefix.
 
 define_code_enum! {
-    /// Autostart 카테고리 에러 코드.
+    /// Autostart category error codes.
     pub enum AutostartCode {
-        /// 자동 시작 카운터 증가 실패.
+        /// Failed to increment the autostart counter.
         CounterIncrementFailed => "autostart.counter_increment_failed",
-        /// 자동 시작 비활성화 실패.
+        /// Failed to disable autostart.
         DisableFailed => "autostart.disable_failed",
-        /// 자동 시작 활성화 실패.
+        /// Failed to enable autostart.
         EnableFailed => "autostart.enable_failed",
-        /// autostart Tauri 이벤트 emit 실패.
+        /// Failed to emit the autostart Tauri event.
         EventEmitFailed => "autostart.event_emit_failed",
-        /// 자동 시작 상태 조회 실패.
+        /// Failed to query autostart status.
         QueryFailed => "autostart.query_failed",
-        /// systemd notify 호출 스킵 (NOTIFY_SOCKET 없음 등).
+        /// systemd notify call skipped (e.g. NOTIFY_SOCKET absent).
         SdNotifySkipped => "autostart.sd_notify_skipped",
-        /// systemd 서비스 파일 마이그레이션 완료.
+        /// systemd service file migration completed.
         ServiceMigrated => "autostart.service_migrated",
-        /// systemd 서비스 파일 마이그레이션 실패 (write/io 에러).
+        /// systemd service file migration failed (write/io error).
         ServiceMigrationFailed => "autostart.service_migration_failed",
-        /// systemd 서비스 파일 마이그레이션 스킵 (사용자 수정 추정).
+        /// systemd service file migration skipped (presumed user-modified).
         ServiceMigrationSkipped => "autostart.service_migration_skipped",
     }
 }

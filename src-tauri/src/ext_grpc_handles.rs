@@ -1,20 +1,23 @@
-/// F-RR-C36-01: 외부 gRPC 슈퍼바이저 + TLS 감시자 핸들을 Tauri managed state 로 유지.
+/// F-RR-C36-01: keep the external gRPC supervisor + TLS watcher handles in
+/// Tauri managed state.
 ///
-/// `build_and_spawn`이 반환한 핸들을 이 구조체로 감싸 `app.manage()` 에 등록하면
-/// Tauri가 앱 종료 시까지 소유권을 유지하고 Drop 시 태스크가 정상 정리된다.
+/// Wrapping the handles returned by `build_and_spawn` in this struct and
+/// registering it with `app.manage()` lets Tauri retain ownership until the app
+/// shuts down, so the tasks are cleaned up properly on Drop.
 ///
-/// ## 배경
-/// - `ext_grpc_supervisor`: JoinHandle — Drop 시 슈퍼바이저 태스크가 abort 되어
-///   외부 gRPC accept loop 이 멈춤.
-/// - `ext_cert_watcher`: CertWatcherHandle — Drop 시 cert 감시 + 만료 모니터 태스크
-///   두 개가 abort 됨 (F-RR-C28-02).
-/// 이전 구현에서는 두 핸들이 `if config.web.enabled { ... }` 블록 끝에서 Drop되어
-/// `build_and_spawn` 반환 직후 서버가 조용히 중단되는 regression 이 있었다.
+/// ## Background
+/// - `ext_grpc_supervisor`: JoinHandle — on Drop the supervisor task is aborted,
+///   which stops the external gRPC accept loop.
+/// - `ext_cert_watcher`: CertWatcherHandle — on Drop the two cert-watch + expiry
+///   monitor tasks are aborted (F-RR-C28-02).
+/// In the previous implementation both handles were dropped at the end of the
+/// `if config.web.enabled { ... }` block, which caused a regression where the
+/// server stopped silently right after `build_and_spawn` returned.
 #[cfg(feature = "grpc-dashboard-external")]
 #[allow(dead_code)]
 pub(crate) struct ExtGrpcHandles {
-    /// 외부 gRPC 슈퍼바이저 JoinHandle — Some 이면 서버가 실행 중.
+    /// External gRPC supervisor JoinHandle — Some means the server is running.
     pub(crate) supervisor: Option<tokio::task::JoinHandle<()>>,
-    /// TLS 인증서 감시자 핸들 — Drop 시 cert + 만료 태스크 abort.
+    /// TLS certificate watcher handle — on Drop the cert + expiry tasks are aborted.
     pub(crate) cert_watcher: Option<maekon_web::grpc::external::tls_config::CertWatcherHandle>,
 }

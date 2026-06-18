@@ -1,25 +1,25 @@
-//! GuiCode — GUI interaction 카테고리 에러 코드. `gui.*` 접두사.
+//! GuiCode — GUI interaction category error codes. `gui.*` prefix.
 //!
-//! `GuiInteractionError`에서 사용.
+//! Used by `GuiInteractionError`.
 
 define_code_enum! {
-    /// GUI 카테고리 에러 코드.
+    /// GUI category error codes.
     pub enum GuiCode {
-        /// GUI 세션 토큰 유효하지 않음.
+        /// GUI session token is invalid.
         Unauthorized => "gui.unauthorized",
-        /// GUI 세션을 찾을 수 없음.
+        /// GUI session not found.
         NotFound => "gui.not_found",
-        /// GUI 요청이 잘못됨.
+        /// GUI request is malformed.
         BadRequest => "gui.bad_request",
-        /// GUI 요청 금지됨.
+        /// GUI request forbidden.
         Forbidden => "gui.forbidden",
-        /// GUI 포커스 드리프트 감지됨.
+        /// GUI focus drift detected.
         FocusDrift => "gui.focus_drift",
-        /// GUI 티켓이 더 이상 유효하지 않음.
+        /// GUI ticket is no longer valid.
         TicketInvalid => "gui.ticket_invalid",
-        /// GUI 런타임 사용 불가.
+        /// GUI runtime unavailable.
         Unavailable => "gui.unavailable",
-        /// GUI 런타임 내부 오류.
+        /// GUI runtime internal error.
         InternalError => "gui.internal_error",
     }
 }

@@ -32,7 +32,8 @@ pub struct GuiInteractionService {
     pub(super) sessions: RwLock<HashMap<String, StoredSession>>,
     pub(super) event_tx: broadcast::Sender<GuiSessionEvent>,
     cleanup_started: AtomicBool,
-    pub(super) hmac_secret: Option<Vec<u8>>,
+    // Zeroized on drop (review4 A17) — mirrors policy/token.rs's Zeroizing secret.
+    pub(super) hmac_secret: Option<zeroize::Zeroizing<Vec<u8>>>,
 }
 
 impl GuiInteractionService {
@@ -51,9 +52,9 @@ impl GuiInteractionService {
             event_tx,
             cleanup_started: AtomicBool::new(false),
             hmac_secret: hmac_secret
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .map(|value| value.into_bytes()),
+                .map(|value| value.trim().as_bytes().to_vec())
+                .filter(|bytes| !bytes.is_empty())
+                .map(zeroize::Zeroizing::new),
         }
     }
 
@@ -162,8 +163,27 @@ impl GuiInteractionService {
 
         let capability_token = new_capability_token();
 
+        // Lazy TTL expiry: purge any expired sessions before checking the cap
+        // so that well-behaved callers are not penalised by stale entries that
+        // the background cleanup task has not yet collected.
+        self.expire_sessions().await;
+
         {
             let mut sessions = self.sessions.write().await;
+            if sessions.len() >= super::MAX_SESSIONS {
+                tracing::warn!(
+                    limit = super::MAX_SESSIONS,
+                    current = sessions.len(),
+                    "GUI session limit reached — rejecting create_session"
+                );
+                return Err(GuiInteractionError::BadRequest {
+                    code: maekon_core::error_codes::GuiCode::BadRequest,
+                    message: format!(
+                        "Session limit of {} reached; close an existing session before creating a new one",
+                        super::MAX_SESSIONS
+                    ),
+                });
+            }
             sessions.insert(
                 session_id.clone(),
                 StoredSession {
@@ -386,7 +406,18 @@ impl GuiInteractionService {
             });
         };
 
-        if stored.capability_token != capability_token.trim() {
+        // Constant-time comparison of the session capability token to avoid a
+        // timing side-channel on the auth secret. `ConstantTimeEq::ct_eq` folds a
+        // length mismatch into a `Choice(0)` result without an early-return leak,
+        // so unequal-length tokens are rejected as well.
+        use subtle::ConstantTimeEq;
+        let presented = capability_token.trim();
+        if !bool::from(
+            stored
+                .capability_token
+                .as_bytes()
+                .ct_eq(presented.as_bytes()),
+        ) {
             return Err(GuiInteractionError::Unauthorized {
                 code: maekon_core::error_codes::GuiCode::Unauthorized,
             });
@@ -460,7 +491,8 @@ impl GuiInteractionService {
 
     pub(super) fn require_hmac_secret(&self) -> Result<&[u8], GuiInteractionError> {
         self.hmac_secret
-            .as_deref()
+            .as_ref()
+            .map(|secret| secret.as_slice())
             .ok_or_else(|| GuiInteractionError::Unavailable {
                 code: maekon_core::error_codes::GuiCode::Unavailable,
                 message: format!("{GUI_HMAC_SECRET_ENV} is missing or empty"),

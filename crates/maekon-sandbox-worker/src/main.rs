@@ -1,7 +1,8 @@
-//! 샌드박스 제약 아래에서 자동화 액션을 실행하는 worker 바이너리.
+//! Worker binary that executes automation actions under platform sandbox constraints.
 //!
-//! 부모 프로세스가 플랫폼별 샌드박스 제약을 적용한 뒤 실행한다. stdin에서
-//! SandboxRequest JSON을 읽고 액션을 실행한 뒤 SandboxResponse JSON을 stdout에 쓴다.
+//! The parent process applies platform-specific sandbox restrictions before spawning this binary.
+//! It reads a SandboxRequest JSON from stdin, executes the action, then writes a
+//! SandboxResponse JSON to stdout.
 
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use maekon_core::models::automation::AutomationAction;
@@ -20,7 +21,7 @@ struct SandboxResponse {
 }
 
 impl SandboxResponse {
-    /// 액션 실행 성공 응답을 생성한다.
+    /// Creates a success response for a completed action.
     fn ok() -> Self {
         Self {
             success: true,
@@ -28,7 +29,7 @@ impl SandboxResponse {
         }
     }
 
-    /// 실패 사유를 담은 응답을 생성한다.
+    /// Creates a failure response carrying the reason for the failure.
     fn err(error: impl Into<String>) -> Self {
         Self {
             success: false,
@@ -39,11 +40,11 @@ impl SandboxResponse {
 
 fn main() {
     let response = match EnigoInputExecutor::new() {
-        // executor 초기화 실패(예: display 없음)도 stdout 응답으로 안전하게 보고한다.
+        // Executor initialisation failure (e.g. no display) is reported safely via a stdout response.
         Err(e) => SandboxResponse::err(e),
         Ok(mut executor) => match read_request_line() {
             Err(e) => SandboxResponse::err(e),
-            // stdin 의 한 줄을 순수 처리 경계(handle_request)로 위임한다.
+            // Delegates a single line from stdin to the pure processing boundary (handle_request).
             Ok(line) => handle_request(&line, &mut executor),
         },
     };
@@ -55,7 +56,7 @@ fn main() {
     }
 }
 
-/// stdin 에서 SandboxRequest JSON 한 줄을 읽는다.
+/// Reads one line of SandboxRequest JSON from stdin.
 fn read_request_line() -> Result<String, String> {
     let stdin = io::stdin();
     stdin
@@ -66,11 +67,11 @@ fn read_request_line() -> Result<String, String> {
         .map_err(|e| format!("stdin read error: {e}"))
 }
 
-/// stdin/stdout 프로토콜의 순수 처리 경계 (보안 격리 boundary).
+/// Pure processing boundary of the stdin/stdout protocol (security isolation boundary).
 ///
-/// 한 줄의 SandboxRequest JSON 문자열을 받아 액션을 실행하고
-/// SandboxResponse 를 반환한다. 잘못된 JSON 은 panic 하지 않고
-/// `success=false` + error 메시지로 안전하게 처리한다 (격리 경계 신뢰 불가 입력 방어).
+/// Accepts one line of SandboxRequest JSON, executes the action, and returns a
+/// SandboxResponse. Malformed JSON is handled safely as `success=false` + an error
+/// message rather than panicking (defence against untrusted input at the isolation boundary).
 fn handle_request(line: &str, executor: &mut dyn InputExecutor) -> SandboxResponse {
     let request: SandboxRequest = match serde_json::from_str(line) {
         Ok(request) => request,
@@ -89,7 +90,6 @@ trait InputExecutor {
     fn key_type(&mut self, text: &str) -> Result<(), String>;
     fn key_press(&mut self, key: &str) -> Result<(), String>;
     fn key_release(&mut self, key: &str) -> Result<(), String>;
-    fn hotkey(&mut self, keys: &[String]) -> Result<(), String>;
 }
 
 struct EnigoInputExecutor {
@@ -114,7 +114,7 @@ impl InputExecutor for EnigoInputExecutor {
     fn mouse_click(&mut self, button: &str, x: i32, y: i32) -> Result<(), String> {
         self.mouse_move(x, y)?;
         self.enigo
-            .button(parse_mouse_button(button), Direction::Click)
+            .button(parse_mouse_button(button)?, Direction::Click)
             .map_err(|error| format!("mouse click failed: {error}"))
     }
 
@@ -126,48 +126,92 @@ impl InputExecutor for EnigoInputExecutor {
 
     fn key_press(&mut self, key: &str) -> Result<(), String> {
         self.enigo
-            .key(parse_key(key), Direction::Press)
+            .key(parse_key(key)?, Direction::Press)
             .map_err(|error| format!("key press failed: {error}"))
     }
 
     fn key_release(&mut self, key: &str) -> Result<(), String> {
         self.enigo
-            .key(parse_key(key), Direction::Release)
+            .key(parse_key(key)?, Direction::Release)
             .map_err(|error| format!("key release failed: {error}"))
     }
-
-    fn hotkey(&mut self, keys: &[String]) -> Result<(), String> {
-        for key in keys {
-            self.key_press(key)?;
-        }
-        for key in keys.iter().rev() {
-            self.key_release(key)?;
-        }
-        Ok(())
-    }
 }
+
+/// Maximum number of key units a single action may inject (KeyType characters / Hotkey keys).
+/// Limits the blast radius of keystroke injection and the CPU cost of a single synthesis burst
+/// (oneshim#5982). Requests that exceed this limit are rejected before reaching the OS.
+const MAX_KEY_TYPE_CHARS: usize = 4096;
 
 fn run_action(action: &AutomationAction, executor: &mut dyn InputExecutor) -> Result<(), String> {
     match action {
         AutomationAction::MouseMove { x, y } => executor.mouse_move(*x, *y),
         AutomationAction::MouseClick { button, x, y } => executor.mouse_click(button, *x, *y),
-        AutomationAction::KeyType { text } => executor.key_type(text),
+        AutomationAction::KeyType { text } => {
+            let len = text.chars().count();
+            if len > MAX_KEY_TYPE_CHARS {
+                return Err(format!(
+                    "key_type text too long: {len} chars (max {MAX_KEY_TYPE_CHARS})"
+                ));
+            }
+            executor.key_type(text)
+        }
         AutomationAction::KeyPress { key } => executor.key_press(key),
         AutomationAction::KeyRelease { key } => executor.key_release(key),
-        AutomationAction::Hotkey { keys } => executor.hotkey(keys),
+        AutomationAction::Hotkey { keys } => run_hotkey(executor, keys),
     }
 }
 
-fn parse_mouse_button(button: &str) -> Button {
-    match button.to_lowercase().as_str() {
+/// Presses all keys in order, then releases **every** key that was actually pressed —
+/// even if individual press/release calls fail along the way. This ensures that modifier
+/// keys (Ctrl/Shift/Alt/Meta) can never be left stuck (oneshim#5983). Errors are
+/// collected rather than causing an early return from the release loop, and are reported
+/// together at the end.
+fn run_hotkey(executor: &mut dyn InputExecutor, keys: &[String]) -> Result<(), String> {
+    // oneshim#5982 blast-radius: cap how many keys a single Hotkey may inject,
+    // reusing the same limit as KeyType. Rejected before any key reaches the OS.
+    let count = keys.len();
+    if count > MAX_KEY_TYPE_CHARS {
+        return Err(format!(
+            "hotkey too many keys: {count} keys (max {MAX_KEY_TYPE_CHARS})"
+        ));
+    }
+    let mut pressed: Vec<&String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for key in keys {
+        match executor.key_press(key) {
+            Ok(()) => pressed.push(key),
+            Err(e) => {
+                errors.push(format!("press {key}: {e}"));
+                break;
+            }
+        }
+    }
+    for key in pressed.iter().rev() {
+        if let Err(e) = executor.key_release(key) {
+            errors.push(format!("release {key}: {e}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("hotkey failed: {}", errors.join("; ")))
+    }
+}
+
+fn parse_mouse_button(button: &str) -> Result<Button, String> {
+    Ok(match button.to_lowercase().as_str() {
+        "left" => Button::Left,
         "right" => Button::Right,
         "middle" => Button::Middle,
-        _ => Button::Left,
-    }
+        // Unknown button names are rejected as an error rather than silently synthesising
+        // Button::Left (same contract as key handling in oneshim#5981) — prevents
+        // unintended or malicious button injection.
+        _ => return Err(format!("unknown mouse button: {button}")),
+    })
 }
 
-fn parse_key(key: &str) -> Key {
-    match key.to_lowercase().as_str() {
+fn parse_key(key: &str) -> Result<Key, String> {
+    Ok(match key.to_lowercase().as_str() {
         "enter" | "return" => Key::Return,
         "tab" => Key::Tab,
         "escape" | "esc" => Key::Escape,
@@ -200,14 +244,16 @@ fn parse_key(key: &str) -> Key {
         "f11" => Key::F11,
         "f12" => Key::F12,
         other => {
-            if let Some(ch) = other.chars().next() {
-                if other.chars().count() == 1 {
-                    return Key::Unicode(ch);
-                }
+            // Only single characters are interpreted as Unicode key presses. Unknown
+            // multi-character key names are rejected as an error rather than silently
+            // synthesising 'a' (oneshim#5981) — prevents unintended key injection.
+            let mut chars = other.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Key::Unicode(ch),
+                _ => return Err(format!("unknown key: {key}")),
             }
-            Key::Unicode('a')
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -217,6 +263,9 @@ mod tests {
     #[derive(Default)]
     struct MockInputExecutor {
         events: Vec<String>,
+        /// Injects a key_release failure for the specified key (used to verify the
+        /// stuck-modifier recovery path).
+        fail_release_on: Option<String>,
     }
 
     impl InputExecutor for MockInputExecutor {
@@ -241,12 +290,12 @@ mod tests {
         }
 
         fn key_release(&mut self, key: &str) -> Result<(), String> {
+            // Always records that a release was attempted (even on failure) — used to
+            // assert the "every pressed key is released" invariant.
             self.events.push(format!("release:{key}"));
-            Ok(())
-        }
-
-        fn hotkey(&mut self, keys: &[String]) -> Result<(), String> {
-            self.events.push(format!("hotkey:{}", keys.join("+")));
+            if self.fail_release_on.as_deref() == Some(key) {
+                return Err(format!("mock release failure: {key}"));
+            }
             Ok(())
         }
     }
@@ -281,16 +330,111 @@ mod tests {
 
         run_action(&action, &mut executor).unwrap();
 
-        assert_eq!(executor.events, vec!["hotkey:ctrl+k"]);
+        // press in order, release in reverse — orchestrated by run_hotkey.
+        assert_eq!(
+            executor.events,
+            vec!["press:ctrl", "press:k", "release:k", "release:ctrl"]
+        );
+    }
+
+    #[test]
+    fn run_hotkey_releases_all_pressed_keys_even_when_a_release_fails() {
+        // oneshim#5983: a mid-loop key_release failure must NOT leave an earlier
+        // modifier stuck — every pressed key is still released, errors collected.
+        let mut executor = MockInputExecutor {
+            fail_release_on: Some("k".to_string()),
+            ..Default::default()
+        };
+        let keys = vec!["ctrl".to_string(), "k".to_string()];
+
+        let result = run_hotkey(&mut executor, &keys);
+
+        // Verify the error message names the failing key so the caller can log it.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("release k"),
+            "expected release-k failure in: {err}"
+        );
+        // ctrl was STILL released after k's release failed (no stuck modifier).
+        assert_eq!(
+            executor.events,
+            vec!["press:ctrl", "press:k", "release:k", "release:ctrl"]
+        );
+    }
+
+    #[test]
+    fn run_action_rejects_oversize_keytype() {
+        // oneshim#5982: KeyType beyond MAX_KEY_TYPE_CHARS is rejected before the OS.
+        let mut executor = MockInputExecutor::default();
+        let action = AutomationAction::KeyType {
+            text: "x".repeat(MAX_KEY_TYPE_CHARS + 1),
+        };
+
+        let result = run_action(&action, &mut executor);
+
+        // Verify the error names the actual and max lengths so operators can diagnose it.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("key_type text too long"),
+            "expected size-limit error in: {err}"
+        );
+        assert!(executor.events.is_empty(), "executor must not be invoked");
+    }
+
+    #[test]
+    fn run_action_rejects_oversize_hotkey() {
+        // oneshim#5982: a Hotkey beyond MAX_KEY_TYPE_CHARS keys is rejected before
+        // any key reaches the OS, sharing the KeyType blast-radius limit.
+        let mut executor = MockInputExecutor::default();
+        let action = AutomationAction::Hotkey {
+            keys: vec!["a".to_string(); MAX_KEY_TYPE_CHARS + 1],
+        };
+
+        let result = run_action(&action, &mut executor);
+
+        // Verify the error names the actual and max counts so operators can diagnose it.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("hotkey too many keys"),
+            "expected size-limit error in: {err}"
+        );
+        // No key was pressed or released — rejected before touching the executor.
+        assert!(executor.events.is_empty(), "executor must not be invoked");
     }
 
     #[test]
     fn parse_key_supports_named_and_unicode_keys() {
-        assert!(matches!(parse_key("enter"), Key::Return));
-        assert!(matches!(parse_key("x"), Key::Unicode('x')));
+        assert!(matches!(parse_key("enter"), Ok(Key::Return)));
+        assert!(matches!(parse_key("x"), Ok(Key::Unicode('x'))));
     }
 
-    /// 액션 실행을 강제로 실패시켜 에러 응답 경로를 검증하기 위한 mock.
+    #[test]
+    fn parse_key_rejects_unknown_multichar_key_instead_of_synthesizing_a() {
+        // oneshim#5981: an unrecognized multi-char key name must be an Err, not a
+        // silent Key::Unicode('a') keypress.
+        let err = parse_key("unknownkey").unwrap_err();
+        assert!(err.contains("unknown key"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_mouse_button_supports_known_buttons() {
+        assert!(matches!(parse_mouse_button("left"), Ok(Button::Left)));
+        assert!(matches!(parse_mouse_button("right"), Ok(Button::Right)));
+        assert!(matches!(parse_mouse_button("middle"), Ok(Button::Middle)));
+    }
+
+    #[test]
+    fn parse_mouse_button_rejects_unknown_button_instead_of_synthesizing_left() {
+        // oneshim#5981 (buttons): an unrecognized button name must be an Err, not a
+        // silent Button::Left click — mirroring parse_key's reject-unknown contract.
+        let err = parse_mouse_button("scrollwheel").unwrap_err();
+        assert!(
+            err.contains("unknown mouse button"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Mock that forces every action to fail — used to verify the error response path.
     #[derive(Default)]
     struct FailingInputExecutor;
 
@@ -310,32 +454,32 @@ mod tests {
         fn key_release(&mut self, _key: &str) -> Result<(), String> {
             Err("mock executor failure".to_string())
         }
-        fn hotkey(&mut self, _keys: &[String]) -> Result<(), String> {
-            Err("mock executor failure".to_string())
-        }
     }
 
-    // ── stdin/stdout 프로토콜 경계 (handle_request) 테스트 — #4831 보안 격리 boundary ──
+    // ── stdin/stdout protocol boundary (handle_request) tests — #4831 security isolation boundary ──
 
     #[test]
     fn handle_request_valid_json_dispatches_and_returns_success() {
-        // 유효한 SandboxRequest JSON → 실제 액션 실행 + success=true 응답.
-        // AutomationAction 은 externally-tagged 직렬화이므로 action 아래 variant 키로 중첩된다.
+        // Valid SandboxRequest JSON → actual action executed + success=true response.
+        // AutomationAction uses externally-tagged serialisation, so the variant key is
+        // nested under the "action" field.
         let line = r#"{"action":{"MouseClick":{"button":"left","x":10,"y":20}}}"#;
         let mut executor = MockInputExecutor::default();
 
         let response = handle_request(line, &mut executor);
 
-        // 응답이 성공이고 error 가 없어야 한다.
+        // The response must indicate success with no error field.
         assert!(response.success);
         assert!(response.error.is_none());
-        // 그리고 실제로 mock executor 에 액션이 전달되었는지 관찰 가능한 효과를 단언한다 (theater 아님).
+        // Also assert an observable side-effect showing the action actually reached the
+        // mock executor (not merely theater).
         assert_eq!(executor.events, vec!["click:left,10,20"]);
     }
 
     #[test]
     fn handle_request_valid_keytype_reaches_executor() {
-        // 또 다른 variant(KeyType) 도 경계를 통과해 executor 에 도달하는지 확인.
+        // Confirms that another variant (KeyType) also passes through the boundary
+        // and reaches the executor.
         let line = r#"{"action":{"KeyType":{"text":"hi"}}}"#;
         let mut executor = MockInputExecutor::default();
 
@@ -347,7 +491,8 @@ mod tests {
 
     #[test]
     fn handle_request_malformed_json_returns_graceful_error_not_panic() {
-        // 깨진 JSON 입력 → panic 없이 success=false + 진단 메시지 응답 (격리 경계 방어).
+        // Malformed JSON input → success=false + diagnostic message, no panic
+        // (isolation boundary defence against untrusted input).
         let line = "this is not json {{{";
         let mut executor = MockInputExecutor::default();
 
@@ -356,18 +501,19 @@ mod tests {
         assert!(!response.success);
         let error = response
             .error
-            .expect("malformed JSON 은 error 메시지를 가져야 한다");
+            .expect("malformed JSON must produce an error message");
         assert!(
             error.contains("invalid request JSON"),
-            "예상치 못한 에러 메시지: {error}"
+            "unexpected error message: {error}"
         );
-        // 파싱 단계에서 거부되었으므로 executor 에는 어떤 액션도 전달되지 않아야 한다.
+        // Rejected at the parse stage, so no action must have reached the executor.
         assert!(executor.events.is_empty());
     }
 
     #[test]
     fn handle_request_unknown_action_variant_returns_error_not_panic() {
-        // 구조적으로는 JSON 이지만 알 수 없는 액션 variant → 역직렬화 실패를 안전하게 보고.
+        // Structurally valid JSON but with an unknown action variant → deserialisation
+        // failure reported safely, no panic.
         let line = r#"{"action":{"SelfDestruct":{}}}"#;
         let mut executor = MockInputExecutor::default();
 
@@ -380,7 +526,7 @@ mod tests {
 
     #[test]
     fn handle_request_empty_input_returns_error_not_panic() {
-        // 빈 문자열도 panic 없이 에러 응답으로 처리되어야 한다.
+        // An empty string must also produce an error response, not a panic.
         let mut executor = MockInputExecutor::default();
 
         let response = handle_request("", &mut executor);
@@ -391,7 +537,8 @@ mod tests {
 
     #[test]
     fn handle_request_action_execution_failure_propagates_to_error_response() {
-        // 유효한 요청이지만 executor 가 실행에 실패하면 그 사유가 응답 error 로 전파되어야 한다.
+        // A valid request where the executor fails must propagate the failure reason
+        // into the response error field.
         let line = r#"{"action":{"MouseMove":{"x":1,"y":2}}}"#;
         let mut executor = FailingInputExecutor;
 

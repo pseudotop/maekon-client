@@ -1,6 +1,7 @@
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::session_context::SessionContextAssembler;
 use crate::session_manager::SessionManagerImpl;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::session_context_store::SessionContextStorePort;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -13,22 +14,36 @@ pub(super) type SessionManagerLaunch = Option<(Arc<SessionManagerImpl>, std::tim
 /// command (single-instance dead-writer guard).
 pub(super) type CodexApprovalRegistry = crate::provider_adapters::CodexApprovalRegistry;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_session_manager(
     app_handle: &AppHandle,
+    // #6123: the background runtime handle the off-reactor audit drain runs on.
+    // This wiring executes on the synchronous Tauri main thread, where
+    // `Handle::try_current()` is `Err`, so the handle must be passed explicitly.
+    runtime_handle: &tokio::runtime::Handle,
     sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
     config: &maekon_core::config::AppConfig,
     data_dir_path: &std::path::Path,
     shared_regime_state: Arc<SharedRegimeState>,
+    consent_manager: Arc<dyn ConsentManagerPort>,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     // registry from the composition root, threaded into the session manager so
     // `HttpApiSession`s share one breaker with the other network adapters.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
 ) -> (SessionManagerLaunch, CodexApprovalRegistry) {
     let storage_for_audit = sqlite_storage.clone();
-    let persistence_cb: Arc<dyn maekon_automation::audit::AuditPersistence> =
+    // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
+    // blocking save in ChannelAuditPersistence so it drains on a dedicated
+    // spawn_blocking task off-reactor (spawned onto `runtime_handle`).
+    let blocking_persist: Arc<dyn maekon_automation::audit::AuditPersistence> =
         Arc::new(move |entry: &maekon_core::models::audit::AuditEntry| {
             storage_for_audit.save_audit_entry(entry);
         });
+    let persistence_cb: Arc<dyn maekon_automation::audit::AuditPersistence> =
+        Arc::new(maekon_automation::audit::ChannelAuditPersistence::new(
+            blocking_persist,
+            runtime_handle.clone(),
+        ));
     let audit_query: Arc<dyn maekon_automation::audit::AuditQuery> = Arc::new(
         crate::audit_query::SqliteAuditQuery::new(sqlite_storage.clone()),
     );
@@ -40,8 +55,26 @@ pub(super) fn build_session_manager(
             .with_query(audit_query)
             .with_pii_sanitizer(audit_pii_sanitizer),
     ));
+    // #6168: durable persister for AI conversation session audit entries. The
+    // production `AuditLogPort::record_session_event` was a no-op default, so the
+    // `session_audit_log` table received ZERO production writes. Wire a
+    // SqliteStorage-backed persister and run the blocking SQLite INSERT
+    // off-reactor (`spawn_blocking` on `runtime_handle`), mirroring the #6123
+    // command-audit constraint that blocking SQLite must not touch the reactor.
+    let storage_for_session_audit = sqlite_storage.clone();
+    let session_audit_handle = runtime_handle.clone();
+    let session_persistence: Arc<dyn maekon_automation::audit::SessionAuditPersistence> = Arc::new(
+        move |entry: &maekon_core::models::ai_session::SessionAuditEntry| {
+            let storage = storage_for_session_audit.clone();
+            let entry = entry.clone();
+            session_audit_handle.spawn_blocking(move || {
+                storage.save_session_audit_entry(&entry);
+            });
+        },
+    );
     let audit_port: Arc<dyn maekon_core::ports::audit_log::AuditLogPort> = Arc::new(
-        maekon_automation::audit::AuditLogAdapter::new(audit_logger.clone()),
+        maekon_automation::audit::AuditLogAdapter::new(audit_logger.clone())
+            .with_session_persistence(session_persistence),
     );
 
     let session_config = Arc::new(config.ai_session.clone());
@@ -76,7 +109,7 @@ pub(super) fn build_session_manager(
         let process_monitor: Arc<dyn maekon_core::ports::monitor::ProcessMonitor> =
             Arc::new(maekon_monitor::process::ProcessTracker::new());
         Arc::new(crate::provider_adapters::ExternalOcrPrivacyGuard::new(
-            data_dir_path.join("consent.json"),
+            consent_manager.clone(),
             config.privacy.pii_filter_level,
             config.ai_provider.external_data_policy,
             config.privacy.clone(),

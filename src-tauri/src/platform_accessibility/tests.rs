@@ -6,29 +6,30 @@ mod tests {
     use maekon_core::config::PiiFilterLevel;
 
     // ──────────────────────────────────────────────────────────────────────────────
-    // F-QA-C23-03: find_element / analyze_scene spawn_blocking 경로 async 테스트
+    // F-QA-C23-03: async tests for the find_element / analyze_scene spawn_blocking path
     // ──────────────────────────────────────────────────────────────────────────────
 
-    /// find_element 내부의 필터링 + 변환 로직을 spawn_blocking 으로 감싸
-    /// 정상 경로(1개 일치 요소 반환)를 비동기적으로 검증한다.
+    /// Wrap the filtering + conversion logic inside find_element in spawn_blocking
+    /// and verify the happy path (returns a single matching element) asynchronously.
     ///
-    /// 실제 OS 접근성 API(osascript/powershell/xdotool) 를 호출하지 않고,
-    /// parse_accessibility_lines 로 제어된 노드를 생성하여 필터 로직을 직접 테스트한다.
+    /// Does not call the real OS accessibility APIs (osascript/powershell/xdotool);
+    /// builds controlled nodes via parse_accessibility_lines to test the filter
+    /// logic directly.
     #[tokio::test]
     async fn find_element_filter_logic_via_spawn_blocking() {
-        // 가상 접근성 노드 원시 데이터
+        // Synthetic accessibility node raw data
         let raw = "Notes|||AXButton|||Save|||100|||200|||80|||30\n\
                    Notes|||AXTextField|||Email|||200|||300|||150|||25\n";
 
-        // spawn_blocking 으로 동기 파싱 격리 (실제 find_element 패턴과 동일)
+        // Isolate synchronous parsing via spawn_blocking (same as the real find_element pattern)
         let nodes = tokio::task::spawn_blocking(move || types::parse_accessibility_lines(raw))
             .await
-            .expect("spawn_blocking join 성공")
-            .expect("parse_accessibility_lines 성공");
+            .expect("spawn_blocking join should succeed")
+            .expect("parse_accessibility_lines should succeed");
 
-        assert_eq!(nodes.len(), 2, "2개 노드가 파싱되어야 한다");
+        assert_eq!(nodes.len(), 2, "two nodes should be parsed");
 
-        // text="Save" 필터 — 1개 일치
+        // text="Save" filter — exactly one match
         let text_filter = Some("Save".to_string());
         let filtered: Vec<maekon_core::models::intent::UiElement> = nodes
             .into_iter()
@@ -47,12 +48,12 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(filtered.len(), 1, "text 필터 'Save' → 1개 일치");
+        assert_eq!(filtered.len(), 1, "text filter 'Save' should yield 1 match");
         assert_eq!(filtered[0].text, "Save");
     }
 
-    /// analyze_scene 내부의 accessibility_nodes_to_scene_elements 변환 로직을
-    /// spawn_blocking 으로 감싸 비동기적으로 검증한다.
+    /// Wrap the accessibility_nodes_to_scene_elements conversion logic inside
+    /// analyze_scene in spawn_blocking and verify it asynchronously.
     #[tokio::test]
     async fn analyze_scene_node_to_element_conversion_via_spawn_blocking() {
         let raw = "Code|||AXButton|||Run|||50|||60|||120|||40\n\
@@ -60,47 +61,47 @@ mod tests {
 
         let nodes = tokio::task::spawn_blocking(move || types::parse_accessibility_lines(raw))
             .await
-            .expect("spawn_blocking join 성공")
-            .expect("parse_accessibility_lines 성공");
+            .expect("spawn_blocking join should succeed")
+            .expect("parse_accessibility_lines should succeed");
 
-        assert!(!nodes.is_empty(), "최소 1개 노드 필요");
+        assert!(!nodes.is_empty(), "at least one node required");
 
         let (width, height) = estimate_screen_size(&nodes);
         let elements =
             accessibility_nodes_to_scene_elements(nodes, width, height, PiiFilterLevel::Off);
 
-        assert_eq!(elements.len(), 2, "2개 씬 요소가 변환되어야 한다");
-        // element_id 패턴 검증
+        assert_eq!(elements.len(), 2, "two scene elements should be converted");
+        // Verify element_id pattern
         assert!(
             elements[0].element_id.starts_with("ax_"),
-            "element_id 는 ax_ 접두사"
+            "element_id should have the ax_ prefix"
         );
-        // bbox_norm 범위 검증 (0.0 ~ 1.0)
+        // Verify bbox_norm range (0.0 ~ 1.0)
         let e = &elements[0];
         assert!(
             e.bbox_norm.x >= 0.0 && e.bbox_norm.x <= 1.0,
-            "bbox_norm.x 는 [0,1] 범위"
+            "bbox_norm.x should be in the [0,1] range"
         );
         assert!(
             e.bbox_norm.y >= 0.0 && e.bbox_norm.y <= 1.0,
-            "bbox_norm.y 는 [0,1] 범위"
+            "bbox_norm.y should be in the [0,1] range"
         );
     }
 
-    /// analyze_scene: 노드가 없을 때 CoreError::ElementNotFound 를 반환함을 검증한다.
+    /// analyze_scene: verify it returns CoreError::ElementNotFound when there are no nodes.
     #[tokio::test]
     async fn analyze_scene_empty_nodes_returns_element_not_found() {
         let raw = "";
         let result = tokio::task::spawn_blocking(move || types::parse_accessibility_lines(raw))
             .await
-            .expect("spawn_blocking join 성공");
+            .expect("spawn_blocking join should succeed");
 
         assert!(
             matches!(
                 result,
                 Err(maekon_core::error::CoreError::ElementNotFound { .. })
             ),
-            "빈 원시 데이터 → CoreError::ElementNotFound 여야 한다"
+            "empty raw data should yield CoreError::ElementNotFound"
         );
     }
 

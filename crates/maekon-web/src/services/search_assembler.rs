@@ -40,8 +40,8 @@ pub(crate) fn assemble_frame_search_result(
         .as_ref()
         .map(|_| format!("/api/frames/{}/image", row.id));
 
-    // F-QA-C34-04: sibling-miss fix — frame window_title/matched_text も event と同様に PII マスキング必須.
-    // cycle 33 PR #4012 は assemble_event_search_result のみ修正 — frame 側が漏れていた.
+    // F-QA-C34-04: sibling-miss fix — like event, frame window_title/matched_text also require PII masking.
+    // cycle 33 PR #4012 only fixed assemble_event_search_result — the frame side was missed.
     let window_title = search_sanitize_opt(row.window_title, sanitizer);
     let matched_text = search_sanitize_opt(row.matched_text, sanitizer);
 
@@ -63,9 +63,9 @@ pub(crate) fn assemble_event_search_result(
     sanitizer: &Option<Arc<dyn PiiSanitizer>>,
 ) -> Result<SearchResult, ApiError> {
     let sanitizer = require_search_sanitizer(sanitizer)?;
-    // #3603: window_title 과 data(matched_text) 는 비정형 사용자 입력 — PII 마스킹 필수.
-    // sanitize_title 은 Standard 레벨(이메일/전화/주민번호/경로 등) 로 동작한다.
-    // Option<String> 에 대해 as_deref() 로 &str 를 얻은 뒤 마스킹 후 재포장.
+    // #3603: window_title and data(matched_text) are unstructured user input — PII masking is required.
+    // sanitize_title operates at the Standard level (email/phone/SSN/path, etc.).
+    // For Option<String>, obtain a &str via as_deref(), mask, then re-wrap.
     let window_title = search_sanitize_opt(row.window_title, sanitizer);
     let matched_text = search_sanitize_opt(row.data, sanitizer);
 
@@ -130,55 +130,54 @@ mod tests {
         }
     }
 
-    /// #3603: assemble_event_search_result 가 window_title 의 이메일 주소를 마스킹하는지 검증.
+    /// #3603: verify assemble_event_search_result masks the email address in window_title.
     #[test]
     fn test_assemble_event_search_result_masks_email_in_window_title() {
         let row = make_event_row(Some("Login — user@example.com"), Some("normal data"));
         let result = assemble_event_search_result(row, &sanitizer()).unwrap();
-        let title = result
-            .window_title
-            .expect("window_title 은 Some 이어야 한다");
+        let title = result.window_title.expect("window_title should be Some");
         assert!(
             !title.contains("user@example.com"),
-            "이메일이 마스킹되지 않았다: {title}"
+            "email was not masked: {title}"
         );
-        assert!(title.contains("[EMAIL]"), "이메일 마스커가 없다: {title}");
+        assert!(
+            title.contains("[EMAIL]"),
+            "email masker is missing: {title}"
+        );
     }
 
-    /// #3603: assemble_event_search_result 가 data(matched_text) 의 이메일을 마스킹하는지 검증.
+    /// #3603: verify assemble_event_search_result masks the email in data(matched_text).
     #[test]
     fn test_assemble_event_search_result_masks_email_in_data() {
         let row = make_event_row(Some("일반 제목"), Some("연락처: admin@company.org 로 문의"));
         let result = assemble_event_search_result(row, &sanitizer()).unwrap();
-        let text = result
-            .matched_text
-            .expect("matched_text 는 Some 이어야 한다");
+        let text = result.matched_text.expect("matched_text should be Some");
         assert!(
             !text.contains("admin@company.org"),
-            "data 이메일이 마스킹되지 않았다: {text}"
+            "data email was not masked: {text}"
         );
         assert!(
             text.contains("[EMAIL]"),
-            "data 이메일 마스커가 없다: {text}"
+            "data email masker is missing: {text}"
         );
     }
 
-    /// #3603: window_title 과 data 모두 None 이면 None 을 그대로 반환해야 한다.
+    /// #3603: when both window_title and data are None, None must be returned as-is.
     #[test]
     fn test_assemble_event_search_result_none_fields_passthrough() {
         let row = make_event_row(None, None);
         let result = assemble_event_search_result(row, &sanitizer()).unwrap();
         assert!(
             result.window_title.is_none(),
-            "None window_title 이 변환됐다"
+            "None window_title was transformed"
         );
         assert!(
             result.matched_text.is_none(),
-            "None matched_text 가 변환됐다"
+            "None matched_text was transformed"
         );
     }
 
-    /// #3603: PII 없는 일반 텍스트는 원문 보존 — 과도한 마스킹 방지 회귀.
+    /// #3603: PII-free plain text is preserved verbatim — regression guard against over-masking.
     #[test]
     fn test_assemble_event_search_result_no_pii_unchanged() {
         let row = make_event_row(
@@ -189,16 +188,16 @@ mod tests {
         assert_eq!(
             result.window_title.as_deref(),
             Some("Visual Studio Code - main.rs"),
-            "PII 없는 window_title 이 변경됐다"
+            "PII-free window_title was changed"
         );
         assert_eq!(
             result.matched_text.as_deref(),
             Some("일반적인 이벤트 데이터"),
-            "PII 없는 data 가 변경됐다"
+            "PII-free data was changed"
         );
     }
 
-    /// #3603: 한국어 텍스트 + 이메일 혼합 — UTF-8 안전성 검증.
+    /// #3603: Korean text mixed with an email — UTF-8 safety verification.
     #[test]
     fn test_assemble_event_search_result_utf8_korean_with_pii() {
         let row = make_event_row(
@@ -206,21 +205,21 @@ mod tests {
             Some("데이터: 010-1234-5678 전화번호"),
         );
         let result = assemble_event_search_result(row, &sanitizer()).unwrap();
-        let title = result.window_title.expect("window_title 은 Some");
-        // 이메일 마스킹 (sanitize_title 이 @ 패턴 탐지)
+        let title = result.window_title.expect("window_title should be Some");
+        // Email masking (sanitize_title detects the @ pattern)
         assert!(
             !title.contains("홍길동@회사.com"),
-            "한국어 이메일이 마스킹되지 않았다: {title}"
+            "Korean email was not masked: {title}"
         );
-        // 한국어 문자 자체는 보존
+        // The Korean characters themselves are preserved
         assert!(
             title.contains("사용자 로그인"),
-            "한국어 컨텍스트 텍스트가 소실됐다: {title}"
+            "Korean context text was lost: {title}"
         );
     }
 
     // -----------------------------------------------------------------------
-    // F-QA-C34-04: assemble_frame_search_result PII 마스킹 — sibling-miss fix
+    // F-QA-C34-04: assemble_frame_search_result PII masking — sibling-miss fix
     // -----------------------------------------------------------------------
 
     fn make_frame_row(window_title: Option<&str>, matched_text: Option<&str>) -> SearchFrameRow {
@@ -235,44 +234,40 @@ mod tests {
         }
     }
 
-    /// F-QA-C34-04: assemble_frame_search_result が window_title のメールアドレスをマスクするか検証.
-    /// cycle 33 PR #4012 のシブリングミス修正 — frame 側も event と同様に sanitize_title 適用が必須.
+    /// F-QA-C34-04: verify assemble_frame_search_result masks the email address in window_title.
+    /// cycle 33 PR #4012 sibling-miss fix — like event, the frame side must also apply sanitize_title.
     #[test]
     fn frame_search_result_masks_email_in_window_title() {
         let row = make_frame_row(Some("Frame — user@example.com"), Some("data"));
         let result = assemble_frame_search_result(row, vec![], &sanitizer()).unwrap();
-        let title = result
-            .window_title
-            .expect("window_title は Some であるべき");
+        let title = result.window_title.expect("window_title should be Some");
         assert!(
             !title.contains("user@example.com"),
-            "frame window_title のメールがマスクされていない: {title}"
+            "frame window_title email is not masked: {title}"
         );
         assert!(
             title.contains("[EMAIL]"),
-            "frame window_title にマスカーがない: {title}"
+            "frame window_title has no masker: {title}"
         );
     }
 
-    /// F-QA-C34-04: assemble_frame_search_result が matched_text のメールアドレスをマスクするか検証.
+    /// F-QA-C34-04: verify assemble_frame_search_result masks the email address in matched_text.
     #[test]
     fn frame_search_result_masks_email_in_matched_text() {
         let row = make_frame_row(Some("일반 제목"), Some("contact: admin@corp.io"));
         let result = assemble_frame_search_result(row, vec![], &sanitizer()).unwrap();
-        let text = result
-            .matched_text
-            .expect("matched_text は Some であるべき");
+        let text = result.matched_text.expect("matched_text should be Some");
         assert!(
             !text.contains("admin@corp.io"),
-            "frame matched_text のメールがマスクされていない: {text}"
+            "frame matched_text email is not masked: {text}"
         );
         assert!(
             text.contains("[EMAIL]"),
-            "frame matched_text にマスカーがない: {text}"
+            "frame matched_text has no masker: {text}"
         );
     }
 
-    /// F-QA-C34-04: PII 없는 frame title は원문 보존 — 과도한 마스킹 회귀 방지.
+    /// F-QA-C34-04: PII-free frame titles are preserved verbatim — guard against over-masking regression.
     #[test]
     fn frame_search_result_no_pii_unchanged() {
         let row = make_frame_row(Some("Finder — Documents"), Some("regular content"));
@@ -280,27 +275,27 @@ mod tests {
         assert_eq!(
             result.window_title.as_deref(),
             Some("Finder — Documents"),
-            "PII 없는 frame window_title 이 변경됐다"
+            "PII-free frame window_title was changed"
         );
         assert_eq!(
             result.matched_text.as_deref(),
             Some("regular content"),
-            "PII 없는 frame matched_text 가 변경됐다"
+            "PII-free frame matched_text was changed"
         );
     }
 
-    /// F-QA-C34-04: window_title / matched_text 모두 None 이면 None 반환 — passthrough.
+    /// F-QA-C34-04: when both window_title and matched_text are None, return None — passthrough.
     #[test]
     fn frame_search_result_none_fields_passthrough() {
         let row = make_frame_row(None, None);
         let result = assemble_frame_search_result(row, vec![], &sanitizer()).unwrap();
         assert!(
             result.window_title.is_none(),
-            "None frame window_title 이 변환됐다"
+            "None frame window_title was transformed"
         );
         assert!(
             result.matched_text.is_none(),
-            "None frame matched_text 가 변환됐다"
+            "None frame matched_text was transformed"
         );
     }
 }

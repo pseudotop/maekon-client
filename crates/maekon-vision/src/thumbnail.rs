@@ -8,23 +8,25 @@ use std::borrow::Cow;
 use std::num::NonZeroUsize;
 use tracing::debug;
 
-// F-PF-22: 썸네일 캐시를 엔트리 수 기반에서 바이트 예산 기반으로 변경.
-// (hash, w, h) 키 조합이 다수 생성되면 엔트리 20개 한도가 빠르게 소진되어
-// 캐시 churn 이 발생하던 문제를 해소.
-// - 기본 예산: 10 MB (RGBA w*h*4 기준)
-// - LRU 엔트리 한도: 256개 (실질 한도는 바이트 예산 — 128×128 RGBA 기준 ~156엔트리에서 소진)
-// - 환경변수 MAEKON_THUMBNAIL_CACHE_BYTES 로 재정의 가능
+// F-PF-22: switch the thumbnail cache from an entry-count budget to a byte
+// budget. When many (hash, w, h) key combinations are generated, the 20-entry
+// limit was exhausted quickly, causing cache churn; this resolves that.
+// - Default budget: 10 MB (based on RGBA w*h*4)
+// - LRU entry limit: 256 (the effective limit is the byte budget — exhausted at
+//   ~156 entries for 128×128 RGBA)
+// - Overridable via the MAEKON_THUMBNAIL_CACHE_BYTES environment variable
 
-/// 기본 바이트 예산 10 MB.
+/// Default byte budget: 10 MB.
 const DEFAULT_CACHE_BUDGET_BYTES: usize = 10 * 1024 * 1024;
 
-/// 엔트리 수 상한 (바이트 예산과 독립적으로 적용되는 보조 상한).
-/// 128×128 RGBA = 64 KB/엔트리 → 10 MB 예산 기준 실질 한도 ~156엔트리.
-/// 256은 그보다 큰 안전 마진이며, 예산 소진 전에 이 상한에 도달하는 경우는
-/// 매우 작은 썸네일(예: 32×32 이하)을 다수 캐싱할 때만 해당.
+/// Entry-count cap (a secondary cap applied independently of the byte budget).
+/// 128×128 RGBA = 64 KB/entry → effective limit ~156 entries under the 10 MB
+/// budget. 256 is a larger safety margin; reaching this cap before the budget is
+/// exhausted only happens when caching many very small thumbnails (e.g. 32×32 or
+/// smaller).
 const MAX_CACHE_ENTRIES: usize = 256;
 
-/// 환경변수 `MAEKON_THUMBNAIL_CACHE_BYTES` 로 바이트 예산을 재정의한다.
+/// Override the byte budget via the `MAEKON_THUMBNAIL_CACHE_BYTES` environment variable.
 fn resolve_cache_budget() -> usize {
     std::env::var("MAEKON_THUMBNAIL_CACHE_BYTES")
         .ok()
@@ -35,13 +37,13 @@ fn resolve_cache_budget() -> usize {
 
 type CacheKey = (u64, u32, u32);
 
-/// 바이트 예산을 추적하는 LRU 썸네일 캐시 래퍼.
+/// LRU thumbnail cache wrapper that tracks a byte budget.
 struct ByteBudgetCache {
-    /// 내부 LRU 캐시 (엔트리 수 상한 MAX_CACHE_ENTRIES).
+    /// Inner LRU cache (entry-count cap MAX_CACHE_ENTRIES).
     inner: LruCache<CacheKey, Vec<u8>>,
-    /// 현재 캐시가 점유하는 총 바이트.
+    /// Total bytes currently occupied by the cache.
     total_bytes: usize,
-    /// 최대 허용 바이트 예산.
+    /// Maximum allowed byte budget.
     budget_bytes: usize,
 }
 
@@ -60,11 +62,11 @@ impl ByteBudgetCache {
         self.inner.get(key)
     }
 
-    /// 새 항목을 삽입하고 바이트 예산을 초과하는 경우 LRU 엔트리를 축출한다.
+    /// Insert a new entry and evict LRU entries when the byte budget is exceeded.
     fn put(&mut self, key: CacheKey, value: Vec<u8>) {
         let entry_bytes = value.len();
 
-        // 동일 키가 이미 존재하면 이전 항목 바이트를 차감한다.
+        // If the same key already exists, subtract the previous entry's bytes.
         if let Some(old) = self.inner.peek(&key) {
             self.total_bytes = self.total_bytes.saturating_sub(old.len());
         }
@@ -72,7 +74,7 @@ impl ByteBudgetCache {
         self.inner.put(key, value);
         self.total_bytes = self.total_bytes.saturating_add(entry_bytes);
 
-        // 바이트 예산 초과 시 LRU 엔트리를 축출한다.
+        // Evict LRU entries when the byte budget is exceeded.
         while self.total_bytes > self.budget_bytes {
             if let Some((_, evicted)) = self.inner.pop_lru() {
                 self.total_bytes = self.total_bytes.saturating_sub(evicted.len());
@@ -92,12 +94,12 @@ impl ByteBudgetCache {
         self.total_bytes = 0;
     }
 
-    /// 현재 총 바이트 사용량.
+    /// Current total byte usage.
     fn total_bytes(&self) -> usize {
         self.total_bytes
     }
 
-    /// 최대 바이트 예산.
+    /// Maximum byte budget.
     fn budget_bytes(&self) -> usize {
         self.budget_bytes
     }
@@ -127,29 +129,24 @@ fn compute_image_hash(image: &DynamicImage) -> u64 {
     hash ^= h as u64;
     hash = hash.wrapping_mul(FNV_PRIME);
 
-    let step_x = (w as usize).max(1) / 16;
-    let step_y = (h as usize).max(1) / 16;
-    let stride = w as usize * 4;
-
-    for sy in 0..16 {
-        let y = (sy * step_y).min((h as usize).saturating_sub(1));
-        let row_offset = y * stride;
-
-        for sx in 0..16 {
-            let x = (sx * step_x).min((w as usize).saturating_sub(1));
-            let pixel_offset = row_offset + x * 4;
-
-            if pixel_offset + 3 < raw.len() {
-                let pixel = u32::from_le_bytes([
-                    raw[pixel_offset],
-                    raw[pixel_offset + 1],
-                    raw[pixel_offset + 2],
-                    raw[pixel_offset + 3],
-                ]);
-                hash ^= pixel as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
+    // Hash ALL source bytes, not a 256-pixel sample (review4 V16). The (hash, w, h)
+    // key is a content-identity key used to substitute a previously-resized
+    // thumbnail on a cache hit; a sparse 256-sample hash let two genuinely different
+    // frames — differing only between sample columns or in the unsampled
+    // bottom-right strip — collide and return the WRONG image's thumbnail (uploaded
+    // + stored as dashcam). This runs inside spawn_blocking (off the 1s capture
+    // loop), so a full-buffer scan is affordable. 8 bytes/iteration for speed.
+    let mut chunks = raw.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
+        hash ^= word;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    for &byte in chunks.remainder() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
     }
 
     hash
@@ -289,11 +286,11 @@ pub fn resize_to_fit(
 }
 
 pub struct CacheStats {
-    /// 현재 캐시에 저장된 엔트리 수.
+    /// Number of entries currently stored in the cache.
     pub size: usize,
-    /// 총 바이트 사용량.
+    /// Total byte usage.
     pub total_bytes: usize,
-    /// 최대 바이트 예산.
+    /// Maximum byte budget.
     pub budget_bytes: usize,
 }
 
@@ -500,16 +497,16 @@ mod tests {
         );
     }
 
-    /// F-PF-22: 바이트 예산 기반 캐시 검증.
-    /// 예산을 초과하는 대형 썸네일 삽입 시 LRU 축출이 발생해
-    /// total_bytes 가 항상 budget_bytes 이하를 유지해야 한다.
+    /// F-PF-22: verify the byte-budget-based cache.
+    /// When large thumbnails exceeding the budget are inserted, LRU eviction must
+    /// occur so that total_bytes always stays at or below budget_bytes.
     #[test]
     fn test_thumbnail_cache_byte_budget() {
         let _guard = CACHE_TEST_LOCK.lock().unwrap();
         clear_cache();
 
-        // 각 800×600 RGBA 썸네일 = 800*600*4 = 1,920,000 bytes (~1.83 MB).
-        // 10 MB 예산에 6장 삽입 → 총 11.52 MB > 10 MB 이므로 축출 발생.
+        // Each 800×600 RGBA thumbnail = 800*600*4 = 1,920,000 bytes (~1.83 MB).
+        // Inserting 6 into the 10 MB budget → 11.52 MB total > 10 MB, so eviction occurs.
         for i in 0_u8..6 {
             let img = make_test_image(800, 600, [i, i * 2, i * 3, 255]);
             fast_resize(&img, 800, 600).unwrap();
@@ -524,15 +521,15 @@ mod tests {
         );
     }
 
-    /// F-PF-22: 10 MB 기본 예산 확인.
+    /// F-PF-22: confirm the 10 MB default budget.
     #[test]
     fn test_thumbnail_cache_default_budget_is_10mb() {
         let stats = get_cache_stats();
-        // 환경변수 미설정 시 기본 예산 = 10 MB.
-        // 다른 테스트가 삽입 후 total_bytes > 0 일 수 있으므로 budget_bytes 만 확인.
+        // With the environment variable unset, the default budget = 10 MB.
+        // Other tests may leave total_bytes > 0 after inserting, so only check budget_bytes.
         assert_eq!(
             stats.budget_bytes, DEFAULT_CACHE_BUDGET_BYTES,
-            "기본 바이트 예산은 10 MB 여야 한다"
+            "default byte budget must be 10 MB"
         );
     }
 

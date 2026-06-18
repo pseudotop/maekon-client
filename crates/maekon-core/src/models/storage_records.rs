@@ -220,6 +220,26 @@ impl SuggestionRecord {
             self.context_window,
             self.context_target_id,
         );
+        // Parse `expires_at` strictly, mirroring `created_at` below. A NULL
+        // `expires_at` legitimately means "never expires", but a present
+        // value that fails RFC3339 parsing is a corrupt record: silently
+        // mapping it to `None` would flip a (possibly already-expired)
+        // suggestion into one that never expires. Drop such records instead,
+        // and emit a warning so the drift is observable.
+        let expires_at = match self.expires_at.as_deref() {
+            None => None,
+            Some(raw) => match chrono::DateTime::parse_from_rfc3339(raw) {
+                Ok(parsed) => Some(parsed.with_timezone(&chrono::Utc)),
+                Err(_) => {
+                    tracing::warn!(
+                        suggestion_id = %self.suggestion_id,
+                        raw,
+                        "dropping suggestion: unparseable expires_at"
+                    );
+                    return None;
+                }
+            },
+        };
         Some(Suggestion {
             suggestion_id: self.suggestion_id,
             suggestion_type,
@@ -231,11 +251,7 @@ impl SuggestionRecord {
             created_at: chrono::DateTime::parse_from_rfc3339(&self.created_at)
                 .ok()?
                 .with_timezone(&chrono::Utc),
-            expires_at: self.expires_at.as_ref().and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(s)
-                    .ok()
-                    .map(|d| d.with_timezone(&chrono::Utc))
-            }),
+            expires_at,
             source,
             reasoning: self.reasoning,
             context_scope,
@@ -274,44 +290,48 @@ fn non_empty_context_value(value: Option<String>) -> Option<String> {
     })
 }
 
-/// Egress 감사 원장 한 행 (`egress_ledger` 테이블, V36, #4803/E20).
+/// A single row of the egress audit ledger (`egress_ledger` table, V36, #4803/E20).
 ///
-/// 디바이스를 떠난(`disposition='uploaded'`) 또는 정책상 차단된
-/// (`disposition='blocked'`) 이벤트를 규제 준수 증거로 기록한다.
-/// `IntegrationInsightAuditRecord` 와 동일한 형태(serde + Clone + Debug)를 따른다.
+/// Records, as regulatory-compliance evidence, events that either left the
+/// device (`disposition='uploaded'`) or were blocked by policy
+/// (`disposition='blocked'`). Follows the same shape (serde + Clone + Debug)
+/// as `IntegrationInsightAuditRecord`.
 fn default_recipient_count() -> i64 {
     1
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EgressLedgerRecord {
-    /// 호출자가 생성하는 UUID. `egress_ledger.record_id` UNIQUE 로 재실행 중복 제거.
+    /// Caller-generated UUID. `egress_ledger.record_id` is UNIQUE, so re-runs
+    /// are deduplicated.
     pub record_id: String,
-    /// 이벤트 유형. 텔레메트리 producer: Context/Window/User/Input/Process/System/
-    /// Clipboard/FileAccess. 동기화 producer(#5143): `CrossDeviceSync`(일반 push)
-    /// 또는 `DeletionEvent`(GDPR Art.17 tombstone push).
+    /// Event type. Telemetry producers: Context/Window/User/Input/Process/System/
+    /// Clipboard/FileAccess. Sync producers (#5143): `CrossDeviceSync` (normal
+    /// push) or `DeletionEvent` (GDPR Art.17 tombstone push).
     pub event_type: String,
-    /// 연관 이벤트 id (nullable). events 테이블 id 또는 생성된 식별자.
+    /// Associated event id (nullable). The events-table id or a generated identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// 직렬화된 payload 바이트 크기. 평문(plaintext) 직렬화 크기이며, 암호화/압축
-    /// 후의 on-wire 크기가 아니다(#5143). LAN fan-out 은 동일 직렬화를 N 피어로
-    /// 보내므로 실제 egress 총량 = `byte_count * recipient_count` (#5147 item 2).
+    /// Serialized payload byte size. This is the plaintext serialized size, not
+    /// the on-wire size after encryption/compression (#5143). LAN fan-out sends
+    /// the same serialization to N peers, so the actual total egress =
+    /// `byte_count * recipient_count` (#5147 item 2).
     pub byte_count: i64,
-    /// egress 수신처 개수(#5147 item 2). LAN multi-peer push = 전달 성공 피어 수,
-    /// File/Remote(단일 목적지) = 1. 누락 시(이전 레코드/텔레메트리) 1 로 기본.
+    /// Number of egress recipients (#5147 item 2). LAN multi-peer push = number
+    /// of peers delivered to successfully; File/Remote (single destination) = 1.
+    /// Defaults to 1 when absent (older records / telemetry).
     #[serde(default = "default_recipient_count")]
     pub recipient_count: i64,
-    /// egress 대상 (업로드 엔드포인트 / sink 타깃 문자열). 텔레메트리:
-    /// `server.batch_upload`. 동기화: `sync.lan`/`sync.remote`/`sync.file`
-    /// (peer/endpoint 상세는 일부러 기록하지 않음).
+    /// Egress destination (upload endpoint / sink target string). Telemetry:
+    /// `server.batch_upload`. Sync: `sync.lan`/`sync.remote`/`sync.file`
+    /// (peer/endpoint details are deliberately not recorded).
     pub destination: String,
-    /// egress 처분 — `'uploaded'` 또는 `'blocked'`.
+    /// Egress disposition — `'uploaded'` or `'blocked'`.
     pub disposition: String,
-    /// egress 시점의 동의 스냅샷. 텔레메트리 path = telemetry/upload 동의; 동기화
-    /// path = `cross_device_sync=<bool>`(#5143).
+    /// Consent snapshot at the egress moment. Telemetry path = telemetry/upload
+    /// consent; sync path = `cross_device_sync=<bool>` (#5143).
     pub consent_state: String,
-    /// 발생 시각 (RFC3339).
+    /// Occurrence timestamp (RFC3339).
     pub occurred_at: String,
 }
 
@@ -456,5 +476,72 @@ impl PendingFeedbackRecord {
             self.attempts,
             next_retry,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::suggestion::SuggestionSource;
+
+    /// Build a minimal valid `SuggestionRecord` with the given `expires_at`.
+    fn record_with_expires_at(expires_at: Option<&str>) -> SuggestionRecord {
+        SuggestionRecord {
+            id: 1,
+            suggestion_id: "sug-1".to_string(),
+            suggestion_type: "WORK_GUIDANCE".to_string(),
+            source: SuggestionSource::RULE_BASED_STR.to_string(),
+            content: "do the thing".to_string(),
+            priority: "MEDIUM".to_string(),
+            confidence_score: 0.9,
+            relevance_score: 0.8,
+            is_actionable: true,
+            reasoning: None,
+            context_app: None,
+            context_window: None,
+            context_target_id: None,
+            shown_at: None,
+            dismissed_at: None,
+            acted_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: expires_at.map(|s| s.to_string()),
+            resurface_at: None,
+        }
+    }
+
+    #[test]
+    fn absent_expires_at_means_never_expires() {
+        let suggestion = record_with_expires_at(None)
+            .try_into_suggestion()
+            .expect("record with no expires_at should convert");
+        assert!(suggestion.expires_at.is_none());
+    }
+
+    #[test]
+    fn valid_expires_at_is_parsed() {
+        let suggestion = record_with_expires_at(Some("2026-02-01T12:30:00Z"))
+            .try_into_suggestion()
+            .expect("record with valid expires_at should convert");
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-02-01T12:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(suggestion.expires_at, Some(expected));
+    }
+
+    #[test]
+    fn malformed_expires_at_drops_record() {
+        // A present-but-unparseable expires_at must NOT be silently treated as
+        // "never expires"; the corrupt record is dropped (mirrors created_at).
+        assert!(record_with_expires_at(Some("not-a-timestamp"))
+            .try_into_suggestion()
+            .is_none());
+    }
+
+    #[test]
+    fn malformed_created_at_drops_record() {
+        // Sanity check that the existing strict created_at handling is unchanged.
+        let mut record = record_with_expires_at(None);
+        record.created_at = "not-a-timestamp".to_string();
+        assert!(record.try_into_suggestion().is_none());
     }
 }

@@ -24,7 +24,41 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+
+/// Executes `f` (a synchronous, potentially blocking filesystem operation)
+/// without stalling the tokio multi-thread worker thread pool.
+///
+/// In production the Tauri app runs on a `multi_thread` tokio runtime.
+/// `tokio::task::block_in_place` notifies the scheduler that this worker thread
+/// is about to block, allowing it to move other ready tasks to idle workers so
+/// no async task is starved during the disk write.
+///
+/// `block_in_place` is **only valid on the multi-thread scheduler** — on a
+/// `current_thread` runtime it panics with "can call blocking only when running
+/// on the multi-threaded runtime". This is detected at runtime (not via a
+/// `#[cfg(test)]` gate, which would only cover this crate's own test builds and
+/// not downstream crates that compile `maekon-core` in release mode but call
+/// `update`/`update_with` from a single-threaded `#[tokio::test]`). When the
+/// current runtime is `current_thread`, or there is no runtime at all, `f` is
+/// called directly: the IO is a single short config-file write and the
+/// `writer_lock` already serialises writers, so a direct call is safe.
+///
+/// # Holds the parking_lot writer_lock
+/// The caller holds `Inner::writer_lock` across this call — that is intentional
+/// and safe: we never cross an `.await` point while the guard is held, so
+/// the guard's non-`Send`-ness is never an issue.
+#[inline]
+fn blocking_io<T>(f: impl FnOnce() -> T) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        // current_thread runtime, or called outside any tokio runtime.
+        _ => f(),
+    }
+}
 
 /// Configuration store with a `watch`-backed broadcast bus.
 ///
@@ -52,6 +86,23 @@ struct Inner {
     /// Admin-deployed managed (MDM) policy, loaded once at construction.
     /// `None` = no policy file = consumer/normal operation (#4832).
     managed: Option<ManagedConfig>,
+    /// `true` when the on-disk config was found corrupt at construction and we
+    /// fell back to the privacy-preserving recovery default (telemetry/capture
+    /// off). Surfaced to the UI via
+    /// [`ConfigManager::config_was_reset_from_corruption`] so the user can be
+    /// told their settings were reset rather than silently re-enabling
+    /// collection. Set once at construction; never mutated after.
+    config_reset_from_corruption: bool,
+}
+
+/// Map an `AppConfig::validate_bounds` failure message to a typed config error
+/// (#6102-4). Shared by the `update` / `update_with` / `reload` write paths so
+/// an out-of-range value is rejected consistently.
+fn map_bounds_error(message: String) -> CoreError {
+    CoreError::Config {
+        code: crate::error_codes::ConfigCode::Invalid,
+        message,
+    }
 }
 
 impl ConfigManager {
@@ -102,21 +153,32 @@ impl ConfigManager {
             }
         }
 
+        // Set when an existing config file fails to parse and we fall back to
+        // the privacy-preserving recovery default (see below).
+        let mut config_reset_from_corruption = false;
         let mut initial = if config_path.exists() {
             match migration::load_and_migrate_from_file(&config_path) {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(
+                    // Distinct error-level signal: a corrupt config means the
+                    // user's prior privacy choices were lost. This is NOT the
+                    // routine "file missing -> seed defaults" path, so it must
+                    // not be hidden behind the warn-level noise floor.
+                    error!(
                         path = %config_path.display(),
                         error = %e,
-                        "config file corrupted, falling back to defaults"
+                        "config file corrupted; settings reset to privacy-preserving \
+                         defaults (telemetry/capture disabled until re-enabled)"
                     );
-                    let default_config = AppConfig::default_config();
+                    config_reset_from_corruption = true;
+                    // Fail-closed: do NOT re-seed the fresh-install default-on
+                    // telemetry/capture intent over an unrecoverable opt-out.
+                    let recovery_config = AppConfig::fail_closed_recovery_default();
                     // Overwrite the corrupt file so the next launch is clean.
-                    if let Err(e) = persistence::save_to_file(&config_path, &default_config) {
+                    if let Err(e) = persistence::save_to_file(&config_path, &recovery_config) {
                         debug!("save_to_file failed: {e}");
                     }
-                    default_config
+                    recovery_config
                 }
             }
         } else {
@@ -144,6 +206,28 @@ impl ConfigManager {
             }
         }
 
+        // #6169/#6177: bounds-clamp the loaded config BEFORE seeding the bus.
+        // Unlike the write chokepoints (`update`/`update_with`/`reload`), which
+        // REJECT out-of-range values, the INITIAL-LOAD path must stay fail-open:
+        // a hand-edited / downgrade config.json with sub-floor intervals (e.g.
+        // `monitor.poll_interval_ms: 0` or `analysis.interval_secs: 0`) would
+        // otherwise reach the scheduler unvalidated and panic or hot-spin a
+        // `tokio::time::interval`. Raise such values to their floor and persist
+        // the correction (mirrors the managed-clamp rewrite above) so the fix
+        // survives a relaunch. Applied after the managed overlay so a managed
+        // value is clamped to policy first, then to its floor.
+        let bounds_clamped = initial.clamp_bounds();
+        if !bounds_clamped.is_empty() {
+            warn!(
+                target: "config_bounds",
+                fields = ?bounds_clamped,
+                "config bounds clamped sub-floor interval(s) at startup (fail-open)"
+            );
+            if let Err(e) = persistence::save_to_file(&config_path, &initial) {
+                debug!("save_to_file (bounds clamp) failed: {e}");
+            }
+        }
+
         let (sender, _rx) = watch::channel(Arc::new(initial));
         // Dropping `_rx` is fine — `watch::Sender` does not require any receivers
         // to exist. `subscribe()` lazily creates them.
@@ -154,8 +238,20 @@ impl ConfigManager {
                 writer_lock: Mutex::new(()),
                 config_path,
                 managed,
+                config_reset_from_corruption,
             }),
         })
+    }
+
+    /// Whether the config was reset to privacy-preserving defaults because the
+    /// on-disk file was found corrupt at construction.
+    ///
+    /// `true` means the user's prior settings (possibly including an explicit
+    /// telemetry/capture opt-out) could not be recovered, so collection knobs
+    /// were forced off and the user should be prompted to review them. The UI
+    /// reads this once after startup to surface a "settings were reset" notice.
+    pub fn config_was_reset_from_corruption(&self) -> bool {
+        self.inner.config_reset_from_corruption
     }
 
     pub fn get(&self) -> AppConfig {
@@ -193,7 +289,26 @@ impl ConfigManager {
         // (settings API, Tauri IPC, backup restore, scheduler) is enforced by
         // construction — a per-callsite guard would leak via siblings (#4832).
         self.enforce_managed_overlay(&mut new_config);
-        persistence::save_to_file(&self.inner.config_path, &new_config)?;
+        // #6102-4: reject out-of-range values at THE write chokepoint (after the
+        // managed clamp, so a managed value clamped into range is honored, but a
+        // caller override that escapes the bounds is rejected rather than spinning
+        // the scheduler loops on a sub-second interval).
+        new_config.validate_bounds().map_err(map_bounds_error)?;
+        // #6256: reject an auto-updater signature-verification downgrade at THE
+        // write chokepoint, so every interactive write surface (settings HTTP
+        // API, Tauri IPC, backup restore) is covered by construction — not just
+        // the WebView allowlist. `validate_integrity_policy` is a no-op when
+        // updates are disabled and passes the default (verification on), so this
+        // only blocks `update.enabled=true` paired with
+        // `require_signature_verification=false`.
+        new_config.update.validate_integrity_policy()?;
+        // `blocking_io` wraps `block_in_place` so that the multi-thread tokio
+        // scheduler can move other tasks off this worker thread while the
+        // synchronous fs::write executes, preventing worker-thread starvation.
+        // The parking_lot guard is held across the call (no `.await`), which is
+        // safe — parking_lot guards are non-`Send` only in the async-Send sense,
+        // and we are in a synchronous stack frame throughout.
+        blocking_io(|| persistence::save_to_file(&self.inner.config_path, &new_config))?;
         self.inner.sender.send_replace(Arc::new(new_config));
         debug!(
             "settings save complete: {}",
@@ -216,7 +331,12 @@ impl ConfigManager {
         })?;
         // Managed-policy clamp at the chokepoint (see `update`).
         self.enforce_managed_overlay(&mut new_cfg);
-        persistence::save_to_file(&self.inner.config_path, &new_cfg)?;
+        // #6102-4: bounds check after the managed clamp (see `update`).
+        new_cfg.validate_bounds().map_err(map_bounds_error)?;
+        // #6256: same updater signature-verification downgrade guard as `update`.
+        new_cfg.update.validate_integrity_policy()?;
+        // Same `block_in_place` guard as `update` — see comment there.
+        blocking_io(|| persistence::save_to_file(&self.inner.config_path, &new_cfg))?;
         let snapshot = new_cfg.clone();
         self.inner.sender.send_replace(Arc::new(new_cfg));
         debug!(
@@ -236,6 +356,9 @@ impl ConfigManager {
         // Re-clamp on reload so an externally edited config.json cannot escape
         // managed policy (cheap defense-in-depth at an existing writer).
         self.enforce_managed_overlay(&mut reloaded);
+        // #6102-4: an externally hand-edited config.json must not load out-of-range
+        // values that escape the scheduler's interval floors.
+        reloaded.validate_bounds().map_err(map_bounds_error)?;
         self.inner.sender.send_replace(Arc::new(reloaded));
         info!("settings load complete");
         Ok(())

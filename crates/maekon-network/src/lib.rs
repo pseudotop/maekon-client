@@ -84,6 +84,7 @@ pub mod http_api_session;
 pub mod http_client;
 pub mod integration;
 pub mod local_llm_session;
+pub(crate) mod mutex_ext;
 pub mod oauth;
 pub mod ollama_discovery;
 mod provider_error_body;

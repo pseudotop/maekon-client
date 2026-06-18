@@ -6,16 +6,15 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tempfile::tempdir;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::time::timeout;
 
 use super::{
     append_model_flag, append_oneshot_flags, build_codex_ocr_prompt, build_path_based_ocr_prompt,
     classify_subprocess_error_with_redactions, default_llm_model_for_surface,
     default_ocr_model_for_surface, invocation_runtime_for_surface, is_gemini_json_flag_error,
-    parse_ocr_output, provider_name_for_surface_id, write_subprocess_ocr_image, BoxFuture,
-    DetectedSubprocessCli, SubprocessKind, DEFAULT_SUBPROCESS_TIMEOUT_SECS, OCR_SCHEMA_JSON,
+    parse_ocr_output, provider_name_for_surface_id, write_prompt_and_collect_output,
+    write_subprocess_ocr_image, BoxFuture, DetectedSubprocessCli, SubprocessKind,
+    DEFAULT_SUBPROCESS_TIMEOUT_SECS, OCR_SCHEMA_JSON,
 };
 use maekon_api_contracts::provider_specs::subprocess_supports_json_output;
 
@@ -114,28 +113,15 @@ impl SubprocessOcrProvider {
             .kill_on_drop(true);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
 
-        let mut child = child.spawn().map_err(|err| CoreError::Internal {
+        let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("Failed to spawn Codex OCR subprocess: {err}"),
         })?;
 
-        let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Internal {
-            code: maekon_core::error_codes::InternalCode::Generic,
-            message: "Failed to open stdin for Codex OCR subprocess".to_string(),
-        })?;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(CoreError::Io)?;
-        drop(stdin);
-
-        let output = timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        // #6262: bounded stdin write + output collection with concurrent pipe
+        // draining (avoids stdin/stdout deadlock; see parsing::write_prompt_and_collect_output).
+        let output =
+            write_prompt_and_collect_output(child, &prompt, "Codex OCR", self.timeout).await?;
 
         if !output.status.success() {
             let image_path_text = image_path.to_string_lossy();
@@ -164,27 +150,30 @@ impl SubprocessOcrProvider {
     ) -> Result<String, CoreError> {
         let prompt = build_path_based_ocr_prompt(image_path, &self.model);
         let mut command = Command::new(&self.surface.executable_path);
-        command.arg("-p");
+        // Keep path-based OCR instructions out of argv because they can include
+        // private local paths and nearby UI context.
+        command.arg("-p").arg("-");
         append_oneshot_flags(&mut command, &self.surface.surface_id);
         command
             .arg("--output-format")
             .arg("json")
             .arg("--json-schema")
             .arg(OCR_SCHEMA_JSON)
-            .arg(&prompt)
             .current_dir(workdir)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
-        let output = timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)?;
+        let child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Claude OCR subprocess: {err}"),
+        })?;
+
+        // #6262: bounded stdin write + output collection (see run_codex_ocr).
+        let output =
+            write_prompt_and_collect_output(child, &prompt, "Claude OCR", self.timeout).await?;
 
         if !output.status.success() {
             let image_path_text = image_path.to_string_lossy();
@@ -206,7 +195,26 @@ impl SubprocessOcrProvider {
     ) -> Result<String, CoreError> {
         let prompt = build_path_based_ocr_prompt(image_path, &self.model);
         let output = match self.run_gemini_command(workdir, &prompt, true).await {
-            Ok(output) => output,
+            Ok(output) if output.status.success() => output,
+            // #6263: the `--output-format json` version incompatibility surfaces
+            // as a NON-ZERO EXIT, not an `Err`, so the previous Err-only fallback
+            // arm never fired. Classify the failed first attempt and retry once
+            // without the json flag if it is the json-flag error.
+            Ok(failed) => {
+                let image_path_text = image_path.to_string_lossy();
+                let candidate = classify_subprocess_error_with_redactions(
+                    SubprocessKind::Ocr,
+                    &self.surface.surface_id,
+                    &String::from_utf8_lossy(&failed.stderr),
+                    &[&prompt, image_path_text.as_ref()],
+                );
+                if is_gemini_json_flag_error(&candidate) {
+                    self.run_gemini_command(workdir, &prompt, false).await?
+                } else {
+                    return Err(candidate);
+                }
+            }
+            // Legacy path: flag error returned as an `Err` still retries.
             Err(error) if is_gemini_json_flag_error(&error) => {
                 self.run_gemini_command(workdir, &prompt, false).await?
             }
@@ -233,7 +241,9 @@ impl SubprocessOcrProvider {
         prefer_json_output: bool,
     ) -> Result<std::process::Output, CoreError> {
         let mut command = Command::new(&self.surface.executable_path);
-        command.arg("-p").arg(prompt);
+        // Match LLM subprocess handling: stdin avoids leaking OCR prompts and
+        // local image paths through process listings.
+        command.arg("-p").arg("-");
         if prefer_json_output
             && subprocess_supports_json_output(&self.surface.surface_id).unwrap_or(false)
         {
@@ -241,18 +251,19 @@ impl SubprocessOcrProvider {
         }
         command
             .current_dir(workdir)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
-        timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| CoreError::RequestTimeout {
-                code: maekon_core::error_codes::NetworkCode::Timeout,
-                timeout_ms: self.timeout.as_millis() as u64,
-            })?
-            .map_err(CoreError::Io)
+        let child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Gemini OCR subprocess: {err}"),
+        })?;
+
+        // #6262: bounded stdin write + output collection (see run_codex_ocr).
+        write_prompt_and_collect_output(child, prompt, "Gemini OCR", self.timeout).await
     }
 }
 
@@ -329,6 +340,97 @@ mod tests {
         assert_eq!(results[0].confidence, 0.96);
     }
 
+    #[tokio::test]
+    async fn gemini_ocr_invocation_delivers_prompt_via_stdin() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let executable_path = write_fake_gemini_ocr_cli(temp_dir.path());
+        let image_path = temp_dir.path().join("screen.png");
+        std::fs::write(&image_path, b"fake png").expect("image");
+        let provider = SubprocessOcrProvider::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.google.subprocess_cli".to_string(),
+                executable_path,
+            },
+            &AiProviderConfig::default(),
+        );
+
+        let raw = provider
+            .run_gemini_ocr(temp_dir.path(), &image_path)
+            .await
+            .expect("fake Gemini CLI should receive OCR prompt via stdin");
+        let results = parse_ocr_output(&raw).expect("Gemini OCR JSON envelope");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Search");
+        assert_eq!(results[0].confidence, 0.91);
+    }
+
+    fn write_fake_gemini_ocr_cli(base_dir: &Path) -> PathBuf {
+        let bin_dir = base_dir.join("Gemini CLI").join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("fake cli dir");
+        let source_path = bin_dir.join("fake_gemini_ocr.rs");
+        let executable_path = bin_dir.join(if cfg!(windows) {
+            "gemini.exe"
+        } else {
+            "gemini"
+        });
+        std::fs::write(
+            &source_path,
+            r##"
+fn main() {
+    use std::io::Read;
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let prompt_slot = args
+        .windows(2)
+        .find(|window| window[0] == "-p")
+        .map(|window| window[1].as_str());
+    let has_json_output = args
+        .windows(2)
+        .any(|window| window[0] == "--output-format" && window[1] == "json");
+    if prompt_slot != Some("-") {
+        eprintln!("expected stdin sentinel '-' after -p");
+        std::process::exit(44);
+    }
+    if !has_json_output {
+        eprintln!("expected --output-format json");
+        std::process::exit(42);
+    }
+    if args.iter().any(|arg| arg.contains("Read the local image file")) {
+        eprintln!("raw OCR prompt leaked through argv");
+        std::process::exit(45);
+    }
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt).expect("stdin");
+    if !prompt.contains("Read the local image file") {
+        eprintln!("stdin prompt missing OCR instructions");
+        std::process::exit(46);
+    }
+    println!(
+        "{}",
+        r#"{"results":[{"text":"Search","x":30,"y":40,"width":100,"height":30,"confidence":0.91}]}"#
+    );
+}
+"##,
+        )
+        .expect("fake cli source");
+        compile_fake_cli(&source_path, &executable_path);
+        executable_path
+    }
+
+    fn compile_fake_cli(source_path: &Path, executable_path: &Path) {
+        use std::process::Command as StdCommand;
+
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let status = StdCommand::new(rustc)
+            .arg(source_path)
+            .arg("-o")
+            .arg(executable_path)
+            .status()
+            .expect("compile fake cli");
+        assert!(status.success(), "fake cli should compile");
+    }
+
     #[cfg(windows)]
     fn write_fake_claude_ocr_cli(base_dir: &Path) -> PathBuf {
         use std::process::Command as StdCommand;
@@ -341,11 +443,16 @@ mod tests {
             &source_path,
             r##"
 fn main() {
+    use std::io::Read;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has_json_output = args
         .windows(2)
         .any(|window| window[0] == "--output-format" && window[1] == "json");
     let has_schema = args.iter().any(|arg| arg == "--json-schema");
+    let prompt_slot = args
+        .windows(2)
+        .find(|window| window[0] == "-p")
+        .map(|window| window[1].as_str());
     if !has_json_output {
         eprintln!("expected --output-format json");
         std::process::exit(42);
@@ -353,6 +460,20 @@ fn main() {
     if !has_schema {
         eprintln!("expected --json-schema");
         std::process::exit(43);
+    }
+    if prompt_slot != Some("-") {
+        eprintln!("expected stdin sentinel '-' after -p");
+        std::process::exit(44);
+    }
+    if args.iter().any(|arg| arg.contains("Read the local image file")) {
+        eprintln!("raw OCR prompt leaked through argv");
+        std::process::exit(45);
+    }
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt).expect("stdin");
+    if !prompt.contains("Read the local image file") {
+        eprintln!("stdin prompt missing OCR instructions");
+        std::process::exit(46);
     }
     println!(
         "{}",
@@ -385,6 +506,7 @@ fn main() {
             r#"#!/bin/sh
 found_output=0
 found_schema=0
+found_stdin_sentinel=0
 previous=
 for arg in "$@"; do
   if [ "$previous" = "--output-format" ] && [ "$arg" = "json" ]; then
@@ -393,6 +515,15 @@ for arg in "$@"; do
   if [ "$previous" = "--json-schema" ]; then
     found_schema=1
   fi
+  if [ "$previous" = "-p" ] && [ "$arg" = "-" ]; then
+    found_stdin_sentinel=1
+  fi
+  case "$arg" in
+    *"Read the local image file"*)
+      echo "raw OCR prompt leaked through argv" >&2
+      exit 45
+      ;;
+  esac
   previous="$arg"
 done
 if [ "$found_output" -ne 1 ]; then
@@ -403,6 +534,18 @@ if [ "$found_schema" -ne 1 ]; then
   echo "expected --json-schema" >&2
   exit 43
 fi
+if [ "$found_stdin_sentinel" -ne 1 ]; then
+  echo "expected stdin sentinel '-' after -p" >&2
+  exit 44
+fi
+prompt="$(cat)"
+case "$prompt" in
+  *"Read the local image file"*) ;;
+  *)
+    echo "stdin prompt missing OCR instructions" >&2
+    exit 46
+    ;;
+esac
 printf '%s\n' '{"type":"result","result":"Output provided.","structured_output":{"results":[{"text":"Save","x":10,"y":20,"width":80,"height":24,"confidence":0.96}]}}'
 "#,
         )

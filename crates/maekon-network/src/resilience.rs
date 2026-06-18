@@ -9,6 +9,14 @@ use crate::error::NetworkError;
 const DEFAULT_RETRY_AFTER_SECS: u64 = 60;
 const MAX_BACKOFF_EXPONENT: u32 = 10;
 
+/// Upper bound on a server-supplied `Retry-After` delay (seconds).
+///
+/// A 429 carrying an abusive or buggy `Retry-After` (e.g. `4294967295`) would
+/// otherwise stall uploads/sync for years. Clamping at the source bounds every
+/// downstream consumer of [`extract_retry_after`]. Matches the auth-path cap in
+/// `auth::refresh::parse_retry_after` (`secs.min(60)`).
+pub const MAX_RETRY_AFTER_SECS: u64 = 60;
+
 pub fn extract_retry_after(response: &reqwest::Response) -> u64 {
     response
         .headers()
@@ -16,6 +24,7 @@ pub fn extract_retry_after(response: &reqwest::Response) -> u64 {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_RETRY_AFTER_SECS)
+        .min(MAX_RETRY_AFTER_SECS)
 }
 
 pub fn scale_duration(duration: Duration, factor: u32) -> Duration {
@@ -89,7 +98,9 @@ impl RetryBackoffGate {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         let delay = match error {
             NetworkError::RateLimited { retry_after_secs } => {
-                Duration::from_secs(*retry_after_secs)
+                // Defensive clamp: even if a value reached the error without
+                // passing through `extract_retry_after`, never block for years.
+                Duration::from_secs((*retry_after_secs).min(MAX_RETRY_AFTER_SECS))
             }
             _ => jittered_backoff_delay(
                 self.consecutive_failures.saturating_sub(1),
@@ -122,8 +133,11 @@ pub enum BreakerSignal {
 ///
 /// Rules:
 /// - 2xx → `Success`.
-/// - 5xx, 401, 429, or transport error → `Failure` (endpoint health concern).
-/// - 4xx other than 401/429 → `Neutral` (caller-side bug; must not trip the
+/// - 5xx, 401, 408, 429, or transport error → `Failure` (endpoint health
+///   concern). 408 Request Timeout is an endpoint-side timeout that the
+///   HTTP/retry layer already treats as retryable, so it must feed the breaker
+///   consistently rather than being ignored as `Neutral`.
+/// - 4xx other than 401/408/429 → `Neutral` (caller-side bug; must not trip the
 ///   shared breaker for every other caller against the same endpoint).
 pub fn classify_for_breaker(status: Option<u16>, transport_err: bool) -> BreakerSignal {
     if transport_err {
@@ -131,7 +145,7 @@ pub fn classify_for_breaker(status: Option<u16>, transport_err: bool) -> Breaker
     }
     match status {
         Some(s) if (200..300).contains(&s) => BreakerSignal::Success,
-        Some(401) | Some(429) => BreakerSignal::Failure,
+        Some(401) | Some(408) | Some(429) => BreakerSignal::Failure,
         Some(s) if s >= 500 => BreakerSignal::Failure,
         Some(_) => BreakerSignal::Neutral,
         None => BreakerSignal::Failure,
@@ -168,6 +182,25 @@ mod tests {
     fn scaled_duration_scales_millis() {
         let delay = scale_duration(Duration::from_millis(250), 8);
         assert_eq!(delay, Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_failure_clamps_huge_retry_after() {
+        // A 429 carrying an abusive Retry-After (here u32::MAX seconds ≈ 136
+        // years) must never block the upload/sync gate for that long.
+        let mut gate = RetryBackoffGate::new(RetryBackoffPolicy::new(
+            Duration::from_millis(10),
+            Duration::from_millis(100),
+        ));
+        let now = Instant::now();
+        let delay = gate.on_failure(
+            now,
+            &NetworkError::RateLimited {
+                retry_after_secs: 4_294_967_295,
+            },
+        );
+        assert_eq!(delay, Duration::from_secs(MAX_RETRY_AFTER_SECS));
+        assert!(gate.is_ready(now + Duration::from_secs(MAX_RETRY_AFTER_SECS)));
     }
 
     #[tokio::test]
@@ -238,6 +271,17 @@ mod tests {
         );
         assert_eq!(
             classify_for_breaker(Some(429), false),
+            BreakerSignal::Failure
+        );
+    }
+
+    #[test]
+    fn classify_failure_on_request_timeout() {
+        // 408 Request Timeout is an endpoint-side timeout the HTTP/retry layer
+        // treats as retryable, so it must feed the breaker as `Failure` (not
+        // `Neutral`) to stay consistent with the retry layer.
+        assert_eq!(
+            classify_for_breaker(Some(408), false),
             BreakerSignal::Failure
         );
     }

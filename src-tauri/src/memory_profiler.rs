@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-/// F-PF-C20-04: 스냅샷 최대 보존 개수 (링 버퍼 상한).
-/// Vec::with_capacity(MAX_SNAPSHOTS) 는 pre-allocation 일 뿐 cap 이 아니므로
-/// record_snapshot 에서 초과 시 오래된 항목을 drain 한다.
+/// F-PF-C20-04: maximum number of retained snapshots (ring buffer upper bound).
+/// `Vec::with_capacity(MAX_SNAPSHOTS)` is only a pre-allocation, not a cap, so
+/// `record_snapshot` drains the oldest entries when this bound is exceeded.
 const MAX_SNAPSHOTS: usize = 1000;
 
 #[derive(Debug, Clone)]
@@ -23,8 +23,9 @@ pub struct MemoryTracker {
     peak_rss: AtomicU64,
     snapshots: parking_lot::Mutex<Vec<MemorySnapshot>>,
     start_time: Instant,
-    /// F-PF-C21-05: System 인스턴스 공유 — get_current_rss() 호출마다 System::new() 생성하는
-    /// 패턴을 제거한다. SysInfoMonitor (maekon-monitor crate) 와 동일한 Arc<Mutex<System>> 패턴.
+    /// F-PF-C21-05: share a single `System` instance — removes the pattern of
+    /// creating `System::new()` on every `get_current_rss()` call. Same
+    /// `Arc<Mutex<System>>` pattern as `SysInfoMonitor` (in the maekon-monitor crate).
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     system: std::sync::Mutex<sysinfo::System>,
 }
@@ -37,8 +38,9 @@ impl Default for MemoryTracker {
 
 impl MemoryTracker {
     pub fn new() -> Self {
-        // F-PF-C21-05: System 인스턴스를 한 번만 생성하여 공유. get_current_rss 자유함수는
-        // initial RSS 측정에만 사용하고, 이후 record_snapshot 은 공유 System 을 재사용한다.
+        // F-PF-C21-05: create the `System` instance once and share it. The free
+        // function `get_current_rss` is used only for the initial RSS
+        // measurement; afterwards `record_snapshot` reuses the shared `System`.
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         let system = {
             use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -72,7 +74,8 @@ impl MemoryTracker {
     }
 
     pub fn record_snapshot(&self) -> Option<MemorySnapshot> {
-        // F-PF-C21-05: 공유 System 인스턴스를 통해 RSS 측정 — System::new() per-call 제거.
+        // F-PF-C21-05: measure RSS via the shared `System` instance — removes the
+        // per-call `System::new()`.
         let rss = self.get_rss_shared()?;
         let snapshot = MemorySnapshot {
             rss_bytes: rss,
@@ -83,9 +86,10 @@ impl MemoryTracker {
         self.peak_rss.fetch_max(rss, Ordering::Relaxed);
 
         {
-            // F-PF-C20-04: MAX_SNAPSHOTS 초과 시 오래된 항목 drain — 무한 성장 방지.
-            // VecDeque 교체 대안이 더 효율적이나, parking_lot::Mutex<Vec<_>> API 유지를
-            // 우선하여 drain 방식으로 구현한다.
+            // F-PF-C20-04: drain the oldest entries when MAX_SNAPSHOTS is exceeded
+            // — prevents unbounded growth. Switching to a VecDeque would be more
+            // efficient, but we prioritize keeping the `parking_lot::Mutex<Vec<_>>`
+            // API and implement this via drain instead.
             let mut snapshots = self.snapshots.lock();
             snapshots.push(snapshot.clone());
             if snapshots.len() > MAX_SNAPSHOTS {
@@ -97,14 +101,14 @@ impl MemoryTracker {
         Some(snapshot)
     }
 
-    /// F-RR-C22-03: tokio async 런타임에서 안전하게 RSS 스냅샷을 기록한다.
+    /// F-RR-C22-03: safely record an RSS snapshot from the tokio async runtime.
     ///
-    /// `sysinfo::System::refresh_processes` 는 동기 블로킹 syscall 이므로
-    /// tokio worker 스레드를 블로킹하지 않도록 `spawn_blocking` 으로 격리한다.
-    /// SysInfoMonitor (F-RR-39) 와 동일한 패턴.
+    /// `sysinfo::System::refresh_processes` is a synchronous blocking syscall,
+    /// so it is isolated via `spawn_blocking` to avoid blocking a tokio worker
+    /// thread. Same pattern as `SysInfoMonitor` (F-RR-39).
     ///
-    /// 반환값: 스냅샷 성공 시 `Some(snapshot)`, RSS 측정 실패 또는
-    /// spawn_blocking join 실패 시 `None`.
+    /// Returns `Some(snapshot)` on success, or `None` if the RSS measurement
+    /// fails or the `spawn_blocking` join fails.
     pub async fn record_snapshot_async(tracker: std::sync::Arc<Self>) -> Option<MemorySnapshot> {
         tokio::task::spawn_blocking(move || tracker.record_snapshot())
             .await
@@ -135,8 +139,9 @@ impl MemoryTracker {
         }
     }
 
-    /// F-PF-C21-05: 공유 System 인스턴스를 통해 현재 프로세스 RSS 를 반환한다.
-    /// platform 미지원 시 None 반환 (get_current_rss() 자유함수와 동일 의미론).
+    /// F-PF-C21-05: return the current process RSS via the shared `System`
+    /// instance. Returns None on unsupported platforms (same semantics as the
+    /// `get_current_rss()` free function).
     fn get_rss_shared(&self) -> Option<u64> {
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         {
@@ -164,7 +169,7 @@ impl MemoryTracker {
 
         if analysis.leak_suspected {
             warn!(
-                "⚠️ 메모리 누수 의심: {:.2}KB/s 증가율",
+                "memory leak suspected: {:.2}KB/s growth rate",
                 analysis.growth_rate_bytes_per_sec / 1024.0
             );
         }
@@ -298,10 +303,11 @@ mod tests {
         assert!((rate - 1_000_000.0).abs() < 10_000.0, "rate: {}", rate);
     }
 
-    /// F-QA-C23-02: record_snapshot_async 가 macOS/Linux/Windows 에서 Some 을 반환하는지 검증.
+    /// F-QA-C23-02: verify that `record_snapshot_async` returns Some on
+    /// macOS/Linux/Windows.
     ///
-    /// spawn_blocking JoinError 경로(unwrap_or(None))는 별도로 테스트하기 위해
-    /// 정상 경로(Some 반환)를 먼저 커버한다.
+    /// The `spawn_blocking` JoinError path (`unwrap_or(None)`) is tested
+    /// separately, so cover the happy path (returns Some) first.
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     #[tokio::test]
     async fn record_snapshot_async_returns_some_on_supported_platforms() {
@@ -310,27 +316,28 @@ mod tests {
 
         assert!(
             result.is_some(),
-            "macOS/Linux/Windows 에서 record_snapshot_async 는 Some 을 반환해야 한다"
+            "record_snapshot_async must return Some on macOS/Linux/Windows"
         );
         let snapshot = result.unwrap();
-        // RSS 는 지원 플랫폼에서 0 이 아니어야 한다.
+        // RSS must be non-zero on supported platforms.
         assert!(
             snapshot.rss_bytes > 0,
-            "record_snapshot_async: rss_bytes > 0 이어야 한다 (got {})",
+            "record_snapshot_async: rss_bytes must be > 0 (got {})",
             snapshot.rss_bytes
         );
     }
 
-    /// F-QA-C23-02: JoinError unwrap_or(None) 경로 — spawn_blocking 이 Err 를 반환하면 None.
+    /// F-QA-C23-02: JoinError `unwrap_or(None)` path — if `spawn_blocking`
+    /// returns Err, the result is None.
     ///
-    /// 패닉이 spawn_blocking 내부에서 발생할 경우 JoinError 가 반환되고
-    /// unwrap_or(None) 에 의해 None 이 전파된다.
+    /// When a panic occurs inside `spawn_blocking`, a JoinError is returned and
+    /// `unwrap_or(None)` propagates None.
     #[tokio::test]
     async fn record_snapshot_async_returns_none_on_panic() {
-        // spawn_blocking 내부에서 패닉이 발생하면 JoinHandle::await 는 Err(JoinError) 를 반환한다.
-        // unwrap_or(None) 이 이를 None 으로 변환함을 직접 검증한다.
+        // When a panic occurs inside `spawn_blocking`, `JoinHandle::await` returns
+        // `Err(JoinError)`. Verify directly that `unwrap_or(None)` converts it to None.
         let result: Option<MemorySnapshot> = tokio::task::spawn_blocking(|| {
-            // 내부 패닉 시뮬레이션
+            // Simulate an internal panic.
             panic!("simulated panic in spawn_blocking");
         })
         .await
@@ -338,20 +345,20 @@ mod tests {
 
         assert!(
             result.is_none(),
-            "spawn_blocking 내부 패닉 시 unwrap_or(None) 으로 None 반환"
+            "a panic inside spawn_blocking must return None via unwrap_or(None)"
         );
     }
 
-    /// F-PF-C20-04: MAX_SNAPSHOTS+1 항목 기록 후 len == MAX_SNAPSHOTS 를 검증.
-    /// Vec 이 무한 성장하지 않음을 보장한다.
+    /// F-PF-C20-04: verify that after recording MAX_SNAPSHOTS+1 entries,
+    /// len == MAX_SNAPSHOTS. Guarantees the Vec does not grow unboundedly.
     #[test]
     fn test_snapshot_cap_enforced() {
         let tracker = MemoryTracker::new();
         let base = Instant::now();
 
-        // MAX_SNAPSHOTS + 1 개의 가상 스냅샷을 직접 snapshots 에 주입한다.
-        // get_current_rss() 가 None 을 반환하는 CI 환경에서도 동작해야 하므로
-        // record_snapshot() 우회 → snapshots 직접 조작.
+        // Inject MAX_SNAPSHOTS + 1 synthetic snapshots directly into `snapshots`.
+        // This must work even in CI environments where `get_current_rss()` returns
+        // None, so bypass `record_snapshot()` and manipulate `snapshots` directly.
         {
             let mut snapshots = tracker.snapshots.lock();
             for i in 0..=(MAX_SNAPSHOTS) {
@@ -370,7 +377,7 @@ mod tests {
         let analysis = tracker.analyze();
         assert_eq!(
             analysis.snapshot_count, MAX_SNAPSHOTS,
-            "snapshot_count={} 가 MAX_SNAPSHOTS={} 초과",
+            "snapshot_count={} exceeds MAX_SNAPSHOTS={}",
             analysis.snapshot_count, MAX_SNAPSHOTS
         );
     }

@@ -17,6 +17,13 @@ pub struct LlmIntentPlanner {
     element_finder: Arc<dyn ElementFinder>,
     skill_loader: Option<Arc<dyn SkillLoader>>,
     wait_timeout_ms: u64,
+    /// Minimum LLM self-reported interpretation confidence to auto-execute an
+    /// intent (#6333 A10). The element-finder gate only covers OCR/AX certainty,
+    /// not the LLM's interpretation confidence — so a hallucinated/prompt-injected
+    /// interpretation with confidence ~0 would auto-execute if a matching on-screen
+    /// element happens to exist. Below this floor the plan is rejected. Default 0.0
+    /// = disabled (preserves prior behavior; admins opt in).
+    min_llm_confidence: f64,
 }
 
 impl LlmIntentPlanner {
@@ -26,12 +33,20 @@ impl LlmIntentPlanner {
             element_finder,
             skill_loader: None,
             wait_timeout_ms: 5_000,
+            min_llm_confidence: 0.0,
         }
     }
 
     /// Attach a skill loader for progressive skill disclosure.
     pub fn with_skill_loader(mut self, loader: Arc<dyn SkillLoader>) -> Self {
         self.skill_loader = Some(loader);
+        self
+    }
+
+    /// Set the minimum LLM interpretation confidence to auto-execute (#6333 A10).
+    /// `0.0` (the default) disables the gate.
+    pub fn with_min_llm_confidence(mut self, min: f64) -> Self {
+        self.min_llm_confidence = min;
         self
     }
 
@@ -85,7 +100,7 @@ impl LlmIntentPlanner {
             "hotkey" => Ok(AutomationIntent::ExecuteHotkey {
                 keys: parse_hotkey_keys(intent_hint).ok_or_else(|| {
                     AutomationError::InvalidArguments(
-                        "단축키 의도는 'Ctrl+S' 형태 키 조합이 필요합니다".to_string(),
+                        "a hotkey intent requires a key combination in 'Ctrl+S' form".to_string(),
                     )
                 })?,
             }),
@@ -103,7 +118,7 @@ impl LlmIntentPlanner {
                     .unwrap_or_else(|| intent_hint.to_string()),
             }),
             other => Err(AutomationError::InvalidArguments(format!(
-                "지원하지 않는 action_type: {other}"
+                "unsupported action_type: {other}"
             ))),
         }
     }
@@ -127,6 +142,19 @@ impl IntentPlanner for LlmIntentPlanner {
                 .interpret_intent(&screen_context, intent_hint)
                 .await?
         };
+
+        // #6333 A10: reject interpretations the LLM itself is not confident about,
+        // so a hallucinated/prompt-injected low-confidence interpretation does not
+        // auto-execute just because a matching on-screen element exists. Default
+        // floor 0.0 keeps this disabled unless an admin sets `automation.min_llm_confidence`.
+        if interpreted.confidence < self.min_llm_confidence {
+            return Err(AutomationError::InvalidArguments(format!(
+                "LLM interpretation confidence {:.2} is below the configured minimum {:.2}; \
+                 not auto-executing this intent (#6333 A10)",
+                interpreted.confidence, self.min_llm_confidence
+            ))
+            .into());
+        }
 
         self.action_to_intent(interpreted, intent_hint)
             .map_err(Into::into)
@@ -247,6 +275,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_rejects_below_min_llm_confidence() {
+        // #6333 A10: a low-confidence LLM interpretation must NOT auto-execute when a
+        // confidence floor is configured, even though a matching element exists.
+        let planner = LlmIntentPlanner::new(
+            Arc::new(StubLlmProvider {
+                action: InterpretedAction {
+                    target_text: Some("save".to_string()),
+                    target_role: Some("button".to_string()),
+                    action_type: "click".to_string(),
+                    confidence: 0.3,
+                },
+            }),
+            Arc::new(StubElementFinder),
+        )
+        .with_min_llm_confidence(0.7);
+        let err = planner.plan("click save").await.unwrap_err();
+        assert!(
+            err.to_string().contains("confidence"),
+            "low-confidence plan must be rejected with a confidence error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_allows_at_or_above_min_llm_confidence() {
+        let planner = LlmIntentPlanner::new(
+            Arc::new(StubLlmProvider {
+                action: InterpretedAction {
+                    target_text: Some("save".to_string()),
+                    target_role: Some("button".to_string()),
+                    action_type: "click".to_string(),
+                    confidence: 0.8,
+                },
+            }),
+            Arc::new(StubElementFinder),
+        )
+        .with_min_llm_confidence(0.7);
+        let intent = planner
+            .plan("click save")
+            .await
+            .expect("above-floor plan must succeed");
+        assert!(matches!(intent, AutomationIntent::ClickElement { .. }));
+    }
+
+    #[tokio::test]
     async fn plan_click_action_to_click_intent() {
         let planner = LlmIntentPlanner::new(
             Arc::new(StubLlmProvider {
@@ -260,7 +332,12 @@ mod tests {
             Arc::new(StubElementFinder),
         );
 
-        let intent = planner.plan("save 버튼 클릭").await.unwrap();
+        // Intent-hint test input ("click the save button"); the stub LLM ignores
+        // the hint for click, so the Korean is incidental test data (ASCII-escaped).
+        let intent = planner
+            .plan("save \u{bc84}\u{d2bc} \u{d074}\u{b9ad}")
+            .await
+            .unwrap();
         assert!(matches!(intent, AutomationIntent::ClickElement { .. }));
     }
 
@@ -289,8 +366,13 @@ mod tests {
 
     #[test]
     fn quoted_text_extraction() {
+        // Surrounding non-ASCII context ("type \"hello world\" into the field") proves
+        // extraction pulls only the quoted portion; Korean is incidental test input
+        // (ASCII-escaped to keep the source ASCII while preserving the exact bytes).
         assert_eq!(
-            extract_quoted_text("입력창에 \"hello world\" 입력"),
+            extract_quoted_text(
+                "\u{c785}\u{b825}\u{cc3d}\u{c5d0} \"hello world\" \u{c785}\u{b825}"
+            ),
             Some("hello world".to_string())
         );
         assert_eq!(extract_quoted_text("no quoted text"), None);

@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setConsent } from '../../api/client'
 import type { ConsentPermissions } from '../../api/contracts'
 
-// set_consent(permissions) → ConsentSnapshot. Tauri 는 invoke 인자 키를 그대로
-// 직렬화하므로 `permissions` 키로 ConsentPermissions(snake_case) 가 전달된다.
+// set_consent(permissions) → ConsentSnapshot. Tauri serializes invoke argument
+// keys verbatim, so ConsentPermissions (snake_case) is passed under the `permissions` key.
 describe('set_consent IPC contract', () => {
   afterEach(() => clearMocks())
 

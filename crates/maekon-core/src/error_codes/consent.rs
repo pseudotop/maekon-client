@@ -1,11 +1,11 @@
-//! ConsentCode — Consent 카테고리 에러 코드. `consent.*` 접두사.
+//! ConsentCode — Consent category error codes. `consent.*` prefix.
 
 define_code_enum! {
-    /// Consent 카테고리 에러 코드.
+    /// Consent category error codes.
     pub enum ConsentCode {
-        /// 동의 필요 (아직 받지 못함).
+        /// Consent required (not yet obtained).
         Required => "consent.required",
-        /// 동의 만료 (재-동의 필요).
+        /// Consent expired (re-consent required).
         Expired => "consent.expired",
     }
 }

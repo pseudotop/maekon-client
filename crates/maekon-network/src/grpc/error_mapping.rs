@@ -1,4 +1,5 @@
 use crate::error::NetworkError;
+use crate::resilience::MAX_RETRY_AFTER_SECS;
 use tonic::{Code, Status};
 
 const DEFAULT_RETRY_AFTER_SECS: u64 = 60;
@@ -72,6 +73,10 @@ fn extract_retry_after_secs(status: &Status) -> u64 {
                 .and_then(|value| value.parse::<u64>().ok())
         })
         .unwrap_or(DEFAULT_RETRY_AFTER_SECS)
+        // Clamp at the source — an abusive metadata value (e.g. u32::MAX)
+        // would otherwise stall uploads/sync for years. Matches the HTTP-path
+        // cap in `resilience::extract_retry_after`.
+        .min(MAX_RETRY_AFTER_SECS)
 }
 
 #[cfg(test)]
@@ -108,6 +113,24 @@ mod tests {
                 retry_after_secs: DEFAULT_RETRY_AFTER_SECS
             }
         ));
+    }
+
+    #[test]
+    fn clamps_huge_retry_after_metadata() {
+        // An abusive `retry-after` metadata value (u32::MAX seconds ≈ 136
+        // years) must clamp to MAX_RETRY_AFTER_SECS, not stall sync for years.
+        let mut status = Status::resource_exhausted("busy");
+        status
+            .metadata_mut()
+            .insert("retry-after", "4294967295".parse().unwrap());
+
+        let err = map_grpc_status_error("grpc upload", status);
+        match err {
+            NetworkError::RateLimited { retry_after_secs } => {
+                assert_eq!(retry_after_secs, MAX_RETRY_AFTER_SECS);
+            }
+            other => panic!("expected RateLimited, got: {other:?}"),
+        }
     }
 
     #[test]

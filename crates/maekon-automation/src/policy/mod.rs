@@ -59,7 +59,7 @@ impl PolicyClient {
     }
 
     pub async fn validate_command(&self, cmd: &AutomationCommand) -> Result<bool, AutomationError> {
-        // TTL이 0으로 설정된 경우 모든 캐시된 토큰을 즉시 거부한다.
+        // When TTL is configured to 0, immediately reject every cached token.
         // A configured ttl_seconds of 0 means "never cache" — every token is
         // treated as a replay to prevent stale token acceptance.
         {

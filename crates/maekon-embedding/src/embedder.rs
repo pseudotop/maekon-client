@@ -103,26 +103,26 @@ pub mod fastembed_impl {
             tokio::task::spawn_blocking(move || {
                 let mut guard = model.lock().map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
-                    message: format!("fastembed lock poisoned: {e}"),
+                    message: format!("[embedding] fastembed lock poisoned: {e}"),
                 })?;
                 let results = guard
                     .embed(vec![text], None)
                     .map_err(|e| CoreError::Internal {
                         code: maekon_core::error_codes::InternalCode::Generic,
-                        message: format!("fastembed embed failed: {e}"),
+                        message: format!("[embedding] fastembed embed failed: {e}"),
                     })?;
                 results
                     .into_iter()
                     .next()
                     .ok_or_else(|| CoreError::Internal {
                         code: maekon_core::error_codes::InternalCode::Generic,
-                        message: "fastembed returned empty result".into(),
+                        message: "[embedding] fastembed returned empty result".into(),
                     })
             })
             .await
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!("spawn_blocking join error: {e}"),
+                message: format!("[embedding] spawn_blocking join error: {e}"),
             })?
         }
 
@@ -133,17 +133,17 @@ pub mod fastembed_impl {
             tokio::task::spawn_blocking(move || {
                 let mut guard = model.lock().map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
-                    message: format!("fastembed lock poisoned: {e}"),
+                    message: format!("[embedding] fastembed lock poisoned: {e}"),
                 })?;
                 guard.embed(texts, None).map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
-                    message: format!("fastembed batch embed failed: {e}"),
+                    message: format!("[embedding] fastembed batch embed failed: {e}"),
                 })
             })
             .await
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!("spawn_blocking join error: {e}"),
+                message: format!("[embedding] spawn_blocking join error: {e}"),
             })?
         }
 

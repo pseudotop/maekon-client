@@ -1,10 +1,20 @@
 use async_trait::async_trait;
 use tracing::debug;
+#[cfg(feature = "enigo")]
+use tracing::warn;
 
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::{ElementBounds, UiElement};
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::input_driver::InputDriver;
+
+/// Maximum characters/keys a single synthesized input action may carry.
+///
+/// Bounds untrusted preset/LLM/template-driven input so one
+/// TypeIntoElement/KeyType/Hotkey cannot emit an unbounded keystroke burst
+/// (review4 A8 + re-verify). Shared by `action_dispatcher` and `intent_resolver`
+/// so the cap cannot diverge across the two synthesis paths.
+pub(crate) const MAX_SYNTHESIZED_INPUT_LEN: usize = 4096;
 
 pub struct NoOpInputDriver;
 
@@ -83,8 +93,8 @@ impl EnigoInputDriver {
         })
     }
 
-    fn parse_key(key: &str) -> enigo::Key {
-        match key.to_lowercase().as_str() {
+    fn parse_key(key: &str) -> Result<enigo::Key, CoreError> {
+        Ok(match key.to_lowercase().as_str() {
             "enter" | "return" => enigo::Key::Return,
             "tab" => enigo::Key::Tab,
             "escape" | "esc" => enigo::Key::Escape,
@@ -117,15 +127,23 @@ impl EnigoInputDriver {
             "f11" => enigo::Key::F11,
             "f12" => enigo::Key::F12,
             other => {
-                if let Some(ch) = other.chars().next() {
-                    if other.chars().count() == 1 {
-                        return enigo::Key::Unicode(ch);
+                // Only single-character strings map to a Unicode key. Unknown multi-char
+                // key names are rejected as an error instead of silently synthesizing
+                // Key::Unicode('a') — a wrong/destructive keystroke (oneshim#6124, parity
+                // with the sandbox-worker hardening in oneshim#5981).
+                let mut chars = other.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) => enigo::Key::Unicode(ch),
+                    _ => {
+                        warn!("rejected unknown key: {key}");
+                        return Err(CoreError::InvalidArguments {
+                            code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+                            message: format!("unknown key: {key}"),
+                        });
                     }
                 }
-                debug!("unknown key: {other}, Unicode 'a'");
-                enigo::Key::Unicode('a')
             }
-        }
+        })
     }
 }
 
@@ -185,7 +203,7 @@ impl InputDriver for EnigoInputDriver {
         debug!(key, "[Enigo] key");
         let mut enigo = self.enigo.lock().await;
         enigo
-            .key(Self::parse_key(key), enigo::Direction::Press)
+            .key(Self::parse_key(key)?, enigo::Direction::Press)
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Key press failed: {e}"),
@@ -198,7 +216,7 @@ impl InputDriver for EnigoInputDriver {
         debug!(key, "[Enigo] key");
         let mut enigo = self.enigo.lock().await;
         enigo
-            .key(Self::parse_key(key), enigo::Direction::Release)
+            .key(Self::parse_key(key)?, enigo::Direction::Release)
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Key release failed: {e}"),
@@ -212,7 +230,7 @@ impl InputDriver for EnigoInputDriver {
         let mut enigo = self.enigo.lock().await;
         for key_str in keys {
             enigo
-                .key(Self::parse_key(key_str), enigo::Direction::Press)
+                .key(Self::parse_key(key_str)?, enigo::Direction::Press)
                 .map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
                     message: format!("Hotkey press failed: {e}"),
@@ -220,7 +238,7 @@ impl InputDriver for EnigoInputDriver {
         }
         for key_str in keys.iter().rev() {
             enigo
-                .key(Self::parse_key(key_str), enigo::Direction::Release)
+                .key(Self::parse_key(key_str)?, enigo::Direction::Release)
                 .map_err(|e| CoreError::Internal {
                     code: maekon_core::error_codes::InternalCode::Generic,
                     message: format!("Hotkey release failed: {e}"),
@@ -347,21 +365,24 @@ mod tests {
     fn enigo_parse_key_special_keys() {
         assert!(matches!(
             EnigoInputDriver::parse_key("Enter"),
-            enigo::Key::Return
+            Ok(enigo::Key::Return)
         ));
         assert!(matches!(
             EnigoInputDriver::parse_key("escape"),
-            enigo::Key::Escape
+            Ok(enigo::Key::Escape)
         ));
         assert!(matches!(
             EnigoInputDriver::parse_key("Ctrl"),
-            enigo::Key::Control
+            Ok(enigo::Key::Control)
         ));
         assert!(matches!(
             EnigoInputDriver::parse_key("Command"),
-            enigo::Key::Meta
+            Ok(enigo::Key::Meta)
         ));
-        assert!(matches!(EnigoInputDriver::parse_key("F1"), enigo::Key::F1));
+        assert!(matches!(
+            EnigoInputDriver::parse_key("F1"),
+            Ok(enigo::Key::F1)
+        ));
     }
 
     #[cfg(feature = "enigo")]
@@ -369,7 +390,27 @@ mod tests {
     fn enigo_parse_key_unicode() {
         assert!(matches!(
             EnigoInputDriver::parse_key("a"),
-            enigo::Key::Unicode('a')
+            Ok(enigo::Key::Unicode('a'))
+        ));
+    }
+
+    #[cfg(feature = "enigo")]
+    #[test]
+    fn enigo_parse_key_rejects_unknown_multichar_key_instead_of_synthesizing_a() {
+        // Regression for oneshim#6124: an unknown multi-char key name must be rejected
+        // (InvalidArguments) rather than silently mapped to Key::Unicode('a'), which
+        // would inject a wrong/destructive keystroke. A known named key and a single
+        // character still parse successfully.
+        let err = EnigoInputDriver::parse_key("unknownkey")
+            .expect_err("unknown multi-char key must be rejected");
+        assert!(matches!(err, CoreError::InvalidArguments { .. }));
+        assert!(matches!(
+            EnigoInputDriver::parse_key("enter"),
+            Ok(enigo::Key::Return)
+        ));
+        assert!(matches!(
+            EnigoInputDriver::parse_key("x"),
+            Ok(enigo::Key::Unicode('x'))
         ));
     }
 

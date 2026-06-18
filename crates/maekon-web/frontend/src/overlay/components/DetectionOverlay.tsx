@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { palette } from '../../styles/tokens'
 import type { DetectionElementPayload, DetectionScenePayload } from '../types'
 
@@ -129,6 +130,7 @@ interface InspectorProps {
 }
 
 const Inspector = forwardRef<HTMLDivElement, InspectorProps>(function Inspector({ element }, ref) {
+  const { t } = useTranslation()
   const color = getRoleColor(element.role)
   const innerRef = useRef<HTMLDivElement>(null)
   const resolvedRef = (ref as React.RefObject<HTMLDivElement>) ?? innerRef
@@ -149,11 +151,11 @@ const Inspector = forwardRef<HTMLDivElement, InspectorProps>(function Inspector(
         <span className="text-white/60">{(element.confidence * 100).toFixed(0)}%</span>
       </div>
       <div className="space-y-1 text-[11px]">
-        <Row label="label" value={element.label || '(empty)'} />
-        <Row label="role" value={element.role ?? 'unknown'} />
-        <Row label="bounds" value={`(${element.x}, ${element.y}, ${element.width}, ${element.height})`} />
-        <Row label="source" value={element.source} />
-        <Row label="id" value={element.element_id} mono />
+        <Row label={t('detectionOverlay.fieldLabel')} value={element.label || t('detectionOverlay.emptyValue')} />
+        <Row label={t('detectionOverlay.fieldRole')} value={element.role ?? t('detectionOverlay.unknownRole')} />
+        <Row label={t('detectionOverlay.fieldBounds')} value={`(${element.x}, ${element.y}, ${element.width}, ${element.height})`} />
+        <Row label={t('detectionOverlay.fieldSource')} value={element.source} />
+        <Row label={t('detectionOverlay.fieldId')} value={element.element_id} mono />
       </div>
     </div>
   )

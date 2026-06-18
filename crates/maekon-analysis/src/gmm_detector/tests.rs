@@ -288,6 +288,39 @@ fn cannot_link_constraint_applied() {
 }
 
 // ---------------------------------------------------------------------------
+// Dense-centroid regression (#6120)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recompute_centroids_is_dense_for_noncontiguous_labels() {
+    // Non-contiguous labels {0, 2, 5} (plus a noise -1) must produce exactly
+    // 3 centroids with no phantom `RegimeFeatures::default()` padding for the
+    // absent labels 1, 3, 4 (#6120).
+    let features = vec![
+        coding_point(0.10, 0.10), // label 0
+        coding_point(0.20, 0.20), // label 2
+        coding_point(0.30, 0.30), // label 5
+        coding_point(0.40, 0.40), // noise (-1) -> skipped
+    ];
+    let labels = vec![0, 2, 5, -1];
+
+    let (centroids, centroid_labels) = GmmDetector::recompute_centroids(&features, &labels);
+
+    assert_eq!(
+        centroids.len(),
+        3,
+        "expected one centroid per present label, not 0..=max_label padding"
+    );
+    // Remap is dense and sorted ascending by present label.
+    assert_eq!(centroid_labels, vec![0, 2, 5]);
+
+    // Each centroid equals its single member point (not a default-filled gap).
+    assert!((centroids[0].avg_event_rate - 0.10).abs() < 1e-5);
+    assert!((centroids[1].avg_event_rate - 0.20).abs() < 1e-5);
+    assert!((centroids[2].avg_event_rate - 0.30).abs() < 1e-5);
+}
+
+// ---------------------------------------------------------------------------
 // Algorithm metadata
 // ---------------------------------------------------------------------------
 

@@ -175,6 +175,24 @@ impl FileAccessWatcher {
         }
     }
 
+    /// Attach a PII sanitizer so emitted `FileAccessEvent.relative_path` values
+    /// are masked before they reach storage/logs/upload.
+    ///
+    /// review4 monitor (confirms #6298): `FileAccessFilter` already supports a
+    /// sanitizer, but the watcher had no passthrough and the production wiring
+    /// constructed it via `new` only — so raw filenames (`Resume_JohnDoe.pdf`,
+    /// `2024_TaxReturn.xlsx`) were emitted unmasked. This consuming builder
+    /// mirrors `ClipboardMonitor::with_pii_sanitizer` so the call site can wire
+    /// the same `VisionPiiSanitizer` it uses for the clipboard.
+    pub fn with_pii_sanitizer(
+        mut self,
+        sanitizer: Arc<dyn PiiSanitizer>,
+        level: PiiFilterLevel,
+    ) -> Self {
+        self.filter = self.filter.with_pii_sanitizer(sanitizer, level);
+        self
+    }
+
     /// Scan monitored directories and detect file changes since the last poll.
     ///
     /// Returns a list of `FileAccessEvent` for created and modified files.
@@ -512,5 +530,57 @@ mod tests {
             "first poll emitted {} events, limit={limit}",
             events.len()
         );
+    }
+
+    /// Sanitizer that masks any input to a fixed sentinel, so a test can prove
+    /// the emitted path was actually routed through the sanitizer.
+    struct SentinelSanitizer;
+    impl PiiSanitizer for SentinelSanitizer {
+        fn sanitize_text(&self, _text: &str, _level: PiiFilterLevel) -> String {
+            "[REDACTED]".to_string()
+        }
+    }
+
+    #[test]
+    fn watcher_with_sanitizer_masks_emitted_path() {
+        // review4 monitor (#6298 regression guard): a watcher built through the
+        // production-style path with a sanitizer must emit masked relative_paths,
+        // not raw PII filenames.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Resume_JohnDoe.pdf"), "x").unwrap();
+        let config = FileAccessConfig {
+            enabled: true,
+            monitored_folders: vec![tmp.path().to_path_buf()],
+            excluded_extensions: vec![],
+            max_events_per_minute: 100,
+        };
+        let watcher = FileAccessWatcher::new(config)
+            .with_pii_sanitizer(Arc::new(SentinelSanitizer), PiiFilterLevel::Standard);
+
+        let events = watcher.poll_changes();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].relative_path,
+            PathBuf::from("[REDACTED]"),
+            "watcher must route emitted paths through the wired sanitizer"
+        );
+    }
+
+    #[test]
+    fn watcher_without_sanitizer_emits_raw_relative_path() {
+        // Documents the default (no-sanitizer) behavior that the production wiring
+        // must override: without a sanitizer the relative filename is emitted raw.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("plain.rs"), "x").unwrap();
+        let config = FileAccessConfig {
+            enabled: true,
+            monitored_folders: vec![tmp.path().to_path_buf()],
+            excluded_extensions: vec![],
+            max_events_per_minute: 100,
+        };
+        let watcher = FileAccessWatcher::new(config);
+        let events = watcher.poll_changes();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].relative_path, PathBuf::from("plain.rs"));
     }
 }

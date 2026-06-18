@@ -19,7 +19,15 @@ pub fn mask_emails(text: &str) -> String {
                 .unwrap_or(chars.len());
 
             if at_abs > start && end > at_abs + 1 {
-                result.extend(&chars[i..start]);
+                // `start` (the position just after the preceding `<`/`(`/whitespace
+                // delimiter) can land *before* the current cursor `i` when an
+                // adjacent bracketed/parenthesized email precedes another at-token
+                // (e.g. `<a@b.com>x@y.com`). Emitting `chars[i..start]` with
+                // `start < i` is a reversed slice range and panics. Clamp the
+                // lower bound to `i` so the prefix slice is always non-reversed;
+                // any already-emitted prefix is simply not re-copied.
+                let pre_start = start.max(i);
+                result.extend(&chars[i..pre_start]);
                 result.push_str("[EMAIL]");
                 i = end;
                 continue;
@@ -38,14 +46,13 @@ pub fn mask_emails(text: &str) -> String {
 }
 
 pub fn mask_phone_numbers(text: &str) -> String {
-    let mut result = text.to_string();
-    let chars: Vec<char> = result.chars().collect();
+    let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
 
-    let mut masked = String::new();
+    let mut masked = String::with_capacity(text.len());
     let mut i = 0;
     while i < len {
-        if (chars[i] == '+' || chars[i].is_ascii_digit()) && is_phone_number_start(&chars, i, len) {
+        if (chars[i] == '+' || chars[i].is_ascii_digit()) && is_phone_number_start(&chars, i) {
             if let Some(end) = find_phone_number_end(&chars, i, len) {
                 masked.push_str("[PHONE]");
                 i = end;
@@ -55,46 +62,64 @@ pub fn mask_phone_numbers(text: &str) -> String {
         masked.push(chars[i]);
         i += 1;
     }
-    result = masked;
-    result
+    masked
 }
 
-fn is_phone_number_start(chars: &[char], pos: usize, _len: usize) -> bool {
-    if chars[pos] == '+' {
-        return true;
+/// A phone match may begin at `+` or any ASCII digit (review4 V2 — the old code
+/// only accepted `+`/`0`, leaking US and most international numbers). A leading
+/// word-boundary guard rejects a start that is glued to a preceding token so we
+/// never begin a match mid-number (IP octet, card/IBAN group, version) or mid-word.
+fn is_phone_number_start(chars: &[char], pos: usize) -> bool {
+    if pos > 0 {
+        let prev = chars[pos - 1];
+        if prev.is_ascii_digit() || prev.is_ascii_alphabetic() || prev == '.' || prev == '+' {
+            return false;
+        }
     }
-    if chars[pos] == '0' {
-        return true;
-    }
-    false
+    chars[pos] == '+' || chars[pos].is_ascii_digit()
 }
 
 fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usize> {
     let mut i = start;
-    let mut digit_count = 0;
-    let mut separator_count = 0;
+    let mut digit_count = 0usize;
+    let mut separator_count = 0usize;
+    // Index just past the last DIGIT consumed — the match ends here so a trailing
+    // separator is never absorbed into [PHONE] (review4 V7: prevents merging with
+    // the following token and the adjacent-phone residual leak).
+    let mut last_digit_end = start;
 
     if i < len && chars[i] == '+' {
         i += 1;
     }
 
     while i < len {
-        if chars[i].is_ascii_digit() {
+        let c = chars[i];
+        if c.is_ascii_digit() {
             digit_count += 1;
             i += 1;
-        } else if chars[i] == '-' || chars[i] == ' ' || chars[i] == '.' {
-            separator_count += 1;
-            if separator_count > 4 {
+            last_digit_end = i;
+        } else if c == '-' || c == ' ' {
+            // A separator is internal only when it sits between digit groups AND we
+            // do not yet hold a complete (>=9 digit) number. Once 9+ digits are
+            // accumulated, treat the separator as a boundary so two space/dash-
+            // adjacent numbers do not merge into one match. '.' is intentionally NOT
+            // a separator (avoids swallowing IPv4 octets / version strings).
+            if digit_count >= 9 || i + 1 >= len || !chars[i + 1].is_ascii_digit() {
                 break;
             }
+            separator_count += 1;
             i += 1;
         } else {
             break;
         }
     }
 
-    if digit_count >= 9 && separator_count >= 1 {
-        Some(i)
+    // E.164 caps a phone at 15 digits. Separator-bearing numbers need >=9 digits;
+    // separator-less runs need >=10 (review4 V14) to avoid masking short numeric IDs.
+    let valid = (separator_count >= 1 && (9..=15).contains(&digit_count))
+        || (separator_count == 0 && (10..=15).contains(&digit_count));
+    if valid {
+        Some(last_digit_end)
     } else {
         None
     }
@@ -141,19 +166,38 @@ pub fn mask_credit_cards(text: &str) -> String {
 }
 
 pub fn mask_korean_id(text: &str) -> String {
-    let mut result = text.to_string();
-    if result.contains('-') {
-        let parts: Vec<String> = result.split('-').map(|s| s.to_string()).collect();
-        for window in parts.windows(2) {
-            if window[0].len() >= 6
-                && window[0].chars().rev().take(6).all(|c| c.is_ascii_digit())
-                && window[1].len() >= 7
-                && window[1].chars().take(7).all(|c| c.is_ascii_digit())
-            {
-                let needle = format!("{}-{}", &window[0][window[0].len() - 6..], &window[1][..7]);
-                result = result.replace(&needle, "[KR_ID]");
+    // Korean RRN: 6 digits '-' 7 digits. Single O(N) left-to-right pass (review4
+    // V1/V5 sibling: the previous split + result.replace(per-window) rebuilt the
+    // whole string for each match — O(K*N) on uncapped input). Mask the last-6 +
+    // '-' + first-7 core when a '-' has >=6 digits before and >=7 after, mirroring
+    // the previous needle construction. Digit runs are bounded by separators, so the
+    // back-scan is amortized O(N).
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < len {
+        if chars[i] == '-' {
+            let digits_before = chars[..i]
+                .iter()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
+            let digits_after = chars[i + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
+            if digits_before >= 6 && digits_after >= 7 {
+                // The 6 ASCII digits before the '-' are already in `result`; drop
+                // them (1 byte each) and emit the marker, then skip '-' + 7 digits.
+                result.truncate(result.len() - 6);
+                result.push_str("[KR_ID]");
+                i += 1 + 7;
+                continue;
             }
         }
+        result.push(chars[i]);
+        i += 1;
     }
     result
 }
@@ -198,8 +242,11 @@ pub fn mask_ssn(text: &str) -> String {
 }
 
 pub fn mask_api_keys(text: &str) -> String {
-    let mut result = text.to_string();
-    let prefixes = [
+    // 15 known key prefixes (case-sensitive). A token is a key when >=8 chars
+    // follow the prefix before a terminator. (review4 V5: single O(N) left-to-right
+    // pass — the previous per-prefix scan rebuilt the whole tail with format! on
+    // every match, giving O(N^2) on inputs dense in key-like tokens.)
+    const PREFIXES: [&str; 15] = [
         "sk-",
         "pk-",
         "sk_",
@@ -216,68 +263,93 @@ pub fn mask_api_keys(text: &str) -> String {
         "xoxb-",
         "xoxp-",
     ];
+    let is_terminator =
+        |c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';';
 
-    for prefix in &prefixes {
-        while let Some(pos) = result.find(prefix) {
-            let start = pos;
-            let after = &result[pos + prefix.len()..];
-            let end_offset = after
-                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';')
-                .unwrap_or(after.len());
-
-            if end_offset >= 8 {
-                let key_end = pos + prefix.len() + end_offset;
-                result = format!("{}[API_KEY]{}", &result[..start], &result[key_end..]);
-            } else {
-                break;
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < len {
+        // Match the longest prefix starting at i (prefixes are pure ASCII).
+        let mut matched_prefix_len = 0usize;
+        for prefix in PREFIXES {
+            let plen = prefix.len(); // ASCII => char count == byte len
+            if plen > matched_prefix_len
+                && i + plen <= len
+                && chars[i..i + plen].iter().copied().eq(prefix.chars())
+            {
+                matched_prefix_len = plen;
             }
         }
+        if matched_prefix_len > 0 {
+            let token_start = i + matched_prefix_len;
+            let mut j = token_start;
+            while j < len && !is_terminator(chars[j]) {
+                j += 1;
+            }
+            if j - token_start >= 8 {
+                out.push_str("[API_KEY]");
+                i = j;
+                continue;
+            }
+            // Short token (likely a false positive): emit the prefix verbatim and
+            // continue scanning from just after it.
+            out.extend(&chars[i..token_start]);
+            i = token_start;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
     }
 
     // Mask bearer tokens: "Bearer <token>" (case-insensitive)
-    result = mask_bearer_tokens(&result);
+    let result = mask_bearer_tokens(&out);
 
     // Mask PEM private key blocks: "-----BEGIN * PRIVATE KEY-----"
-    result = mask_private_key_blocks(&result);
-
-    result
+    mask_private_key_blocks(&result)
 }
 
 fn mask_bearer_tokens(text: &str) -> String {
-    // Rebuild `lower` from `result` on every replacement to keep byte offsets
-    // in sync with `result`.  This avoids the stale-offset bug that would
-    // occur when successive replacements change the string length.
-    let mut result = text.to_string();
-    let needle = "bearer ";
-    let mut search_from = 0usize;
+    // Single O(N) left-to-right pass with a case-insensitive "bearer " window match
+    // (review4 V1: the previous loop called result.to_lowercase() on EVERY iteration
+    // and advanced ~one occurrence at a time, giving O(N^2) — multi-second on large
+    // inputs dense in the substring, e.g. an auth-header log dump).
+    const NEEDLE: [char; 7] = ['b', 'e', 'a', 'r', 'e', 'r', ' '];
+    let is_terminator =
+        |c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';';
 
-    loop {
-        // Always derive `lower` from the current `result` so offsets are correct.
-        let lower = result.to_lowercase();
-        if search_from >= lower.len() {
-            break;
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < len {
+        let matches_needle = i + NEEDLE.len() <= len
+            && chars[i..i + NEEDLE.len()]
+                .iter()
+                .zip(NEEDLE.iter())
+                .all(|(c, n)| c.eq_ignore_ascii_case(n));
+        if matches_needle {
+            let token_start = i + NEEDLE.len();
+            let mut j = token_start;
+            while j < len && !is_terminator(chars[j]) {
+                j += 1;
+            }
+            if j - token_start >= 8 {
+                out.push_str("Bearer [API_KEY]");
+                i = j;
+                continue;
+            }
+            // Short token: emit the matched "bearer " verbatim (preserving case) and
+            // continue scanning from just after it.
+            out.extend(&chars[i..token_start]);
+            i = token_start;
+            continue;
         }
-        let Some(rel_pos) = lower[search_from..].find(needle) else {
-            break;
-        };
-        let pos = search_from + rel_pos;
-        let token_start = pos + needle.len();
-        let after = &result[token_start..];
-        let end_offset = after
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';')
-            .unwrap_or(after.len());
-
-        if end_offset >= 8 {
-            let tail = result[token_start + end_offset..].to_string();
-            result = format!("{}Bearer [API_KEY]{}", &result[..pos], tail);
-            // Advance past the replacement so we do not re-examine it.
-            search_from = pos + "bearer [api_key]".len();
-        } else {
-            search_from = token_start + end_offset.max(1);
-        }
+        out.push(chars[i]);
+        i += 1;
     }
-
-    result
+    out
 }
 
 fn mask_private_key_blocks(text: &str) -> String {
@@ -286,38 +358,40 @@ fn mask_private_key_blocks(text: &str) -> String {
         return text.to_string();
     }
 
-    let mut result = text.to_string();
-    let mut search_from = 0;
-    while let Some(rel_begin) = result[search_from..].find("-----BEGIN ") {
-        let begin_pos = search_from + rel_begin;
-        let header_after = &result[begin_pos + 11..];
+    // Single O(N) pass over the immutable input, accumulating into a fresh String
+    // (review4 V1/V5 sibling: the previous code rebuilt the whole accumulator via
+    // format! on every BEGIN block — O(M*N) on inputs dense in PEM blocks, and this
+    // runs on the Strict mask_api_keys hot path).
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some(rel_begin) = text[cursor..].find("-----BEGIN ") {
+        let begin_pos = cursor + rel_begin;
+        let header_after = &text[begin_pos + 11..];
         // Find the closing dashes of the header line
         let Some(header_end_rel) = header_after.find("-----") else {
             break;
         };
         let label = &header_after[..header_end_rel];
         if !label.contains("PRIVATE KEY") {
-            // Not a private key block — skip past this marker and keep searching
-            search_from = begin_pos + 11;
+            // Not a private key block — emit up to and including this BEGIN marker
+            // (unmasked) and keep searching after it.
+            out.push_str(&text[cursor..begin_pos + 11]);
+            cursor = begin_pos + 11;
             continue;
         }
-        let label = label.to_string();
-        // Find the matching END marker
-        let end_marker = format!("-----END {}-----", label);
-        let block_end = result[begin_pos..].find(&end_marker);
-        let replace_end = if let Some(rel) = block_end {
-            begin_pos + rel + end_marker.len()
-        } else {
-            // No closing marker found — mask to end of string
-            result.len()
-        };
-        let tail = result[replace_end..].to_string();
-        result = format!("{}[PRIVATE_KEY]{}", &result[..begin_pos], tail);
-        // After replacement, search_from stays at begin_pos (now points at [PRIVATE_KEY])
-        search_from = begin_pos + "[PRIVATE_KEY]".len();
+        // Find the matching END marker; if absent, mask to end of string.
+        let end_marker = format!("-----END {label}-----");
+        let block_end = text[begin_pos..]
+            .find(&end_marker)
+            .map(|rel| begin_pos + rel + end_marker.len())
+            .unwrap_or(text.len());
+        out.push_str(&text[cursor..begin_pos]);
+        out.push_str("[PRIVATE_KEY]");
+        cursor = block_end;
     }
+    out.push_str(&text[cursor..]);
 
-    result
+    out
 }
 
 pub fn mask_ip_addresses(text: &str) -> String {
@@ -337,8 +411,9 @@ pub fn mask_ip_addresses(text: &str) -> String {
                 }
             }
         }
-        // IPv6 주소는 16진수(0-9a-fA-F) 또는 압축 표기(`::`)로 시작할 수 있다.
-        // IPv4 매칭에 실패한 경우에만 IPv6 파싱을 시도한다 (per-pattern 접근).
+        // An IPv6 address can start with a hex digit (0-9a-fA-F) or compressed
+        // notation (`::`). Only attempt IPv6 parsing when IPv4 matching failed
+        // (per-pattern approach).
         if chars[i].is_ascii_hexdigit() || chars[i] == ':' {
             if let Some(ip_end) = try_parse_ipv6(&chars, i, len) {
                 masked.push_str("[IP]");
@@ -354,16 +429,26 @@ pub fn mask_ip_addresses(text: &str) -> String {
     result
 }
 
-/// IPv6 주소를 `start` 위치부터 파싱한다. 매칭 시 끝 인덱스를 반환한다.
+/// Try to parse an IPv6 address starting at `start`. Returns the end index on match.
 ///
-/// `try_parse_ipv4`의 per-pattern 방식을 그대로 따른다. RFC 4291 표기를 폭넓게
-/// 수용하되 false positive 를 줄이기 위해 다음을 요구한다:
-/// - 최소 2개의 콜론(`:`)을 포함 (단일 콜론 토큰은 IPv6 가 아님)
-/// - `::` 압축 표기는 1회만 허용
-/// - 각 그룹은 1~4 자리 16진수
-/// - 시작 직전이 16진수/콜론이면 단어 중간으로 보고 거부
+/// Follows the same per-pattern approach as `try_parse_ipv4`. Accepts RFC 4291
+/// notation broadly but tightens acceptance to cut false positives from git SHAs,
+/// ISO timestamps (HH:MM:SS), UUIDs, and k8s names:
+///
+/// - Each group: 1–4 hex digits.
+/// - `::` compressed notation: at most once.
+/// - Word-boundary guard: rejects if the preceding character is a hex digit or colon.
+/// - **Acceptance gate** (both conditions must hold):
+///   1. `colon_count >= 7` **or** a `::` was seen — this alone excludes `HH:MM:SS`
+///      (2 colons, no `::`) and short hex tokens.
+///   2. `group_count >= 2` **or** a `::` was seen — `::1` (loopback) has only one
+///      explicit group but the `::` signals implicit zero groups, so it is accepted.
+///
+/// Examples that PASS: `::1`, `fe80::1`, `2001:db8::1`, full 8-group addresses.
+/// Examples that FAIL: git SHAs (no colons), `HH:MM:SS` timestamps (no `::`,
+/// colon_count=2), UUIDs (hyphens terminate the scan before enough colons).
 fn try_parse_ipv6(chars: &[char], start: usize, len: usize) -> Option<usize> {
-    // 단어 중간 매칭 방지: 직전 문자가 16진수/콜론이면 거부.
+    // Word-boundary guard: reject if the preceding character is a hex digit or colon.
     if start > 0 && (chars[start - 1].is_ascii_hexdigit() || chars[start - 1] == ':') {
         return None;
     }
@@ -388,10 +473,10 @@ fn try_parse_ipv6(chars: &[char], start: usize, len: usize) -> Option<usize> {
                 group_count += 1;
             }
             group_digits = 0;
-            // `::` 압축 표기 처리
+            // Handle `::` compressed notation (allowed at most once).
             if i + 1 < len && chars[i + 1] == ':' {
                 if double_colon_seen {
-                    return None; // `::` 는 1회만 허용
+                    return None; // `::` may appear at most once in an IPv6 address
                 }
                 double_colon_seen = true;
                 colon_count += 1;
@@ -408,8 +493,17 @@ fn try_parse_ipv6(chars: &[char], start: usize, len: usize) -> Option<usize> {
         group_count += 1;
     }
 
-    // 콜론 2개 이상 + 16진수 그룹 1개 이상이어야 IPv6 로 간주.
-    if colon_count >= 2 && group_count >= 1 {
+    // Gate 1: enough colons for a real IPv6, or a `::` was present.
+    //   - Excludes HH:MM:SS timestamps (colon_count=2, no `::`)
+    //   - Excludes short hex-colon tokens
+    let enough_colons = colon_count >= 7 || double_colon_seen;
+
+    // Gate 2: enough explicit hex groups, or `::` supplies the implicit zero groups.
+    //   - Allows `::1` (group_count=1, double_colon_seen=true)
+    //   - Requires >=2 explicit groups when no `::` is present
+    let enough_groups = group_count >= 2 || double_colon_seen;
+
+    if enough_colons && enough_groups {
         Some(i)
     } else {
         None
@@ -501,18 +595,33 @@ fn try_parse_iban(chars: &[char], start: usize, len: usize) -> Option<(usize, us
     let prefix_len = 4; // country code + check digits
     let mut i = start + 4;
     let mut alnum_count = 0;
+    // The 4-char country+check prefix is the first canonical group.
+    let mut prev_run_len = 4usize;
 
-    // Consume alphanumeric chars and optional spaces/dashes (formatted IBAN)
-    while i < len {
-        if chars[i].is_ascii_alphanumeric() {
+    // Consume the IBAN body as canonical groups: alphanumeric runs separated by a
+    // SINGLE space/dash, where an internal separator is honored only when the run
+    // it follows was exactly 4 chars (canonical grouping). A shorter/longer run
+    // terminates the IBAN, so trailing plain words after a formatted IBAN are no
+    // longer greedily absorbed and deleted. (review4 V6) The compact (separator-
+    // free) form is consumed as a single long run.
+    loop {
+        if i < len && (chars[i] == ' ' || chars[i] == '-') {
+            if prev_run_len == 4 && i + 1 < len && chars[i + 1].is_ascii_alphanumeric() {
+                i += 1; // internal separator between two canonical groups
+            } else {
+                break; // separator after a non-full group => boundary, stop
+            }
+        }
+        let run_start = i;
+        while i < len && chars[i].is_ascii_alphanumeric() {
             alnum_count += 1;
             i += 1;
-        } else if chars[i] == ' ' || chars[i] == '-' {
-            // Allow spaces/dashes in formatted IBANs
-            i += 1;
-        } else {
+        }
+        let run_len = i - run_start;
+        if run_len == 0 {
             break;
         }
+        prev_run_len = run_len;
     }
 
     // IBAN body (after country+check) must be 11-30 alphanumeric chars
@@ -558,49 +667,173 @@ pub fn mask_passport(text: &str) -> String {
     result
 }
 
-pub fn mask_user_paths(text: &str) -> String {
-    let result = mask_user_paths_os(text, "/Users/", 7, '/');
-    let result = mask_user_paths_os(&result, "/home/", 6, '/');
-    mask_user_paths_os(&result, r"C:\Users\", 9, '\\')
-}
+/// Replace OS-specific user-home path prefixes (`/Users/`, `/home/`, `C:\Users\`)
+/// with `[USER]`. Delegates to the canonical masker in `maekon-core` so there is
+/// a single implementation shared with `maekon-monitor` (which cannot depend on
+/// `maekon-vision` per the hexagonal rule). Kept as a thin re-export so existing
+/// `redaction::mask_user_paths` call sites and tests are unchanged.
+pub use maekon_core::path_redaction::mask_user_paths;
 
-/// Replace OS-specific user path prefixes with `[USER]`, tracking offset to avoid
-/// re-matching replacement text.
-fn mask_user_paths_os(text: &str, prefix: &str, prefix_len: usize, sep: char) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut search_from = 0;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    while search_from < text.len() {
-        match text[search_from..].find(prefix) {
-            Some(rel_start) => {
-                let abs_start = search_from + rel_start;
-                let after = &text[abs_start + prefix_len..];
-                if after.is_empty() {
-                    // prefix at end of string with no username — leave as-is
-                    result.push_str(&text[search_from..]);
-                    return result;
-                }
-                let end = after
-                    .find(|c: char| c == sep || c.is_whitespace())
-                    .unwrap_or(after.len());
-                if end == 0 {
-                    // prefix followed by separator or whitespace — no username
-                    result.push_str(&text[search_from..abs_start + prefix_len]);
-                    search_from = abs_start + prefix_len;
-                    continue;
-                }
-                // Emit text before the match + masked replacement
-                result.push_str(&text[search_from..abs_start]);
-                result.push_str(&prefix[..prefix_len]);
-                result.push_str("[USER]");
-                search_from = abs_start + prefix_len + end;
-            }
-            None => {
-                result.push_str(&text[search_from..]);
-                break;
-            }
-        }
+    // --- try_parse_ipv6 acceptance tests ---
+
+    fn ipv6_accepts(input: &str) -> bool {
+        let chars: Vec<char> = input.chars().collect();
+        let len = chars.len();
+        try_parse_ipv6(&chars, 0, len).is_some()
     }
 
-    result
+    #[test]
+    fn test_ipv6_accept_loopback() {
+        // ::1 — compressed loopback, only one explicit group
+        assert!(ipv6_accepts("::1"), "::1 must be accepted as IPv6");
+    }
+
+    #[test]
+    fn test_ipv6_accept_link_local() {
+        // fe80::1 — link-local with compressed suffix
+        assert!(ipv6_accepts("fe80::1"), "fe80::1 must be accepted as IPv6");
+    }
+
+    #[test]
+    fn test_ipv6_accept_documentation_prefix() {
+        // 2001:db8::1 — documentation prefix (RFC 3849) with compressed suffix
+        assert!(
+            ipv6_accepts("2001:db8::1"),
+            "2001:db8::1 must be accepted as IPv6"
+        );
+    }
+
+    #[test]
+    fn test_ipv6_accept_full_eight_groups() {
+        // Full 8-group address without compression
+        assert!(
+            ipv6_accepts("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+            "full 8-group IPv6 must be accepted"
+        );
+    }
+
+    // --- try_parse_ipv6 rejection tests ---
+
+    #[test]
+    fn test_ipv6_reject_git_sha() {
+        // 40-char git SHA — all hex, no colons
+        let sha = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        assert!(!ipv6_accepts(sha), "git SHA must not be accepted as IPv6");
+    }
+
+    #[test]
+    fn test_ipv6_reject_uuid() {
+        // UUID with hyphens — hyphens terminate the scan before enough colons accumulate
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        assert!(!ipv6_accepts(uuid), "UUID must not be accepted as IPv6");
+    }
+
+    #[test]
+    fn test_ipv6_reject_iso_timestamp() {
+        // ISO 8601 time component HH:MM:SS — 2 colons, no ::, colon_count < 7
+        assert!(
+            !ipv6_accepts("14:30:00"),
+            "ISO time HH:MM:SS must not be accepted as IPv6"
+        );
+    }
+
+    // --- mask_api_keys regression tests ---
+
+    #[test]
+    fn test_mask_api_keys_short_prefix_does_not_skip_later_real_key() {
+        // A short false-positive prefix occurrence (`sk-x`, <8 chars after the
+        // prefix) must not abort the scan for a later real key sharing the same
+        // prefix. Regression for #6087: the old `break` on the short-token case
+        // leaked the real key.
+        let input = "sk-x then sk-abcdefghijklmnop here";
+        let masked = mask_api_keys(input);
+        assert!(
+            masked.contains("[API_KEY]"),
+            "later real key sharing the prefix must be masked: {masked}"
+        );
+        assert!(
+            !masked.contains("sk-abcdefghijklmnop"),
+            "the real key must not be left in the output: {masked}"
+        );
+        // The short false positive is too short to be a key and is left intact.
+        assert!(
+            masked.contains("sk-x"),
+            "short false-positive prefix should be preserved: {masked}"
+        );
+    }
+
+    // --- mask_emails regression tests (#6116) ---
+    //
+    // The reversed-slice panic occurred when `start` (the position just after a
+    // `<`/`(`/whitespace delimiter preceding an email) landed before the current
+    // cursor `i`, which happens with adjacent bracketed/parenthesized emails
+    // immediately followed by another at-token. Each case below asserts the call
+    // does NOT panic, both addresses are masked, and no residual at-sign leaks.
+
+    fn assert_both_masked_no_at(input: &str) -> String {
+        let masked = mask_emails(input);
+        assert!(
+            !masked.contains('@'),
+            "no residual at-sign should remain: {masked}"
+        );
+        assert!(
+            masked.contains("[EMAIL]"),
+            "emails must be masked: {masked}"
+        );
+        masked
+    }
+
+    #[test]
+    fn test_mask_emails_bracketed_adjacent_at_token_no_panic() {
+        // Bracketed `a@b.com` immediately followed by `x@y.com` with no gap —
+        // the second at-token's backward delimiter search lands before `i`.
+        let masked = assert_both_masked_no_at("<a@b.com>x@y.com");
+        assert!(
+            !masked.contains("a@b.com") && !masked.contains("x@y.com"),
+            "both addresses must be masked: {masked}"
+        );
+    }
+
+    #[test]
+    fn test_mask_emails_parenthesized_adjacent_at_token_no_panic() {
+        // Parenthesized `a@b.com` immediately followed by `c@d.com`.
+        let masked = assert_both_masked_no_at("(a@b.com)c@d.com");
+        assert!(
+            !masked.contains("a@b.com") && !masked.contains("c@d.com"),
+            "both addresses must be masked: {masked}"
+        );
+    }
+
+    #[test]
+    fn test_mask_emails_bracketed_space_then_at_token() {
+        // Bracketed `a@b.com`, a space, then `x@y.com`.
+        let masked = assert_both_masked_no_at("<a@b.com> x@y.com");
+        assert!(
+            !masked.contains("a@b.com") && !masked.contains("x@y.com"),
+            "both addresses must be masked: {masked}"
+        );
+    }
+
+    #[test]
+    fn test_mask_emails_login_title_case() {
+        // The existing window-title case must keep working after the clamp fix.
+        let masked = mask_emails("Login - user@example.com");
+        assert!(masked.contains("[EMAIL]"), "email must be masked: {masked}");
+        assert!(
+            !masked.contains("user@example.com"),
+            "the address must not be left in the output: {masked}"
+        );
+        assert!(
+            !masked.contains('@'),
+            "no residual at-sign should remain: {masked}"
+        );
+        assert!(
+            masked.starts_with("Login - "),
+            "the non-email prefix must be preserved: {masked}"
+        );
+    }
 }

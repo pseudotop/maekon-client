@@ -1,11 +1,11 @@
-//! ValidationCode — Validation 카테고리 에러 코드. `validation.*` 접두사.
+//! ValidationCode — Validation category error codes. `validation.*` prefix.
 
 define_code_enum! {
-    /// Validation 카테고리 에러 코드.
+    /// Validation category error codes.
     pub enum ValidationCode {
-        /// 특정 필드 검증 실패.
+        /// Specific field validation failure.
         InvalidField => "validation.invalid_field",
-        /// 함수/메서드 인자 검증 실패.
+        /// Function/method argument validation failure.
         InvalidArguments => "validation.invalid_arguments",
     }
 }

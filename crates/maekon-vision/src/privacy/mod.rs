@@ -13,7 +13,7 @@ pub use adapter::VisionPiiSanitizer;
 pub use detection::{
     detect_pii_markers_with_level, is_sensitive_app, is_sensitive_segment_with_level,
     matches_exclusion_pattern, sanitize_title, sanitize_title_with_level, should_exclude,
-    PiiMarker, SENSITIVE_APP_KEYWORDS,
+    PiiMarker, SENSITIVE_APP_KEYWORDS, SENSITIVE_TITLE_SUBSTRINGS,
 };
 // Redaction functions are internal; only the detection layer exposes the public API.
 // Individual mask_* functions used within detection.rs are pub within the crate.
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn mask_ipv6_full() {
-        // 완전 표기 IPv6 주소 마스킹
+        // Mask a fully-written IPv6 address
         let result =
             redaction::mask_ip_addresses("host 2001:0db8:85a3:0000:0000:8a2e:0370:7334 up");
         assert!(result.contains("[IP]"));
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn mask_ipv6_compressed() {
-        // `::` 압축 표기 IPv6 주소 마스킹
+        // Mask a `::`-compressed IPv6 address
         let result = redaction::mask_ip_addresses("connecting to 2001:db8::1 now");
         assert!(result.contains("[IP]"));
         assert!(!result.contains("2001:db8::1"));
@@ -186,14 +186,14 @@ mod tests {
 
     #[test]
     fn mask_ipv6_loopback() {
-        // 루프백(`::1`) 마스킹
+        // Mask the loopback address (`::1`)
         let result = redaction::mask_ip_addresses("loopback ::1 alive");
         assert!(result.contains("[IP]"));
     }
 
     #[test]
     fn mask_ipv6_strict_level() {
-        // Strict 레벨에서 IPv6 주소가 마스킹되는지 검증 (Strict 계약)
+        // Verify that IPv6 addresses are masked at the Strict level (Strict contract)
         let result =
             sanitize_title_with_level("server at fe80::a00:27ff:fe4e:66a1", PiiFilterLevel::Strict);
         assert!(result.contains("[IP]"));
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn mask_ipv6_preserves_non_ip() {
-        // 단일 콜론 토큰(예: 시각 표기)은 IPv6 가 아니므로 보존
+        // A single-colon token (e.g. a time-of-day notation) is not IPv6, so preserve it
         let result = redaction::mask_ip_addresses("time 12:30 done");
         assert!(!result.contains("[IP]"));
     }
@@ -594,5 +594,241 @@ mod tests {
     #[test]
     fn mask_credit_cards_short_sequence() {
         assert_eq!(redaction::mask_credit_cards("123456789012"), "123456789012");
+    }
+
+    // ── #6003: encrypted-messaging / password / 2FA app keyword coverage ──
+
+    #[test]
+    fn sensitive_app_messaging_apps() {
+        // Encrypted messaging apps added in #6003
+        assert!(is_sensitive_app("Telegram"), "Telegram not detected");
+        assert!(is_sensitive_app("WhatsApp"), "WhatsApp not detected");
+        assert!(is_sensitive_app("Threema"), "Threema not detected");
+        assert!(is_sensitive_app("Session"), "Session not detected");
+        assert!(is_sensitive_app("Wire"), "Wire not detected");
+    }
+
+    #[test]
+    fn sensitive_app_encrypted_email() {
+        // Encrypted email clients added in #6003
+        assert!(is_sensitive_app("Protonmail"), "Protonmail not detected");
+        assert!(
+            is_sensitive_app("ProtonMail"),
+            "ProtonMail (mixed case) not detected"
+        );
+        assert!(is_sensitive_app("Tutanota"), "Tutanota not detected");
+    }
+
+    #[test]
+    fn sensitive_app_2fa_authy() {
+        // 2FA apps added in #6003
+        assert!(is_sensitive_app("Authy"), "Authy not detected");
+    }
+
+    #[test]
+    fn should_exclude_browser_title_protonmail() {
+        // Browser (Chrome) showing Proton Mail tab — app is not sensitive,
+        // but the title should trigger exclusion when auto_exclude_sensitive=true.
+        assert!(
+            should_exclude(
+                "Google Chrome",
+                "Proton Mail - Inbox — Google Chrome",
+                &[],
+                &[],
+                &[],
+                true,
+            ),
+            "browser title containing protonmail should be excluded"
+        );
+    }
+
+    #[test]
+    fn should_exclude_browser_title_tutanota() {
+        assert!(
+            should_exclude(
+                "Firefox",
+                "Tutanota — Encrypted Email — Mozilla Firefox",
+                &[],
+                &[],
+                &[],
+                true,
+            ),
+            "browser title containing tutanota should be excluded"
+        );
+    }
+
+    #[test]
+    fn should_exclude_browser_title_not_leaked_when_auto_disabled() {
+        // With auto_exclude_sensitive=false the title alone must NOT exclude.
+        assert!(
+            !should_exclude(
+                "Google Chrome",
+                "Proton Mail - Inbox — Google Chrome",
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            "browser title exclusion must be opt-in (auto_exclude_sensitive=false)"
+        );
+    }
+
+    #[test]
+    fn should_exclude_normal_browser_title_not_excluded() {
+        // A regular browser tab must not be excluded.
+        assert!(
+            !should_exclude(
+                "Google Chrome",
+                "GitHub — Build software better, together",
+                &[],
+                &[],
+                &[],
+                true,
+            ),
+            "non-sensitive browser title should not be excluded"
+        );
+    }
+
+    // ── review4 privacy masker regression tests ─────────────────────────
+
+    #[test]
+    fn phone_us_and_intl_format_masked() {
+        // V2: numbers not starting with '+'/'0' must mask.
+        for input in [
+            "call 415-555-1234 now",
+            "415 555 1234",
+            "1-800-555-1234",
+            "ring 20 7946 0958 ok",
+        ] {
+            let r = redaction::mask_phone_numbers(input);
+            assert!(r.contains("[PHONE]"), "not masked: {input}");
+        }
+    }
+
+    #[test]
+    fn phone_separatorless_masked() {
+        // V14: separator-less numbers must mask.
+        let r = redaction::mask_phone_numbers("call 01012345678 now");
+        assert!(r.contains("[PHONE]"));
+        assert!(!r.contains("01012345678"));
+        assert!(redaction::mask_phone_numbers("5551234567").contains("[PHONE]"));
+    }
+
+    #[test]
+    fn phone_preserves_trailing_separator() {
+        // V7: the trailing separator/punctuation must not be absorbed into [PHONE].
+        assert_eq!(
+            redaction::mask_phone_numbers("call 010-1234-5678 now"),
+            "call [PHONE] now"
+        );
+        assert_eq!(
+            redaction::mask_phone_numbers("Call 010-1234-5678. Done"),
+            "Call [PHONE]. Done"
+        );
+    }
+
+    #[test]
+    fn phone_adjacent_numbers_both_masked_no_residual() {
+        // V7: two adjacent phones each mask, with no leaked residual digits.
+        assert_eq!(
+            redaction::mask_phone_numbers("010-111-2222 010-333-4444"),
+            "[PHONE] [PHONE]"
+        );
+    }
+
+    #[test]
+    fn phone_does_not_eat_ipv4_at_standard() {
+        // Regression: the broadened phone scanner must not mask an IPv4 ('.' is not a
+        // phone separator); at Standard the IP is left intact (IP masking is Strict).
+        let r = sanitize_title_with_level("host 192.168.1.100 up", PiiFilterLevel::Standard);
+        assert!(!r.contains("[PHONE]"), "IPv4 wrongly masked as phone: {r}");
+        assert!(
+            r.contains("192.168.1.100"),
+            "IPv4 should survive at Standard"
+        );
+    }
+
+    #[test]
+    fn card_takes_precedence_over_phone_at_standard() {
+        // Regression: a 16-digit card masks as [CARD], not [PHONE], at Standard
+        // (numeric PII runs before the broadened phone scanner).
+        let r =
+            sanitize_title_with_level("card 4111 1111 1111 1111 paid", PiiFilterLevel::Standard);
+        assert!(r.contains("[CARD]"), "card not masked: {r}");
+        assert!(!r.contains("[PHONE]"), "card wrongly masked as phone: {r}");
+    }
+
+    #[test]
+    fn iban_preserves_trailing_words() {
+        // V6: trailing plain words after an IBAN must not be absorbed/deleted.
+        let r = redaction::mask_iban("IBAN DE89370400440532013000 ok");
+        assert!(r.contains("[IBAN]"));
+        assert!(r.contains("ok"), "trailing word deleted: {r}");
+        let r2 = redaction::mask_iban("transfer GB29 NWBK 6016 1331 9268 19 paid today");
+        assert!(r2.contains("[IBAN]"));
+        assert!(r2.contains("paid today"), "trailing words deleted: {r2}");
+    }
+
+    #[test]
+    fn api_key_bearer_single_pass_correct_and_bounded() {
+        // V1/V5: single-pass O(N) sanitize stays correct + bounded on large inputs
+        // dense in bearer/key tokens (the previous O(N^2) impl took seconds here).
+        let big_bearer = "Authorization: Bearer tokenABCDEFGHIJ\n".repeat(20_000);
+        let big_keys = "export AKIAabcdefghij1234 \n".repeat(20_000);
+        let started = Instant::now();
+        let b = redaction::mask_api_keys(&big_bearer);
+        let k = redaction::mask_api_keys(&big_keys);
+        let elapsed_ms = started.elapsed().as_millis();
+        assert!(b.contains("Bearer [API_KEY]") && !b.contains("tokenABCDEFGHIJ"));
+        assert!(k.contains("[API_KEY]") && !k.contains("AKIAabcdefghij1234"));
+        if perf_gates_enabled() {
+            let budget = perf_budget_ms("MAEKON_PERF_BUDGET_APIKEY_MS", 500);
+            assert!(
+                elapsed_ms <= budget,
+                "api-key/bearer sanitize O(N^2) regression: {elapsed_ms}ms > {budget}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn korean_id_and_private_key_single_pass_correct_and_bounded() {
+        // review4 V1/V5 sibling: mask_korean_id + mask_private_key_blocks are now
+        // single-pass O(N) (were O(N^2) rebuild-per-match). private-key masking runs
+        // inside mask_api_keys (the Strict hot path V5 only half-closed).
+        let kr = redaction::mask_korean_id("RRN 901010-1234567 end");
+        assert!(
+            kr.contains("[KR_ID]") && !kr.contains("901010-1234567"),
+            "KR-ID not masked: {kr}"
+        );
+        assert!(
+            kr.contains("RRN") && kr.contains("end"),
+            "adjacent text dropped: {kr}"
+        );
+        let pem = sanitize_title_with_level(
+            "k: -----BEGIN RSA PRIVATE KEY-----\nABCDEFGH\n-----END RSA PRIVATE KEY----- tail",
+            PiiFilterLevel::Strict,
+        );
+        assert!(
+            pem.contains("[PRIVATE_KEY]") && !pem.contains("ABCDEFGH"),
+            "PEM not masked: {pem}"
+        );
+        assert!(pem.contains("tail"), "trailing text dropped: {pem}");
+
+        let big_kr = "901010-1234567 ".repeat(20_000);
+        let big_pem =
+            "-----BEGIN RSA PRIVATE KEY-----\nX\n-----END RSA PRIVATE KEY-----\n".repeat(20_000);
+        let started = Instant::now();
+        let k = redaction::mask_korean_id(&big_kr);
+        let p = redaction::mask_api_keys(&big_pem);
+        let elapsed_ms = started.elapsed().as_millis();
+        assert!(k.contains("[KR_ID]") && !k.contains("901010-1234567"));
+        assert!(p.contains("[PRIVATE_KEY]") && !p.contains("PRIVATE KEY-----"));
+        if perf_gates_enabled() {
+            let budget = perf_budget_ms("MAEKON_PERF_BUDGET_MASKER_MS", 1_000);
+            assert!(
+                elapsed_ms <= budget,
+                "korean-id/private-key sanitize O(N^2) regression: {elapsed_ms}ms > {budget}ms"
+            );
+        }
     }
 }

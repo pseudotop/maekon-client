@@ -8,6 +8,9 @@ This page documents what runs on every pull request and how releases are produce
 
 The CI pipeline is defined in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
 
+For the public/fork-safe versus maintainer-only split, see
+[`public-private-ci-split.md`](./public-private-ci-split.md).
+
 ### Static Analysis (runs first)
 
 | Step | Command | Blocks merge on failure |
@@ -68,6 +71,17 @@ If frontend files change, a separate job runs:
 1. `pnpm install --frozen-lockfile`
 2. `pnpm build`
 3. Playwright E2E tests (Chromium headless)
+
+### Public/Fork-Safe Boundary
+
+Public pull requests run synthetic, secret-free checks only. Workflows that run
+on `pull_request` must not use `pull_request_target`, must not read
+`secrets.*`, and must not request write permissions. The CI check job enforces
+that boundary with `scripts/ci/check-public-private-ci-split.sh`.
+
+Maintainer-only validation for privacy, security, release signing, OS
+permission behavior, and installer/update flows is triggered by maintainer
+labels and summarized publicly without sensitive evidence.
 
 ---
 

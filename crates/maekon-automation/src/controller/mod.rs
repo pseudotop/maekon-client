@@ -40,8 +40,8 @@ pub struct AutomationController {
     pub(super) policy_client: Arc<PolicyClient>,
     pub(super) audit_logger: Arc<RwLock<AuditLogger>>,
     pub(super) action_dispatcher: Arc<dyn AutomationActionDispatcher>,
-    /// 샌드박스 핸들을 보관해 두어 인라인 InputDriver 배선 시
-    /// 디스패처를 `with_inline_driver`로 재구성할 수 있게 한다(#4539).
+    /// Retains the sandbox handle so that, when an inline InputDriver is wired, the
+    /// dispatcher can be rebuilt via `with_inline_driver` (#4539).
     pub(super) sandbox: Arc<dyn Sandbox>,
     pub(super) base_sandbox_config: SandboxConfig,
     pub(super) enabled: bool,
@@ -191,13 +191,13 @@ impl AutomationController {
         self.action_dispatcher = dispatcher;
     }
 
-    /// Permissive-noop 경로(#4539)에서 액션을 인-프로세스로 실행할 InputDriver를
-    /// 배선한다. 보관해 둔 샌드박스 핸들과 함께 디스패처를
-    /// `SandboxActionDispatcher::with_inline_driver`로 재구성한다.
+    /// Wire an InputDriver to execute actions in-process on the permissive-noop path
+    /// (#4539). Together with the retained sandbox handle, this rebuilds the dispatcher
+    /// via `SandboxActionDispatcher::with_inline_driver`.
     ///
-    /// 미배선(레거시) 상태에서는 permissive-noop 경로가 실행 없이 Success를
-    /// 반환하던 기존 동작을 유지한다. 실제 컨트롤러는 src-tauri 배선에서 이
-    /// 세터를 호출해 액션 누락(거짓 성공)을 방지한다.
+    /// When unwired (legacy), the permissive-noop path keeps the legacy behavior of
+    /// returning Success without executing. The real controller calls this setter from
+    /// the src-tauri wiring to prevent dropped actions (false success).
     pub fn set_inline_action_executor(&mut self, driver: Arc<dyn InputDriver>) {
         self.action_dispatcher = Arc::new(SandboxActionDispatcher::with_inline_driver(
             self.sandbox.clone(),
@@ -242,7 +242,7 @@ impl AutomationController {
             Ok(())
         } else {
             Err(AutomationError::PolicyDenied(
-                "자동화가 비active화 state입니다".to_string(),
+                "Automation is disabled".to_string(),
             ))
         }
     }

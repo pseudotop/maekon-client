@@ -149,6 +149,32 @@ fn parse_claude_response_valid() {
 }
 
 #[test]
+fn parse_action_json_reversed_brackets_returns_error_without_panicking() {
+    // #6194 sibling: adversarial model text with a '}' before the first '{'
+    // ("} foo {") must NOT panic on the reversed inclusive-range slice in
+    // parse_action_json — it should fall through and surface a clean parse error.
+    let body = r#"{
+            "content": [{
+                "type": "text",
+                "text": "} foo {"
+            }]
+        }"#;
+    let result = parsers::parse_claude_response(body);
+    let err =
+        result.expect_err("reversed-bracket model text must yield a parse error, not a panic");
+    // The fall-through feeds the whole "} foo {" to serde_json, which fails to
+    // parse an InterpretedAction — surfaced as a Validation error on the
+    // `llm_response.action` field, NOT a panic.
+    assert!(
+        matches!(
+            &err,
+            CoreError::Validation { field, .. } if field == "llm_response.action"
+        ),
+        "expected Validation on llm_response.action, got: {err:?}"
+    );
+}
+
+#[test]
 fn parse_claude_response_with_markdown() {
     let body = r#"{
             "content": [{

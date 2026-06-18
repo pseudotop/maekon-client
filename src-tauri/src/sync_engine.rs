@@ -332,7 +332,12 @@ impl SyncEngine {
         // Use the last successful push watermark so we only extract rows
         // that were created or modified since the previous push.
         let since = { self.last_push_watermark.lock().clone() };
-        let local_changes = self.extractor.get_changes_since(&since).await?;
+        // #6247: PUSH uses the SELF-ORIGIN scope. The LAN `/sync/push` receiver (#5211)
+        // rejects any data row whose origin is not the authenticated pusher, so we must
+        // not re-send peer-origin rows we received via merge — doing so both fails the
+        // push and risks cross-device echo loops. (Pull-serving keeps the all-origin
+        // `get_changes_since` so a relay can forward another peer's rows.)
+        let local_changes = self.extractor.get_local_changes_since(&since).await?;
 
         if !local_changes.is_empty() {
             info!(rows = local_changes.row_count(), "pushing local changes");
@@ -372,6 +377,14 @@ impl SyncEngine {
     /// (Gate 1) — and, when called directly by the scheduler, the capture gate too. A
     /// tombstone is an erasure, not data collection, so it must reach peers even when
     /// the user has revoked cross_device_sync or sync/capture is gated off (#5165 —
+    /// Reclaim transport-side storage (e.g. consumed changeset files in a shared
+    /// sync folder) by delegating to the transport's `enforce_retention` (#6243).
+    /// No-op for transports with no reclaimable local artifacts (remote/in-memory).
+    /// Called periodically by the cross-device sync loop.
+    pub async fn enforce_transport_retention(&self) -> Result<usize, CoreError> {
+        self.transport.enforce_retention().await
+    }
+
     /// "revoke-and-walk-away"). Returns `true` if a DeletionEvent was due (and pushed).
     ///
     /// Safe to call every tick (and inside `run_cycle`): the persisted fire-once gate

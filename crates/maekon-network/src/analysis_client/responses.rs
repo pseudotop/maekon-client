@@ -113,6 +113,17 @@ pub(crate) fn parse_candidates(text: &str) -> Result<Vec<SuggestionCandidate>, N
         ))
     })?;
 
+    // Guard reversed bounds (e.g. adversarial `] ... [`): a closing bracket
+    // before the first opening bracket would make `json_str[start..=end]` a
+    // reversed inclusive-range slice, which panics. Mirror the sibling
+    // `extract_json_array` guard and degrade to a privacy-safe error instead.
+    if end < start {
+        return Err(NetworkError::Analysis(provider_parse_error_message(
+            "Analysis API",
+            "malformed JSON array bounds in LLM response",
+        )));
+    }
+
     let array_str = &json_str[start..=end];
     serde_json::from_str(array_str).map_err(|e| {
         NetworkError::Analysis(provider_parse_error_message(

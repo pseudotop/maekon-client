@@ -76,7 +76,7 @@ pub struct SqliteVectorStore {
 
 impl SqliteVectorStore {
     /// Create a new `SqliteVectorStore` sharing the same [`GuardedConnection`]
-    /// as `SqliteStorage` (#4928 — barrier-free 핸들 불가).
+    /// as `SqliteStorage` (#4928 — a barrier-free handle is not allowed).
     pub fn new(conn: Arc<GuardedConnection>) -> Self {
         let ivf_index = Arc::new(SqliteVectorIndex::new(conn.clone()));
         Self {
@@ -87,8 +87,9 @@ impl SqliteVectorStore {
         }
     }
 
-    /// **쓰기** 클로저를 spawn_blocking 으로 격리하는 funnel.
-    /// deletion_flag set 시 클로저는 실행되지 않고 `Ok(T::default())` 를 반환한다.
+    /// Funnel that isolates a **write** closure onto spawn_blocking.
+    /// When deletion_flag is set, the closure is not run and `Ok(T::default())`
+    /// is returned instead.
     async fn with_conn<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -100,7 +101,8 @@ impl SqliteVectorStore {
             .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
-    /// **읽기** 클로저를 spawn_blocking 으로 격리하는 funnel(deletion_flag 무관).
+    /// Funnel that isolates a **read** closure onto spawn_blocking
+    /// (independent of deletion_flag).
     async fn with_conn_read<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,

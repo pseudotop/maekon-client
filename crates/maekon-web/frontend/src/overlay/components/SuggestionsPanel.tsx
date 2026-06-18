@@ -13,8 +13,8 @@ import { SuggestionReplayTrail } from './SuggestionReplayTrail'
 import { SuggestionStats } from './SuggestionStats'
 import { showToast } from './Toast'
 
-// ADR-019 Follow-up #3: IpcError 의 wire code 를 보존·현지화하기 위해 translateError 로 라우팅한다.
-// 기존 errorMessage 헬퍼는 code 를 버리고 raw 영문 메시지만 노출했었다.
+// ADR-019 Follow-up #3: Route through translateError to preserve and localize the IpcError wire code.
+// The previous errorMessage helper discarded the code and exposed only the raw English message.
 function errorMessage(e: unknown, locale: WireErrorLocale): string {
   return translateError(e, locale)
 }
@@ -113,7 +113,7 @@ export function SuggestionsPanel({
   anchor,
 }: SuggestionsPanelProps) {
   const { t, i18n } = useTranslation()
-  // ADR-019 Follow-up #3: 현재 UI 로케일을 wire-error 로케일로 매핑 (BugReportWizard 와 동일 패턴).
+  // ADR-019 Follow-up #3: Map the current UI locale to the wire-error locale (same pattern as BugReportWizard).
   const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)

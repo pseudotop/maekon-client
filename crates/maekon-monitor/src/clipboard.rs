@@ -2,11 +2,15 @@ use maekon_core::config::PiiFilterLevel;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // Event types are canonical in maekon-core; re-exported here.
 pub use maekon_core::models::event::{ClipboardContentType, ClipboardEvent};
+
+const CLIPBOARD_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Clipboard change detection monitor.
 ///
@@ -143,7 +147,10 @@ impl ClipboardMonitor {
 fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("pbpaste").output().ok()?;
+        let mut command = std::process::Command::new("pbpaste");
+        let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
+            .ok()
+            .flatten()?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -154,15 +161,20 @@ fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         // Try xclip first, fall back to xsel
-        let output = std::process::Command::new("xclip")
-            .args(["-selection", "clipboard", "-o"])
-            .output()
-            .or_else(|_| {
-                std::process::Command::new("xsel")
-                    .args(["--clipboard", "--output"])
-                    .output()
-            })
-            .ok()?;
+        let mut xclip = std::process::Command::new("xclip");
+        xclip.args(["-selection", "clipboard", "-o"]);
+        let output = command_output_with_timeout(&mut xclip, CLIPBOARD_COMMAND_TIMEOUT)
+            .ok()
+            .flatten()
+            .filter(|output| output.status.success())
+            .or_else(|| {
+                let mut xsel = std::process::Command::new("xsel");
+                xsel.args(["--clipboard", "--output"]);
+                command_output_with_timeout(&mut xsel, CLIPBOARD_COMMAND_TIMEOUT)
+                    .ok()
+                    .flatten()
+                    .filter(|output| output.status.success())
+            })?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -172,10 +184,11 @@ fn read_system_clipboard() -> Option<String> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", "Get-Clipboard"])
-            .output()
-            .ok()?;
+        let mut command = std::process::Command::new("powershell");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"]);
+        let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
+            .ok()
+            .flatten()?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
@@ -186,6 +199,60 @@ fn read_system_clipboard() -> Option<String> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         None
+    }
+}
+
+fn command_output_with_timeout(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        if let Some(ref mut pipe) = stdout {
+            pipe.read_to_end(&mut buffer)?;
+        }
+        Ok(buffer)
+    });
+    let stderr_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        if let Some(ref mut pipe) = stderr {
+            pipe.read_to_end(&mut buffer)?;
+        }
+        Ok(buffer)
+    });
+
+    let started_at = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = stdout_reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("stdout reader panicked")))?;
+            let stderr = stderr_reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("stderr reader panicked")))?;
+            return Ok(Some(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            }));
+        }
+
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Ok(None);
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -346,5 +413,59 @@ mod tests {
             .expect("event fires");
         let preview = event.preview.expect("Basic level produces preview");
         assert_eq!(preview, "plain text that fits");
+    }
+
+    #[test]
+    fn command_timeout_helper_returns_fast_output() {
+        let mut command = fast_output_command();
+        let output = command_output_with_timeout(&mut command, std::time::Duration::from_secs(2))
+            .expect("command should launch")
+            .expect("fast command should complete before timeout");
+
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("ok"));
+    }
+
+    #[test]
+    fn command_timeout_helper_kills_hung_process() {
+        let mut command = slow_command();
+        let output =
+            command_output_with_timeout(&mut command, std::time::Duration::from_millis(50))
+                .expect("command should launch");
+
+        assert!(output.is_none(), "hung command should time out");
+    }
+
+    #[cfg(target_os = "windows")]
+    fn fast_output_command() -> std::process::Command {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "echo ok"]);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn fast_output_command() -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf ok"]);
+        command
+    }
+
+    #[cfg(target_os = "windows")]
+    fn slow_command() -> std::process::Command {
+        let mut command = std::process::Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Milliseconds 500",
+        ]);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn slow_command() -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 1"]);
+        command
     }
 }

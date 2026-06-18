@@ -16,6 +16,7 @@ use crate::gui_interaction::{
 use crate::policy::AuditLevel;
 use maekon_core::config::ConfirmationRequirement;
 use maekon_core::error::CoreError;
+use maekon_core::models::audit::AuditStatus;
 use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
 use maekon_core::models::gui::{GuiExecutionTicket, GuiInteractionSession, GuiSessionEvent};
 use maekon_core::models::intent::{AutomationIntent, IntentCommand, IntentResult};
@@ -179,10 +180,18 @@ impl AutomationController {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Record the real outcome status (review4 A1).
+            let (action_type, status) = if result.success {
+                ("complete", AuditStatus::Completed)
+            } else {
+                ("failed", AuditStatus::Failed)
+            };
+            logger.log_with_status_and_time(
                 AuditLevel::Basic,
                 &cmd.command_id,
                 &cmd.session_id,
+                action_type,
+                status,
                 &format!("success={}, elapsed={}ms", result.success, elapsed_ms),
                 elapsed_ms,
             );
@@ -206,7 +215,8 @@ impl AutomationController {
                 AuditLevel::Basic,
                 command_id,
                 session_id,
-                &format!("intent_hint={intent_hint}"),
+                // Payload-free: the raw NL hint can carry secrets (review4 A12).
+                &format!("intent_hint_len={}", intent_hint.chars().count()),
             );
         }
 
@@ -252,13 +262,25 @@ impl AutomationController {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Mask the planned intent via audit_intent_label (text_len form) and
+            // record the real status (review4 A1/A12): the raw Debug of an
+            // AutomationIntent embeds free-form TypeIntoElement/KeyType text.
+            let (action_type, status) = if result.success {
+                ("complete", AuditStatus::Completed)
+            } else {
+                ("failed", AuditStatus::Failed)
+            };
+            logger.log_with_status_and_time(
                 AuditLevel::Basic,
                 command_id,
                 session_id,
+                action_type,
+                status,
                 &format!(
-                    "planned_intent={:?}, success={}, elapsed={}ms",
-                    planned_intent, result.success, elapsed_ms
+                    "{}, success={}, elapsed={}ms",
+                    audit_intent_label(&planned_intent),
+                    result.success,
+                    elapsed_ms
                 ),
                 elapsed_ms,
             );
@@ -554,7 +576,7 @@ impl AutomationController {
     }
 }
 
-fn audit_intent_label(intent: &AutomationIntent) -> String {
+pub(super) fn audit_intent_label(intent: &AutomationIntent) -> String {
     match intent {
         AutomationIntent::ClickElement {
             text,

@@ -115,12 +115,16 @@ pub(super) fn parse_anthropic_sse_event(event_type: &str, data: &str) -> Option<
     match event_type {
         "content_block_start" => {
             let val: serde_json::Value = serde_json::from_str(data).ok()?;
+            // #6202: Anthropic carries the content-block ordinal in the top-level
+            // `index`. Parallel tool calls each occupy a distinct index; hardcoding
+            // 0 collapsed them into one corrupted call. Read it like OpenAI does.
+            let index = val.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             let block = val.get("content_block")?;
             if block.get("type")?.as_str()? == "tool_use" {
                 let id = block.get("id")?.as_str()?.to_string();
                 let name = block.get("name")?.as_str()?.to_string();
                 Some(OutboundMessage::ToolCallDelta {
-                    index: 0,
+                    index,
                     id,
                     name,
                     arguments_chunk: String::new(),
@@ -131,6 +135,10 @@ pub(super) fn parse_anthropic_sse_event(event_type: &str, data: &str) -> Option<
         }
         "content_block_delta" => {
             let val: serde_json::Value = serde_json::from_str(data).ok()?;
+            // #6202: same top-level `index` ties this delta to its tool-call slot.
+            // input_json_delta for parallel tool calls must target the correct
+            // slot rather than always slot 0.
+            let index = val.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             let delta = val.get("delta")?;
             let delta_type = delta.get("type")?.as_str()?;
             match delta_type {
@@ -151,7 +159,7 @@ pub(super) fn parse_anthropic_sse_event(event_type: &str, data: &str) -> Option<
                 "input_json_delta" => {
                     let partial = delta.get("partial_json")?.as_str()?.to_string();
                     Some(OutboundMessage::ToolCallDelta {
-                        index: 0,
+                        index,
                         id: String::new(),
                         name: String::new(),
                         arguments_chunk: partial,

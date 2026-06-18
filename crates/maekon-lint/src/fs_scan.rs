@@ -2,16 +2,32 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn is_locale_file(path: &Path) -> bool {
-    path.to_string_lossy().contains("/src/i18n/locales/")
-}
+// is_locale_file was removed because it was dead code:
+//
+// 1. collect_files only gathers .rs/.ts/.tsx/.js/.jsx files, never .json — so
+//    locale JSON files (the only files that path would match) can never appear
+//    in the file list passed to is_locale_file's callers.
+//
+// 2. The forward-slash substring "/src/i18n/locales/" would silently fail to
+//    match on Windows, where Path::to_string_lossy() uses backslashes.
+//
+// No active scan path depended on this guard.  Removing it eliminates both the
+// dead-code confusion and the latent platform bug.
 
+/// Returns `true` if the path should be excluded from scanning.
+///
+/// An empty needle is skipped: `"".contains("")` is always `true`, which would
+/// cause every path to be silently excluded — a false-pass that makes the lint
+/// scan nothing and exit 0.
 pub(crate) fn is_ignored(path: &Path, ignores: &[String]) -> bool {
     if ignores.is_empty() {
         return false;
     }
     let path_str = path.to_string_lossy();
-    ignores.iter().any(|needle| path_str.contains(needle))
+    ignores
+        .iter()
+        .filter(|needle| !needle.is_empty())
+        .any(|needle| path_str.contains(needle.as_str()))
 }
 
 pub(crate) fn first_non_ascii(line: &str) -> Option<(usize, char)> {

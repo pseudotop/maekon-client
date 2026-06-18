@@ -44,10 +44,11 @@ impl SqliteSyncExtractor {
     /// Backfill origin_device_id for pre-sync rows (empty string -> local device_id).
     /// Called once on first extraction. Idempotent.
     ///
-    /// #4928 round-3 (FIX A): 이 함수는 ALL_TABLES 6개 테이블에 `UPDATE` 를 발행하므로
-    /// **반드시 `write_lock()` funnel 을 통과**해야 한다(read 경로 우회 금지). erasure 가
-    /// 진행 중이면 funnel 이 스킵하므로 (`Skipped` → row 미변경) 곧 wipe 될 DB 를
-    /// backfill 하지 않는다 — 의미상 올바르며 read-funnel 로 mutation 을 밀반입하지 않는다.
+    /// #4928 round-3 (FIX A): this function issues an `UPDATE` against all 6 ALL_TABLES
+    /// tables, so it **must go through the `write_lock()` funnel** (no bypassing via the
+    /// read path). When an erasure is in progress the funnel skips it (`Skipped` → rows
+    /// unchanged), so a DB about to be wiped is not backfilled — which is semantically
+    /// correct and avoids smuggling a mutation through the read funnel.
     fn backfill_origin_device_id(conn: &Connection, device_id: &str) -> Result<u64, StorageError> {
         // ⚠️ GDPR SYNC GUARD (#4478 G3) — authoritative cross-device sync table set.
         // Adding a table here replicates its rows to LAN peers; a contributor MUST:
@@ -90,31 +91,52 @@ impl SqliteSyncExtractor {
     }
 
     /// Query a single table for rows with HLC > watermark, returning JSON values.
+    ///
+    /// When `self_origin` is `Some(device_id)` the query is additionally constrained
+    /// to `origin_device_id = device_id` so only rows authored by THIS device are
+    /// emitted. This is the PUSH scope: the LAN `/sync/push` receiver contract (#5211)
+    /// rejects any data row whose `origin_device_id` differs from the authenticated
+    /// pusher (`first_row_origin_mismatch` in `lan_server`), so re-pushing peer-origin
+    /// rows received via merge would be refused and would create cross-device echo
+    /// loops (#6247). When `self_origin` is `None` every origin is served — the PULL
+    /// scope, where a relay device may legitimately forward another peer's rows.
     fn query_table_changes(
         conn: &Connection,
         table: &str,
         columns: &str,
         since: &Hlc,
+        self_origin: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, StorageError> {
+        // The HLC>since predicate is identical in both scopes; the self-origin variant
+        // just ANDs an equality on origin_device_id (bound as ?4 when present).
+        let origin_filter = if self_origin.is_some() {
+            " AND origin_device_id = ?4"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT {columns} FROM {table} \
-             WHERE (hlc_wall_ms > ?1) \
+             WHERE ((hlc_wall_ms > ?1) \
                 OR (hlc_wall_ms = ?1 AND hlc_counter > ?2) \
-                OR (hlc_wall_ms = ?1 AND hlc_counter = ?2 AND origin_device_id > ?3) \
+                OR (hlc_wall_ms = ?1 AND hlc_counter = ?2 AND origin_device_id > ?3))\
+                {origin_filter} \
              ORDER BY hlc_wall_ms, hlc_counter"
         );
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| StorageError::Internal(format!("prepare query for {table}: {e}")))?;
 
+        // rusqlite needs a homogeneous param slice; build it with the optional 4th bind.
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            vec![&since.wall_ms, &since.counter, &since.device_id];
+        if let Some(device_id) = self_origin.as_ref() {
+            params.push(device_id);
+        }
         let rows = stmt
-            .query_map(
-                rusqlite::params![since.wall_ms, since.counter, &since.device_id],
-                |row| {
-                    let json_str: String = row.get(0)?;
-                    Ok(json_str)
-                },
-            )
+            .query_map(params.as_slice(), |row| {
+                let json_str: String = row.get(0)?;
+                Ok(json_str)
+            })
             .map_err(|e| StorageError::Internal(format!("query {table}: {e}")))?;
 
         let mut results = Vec::new();
@@ -233,172 +255,222 @@ impl SqliteSyncExtractor {
 
         Ok(max)
     }
-}
 
-#[async_trait]
-impl ChangeExtractor for SqliteSyncExtractor {
-    async fn get_changes_since(&self, since: &Hlc) -> Result<ChangeSet, CoreError> {
+    /// Synchronous core of changeset extraction, shared by the pull-serving
+    /// (`get_changes_since`, all-origin) and push (`get_local_changes_since`,
+    /// self-origin) paths. Runs entirely under a blocking thread + read lock.
+    ///
+    /// `self_origin` selects the row scope (#6247):
+    /// * `true`  — only rows authored by THIS device (`origin_device_id = device_id`)
+    ///   on the 6 live data tables. This is the PUSH scope and matches the LAN
+    ///   `/sync/push` receiver contract (#5211): a peer may only push self-origin
+    ///   data rows, so re-sending peer-origin rows received via merge would be
+    ///   rejected and cause cross-device echo/loops.
+    /// * `false` — every origin (the PULL scope), where a relay device may forward
+    ///   another peer's rows to an offline receiver.
+    ///
+    /// Tombstones are ALWAYS emitted all-origin regardless of `self_origin`: the
+    /// receiver contract explicitly exempts them (they keep the erased row's original
+    /// origin) so a relay peer can carry a content-free erasure for an offline
+    /// receiver. Scoping them to self would break offline-peer erasure convergence.
+    fn extract_changeset_blocking(
+        conn: &Connection,
+        since: &Hlc,
+        device_id: &str,
+        device_name: &str,
+        sync_config: &SyncConfig,
+        self_origin: bool,
+    ) -> Result<ChangeSet, StorageError> {
+        let include_content = sync_config.include_content_activities;
+        let include_llm_summary = sync_config.include_llm_summary;
+        let include_embed_text = sync_config.include_embedding_text;
+        // Self-origin push scope binds origin_device_id = this device; pull serves all.
+        let origin_scope: Option<&str> = if self_origin { Some(device_id) } else { None };
+
+        // --- Build per-table JSON extraction queries ---
+        // Each query uses json_object() to produce a self-contained JSON row.
+
+        // activity_segments (append-only). Content fields are INDEPENDENTLY gated:
+        // `llm_summary` (an LLM narrative of screen activity) behind include_llm_summary,
+        // `content_activities_json` behind include_content_activities — both default off
+        // so a data-minimized sync carries neither (#5174 privacy parity). trigger_reason
+        // (NOT NULL) is always emitted so the peer's merge_segment INSERT satisfies the
+        // constraint (#5202).
+        let llm_summary_col = if include_llm_summary {
+            "'llm_summary',llm_summary,"
+        } else {
+            ""
+        };
+        let content_activities_col = if include_content {
+            "'content_activities_json',content_activities_json,"
+        } else {
+            ""
+        };
+        let seg_cols = format!(
+            "json_object('id',id,'start_time',start_time,'end_time',end_time,\
+             'duration_secs',duration_secs,'trigger_reason',trigger_reason,\
+             'regime_id',regime_id,\
+             'dominant_category',dominant_category,'app_breakdown',app_breakdown,\
+             {llm_summary_col}{content_activities_col}\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)"
+        );
+        let segments =
+            Self::query_table_changes(conn, "activity_segments", &seg_cols, since, origin_scope)?;
+
+        // regimes (LWW, includes tombstone columns)
+        let regimes = Self::query_table_changes(
+            conn,
+            "regimes",
+            "json_object('id',id,'label',label,'detected_at',detected_at,\
+             'last_seen_at',last_seen_at,'occurrence_count',occurrence_count,\
+             'avg_density',avg_density,'avg_importance',avg_importance,\
+             'dominant_category',dominant_category,'params_snapshot_id',params_snapshot_id,\
+             'is_active',is_active,'is_deleted',is_deleted,'deleted_at',deleted_at,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)",
+            since,
+            origin_scope,
+        )?;
+
+        // regime_overrides (append-only)
+        let overrides = Self::query_table_changes(
+            conn,
+            "regime_overrides",
+            "json_object('override_id',override_id,'segment_id',segment_id,\
+             'original_regime_id',original_regime_id,'action_type',action_type,\
+             'action_data',action_data,'created_at',created_at,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)",
+            since,
+            origin_scope,
+        )?;
+
+        // embedding_vectors (LWW, includes tombstone; respects include_embed_text)
+        let embed_cols = if include_embed_text {
+            "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
+             'content_label',content_label,'original_text',original_text,\
+             'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
+             'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)"
+        } else {
+            "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
+             'content_label',content_label,\
+             'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
+             'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)"
+        };
+        let mut embeddings =
+            Self::query_table_changes(conn, "embedding_vectors", embed_cols, since, origin_scope)?;
+        // #5210: a SEGMENT_SUMMARY embedding's text AND vector both represent the
+        // llm_summary screen-activity narrative. When include_llm_summary is off, exclude
+        // those rows entirely (not just their original_text) so include_embedding_text is
+        // not a backdoor that re-exposes the gated narrative. They regenerate locally.
+        if !include_llm_summary {
+            embeddings.retain(|e| {
+                e.get("content_type").and_then(|v| v.as_str()) != Some("SEGMENT_SUMMARY")
+            });
+        }
+
+        // suggestions (LWW, monotonic status merge)
+        let suggestions = Self::query_table_changes(
+            conn,
+            "suggestions",
+            "json_object('suggestion_id',suggestion_id,'suggestion_type',suggestion_type,\
+             'source',source,'content',content,'priority',priority,\
+             'confidence_score',confidence_score,'relevance_score',relevance_score,\
+             'is_actionable',is_actionable,'reasoning',reasoning,\
+             'context_app',context_app,'context_window',context_window,\
+             'context_target_id',context_target_id,\
+             'shown_at',shown_at,'dismissed_at',dismissed_at,'acted_at',acted_at,\
+             'created_at',created_at,'expires_at',expires_at,\
+             'is_deleted',is_deleted,'deleted_at',deleted_at,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)",
+            since,
+            origin_scope,
+        )?;
+
+        // trigger_params_snapshots (append-only)
+        let param_snapshots = Self::query_table_changes(
+            conn,
+            "trigger_params_snapshots",
+            "json_object('id',id,'created_at',created_at,'preset',preset,\
+             'params_json',params_json,\
+             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
+             'origin_device_id',origin_device_id)",
+            since,
+            origin_scope,
+        )?;
+
+        // sync_tombstones (V38, #5174 S2): the retained erasure outbox rides the normal
+        // changeset stream so an offline peer converges on its next pull. Pure read.
+        // ALWAYS all-origin (see the doc comment): the receiver exempts tombstones from
+        // the self-origin check so relay peers carry content-free erasures.
+        let tombstones = Self::query_tombstones_since(conn, since)?;
+
+        // Compute the new watermark as the DB-GLOBAL max HLC for this device
+        // (compute_max_hlc scans each whole syncable table with no `> since`
+        // filter — it is NOT the max of just this batch). This DB-global
+        // monotonicity is load-bearing: the watermark is the egress-ledger
+        // dedup_key for a CrossDeviceSync push (#5147), so two distinct pushes
+        // always get distinct keys and only an exact same-batch re-push
+        // collapses. Do NOT "fix" this toward batch-max — it would let two
+        // different egresses share a record_id and silently drop an audit row.
+        // It is origin-agnostic by design so both scopes share one watermark.
+        let watermark = Self::compute_max_hlc(conn, device_id)?;
+
+        Ok(ChangeSet {
+            kind: ChangeSetKind::Data,
+            origin_device_id: device_id.to_string(),
+            origin_device_name: device_name.to_string(),
+            watermark,
+            segments,
+            regimes,
+            overrides,
+            embeddings,
+            suggestions,
+            param_snapshots,
+            preferences: Vec::new(), // deferred to Phase 3b
+            tombstones,
+        })
+    }
+
+    /// Shared async wrapper for the two extraction scopes. Runs backfill through the
+    /// write funnel, then extracts under a read lock on a blocking thread. `self_origin`
+    /// is forwarded to `extract_changeset_blocking` (true = push/self-origin, #6247).
+    async fn extract_with_scope(
+        &self,
+        since: &Hlc,
+        self_origin: bool,
+    ) -> Result<ChangeSet, CoreError> {
         let conn = self.conn.clone();
         let since = since.clone();
         let device_id = self.device_id.clone();
         let device_name = self.device_name.clone();
-        let include_content = self.sync_config.include_content_activities;
-        let include_llm_summary = self.sync_config.include_llm_summary;
-        let include_embed_text = self.sync_config.include_embedding_text;
+        let sync_config = self.sync_config.clone();
 
         tokio::task::spawn_blocking(move || {
-            // #4928 round-3 (FIX A): backfill 은 ALL_TABLES UPDATE 이므로 write_lock funnel
-            // 을 통과시킨다(read 경로로 mutation 밀반입 금지). erasure 진행 중이면 funnel 이
-            // 스킵하여 곧 wipe 될 행을 backfill 하지 않는다 — 의미상 무해.
+            // #4928 round-3 (FIX A): backfill is an ALL_TABLES UPDATE, so route it through
+            // the write_lock funnel (no smuggling a mutation through the read path). When an
+            // erasure is in progress the funnel skips it, so rows about to be wiped are not
+            // backfilled — semantically harmless.
             conn.write_lock()
                 .run(0u64, |c| Self::backfill_origin_device_id(c, &device_id))?;
 
-            // 이후 추출은 순수 읽기 경로 — read_lock(deletion_flag 무관)으로 충분하다.
+            // The extraction that follows is a pure read path — read_lock (independent of
+            // deletion_flag) is sufficient.
             let read = conn.read_lock();
-            let guard = read.conn();
-
-            // --- Build per-table JSON extraction queries ---
-            // Each query uses json_object() to produce a self-contained JSON row.
-
-            // activity_segments (append-only). Content fields are INDEPENDENTLY gated:
-            // `llm_summary` (an LLM narrative of screen activity) behind include_llm_summary,
-            // `content_activities_json` behind include_content_activities — both default off
-            // so a data-minimized sync carries neither (#5174 privacy parity). trigger_reason
-            // (NOT NULL) is always emitted so the peer's merge_segment INSERT satisfies the
-            // constraint (#5202).
-            let llm_summary_col = if include_llm_summary {
-                "'llm_summary',llm_summary,"
-            } else {
-                ""
-            };
-            let content_activities_col = if include_content {
-                "'content_activities_json',content_activities_json,"
-            } else {
-                ""
-            };
-            let seg_cols = format!(
-                "json_object('id',id,'start_time',start_time,'end_time',end_time,\
-                 'duration_secs',duration_secs,'trigger_reason',trigger_reason,\
-                 'regime_id',regime_id,\
-                 'dominant_category',dominant_category,'app_breakdown',app_breakdown,\
-                 {llm_summary_col}{content_activities_col}\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)"
-            );
-            let segments =
-                Self::query_table_changes(guard, "activity_segments", &seg_cols, &since)?;
-
-            // regimes (LWW, includes tombstone columns)
-            let regimes = Self::query_table_changes(
-                guard,
-                "regimes",
-                "json_object('id',id,'label',label,'detected_at',detected_at,\
-                 'last_seen_at',last_seen_at,'occurrence_count',occurrence_count,\
-                 'avg_density',avg_density,'avg_importance',avg_importance,\
-                 'dominant_category',dominant_category,'params_snapshot_id',params_snapshot_id,\
-                 'is_active',is_active,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)",
+            Self::extract_changeset_blocking(
+                read.conn(),
                 &since,
-            )?;
-
-            // regime_overrides (append-only)
-            let overrides = Self::query_table_changes(
-                guard,
-                "regime_overrides",
-                "json_object('override_id',override_id,'segment_id',segment_id,\
-                 'original_regime_id',original_regime_id,'action_type',action_type,\
-                 'action_data',action_data,'created_at',created_at,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)",
-                &since,
-            )?;
-
-            // embedding_vectors (LWW, includes tombstone; respects include_embed_text)
-            let embed_cols = if include_embed_text {
-                "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
-                 'content_label',content_label,'original_text',original_text,\
-                 'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
-                 'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)"
-            } else {
-                "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
-                 'content_label',content_label,\
-                 'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
-                 'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)"
-            };
-            let mut embeddings =
-                Self::query_table_changes(guard, "embedding_vectors", embed_cols, &since)?;
-            // #5210: a SEGMENT_SUMMARY embedding's text AND vector both represent the
-            // llm_summary screen-activity narrative. When include_llm_summary is off, exclude
-            // those rows entirely (not just their original_text) so include_embedding_text is
-            // not a backdoor that re-exposes the gated narrative. They regenerate locally.
-            if !include_llm_summary {
-                embeddings.retain(|e| {
-                    e.get("content_type").and_then(|v| v.as_str()) != Some("SEGMENT_SUMMARY")
-                });
-            }
-
-            // suggestions (LWW, monotonic status merge)
-            let suggestions = Self::query_table_changes(
-                guard,
-                "suggestions",
-                "json_object('suggestion_id',suggestion_id,'suggestion_type',suggestion_type,\
-                 'source',source,'content',content,'priority',priority,\
-                 'confidence_score',confidence_score,'relevance_score',relevance_score,\
-                 'is_actionable',is_actionable,'reasoning',reasoning,\
-                 'context_app',context_app,'context_window',context_window,\
-                 'context_target_id',context_target_id,\
-                 'shown_at',shown_at,'dismissed_at',dismissed_at,'acted_at',acted_at,\
-                 'created_at',created_at,'expires_at',expires_at,\
-                 'is_deleted',is_deleted,'deleted_at',deleted_at,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)",
-                &since,
-            )?;
-
-            // trigger_params_snapshots (append-only)
-            let param_snapshots = Self::query_table_changes(
-                guard,
-                "trigger_params_snapshots",
-                "json_object('id',id,'created_at',created_at,'preset',preset,\
-                 'params_json',params_json,\
-                 'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-                 'origin_device_id',origin_device_id)",
-                &since,
-            )?;
-
-            // sync_tombstones (V38, #5174 S2): the retained erasure outbox rides the normal
-            // changeset stream so an offline peer converges on its next pull. Pure read.
-            let tombstones = Self::query_tombstones_since(guard, &since)?;
-
-            // Compute the new watermark as the DB-GLOBAL max HLC for this device
-            // (compute_max_hlc scans each whole syncable table with no `> since`
-            // filter — it is NOT the max of just this batch). This DB-global
-            // monotonicity is load-bearing: the watermark is the egress-ledger
-            // dedup_key for a CrossDeviceSync push (#5147), so two distinct pushes
-            // always get distinct keys and only an exact same-batch re-push
-            // collapses. Do NOT "fix" this toward batch-max — it would let two
-            // different egresses share a record_id and silently drop an audit row.
-            let watermark = Self::compute_max_hlc(guard, &device_id)?;
-
-            Ok::<ChangeSet, StorageError>(ChangeSet {
-                kind: ChangeSetKind::Data,
-                origin_device_id: device_id,
-                origin_device_name: device_name,
-                watermark,
-                segments,
-                regimes,
-                overrides,
-                embeddings,
-                suggestions,
-                param_snapshots,
-                preferences: Vec::new(), // deferred to Phase 3b
-                tombstones,
-            })
+                &device_id,
+                &device_name,
+                &sync_config,
+                self_origin,
+            )
         })
         .await
         .map_err(|e| CoreError::Internal {
@@ -407,13 +479,26 @@ impl ChangeExtractor for SqliteSyncExtractor {
         })?
         .map_err(CoreError::from)
     }
+}
+
+#[async_trait]
+impl ChangeExtractor for SqliteSyncExtractor {
+    async fn get_changes_since(&self, since: &Hlc) -> Result<ChangeSet, CoreError> {
+        // All-origin (pull-serving) scope.
+        self.extract_with_scope(since, false).await
+    }
+
+    async fn get_local_changes_since(&self, since: &Hlc) -> Result<ChangeSet, CoreError> {
+        // Self-origin (push) scope — see the trait doc + #6247.
+        self.extract_with_scope(since, true).await
+    }
 
     async fn local_watermark(&self) -> Result<Hlc, CoreError> {
         let conn = self.conn.clone();
         let device_id = self.device_id.clone();
 
         tokio::task::spawn_blocking(move || {
-            // 읽기 — read_lock(deletion_flag 무관).
+            // Read — read_lock (independent of deletion_flag).
             let read = conn.read_lock();
             Self::compute_max_hlc(read.conn(), &device_id)
         })
@@ -428,8 +513,9 @@ impl ChangeExtractor for SqliteSyncExtractor {
     async fn persisted_erasure_hlc(&self) -> Result<Option<Hlc>, CoreError> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<Option<Hlc>, StorageError> {
-            // 읽기 — read_lock(deletion_flag 무관). erasure 진행 중(flag set)에도 retained
-            // anchor 를 읽어 DeletionEvent watermark 를 stamp 해야 하므로 read_lock 이 옳다.
+            // Read — read_lock (independent of deletion_flag). Even while an erasure is in
+            // progress (flag set), the retained anchor must be read to stamp the
+            // DeletionEvent watermark, so read_lock is correct.
             let read = conn.read_lock();
             let value: Option<String> = read
                 .conn()
@@ -531,14 +617,15 @@ mod tests {
         assert_eq!(origin, device_id);
     }
 
-    /// #4928 round-3 (FIX A): backfill 은 write_lock funnel 을 통과하므로 deletion_flag
-    /// 가 set 이면 self-skip 한다 — 곧 wipe 될 행의 origin_device_id 가 변경되지 않는다.
+    /// #4928 round-3 (FIX A): backfill goes through the write_lock funnel, so it self-skips
+    /// when deletion_flag is set — the origin_device_id of rows about to be wiped is not
+    /// changed.
     #[tokio::test]
     async fn backfill_self_skips_when_deletion_flag_set() {
         use std::sync::atomic::Ordering;
 
         let (storage, device_id) = setup();
-        // pre-V14 행(빈 origin_device_id) 삽입.
+        // Insert a pre-V14 row (empty origin_device_id).
         {
             let conn = storage.connection_arc();
             let guard = conn.test_lock();
@@ -554,7 +641,7 @@ mod tests {
                 .unwrap();
         }
 
-        // deletion_flag set → backfill write_lock 가 스킵되어야 한다.
+        // deletion_flag set → the backfill write_lock must be skipped.
         storage
             .connection_arc()
             .deletion_flag()
@@ -566,10 +653,10 @@ mod tests {
             "Test".to_string(),
             SyncConfig::default(),
         );
-        // get_changes_since 자체는 성공해야 한다(읽기는 스킵 안 함).
+        // get_changes_since itself must succeed (reads are not skipped).
         let _ = extractor.get_changes_since(&Hlc::default()).await.unwrap();
 
-        // origin_device_id 가 여전히 빈 문자열이어야 한다(backfill 스킵 증명).
+        // origin_device_id must still be the empty string (proves the backfill was skipped).
         let conn = storage.connection_arc();
         let guard = conn.test_lock();
         let origin: String = guard
@@ -581,7 +668,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             origin, "",
-            "deletion_flag set 시 backfill UPDATE 는 스킵되어 row 가 변경되지 않아야 한다"
+            "when deletion_flag is set the backfill UPDATE must be skipped, leaving the row unchanged"
         );
     }
 
@@ -851,6 +938,119 @@ mod tests {
             cs2.embeddings.len(),
             2,
             "both embeddings sync when llm_summary is on"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_excludes_peer_origin_rows_but_pull_includes_them() {
+        // #6247: the PUSH path (get_local_changes_since) must emit ONLY self-origin data
+        // rows, because the LAN /sync/push receiver (#5211) rejects any data row whose
+        // origin is not the authenticated pusher — re-sending a peer-origin row received
+        // via merge would fail the push AND echo the row back to its author (loop). The
+        // PULL-serving path (get_changes_since) keeps all-origin so a relay can forward
+        // another peer's rows to an offline receiver.
+        let (storage, device_id) = setup();
+        let peer_id = "peer-device-c";
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            // A row authored locally (self-origin).
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-self', '2026-01-01', '2026-01-01', 3600, 'timer', 'Dev', 100, 1, ?1)",
+                    rusqlite::params![device_id],
+                )
+                .unwrap();
+            // A row received from a peer via merge (peer-origin).
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-peer', '2026-01-02', '2026-01-02', 3600, 'timer', 'Comm', 200, 1, ?1)",
+                    rusqlite::params![peer_id],
+                )
+                .unwrap();
+        }
+
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id.clone(),
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+
+        // PUSH scope: only the self-origin row.
+        let push_cs = extractor
+            .get_local_changes_since(&Hlc::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            push_cs.segments.len(),
+            1,
+            "push must carry only the self-origin row"
+        );
+        assert_eq!(push_cs.segments[0]["id"], "seg-self");
+        assert_eq!(push_cs.segments[0]["origin_device_id"], device_id);
+
+        // PULL-serving scope: both rows (relay may forward the peer's row).
+        let pull_cs = extractor.get_changes_since(&Hlc::default()).await.unwrap();
+        assert_eq!(
+            pull_cs.segments.len(),
+            2,
+            "pull-serving must carry every origin so a relay can forward peer rows"
+        );
+
+        // Both scopes share the DB-global watermark (compute_max_hlc is origin-agnostic),
+        // so the push watermark still advances past the peer row and the next push does
+        // not re-extract it.
+        assert_eq!(push_cs.watermark, pull_cs.watermark);
+        assert_eq!(push_cs.watermark.wall_ms, 200);
+    }
+
+    #[tokio::test]
+    async fn push_still_emits_peer_origin_tombstones_for_relay() {
+        // #6247 / #5174: tombstones are content-free erasure carriers exempt from the
+        // self-origin receiver check, so even on the self-origin PUSH path a relay device
+        // must still forward a peer-origin tombstone to help an offline receiver converge.
+        let (storage, device_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            // A tombstone authored by ANOTHER device (as if relayed/merged in).
+            guard
+                .execute(
+                    "INSERT INTO sync_tombstones \
+                     (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+                     VALUES ('activity_segments', 'seg-erased', 'origin-other', 300, 0, \
+                             '2026-02-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            device_id,
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+
+        let push_cs = extractor
+            .get_local_changes_since(&Hlc::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            push_cs.tombstones.len(),
+            1,
+            "push must still relay a peer-origin tombstone"
+        );
+        assert_eq!(push_cs.tombstones[0].row_id, "seg-erased");
+        assert_eq!(push_cs.tombstones[0].origin_device_id, "origin-other");
+        assert!(
+            push_cs.segments.is_empty(),
+            "no self-origin data rows present"
         );
     }
 }

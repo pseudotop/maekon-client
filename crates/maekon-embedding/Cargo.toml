@@ -29,7 +29,6 @@ fastembed-local = ["dep:fastembed"]
 [dev-dependencies]
 tokio-test = { workspace = true }
 criterion = { workspace = true }
-maekon-core = { workspace = true }
 
 [[bench]]
 name = "embedding_bench"

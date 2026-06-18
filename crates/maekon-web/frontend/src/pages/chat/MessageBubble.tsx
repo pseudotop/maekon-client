@@ -206,7 +206,7 @@ export function MessageBubble({
         </div>
         {msg.tool_use.input && (
           <details className="mt-1">
-            <summary className="cursor-pointer text-content-secondary text-xs">Input</summary>
+            <summary className="cursor-pointer text-content-secondary text-xs">{t('messageBubble.input')}</summary>
             <pre className="mt-1 overflow-x-auto rounded bg-surface-sunken p-2 text-[10px]">
               {JSON.stringify(msg.tool_use.input, null, 2)}
             </pre>
@@ -214,7 +214,7 @@ export function MessageBubble({
         )}
         {msg.tool_use.result && (
           <details open className="mt-1">
-            <summary className="cursor-pointer text-content-secondary text-xs">Result</summary>
+            <summary className="cursor-pointer text-content-secondary text-xs">{t('messageBubble.result')}</summary>
             <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-surface-sunken p-2 text-[10px]">
               {msg.tool_use.result}
             </pre>

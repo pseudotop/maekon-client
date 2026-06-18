@@ -1,7 +1,7 @@
 //! Detection and inference: posterior probabilities, centroid helpers,
 //! and the `ClusteringStrategy` impl for `GmmDetector`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use maekon_core::models::recalibration::ClusterConstraint;
 use maekon_core::models::tiered_memory::RegimeFeatures;
@@ -60,11 +60,18 @@ impl GmmDetector {
             .collect()
     }
 
-    /// Recompute centroids from final labels after constraint modifications.
+    /// Recompute a DENSE centroid list from final labels after constraint
+    /// modifications.
+    ///
+    /// Returns `(centroids, centroid_labels)` where `centroid_labels[i]` is the
+    /// real cluster label of `centroids[i]`. Only distinct non-noise labels that
+    /// are actually present produce a centroid (visited in ascending order);
+    /// there is no `0..=max_label` padding, so the array has no default-filled
+    /// gaps and its length equals the real cluster count (#6120).
     pub(super) fn recompute_centroids(
         features: &[RegimeFeatures],
         labels: &[i32],
-    ) -> Vec<RegimeFeatures> {
+    ) -> (Vec<RegimeFeatures>, Vec<i32>) {
         let mut sums: HashMap<i32, [f64; RegimeFeatures::DIMENSIONS]> = HashMap::new();
         let mut counts: HashMap<i32, usize> = HashMap::new();
 
@@ -82,21 +89,23 @@ impl GmmDetector {
             *counts.entry(label).or_insert(0) += 1;
         }
 
-        let max_label = sums.keys().copied().max().unwrap_or(-1);
-        let mut centroids = Vec::new();
-        for label in 0..=max_label {
-            if let (Some(sum), Some(&cnt)) = (sums.get(&label), counts.get(&label)) {
-                let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
-                for (d, &s) in sum.iter().enumerate() {
-                    arr[d] = (s / cnt as f64) as f32;
-                }
-                centroids.push(RegimeFeatures::from_array(arr));
-            } else {
-                centroids.push(RegimeFeatures::default());
+        // Dense centroids: one per present label, sorted ascending.
+        let mut present_labels: Vec<i32> = sums.keys().copied().collect();
+        present_labels.sort_unstable();
+
+        let mut centroids = Vec::with_capacity(present_labels.len());
+        for &label in &present_labels {
+            // `present_labels` comes from `sums` keys, so both lookups succeed.
+            let sum = &sums[&label];
+            let cnt = counts[&label];
+            let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
+            for (d, &s) in sum.iter().enumerate() {
+                arr[d] = (s / cnt as f64) as f32;
             }
+            centroids.push(RegimeFeatures::from_array(arr));
         }
 
-        centroids
+        (centroids, present_labels)
     }
 }
 
@@ -238,12 +247,14 @@ impl ClusteringStrategy for GmmDetector {
         apply_link_constraints(features, &mut full_labels, &parsed);
 
         let noise_count = full_labels.iter().filter(|&&l| l < 0).count();
-        let cluster_count = {
-            let ids: HashSet<i32> = full_labels.iter().copied().filter(|&l| l >= 0).collect();
-            ids.len()
-        };
 
-        let centroids = Self::recompute_centroids(features, &full_labels);
+        // Dense centroids: one per present label, no `0..=max_label` padding.
+        // The `centroid_labels` remap is currently unused by GMM `classify()`
+        // (which scores against the stored model, not these centroids), but the
+        // dense layout guarantees `cluster_count == centroids.len()` for
+        // non-contiguous labels (#6120).
+        let (centroids, _centroid_labels) = Self::recompute_centroids(features, &full_labels);
+        let cluster_count = centroids.len();
 
         Ok(ClusteringResult {
             labels: full_labels,

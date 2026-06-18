@@ -17,7 +17,7 @@ impl SqliteStorage {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<CoachingEventRow>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::query_coaching_events_inner(read.conn(), limit, offset)
     }
@@ -84,7 +84,7 @@ impl SqliteStorage {
         &self,
         since_date: &str,
     ) -> Result<Vec<CoachingEventRow>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::query_coaching_events_since_inner(read.conn(), since_date)
     }
@@ -143,7 +143,7 @@ impl SqliteStorage {
 
     /// Insert a coaching event record.
     pub fn insert_coaching_event(&self, event: &CoachingEventRow) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, coaching_events ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; coaching_events ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "INSERT INTO coaching_events
@@ -180,7 +180,7 @@ impl SqliteStorage {
         feedback_type: Option<&str>,
         feedback_score: Option<f64>,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE coaching_events
@@ -209,7 +209,7 @@ impl SqliteStorage {
         event_id: &str,
         personalized_text: &str,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE coaching_events SET personalized_message = ?2 WHERE event_id = ?1",
@@ -225,7 +225,7 @@ impl SqliteStorage {
 
     /// Get all regime goals from the regime_goals table.
     pub fn get_regime_goals(&self) -> Result<HashMap<String, u32>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -256,7 +256,7 @@ impl SqliteStorage {
         regime_label: &str,
         target_minutes: u32,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, regime_goals ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; regime_goals ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "INSERT INTO regime_goals (regime_label, daily_target_minutes, updated_at)
@@ -273,7 +273,7 @@ impl SqliteStorage {
 
     /// Delete a regime goal by label.
     pub fn delete_regime_goal(&self, regime_label: &str) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "DELETE FROM regime_goals WHERE regime_label = ?1",

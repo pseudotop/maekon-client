@@ -73,13 +73,18 @@ pub async fn subscribe_metrics(
         streaming_source.load_policy(),
         streaming_source.streaming_enabled(),
     );
-    // Step 0a: authority validation (IMP-V2-A) — reject DNS-rebound hostnames
-    // when the client exposes `:authority` via the `"host"` metadata key.
-    // Tonic 0.14 does not uniformly propagate `:authority` into request
-    // metadata; when absent, the loopback-only `serve()` bind is our actual
-    // protection against DNS rebinding. This layer adds belt-and-braces
-    // rejection for the cases where the authority IS observable (browser
-    // `fetch` with explicit `Host` header, integration proxies, etc.).
+    // Step 0a: authority validation (IMP-V2-A) — reject a DNS-rebound
+    // (non-loopback) hostname WHEN it is observable.
+    //
+    // tonic 0.14 does NOT propagate the HTTP/2 `:authority` pseudo-header into
+    // request metadata, so `host` is normally ABSENT for gRPC clients (rejecting
+    // on absence rejected every legitimate streaming subscriber). We therefore
+    // validate only when an authority IS observable (browser `fetch` with an
+    // explicit `Host`, integration proxies) and must NOT reject on absence. The
+    // actual transport protections are the loopback `serve()` bind (default
+    // builds) and the Bearer auth gate below (Step 1, enforced on every bind —
+    // including the external/routable one, for which a loopback-only authority
+    // allowlist would be inapplicable anyway).
     if let Some(authority) = req.metadata().get("host").and_then(|v| v.to_str().ok()) {
         validate_authority(Some(authority))?;
     }
@@ -181,7 +186,19 @@ pub async fn subscribe_metrics(
                 }
                 // Coalesce queued wake-ups within a 10ms quiet window.
                 let quiet = Duration::from_millis(10);
-                while tokio::time::timeout(quiet, rx.recv()).await.is_ok() { /* drain */ }
+                // oneshim#5964: match the inner result explicitly. `.is_ok()` on the
+                // OUTER Result treats Ok(Err(RecvError::Closed)) as success, so once
+                // the broadcast sender dropped, rx.recv() returned Closed instantly
+                // and this drain spun at 100% CPU forever. Closed must end the
+                // stream; Lagged stays recoverable; Elapsed ends the quiet window.
+                loop {
+                    match tokio::time::timeout(quiet, rx.recv()).await {
+                        Ok(Ok(_)) => { /* drained one — keep coalescing */ }
+                        Ok(Err(RecvError::Lagged(_))) => { /* missed some — keep coalescing */ }
+                        Ok(Err(RecvError::Closed)) => return, // sender gone — end the stream
+                        Err(_elapsed) => break,              // quiet window elapsed — done
+                    }
+                }
                 // CRIT-5: rate-limit BEFORE expensive work (collect_metrics +
                 // classify + DB). This is the tight-skip path for throttled
                 // realtime under opt-out.
@@ -240,7 +257,16 @@ pub async fn subscribe_metrics(
             };
             if let Some(t) = ticker.as_mut() {
                 if ticker_period != Some(effective_interval_cache) {
-                    let mut new_ticker = tokio::time::interval(effective_interval_cache);
+                    // #6278: build the new-period ticker with `interval_at(now +
+                    // period, ..)`, NOT `interval(period)`. A fresh `interval()`
+                    // fires its FIRST tick IMMEDIATELY, so recreating it on every
+                    // load-level oscillation defeats the emit-interval throttle
+                    // (back-to-back emits). `interval_at` sets the new period AND
+                    // schedules the first tick one full period out.
+                    let mut new_ticker = tokio::time::interval_at(
+                        tokio::time::Instant::now() + effective_interval_cache,
+                        effective_interval_cache,
+                    );
                     new_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                     *t = new_ticker;
                     ticker_period = Some(effective_interval_cache);

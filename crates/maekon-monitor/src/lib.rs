@@ -41,9 +41,10 @@ pub mod window_layout;
 mod active_window_parse;
 // Cfg-free macOS `pmset -g batt` → PowerStatus parser (#5138), same rationale.
 mod power_parse;
-// Content-free log digest for window titles (#5591) + crate-wide textual guard
-// against raw-title tracing. Un-gated so the guard runs on every host OS.
-mod log_privacy;
+// Content-free log digest for window titles + suggestion content (#5591, #6006)
+// + workspace-wide textual guard against raw-title/content tracing.
+// Un-gated so the guard runs on every host OS.
+pub mod log_privacy;
 
 #[cfg(target_os = "macos")]
 pub mod macos;

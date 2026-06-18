@@ -11,7 +11,7 @@ impl SqliteStorage {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<Vec<maekon_core::models::tiered_memory::SegmentSummary>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 

@@ -1,19 +1,19 @@
-// 네트워크 연결 설정 — 서버/gRPC/TLS/Web 설정 모음
+// Network connection config — server/gRPC/TLS/Web settings
 use serde::{Deserialize, Serialize};
 
 // ── TlsConfig ──────────────────────────────────────────────────────
 
-/// TLS 연결 설정 — 아웃바운드 HTTP/SSE 연결 보안 정책
+/// TLS connection config — security policy for outbound HTTP/SSE connections.
 ///
-/// 기본값: enabled=true (TLS 강제), allow_self_signed=false (운영 환경 표준).
-/// 개발 환경에서는 enabled=false 로 로컬 HTTP를 명시적으로 허용할 수 있다.
+/// Defaults: enabled=true (TLS enforced), allow_self_signed=false (production
+/// standard). In development, enabled=false explicitly permits local HTTP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
-    /// TLS 강제 여부 — false 시 http:// 연결 허용 (개발 전용)
+    /// Whether TLS is enforced — when false, http:// connections are allowed (dev only).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 호환성 필드. 클라이언트는 더 이상 인증서 검증 우회를 수행하지 않는다.
+    /// Compatibility field. The client no longer bypasses certificate verification.
     #[serde(default)]
     pub allow_self_signed: bool,
 }
@@ -166,7 +166,7 @@ impl Default for LoadThresholds {
     }
 }
 
-// ── Default / helper functions (pub(super) — config/mod.rs 에서 사용) ─
+// ── Default / helper functions (pub(super) — used by config/mod.rs) ─
 
 pub(crate) fn default_request_timeout_ms() -> u64 {
     30_000
@@ -198,12 +198,12 @@ fn default_grpc_request_timeout() -> u64 {
     30
 }
 
-/// 로컬 WebServer 기본 포트 — IANA Dynamic/Ephemeral 대역 (49152-65535)
+/// Default port for the local web server — IANA Dynamic/Ephemeral range (49152-65535).
 ///
-/// 9090 등 Well-Known/Registered Port 대역은 Prometheus, Cockpit 등과 충돌 가능.
-/// 10090 은 IANA 미등록 Registered Port 대역 (1024-49151) 으로
-/// OS ephemeral 아웃바운드 할당과 겹치지 않으면서 충돌 가능성이 낮음.
-/// MAX_PORT_ATTEMPTS=10 으로 10090-10099 범위 자동 폴백.
+/// Well-Known/Registered ports such as 9090 can collide with Prometheus, Cockpit,
+/// etc. 10090 sits in the IANA-unregistered Registered Port range (1024-49151), so
+/// it does not overlap OS ephemeral outbound allocation and has a low collision risk.
+/// With MAX_PORT_ATTEMPTS=10, it auto-falls back across the 10090-10099 range.
 pub const DEFAULT_WEB_PORT: u16 = 10090;
 
 fn default_web_enabled() -> bool {

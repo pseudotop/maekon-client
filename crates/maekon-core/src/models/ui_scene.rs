@@ -33,6 +33,13 @@ pub struct UiSceneElement {
     pub element_id: String,
     pub bbox_abs: ElementBounds,
     pub bbox_norm: NormalizedBounds,
+    /// Raw, unredacted OCR/accessibility text.
+    ///
+    /// Kept in-process for click targeting (text matching, ranking, and Strict
+    /// re-sanitization). It is never serialized so it cannot egress via overlay
+    /// IPC or the localhost REST surface — egress consumers must read the masked
+    /// `text_masked` copy instead. On deserialization it defaults to empty.
+    #[serde(skip_serializing, default)]
     pub label: String,
     pub role: Option<String>,
     pub intent: Option<String>,
@@ -101,6 +108,49 @@ mod tests {
         let deserialized: UiScene = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.scene_id, "scene-1");
         assert_eq!(deserialized.elements.len(), 1);
-        assert_eq!(deserialized.elements[0].label, "Save");
+        // The masked copy survives serialization; it is what egress consumers see.
+        assert_eq!(
+            deserialized.elements[0].text_masked.as_deref(),
+            Some("Save")
+        );
+    }
+
+    #[test]
+    fn ui_scene_element_label_never_serializes() {
+        let element = UiSceneElement {
+            element_id: "el-pii".to_string(),
+            bbox_abs: ElementBounds {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            bbox_norm: NormalizedBounds::new(0.0, 0.0, 0.01, 0.01),
+            // Simulate raw OCR text containing PII.
+            label: "alice@example.com".to_string(),
+            role: None,
+            intent: None,
+            state: None,
+            confidence: 0.5,
+            text_masked: Some("[EMAIL]".to_string()),
+            parent_id: None,
+        };
+
+        let json = serde_json::to_string(&element).unwrap();
+        // Raw label must never reach the wire (overlay IPC / localhost REST).
+        assert!(
+            !json.contains("alice@example.com"),
+            "raw label leaked into serialized output: {json}"
+        );
+        assert!(
+            !json.contains("\"label\""),
+            "label field must be skipped on serialization: {json}"
+        );
+        assert!(json.contains("[EMAIL]"), "masked copy should serialize");
+
+        // It still deserializes (defaulting to empty) so embedding DTOs round-trip.
+        let decoded: UiSceneElement = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.label, "");
+        assert_eq!(decoded.text_masked.as_deref(), Some("[EMAIL]"));
     }
 }

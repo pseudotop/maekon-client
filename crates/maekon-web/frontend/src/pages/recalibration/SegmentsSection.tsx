@@ -14,7 +14,7 @@ export default function SegmentsSection() {
 
   return (
     <Card padding="md">
-      <h2 className={cn(typography.h3, colors.text.primary, 'mb-4')}>Segments</h2>
+      <h2 className={cn(typography.h3, colors.text.primary, 'mb-4')}>{t('segmentsSection.heading')}</h2>
 
       {segmentsLoading && (
         <div className="space-y-2">
@@ -40,11 +40,11 @@ export default function SegmentsSection() {
           <table className="w-full min-w-[600px] text-left text-sm">
             <thead>
               <tr className={cn('border-DEFAULT border-b', colors.text.tertiary)}>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Time</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Duration</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>Regime</th>
-                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>App</th>
-                <th className={`pb-2 ${typography.weight.medium}`}>Actions</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('segmentsSection.columnTime')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('segmentsSection.columnDuration')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('segmentsSection.columnRegime')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('segmentsSection.columnApp')}</th>
+                <th className={`pb-2 ${typography.weight.medium}`}>{t('segmentsSection.columnActions')}</th>
               </tr>
             </thead>
             <tbody>

@@ -1,11 +1,11 @@
-//! PermissionCode — Permission 카테고리 에러 코드. `permission.*` 접두사.
+//! PermissionCode — Permission category error codes. `permission.*` prefix.
 
 define_code_enum! {
-    /// Permission 카테고리 에러 코드.
+    /// Permission category error codes.
     pub enum PermissionCode {
-        /// 권한 거부 (일반).
+        /// Permission denied (general).
         PermissionDenied => "permission.permission_denied",
-        /// 개인정보 권한 거부.
+        /// Privacy permission denied.
         PrivacyDenied => "permission.privacy_denied",
     }
 }

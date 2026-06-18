@@ -1,16 +1,17 @@
-//! InternalCode — 내부 에러 및 `#[from]`-wrapped 외부 에러용 코드. `internal.*` 접두사.
+//! InternalCode — codes for internal errors and `#[from]`-wrapped external
+//! errors. `internal.*` prefix.
 //!
-//! `Io` / `Serialization`은 `impl CoreError::code()`에서 파생 반환만 하고
-//! variant 필드로 저장되지는 않음 (spec §4.6).
+//! `Io` / `Serialization` are only returned derivedly from
+//! `impl CoreError::code()` and are not stored as variant fields (spec §4.6).
 
 define_code_enum! {
-    /// Internal 카테고리 에러 코드.
+    /// Internal category error codes.
     pub enum InternalCode {
-        /// 일반 내부 에러.
+        /// Generic internal error.
         Generic => "internal.generic",
-        /// `std::io::Error` `#[from]` 래핑 에러.
+        /// `std::io::Error` `#[from]`-wrapped error.
         Io => "internal.io",
-        /// `serde_json::Error` `#[from]` 래핑 에러.
+        /// `serde_json::Error` `#[from]`-wrapped error.
         Serialization => "internal.serialization",
     }
 }

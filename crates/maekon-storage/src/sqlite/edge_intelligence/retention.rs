@@ -3,15 +3,15 @@ use chrono::Utc;
 
 use super::super::SqliteStorage;
 
-/// egress_ledger 보존 상한 — 가장 최근 N 건만 유지한다(V36, #4803).
-/// unbounded 증가를 막기 위한 cap. 초과분은 `enforce_all_retention` 에서 삭제된다.
+/// egress_ledger retention cap — keep only the most recent N rows (V36, #4803).
+/// A cap to prevent unbounded growth. Excess rows are deleted in `enforce_all_retention`.
 const EGRESS_LEDGER_MAX_ROWS: i64 = 5000;
 
 impl SqliteStorage {
     /// Delete activity segments older than `max_days`. Returns the number of deleted rows.
     pub fn enforce_segment_retention(&self, max_days: u32) -> Result<usize, StorageError> {
         let cutoff = (Utc::now() - chrono::Duration::days(max_days as i64)).to_rfc3339();
-        // 쓰기(retention DELETE) — write_lock(deletion_flag set 시 스킵).
+        // Write (retention DELETE) — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run(0usize, |conn| {
         let table_exists: bool = conn
             .query_row(
@@ -67,7 +67,7 @@ impl SqliteStorage {
     /// anti-resurrection correctness is HLC-based and skew-immune.
     pub fn gc_sync_tombstones(&self, data_retention_days: u32) -> Result<usize, StorageError> {
         let horizon = data_retention_days.max(90);
-        // 쓰기(GC DELETE) — write_lock(deletion_flag set 시 스킵).
+        // Write (GC DELETE) — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run(0usize, |conn| {
             let deleted = conn
                 .execute(
@@ -84,7 +84,7 @@ impl SqliteStorage {
     /// Delete weekly digests older than `max_weeks`. Returns the number of deleted rows.
     pub fn enforce_digest_retention(&self, max_weeks: u32) -> Result<usize, StorageError> {
         let cutoff = (Utc::now() - chrono::Duration::days(max_weeks as i64 * 7)).to_rfc3339();
-        // 쓰기(retention DELETE) — write_lock(deletion_flag set 시 스킵).
+        // Write (retention DELETE) — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run(0usize, |conn| {
         let table_exists: bool = conn
             .query_row(
@@ -116,7 +116,7 @@ impl SqliteStorage {
     ///
     /// Returns the total number of rows deleted across all tables.
     pub fn enforce_all_retention(&self) -> Result<u64, StorageError> {
-        // 쓰기(retention DELETE) — write_lock(deletion_flag set 시 스킵).
+        // Write (retention DELETE) — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run(0u64, |conn| {
             let mut total: u64 = 0;
 
@@ -192,8 +192,24 @@ impl SqliteStorage {
                 .unwrap_or(0) as u64;
             total += n;
 
-            // egress_ledger (V36, #4803): unbounded 방지 — 가장 최근 EGRESS_LEDGER_MAX_ROWS
-            // 건만 보존하고 그보다 오래된 행을 id 순으로 삭제한다(occurred_at tie-break 안전).
+            // coaching_events (V17): 90 days. INSERT-only coaching-message log that
+            // would otherwise grow unbounded; pruned on the `shown_at` column (TEXT
+            // NOT NULL), mirroring the 90-day window applied to the sibling
+            // suggestion/behavior tables above. The `shown_at IS NOT NULL` guard is
+            // defensive (the column is NOT NULL in schema) and matches the segment
+            // retention style — a NULL/unparseable timestamp is left untouched.
+            let n = conn
+                .execute(
+                    "DELETE FROM coaching_events \
+                     WHERE shown_at < datetime('now', '-90 days') AND shown_at IS NOT NULL",
+                    [],
+                )
+                .unwrap_or(0) as u64;
+            total += n;
+
+            // egress_ledger (V36, #4803): prevent unbounded growth — keep only the most
+            // recent EGRESS_LEDGER_MAX_ROWS rows and delete older ones ordered by id
+            // (safe even with an occurred_at tie-break).
             let n = conn
                 .execute(
                     "DELETE FROM egress_ledger WHERE id NOT IN (

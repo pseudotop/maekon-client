@@ -14,7 +14,7 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use noop::NoOpSandbox;
+pub use noop::{FailClosedSandbox, NoOpSandbox};
 
 #[cfg(target_os = "linux")]
 pub use linux::LinuxSandbox;
@@ -24,17 +24,40 @@ pub use macos::MacOsSandbox;
 pub use windows::WindowsSandbox;
 
 use maekon_core::config::{SandboxConfig, SandboxProfile};
+use maekon_core::models::automation::AutomationAction;
 use maekon_core::ports::sandbox::Sandbox;
 use std::sync::Arc;
 
-/// `config`가 Permissive 프로파일이면서 커스텀 리소스 제한이 없을 때 `true`를 반환한다.
-/// 이 경우 서브프로세스 샌드박스를 건너뛰어도 안전하다 (격리할 자원 제약이 없음).
+/// Return a log-safe string for an [`AutomationAction`].
 ///
-/// 단, 동작 자체를 누락해서는 안 된다(#4539): 이 판정의 소비자는
-/// `SandboxActionDispatcher::dispatch`이며, 그 경로에서 액션을 인-프로세스
-/// InputDriver로 직접 실행한다. 플랫폼별 sandbox 어댑터(`execute_sandboxed`)는
-/// 이 헬퍼를 참조하지 않고 프로파일과 무관하게 항상 worker를 경유한다 —
-/// 어댑터 안에 no-op 가드를 추가하면 직접 호출자에서 액션이 조용히 드롭된다(#5604).
+/// `KeyType` carries free-form text that may contain passwords or other
+/// sensitive content and MUST NOT appear in any log sink.  All other variants
+/// expose only non-sensitive structural data (coordinates, key names).
+pub(crate) fn redact_action(a: &AutomationAction) -> String {
+    match a {
+        AutomationAction::KeyType { text } => {
+            format!("KeyType {{ text: [REDACTED len={}] }}", text.len())
+        }
+        AutomationAction::MouseMove { x, y } => format!("MouseMove {{ x: {x}, y: {y} }}"),
+        AutomationAction::MouseClick { button, x, y } => {
+            format!("MouseClick {{ button: {button:?}, x: {x}, y: {y} }}")
+        }
+        AutomationAction::KeyPress { key } => format!("KeyPress {{ key: {key:?} }}"),
+        AutomationAction::KeyRelease { key } => format!("KeyRelease {{ key: {key:?} }}"),
+        AutomationAction::Hotkey { keys } => format!("Hotkey {{ keys: {keys:?} }}"),
+    }
+}
+
+/// Returns `true` when `config` uses the Permissive profile AND has no custom
+/// resource limits. In that case it is safe to skip the subprocess sandbox
+/// (there are no resource constraints to isolate).
+///
+/// Note that the action itself must still be performed (#4539): the consumer of
+/// this decision is `SandboxActionDispatcher::dispatch`, which on that path runs
+/// the action directly via the in-process InputDriver. The per-platform sandbox
+/// adapters (`execute_sandboxed`) do not consult this helper and always route
+/// through the worker regardless of profile — adding a no-op guard inside an
+/// adapter would silently drop actions for direct callers (#5604).
 pub(crate) fn is_permissive_noop(config: &SandboxConfig) -> bool {
     matches!(config.profile, SandboxProfile::Permissive)
         && config.max_memory_bytes == 0
@@ -50,13 +73,18 @@ pub fn create_platform_sandbox(config: &SandboxConfig) -> Arc<dyn Sandbox> {
 }
 
 fn create_native_sandbox() -> Arc<dyn Sandbox> {
+    // Reached only when `SandboxConfig.enabled == true` (see
+    // `create_platform_sandbox`). If no platform sandbox can actually enforce
+    // isolation here we must fail CLOSED rather than silently substitute a
+    // NoOpSandbox — the operator opted into sandboxing, so running uncontained
+    // while reporting success would be a sandbox escape (review4 A2/A6/A7).
     #[cfg(target_os = "linux")]
     {
         let sandbox = LinuxSandbox::new();
         if sandbox.is_available() {
             return Arc::new(sandbox);
         }
-        tracing::warn!("Linux sandbox not available; using NoOp sandbox");
+        tracing::error!("Linux sandbox not available; failing closed (refusing automation)");
     }
 
     #[cfg(target_os = "macos")]
@@ -65,7 +93,7 @@ fn create_native_sandbox() -> Arc<dyn Sandbox> {
         if sandbox.is_available() {
             return Arc::new(sandbox);
         }
-        tracing::warn!("macOS sandbox not available; using NoOp sandbox");
+        tracing::error!("macOS sandbox not available; failing closed (refusing automation)");
     }
 
     #[cfg(target_os = "windows")]
@@ -74,15 +102,17 @@ fn create_native_sandbox() -> Arc<dyn Sandbox> {
         if sandbox.is_available() {
             return Arc::new(sandbox);
         }
-        tracing::warn!("Windows sandbox not available; using NoOp sandbox");
+        tracing::error!("Windows sandbox not available; failing closed (refusing automation)");
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
-        tracing::warn!("sandbox unsupported on this platform; using NoOp sandbox");
+        tracing::error!(
+            "sandbox unsupported on this platform; failing closed (refusing automation)"
+        );
     }
 
-    Arc::new(NoOpSandbox)
+    Arc::new(FailClosedSandbox)
 }
 
 #[cfg(test)]
@@ -100,13 +130,23 @@ mod tests {
     }
 
     #[test]
-    fn enabled_config_returns_platform_sandbox() {
+    fn enabled_config_never_silently_noops() {
         let config = SandboxConfig {
             enabled: true,
             ..Default::default()
         };
         let sandbox = create_platform_sandbox(&config);
-        assert!(sandbox.is_available());
+        // When enabled, the factory must return either a real enforcing platform
+        // sandbox (is_available == true) or — when this build/platform cannot
+        // enforce isolation — a FailClosedSandbox that refuses execution. It must
+        // NEVER silently substitute the NoOp sandbox, which would run actions
+        // fully uncontained while reporting success (review4 A2/A6/A7).
+        assert_ne!(
+            sandbox.platform(),
+            "noop",
+            "enabled sandbox must not fall back to NoOp (silent fail-open)"
+        );
+        assert!(sandbox.is_available() || sandbox.platform() == "fail-closed");
     }
 
     #[test]

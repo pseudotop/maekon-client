@@ -24,7 +24,7 @@ use maekon_core::ports::integration::{
     IntegrationEgressPort, IntegrationEgressSignalPort, IntegrationOutboxPort,
     IntegrationSessionPort,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OnceCell};
 use tracing::warn;
 
 use super::transport::IntegrationEgressTransportClient;
@@ -36,9 +36,17 @@ pub struct IntegrationEgressCoordinator {
     transport: Arc<dyn IntegrationEgressTransportClient>,
     max_batch_size: usize,
     flush_notify: Arc<Notify>,
-    /// F-RR-C25-05: 현재 outbox에 누적된 추정 바이트 수.
-    /// enqueue_message 에서 증가, flush 후 ack 완료 시 감소합니다.
+    /// F-RR-C25-05: estimated number of bytes currently accumulated in the outbox.
+    /// Incremented in `enqueue_message`, decremented once the ack completes after a flush.
     pub(crate) pending_bytes: AtomicUsize,
+    /// #6127: one-shot guard ensuring `pending_bytes` is reconciled from the
+    /// persistent outbox exactly once before the first enqueue/flush. A freshly
+    /// constructed coordinator seeds `pending_bytes` to 0, but the on-disk
+    /// outbox may already hold a pre-restart backlog. Without reconciliation,
+    /// flushing that backlog would decrement a counter that never counted it,
+    /// underflowing the unsigned counter. The reconcile is idempotent and runs
+    /// lazily so wiring cannot accidentally skip it.
+    reconciled: OnceCell<()>,
 }
 
 impl IntegrationEgressCoordinator {
@@ -55,20 +63,62 @@ impl IntegrationEgressCoordinator {
             max_batch_size: max_batch_size.max(1),
             flush_notify: Arc::new(Notify::new()),
             pending_bytes: AtomicUsize::new(0),
+            reconciled: OnceCell::new(),
         }
     }
 
-    /// 현재 추정 누적 바이트 수를 반환합니다 (모니터링/테스트용).
+    /// #6127: Seed `pending_bytes` from the full persisted outbox backlog.
     ///
-    /// # 주의: Relaxed 순서 스냅샷
+    /// On restart the in-memory `pending_bytes` counter starts at 0, but the
+    /// SQLite-backed outbox may still hold messages enqueued before shutdown.
+    /// This reconciliation sums the serialized byte estimate over **all**
+    /// persisted pending items (not a single `max_batch_size` page) so that the
+    /// counter reflects the real on-disk backlog before any flush decrements it.
     ///
-    /// 이 값은 `Ordering::Relaxed` 로 읽으므로 best-effort 근사치입니다.
-    /// 동시에 진행 중인 `enqueue_message` / `flush` 호출과의 순서가 보장되지 않아
-    /// 호출 시점에 따라 직전 또는 직후 상태를 반영할 수 있습니다.
+    /// Idempotent: the underlying `OnceCell` runs the body at most once, so
+    /// calling this during wiring and/or having it triggered lazily on the
+    /// first operation both converge to a single reconciliation.
+    pub async fn reconcile_pending_bytes(&self) -> Result<(), CoreError> {
+        // `get_or_try_init` only flips the cell to initialized when the closure
+        // returns `Ok`; a transient outbox read error leaves it un-reconciled
+        // so a later call (or the lazy first-op trigger) can retry.
+        self.reconciled
+            .get_or_try_init(|| async {
+                // List the FULL outbox, not one batch: pass the current pending
+                // count as the limit so every persisted item is summed.
+                let total_items = self.outbox.pending_count().await?;
+                let items = self.outbox.list_pending(total_items).await?;
+                let backlog_bytes: usize = items
+                    .iter()
+                    .map(|item| {
+                        serde_json::to_vec(&item.envelope)
+                            .map(|v| v.len())
+                            .unwrap_or(0)
+                            + serde_json::to_vec(&item.payload)
+                                .map(|v| v.len())
+                                .unwrap_or(0)
+                    })
+                    .sum();
+                self.pending_bytes.store(backlog_bytes, Ordering::Relaxed);
+                Ok::<(), CoreError>(())
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// Returns the current estimated accumulated byte count (for monitoring/testing).
     ///
-    /// 따라서 반환값을 **strict upper-bound** (예: `assert!(v <= MAX)`) 로
-    /// 사용하면 비결정적 테스트 실패를 유발할 수 있습니다. 단조적 peak 추적
-    /// (F-RR-C26-01 테스트 참조) 등 best-effort 용도로만 사용하세요.
+    /// # Caution: Relaxed-ordering snapshot
+    ///
+    /// This value is read with `Ordering::Relaxed`, so it is a best-effort
+    /// approximation. Its ordering with respect to concurrent `enqueue_message`
+    /// / `flush` calls is not guaranteed, so depending on the moment it is
+    /// called it may reflect either the state just before or just after them.
+    ///
+    /// Using the returned value as a **strict upper-bound** (e.g.
+    /// `assert!(v <= MAX)`) can therefore trigger non-deterministic test
+    /// failures. Use it only for best-effort purposes such as monotonic peak
+    /// tracking (see the F-RR-C26-01 test).
     pub fn pending_bytes(&self) -> usize {
         self.pending_bytes.load(Ordering::Relaxed)
     }
@@ -136,7 +186,11 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
         envelope: IntegrationEnvelope,
         payload: IntegrationOutboundPayload,
     ) -> Result<(), CoreError> {
-        // F-PF-C24-05: count 상한 — 아이템 수가 MAX_OUTBOX_ITEMS 에 도달하면 거부.
+        // #6127: reconcile the byte counter from the persisted backlog before
+        // the first enqueue, so a pre-restart outbox is accounted for.
+        self.reconcile_pending_bytes().await?;
+
+        // F-PF-C24-05: count cap — reject once the item count reaches MAX_OUTBOX_ITEMS.
         let count = self.outbox.pending_count().await?;
         if count >= MAX_OUTBOX_ITEMS {
             return Err(CoreError::ServiceUnavailable {
@@ -148,7 +202,7 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
             });
         }
 
-        // F-RR-C26-01: 원자적 예약-후-검사 패턴.
+        // F-RR-C26-01: atomic reserve-then-check pattern.
         let msg_bytes = estimate_message_bytes(&envelope, &payload);
         let new_total = self.pending_bytes.fetch_add(msg_bytes, Ordering::Relaxed) + msg_bytes;
         if new_total > MAX_OUTBOX_BYTES {
@@ -157,7 +211,7 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
                 new_total,
                 msg_bytes,
                 max_bytes = MAX_OUTBOX_BYTES,
-                "outbox byte cap 초과 — 메시지 거부 (flush 후 재시도)"
+                "outbox byte cap exceeded — message rejected (retry after flush)"
             );
             return Err(CoreError::ServiceUnavailable {
                 code: maekon_core::error_codes::ServiceCode::Unavailable,
@@ -182,6 +236,11 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
     }
 
     async fn flush(&self) -> Result<usize, CoreError> {
+        // #6127: reconcile the byte counter from the persisted backlog before
+        // the first flush, so flushing a pre-restart backlog decrements a
+        // counter that actually accounted for it (no underflow).
+        self.reconcile_pending_bytes().await?;
+
         let session = self.session_port.current_session().await?.ok_or_else(|| {
             CoreError::ServiceUnavailable {
                 code: maekon_core::error_codes::ServiceCode::Unavailable,
@@ -229,8 +288,15 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
                             .unwrap_or(0)
                 })
                 .sum();
-            // F-RR-C27-01/F-RC-C27-01: fetch_sub — race-free decrement.
-            self.pending_bytes.fetch_sub(acked_bytes, Ordering::Relaxed);
+            // F-RR-C27-01/F-RC-C27-01: race-free decrement.
+            // #6127: saturating CAS loop clamping at 0 — decrementing more than
+            // the tracked bytes (e.g. flushing an unreconciled pre-restart
+            // backlog) must NOT underflow the unsigned counter.
+            let _ =
+                self.pending_bytes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        Some(current.saturating_sub(acked_bytes))
+                    });
 
             self.outbox.delete(&acknowledged_queue_ids).await?;
         }

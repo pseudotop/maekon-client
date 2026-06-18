@@ -38,7 +38,9 @@ impl EventsQueryService {
             .await
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
-        let fetch_limit = limit + offset;
+        // #6281: saturating_add — `limit + offset` could overflow (debug panic /
+        // release silent wrap-to-0) on attacker-supplied pagination params.
+        let fetch_limit = limit.saturating_add(offset);
         // get_events is out of plan scope (still takes DateTime<Utc>): decompose.
         let data: Vec<EventResponse> = self
             .ctx

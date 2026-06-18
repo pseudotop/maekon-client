@@ -9,6 +9,11 @@ This directory is organized by document intent.
 - [DOCUMENTATION_POLICY.md](./DOCUMENTATION_POLICY.md): documentation conventions and maintenance rules
 - [install.md](./install.md): installation guide
 - [testing/source-build-prerequisites.md](./testing/source-build-prerequisites.md): fresh-checkout build and Tauri sidecar prerequisites
+- [guides/public-contribution-governance.md](./guides/public-contribution-governance.md): public contribution labels, CODEOWNERS, and branch protection expectations
+- [guides/public-contributor-path.md](./guides/public-contributor-path.md): public-safe contribution lifecycle, evidence checklist, and maintainer handoff expectations
+- [guides/public-private-ci-split.md](./guides/public-private-ci-split.md): fork-safe public CI and maintainer-only validation boundary
+- [guides/hybrid-import-workflow.md](./guides/hybrid-import-workflow.md): public PR import, attribution, parent validation, and export handoff workflow
+- [guides/good-first-issues.md](./guides/good-first-issues.md): public-safe first contribution guide and starter issue batch
 
 ## Directories
 

@@ -1,6 +1,7 @@
 use crate::i18n::{
-    contains_human_text, detect_hardcoded_ui_literals, extract_translation_keys, flatten_json_keys,
-    has_translation_key, load_locale_keys, scan_i18n,
+    contains_human_text, detect_hardcoded_ui_literals, extract_template_literal_t_calls,
+    extract_translation_keys, flatten_json_keys, has_translation_key, load_locale_keys, scan_i18n,
+    strip_jsx_expressions,
 };
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -24,6 +25,353 @@ fn extract_translation_keys_ignores_non_i18n_calls() {
     let keys = extract_translation_keys(line);
     assert!(keys.is_empty());
 }
+
+// ── Fix #15: template-literal t() extraction ──────────────────────────────────
+
+/// A template literal with an interpolation should yield a notice with the
+/// static prefix before `${`.
+#[test]
+fn extract_template_literal_t_calls_dynamic_prefix() {
+    // e.g. t(`heatmap.${key}`)  — static prefix is "heatmap."
+    let results = extract_template_literal_t_calls("t(`heatmap.${key}`)");
+    assert_eq!(results.len(), 1);
+    let (col, prefix, call) = &results[0];
+    assert_eq!(*col, 1);
+    assert_eq!(prefix, "heatmap.");
+    assert!(call.contains("heatmap.${key}"));
+}
+
+/// A fully static template literal (no `${`) should also be captured — it is
+/// invisible to `extract_translation_keys` which only handles quote strings.
+#[test]
+fn extract_template_literal_t_calls_fully_static() {
+    let results = extract_template_literal_t_calls("t(`common.save`)");
+    assert_eq!(results.len(), 1);
+    let (_col, prefix, call) = &results[0];
+    assert_eq!(prefix, "common.save");
+    assert!(call.contains("common.save"));
+}
+
+/// A line with no template-literal t() call produces no results.
+#[test]
+fn extract_template_literal_t_calls_none_present() {
+    let results = extract_template_literal_t_calls(r#"const x = t('common.save');"#);
+    assert!(
+        results.is_empty(),
+        "single-quote t() should not be picked up by the template-literal extractor"
+    );
+}
+
+/// Alphanumeric prefix before `t(` (e.g. `set(`) must be ignored.
+#[test]
+fn extract_template_literal_t_calls_alnum_prefix_rejected() {
+    let results = extract_template_literal_t_calls("reset(`my.key`)");
+    assert!(
+        results.is_empty(),
+        "set(`...`) is not a standalone t() call"
+    );
+}
+
+/// Multiple template-literal t() calls on one line.
+#[test]
+fn extract_template_literal_t_calls_multiple_on_line() {
+    let line = "t(`a.${x}`) + t(`b.${y}`)";
+    let results = extract_template_literal_t_calls(line);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].1, "a.");
+    assert_eq!(results[1].1, "b.");
+}
+
+/// Unclosed backtick on the same line: skip without panicking.
+#[test]
+fn extract_template_literal_t_calls_unclosed_backtick_skipped() {
+    let results = extract_template_literal_t_calls("t(`unclosed");
+    assert!(
+        results.is_empty(),
+        "unclosed backtick should not panic or produce a result"
+    );
+}
+
+// ── Fix #8: JSON array expansion ──────────────────────────────────────────────
+
+/// An array value should expand to indexed keys `[0]`, `[1]`, etc.
+#[test]
+fn flatten_json_keys_array_expanded_per_element() {
+    let value = serde_json::json!({
+        "heatmap": {
+            "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        }
+    });
+    let mut keys = BTreeSet::new();
+    flatten_json_keys("", &value, &mut keys);
+
+    assert!(
+        keys.contains("heatmap.days[0]"),
+        "first element must appear as [0]"
+    );
+    assert!(
+        keys.contains("heatmap.days[6]"),
+        "seventh element must appear as [6]"
+    );
+    assert!(
+        keys.contains("heatmap.days"),
+        "the bare array key must also appear (supports returnObjects:true retrieval)"
+    );
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.starts_with("heatmap.days["))
+            .count(),
+        7,
+        "all 7 array elements must be expanded"
+    );
+}
+
+/// An empty array produces only the bare key (no per-element keys). A locale
+/// whose array is empty relative to a populated baseline is still caught: the
+/// baseline's `[0]`… per-element keys are missing from the empty locale.
+#[test]
+fn flatten_json_keys_empty_array_produces_only_bare_key() {
+    let value = serde_json::json!({ "days": [] });
+    let mut keys = BTreeSet::new();
+    flatten_json_keys("", &value, &mut keys);
+    assert_eq!(
+        keys.into_iter().collect::<Vec<_>>(),
+        vec!["days".to_string()],
+        "an empty array yields only the bare key (returnObjects), no per-element keys"
+    );
+}
+
+/// Mixed-depth JSON with an array inside a nested object.
+#[test]
+fn flatten_json_keys_nested_array() {
+    let value = serde_json::json!({ "a": { "b": ["x", "y"] } });
+    let mut keys = BTreeSet::new();
+    flatten_json_keys("", &value, &mut keys);
+    assert!(
+        keys.contains("a.b"),
+        "bare array key present (returnObjects)"
+    );
+    assert!(keys.contains("a.b[0]"));
+    assert!(keys.contains("a.b[1]"));
+    assert_eq!(keys.len(), 3);
+}
+
+/// Existing behavior for plain object keys is unchanged.
+#[test]
+fn flatten_json_keys_works() {
+    let value = serde_json::json!({
+        "common": {
+            "save": "Save",
+            "cancel": "Cancel"
+        },
+        "dashboard": {
+            "title": "Dashboard"
+        }
+    });
+    let mut keys = BTreeSet::new();
+    flatten_json_keys("", &value, &mut keys);
+    assert!(keys.contains("common.save"));
+    assert!(keys.contains("common.cancel"));
+    assert!(keys.contains("dashboard.title"));
+}
+
+// ── Fix #9: baseline en.json load failure ─────────────────────────────────────
+
+/// When en.json is absent the scan must return exactly ONE fatal error (the
+/// locale-load error) and the early-abort sentinel, without producing thousands
+/// of spurious missing-key or extra-key findings.
+#[test]
+fn scan_i18n_missing_en_json_emits_fatal_and_aborts() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+
+    // Write all locales EXCEPT en.json.
+    for locale in ["ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, r#"{{"common":{{"save":"저장"}}}}"#).unwrap();
+    }
+
+    // Place a product tsx that uses a key so we can confirm no missing-i18n-key
+    // errors are generated.
+    let src_dir = dir.path().join("crates/maekon-web/frontend/src/pages");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let mut tsx = std::fs::File::create(src_dir.join("index.tsx")).unwrap();
+    writeln!(tsx, r#"t('common.save')"#).unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+
+    // Exactly one locale-load error (for en.json) + one baseline-locale-missing.
+    let load_errors: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "locale-load")
+        .collect();
+    let fatal_errors: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "baseline-locale-missing")
+        .collect();
+    let missing_key_errors: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+    let missing_locale_errors: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-locale-key")
+        .collect();
+
+    assert_eq!(
+        load_errors.len(),
+        1,
+        "exactly one locale-load error expected (for en.json)"
+    );
+    assert_eq!(
+        fatal_errors.len(),
+        1,
+        "exactly one baseline-locale-missing sentinel expected"
+    );
+    assert!(
+        missing_key_errors.is_empty(),
+        "no missing-i18n-key errors should be emitted when en.json is absent"
+    );
+    assert!(
+        missing_locale_errors.is_empty(),
+        "no missing-locale-key errors should be emitted when en.json is absent"
+    );
+}
+
+// ── Fix #10: JSX text-node mixed content ─────────────────────────────────────
+
+/// `strip_jsx_expressions` removes `{...}` spans and collapses whitespace.
+#[test]
+fn strip_jsx_expressions_removes_expression_spans() {
+    assert_eq!(strip_jsx_expressions("Save {count}"), "Save");
+    assert_eq!(strip_jsx_expressions("{count} items"), "items");
+    assert_eq!(strip_jsx_expressions("Hello {name}!"), "Hello !");
+    assert_eq!(strip_jsx_expressions("{expr}"), "");
+}
+
+/// Nested braces are handled correctly.
+#[test]
+fn strip_jsx_expressions_nested_braces() {
+    // {fn({ key: val })} — the inner braces must not terminate stripping early.
+    assert_eq!(
+        strip_jsx_expressions("Result: {fn({ key: val })}"),
+        "Result:"
+    );
+}
+
+/// Segments that are purely static text are unchanged (except whitespace
+/// normalisation).
+#[test]
+fn strip_jsx_expressions_no_expressions_unchanged() {
+    assert_eq!(strip_jsx_expressions("Submit form"), "Submit form");
+}
+
+/// Mixed segment `Save {count}` used to be silently skipped because it ends
+/// with `}`.  After fix #10 the static text `Save` must be detected.
+#[test]
+fn detect_hardcoded_text_node_mixed_content_trailing_expr_flagged() {
+    let line = r#"<button>Save {count}</button>"#;
+    let hits = detect_hardcoded_ui_literals(line);
+    assert_eq!(
+        hits.len(),
+        1,
+        "mixed 'Save {{count}}' should be flagged — static text 'Save' is hardcoded copy"
+    );
+    assert!(hits[0].1.contains("text node"));
+}
+
+/// Mixed segment with expression FIRST: `{count} items` used to be skipped
+/// because it starts with `{`.
+#[test]
+fn detect_hardcoded_text_node_mixed_content_leading_expr_flagged() {
+    let line = r#"<span>{count} items selected</span>"#;
+    let hits = detect_hardcoded_ui_literals(line);
+    assert_eq!(
+        hits.len(),
+        1,
+        "\"{{count}} items selected\" should be flagged — 'items selected' is hardcoded copy"
+    );
+}
+
+/// Pure JSX expression (`{userName}`) must still be skipped (no regression).
+#[test]
+fn detect_hardcoded_text_node_skips_jsx_expression() {
+    let line = r#"<span>{userName}</span>"#;
+    let hits = detect_hardcoded_ui_literals(line);
+    assert!(hits.is_empty());
+}
+
+// ── Fix #11: restricted plural/context suffix matching ────────────────────────
+
+/// Direct key match still works.
+#[test]
+fn i18n_key_lookup_direct_match() {
+    let mut keys = BTreeSet::new();
+    keys.insert("common.save".to_string());
+    assert!(has_translation_key(&keys, "common.save"));
+}
+
+/// Recognized ICU plural suffixes are accepted.
+#[test]
+fn i18n_key_lookup_accepts_plural_resource_forms() {
+    let mut keys = BTreeSet::new();
+    keys.insert("timeline.selectedCount_one".to_string());
+    keys.insert("timeline.selectedCount_other".to_string());
+
+    assert!(has_translation_key(&keys, "timeline.selectedCount"));
+}
+
+/// All other recognized plural suffixes must also be accepted.
+#[test]
+fn i18n_key_lookup_accepts_all_plural_suffixes() {
+    for suffix in &["_zero", "_two", "_few", "_many", "_plural"] {
+        let mut keys = BTreeSet::new();
+        keys.insert(format!("count{suffix}"));
+        assert!(
+            has_translation_key(&keys, "count"),
+            "suffix {suffix} should be recognized"
+        );
+    }
+}
+
+/// i18next context forms (`{key}_{context}`) are accepted via the range scan
+/// fallback.  This is intentional — context values are arbitrary runtime
+/// strings and cannot be enumerated statically.
+#[test]
+fn i18n_key_lookup_accepts_context_resource_forms() {
+    let mut keys = BTreeSet::new();
+    keys.insert("settings.autostart.unsupported_snap_sandbox".to_string());
+
+    assert!(has_translation_key(&keys, "settings.autostart.unsupported"));
+}
+
+/// A key must NOT be accepted when only an *unrelated* key that happens to
+/// start with the same substring (but joined by a DOT, not underscore) exists.
+/// e.g. `t('foo')` when only `foo.bar` exists — that is a distinct key, not a
+/// plural/context form.
+#[test]
+fn i18n_key_lookup_rejects_dot_sibling() {
+    let mut keys = BTreeSet::new();
+    keys.insert("foo.bar".to_string());
+    // `foo` does not exist; `foo.bar` is not a prefix match via `_`.
+    assert!(
+        !has_translation_key(&keys, "foo"),
+        "foo.bar is not a plural/context form of foo"
+    );
+}
+
+/// A missing key with no related forms at all is correctly rejected.
+#[test]
+fn i18n_key_lookup_rejects_missing_key() {
+    let mut keys = BTreeSet::new();
+    keys.insert("common.save".to_string());
+    assert!(!has_translation_key(&keys, "common.cancel"));
+}
+
+// ── Unchanged / regression tests ─────────────────────────────────────────────
 
 #[test]
 fn contains_human_text_heuristic() {
@@ -73,41 +421,6 @@ fn contains_human_text_mixed_content() {
     assert!(contains_human_text("v2.0 release"));
     assert!(!contains_human_text("123-456"));
     assert!(!contains_human_text("###"));
-}
-
-#[test]
-fn flatten_json_keys_works() {
-    let value = serde_json::json!({
-        "common": {
-            "save": "Save",
-            "cancel": "Cancel"
-        },
-        "dashboard": {
-            "title": "Dashboard"
-        }
-    });
-    let mut keys = BTreeSet::new();
-    flatten_json_keys("", &value, &mut keys);
-    assert!(keys.contains("common.save"));
-    assert!(keys.contains("common.cancel"));
-    assert!(keys.contains("dashboard.title"));
-}
-
-#[test]
-fn i18n_key_lookup_accepts_plural_resource_forms() {
-    let mut keys = BTreeSet::new();
-    keys.insert("timeline.selectedCount_one".to_string());
-    keys.insert("timeline.selectedCount_other".to_string());
-
-    assert!(has_translation_key(&keys, "timeline.selectedCount"));
-}
-
-#[test]
-fn i18n_key_lookup_accepts_context_resource_forms() {
-    let mut keys = BTreeSet::new();
-    keys.insert("settings.autostart.unsupported_snap_sandbox".to_string());
-
-    assert!(has_translation_key(&keys, "settings.autostart.unsupported"));
 }
 
 #[test]
@@ -193,13 +506,6 @@ fn detect_hardcoded_text_node_between_tags() {
     let hits = detect_hardcoded_ui_literals(line);
     assert_eq!(hits.len(), 1);
     assert!(hits[0].1.contains("text node"));
-}
-
-#[test]
-fn detect_hardcoded_text_node_skips_jsx_expression() {
-    let line = r#"<span>{userName}</span>"#;
-    let hits = detect_hardcoded_ui_literals(line);
-    assert!(hits.is_empty());
 }
 
 #[test]
@@ -306,6 +612,26 @@ fn load_locale_keys_empty_object() {
 
     let keys = load_locale_keys(&path).unwrap();
     assert!(keys.is_empty());
+}
+
+/// Fix #8 regression: load_locale_keys on a file containing an array value
+/// must expand the array elements.
+#[test]
+fn load_locale_keys_array_value_expanded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("en.json");
+    let mut f = std::fs::File::create(&path).unwrap();
+    write!(f, r#"{{"heatmap":{{"days":["Mon","Tue","Wed"]}}}}"#).unwrap();
+
+    let keys = load_locale_keys(&path).unwrap();
+    assert!(keys.contains("heatmap.days[0]"));
+    assert!(keys.contains("heatmap.days[1]"));
+    assert!(keys.contains("heatmap.days[2]"));
+    assert!(
+        keys.contains("heatmap.days"),
+        "bare array key must also appear (returnObjects:true retrieval)"
+    );
+    assert_eq!(keys.len(), 4);
 }
 
 #[test]

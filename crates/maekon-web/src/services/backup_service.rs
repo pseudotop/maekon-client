@@ -84,8 +84,9 @@ impl BackupQueryService {
                     .await
                     .map_err(|error| ApiError::Internal(error.to_string()))?
                     .into_iter()
-                    .map(to_event_backup)
-                    .collect(),
+                    // #6273: mask PII (Standard, fail-closed) like the export surface.
+                    .map(|row| to_event_backup(row, &self.ctx.pii_sanitizer))
+                    .collect::<Result<Vec<_>, _>>()?,
             );
         }
 
@@ -97,8 +98,9 @@ impl BackupQueryService {
                     .await
                     .map_err(|error| ApiError::Internal(error.to_string()))?
                     .into_iter()
-                    .map(to_frame_backup)
-                    .collect(),
+                    // #6273: mask PII (Standard, fail-closed) like the export surface.
+                    .map(|row| to_frame_backup(row, &self.ctx.pii_sanitizer))
+                    .collect::<Result<Vec<_>, _>>()?,
             );
         }
 

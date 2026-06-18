@@ -38,6 +38,19 @@ pub trait IntegrationTransportClient: Send + Sync {
     async fn heartbeat(&self, session_id: &str) -> Result<DateTime<Utc>, CoreError>;
 
     async fn disconnect(&self, session_id: &str) -> Result<(), CoreError>;
+
+    /// Evict (locally close + drop) the transport-side binding for a superseded
+    /// session id without performing a remote disconnect handshake.
+    ///
+    /// Unlike [`disconnect`](Self::disconnect), this performs no network round
+    /// trip and tolerates a missing binding: it aborts the prior live channel's
+    /// read_loop task and drops the channel `Arc` so the spawned task and its
+    /// TCP socket do not leak when a reconnect rotates the session id. Used by
+    /// the coordinator on the reconnect path before issuing a fresh `connect`.
+    /// The default is a no-op for transports that hold no per-session binding.
+    async fn evict_binding(&self, _session_id: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

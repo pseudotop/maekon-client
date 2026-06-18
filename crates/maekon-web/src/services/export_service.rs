@@ -137,6 +137,13 @@ fn resolve_export_range(params: &ExportQuery) -> (DateTime<Utc>, DateTime<Utc>) 
         .map(|datetime| datetime.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
 
+    // #6281: bound the span so a caller-supplied from/to cannot make
+    // list_*_exports load an unbounded result set into memory. Clamp `from` to at
+    // most MAX_EXPORT_DAYS before `to` (keeps the most recent window of an
+    // over-large request; narrow/historical ranges are unaffected).
+    const MAX_EXPORT_DAYS: i64 = 731; // ~2 years
+    let from = from.max(to - Duration::days(MAX_EXPORT_DAYS));
+
     (from, to)
 }
 
@@ -206,9 +213,13 @@ pub(crate) fn sessions_to_ical(sessions: &[FocusWorkSessionRecord]) -> String {
         buf.push_str(&format!("UID:session-{}@maekon\r\n", session.id));
         buf.push_str(&format!("DTSTART:{dtstart}\r\n"));
         buf.push_str(&format!("DTEND:{dtend}\r\n"));
+        // `primary_app` and `category` are OS-captured free-form strings. Escape
+        // them per RFC 5545 §3.3.11 so embedded `;`, `,`, `\`, CR, or LF cannot
+        // inject a new content line or property into the VEVENT.
         buf.push_str(&format!(
             "SUMMARY:{} ({})\r\n",
-            session.primary_app, session.category
+            ical_text_escape(&session.primary_app),
+            ical_text_escape(&session.category)
         ));
         buf.push_str(&format!(
             "DESCRIPTION:Duration: {}s | Deep work: {}s | Interruptions: {}\r\n",
@@ -231,7 +242,10 @@ pub(crate) fn sessions_to_toggl_csv(sessions: &[FocusWorkSessionRecord]) -> Stri
         let description = csv_escape(&format!("{} ({})", session.primary_app, session.category));
         let (start_date, start_time) = split_rfc3339_date_time(&session.started_at);
         let duration = format_toggl_duration(session.duration_secs);
-        let tags = &session.category;
+        // category is a free-form String; route the Tags cell through csv_escape so a
+        // formula-injection prefix (= + - @) is defanged here too, not only in the
+        // description (#6082 follow-up).
+        let tags = csv_escape(&session.category);
 
         buf.push_str(&format!(
             "{description},{start_date},{start_time},{duration},{tags}\n"
@@ -239,6 +253,34 @@ pub(crate) fn sessions_to_toggl_csv(sessions: &[FocusWorkSessionRecord]) -> Stri
     }
 
     buf
+}
+
+/// Escape a runtime string for use in an iCalendar TEXT property value
+/// (RFC 5545 §3.3.11).
+///
+/// OS-captured values such as app names or categories are written into TEXT
+/// properties (e.g. `SUMMARY`) verbatim. Without escaping, a `;`, `,`, or
+/// backslash changes the property's structured value, and an embedded CR/LF
+/// terminates the current content line — allowing an attacker-controlled string
+/// to inject an entirely new property or component into the VEVENT (iCalendar
+/// injection / CWE-93). Per §3.3.11 we escape backslash, semicolon, and comma,
+/// and we collapse CR/LF (and the literal `\n`/`\N` newline escapes) to a single
+/// space so no new content line can be started.
+fn ical_text_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            ';' => escaped.push_str("\\;"),
+            ',' => escaped.push_str("\\,"),
+            // CR and LF are line-folding controls in iCalendar; neutralize them
+            // so a runtime string cannot terminate the content line and inject a
+            // new property/component. Collapse to a single space.
+            '\r' | '\n' => escaped.push(' '),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 /// Convert an RFC 3339 timestamp to iCal DATETIME format (yyyyMMddTHHmmssZ).
@@ -269,12 +311,30 @@ fn format_toggl_duration(secs: u64) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-/// Escape a CSV field value: quote it if it contains comma, quote, or newline.
+/// Neutralize CSV formula injection (CWE-1236).
+///
+/// OS-captured values such as window titles or app names are written verbatim
+/// into export cells. RFC 4180 quoting does not defang a leading control
+/// character that a spreadsheet treats as a formula trigger (`=`, `+`, `-`,
+/// `@`, TAB, or CR), which can yield DDE/HYPERLINK execution on open in Excel
+/// or Google Sheets. Prefix any such field with a single apostrophe so the
+/// spreadsheet renders it as literal text. The apostrophe is dropped on
+/// display by the spreadsheet, so the visible value is unchanged.
+fn defang_csv_formula(value: &str) -> String {
+    match value.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{value}"),
+        _ => value.to_string(),
+    }
+}
+
+/// Escape a CSV field value: defang formula injection, then quote it if it
+/// contains comma, quote, or newline.
 fn csv_escape(value: &str) -> String {
+    let value = defang_csv_formula(value);
     if value.contains(',') || value.contains('"') || value.contains('\n') {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
-        value.to_string()
+        value
     }
 }
 
@@ -305,16 +365,7 @@ pub(crate) fn records_to_csv<T: Serialize>(records: &[T]) -> Result<String, ApiE
                     object
                         .get(header_name)
                         .map(|item| match item {
-                            serde_json::Value::String(value) => {
-                                if value.contains(',')
-                                    || value.contains('"')
-                                    || value.contains('\n')
-                                {
-                                    format!("\"{}\"", value.replace('"', "\"\""))
-                                } else {
-                                    value.clone()
-                                }
-                            }
+                            serde_json::Value::String(value) => csv_escape(value),
                             serde_json::Value::Null => String::new(),
                             other => other.to_string(),
                         })
@@ -402,6 +453,71 @@ mod tests {
 
         let vevent_count = result.matches("BEGIN:VEVENT").count();
         assert_eq!(vevent_count, 2);
+    }
+
+    // ── ical_text_escape (RFC 5545 §3.3.11 / CWE-93) ──────────────
+
+    #[test]
+    fn ical_text_escape_escapes_special_chars() {
+        // Backslash, semicolon, and comma are escaped per §3.3.11.
+        assert_eq!(ical_text_escape("a\\b"), "a\\\\b");
+        assert_eq!(ical_text_escape("a;b"), "a\\;b");
+        assert_eq!(ical_text_escape("a,b"), "a\\,b");
+    }
+
+    #[test]
+    fn ical_text_escape_collapses_newlines_to_space() {
+        // CR/LF are line-folding controls and must not survive verbatim.
+        assert_eq!(ical_text_escape("a\r\nb"), "a  b");
+        assert_eq!(ical_text_escape("a\nb"), "a b");
+        assert!(!ical_text_escape("a\r\nb").contains('\r'));
+        assert!(!ical_text_escape("a\r\nb").contains('\n'));
+    }
+
+    #[test]
+    fn ical_text_escape_leaves_benign_text_untouched() {
+        assert_eq!(ical_text_escape("VS Code"), "VS Code");
+        assert_eq!(ical_text_escape(""), "");
+    }
+
+    #[test]
+    fn ical_summary_cannot_inject_a_new_property_line() {
+        // A malicious app/category that tries to terminate the SUMMARY content
+        // line and inject a forged property (CWE-93). The embedded CRLF, `;`,
+        // and `,` must all be neutralized so no extra property line appears.
+        let mut session = sample_session();
+        session.primary_app = "Evil\r\nATTENDEE:mailto:attacker@evil.com\r\nX-INJECT".to_string();
+        session.category = "cat,with;chars".to_string();
+
+        let result = sessions_to_ical(&[session]);
+
+        // The forged ATTENDEE/X-INJECT properties must never appear as their own
+        // content lines.
+        for line in result.split("\r\n") {
+            assert!(
+                !line.starts_with("ATTENDEE:"),
+                "injected ATTENDEE property leaked as a content line: {result:?}"
+            );
+            assert!(
+                !line.starts_with("X-INJECT"),
+                "injected X-INJECT property leaked as a content line: {result:?}"
+            );
+        }
+
+        // Exactly one SUMMARY line is emitted for the single VEVENT, and the
+        // injected payload is folded into that single escaped value.
+        let summary_lines: Vec<&str> = result
+            .split("\r\n")
+            .filter(|line| line.starts_with("SUMMARY:"))
+            .collect();
+        assert_eq!(summary_lines.len(), 1);
+        let summary = summary_lines[0];
+        assert!(summary.contains("Evil  ATTENDEE:mailto:attacker@evil.com  X-INJECT"));
+        // RFC 5545 escapes applied to the category.
+        assert!(summary.contains("cat\\,with\\;chars"));
+        // Structural integrity: still a single well-formed VEVENT.
+        assert_eq!(result.matches("BEGIN:VEVENT").count(), 1);
+        assert_eq!(result.matches("END:VEVENT").count(), 1);
     }
 
     // ── sessions_to_toggl_csv ─────────────────────────────────────
@@ -510,6 +626,45 @@ mod tests {
         assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
     }
 
+    // ── defang_csv_formula (CWE-1236) ─────────────────────────────
+
+    #[test]
+    fn defang_neutralizes_each_trigger_char() {
+        // A leading formula-trigger char gets an apostrophe prefix.
+        assert_eq!(defang_csv_formula("=1+1"), "'=1+1");
+        assert_eq!(defang_csv_formula("+1"), "'+1");
+        assert_eq!(defang_csv_formula("-1"), "'-1");
+        assert_eq!(defang_csv_formula("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(defang_csv_formula("\tcmd"), "'\tcmd");
+        assert_eq!(defang_csv_formula("\rcmd"), "'\rcmd");
+    }
+
+    #[test]
+    fn defang_leaves_benign_values_untouched() {
+        assert_eq!(defang_csv_formula("VS Code"), "VS Code");
+        assert_eq!(defang_csv_formula(""), "");
+        // A trigger char that is not leading must not be touched.
+        assert_eq!(defang_csv_formula("a=b"), "a=b");
+    }
+
+    #[test]
+    fn csv_escape_neutralizes_hyperlink_formula() {
+        // A window title that begins with a formula must be defanged and,
+        // because it contains commas/quotes, also RFC-4180 quoted.
+        let escaped = csv_escape("=HYPERLINK(\"http://evil\",\"x\")");
+        assert!(escaped.starts_with("\"'=HYPERLINK"));
+    }
+
+    #[test]
+    fn toggl_csv_neutralizes_formula_in_app_name() {
+        let mut session = sample_session();
+        session.primary_app = "=HYPERLINK(\"http://evil\")".to_string();
+        let result = sessions_to_toggl_csv(&[session]);
+        // The description cell must carry a leading apostrophe before `=`.
+        assert!(result.contains("'=HYPERLINK"));
+        assert!(!result.contains(",=HYPERLINK"));
+    }
+
     // ── records_to_csv ────────────────────────────────────────────
 
     #[test]
@@ -563,6 +718,22 @@ mod tests {
         let data_line = csv.lines().nth(1).unwrap();
         // The value should be quoted.
         assert!(data_line.contains("\"a,b\""));
+    }
+
+    #[test]
+    fn records_to_csv_neutralizes_formula_in_string_field() {
+        #[derive(Serialize)]
+        struct Row {
+            window_title: String,
+        }
+
+        let rows = vec![Row {
+            window_title: "=HYPERLINK(\"http://evil\")".to_string(),
+        }];
+        let csv = records_to_csv(&rows).unwrap();
+        let data_line = csv.lines().nth(1).unwrap();
+        // The formula must be defanged with a leading apostrophe.
+        assert!(data_line.contains("'=HYPERLINK"));
     }
 
     // ── resolve_export_range ──────────────────────────────────────

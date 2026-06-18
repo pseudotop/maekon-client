@@ -31,6 +31,10 @@ pub(crate) mod ax {
     pub const kAXErrorNoValue: AXError = -25212;
     pub const kAXErrorAttributeUnsupported: AXError = -25205;
     pub const kAXErrorNotImplemented: AXError = -25208;
+    /// Returned when an AX request cannot complete — notably when a messaging
+    /// timeout (see `AXUIElementSetMessagingTimeout`) elapses because the target
+    /// app's main thread is hung.
+    pub const kAXErrorCannotComplete: AXError = -25204;
 
     // Attribute key string values -- constructed at call time.
     // These correspond to the Apple-defined kAX*Attribute constants.
@@ -85,6 +89,22 @@ pub(crate) mod ax {
             attributes: core_foundation_sys::array::CFArrayRef,
             options: u32, // 0 = default
             values: *mut core_foundation_sys::array::CFArrayRef,
+        ) -> AXError;
+
+        /// Set the per-element messaging timeout (in seconds) for synchronous
+        /// AX IPC to the target application's main thread.
+        ///
+        /// `AXUIElementCopyAttributeValue` / `AXUIElementCopyMultipleAttributeValues`
+        /// are blocking IPC calls; without an explicit timeout a hung target app
+        /// blocks the calling thread for the multi-tens-of-seconds system default.
+        /// Setting a short timeout makes those calls return
+        /// [`kAXErrorCannotComplete`] instead of blocking. Applying it to the
+        /// system-wide element sets the global default for elements that do not
+        /// have their own timeout. `timeout_seconds` of `0.0` restores the
+        /// system default.
+        pub fn AXUIElementSetMessagingTimeout(
+            element: AXUIElementRef,
+            timeout_seconds: f32,
         ) -> AXError;
     }
 

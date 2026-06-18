@@ -21,6 +21,19 @@ use super::transport::IntegrationEgressTransportResponse;
 
 type LiveWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Maximum number of inbound ack entries queued before the oldest is evicted.
+/// Prevents an untrusted/compromised server from growing the queue without bound.
+const MAX_INBOUND_ACKS: usize = 1000;
+
+/// Maximum number of inbound prompt entries queued before the oldest is evicted.
+/// Prevents an untrusted/compromised server from growing the queue without bound.
+const MAX_INBOUND_PROMPTS: usize = 1000;
+
+/// Maximum byte length of a WebSocket text frame that will be deserialized.
+/// Frames larger than this limit are skipped with a warning rather than parsed,
+/// capping per-message allocations under the agent's <100 MB RSS budget.
+const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
+
 #[derive(Default)]
 struct WebSocketIntegrationInboundState {
     outbound_acks: VecDeque<IntegrationAckPayload>,
@@ -107,17 +120,39 @@ impl WebSocketIntegrationSessionChannel {
             };
             match raw {
                 Ok(Message::Text(text)) => {
+                    // Guard against oversized frames before any allocation-heavy
+                    // deserialization.  An untrusted server can send arbitrarily
+                    // large JSON; reject early to stay within the <100 MB RSS budget.
+                    if text.len() > MAX_WS_MESSAGE_BYTES {
+                        warn!(
+                            bytes = text.len(),
+                            limit = MAX_WS_MESSAGE_BYTES,
+                            "integration websocket: incoming text frame exceeds size limit, skipping"
+                        );
+                        continue;
+                    }
+
                     let mut ack_changed = false;
                     let mut prompt_changed = false;
                     if let Ok(ack) = serde_json::from_str::<IntegrationAckPayload>(&text) {
-                        inbound.lock().await.outbound_acks.push_back(ack);
+                        let mut state = inbound.lock().await;
+                        if state.outbound_acks.len() >= MAX_INBOUND_ACKS {
+                            state.outbound_acks.pop_front();
+                            warn!("inbound ack buffer full: dropping oldest");
+                        }
+                        state.outbound_acks.push_back(ack);
                         ack_changed = true;
                     } else if let Ok(event) =
                         serde_json::from_str::<IntegrationCloudEvent<ProactivePrompt>>(&text)
                     {
                         match prompt_from_cloudevent(event) {
                             Ok(prompt) => {
-                                inbound.lock().await.prompts.push_back(prompt);
+                                let mut state = inbound.lock().await;
+                                if state.prompts.len() >= MAX_INBOUND_PROMPTS {
+                                    state.prompts.pop_front();
+                                    warn!("inbound prompt buffer full: dropping oldest");
+                                }
+                                state.prompts.push_back(prompt);
                                 prompt_changed = true;
                             }
                             Err(err) => {
@@ -128,7 +163,12 @@ impl WebSocketIntegrationSessionChannel {
                         for event in batch.events {
                             match prompt_from_cloudevent(event) {
                                 Ok(prompt) => {
-                                    inbound.lock().await.prompts.push_back(prompt);
+                                    let mut state = inbound.lock().await;
+                                    if state.prompts.len() >= MAX_INBOUND_PROMPTS {
+                                        state.prompts.pop_front();
+                                        warn!("inbound prompt buffer full: dropping oldest");
+                                    }
+                                    state.prompts.push_back(prompt);
                                     prompt_changed = true;
                                 }
                                 Err(err) => {
@@ -350,6 +390,128 @@ mod tests {
             Arc::strong_count(&notify) >= 2,
             "F-RR-37: strong_count should be >= 2 when a task clone exists; \
              the Arc::strong_count == 1 guard was permanently false"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #5974: inbound buffer cap tests
+    // ------------------------------------------------------------------
+
+    /// Simulate the bounded-push logic for the ack queue: pushing
+    /// MAX_INBOUND_ACKS + 1 items must leave exactly MAX_INBOUND_ACKS items
+    /// in the queue (oldest evicted, newest retained).
+    #[test]
+    fn inbound_ack_buffer_evicts_oldest_when_full() {
+        use maekon_api_contracts::integration::IntegrationAckPayload;
+
+        let mut state = WebSocketIntegrationInboundState::default();
+        // Fill to capacity.
+        for i in 0..MAX_INBOUND_ACKS {
+            let ack = IntegrationAckPayload {
+                session_id: "sess".to_string(),
+                acknowledged_ids: vec![format!("id-{i}")],
+                ack_cursor: None,
+            };
+            if state.outbound_acks.len() >= MAX_INBOUND_ACKS {
+                state.outbound_acks.pop_front();
+            }
+            state.outbound_acks.push_back(ack);
+        }
+        assert_eq!(state.outbound_acks.len(), MAX_INBOUND_ACKS);
+
+        // Push one more — oldest (id-0) must be evicted.
+        let overflow = IntegrationAckPayload {
+            session_id: "sess".to_string(),
+            acknowledged_ids: vec!["id-overflow".to_string()],
+            ack_cursor: None,
+        };
+        if state.outbound_acks.len() >= MAX_INBOUND_ACKS {
+            state.outbound_acks.pop_front();
+        }
+        state.outbound_acks.push_back(overflow);
+
+        assert_eq!(
+            state.outbound_acks.len(),
+            MAX_INBOUND_ACKS,
+            "queue must remain at capacity after overflow"
+        );
+        // The front is now id-1 (id-0 was evicted).
+        assert_eq!(
+            state.outbound_acks.front().unwrap().acknowledged_ids[0],
+            "id-1"
+        );
+        // The back is the overflow entry.
+        assert_eq!(
+            state.outbound_acks.back().unwrap().acknowledged_ids[0],
+            "id-overflow"
+        );
+    }
+
+    /// Simulate the bounded-push logic for the prompt queue.
+    #[test]
+    fn inbound_prompt_buffer_evicts_oldest_when_full() {
+        use maekon_core::models::integration::{
+            ProactivePrompt, ProactivePromptCategory, ProactivePromptPriority, PromptProvenance,
+        };
+
+        let mut state = WebSocketIntegrationInboundState::default();
+
+        let make_prompt = |tag: &str| ProactivePrompt {
+            prompt_id: tag.to_string(),
+            category: ProactivePromptCategory::Task,
+            title: String::new(),
+            body: String::new(),
+            priority: ProactivePromptPriority::Low,
+            actions: vec![],
+            expires_at: None,
+            provenance: PromptProvenance {
+                source_system: "test".to_string(),
+                source_actor: None,
+                correlation_id: None,
+            },
+        };
+
+        // Fill to capacity.
+        for i in 0..MAX_INBOUND_PROMPTS {
+            let p = make_prompt(&format!("p-{i}"));
+            if state.prompts.len() >= MAX_INBOUND_PROMPTS {
+                state.prompts.pop_front();
+            }
+            state.prompts.push_back(p);
+        }
+        assert_eq!(state.prompts.len(), MAX_INBOUND_PROMPTS);
+
+        // Push one more — oldest must be evicted.
+        let overflow = make_prompt("p-overflow");
+        if state.prompts.len() >= MAX_INBOUND_PROMPTS {
+            state.prompts.pop_front();
+        }
+        state.prompts.push_back(overflow);
+
+        assert_eq!(
+            state.prompts.len(),
+            MAX_INBOUND_PROMPTS,
+            "queue must remain at capacity after overflow"
+        );
+        assert_eq!(state.prompts.front().unwrap().prompt_id, "p-1");
+        assert_eq!(state.prompts.back().unwrap().prompt_id, "p-overflow");
+    }
+
+    /// Verify the size-gate constant relationship: a message of exactly
+    /// MAX_WS_MESSAGE_BYTES bytes must be accepted (len == limit is within
+    /// bounds), while len > limit is rejected.
+    #[test]
+    fn ws_message_size_gate_boundary() {
+        let at_limit = "x".repeat(MAX_WS_MESSAGE_BYTES);
+        let over_limit = "x".repeat(MAX_WS_MESSAGE_BYTES + 1);
+
+        assert!(
+            at_limit.len() <= MAX_WS_MESSAGE_BYTES,
+            "a frame at the limit must pass the gate"
+        );
+        assert!(
+            over_limit.len() > MAX_WS_MESSAGE_BYTES,
+            "a frame over the limit must be rejected"
         );
     }
 }

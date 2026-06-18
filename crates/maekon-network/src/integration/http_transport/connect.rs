@@ -225,4 +225,12 @@ impl IntegrationTransportClient for HttpsIntegrationTransportClient {
         self.session_bindings.remove(session_id).await;
         Ok(())
     }
+
+    async fn evict_binding(&self, session_id: &str) -> Result<(), CoreError> {
+        // #6204: drop the superseded binding and abort its live channel's
+        // read_loop locally — no remote disconnect handshake. A missing binding
+        // is not an error (the prior session may never have created one).
+        self.session_bindings.evict(session_id).await;
+        Ok(())
+    }
 }

@@ -37,6 +37,13 @@ use auth::TokenCache;
 
 const PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Maximum number of verified LAN peers held in memory.
+///
+/// Defense-in-depth bound on the verified set (the upstream `lan_discovery`
+/// peer map is already bounded by `MAX_LAN_PEERS`). At capacity, only updates
+/// to already-tracked peers are accepted; new device_ids are dropped.
+const MAX_VERIFIED_PEERS: usize = 256;
+
 #[allow(dead_code)]
 pub struct LanSyncTransport {
     discovery: parking_lot::Mutex<LanDiscovery>,
@@ -177,9 +184,22 @@ impl LanSyncTransport {
 
         let mut verified = self.verified_peers.write();
 
-        // Add newly discovered peers
+        // Add newly discovered peers. The map is bounded against multicast-driven
+        // memory exhaustion (mirrors `MAX_LAN_PEERS` in `lan_discovery`): at
+        // capacity, only updates to already-tracked peers are accepted; new
+        // device_ids are dropped. `lan_discovery` already bounds its own map, so
+        // this is a defense-in-depth cap on the verified set.
         for (id, peer) in &discovered {
-            if !verified.contains_key(id) {
+            let known = verified.contains_key(id);
+            if !known {
+                if verified.len() >= MAX_VERIFIED_PEERS {
+                    debug!(
+                        device_id = %id,
+                        max_peers = MAX_VERIFIED_PEERS,
+                        "verified LAN peer map at capacity, dropping new peer"
+                    );
+                    continue;
+                }
                 debug!(device_id = %id, host = %peer.host, "new LAN peer discovered");
             }
             verified.insert(id.clone(), peer.clone());
@@ -199,13 +219,33 @@ impl LanSyncTransport {
     }
 
     /// Build the base URL for a peer's sync server.
+    ///
+    /// IPv6 literal authorities must be bracket-wrapped per RFC 3986 §3.2.2,
+    /// otherwise the colons in the address collide with the host:port separator
+    /// and produce a malformed URL (e.g. `https://fe80::1:8443` instead of
+    /// `https://[fe80::1]:8443`). Hostnames and IPv4 literals are left as-is.
     fn peer_url(peer: &LanPeerInfo, path: &str) -> String {
-        format!("https://{}:{}{}", peer.host, peer.port, path)
+        // Bracket any IPv6 authority (RFC 3986 / RFC 6874). A colon in the host
+        // means IPv6 — this also catches a zone-id form like `fe80::1%en0` that
+        // `Ipv6Addr::parse` rejects — unless it is already bracketed.
+        let host_is_ipv6 = peer.host.contains(':') && !peer.host.starts_with('[');
+        let authority = if host_is_ipv6 {
+            format!("[{}]", peer.host)
+        } else {
+            peer.host.clone()
+        };
+        format!("https://{}:{}{}", authority, peer.port, path)
     }
 
     /// Build a per-peer reqwest client whose TLS handshake is verified by a
-    /// `TofuVerifier`. Returns the client, the captured-fingerprint cell, and
-    /// whether this was a first contact (None pin ⇒ caller upserts on success).
+    /// `TofuVerifier`. Returns the client, the captured-fingerprint cell, a
+    /// pin-mismatch signal cell, and whether this was a first contact (None pin
+    /// ⇒ caller upserts on success).
+    ///
+    /// The verifier runs synchronously inside the rustls handshake and cannot
+    /// perform async storage I/O. When it rejects because the presented cert
+    /// differs from an existing pin, it sets the `pin_mismatch` cell so the
+    /// async caller can revoke the stored pin after the handshake fails.
     async fn build_peer_client(
         &self,
         peer_id: &str,
@@ -214,6 +254,7 @@ impl LanSyncTransport {
         (
             reqwest::Client,
             std::sync::Arc<parking_lot::Mutex<Option<String>>>,
+            std::sync::Arc<parking_lot::Mutex<bool>>,
             bool,
         ),
         CoreError,
@@ -229,11 +270,13 @@ impl LanSyncTransport {
         }
         let first_contact = stored_pin.is_none();
         let captured = std::sync::Arc::new(parking_lot::Mutex::new(None));
+        let pin_mismatch = std::sync::Arc::new(parking_lot::Mutex::new(false));
 
         let verifier = std::sync::Arc::new(TofuVerifier {
             advertised_fp,
             stored_pin,
             captured: captured.clone(),
+            pin_mismatch: pin_mismatch.clone(),
             provider: self.crypto_provider.clone(),
         });
 
@@ -256,7 +299,7 @@ impl LanSyncTransport {
                 message: format!("build LAN TLS client: {e}"),
             })?;
 
-        Ok((client, captured, first_contact))
+        Ok((client, captured, pin_mismatch, first_contact))
     }
 
     /// Return a cached per-peer client, if present.

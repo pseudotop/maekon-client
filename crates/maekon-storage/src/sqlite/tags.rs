@@ -24,7 +24,7 @@ impl SqliteStorage {
             return Ok(HashMap::new());
         }
 
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
         Self::get_tag_ids_for_frames_inner(conn, frame_ids)
@@ -83,7 +83,7 @@ impl SqliteStorage {
 
     /// # Arguments
     pub fn create_tag(&self, name: &str, color: &str) -> Result<TagRecord, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → 빈 TagRecord, tags ∈ ALL_TABLES).
+        // Write — write_lock (skipped while deletion_flag is set → empty TagRecord; tags ∈ ALL_TABLES).
         let skip = Self::create_tag_skip(name, color);
         self.conn
             .write_lock()
@@ -148,7 +148,7 @@ impl SqliteStorage {
     }
 
     pub fn get_all_tags(&self) -> Result<Vec<TagRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_all_tags_inner(read.conn())
     }
@@ -180,7 +180,7 @@ impl SqliteStorage {
     }
 
     pub fn get_tag(&self, tag_id: i64) -> Result<Option<TagRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_tag_inner(read.conn(), tag_id)
     }
@@ -219,29 +219,53 @@ impl SqliteStorage {
     }
 
     pub fn delete_tag(&self, tag_id: i64) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false, tags ∈ ALL_TABLES).
+        // Write — write_lock (skipped while deletion_flag is set → false; tags ∈ ALL_TABLES).
+        // Routed through the mutable (transactional) funnel so the dependent
+        // `frame_tags` rows and the `tags` row are removed atomically (#6246).
         self.conn
             .write_lock()
-            .run(false, |conn| Self::delete_tag_inner(conn, tag_id))
+            .run_mut(false, |conn| Self::delete_tag_inner(conn, tag_id))
     }
 
-    /// Async `delete_tag` over the write funnel (ADR-026 PR-5).
+    /// Async `delete_tag` over the mutable (transactional) write funnel
+    /// (ADR-026 PR-5; #6246 atomic dependent-row delete).
     pub(crate) async fn delete_tag_async(&self, tag_id: i64) -> Result<bool, StorageError> {
-        self.with_conn(move |conn| Self::delete_tag_inner(conn, tag_id))
+        self.with_conn_mut(move |conn| Self::delete_tag_inner(conn, tag_id))
             .await
     }
 
-    fn delete_tag_inner(conn: &rusqlite::Connection, tag_id: i64) -> Result<bool, StorageError> {
-        let deleted = conn
+    fn delete_tag_inner(
+        conn: &mut rusqlite::Connection,
+        tag_id: i64,
+    ) -> Result<bool, StorageError> {
+        // `frame_tags.tag_id` has an `ON DELETE CASCADE` FK to `tags(id)`, but
+        // that cascade is inert because `PRAGMA foreign_keys` is OFF on this
+        // shared single connection (toggling it here would leak FK-enforcement
+        // semantics into unrelated adapters). So delete the dependent join rows
+        // explicitly, and do it in the same transaction as the parent delete so
+        // the two stay atomic (#6246, same root cause as #6240).
+        let tx = conn
+            .transaction()
+            .map_err(|e| StorageError::Internal(format!("delete_tag tx begin: {e}")))?;
+        // 1. Dependent join rows first (FK child of tags).
+        tx.execute(
+            "DELETE FROM frame_tags WHERE tag_id = ?1",
+            rusqlite::params![tag_id],
+        )
+        .map_err(|e| StorageError::Internal(format!("Failed to delete frame tags: {e}")))?;
+        // 2. Then the parent tag row.
+        let deleted = tx
             .execute("DELETE FROM tags WHERE id = ?1", rusqlite::params![tag_id])
             .map_err(|e| StorageError::Internal(format!("Failed to delete tag: {e}")))?;
+        tx.commit()
+            .map_err(|e| StorageError::Internal(format!("delete_tag commit: {e}")))?;
 
         debug!("delete: id={}, affected={}", tag_id, deleted);
         Ok(deleted > 0)
     }
 
     pub fn add_tag_to_frame(&self, frame_id: i64, tag_id: i64) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, frame_tags ∈ ALL_TABLES).
+        // Write — write_lock (skipped while deletion_flag is set; frame_tags ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             Self::add_tag_to_frame_inner(conn, frame_id, tag_id)
         })
@@ -273,7 +297,7 @@ impl SqliteStorage {
     }
 
     pub fn remove_tag_from_frame(&self, frame_id: i64, tag_id: i64) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        // Write — write_lock (skipped while deletion_flag is set → false).
         self.conn.write_lock().run(false, |conn| {
             Self::remove_tag_from_frame_inner(conn, frame_id, tag_id)
         })
@@ -309,7 +333,7 @@ impl SqliteStorage {
     }
 
     pub fn get_tags_for_frame(&self, frame_id: i64) -> Result<Vec<TagRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_tags_for_frame_inner(read.conn(), frame_id)
     }
@@ -358,7 +382,7 @@ impl SqliteStorage {
         tag_id: i64,
         limit: usize,
     ) -> Result<Vec<FrameRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -397,7 +421,7 @@ impl SqliteStorage {
     }
 
     pub fn update_tag(&self, tag_id: i64, name: &str, color: &str) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        // Write — write_lock (skipped while deletion_flag is set → false).
         self.conn.write_lock().run(false, |conn| {
             Self::update_tag_inner(conn, tag_id, name, color)
         })
@@ -505,6 +529,65 @@ mod tests {
         // Empty input short-circuits to empty map.
         let empty = storage.get_tag_ids_for_frames(&[]).unwrap();
         assert!(empty.is_empty());
+    }
+
+    // ── #6246 regression: delete_tag removes orphaned join rows ────
+
+    /// `frame_tags.tag_id` has an `ON DELETE CASCADE` FK to `tags(id)`, but the
+    /// cascade is inert because `PRAGMA foreign_keys` is OFF on the shared
+    /// connection. `delete_tag` must therefore remove the dependent
+    /// `frame_tags` rows itself (atomically with the parent), leaving none
+    /// orphaned (#6246).
+    #[test]
+    fn delete_tag_removes_orphaned_frame_tags() {
+        let storage = open_storage();
+
+        // Seed a frame via direct SQL (test has no frame API handy).
+        {
+            let conn = storage.conn.test_lock();
+            conn.execute(
+                "INSERT INTO frames (timestamp, trigger_type, app_name, window_title, importance, resolution_w, resolution_h, has_image) \
+                 VALUES ('2026-04-18T00:00:00Z', 'manual', 'a', 'a', 0.5, 1920, 1080, 0)",
+                [],
+            ).unwrap();
+        }
+
+        let tag = storage.create_tag("doomed", "#ff0000").unwrap();
+        storage.add_tag_to_frame(1, tag.id).unwrap();
+
+        // Precondition: exactly one join row points at the tag.
+        let before: i64 = {
+            let conn = storage.conn.test_lock();
+            conn.query_row(
+                "SELECT COUNT(*) FROM frame_tags WHERE tag_id = ?1",
+                rusqlite::params![tag.id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(before, 1, "frame_tags row seeded for the tag");
+
+        assert!(storage.delete_tag(tag.id).unwrap(), "tag was deleted");
+
+        // The tag row is gone.
+        assert!(
+            storage.get_tag(tag.id).unwrap().is_none(),
+            "tag row removed"
+        );
+        // And no orphaned join rows remain.
+        let after: i64 = {
+            let conn = storage.conn.test_lock();
+            conn.query_row(
+                "SELECT COUNT(*) FROM frame_tags WHERE tag_id = ?1",
+                rusqlite::params![tag.id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            after, 0,
+            "frame_tags rows removed with the tag (no orphans)"
+        );
     }
 
     // ── lock-contract regression: concurrent UNIQUE race ───────────

@@ -1,10 +1,10 @@
-// privacy_gate_closed 이벤트 수신 시 addToast 호출 여부를 검증하는 단위 테스트
+// Unit test verifying that addToast is called when a privacy_gate_closed event is received
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as useToastModule from '../../../hooks/useToast'
 
-// vad-state-changed 리스너 콜백을 캡처하기 위한 mock
+// mock for capturing the vad-state-changed listener callback
 const capturedListeners = new Map<string, (event: { payload: unknown }) => void>()
 const mockUnlisten = vi.fn()
 const mockListen = vi.fn(async (eventName: string, cb: (event: { payload: unknown }) => void) => {
@@ -12,12 +12,12 @@ const mockListen = vi.fn(async (eventName: string, cb: (event: { payload: unknow
   return mockUnlisten
 })
 
-// @tauri-apps/api/event 동적 import mock (vi.mock은 hoisted됨)
+// dynamic import mock for @tauri-apps/api/event (vi.mock is hoisted)
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: Parameters<typeof mockListen>) => mockListen(...args),
 }))
 
-// @tauri-apps/api/core invoke mock — get_audio_status를 voice_activity 모드로 반환
+// @tauri-apps/api/core invoke mock — returns get_audio_status in voice_activity mode
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === 'get_audio_status') {
@@ -39,7 +39,7 @@ describe('useAudioCapture — privacy_gate_closed toast', () => {
     capturedListeners.clear()
     mockListen.mockClear()
     mockUnlisten.mockClear()
-    // addToast를 spy로 교체 (실제 구현 유지, 호출 검증 목적)
+    // replace addToast with a spy (keeps the real implementation; purpose is to verify the call)
     addToastSpy = vi.spyOn(useToastModule, 'addToast')
   })
 
@@ -51,7 +51,7 @@ describe('useAudioCapture — privacy_gate_closed toast', () => {
     const { useAudioCapture } = await import('./useAudioCapture')
     const setInput = vi.fn() as React.Dispatch<React.SetStateAction<string>>
     const { result } = renderHook(() => useAudioCapture(false, setInput))
-    // VAD 리스너 등록 완료까지 대기
+    // wait until the VAD listener registration completes
     await waitFor(() => expect(capturedListeners.has('vad-state-changed')).toBe(true))
     return result
   }

@@ -163,6 +163,26 @@ impl Sandbox for LinuxSandbox {
         let landlock_rules = Self::build_landlock_rules(config);
         let resource_limits = Self::build_resource_limits(config);
         let landlock_avail = self.landlock_available;
+        // Whether filesystem isolation is a security guarantee for this profile.
+        // Standard/Strict deny network+process syscalls and restrict reads, so a
+        // silent Landlock downgrade would leave the child uncontained — treat any
+        // such failure as fatal (the child must NOT exec). Permissive is broadly
+        // open by design, so it keeps warn-and-continue but still audits.
+        let require_fs_isolation = requires_fs_isolation(config.profile);
+
+        // review4 A6: when the `linux-sandbox` feature is compiled out there is no
+        // seccomp syscall filtering and no Landlock filesystem isolation — only
+        // setrlimit. A Standard/Strict profile advertises real containment, so the
+        // not(feature) pre_exec path (which applies rlimits and returns Ok) would
+        // be a silent fail-open. Refuse here, pre-fork, where heap allocation is
+        // safe, instead of letting the action exec uncontained.
+        #[cfg(not(feature = "linux-sandbox"))]
+        if require_fs_isolation {
+            return Err(CoreError::SandboxUnsupported {
+                code: maekon_core::error_codes::SandboxCode::UnsupportedPlatform,
+                message: "linux-sandbox feature not compiled — cannot enforce the filesystem/syscall isolation this profile requires; refusing to run uncontained".to_string(),
+            });
+        }
 
         let timeout_ms = if config.max_cpu_time_ms > 0 {
             config.max_cpu_time_ms + 5000
@@ -175,7 +195,7 @@ impl Sandbox for LinuxSandbox {
             read_paths = landlock_rules.read_paths.len(),
             write_paths = landlock_rules.write_paths.len(),
             timeout_ms,
-            action = ?action,
+            action = %super::redact_action(action),
             "Linux sandbox spawning worker subprocess"
         );
 
@@ -183,6 +203,9 @@ impl Sandbox for LinuxSandbox {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Ensure the OS child is reaped when the Child handle drops, even if
+        // the caller cancels the future before timeout handling runs.
+        cmd.kill_on_drop(true);
 
         // SAFETY: pre_exec runs after fork, before exec. The child gets its own
         // address space so constraints apply only to the child. BPF program is
@@ -195,7 +218,16 @@ impl Sandbox for LinuxSandbox {
                     #[cfg(feature = "linux-sandbox")]
                     {
                         if landlock_avail {
-                            apply_landlock_rules_sync(&landlock_rules)?;
+                            apply_landlock_rules_sync(&landlock_rules, require_fs_isolation)?;
+                        } else if require_fs_isolation {
+                            // Profile advertises filesystem isolation but the kernel
+                            // lacks Landlock support — fail the exec rather than run
+                            // the action uncontained (silent downgrade is a sandbox
+                            // escape). pre_exec runs in the child, so this aborts the
+                            // child before it reaches execve.
+                            return Err(std::io::Error::other(
+                                "Landlock unavailable but profile requires filesystem isolation — refusing to exec uncontained",
+                            ));
                         }
                         apply_seccomp_bpf_sync(&bpf_program)?;
                     }
@@ -203,6 +235,7 @@ impl Sandbox for LinuxSandbox {
                     {
                         let _ = landlock_avail;
                         let _ = &landlock_rules;
+                        let _ = require_fs_isolation;
                     }
                     apply_resource_limits_sync(&resource_limits)?;
                     Ok(())
@@ -235,19 +268,31 @@ impl Sandbox for LinuxSandbox {
             drop(stdin);
         }
 
-        let output = tokio::time::timeout(
+        let output = match tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
             child.wait_with_output(),
         )
         .await
-        .map_err(|_| CoreError::ExecutionTimeout {
-            code: maekon_core::error_codes::SandboxCode::Timeout,
-            timeout_ms,
-        })?
-        .map_err(|e| CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("wait failed: {e}"),
-        })?;
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!("wait failed: {e}"),
+                });
+            }
+            Err(_elapsed) => {
+                // Timeout fired. `wait_with_output()` consumed `child` into the
+                // future that has just been dropped, so we cannot signal it
+                // explicitly here. `kill_on_drop(true)` (set on the builder
+                // above) makes tokio SIGKILL the worker as that Child drops, so
+                // the sandbox process tree is reaped — no orphan.
+                return Err(CoreError::ExecutionTimeout {
+                    code: maekon_core::error_codes::SandboxCode::Timeout,
+                    timeout_ms,
+                });
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -268,11 +313,19 @@ impl Sandbox for LinuxSandbox {
             });
         }
 
-        tracing::info!(action = ?action, "Linux sandbox execution completed via worker");
+        tracing::info!(action = %super::redact_action(action), "Linux sandbox execution completed via worker");
         Ok(())
     }
 
     /// Report capabilities based on actual enforcement availability.
+    ///
+    /// `filesystem_isolation` reflects whether Landlock can actually be enforced
+    /// at runtime (kernel-support probe AND `linux-sandbox` feature), not merely
+    /// that rules were built. This is now a truthful contract: for profiles that
+    /// require isolation (`Standard`/`Strict`), `execute_sandboxed` HARD-FAILS the
+    /// child rather than silently downgrading when enforcement is unavailable or
+    /// only partially applied — so a `true` here guarantees isolation for those
+    /// profiles, and a `false` guarantees the action will not run uncontained.
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             #[cfg(feature = "linux-sandbox")]
@@ -314,6 +367,19 @@ struct ResourceLimits {
 
 fn check_landlock_support() -> bool {
     std::path::Path::new("/sys/kernel/security/landlock").exists()
+}
+
+/// Whether the profile treats filesystem isolation as a security guarantee.
+///
+/// `Standard`/`Strict` deny network+process syscalls and restrict reads, so a
+/// Landlock downgrade (unavailable kernel, `restrict_self()` error, or a
+/// non-`FullyEnforced` status) must be fatal rather than silently dropped.
+/// `Permissive` is broadly open by design and tolerates the downgrade.
+fn requires_fs_isolation(profile: SandboxProfile) -> bool {
+    match profile {
+        SandboxProfile::Permissive => false,
+        SandboxProfile::Standard | SandboxProfile::Strict => true,
+    }
 }
 
 // ── Pre-fork build functions ──────────────────────────────────────
@@ -364,11 +430,44 @@ fn build_seccomp_bpf(
     if !allowlist.allow_process {
         for &nr in &[
             libc::SYS_clone,
+            // review4 A18: clone3 is the modern process-creation entry point;
+            // blocking only clone/fork/vfork left a trivial spawn bypass.
+            libc::SYS_clone3,
             libc::SYS_fork,
             libc::SYS_vfork,
             libc::SYS_kill,
             libc::SYS_tkill,
             libc::SYS_tgkill,
+            // pidfd-based signaling bypasses the kill/tkill/tgkill blocks above,
+            // and ptrace / process_vm_* let the child inspect or inject into other
+            // processes (sandbox escape). Close all of them (review4 A18).
+            libc::SYS_pidfd_open,
+            libc::SYS_pidfd_send_signal,
+            libc::SYS_pidfd_getfd,
+            libc::SYS_ptrace,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+            // unshare(CLONE_NEWUSER)+setns grants namespaced CAP_SYS_ADMIN and a
+            // fresh mount namespace, letting a same-uid worker remount over the
+            // Landlock path view — a filesystem-isolation bypass. NO_NEW_PRIVS does
+            // not block unshare (review4 re-verify: A18 sibling).
+            libc::SYS_unshare,
+            libc::SYS_setns,
+        ] {
+            rules.insert(nr, deny.clone());
+        }
+    }
+
+    // io_uring lets a task submit socket/file operations (connect, openat,
+    // send/recv) that the kernel dispatches outside the filtered syscall path —
+    // the seccomp rules above never see them, a blanket bypass of the
+    // network/process/filesystem containment. Deny it whenever any containment is
+    // active, i.e. for any non-Permissive profile (review4 re-verify: A18 sibling).
+    if !allowlist.allow_network || !allowlist.allow_process {
+        for &nr in &[
+            libc::SYS_io_uring_setup,
+            libc::SYS_io_uring_enter,
+            libc::SYS_io_uring_register,
         ] {
             rules.insert(nr, deny.clone());
         }
@@ -415,8 +514,19 @@ fn apply_seccomp_bpf_sync(bpf: &seccompiler::BpfProgram) -> std::io::Result<()> 
 }
 
 /// Apply Landlock filesystem isolation (sync, returns io::Result for pre_exec).
+///
+/// `require_isolation` controls the failure policy when the kernel does not
+/// fully honor the ruleset:
+/// - `true` (Standard/Strict): a `restrict_self()` error OR a non-`FullyEnforced`
+///   status is a HARD error — the `io::Error` propagates out of `pre_exec` and
+///   aborts the child before `execve`, so the action never runs uncontained.
+/// - `false` (Permissive): warn-and-continue, but always emit a structured,
+///   auditable signal so a silent downgrade is observable in logs.
 #[cfg(feature = "linux-sandbox")]
-fn apply_landlock_rules_sync(rules: &LandlockRules) -> std::io::Result<()> {
+fn apply_landlock_rules_sync(
+    rules: &LandlockRules,
+    require_isolation: bool,
+) -> std::io::Result<()> {
     use landlock::{
         path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr,
         RulesetStatus, ABI,
@@ -463,15 +573,34 @@ fn apply_landlock_rules_sync(rules: &LandlockRules) -> std::io::Result<()> {
     match ruleset.restrict_self() {
         Ok(status) => {
             let enforced = status.ruleset == RulesetStatus::FullyEnforced;
+            if !enforced && require_isolation {
+                // Partial/no enforcement on a profile that guarantees isolation is
+                // a silent downgrade — refuse to exec uncontained.
+                return Err(std::io::Error::other(format!(
+                    "Landlock restrict_self status {:?} is not FullyEnforced but profile requires filesystem isolation — refusing to exec uncontained",
+                    status.ruleset
+                )));
+            }
             tracing::info!(
                 enforced,
+                require_isolation,
                 read = rules.read_paths.len(),
                 write = rules.write_paths.len(),
                 "Landlock filesystem isolation applied (pre_exec)"
             );
         }
         Err(e) => {
-            tracing::warn!("Landlock restrict_self failed: {e} — continuing without FS isolation");
+            if require_isolation {
+                return Err(std::io::Error::other(format!(
+                    "Landlock restrict_self failed: {e} — profile requires filesystem isolation, refusing to exec uncontained"
+                )));
+            }
+            // Permissive profile: structured, auditable downgrade signal.
+            tracing::warn!(
+                sandbox.downgrade = true,
+                require_isolation = false,
+                "Landlock restrict_self failed: {e} — permissive profile, continuing without FS isolation"
+            );
         }
     }
 
@@ -597,102 +726,12 @@ fn apply_landlock_rules(rules: &LandlockRules) -> Result<(), AutomationError> {
     }
 }
 
-/// Apply seccomp-BPF syscall filtering.
-///
-/// When `linux-sandbox` feature is enabled, installs a BPF filter that denies
-/// network and/or process syscalls based on the allowlist. Default action is
-/// ALLOW — only explicitly blocked categories are denied (returns EPERM).
-#[allow(dead_code)]
-fn apply_seccomp_filter(allowlist: &SeccompAllowlist) -> Result<(), AutomationError> {
-    #[cfg(feature = "linux-sandbox")]
-    {
-        use seccompiler::{apply_filter, BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
-        use std::collections::BTreeMap;
-
-        // Default ALLOW — deny specific dangerous syscall categories
-        let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-        let deny = vec![SeccompRule::new(vec![])
-            .map_err(|e| AutomationError::SandboxInit(format!("seccomp rule: {e}")))?];
-
-        // Block network syscalls when not allowed
-        if !allowlist.allow_network {
-            for &nr in &[
-                libc::SYS_socket,
-                libc::SYS_connect,
-                libc::SYS_bind,
-                libc::SYS_listen,
-                libc::SYS_accept,
-                libc::SYS_accept4,
-                libc::SYS_sendto,
-                libc::SYS_recvfrom,
-                libc::SYS_sendmsg,
-                libc::SYS_recvmsg,
-                libc::SYS_shutdown,
-                libc::SYS_setsockopt,
-                libc::SYS_getsockopt,
-            ] {
-                rules.insert(nr, deny.clone());
-            }
-        }
-
-        // Block process creation/signal syscalls when not allowed.
-        // NOTE: SYS_execve and SYS_execveat are intentionally NOT blocked —
-        // the child must call execve to start the sandbox-worker binary.
-        // Landlock restricts which executables are reachable from the child.
-        if !allowlist.allow_process {
-            for &nr in &[
-                libc::SYS_clone,
-                libc::SYS_fork,
-                libc::SYS_vfork,
-                libc::SYS_kill,
-                libc::SYS_tkill,
-                libc::SYS_tgkill,
-            ] {
-                rules.insert(nr, deny.clone());
-            }
-        }
-
-        if rules.is_empty() {
-            tracing::debug!("seccomp: no syscalls to block (all categories allowed)");
-            return Ok(());
-        }
-
-        let filter: BpfProgram = SeccompFilter::new(
-            rules,
-            SeccompAction::Allow,                     // default: allow
-            SeccompAction::Errno(libc::EPERM as u32), // denied → EPERM
-            std::env::consts::ARCH.try_into().map_err(|_| {
-                AutomationError::SandboxEnforcement("unsupported arch for seccomp".into())
-            })?,
-        )
-        .map_err(|e| AutomationError::SandboxEnforcement(format!("seccomp filter build: {e}")))?
-        .try_into()
-        .map_err(|e| AutomationError::SandboxEnforcement(format!("seccomp BPF compile: {e}")))?;
-
-        apply_filter(&filter)
-            .map_err(|e| AutomationError::SandboxEnforcement(format!("seccomp apply: {e}")))?;
-
-        tracing::info!(
-            blocked_network = !allowlist.allow_network,
-            blocked_process = !allowlist.allow_process,
-            rules_count = filter.len(),
-            "seccomp-BPF filter applied"
-        );
-
-        Ok(())
-    }
-
-    #[cfg(not(feature = "linux-sandbox"))]
-    {
-        tracing::debug!(
-            basic = allowlist.allow_basic,
-            network = allowlist.allow_network,
-            process = allowlist.allow_process,
-            "seccomp filter (enforcement requires linux-sandbox feature)"
-        );
-        Ok(())
-    }
-}
+// review4 re-verify: the standalone `apply_seccomp_filter` was dead
+// (#[allow(dead_code)], no call sites) and had drifted — it carried a stale
+// pre-A18 deny-set and a broken `SeccompRule::new(vec![])` (rejected by
+// seccompiler). The live path is `build_seccomp_bpf` + `apply_seccomp_bpf_sync`.
+// Removed to eliminate the ADR-075 P-4 verbatim-drift trap (a maintainer could
+// edit this stale copy and silently reintroduce the closed bypass).
 
 /// Apply resource limits via `setrlimit(2)`.
 ///

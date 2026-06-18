@@ -1,3 +1,4 @@
+use anyhow::Result;
 use maekon_core::config::{AiAccessMode, AppConfig};
 use std::path::Path;
 use tracing::{info, warn};
@@ -10,12 +11,17 @@ use crate::cli_subscription_bridge::{
 pub(crate) struct BootstrapPreflightCoordinator;
 
 impl BootstrapPreflightCoordinator {
-    pub(crate) fn run(config: &AppConfig, data_dir: &Path, offline_mode: bool) {
+    /// Run boot-time preflight. The CLI-subscription bridge sync is genuinely
+    /// optional (non-fatal), but the integrity preflight is fail-closed: its
+    /// `Err` is propagated so a downgraded updater trust chain or a tampered
+    /// provisioned policy bundle aborts startup, matching `integrity_guard`'s
+    /// unit-level contract and the `preflight_*` tests (#6257 — the previous
+    /// implementation swallowed this `Err` into a warning, making the gate
+    /// fail-open at runtime).
+    pub(crate) fn run(config: &AppConfig, data_dir: &Path, offline_mode: bool) -> Result<()> {
         maybe_sync_cli_subscription_bridge(config, data_dir);
 
-        if let Err(error) = crate::integrity_guard::run_preflight(config, offline_mode) {
-            warn!("integrity preflight failed (non-fatal): {error}");
-        }
+        crate::integrity_guard::run_preflight(config, offline_mode)
     }
 }
 

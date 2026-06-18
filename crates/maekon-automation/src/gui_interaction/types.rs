@@ -13,7 +13,7 @@ pub use maekon_core::models::gui::{
     GuiExecutionRequest, GuiHighlightRequest,
 };
 
-/// 실행 계획 (내부용) — 자동화 실행 준비 데이터
+/// Execution plan (internal) — data prepared for an automation run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuiExecutionPlan {
     pub session_id: String,

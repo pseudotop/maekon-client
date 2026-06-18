@@ -1654,6 +1654,37 @@ impl AuditLogPort for CapturingAudit {
         });
     }
 
+    // #6277: AuditBridge now emits ONE durable row via log_with_status_and_time
+    // carrying the REAL status + action_type (replacing log_complete_with_time +
+    // a separate log_event). Capture the true status/action_type here so the mock
+    // reflects the new contract — the trait default would delegate to
+    // log_complete_with_time and lose the Started/Denied/Failed/Timeout status.
+    async fn log_with_status_and_time(
+        &self,
+        _level: AuditLevel,
+        command_id: &str,
+        _session_id: &str,
+        action_type: &str,
+        status: AuditStatus,
+        details: &str,
+        execution_time_ms: u64,
+    ) {
+        let grpc_status_code: Option<u32> = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|v| {
+                v.get("grpc_status_code")
+                    .and_then(|n| n.as_u64().map(|u| u as u32))
+            });
+        self.entries.lock().unwrap().push(CapturedEntry {
+            command_id: command_id.to_string(),
+            action_type: action_type.to_string(),
+            status,
+            grpc_status_code,
+            execution_time_ms,
+            details: Some(details.to_string()),
+        });
+    }
+
     async fn pending_count(&self) -> usize {
         0
     }

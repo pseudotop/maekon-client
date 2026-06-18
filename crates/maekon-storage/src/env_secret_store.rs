@@ -60,9 +60,12 @@ mod tests {
 
     #[tokio::test]
     async fn env_secret_store_reads_canonical_env_name() {
+        // The canonical name carries the readable prefix plus an injective
+        // 8-hex-char digest suffix (see `secret_env_var_name`). Derive the key
+        // through the same helper the store uses so write and lookup agree.
         let mut snapshot = HashMap::new();
         snapshot.insert(
-            "MAEKON_SECRET_PROVIDER_OPENAI_DEFAULT_API_KEY".to_string(),
+            secret_env_var_name("provider/openai/default", "api_key"),
             "sk-test".to_string(),
         );
         let store = EnvSecretStore::from_snapshot(snapshot);

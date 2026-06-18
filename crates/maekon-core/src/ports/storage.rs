@@ -83,6 +83,16 @@ pub trait MetricsStorage: Send + Sync {
 
     async fn cleanup_old_metrics(&self, before: DateTime<Utc>) -> Result<usize, CoreError>;
 
+    /// Delete `system_metrics_hourly` rollup rows whose `hour` predates `before`.
+    ///
+    /// The hourly rollup table has a documented 30-day retention (V3 migration)
+    /// but previously had no scheduled cleanup, so it grew unbounded. `before`
+    /// is truncated to the start of its hour and compared against the stored
+    /// hour-bucket key (`%Y-%m-%dT%H:00:00Z`) so the boundary bucket is treated
+    /// consistently with the write-time format. Returns the number of rows
+    /// deleted.
+    async fn cleanup_old_hourly_metrics(&self, before: DateTime<Utc>) -> Result<usize, CoreError>;
+
     async fn save_process_snapshot(&self, snapshot: &ProcessSnapshot) -> Result<(), CoreError>;
 
     async fn get_process_snapshots(

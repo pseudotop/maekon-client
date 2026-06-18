@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel, PrivacyConfig};
 use maekon_core::ports::consent_manager::ConsentManagerPort;
+use tracing::warn;
 
 use crate::privacy::{is_sensitive_app, sanitize_title_with_level, should_exclude};
 
@@ -129,6 +130,21 @@ impl PrivacyGateway {
             self.external_data_policy,
             allow_unredacted_external_ocr,
         );
+        // When the override forced PiiFilterLevel::Off, emit an additional audit
+        // event with the app/window context that resolve_filter_level cannot see.
+        // The window title is PII (document names, mail subjects, URLs), so it is
+        // never interpolated raw — it is sanitized at Strict before logging so the
+        // file log layer cannot persist raw content (#5591/#6006).
+        if allow_unredacted_external_ocr {
+            warn!(
+                privacy.bypass = true,
+                app = %active_app,
+                window_title = %sanitize_title_with_level(window_title, PiiFilterLevel::Strict),
+                "PII filtering DISABLED for external OCR (app context): \
+                 raw screen content for app '{}' will be sent off-device.",
+                active_app
+            );
+        }
         let (sanitized_data, redacted_regions) = if filter_level == PiiFilterLevel::Off {
             (image_data.to_vec(), 0)
         } else {
@@ -146,8 +162,32 @@ impl PrivacyGateway {
         &self,
         texts: &[String],
     ) -> Result<Vec<String>, PrivacyDenied> {
+        self.prepare_text_for_external_with_surface(texts, "", "")
+    }
+
+    pub fn prepare_text_for_external_with_surface(
+        &self,
+        texts: &[String],
+        active_app: &str,
+        window_title: &str,
+    ) -> Result<Vec<String>, PrivacyDenied> {
         if !self.consent_manager.effective_permissions().ocr_processing {
             return Err(PrivacyDenied::NoConsent);
+        }
+
+        if !active_app.is_empty() && is_sensitive_app(active_app) {
+            return Err(PrivacyDenied::SensitiveApp(active_app.to_string()));
+        }
+
+        if should_exclude(
+            active_app,
+            window_title,
+            &self.privacy_config.excluded_apps,
+            &self.privacy_config.excluded_app_patterns,
+            &self.privacy_config.excluded_title_patterns,
+            self.privacy_config.auto_exclude_sensitive,
+        ) {
+            return Err(PrivacyDenied::ExcludedByPolicy);
         }
 
         let filter_level = self.effective_filter_level();
@@ -165,9 +205,7 @@ impl PrivacyGateway {
         #[cfg(feature = "ocr")]
         {
             use crate::ocr::OcrExtractor;
-            use image::GenericImage;
-            use image::GenericImageView;
-            use tracing::{debug, warn};
+            use tracing::debug;
 
             let img = match image::load_from_memory(image_data) {
                 Ok(img) => img,
@@ -386,12 +424,37 @@ impl PrivacyGateway {
         Self::resolve_filter_level(self.pii_filter_level, self.external_data_policy, false)
     }
 
+    /// Resolve the effective [`PiiFilterLevel`] for an off-device OCR call.
+    ///
+    /// # WARNING — `allow_unredacted_external_ocr`
+    ///
+    /// When this flag is `true` **all PII filtering is bypassed** and raw,
+    /// unredacted screen content is transmitted off-device to the external OCR
+    /// provider. Every activation is logged at WARN severity with a structured
+    /// audit event so that operators can detect unexpected or mis-configured
+    /// use (see the `warn!` call below).
+    ///
+    /// // TODO(#5966): rename flag to `bypass_pii_filter_for_external_ocr` for
+    /// //   clarity, and gate activation on an explicit user consent tier rather
+    /// //   than a bare boolean config flag.
     fn resolve_filter_level(
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
         allow_unredacted_external_ocr: bool,
     ) -> PiiFilterLevel {
         if allow_unredacted_external_ocr {
+            // AUDIT: raw, unredacted screen content is about to leave the device.
+            // This warn fires on EVERY invocation of the override path so that
+            // log aggregators (Loki/OTel) can alert on unexpected activations.
+            warn!(
+                privacy.bypass = true,
+                privacy.pii_filter_override = "allow_unredacted_external_ocr",
+                config.external_data_policy = ?external_data_policy,
+                config.pii_filter_level = ?pii_filter_level,
+                "PII filtering DISABLED for external OCR: raw unredacted screen \
+                 content will be sent off-device. \
+                 Ensure explicit user consent covers this data transfer."
+            );
             return PiiFilterLevel::Off;
         }
 
@@ -524,6 +587,34 @@ mod tests {
     }
 
     #[test]
+    fn text_filter_denies_excluded_title_surface() {
+        let consent = make_consent_manager(true);
+        let privacy_config = PrivacyConfig {
+            excluded_title_patterns: vec!["*private*".to_string()],
+            ..PrivacyConfig::default()
+        };
+        let gw = PrivacyGateway::new(
+            consent,
+            PiiFilterLevel::Standard,
+            ExternalDataPolicy::PiiFilterStandard,
+            privacy_config,
+        );
+
+        let err = gw
+            .prepare_text_for_external_with_surface(
+                &["password: redaction-fixture-secret".to_string()],
+                "Notes",
+                "Private banking recovery codes",
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(err, PrivacyDenied::ExcludedByPolicy),
+            "excluded title surfaces must not enter external text preparation, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn effective_filter_level_strict() {
         let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStrict);
         assert_eq!(gw.effective_filter_level(), PiiFilterLevel::Strict);
@@ -607,5 +698,90 @@ mod tests {
         assert!(d3.to_string().contains("policy"));
         let d4 = PrivacyDenied::SanitizationFailed("decode".to_string());
         assert!(d4.to_string().contains("decode"));
+    }
+
+    // --- #5966: allow_unredacted_external_ocr audit tests ---
+
+    /// Verifies that `resolve_filter_level` returns `PiiFilterLevel::Off` when
+    /// `allow_unredacted_external_ocr` is `true`, regardless of the configured
+    /// policy and filter level. The audit `warn!` is emitted on this path; this
+    /// test exercises the branch so that coverage tooling and reviewers can
+    /// confirm the warn macro expands without panic.
+    #[test]
+    fn resolve_filter_level_override_returns_off_and_emits_audit_warn() {
+        for policy in [
+            ExternalDataPolicy::PiiFilterStrict,
+            ExternalDataPolicy::PiiFilterStandard,
+            ExternalDataPolicy::AllowFiltered,
+        ] {
+            for level in [
+                PiiFilterLevel::Strict,
+                PiiFilterLevel::Standard,
+                PiiFilterLevel::Basic,
+                PiiFilterLevel::Off,
+            ] {
+                let resolved = PrivacyGateway::resolve_filter_level(level, policy, true);
+                assert_eq!(
+                    resolved,
+                    PiiFilterLevel::Off,
+                    "override must force Off regardless of policy={policy:?} level={level:?}"
+                );
+            }
+        }
+    }
+
+    /// Verifies that `resolve_filter_level` respects the normal policy path
+    /// when `allow_unredacted_external_ocr` is `false` — guard against the
+    /// override branch accidentally short-circuiting normal operation.
+    #[test]
+    fn resolve_filter_level_no_override_respects_policy() {
+        assert_eq!(
+            PrivacyGateway::resolve_filter_level(
+                PiiFilterLevel::Basic,
+                ExternalDataPolicy::PiiFilterStrict,
+                false,
+            ),
+            PiiFilterLevel::Strict,
+            "PiiFilterStrict must return Strict regardless of user filter level"
+        );
+        assert_eq!(
+            PrivacyGateway::resolve_filter_level(
+                PiiFilterLevel::Basic,
+                ExternalDataPolicy::PiiFilterStandard,
+                false,
+            ),
+            PiiFilterLevel::Standard,
+        );
+        assert_eq!(
+            PrivacyGateway::resolve_filter_level(
+                PiiFilterLevel::Basic,
+                ExternalDataPolicy::AllowFiltered,
+                false,
+            ),
+            PiiFilterLevel::Basic,
+            "AllowFiltered must delegate to the user-configured pii_filter_level"
+        );
+    }
+
+    /// Verifies that the static `sanitize_image_for_external_policy` path also
+    /// exercises the override audit branch (warm coverage for log aggregator
+    /// alert paths). The function must succeed and return the raw bytes
+    /// unchanged when the override is active.
+    #[tokio::test]
+    async fn sanitize_image_for_external_policy_override_emits_warn_and_passes_bytes_through() {
+        let raw = b"sentinel-bytes";
+        let result = PrivacyGateway::sanitize_image_for_external_policy(
+            raw,
+            PiiFilterLevel::Strict,
+            ExternalDataPolicy::PiiFilterStrict,
+            true, // override — triggers audit warn!
+        )
+        .await
+        .expect("override path must succeed (bypass means no sanitization pipeline)");
+        assert_eq!(
+            result.image_data, raw,
+            "override path must return bytes unchanged"
+        );
+        assert_eq!(result.redacted_regions, 0);
     }
 }

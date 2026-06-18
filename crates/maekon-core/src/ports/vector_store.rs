@@ -29,6 +29,27 @@ pub trait VectorStore: Send + Sync {
     /// Store a vector with its associated metadata.
     async fn store(&self, vector: Vec<f32>, metadata: EmbeddingMetadata) -> Result<(), CoreError>;
 
+    /// Store a vector and return the inserted row ID atomically.
+    ///
+    /// Unlike calling [`store`](Self::store) followed by
+    /// [`last_insert_id`](Self::last_insert_id), the row ID is read inside the
+    /// same write transaction/lock as the INSERT, eliminating the TOCTOU window
+    /// where a concurrent write could change `last_insert_rowid()` between the
+    /// two calls (#6113). The embedding pipeline uses the returned ID as the
+    /// HNSW key so the vector is always associated with the correct row.
+    ///
+    /// Default implementation: stores via [`store`](Self::store) then reads
+    /// [`last_insert_id`](Self::last_insert_id). Adapters that share a single
+    /// SQLite connection MUST override this to perform both steps atomically.
+    async fn store_returning_id(
+        &self,
+        vector: Vec<f32>,
+        metadata: EmbeddingMetadata,
+    ) -> Result<u64, CoreError> {
+        self.store(vector, metadata).await?;
+        self.last_insert_id().await
+    }
+
     /// Search for the top-k most similar vectors with time decay weighting.
     async fn search(
         &self,
@@ -77,6 +98,29 @@ pub trait VectorStore: Send + Sync {
             code: crate::error_codes::InternalCode::Generic,
             message: "store_quantized not implemented".into(),
         })
+    }
+
+    /// Store a pre-quantized INT8 vector and return the inserted row ID atomically.
+    ///
+    /// Same contract as [`store_returning_id`](Self::store_returning_id) but for
+    /// the quantized write path. The row ID is read inside the same write
+    /// transaction/lock as the INSERT, so the embedding pipeline can use it as
+    /// the HNSW key without a separate [`last_insert_id`](Self::last_insert_id)
+    /// read that a concurrent write could corrupt (#6113).
+    ///
+    /// Default implementation: delegates to [`store_quantized`](Self::store_quantized)
+    /// then reads [`last_insert_id`](Self::last_insert_id). Adapters sharing a
+    /// single SQLite connection MUST override this to perform both steps atomically.
+    async fn store_quantized_returning_id(
+        &self,
+        vector_f32: Vec<f32>,
+        vector_int8: &QuantizedVector,
+        metadata: EmbeddingMetadata,
+        skip_float32: bool,
+    ) -> Result<u64, CoreError> {
+        self.store_quantized(vector_f32, vector_int8, metadata, skip_float32)
+            .await?;
+        self.last_insert_id().await
     }
 
     /// Search using INT8 quantized cosine similarity (faster, approximate).

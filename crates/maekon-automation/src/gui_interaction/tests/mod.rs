@@ -11,6 +11,7 @@ mod execute;
 mod highlight;
 mod m5;
 mod session;
+mod session_limit;
 
 // ── Test constants ──────────────────────────────────────────────────
 

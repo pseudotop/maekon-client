@@ -3,8 +3,8 @@ import http from 'node:http'
 import { fetchApiJson, invokeIpc } from './helpers.js'
 
 /**
- * Node.js HTTP client로 외부에서 REST API 호출
- * WebdriverIO 테스트는 Node.js에서 실행되므로 직접 HTTP 요청 가능
+ * Calls the REST API from outside using a Node.js HTTP client.
+ * WebdriverIO tests run under Node.js, so direct HTTP requests are possible.
  */
 function httpRequest(
   url: string,
@@ -50,7 +50,7 @@ describe('S1: API Access Control', () => {
       'Access-Control-Request-Method': 'GET',
     })
 
-    // CORS preflight가 evil.com을 허용하지 않아야 함
+    // The CORS preflight must not allow evil.com
     const acao = res.headers['access-control-allow-origin']
     expect(acao).not.toBe('*')
     if (acao) {
@@ -66,12 +66,12 @@ describe('S1: API Access Control', () => {
   it('T202: get_settings does not expose server credentials', async () => {
     const config = await fetchApiJson<Record<string, any>>('/settings')
 
-    // server.base_url 이 마스킹되어야 함
+    // server.base_url must be masked
     if (config.server) {
       expect(config.server.base_url).toBe('[REDACTED]')
     }
 
-    // ai_provider API 키가 마스킹되어야 함
+    // The ai_provider API keys must be masked
     if (config.ai_provider) {
       if (config.ai_provider.ocr_api) {
         expect(config.ai_provider.ocr_api.api_key).toBe('[REDACTED]')
@@ -81,7 +81,7 @@ describe('S1: API Access Control', () => {
       }
     }
 
-    // tls 인증서 경로가 마스킹되어야 함
+    // The TLS certificate path must be masked
     if (config.tls) {
       expect(config.tls.ca_cert_path || '[REDACTED]').toBe('[REDACTED]')
     }

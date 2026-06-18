@@ -15,11 +15,15 @@ pub(crate) fn ai_sessions_not_available() -> IpcError {
 }
 
 /// Enqueue a failed feedback for background retry and persist to SQLite.
-/// SQLite persist happens synchronously (primary durability guarantee).
-/// In-memory enqueue uses `tokio::spawn` to avoid blocking the IPC caller;
-/// it is best-effort for the current session — on restart, SQLite is restored.
+///
+/// SQLite persist is the primary durability guarantee — it happens first.
+/// The in-memory retry queue is then updated by awaiting the lock directly;
+/// since the enqueue is a single fast push (no I/O, no long await), holding
+/// the lock synchronously in the caller's async context is safe and eliminates
+/// the pre-shutdown cancellation race that existed when a spawned task's
+/// `JoinHandle` was discarded.
 // pub(crate) so sibling module `feedback` can import this.
-pub(crate) fn enqueue_feedback_retry(
+pub(crate) async fn enqueue_feedback_retry(
     mgr: &crate::suggestion_manager::SuggestionManager,
     suggestion_id: &str,
     feedback_type: maekon_core::models::suggestion::FeedbackType,
@@ -35,20 +39,28 @@ pub(crate) fn enqueue_feedback_retry(
     if let Err(e) = mgr.storage().save_pending_feedback(&record) {
         tracing::warn!(id = %suggestion_id, "failed to persist pending feedback: {e}");
     }
-    // Fire-and-forget tokio task to avoid holding the caller's async context.
-    let rq = mgr.retry_queue().clone();
-    let sid = suggestion_id.to_string();
-    tokio::spawn(async move {
-        rq.lock()
-            .await
-            .enqueue(maekon_suggestion::feedback_retry::PendingFeedback {
-                suggestion_id: sid,
-                feedback_type,
-                comment,
-                attempts: 0,
-                next_retry_at: chrono::Utc::now(),
-            });
-    });
+    // Await the lock directly — the critical section is a single VecDeque push,
+    // so the lock is released immediately with no risk of contention.
+    let evicted = mgr.retry_queue().lock().await.enqueue(
+        maekon_suggestion::feedback_retry::PendingFeedback {
+            suggestion_id: suggestion_id.to_string(),
+            feedback_type,
+            comment,
+            attempts: 0,
+            next_retry_at: chrono::Utc::now(),
+        },
+    );
+    // If the bounded queue evicted an older pending retry, delete its durable row
+    // so SQLite does not keep a pending-retry row the in-session maintenance loop
+    // never drains (review4). The lock guard is already released here.
+    if let Some(evicted) = evicted {
+        if let Err(e) = mgr
+            .storage()
+            .delete_pending_feedback(&evicted.suggestion_id)
+        {
+            tracing::warn!(id = %evicted.suggestion_id, "failed to delete evicted pending feedback row: {e}");
+        }
+    }
 }
 
 // pub(crate) so sibling module `feedback` can import this.

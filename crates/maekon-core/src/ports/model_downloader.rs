@@ -38,8 +38,17 @@ pub trait ModelDownloader: Send + Sync {
     ) -> Result<PathBuf, CoreError>;
 
     /// Check if a model file exists and return its status. Fast (file metadata only).
-    fn model_status(&self, model: WhisperModelSize, dest_dir: &Path) -> ModelDownloadStatus;
+    ///
+    /// Async so callers on a tokio runtime can await directly without wrapping in
+    /// `spawn_blocking`. Implementations must use `tokio::fs` (not `std::fs`) to
+    /// avoid blocking the async executor thread.
+    async fn model_status(&self, model: WhisperModelSize, dest_dir: &Path) -> ModelDownloadStatus;
 
     /// Delete a downloaded model file.
-    fn delete_model(&self, model: WhisperModelSize, dest_dir: &Path) -> Result<(), CoreError>;
+    ///
+    /// Async so callers on a tokio runtime can await directly without wrapping in
+    /// `spawn_blocking`. Implementations must use `tokio::fs` (not `std::fs`) to
+    /// avoid blocking the async executor thread.
+    async fn delete_model(&self, model: WhisperModelSize, dest_dir: &Path)
+        -> Result<(), CoreError>;
 }

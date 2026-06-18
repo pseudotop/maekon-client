@@ -1,18 +1,18 @@
 use maekon_core::error::CoreError;
 use thiserror::Error;
 
-/// maekon-analysis crate 전용 에러 타입 (ADR-001 §1)
+/// Error type specific to the maekon-analysis crate (ADR-001 §1)
 #[derive(Debug, Error)]
 pub enum AnalysisError {
-    /// maekon-core 에러를 투명하게 전달
+    /// Transparently propagates a maekon-core error
     #[error(transparent)]
     Core(#[from] CoreError),
 
-    /// 벡터 인덱스 (HNSW 등) 관련 에러
+    /// Vector index (HNSW, etc.) related error
     #[error("vector index error: {0}")]
     VectorIndex(String),
 
-    /// 클러스터링 알고리즘 실패 (GMM, HDBSCAN 등)
+    /// Clustering algorithm failure (GMM, HDBSCAN, etc.)
     #[error("clustering failed: {0}")]
     Clustering(String),
 }

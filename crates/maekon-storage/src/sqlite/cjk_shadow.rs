@@ -1,5 +1,9 @@
 //! CJK bigram shadow — Option F tokenization seam.
 //!
+//! lint:allow-non-english-comments — this file documents CJK/Korean text
+//! tokenization; example tokens (Hangul/Kana/CJK) in comments are illustrative and
+//! must remain non-English to be meaningful.
+//!
 //! Converts CJK character runs (Hangul syllables/jamo, Hiragana/Katakana, CJK Unified)
 //! into overlapping 2-character bigrams joined by spaces, while passing non-CJK text
 //! through unchanged. The resulting "shadow" text is indexed in FTS5 with the

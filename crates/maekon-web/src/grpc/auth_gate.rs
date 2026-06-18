@@ -298,4 +298,24 @@ mod tests {
         let err = validate_authority(None).expect_err("None must reject");
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
+
+    #[test]
+    fn validate_authority_absent_host_is_rejected_not_bypassed() {
+        // Finding #28: SubscribeEvents/SubscribeMetrics must pass the `"host"`
+        // metadata straight through (Option<&str>) so an ABSENT authority hits
+        // this missing-authority rejection branch on the external/routable
+        // instance, instead of silently skipping the allowlist guard. An empty
+        // string is an explicit-but-empty authority, which is treated as a
+        // non-allowlisted host (PermissionDenied), distinct from absence (None).
+        assert_eq!(
+            validate_authority(None).unwrap_err().code(),
+            tonic::Code::InvalidArgument,
+            "absent authority must be rejected, never bypassed"
+        );
+        assert_eq!(
+            validate_authority(Some("")).unwrap_err().code(),
+            tonic::Code::PermissionDenied,
+            "empty authority is not allowlisted"
+        );
+    }
 }

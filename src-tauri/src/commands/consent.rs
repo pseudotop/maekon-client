@@ -1,18 +1,18 @@
 //! Tauri IPC: production consent read/write (GDPR).
 //!
-//! Phase A.2 UI 토글이 동의를 부여하고 `Arc<dyn ConsentManagerPort>`를 통해
-//! 스케줄러에서 즉시 관찰 가능하도록 하는 3개의 IPC 커맨드를 제공한다.
+//! Provides 3 IPC commands so the Phase A.2 UI toggle grants consent and makes it
+//! immediately observable by the scheduler through `Arc<dyn ConsentManagerPort>`.
 //!
-//! # GDPR Art. 17 로컬 데이터 삭제 (#4801)
+//! # GDPR Art. 17 local data erasure (#4801)
 //!
-//! `withdraw_consent`는 revoke persist 이후 로컬 데이터를 2단계로 삭제한다:
-//! - Phase-1: SQLite 전체 테이블 원자적 삭제 (`delete_all_data`).
-//! - Phase-2: 프레임 이미지 파일 삭제 (`delete_all_frames`).
+//! `withdraw_consent` erases local data in 2 phases after the revoke persists:
+//! - Phase-1: atomic deletion of all SQLite tables (`delete_all_data`).
+//! - Phase-2: deletion of frame image files (`delete_all_frames`).
 //!
-//! Phase-2 실패 시 `pending_local_erase=1` 마커를 `app_meta`에 기록하여
-//! 다음 앱 기동 시 `retry_pending_local_erase`가 재시도하도록 한다 (R2/R3).
+//! If Phase-2 fails, a `pending_local_erase=1` marker is written to `app_meta` so
+//! that on the next app launch `retry_pending_local_erase` retries it (R2/R3).
 //!
-//! 원격 전파(DeletionEvent)는 단독 소유자인 sync_engine에 위임한다 (R4).
+//! Remote propagation (DeletionEvent) is delegated to its sole owner, sync_engine (R4).
 use std::sync::Arc;
 
 use maekon_core::consent::{ConsentPermissions, ConsentStatus};
@@ -26,40 +26,45 @@ use tauri::command;
 use crate::ipc_error::IpcError;
 use crate::runtime_state::AppState;
 
-/// 동의 보존 정책 일수 (스토리지 보존 정책과 일치; `expires_at`은 None 유지).
+/// Consent retention policy in days (matches the storage retention policy;
+/// `expires_at` stays None).
 const RETENTION_DAYS: u32 = 30;
 
-/// #4686: 마이크 업그레이드 1회 알림을 이미 보였는지 기록하는 `app_meta` 키.
+/// #4686: `app_meta` key recording whether the one-time microphone upgrade notice
+/// has already been shown.
 const MIC_UPGRADE_NOTICE_FLAG: &str = "microphone_split_notice_shown";
 
-/// #4801: 프레임 파일 삭제가 완료되지 않았음을 재시작 후에도 알리는 `app_meta` 키.
+/// #4801: `app_meta` key that signals, even across restarts, that frame-file
+/// deletion did not complete.
 ///
-/// Phase-2(프레임 삭제) 실패 시 이 마커를 `set_meta_checked`로 기록한다.
-/// 다음 앱 기동 시 `retry_pending_local_erase`가 마커를 감지하고 삭제를 재시도한다.
-/// 양 단계 모두 성공한 뒤 `delete_meta_checked`로 마커를 지운다.
+/// On Phase-2 (frame deletion) failure this marker is written via `set_meta_checked`.
+/// On the next app launch `retry_pending_local_erase` detects the marker and retries
+/// the deletion. Once both phases succeed, the marker is cleared via `delete_meta_checked`.
 pub(crate) const PENDING_LOCAL_ERASE_KEY: &str = "pending_local_erase";
 
-/// 현재 동의 상태의 스냅샷 DTO.
+/// Snapshot DTO of the current consent state.
 ///
-/// 프론트엔드에 상태(`status`)와 허가 집합(`permissions`)을 한 번에 전달한다.
+/// Delivers the status (`status`) and the permission set (`permissions`) to the
+/// frontend in one shot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsentSnapshot {
-    /// 유효성 상태 (Valid / NotGranted / Expired / UpdateRequired).
+    /// Validity status (Valid / NotGranted / Expired / UpdateRequired).
     pub status: ConsentStatus,
-    /// 현재 부여된 권한 집합.
+    /// Currently granted permission set.
     pub permissions: ConsentPermissions,
 }
 
 // ---------------------------------------------------------------------------
-// 순수 헬퍼 — AppState 없이 테스트 가능한 단위 로직
+// Pure helpers — unit logic testable without AppState
 // ---------------------------------------------------------------------------
 
-/// `ConsentManager`에서 현재 상태를 읽어 `ConsentSnapshot`을 반환한다.
+/// Reads the current state from `ConsentManager` and returns a `ConsentSnapshot`.
 ///
-/// `status_and_permissions()`로 상태와 권한을 **단일 read 가드** 안에서 함께
-/// 읽으므로, 두 값이 서로 다른 시점을 가리키는 TOCTOU 창이 없다 (F5). 권한은
-/// 비-Valid 상태에서도 0으로 마스킹하지 않은 **원본 부여 권한**이다 — UI는 상태
-/// (예: Expired)와 함께 "무엇이 부여되었는지"를 보여줘야 하기 때문이다.
+/// `status_and_permissions()` reads the status and permissions together within a
+/// **single read guard**, so there is no TOCTOU window where the two values point
+/// to different moments (F5). The permissions are the **raw granted permissions**,
+/// not masked to zero even in a non-Valid status — because the UI must show "what
+/// was granted" alongside the status (e.g., Expired).
 pub(crate) fn read_consent_snapshot(cm: &dyn ConsentManagerPort) -> ConsentSnapshot {
     let (status, permissions) = cm.status_and_permissions();
     ConsentSnapshot {
@@ -68,10 +73,12 @@ pub(crate) fn read_consent_snapshot(cm: &dyn ConsentManagerPort) -> ConsentSnaps
     }
 }
 
-/// #4686: 마이크 업그레이드 1회 알림을 표시해야 하는지 판정하는 순수 함수.
+/// #4686: pure function that decides whether the one-time microphone upgrade notice
+/// should be shown.
 ///
-/// `audio.enabled`(오디오 캡처 ON)인데 `microphone` 동의가 아직 없고(#4568 분리 이후
-/// 기본 OFF) 알림을 아직 보인 적 없으면 `true`. AppState 없이 단위 테스트 가능하다.
+/// Returns `true` if `audio.enabled` (audio capture ON) but the `microphone` consent
+/// is not yet present (default OFF since the #4568 split) and the notice has not been
+/// shown yet. Unit-testable without AppState.
 fn should_show_microphone_upgrade_notice(
     audio_enabled: bool,
     microphone_granted: bool,
@@ -80,17 +87,18 @@ fn should_show_microphone_upgrade_notice(
     audio_enabled && !microphone_granted && !already_shown
 }
 
-/// 감사 로그 항목을 SQLite에 기록한다.
+/// Records an audit log entry into SQLite.
 ///
-/// - `action`: `"consent_granted"` 또는 `"consent_revoked"`
-/// - `consent_id`: 부여 시 ConsentRecord.consent_id; 철회 시 빈 문자열.
+/// - `action`: `"consent_granted"` or `"consent_revoked"`
+/// - `consent_id`: ConsentRecord.consent_id on grant; empty string on revoke.
 fn audit_consent(
     storage: &SqliteStorage,
     action: &str,
     perms: &ConsentPermissions,
     consent_id: &str,
 ) {
-    // details 필드에 결과 권한 집합·정책 버전·consent_id를 JSON으로 기록한다.
+    // Record the resulting permission set, policy version, and consent_id as JSON
+    // in the details field.
     let details = serde_json::json!({
         "permissions": perms,
         "version": maekon_core::consent::CURRENT_POLICY_VERSION,
@@ -107,54 +115,60 @@ fn audit_consent(
         session_id: "system.consent".into(),
         command_id: "system.consent".into(),
         action_type: action.into(),
-        // 성공 처리 — Granted/Revoked 변형이 없으므로 Completed 사용.
+        // Treated as success — there is no Granted/Revoked variant, so use Completed.
         status: AuditStatus::Completed,
         details: Some(details.to_string()),
         execution_time_ms: None,
     });
 }
 
-/// 동의 부여 + 감사 기록을 수행하고 결과 스냅샷을 반환한다.
+/// Grants consent + records the audit entry and returns the resulting snapshot.
 ///
-/// `grant_consent` 파일 I/O 실패는 `IpcError`로 변환해 호출자에게 전파한다.
-/// 감사 로그는 파일 쓰기가 성공한 이후에만 기록한다 — 실패한 부여는 감사하지 않는다.
+/// A `grant_consent` file-I/O failure is converted to `IpcError` and propagated to
+/// the caller. The audit log is recorded only after the file write succeeds — a
+/// failed grant is not audited.
 pub(crate) fn apply_set_consent(
     cm: &dyn ConsentManagerPort,
     storage: &SqliteStorage,
     permissions: ConsentPermissions,
 ) -> Result<ConsentSnapshot, IpcError> {
-    // 파일 I/O 실패 시 Err를 즉시 반환한다 (GDPR 준수: persist 전 Ok 반환 금지).
+    // On file-I/O failure, return Err immediately (GDPR compliance: do not return Ok
+    // before persisting).
     cm.grant_consent(permissions.clone(), RETENTION_DAYS)
         .map_err(IpcError::from)?;
     let consent_id = cm
         .current_consent()
         .map(|r| r.consent_id)
         .unwrap_or_default();
-    // persist 성공 후에만 감사 기록한다.
+    // Record the audit only after persisting succeeds.
     audit_consent(storage, "consent_granted", &permissions, &consent_id);
     Ok(read_consent_snapshot(cm))
 }
 
-/// 동의 철회 + 감사 기록을 수행하고 결과 스냅샷을 반환한다.
+/// Revokes consent + records the audit entry and returns the resulting snapshot.
 ///
-/// `revoke_consent` 파일 I/O 실패는 `IpcError`로 변환해 호출자에게 전파한다.
-/// 철회 실패 시 UI에 Ok를 반환하면 GDPR Art. 7§3(철회권) 위반이므로 반드시 전파한다.
-/// 감사 로그는 철회가 성공한 이후에만 기록한다.
+/// A `revoke_consent` file-I/O failure is converted to `IpcError` and propagated to
+/// the caller. Returning Ok to the UI on a revoke failure would violate GDPR Art.
+/// 7§3 (right to withdraw), so it must be propagated. The audit log is recorded only
+/// after the revoke succeeds.
 pub(crate) fn apply_withdraw_consent(
     cm: &dyn ConsentManagerPort,
     storage: &SqliteStorage,
 ) -> Result<ConsentSnapshot, IpcError> {
-    // 철회 전 권한 집합·consent_id를 캡처해 감사 로그에 "무엇이 철회되었는지"를 남긴다
-    // (GDPR Art. 7§1 demonstrability — 철회 이벤트만으로 철회된 권한을 재구성할 수 있어야 한다).
+    // Capture the permission set and consent_id before revoking so the audit log
+    // records "what was revoked" (GDPR Art. 7§1 demonstrability — the revoked
+    // permissions must be reconstructable from the revoke event alone).
     let prior = cm.current_consent();
     let prior_permissions = prior
         .as_ref()
         .map(|r| r.permissions.clone())
         .unwrap_or_default();
     let prior_consent_id = prior.map(|r| r.consent_id).unwrap_or_default();
-    // 파일 I/O 실패 시 Err를 즉시 반환한다 (철회 persist 실패를 Ok로 감추는 것은 GDPR 위반).
+    // On file-I/O failure, return Err immediately (hiding a revoke-persist failure
+    // behind Ok is a GDPR violation).
     cm.revoke_consent().map_err(IpcError::from)?;
-    // persist 성공 후에만 감사 기록한다. 철회된(직전) 권한 집합을 기록한다 — all-false 기본값이 아니라.
+    // Record the audit only after persisting succeeds. Record the revoked (prior)
+    // permission set — not the all-false default.
     audit_consent(
         storage,
         "consent_revoked",
@@ -240,9 +254,9 @@ pub(crate) fn reapply_telemetry_gate(app: &tauri::AppHandle) {
     }
 }
 
-/// `AppState`에서 `Arc<dyn ConsentManagerPort>`를 추출한다.
+/// Extracts the `Arc<dyn ConsentManagerPort>` from `AppState`.
 ///
-/// `capture.consent_manager`가 None이면 `service.unavailable` IpcError를 반환한다.
+/// Returns a `service.unavailable` IpcError if `capture.consent_manager` is None.
 fn consent_mgr(state: &AppState) -> Result<&Arc<dyn ConsentManagerPort>, IpcError> {
     state
         .capture
@@ -252,37 +266,41 @@ fn consent_mgr(state: &AppState) -> Result<&Arc<dyn ConsentManagerPort>, IpcErro
 }
 
 // ---------------------------------------------------------------------------
-// Tauri IPC 커맨드
+// Tauri IPC commands
 // ---------------------------------------------------------------------------
 
-/// 현재 동의 상태를 읽어 반환한다.
+/// Reads and returns the current consent state.
 ///
-/// 쓰기 없이 읽기만 수행하므로 `&self` ConsentManager로 충분하다.
+/// Only reads, no writes, so a `&self` ConsentManager is sufficient.
 #[command]
 pub async fn get_consent(state: tauri::State<'_, AppState>) -> Result<ConsentSnapshot, IpcError> {
     Ok(read_consent_snapshot(consent_mgr(&state)?.as_ref()))
 }
 
-/// 지정된 권한 집합으로 동의를 부여하고, 감사 로그를 기록한 후 결과 스냅샷을 반환한다.
+/// Grants consent with the given permission set, records the audit log, and returns
+/// the resulting snapshot.
 ///
-/// `apply_set_consent`는 `grant_consent`(blocking `std::fs::write`) +
-/// `save_audit_entry`(blocking SQLite)를 수행하는 **동기** 헬퍼이므로,
-/// async 워커 풀이 굶지 않도록 `spawn_blocking`으로 옮긴다 (F-RR-06 async-safety).
+/// `apply_set_consent` is a **synchronous** helper that runs `grant_consent`
+/// (blocking `std::fs::write`) + `save_audit_entry` (blocking SQLite), so it is
+/// moved onto `spawn_blocking` to avoid starving the async worker pool (F-RR-06
+/// async-safety).
 ///
-/// 동의 쓰기 직후 VAD 재게이트 신호를 발사한다 (F-MIC-2, #4568): `microphone`을
-/// 철회/축소하면 실행 중인 VAD 리스너가 ≤2 s 백스톱 틱을 기다리지 않고 즉시
-/// 마이크를 내린다. **bare `signal_vad_regate`** 를 사용한다 — `on_capture_pause_toggled`
-/// 는 unpause 엣지에서 VAD 를 자동 재무장하므로, 동의 *부여* 시 마이크가 자동
-/// 시작되는 (consent-to-surveillance) 에스컬레이션을 피한다. 어떤 동의 쓰기든
-/// 무조건 발사한다 (게이트가 여전히 열려 있으면 수신자는 no-op — idempotent).
-/// 신호는 blocking 가드가 해제된 뒤 발사되는 non-blocking `notify_one` 이다.
+/// Immediately after the consent write, fire the VAD re-gate signal (F-MIC-2,
+/// #4568): revoking/narrowing `microphone` makes a running VAD listener drop the
+/// mic at once rather than waiting for the ≤2 s backstop tick. Use the **bare
+/// `signal_vad_regate`** — `on_capture_pause_toggled` auto-rearms VAD on the unpause
+/// edge, so this avoids a consent-to-surveillance escalation where the mic would
+/// auto-start on a consent *grant*. Fire it unconditionally on any consent write
+/// (if the gate is still open the receiver is a no-op — idempotent). The signal is
+/// a non-blocking `notify_one` fired after the blocking guard is released.
 #[command]
 pub async fn set_consent(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     permissions: ConsentPermissions,
 ) -> Result<ConsentSnapshot, IpcError> {
-    // Arc를 복제해 'static 클로저로 소유권을 넘긴다 (State borrow는 await를 넘길 수 없다).
+    // Clone the Arc to move ownership into a 'static closure (a State borrow cannot
+    // cross an await).
     let cm = consent_mgr(&state)?.clone();
     let storage = state.storage.clone();
     let snapshot =
@@ -294,7 +312,8 @@ pub async fn set_consent(
                     format!("set_consent task join failed: {join_err}"),
                 )
             })??;
-    // persist 성공 후 (blocking 가드 해제 후) VAD 재게이트 신호 발사.
+    // After persisting succeeds (after the blocking guard is released), fire the VAD
+    // re-gate signal.
     crate::commands::audio::signal_vad_regate(&app);
     // #5056: re-evaluate the consent gate on the telemetry exporter. Granting
     // telemetry consent (with config already enabled) starts the exporter
@@ -304,24 +323,27 @@ pub async fn set_consent(
     Ok(snapshot)
 }
 
-/// 동의를 철회하고, 감사 로그를 기록한 후 결과 스냅샷을 반환한다.
+/// Revokes consent, records the audit log, and returns the resulting snapshot.
 ///
-/// `apply_withdraw_consent`는 `revoke_consent`(blocking write+rename, write 가드를
-/// 가로질러 보유) + `save_audit_entry`(blocking SQLite)를 수행하는 **동기** 헬퍼이므로,
-/// async 워커 풀이 굶지 않도록 `spawn_blocking`으로 옮긴다 (F-RR-06 async-safety).
-/// revoke의 단일-가드 원자성 설계는 헬퍼 내부에서 그대로 유지된다 (여기선 풀만 분리).
+/// `apply_withdraw_consent` is a **synchronous** helper that runs `revoke_consent`
+/// (blocking write+rename, holding the write guard across the operation) +
+/// `save_audit_entry` (blocking SQLite), so it is moved onto `spawn_blocking` to
+/// avoid starving the async worker pool (F-RR-06 async-safety). The revoke's
+/// single-guard atomicity design is preserved inside the helper (only the pool is
+/// separated here).
 ///
-/// # GDPR Art. 17 로컬 삭제 (#4801, Decision A: 전체-삭제)
+/// # GDPR Art. 17 local erasure (#4801, Decision A: full erasure)
 ///
-/// revoke persist 성공 직후 로컬 데이터를 2단계로 삭제한다:
-/// - Phase-1: SQLite 전체 테이블 원자적 삭제. 실패 시 Err 반환 (R5).
-/// - Phase-2: 프레임 이미지 파일 삭제. 실패 시 재시도 마커 기록 + 부분 상태 표시 (R2/R3).
+/// Immediately after the revoke persist succeeds, erase local data in 2 phases:
+/// - Phase-1: atomic deletion of all SQLite tables. Returns Err on failure (R5).
+/// - Phase-2: deletion of frame image files. On failure, write a retry marker +
+///   report partial status (R2/R3).
 ///
-/// 원격 DeletionEvent 전파는 sync_engine에 위임한다 (R4: pending_deletion=true 유지).
+/// Remote DeletionEvent propagation is delegated to sync_engine (R4: pending_deletion=true is kept).
 ///
-/// 철회 persist 직후 VAD 재게이트 신호를 발사한다 (F-MIC-2, #4568): 실행 중인 VAD
-/// 리스너가 즉시 마이크를 내리도록 한다. `set_consent` 와 동일하게 bare
-/// `signal_vad_regate` 를 blocking 가드 해제 후 발사한다.
+/// Immediately after the revoke persists, fire the VAD re-gate signal (F-MIC-2,
+/// #4568) so a running VAD listener drops the mic at once. As in `set_consent`, fire
+/// the bare `signal_vad_regate` after the blocking guard is released.
 #[command]
 pub async fn withdraw_consent(
     app: tauri::AppHandle,
@@ -330,7 +352,7 @@ pub async fn withdraw_consent(
     let cm = consent_mgr(&state)?.clone();
     let storage = state.storage.clone();
 
-    // Step 1: revoke persist + 감사 로그 (blocking I/O → spawn_blocking).
+    // Step 1: revoke persist + audit log (blocking I/O → spawn_blocking).
     let snapshot =
         tokio::task::spawn_blocking(move || apply_withdraw_consent(cm.as_ref(), &storage))
             .await
@@ -341,8 +363,9 @@ pub async fn withdraw_consent(
                 )
             })??;
 
-    // revoke persist 성공 후 VAD 재게이트 신호 발사 (F-MIC-2).
-    // 신호 발사는 새 캡처를 즉시 차단하는 효과를 낸다 (is_permitted = false).
+    // After the revoke persist succeeds, fire the VAD re-gate signal (F-MIC-2).
+    // Firing the signal has the effect of immediately blocking new captures
+    // (is_permitted = false).
     crate::commands::audio::signal_vad_regate(&app);
     // #5056: re-evaluate the consent gate on the telemetry exporter. Revoking
     // consent zeroes `effective_permissions().telemetry`, so this drives the
@@ -350,7 +373,7 @@ pub async fn withdraw_consent(
     // next config change. Best-effort — never fails the revoke.
     reapply_telemetry_gate(&app);
 
-    // Step 2: GDPR Art. 17 로컬 데이터 삭제 (R5: 실패 시 Ok 반환 불가).
+    // Step 2: GDPR Art. 17 local data erasure (R5: cannot return Ok on failure).
     let frame_storage = state.capture.frame_storage.clone();
     let storage = state.storage.clone();
     erase_all_local_data(storage, frame_storage).await?;
@@ -358,13 +381,15 @@ pub async fn withdraw_consent(
     Ok(snapshot)
 }
 
-/// #4928 round-3 (FIX B): erase 윈도우 동안 `erasing` 신호를 보유하는 RAII 가드.
+/// #4928 round-3 (FIX B): RAII guard that holds the `erasing` signal for the
+/// duration of the erase window.
 ///
-/// `set` 시점에 공유 `erasing` Arc 를 `true` 로 만들고, `Drop` 시 `false` 로 되돌린다.
-/// 이렇게 하면 erase 의 모든 종료 경로(Phase-1 Err, Phase-2 Err, 정상 완료,
-/// 패닉-unwind)에서 신호가 반드시 clear 된다 — happy-path 에서만 수동 clear 하는
-/// 누락 위험이 없다. `grant_consent` 는 `erasing` 을 건드리지 못하므로, 이 가드가
-/// 살아있는 동안에는 재동의가 와도 쓰기가 재개되지 않는다.
+/// On `set` it makes the shared `erasing` Arc `true`, and on `Drop` it sets it back
+/// to `false`. This guarantees the signal is cleared on every exit path of erase
+/// (Phase-1 Err, Phase-2 Err, normal completion, panic-unwind) — there is no risk
+/// of forgetting to clear it manually only on the happy path. Since `grant_consent`
+/// cannot touch `erasing`, no write resumes while this guard is alive even if a
+/// re-grant comes in.
 struct EraseWindowGuard {
     erasing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -378,136 +403,153 @@ impl EraseWindowGuard {
 
 impl Drop for EraseWindowGuard {
     fn drop(&mut self) {
-        // 모든 종료 경로에서 erase 윈도우를 닫는다(성공/에러/패닉 공통).
+        // Close the erase window on every exit path (success/error/panic alike).
         self.erasing
             .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
-/// GDPR Art. 17 로컬 데이터 삭제를 수행한다 (#4801).
+/// Performs GDPR Art. 17 local data erasure (#4801).
 ///
-/// # 순서 (R6)
-/// 1. Phase-1: SQLite 전체 사용자 데이터 테이블 원자적 삭제.
-///    - 실패 시 `IpcError`를 즉시 반환 (R5: 잔존 SQLite 데이터로 Ok 보고 금지).
-/// 2. Phase-2: 프레임 이미지 파일 삭제 (frame_storage가 Some인 경우).
-///    - 실패 시 `pending_local_erase=1` 마커를 `set_meta_checked`로 기록 (R2/R3).
-///    - 마커 기록 성공 여부와 무관하게 호출자에게 오류를 알린다 (R5).
+/// # Order (R6)
+/// 1. Phase-1: atomic deletion of all SQLite user-data tables.
+///    - On failure, return `IpcError` immediately (R5: do not report Ok with
+///      residual SQLite data).
+/// 2. Phase-2: deletion of frame image files (when frame_storage is Some).
+///    - On failure, write a `pending_local_erase=1` marker via `set_meta_checked`
+///      (R2/R3).
+///    - Report the error to the caller regardless of whether the marker write
+///      succeeded (R5).
 ///
-/// # 원격 전파 (R4)
-/// `pending_deletion=true`를 건드리지 않는다 — sync_engine이 단독 소유자다.
+/// # Remote propagation (R4)
+/// Does not touch `pending_deletion=true` — sync_engine is the sole owner.
 async fn erase_all_local_data(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
 ) -> Result<(), IpcError> {
-    // #4928 round-3 (FIX B): grant_consent-during-erase TOCTOU 차단.
+    // #4928 round-3 (FIX B): block the grant_consent-during-erase TOCTOU.
     //
-    // `deletion_flag` 는 erase 도중 재동의(`grant_consent`)가 `false` 로 되돌릴 수
-    // 있으나, `erasing` 은 erase 만 set/clear 하고 `grant_consent` 는 건드리지 못한다.
-    // erase 전체 구간(Phase-1 + Phase-2)에 set 해두면, Phase-1 커밋 후 ~ Phase-2 진행
-    // 중에 재동의가 끼어들어도 in-flight writer 가 `deletion_flag || erasing` 스킵 술어
-    // 때문에 wipe 이후 잔존 행을 쓰지 못한다.
+    // A re-grant (`grant_consent`) during erase can flip `deletion_flag` back to
+    // `false`, but `erasing` is only set/cleared by erase and `grant_consent` cannot
+    // touch it. Setting it for the entire erase span (Phase-1 + Phase-2) means that
+    // even if a re-grant slips in between the Phase-1 commit and Phase-2, an
+    // in-flight writer cannot write residual rows after the wipe because of the
+    // `deletion_flag || erasing` skip predicate.
     //
-    // `storage.erasing()` 은 composition root 에서 SQLite/frames/ConsentManager 셋이
-    // 공유하는 동일 `Arc` 이므로, 이 한 핸들을 set/clear 하면 양쪽 funnel 이 모두 본다.
-    // RAII 가드(`EraseWindowGuard`)가 모든 종료 경로(성공/Err/패닉-unwind)에서 clear 한다.
+    // `storage.erasing()` is the same `Arc` shared by the SQLite/frames/
+    // ConsentManager trio at the composition root, so setting/clearing this one
+    // handle is visible to both funnels. The RAII guard (`EraseWindowGuard`) clears
+    // it on every exit path (success/Err/panic-unwind).
     let _erase_window = EraseWindowGuard::set(storage.erasing());
 
-    // ── Phase-1: SQLite 원자적 삭제 ──────────────────────────────────────────
-    // `delete_all_data`는 blocking I/O이므로 spawn_blocking으로 격리한다.
+    // ── Phase-1: atomic SQLite deletion ──────────────────────────────────────
+    // `delete_all_data` is blocking I/O, so isolate it on spawn_blocking.
     let storage_clone = storage.clone();
     tokio::task::spawn_blocking(move || storage_clone.delete_all_data())
         .await
         .map_err(|join_err| {
             IpcError::new(
                 "internal.generic",
-                format!("GDPR SQLite 삭제 태스크 join 실패: {join_err}"),
+                format!("GDPR SQLite deletion task join failed: {join_err}"),
             )
         })?
         .map_err(|e| {
-            // R5: SQLite 삭제 실패 시 Ok 반환 금지 — Err를 즉시 전파한다.
-            tracing::error!(err = %e, "GDPR Art.17: SQLite 전체 삭제 실패 — 잔존 사용자 데이터");
+            // R5: do not return Ok on SQLite deletion failure — propagate Err immediately.
+            tracing::error!(err = %e, "GDPR Art.17: full SQLite deletion failed — residual user data");
             IpcError::from(e)
         })?;
 
-    tracing::info!("GDPR Art.17 Phase-1 완료: SQLite 전체 삭제 성공");
+    tracing::info!("GDPR Art.17 Phase-1 complete: full SQLite deletion succeeded");
 
-    // ── Phase-2: 프레임 이미지 파일 삭제 ─────────────────────────────────────
+    // ── Phase-2: frame image file deletion ───────────────────────────────────
     let Some(fs) = frame_storage else {
-        // 프레임 스토리지가 없는 경우(오프라인/테스트 환경) — Phase-2 생략.
+        // When there is no frame storage (offline/test environment) — skip Phase-2.
         return Ok(());
     };
 
     match fs.delete_all_frames().await {
         Ok(count) => {
-            tracing::info!(count, "GDPR Art.17 Phase-2 완료: 프레임 파일 삭제 성공");
-            // Phase-2 성공 시 재시도 마커가 있다면 지운다 (이전 부분 삭제 회복).
+            tracing::info!(
+                count,
+                "GDPR Art.17 Phase-2 complete: frame file deletion succeeded"
+            );
+            // On Phase-2 success, clear the retry marker if present (recover from a
+            // prior partial deletion).
             if let Err(e) = storage.delete_meta_checked(PENDING_LOCAL_ERASE_KEY) {
-                // 마커 삭제 실패는 허용: 다음 기동에서 재시도가 다시 발생할 뿐이다.
-                tracing::warn!(err = %e, "GDPR: 재시도 마커 삭제 실패 (non-fatal)");
+                // A marker-deletion failure is acceptable: it only means the retry
+                // happens again on the next launch.
+                tracing::warn!(err = %e, "GDPR: retry marker deletion failed (non-fatal)");
             }
             Ok(())
         }
         Err(e) => {
-            // R3/R5: 프레임 삭제 실패 → 재시도 마커 기록 + 호출자에게 부분 상태 표시.
-            tracing::error!(err = %e, "GDPR Art.17 Phase-2 실패: 프레임 이미지 삭제 불완전");
+            // R3/R5: frame deletion failed → write the retry marker + report partial
+            // status to the caller.
+            tracing::error!(err = %e, "GDPR Art.17 Phase-2 failed: frame image deletion incomplete");
             if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
-                // 마커 기록도 실패하면 추가 경고 (R2 달성 불가 — 한계 기록).
+                // If the marker write also fails, log an extra warning (R2 cannot be
+                // achieved — record the limitation).
                 tracing::error!(
                     err = %meta_err,
-                    "GDPR: 재시도 마커 기록 실패 — 재시작 후 자동 재시도 불가"
+                    "GDPR: retry marker write failed — automatic retry after restart is not possible"
                 );
             }
-            // 프레임 삭제 오류를 IpcError로 변환해 반환한다 (R5).
+            // Convert the frame-deletion error to IpcError and return it (R5).
             Err(IpcError::from(e))
         }
     }
 }
 
-/// 앱 기동 시 미완료 로컬 삭제를 재시도한다 (#4801, R2/R3 — 재시작 내구성).
+/// Retries an incomplete local erasure on app launch (#4801, R2/R3 — restart
+/// durability).
 ///
-/// `app_meta`에 `pending_local_erase=1` 마커가 있으면 `erase_all_local_data`를
-/// 재실행한다. 양 단계 성공 후 마커를 `delete_meta_checked`로 삭제한다.
-/// 실패해도 다음 기동에서 재시도하므로 앱 시작을 중단하지 않는다 (best-effort 재시도).
+/// If the `pending_local_erase=1` marker is present in `app_meta`, re-run
+/// `erase_all_local_data`. After both phases succeed, delete the marker via
+/// `delete_meta_checked`. Even on failure it retries on the next launch, so it does
+/// not abort app startup (best-effort retry).
 ///
-/// # 호출 위치
-/// `app_runtime_launch::mod.rs`의 `build_and_spawn` 함수에서 SQLite가 준비된 직후,
-/// 캡처 서비스가 연결되기 전에 호출한다.
+/// # Call site
+/// Called from the `build_and_spawn` function in `app_runtime_launch::mod.rs` right
+/// after SQLite is ready, before the capture services are connected.
 pub(crate) async fn retry_pending_local_erase(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
 ) {
-    // 마커가 없으면 즉시 반환 (정상 기동 경로).
+    // If there is no marker, return immediately (normal startup path).
     if storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none() {
         return;
     }
 
-    tracing::warn!("GDPR Art.17: 미완료 로컬 삭제 마커 감지 — 재시도를 시작한다");
+    tracing::warn!("GDPR Art.17: detected incomplete local-erasure marker — starting retry");
 
     match erase_all_local_data(storage.clone(), frame_storage).await {
         Ok(()) => {
-            tracing::info!("GDPR Art.17: 재시도 성공 — 재시도 마커 삭제");
-            // Phase-2가 성공했으므로 마커를 삭제한다 (erase_all_local_data 내부에서 이미 처리).
+            tracing::info!("GDPR Art.17: retry succeeded — deleting retry marker");
+            // Phase-2 succeeded, so the marker is deleted (already handled inside
+            // erase_all_local_data).
         }
         Err(e) => {
-            // 재시도도 실패 — 다음 기동에서 다시 시도한다 (마커는 유지됨).
+            // The retry also failed — try again on the next launch (the marker is kept).
             tracing::error!(
                 err = %e,
-                "GDPR Art.17: 재시도 실패 — 다음 기동에서 재시도 예정"
+                "GDPR Art.17: retry failed — will retry on next launch"
             );
         }
     }
 }
 
-/// #4686: 마이크 분리(#4568) 이후 조용히 멈춘 마이크에 대한 **1회성** 업그레이드 알림.
+/// #4686: a **one-time** upgrade notice for a mic that quietly stopped after the
+/// microphone split (#4568).
 ///
-/// `audio.enabled`(사용자가 오디오 캡처를 켬)이지만 `microphone` 동의가 없고(분리 이후
-/// 기본 OFF) 아직 알림을 보인 적 없으면 `true`를 **딱 한 번** 반환하고 `app_meta` 플래그를
-/// 기록한다. 프론트엔드는 mount 시 이를 호출해 privacy 페이지로 안내하는 1회성 배너를
-/// 띄운다. 이후 호출은 항상 `false` (멱등). 명령형 command 라 startup emit-race 가 없다
-/// (프론트가 준비된 뒤 스스로 당겨간다).
+/// If `audio.enabled` (the user turned on audio capture) but the `microphone`
+/// consent is absent (default OFF since the split) and the notice has not been shown
+/// yet, returns `true` **exactly once** and writes the `app_meta` flag. The frontend
+/// calls this on mount to show a one-time banner guiding the user to the privacy
+/// page. Subsequent calls always return `false` (idempotent). Being an imperative
+/// command, there is no startup emit-race (the frontend pulls it itself once ready).
 ///
-/// `app_meta`(blocking SQLite)를 읽고 쓰므로 async 워커 풀을 굶기지 않도록
-/// `spawn_blocking`으로 옮긴다 (F-RR-06 async-safety).
+/// It reads and writes `app_meta` (blocking SQLite), so it is moved onto
+/// `spawn_blocking` to avoid starving the async worker pool (F-RR-06 async-safety).
 #[command]
 pub async fn take_microphone_upgrade_notice(
     state: tauri::State<'_, AppState>,
@@ -525,7 +567,7 @@ pub async fn take_microphone_upgrade_notice(
         let show =
             should_show_microphone_upgrade_notice(audio_enabled, microphone_granted, already_shown);
         if show {
-            // 표시할 때만 플래그를 기록해 정확히 1회만 노출되도록 한다.
+            // Record the flag only when showing, so it is surfaced exactly once.
             storage.set_meta(MIC_UPGRADE_NOTICE_FLAG, "true");
         }
         show
@@ -540,7 +582,7 @@ pub async fn take_microphone_upgrade_notice(
 }
 
 // ---------------------------------------------------------------------------
-// 테스트
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -548,12 +590,12 @@ mod tests {
     use super::*;
     use maekon_core::consent::ConsentManager;
 
-    /// set_consent → get_consent 라운드트립 + 감사 로그 기록 검증.
+    /// Verifies the set_consent → get_consent round-trip + audit log recording.
     ///
-    /// - `AppState` 없이 bare `ConsentManager` + `SqliteStorage`를 직접 사용한다.
-    /// - `apply_set_consent` / `read_consent_snapshot` 헬퍼를 호출한다.
-    /// - 결과 스냅샷의 status == Valid, screen_capture == true를 단언한다.
-    /// - `entries_by_command_id("system.consent")` 에서 `action_type == "consent_granted"` 항목 존재를 단언한다.
+    /// - Uses a bare `ConsentManager` + `SqliteStorage` directly, without `AppState`.
+    /// - Calls the `apply_set_consent` / `read_consent_snapshot` helpers.
+    /// - Asserts the resulting snapshot's status == Valid and screen_capture == true.
+    /// - Asserts a `action_type == "consent_granted"` entry exists in `entries_by_command_id("system.consent")`.
     #[test]
     fn set_then_get_consent_round_trip_and_audit() {
         let dir = tempfile::tempdir().unwrap();
@@ -564,7 +606,7 @@ mod tests {
             maekon_storage::sqlite::SqliteStorage::open(&dir.path().join("s.db"), 1, None).unwrap(),
         );
 
-        // 동의 부여 + 스냅샷 검증
+        // Grant consent + verify the snapshot
         let snap = apply_set_consent(
             cm.as_ref(),
             &storage,
@@ -573,24 +615,24 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("apply_set_consent은 쓰기 가능한 임시 디렉터리에서 실패해선 안 된다");
+        .expect("apply_set_consent must not fail in a writable temp directory");
         assert_eq!(snap.status, maekon_core::consent::ConsentStatus::Valid);
         assert!(snap.permissions.screen_capture);
 
-        // read_consent_snapshot 재확인 (독립적 읽기)
+        // Re-check read_consent_snapshot (independent read)
         let got = read_consent_snapshot(cm.as_ref());
         assert!(got.permissions.screen_capture);
 
-        // 감사 로그 검증: consent_granted 항목이 1개 이상 존재해야 한다.
+        // Verify the audit log: at least one consent_granted entry must exist.
         let audit = storage.entries_by_command_id("system.consent", 10);
         assert!(
             audit.iter().any(|e| e.action_type == "consent_granted"),
-            "audit_log에 consent_granted 항목이 없음: {audit:?}"
+            "no consent_granted entry in audit_log: {audit:?}"
         );
     }
 
-    /// 철회 감사가 철회된(직전) 권한 집합을 기록하는지 검증 (GDPR Art. 7§1 #4684).
-    /// 회귀: 이전엔 all-false default를 기록해 "무엇이 철회됐는지" 재구성이 불가했다.
+    /// Verifies the revoke audit records the revoked (prior) permission set (GDPR Art. 7§1 #4684).
+    /// Regression: it used to record the all-false default, making "what was revoked" unreconstructable.
     #[test]
     fn withdraw_consent_audits_the_revoked_permission_set() {
         let dir = tempfile::tempdir().unwrap();
@@ -621,14 +663,14 @@ mod tests {
         let revoke = audit
             .iter()
             .find(|e| e.action_type == "consent_revoked")
-            .expect("consent_revoked 감사 항목이 있어야 한다");
+            .expect("a consent_revoked audit entry must exist");
         let details: serde_json::Value =
             serde_json::from_str(revoke.details.as_ref().expect("details")).expect("details json");
-        // 철회된 권한 집합(prior)이 기록되어야 한다 — all-false 기본값이 아니라.
+        // The revoked permission set (prior) must be recorded — not the all-false default.
         assert_eq!(
             details["permissions"]["microphone"],
             serde_json::json!(true),
-            "철회 감사는 직전 microphone=true 를 기록해야 한다 (all-false 아님): {details}"
+            "the revoke audit must record the prior microphone=true (not all-false): {details}"
         );
         assert_eq!(
             details["permissions"]["screen_capture"],
@@ -685,36 +727,36 @@ mod tests {
         );
     }
 
-    /// #4686: 마이크 업그레이드 알림 판정 로직 (순수 함수, 진리표).
+    /// #4686: microphone upgrade notice decision logic (pure function, truth table).
     #[test]
     fn microphone_upgrade_notice_decision_truth_table() {
-        // audio ON + mic 미동의 + 미표시 → 표시한다.
+        // audio ON + mic not consented + not shown → show it.
         assert!(should_show_microphone_upgrade_notice(true, false, false));
-        // 이미 1회 표시함 → 다시는 표시하지 않는다.
+        // already shown once → never show again.
         assert!(!should_show_microphone_upgrade_notice(true, false, true));
-        // mic 동의가 이미 있음 → 설명할 것이 없다.
+        // mic consent already present → nothing to explain.
         assert!(!should_show_microphone_upgrade_notice(true, true, false));
-        // audio OFF → 마이크를 쓰지 않으므로 관련 없다.
+        // audio OFF → mic is not used, so this is irrelevant.
         assert!(!should_show_microphone_upgrade_notice(false, false, false));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // #4801 GDPR Art. 17 테스트
+    // #4801 GDPR Art. 17 tests
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// 모든 메서드 호출을 추적하는 수동 Mock FrameStoragePort.
+    /// Manual Mock FrameStoragePort that tracks every method call.
     ///
-    /// `delete_all_frames` 호출 횟수와 반환할 결과를 제어한다.
-    /// mockall 없이 순수 수동 구현 (ADR-001 §5).
+    /// Controls the `delete_all_frames` call count and the result it returns.
+    /// Pure manual implementation without mockall (ADR-001 §5).
     struct MockFrameStorage {
-        /// `delete_all_frames` 호출 횟수.
+        /// `delete_all_frames` call count.
         delete_call_count: std::sync::atomic::AtomicU32,
-        /// true이면 `delete_all_frames`가 CoreError::Storage를 반환한다.
+        /// If true, `delete_all_frames` returns CoreError::Storage.
         should_fail: bool,
     }
 
     impl MockFrameStorage {
-        /// 성공을 반환하는 Mock.
+        /// Mock that returns success.
         fn success() -> Arc<Self> {
             Arc::new(Self {
                 delete_call_count: std::sync::atomic::AtomicU32::new(0),
@@ -722,7 +764,7 @@ mod tests {
             })
         }
 
-        /// 오류를 반환하는 Mock.
+        /// Mock that returns an error.
         fn failing() -> Arc<Self> {
             Arc::new(Self {
                 delete_call_count: std::sync::atomic::AtomicU32::new(0),
@@ -743,29 +785,29 @@ mod tests {
             _ts: chrono::DateTime<chrono::Utc>,
             _data: &[u8],
         ) -> Result<std::path::PathBuf, maekon_core::error::CoreError> {
-            unimplemented!("테스트에서 사용되지 않음")
+            unimplemented!("not used in tests")
         }
 
         async fn save_frames_batch(
             &self,
             _frames: Vec<(chrono::DateTime<chrono::Utc>, Vec<u8>)>,
         ) -> Vec<Result<std::path::PathBuf, maekon_core::error::CoreError>> {
-            unimplemented!("테스트에서 사용되지 않음")
+            unimplemented!("not used in tests")
         }
 
         async fn load_frame(
             &self,
             _path: &std::path::Path,
         ) -> Result<Vec<u8>, maekon_core::error::CoreError> {
-            unimplemented!("테스트에서 사용되지 않음")
+            unimplemented!("not used in tests")
         }
 
         async fn enforce_retention(&self) -> Result<usize, maekon_core::error::CoreError> {
-            unimplemented!("테스트에서 사용되지 않음")
+            unimplemented!("not used in tests")
         }
 
         async fn enforce_storage_limit(&self) -> Result<usize, maekon_core::error::CoreError> {
-            unimplemented!("테스트에서 사용되지 않음")
+            unimplemented!("not used in tests")
         }
 
         async fn delete_all_frames(&self) -> Result<usize, maekon_core::error::CoreError> {
@@ -782,13 +824,13 @@ mod tests {
         }
     }
 
-    /// 헬퍼: 임시 디렉터리에 `SqliteStorage`를 열고 일부 사용자 데이터를 삽입한다.
+    /// Helper: opens a `SqliteStorage` in a temp directory and inserts some user data.
     fn open_storage_with_data() -> (maekon_storage::sqlite::SqliteStorage, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let storage =
             maekon_storage::sqlite::SqliteStorage::open(&dir.path().join("s.db"), 1, None).unwrap();
-        // 이벤트 1건 삽입 — 삭제 후 비어있는지 검증하기 위해.
-        // #4928: connection_arc() 는 Arc<GuardedConnection> 를 반환한다 — write_lock funnel 사용.
+        // Insert 1 event — to verify it is empty after deletion.
+        // #4928: connection_arc() returns Arc<GuardedConnection> — use the write_lock funnel.
         let conn = storage.connection_arc();
         conn.write_lock()
             .run::<_, usize, rusqlite::Error>(0, |c| {
@@ -802,9 +844,9 @@ mod tests {
         (storage, dir)
     }
 
-    /// SQLite 테이블의 행 수를 반환하는 헬퍼.
+    /// Helper that returns the row count of a SQLite table.
     fn count_rows(storage: &maekon_storage::sqlite::SqliteStorage, table: &str) -> i64 {
-        // 읽기 — read_lock funnel.
+        // Read — read_lock funnel.
         let conn = storage.connection_arc();
         let read = conn.read_lock();
         read.conn()
@@ -814,9 +856,9 @@ mod tests {
             .unwrap_or(0)
     }
 
-    // ── 테스트 1: Phase-1 성공 + Phase-2 성공 ────────────────────────────────
+    // ── Test 1: Phase-1 success + Phase-2 success ────────────────────────────
 
-    /// revoke 후 erase_all_local_data는 SQLite를 비우고 delete_all_frames를 호출한다 (#4801).
+    /// After revoke, erase_all_local_data empties SQLite and calls delete_all_frames (#4801).
     #[tokio::test]
     async fn erase_all_local_data_sqlite_empty_and_frames_deleted() {
         let (storage, _dir) = open_storage_with_data();
@@ -825,7 +867,7 @@ mod tests {
 
         assert!(
             count_rows(&storage, "events") > 0,
-            "이벤트가 삽입되어야 한다"
+            "the event must have been inserted"
         );
 
         erase_all_local_data(
@@ -833,28 +875,28 @@ mod tests {
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
         )
         .await
-        .expect("erase_all_local_data는 성공해야 한다");
+        .expect("erase_all_local_data must succeed");
 
         assert_eq!(
             count_rows(&storage, "events"),
             0,
-            "SQLite events 테이블이 비어야 한다"
+            "the SQLite events table must be empty"
         );
         assert_eq!(
             mock_fs.delete_call_count(),
             1,
-            "delete_all_frames가 정확히 1회 호출되어야 한다"
+            "delete_all_frames must be called exactly once"
         );
-        // 성공 후 재시도 마커가 없어야 한다.
+        // After success, there must be no retry marker.
         assert!(
             storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none(),
-            "성공 후 pending_local_erase 마커가 없어야 한다"
+            "there must be no pending_local_erase marker after success"
         );
     }
 
-    // ── 테스트 2: Phase-2 실패 → 마커 기록 + Err 반환 (R3/R5) ───────────────
+    // ── Test 2: Phase-2 failure → marker written + Err returned (R3/R5) ──────
 
-    /// Phase-2(프레임 삭제) 실패 시 pending_local_erase 마커가 기록되고 Err가 반환된다 (#4801 R3/R5).
+    /// On Phase-2 (frame deletion) failure, the pending_local_erase marker is written and Err is returned (#4801 R3/R5).
     #[tokio::test]
     async fn erase_all_local_data_phase2_failure_sets_marker_and_returns_err() {
         let (storage, _dir) = open_storage_with_data();
@@ -867,37 +909,37 @@ mod tests {
         )
         .await;
 
-        // R5: 프레임 삭제 실패 시 Err를 반환해야 한다 (Ok로 은폐 금지).
+        // R5: on frame-deletion failure, Err must be returned (no concealment as Ok).
         let ipc_err = result.unwrap_err();
         assert!(
             ipc_err.code.contains("storage"),
-            "Phase-2 실패 시 storage IpcError를 반환해야 한다 (R5)"
+            "a storage IpcError must be returned on Phase-2 failure (R5)"
         );
 
-        // R3: 재시도 마커가 기록되어야 한다.
+        // R3: the retry marker must be written.
         assert_eq!(
             storage.get_meta(PENDING_LOCAL_ERASE_KEY),
             Some("1".to_string()),
-            "Phase-2 실패 후 pending_local_erase=1 마커가 기록되어야 한다 (R3)"
+            "the pending_local_erase=1 marker must be written after Phase-2 failure (R3)"
         );
 
-        // Phase-1(SQLite)은 이미 완료되어 events 테이블이 비어있어야 한다.
+        // Phase-1 (SQLite) already completed, so the events table must be empty.
         assert_eq!(
             count_rows(&storage, "events"),
             0,
-            "Phase-1(SQLite 삭제)은 성공했으므로 events 테이블이 비어야 한다"
+            "Phase-1 (SQLite deletion) succeeded, so the events table must be empty"
         );
     }
 
-    // ── 테스트 3: 마커가 있을 때 retry_pending_local_erase가 재시도하고 마커를 지운다 ──
+    // ── Test 3: when a marker exists, retry_pending_local_erase retries and clears the marker ──
 
-    /// 마커가 있을 때 retry_pending_local_erase는 삭제를 재시도하고 성공 시 마커를 지운다 (#4801 R2).
+    /// When a marker exists, retry_pending_local_erase retries the deletion and clears the marker on success (#4801 R2).
     #[tokio::test]
     async fn retry_pending_local_erase_reruns_and_clears_marker_on_success() {
         let (storage, _dir) = open_storage_with_data();
         let storage = Arc::new(storage);
 
-        // 재시도 마커를 수동으로 기록한다 (이전 기동에서 Phase-2 실패 시뮬레이션).
+        // Write the retry marker manually (simulating a Phase-2 failure on a prior launch).
         storage
             .set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1")
             .unwrap();
@@ -909,29 +951,29 @@ mod tests {
         )
         .await;
 
-        // 재시도 성공 후 마커가 삭제되어야 한다.
+        // After a successful retry, the marker must be deleted.
         assert!(
             storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none(),
-            "재시도 성공 후 pending_local_erase 마커가 삭제되어야 한다"
+            "the pending_local_erase marker must be deleted after a successful retry"
         );
 
-        // delete_all_frames가 재시도 중 호출되어야 한다.
+        // delete_all_frames must be called during the retry.
         assert_eq!(
             mock_fs.delete_call_count(),
             1,
-            "retry 경로에서 delete_all_frames가 호출되어야 한다"
+            "delete_all_frames must be called on the retry path"
         );
     }
 
-    // ── 테스트 4: 마커가 없을 때 retry_pending_local_erase는 no-op ────────────
+    // ── Test 4: when there is no marker, retry_pending_local_erase is a no-op ──
 
-    /// 마커가 없으면 retry_pending_local_erase는 아무것도 하지 않는다 (#4801 — 정상 기동 경로).
+    /// With no marker, retry_pending_local_erase does nothing (#4801 — normal startup path).
     #[tokio::test]
     async fn retry_pending_local_erase_noop_when_no_marker() {
         let (storage, _dir) = open_storage_with_data();
         let storage = Arc::new(storage);
 
-        // 마커 없이 retry 실행.
+        // Run retry without a marker.
         let mock_fs = MockFrameStorage::success();
         retry_pending_local_erase(
             storage.clone(),
@@ -939,23 +981,23 @@ mod tests {
         )
         .await;
 
-        // delete_all_frames가 호출되지 않아야 한다.
+        // delete_all_frames must not be called.
         assert_eq!(
             mock_fs.delete_call_count(),
             0,
-            "마커가 없으면 delete_all_frames가 호출되지 않아야 한다"
+            "delete_all_frames must not be called when there is no marker"
         );
 
-        // 이벤트 데이터는 그대로 있어야 한다.
+        // The event data must remain intact.
         assert!(
             count_rows(&storage, "events") > 0,
-            "마커 없이 retry 시 데이터가 삭제되어선 안 된다"
+            "data must not be deleted on a retry without a marker"
         );
     }
 
-    // ── 테스트 5: frame_storage가 None이면 Phase-2를 건너뛴다 ────────────────
+    // ── Test 5: when frame_storage is None, Phase-2 is skipped ───────────────
 
-    /// frame_storage가 None이면 Phase-1만 실행하고 Ok를 반환한다.
+    /// When frame_storage is None, only Phase-1 runs and Ok is returned.
     #[tokio::test]
     async fn erase_all_local_data_no_frame_storage_erases_sqlite_only() {
         let (storage, _dir) = open_storage_with_data();
@@ -963,15 +1005,15 @@ mod tests {
 
         assert!(count_rows(&storage, "events") > 0);
 
-        // frame_storage = None — Phase-2 생략.
+        // frame_storage = None — skip Phase-2.
         erase_all_local_data(storage.clone(), None)
             .await
-            .expect("frame_storage가 None이어도 Ok를 반환해야 한다");
+            .expect("Ok must be returned even when frame_storage is None");
 
         assert_eq!(
             count_rows(&storage, "events"),
             0,
-            "frame_storage=None이어도 SQLite는 삭제되어야 한다"
+            "SQLite must be deleted even when frame_storage=None"
         );
     }
 }

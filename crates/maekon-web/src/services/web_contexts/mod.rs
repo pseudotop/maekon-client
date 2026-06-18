@@ -99,6 +99,10 @@ impl FromRef<AppState> for ConfigWebContext {
 pub struct BackupWebContext {
     pub storage: Arc<dyn WebStorage>,
     pub config_manager: Option<ConfigManager>,
+    /// #6273: PII sanitizer so the backup download applies the same Standard
+    /// masking floor as the parallel export surface (both are loopback no-auth
+    /// downloads). Cloned from AppState.diagnostics.pii_sanitizer.
+    pub pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
 }
 
 impl BackupWebContext {
@@ -106,6 +110,7 @@ impl BackupWebContext {
         Self {
             storage: state.core.storage.clone(),
             config_manager: state.core.config_manager.clone(),
+            pii_sanitizer: state.diagnostics.pii_sanitizer.clone(),
         }
     }
 }
@@ -124,9 +129,16 @@ pub struct SettingsWebContext {
     pub(crate) default_secret_backend_kind: CredentialBackendKind,
     pub(crate) secret_store: Option<Arc<dyn SecretStore>>,
     pub(crate) secret_stores: Option<SecretStoreSet>,
-    pub(crate) audit_logger: Option<Arc<dyn AuditLogPort>>,
-    /// #5707: 설정 저장 후 coaching 엔진에 hot-reload 신호를 보내기 위한 핸들.
-    /// `None`이면 엔진이 연결되지 않은 환경(단독 웹 서버, 테스트)이므로 skip.
+    /// #6117: the SHARED, server-lifetime settings-policy audit writer (built
+    /// once in `WebServer::build_router`).  Each per-request context clone holds
+    /// an `Arc` to the SAME writer, so the bounded-channel drain task is never
+    /// recreated or aborted per request.  `None` when no `AuditLogPort` is
+    /// configured (tests / standalone web-server builds).
+    pub(crate) policy_audit_writer:
+        Option<Arc<crate::services::settings_policy_service::PolicyAuditWriter>>,
+    /// #5707: handle used to send a hot-reload signal to the coaching engine
+    /// after settings are saved. `None` means the engine is not wired in this
+    /// environment (standalone web server, tests), so the signal is skipped.
     pub(crate) coaching_engine: Option<Arc<dyn CoachingPort>>,
 }
 
@@ -139,7 +151,7 @@ impl SettingsWebContext {
             default_secret_backend_kind: state.secrets.default_backend_kind,
             secret_store: state.secrets.store.clone(),
             secret_stores: state.secrets.stores.clone(),
-            audit_logger: state.automation.audit_logger.clone(),
+            policy_audit_writer: state.automation.policy_audit_writer.clone(),
             coaching_engine: state.analysis.coaching_engine.clone(),
         }
     }

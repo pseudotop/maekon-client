@@ -1,11 +1,11 @@
-//! OAuthCode — OAuth 카테고리 에러 코드. `oauth.*` 접두사.
+//! OAuthCode — OAuth category error codes. `oauth.*` prefix.
 
 define_code_enum! {
-    /// OAuth 카테고리 에러 코드.
+    /// OAuth category error codes.
     pub enum OAuthCode {
-        /// OAuth 인증 실패 (초기 획득).
+        /// OAuth authentication failed (initial acquisition).
         Failed => "oauth.failed",
-        /// OAuth 토큰 리프레시 실패.
+        /// OAuth token refresh failed.
         RefreshFailed => "oauth.refresh_failed",
     }
 }

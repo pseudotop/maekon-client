@@ -75,9 +75,10 @@ impl VectorIndex for SqliteVectorIndex {
 
         let actual_clusters = n_clusters.min(vectors.len());
 
-        // F-PF-20: IvfIndex::build 는 k-means 반복 연산으로 CPU 집약적이다.
-        // tokio::task::spawn_blocking 으로 async executor 를 블로킹하지 않도록 분리.
-        // vectors 와 config 를 클로저로 move 하고, 결과를 centroids_data + assignments 로 추출.
+        // F-PF-20: IvfIndex::build is CPU-intensive due to the iterative k-means
+        // computation. Move it onto tokio::task::spawn_blocking so it does not block
+        // the async executor. The closure moves `vectors` and `config`, then extracts
+        // the result into `centroids_data` + `assignments`.
         let config = IvfBuildConfig {
             n_clusters: actual_clusters,
             n_iterations,
@@ -111,91 +112,97 @@ impl VectorIndex for SqliteVectorIndex {
         let n_clusters_result = centroids_data.len();
         let n_vectors = assignments.len();
 
-        self.with_conn(move |conn| {
-            // Clear old data
-            conn.execute("DELETE FROM ivf_assignments", [])
-                .map_err(|e| StorageError::Internal(format!("Failed to clear assignments: {e}")))?;
-            conn.execute("DELETE FROM ivf_centroids", [])
-                .map_err(|e| StorageError::Internal(format!("Failed to clear centroids: {e}")))?;
-
-            // Insert centroids
+        // #12: Make the rebuild ATOMIC. Previously the two `DELETE`s ran in
+        // auto-commit mode OUTSIDE the per-section insert transactions, so a
+        // crash after the deletes but before/between the inserts could leave the
+        // index tables empty/partial while `ivf_built_at` (written later) either
+        // persisted from a prior build or — worse — a partial new build looked
+        // complete. We now wrap DELETE + centroid inserts + assignment inserts +
+        // meta upserts in ONE `conn.transaction()` and commit once. A crash mid-
+        // build rolls the whole thing back to the prior consistent index. The WAL
+        // checkpoint + ANALYZE run AFTER commit (they are not transactional DML).
+        // Uses `with_conn_mut` so the closure gets `&mut Connection` for
+        // `transaction()`, while still routing through the #4928 erase barrier
+        // (write_lock re-checks deletion_flag/erasing before the closure runs).
+        self.with_conn_mut(move |conn| {
             {
-                let tx = conn.unchecked_transaction().map_err(|e| {
-                    StorageError::Internal(format!("Failed to begin transaction: {e}"))
+                let tx = conn.transaction().map_err(|e| {
+                    StorageError::Internal(format!("Failed to begin IVF rebuild tx: {e}"))
                 })?;
 
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT INTO ivf_centroids (id, centroid_int8, centroid_scale, centroid_offset, vector_count)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                    )
-                    .map_err(|e| {
-                        StorageError::Internal(format!("Failed to prepare centroid insert: {e}"))
-                    })?;
+                // Clear old data inside the transaction so the wipe is atomic
+                // with the repopulation below.
+                tx.execute("DELETE FROM ivf_assignments", []).map_err(|e| {
+                    StorageError::Internal(format!("Failed to clear assignments: {e}"))
+                })?;
+                tx.execute("DELETE FROM ivf_centroids", []).map_err(|e| {
+                    StorageError::Internal(format!("Failed to clear centroids: {e}"))
+                })?;
 
-                for (id, blob, scale, offset, count) in &centroids_data {
-                    stmt.execute(params![*id as i64, blob, scale, offset, *count as i64])
+                // Insert centroids
+                {
+                    let mut stmt = tx
+                        .prepare(
+                            "INSERT INTO ivf_centroids (id, centroid_int8, centroid_scale, centroid_offset, vector_count)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                        )
+                        .map_err(|e| {
+                            StorageError::Internal(format!("Failed to prepare centroid insert: {e}"))
+                        })?;
+
+                    for (id, blob, scale, offset, count) in &centroids_data {
+                        stmt.execute(params![*id as i64, blob, scale, offset, *count as i64])
+                            .map_err(|e| {
+                                StorageError::Internal(format!("Failed to insert centroid {id}: {e}"))
+                            })?;
+                    }
+                }
+
+                // Insert assignments
+                {
+                    let mut stmt = tx
+                        .prepare(
+                            "INSERT OR REPLACE INTO ivf_assignments (vector_id, cluster_id)
+                             VALUES (?1, ?2)",
+                        )
                         .map_err(|e| {
                             StorageError::Internal(format!(
-                                "Failed to insert centroid {id}: {e}"
+                                "Failed to prepare assignment insert: {e}"
                             ))
                         })?;
-                }
-                drop(stmt);
-                tx.commit().map_err(|e| {
-                    StorageError::Internal(format!("Failed to commit centroids: {e}"))
-                })?;
-            }
 
-            // Insert assignments in chunks of 1000
-            for chunk in assignments.chunks(1000) {
-                let tx = conn.unchecked_transaction().map_err(|e| {
-                    StorageError::Internal(format!("Failed to begin assignment tx: {e}"))
-                })?;
-
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT OR REPLACE INTO ivf_assignments (vector_id, cluster_id)
-                         VALUES (?1, ?2)",
-                    )
-                    .map_err(|e| {
-                        StorageError::Internal(format!(
-                            "Failed to prepare assignment insert: {e}"
-                        ))
-                    })?;
-
-                for (vid, cid) in chunk {
-                    stmt.execute(params![vid, *cid as i64])
-                        .map_err(|e| {
+                    for (vid, cid) in &assignments {
+                        stmt.execute(params![vid, *cid as i64]).map_err(|e| {
                             StorageError::Internal(format!(
                                 "Failed to insert assignment for vector {vid}: {e}"
                             ))
                         })?;
+                    }
                 }
-                drop(stmt);
+
+                // Update meta in the SAME transaction so `ivf_built_at` is only
+                // visible once the centroids/assignments are durably present.
+                let now = chrono::Utc::now().to_rfc3339();
+                tx.execute(
+                    "INSERT OR REPLACE INTO vector_index_meta (key, value, updated_at) VALUES ('ivf_built_at', ?1, ?1)",
+                    params![now],
+                ).map_err(|e| StorageError::Internal(format!("Failed to update index meta: {e}")))?;
+
+                tx.execute(
+                    "INSERT OR REPLACE INTO vector_index_meta (key, value, updated_at) VALUES ('ivf_vector_count', ?1, ?2)",
+                    params![n_vectors.to_string(), now],
+                ).map_err(|e| StorageError::Internal(format!("Failed to update vector count meta: {e}")))?;
+
                 tx.commit().map_err(|e| {
-                    StorageError::Internal(format!("Failed to commit assignments: {e}"))
+                    StorageError::Internal(format!("Failed to commit IVF rebuild: {e}"))
                 })?;
             }
 
-            // Update meta
-            let now = chrono::Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT OR REPLACE INTO vector_index_meta (key, value, updated_at) VALUES ('ivf_built_at', ?1, ?1)",
-                params![now],
-            ).map_err(|e| StorageError::Internal(format!("Failed to update index meta: {e}")))?;
-
-            conn.execute(
-                "INSERT OR REPLACE INTO vector_index_meta (key, value, updated_at) VALUES ('ivf_vector_count', ?1, ?2)",
-                params![n_vectors.to_string(), now],
-            ).map_err(|e| StorageError::Internal(format!("Failed to update vector count meta: {e}")))?;
-
-            // WAL checkpoint
+            // Post-commit maintenance (non-transactional): truncate the WAL and
+            // refresh the query planner statistics after the bulk index writes.
             if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
                 debug!("execute_batch failed: {e}");
             }
-
-            // Refresh query planner statistics after bulk index writes
             if let Err(e) = conn.execute_batch("ANALYZE") {
                 debug!("execute_batch failed: {e}");
             }
@@ -254,8 +261,9 @@ impl VectorIndex for SqliteVectorIndex {
 
         let dims = vectors_data[0].1.len();
 
-        // F-PF-20: BinaryQuantizer::compute_thresholds + 인코딩 루프는 CPU 집약적.
-        // spawn_blocking 으로 오프로드해 async executor 블로킹 방지.
+        // F-PF-20: BinaryQuantizer::compute_thresholds + the encoding loop are
+        // CPU-intensive. Offload them onto spawn_blocking to avoid blocking the
+        // async executor.
         let (codes, thresholds_json) = tokio::task::spawn_blocking(move || {
             let f32_vecs: Vec<Vec<f32>> = vectors_data.iter().map(|(_, v)| v.clone()).collect();
             let thresholds = BinaryQuantizer::compute_thresholds(&f32_vecs, dims)

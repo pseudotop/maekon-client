@@ -247,7 +247,7 @@ impl SqliteStorage {
         if segment_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_segment_details_inner(read.conn(), segment_ids)
     }
@@ -313,7 +313,7 @@ impl SqliteStorage {
     /// Save a GUI interaction event (sync twin).
     pub fn save_gui_interaction(&self, input: &NewGuiInteraction<'_>) -> Result<(), StorageError> {
         let params = owned_gui_interaction(input);
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, gui_interactions ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; gui_interactions in ALL_TABLES).
         self.conn
             .write_lock()
             .run((), |conn| Self::save_gui_interaction_inner(conn, &params))
@@ -363,7 +363,7 @@ impl SqliteStorage {
         &self,
         segment_id: &str,
     ) -> Result<Vec<GuiInteractionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_gui_interactions_for_segment_inner(read.conn(), segment_id)
     }
@@ -426,7 +426,7 @@ impl SqliteStorage {
         start: &str,
         end: &str,
     ) -> Result<Vec<(String, u32)>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::query_gui_interaction_density_inner(read.conn(), start, end)
     }

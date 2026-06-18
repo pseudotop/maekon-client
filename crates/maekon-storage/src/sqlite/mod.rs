@@ -63,6 +63,28 @@ pub(super) static FTS_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// Same rationale and thread-safety guarantees as [`FTS_AVAILABLE`].
 pub(super) static GUI_INTERACTIONS_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+/// Format `instant` as the canonical `system_metrics_hourly.hour` bucket key.
+///
+/// Single source of truth for the hour-bucket string used at write time
+/// (`aggregate_hourly_metrics`), at range-delete time (`delete_data_in_range`),
+/// and at scheduled-retention time (`cleanup_old_hourly_metrics`). The bucket
+/// key is the instant truncated to the start of its hour, formatted with the
+/// `Z` suffix (`%Y-%m-%dT%H:00:00Z`). Keeping a single helper guarantees the
+/// stored key and any comparison bound share an identical, lexically-ordered
+/// representation — a `to_rfc3339()` bound would carry a `+00:00` offset and
+/// sub-hour precision, which sorts differently from the stored `Z` key and
+/// orphaned the boundary bucket.
+pub(super) fn hour_bucket_key(instant: chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::Timelike;
+    instant
+        .with_minute(0)
+        .and_then(|d| d.with_second(0))
+        .and_then(|d| d.with_nanosecond(0))
+        .unwrap_or(instant)
+        .format("%Y-%m-%dT%H:00:00Z")
+        .to_string()
+}
+
 /// Local SQLite storage with a single-connection, Mutex-guarded design.
 ///
 /// # Connection design
@@ -85,8 +107,9 @@ pub(super) static GUI_INTERACTIONS_AVAILABLE: AtomicBool = AtomicBool::new(false
 /// helper already enforces the "acquire lock, clone data out, release lock"
 /// pattern to minimise the critical section.
 pub struct SqliteStorage {
-    /// consent-erasure 차단 chokepoint (#4928). raw `Mutex<Connection>` 접근자는
-    /// 제거되었고, 모든 SQLite 접근은 [`GuardedConnection`] funnel 을 통과한다.
+    /// consent-erasure barrier chokepoint (#4928). The raw `Mutex<Connection>`
+    /// accessor has been removed; every SQLite access goes through the
+    /// [`GuardedConnection`] funnel.
     pub(super) conn: Arc<GuardedConnection>,
     pub(super) retention_days: u32,
     /// Persistent monotonic HLC clock for stamping local synced-table writes so they
@@ -120,7 +143,7 @@ impl SqliteStorage {
 
         post_migration_setup(&conn)?;
 
-        info!("SQLite save initialize: {}", path.display());
+        info!("SQLite storage initialized: {}", path.display());
 
         Ok(Self {
             conn: Arc::new(GuardedConnection::new_unflagged(conn)),
@@ -152,51 +175,58 @@ impl SqliteStorage {
     /// (`SqliteVectorStore`/`SqliteVectorIndex`/`SqliteSyncMerger`/
     /// `SqliteSyncExtractor`/`SqliteRegimeManagerStateStore`/memory_graph).
     ///
-    /// raw `Arc<Mutex<Connection>>` 접근자는 #4928 로 제거되었다 — 어떤 어댑터도
-    /// deletion-barrier 를 우회한 핸들을 얻을 수 없다(by construction).
+    /// The raw `Arc<Mutex<Connection>>` accessor was removed in #4928 — no
+    /// adapter can obtain a handle that bypasses the deletion barrier (by
+    /// construction).
     pub fn connection_arc(&self) -> Arc<GuardedConnection> {
         self.conn.clone()
     }
 
-    /// 공유 `deletion_flag` 를 노출한다(PHASE 2 composition-root 배선/ptr-eq 검증용).
+    /// Expose the shared `deletion_flag` (for PHASE 2 composition-root wiring /
+    /// ptr-eq verification).
     pub fn deletion_flag(&self) -> Arc<AtomicBool> {
         self.conn.deletion_flag()
     }
 
-    /// 공유 `deletion_flag` 를 install 한다(PHASE 2 composition-root 배선용 seam).
+    /// Install the shared `deletion_flag` (seam for PHASE 2 composition-root wiring).
     ///
-    /// `Arc<GuardedConnection>` 내부의 `ArcSwap` 셀을 `&self` 로 교체하므로,
-    /// 이미 `Arc<SqliteStorage>` 로 공유된 인스턴스에도 적용된다. install 이후
-    /// 모든 어댑터(`connection_arc()` 공유)의 `write_lock` 재검사가 동일 flag 를
-    /// 본다 — `ConsentManager::deletion_flag()` 와 ptr-eq 로 연결된다.
+    /// This swaps the `ArcSwap` cell inside `Arc<GuardedConnection>` via `&self`,
+    /// so it also applies to instances already shared as `Arc<SqliteStorage>`.
+    /// After install, the `write_lock` re-check of every adapter (sharing
+    /// `connection_arc()`) sees the same flag — ptr-eq-linked with
+    /// `ConsentManager::deletion_flag()`.
     pub fn set_deletion_flag(&self, flag: Arc<AtomicBool>) {
         self.conn.set_deletion_flag(flag);
     }
 
-    /// #4928 round-3 (FIX B): 공유 `erasing` 신호를 노출한다(배선/ptr-eq 검증용).
+    /// #4928 round-3 (FIX B): expose the shared `erasing` signal (for wiring /
+    /// ptr-eq verification).
     pub fn erasing(&self) -> Arc<AtomicBool> {
         self.conn.erasing()
     }
 
-    /// #4928 round-3 (FIX B): 공유 `erasing` 신호를 install 한다(composition-root 배선용 seam).
+    /// #4928 round-3 (FIX B): install the shared `erasing` signal (seam for
+    /// composition-root wiring).
     ///
-    /// `set_deletion_flag` 와 동일하게 `&self` 로 동작하며, `erase_all_local_data` 가
-    /// RAII 로 set/clear 하는 동안 모든 어댑터의 `write_lock` 이 동일 신호를 본다.
-    /// `grant_consent` 는 이 신호를 건드리지 못하므로 erase 윈도우 안의 재동의 race 를
-    /// 차단한다.
+    /// Works via `&self` like `set_deletion_flag`; while `erase_all_local_data`
+    /// sets/clears it via RAII, every adapter's `write_lock` sees the same
+    /// signal. `grant_consent` cannot touch this signal, so it blocks any
+    /// re-consent race within the erase window.
     pub fn set_erasing(&self, erasing: Arc<AtomicBool>) {
         self.conn.set_erasing(erasing);
     }
 
-    /// 동기 SQLite **쓰기** 연산을 spawn_blocking으로 격리하는 funnel.
+    /// Funnel that isolates a synchronous SQLite **write** operation onto
+    /// spawn_blocking.
     ///
-    /// [`GuardedConnection::write_lock`] 을 통과하므로 consent revoke 후에는
-    /// (deletion_flag set) 클로저가 실행되지 않고 `Ok(T::default())` 를 반환한다.
-    /// 모든 변경(INSERT/UPDATE/DELETE/REPLACE/CREATE) 클로저는 이 funnel 을 사용한다.
-    /// 읽기는 [`Self::with_conn_read`] / [`Self::read_only_query`] 를 사용한다.
+    /// Because it goes through [`GuardedConnection::write_lock`], after consent
+    /// revoke (deletion_flag set) the closure does not run and `Ok(T::default())`
+    /// is returned. All mutating (INSERT/UPDATE/DELETE/REPLACE/CREATE) closures
+    /// use this funnel. Reads use [`Self::with_conn_read`] /
+    /// [`Self::read_only_query`].
     ///
-    /// parking_lot 가드는 spawn_blocking 스레드 안에서 획득/해제되며 `.await` 를
-    /// 가로질러 보유되지 않는다.
+    /// The parking_lot guard is acquired/released inside the spawn_blocking
+    /// thread and is never held across an `.await`.
     pub(super) async fn with_conn<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -205,12 +235,13 @@ impl SqliteStorage {
         self.with_conn_skip(T::default(), f).await
     }
 
-    /// [`Self::with_conn`] 의 명시적 skip-sentinel 버전.
+    /// Explicit skip-sentinel version of [`Self::with_conn`].
     ///
-    /// `T: Default` 가 아니거나(예: `FocusMetrics`) erase-skip 시 `T::default()`
-    /// 와 다른 특정 sentinel 을 반환해야 하는 쓰기 연산에서 사용한다. 동일한
-    /// `write_lock` funnel(`deletion_flag || erasing` 재검사)을 통과하므로 #4928
-    /// erase 배리어는 그대로 유지된다.
+    /// Used by write operations where `T` is not `Default` (e.g. `FocusMetrics`)
+    /// or that must return a specific sentinel other than `T::default()` on
+    /// erase-skip. It goes through the same `write_lock` funnel
+    /// (`deletion_flag || erasing` re-check), so the #4928 erase barrier is
+    /// preserved.
     pub(super) async fn with_conn_skip<F, T>(&self, skipped: T, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -222,10 +253,12 @@ impl SqliteStorage {
             .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
-    /// 동기 SQLite **쓰기** 트랜잭션 연산을 spawn_blocking으로 격리하는 funnel.
+    /// Funnel that isolates a synchronous SQLite **write** transaction operation
+    /// onto spawn_blocking.
     ///
-    /// [`Self::with_conn`] 과 동일하게 deletion_flag set 시 스킵하나, 클로저에
-    /// 커넥션의 배타적(가변) 참조를 넘겨 `transaction()` 등 가변 접근을 허용한다.
+    /// Like [`Self::with_conn`], it skips when deletion_flag is set, but passes
+    /// the closure an exclusive (mutable) reference to the connection to allow
+    /// mutable access such as `transaction()`.
     #[allow(dead_code)]
     pub(super) async fn with_conn_mut<F, T>(&self, f: F) -> Result<T, StorageError>
     where
@@ -238,11 +271,12 @@ impl SqliteStorage {
             .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
-    /// 동기 SQLite **읽기** 연산을 spawn_blocking으로 격리하는 funnel.
+    /// Funnel that isolates a synchronous SQLite **read** operation onto
+    /// spawn_blocking.
     ///
-    /// [`GuardedConnection::read_lock`] 을 통과하므로 deletion_flag 와 무관하게 항상
-    /// 실행된다(읽기는 절대 스킵하지 않음). 순수 SELECT 쿼리는 이 funnel 또는
-    /// [`Self::read_only_query`] 를 사용한다.
+    /// Because it goes through [`GuardedConnection::read_lock`], it always runs
+    /// regardless of deletion_flag (reads are never skipped). Pure SELECT queries
+    /// use this funnel or [`Self::read_only_query`].
     #[allow(dead_code)]
     pub(super) async fn with_conn_read<F, T>(&self, f: F) -> Result<T, StorageError>
     where
@@ -285,7 +319,7 @@ impl SqliteStorage {
             // Acquire lock, execute query, release lock -- all within the
             // blocking thread. The result `T` is owned so the lock is not
             // held while the async runtime schedules the continuation.
-            // 읽기 funnel — deletion_flag 와 무관하게 항상 실행한다.
+            // Read funnel — always runs regardless of deletion_flag.
             conn.read_lock().run(f)
             // guard drops here, releasing the Mutex
         })
@@ -297,7 +331,7 @@ impl SqliteStorage {
 
     /// Retrieve a value from the `app_meta` table, or `None` if the key does not exist.
     ///
-    /// `app_meta` 는 보존(retained) 테이블이지만 읽기이므로 read_lock 으로 충분하다.
+    /// `app_meta` is a retained table, but since this is a read, `read_lock` is sufficient.
     pub fn get_meta(&self, key: &str) -> Option<String> {
         self.conn
             .read_lock()
@@ -311,8 +345,9 @@ impl SqliteStorage {
 
     /// Insert or replace a value in the `app_meta` table.
     ///
-    /// `app_meta` 는 erase 보존 테이블이므로 `retained_write_lock`(deletion_flag 무시)
-    /// 을 사용한다 — revoke 후에도 시스템 메타데이터 기록은 허용된다.
+    /// `app_meta` is an erase-retained table, so it uses `retained_write_lock`
+    /// (ignores deletion_flag) — system-metadata writes are allowed even after
+    /// revoke.
     pub fn set_meta(&self, key: &str, value: &str) {
         let _ = self
             .conn
@@ -335,11 +370,13 @@ impl SqliteStorage {
             });
     }
 
-    /// `app_meta`에 값을 저장하며 오류를 호출자에게 전파한다 (R2: 실행 오류 표면화).
+    /// Store a value in `app_meta`, propagating any error to the caller
+    /// (R2: surface execution errors).
     ///
-    /// `set_meta`와 달리 SQLite 실행 오류를 삼키지 않고 `StorageError`로 반환한다.
-    /// GDPR 재시도 마커 기록처럼 누락이 허용되지 않는 경우에 사용한다.
-    /// 보존 테이블이므로 `retained_write_lock` 을 사용한다.
+    /// Unlike `set_meta`, this does not swallow SQLite execution errors and
+    /// returns them as `StorageError`. Used where a missing write is not
+    /// acceptable, such as recording a GDPR retry marker. Uses
+    /// `retained_write_lock` because this is a retained table.
     pub fn set_meta_checked(&self, key: &str, value: &str) -> Result<(), StorageError> {
         self.conn.retained_write_lock().run(|conn| {
             conn.execute(
@@ -353,11 +390,13 @@ impl SqliteStorage {
         })
     }
 
-    /// `app_meta`에서 키를 삭제하며 오류를 호출자에게 전파한다 (R2: 실행 오류 표면화).
+    /// Delete a key from `app_meta`, propagating any error to the caller
+    /// (R2: surface execution errors).
     ///
-    /// `delete_meta`와 달리 SQLite 실행 오류를 삼키지 않고 `StorageError`로 반환한다.
-    /// GDPR 재시도 마커 해제처럼 누락이 허용되지 않는 경우에 사용한다.
-    /// 보존 테이블이므로 `retained_write_lock` 을 사용한다.
+    /// Unlike `delete_meta`, this does not swallow SQLite execution errors and
+    /// returns them as `StorageError`. Used where a missing write is not
+    /// acceptable, such as clearing a GDPR retry marker. Uses
+    /// `retained_write_lock` because this is a retained table.
     pub fn delete_meta_checked(&self, key: &str) -> Result<(), StorageError> {
         self.conn.retained_write_lock().run(|conn| {
             conn.execute("DELETE FROM app_meta WHERE key = ?1", [key])
@@ -378,19 +417,22 @@ impl SqliteStorage {
     /// Designed to be called from a persistence callback wired by `src-tauri`.
     /// Failures are logged and swallowed to avoid disrupting the audit buffer.
     ///
-    /// # 해시 체인 (#4834, ADR-072 client mirror)
-    /// 동일한 `retained_write_lock` 안에서 (1) 체인 tip(`MAX(seq)` 행) read,
-    /// (2) `next_seq`/`prev_hash` 결정, (3) `entry_hash` 계산, (4) seq/prev_hash/
-    /// entry_hash 를 포함해 INSERT 를 수행한다. 단일 write lock(mutex)이 tip-read
-    /// 와 link-write 를 직렬화하므로 동시성에서도 체인이 찢기지 않는다.
+    /// # Hash chain (#4834, ADR-072 client mirror)
+    /// Within a single `retained_write_lock`, this: (1) reads the chain tip
+    /// (the `MAX(seq)` row), (2) determines `next_seq`/`prev_hash`, (3) computes
+    /// `entry_hash`, and (4) performs the INSERT including seq/prev_hash/
+    /// entry_hash. A single write lock (mutex) serializes the tip-read and the
+    /// link-write, so the chain is never torn even under concurrency.
     ///
-    /// `INSERT OR IGNORE` 가 중복 `entry_id` 로 no-op 이 되어도 seq 가 소모/누락되지
-    /// 않도록, INSERT 의 affected-rows 가 1 일 때만 링크가 commit 된 것으로 본다
-    /// (gap-free 보장). 중복이면 next_seq 는 다음 호출에서 재사용된다.
+    /// So that a duplicate `entry_id` causing `INSERT OR IGNORE` to no-op does
+    /// not consume/skip a seq, the link is considered committed only when the
+    /// INSERT's affected-rows count is 1 (gap-free guarantee). On a duplicate,
+    /// `next_seq` is reused on the next call.
     ///
-    /// `audit_log` 는 erase 보존 테이블이므로 `retained_write_lock`(deletion_flag
-    /// 무시)을 유지해야 한다 — consent_revoked 감사가 erase 시점에 일어나며 체인은
-    /// erase 중/후에도 계속 연장되어야 한다(#4928).
+    /// `audit_log` is an erase-retained table, so it must keep using
+    /// `retained_write_lock` (ignores deletion_flag) — the consent_revoked audit
+    /// happens at erase time and the chain must keep extending during/after the
+    /// erase (#4928).
     pub fn save_audit_entry(&self, entry: &maekon_core::models::audit::AuditEntry) {
         use crate::audit_chain::{compute_entry_hash, CanonicalRecord, GENESIS_PREV_HASH};
 
@@ -398,8 +440,15 @@ impl SqliteStorage {
         let timestamp_str = entry.timestamp.to_rfc3339();
         let exec_time = entry.execution_time_ms.map(|v| v as i64);
 
-        let res: Result<(), rusqlite::Error> = self.conn.retained_write_lock().run(|conn| {
-            // (1) 체인 tip read — seq 가 가장 큰 행. legacy NULL-chain 행은 제외.
+        // The closure returns `StorageError` (not `rusqlite::Error`) so the
+        // canonical-serialization overflow guard in `compute_entry_hash` can
+        // propagate via `?`; `conn.execute` errors auto-convert through the
+        // `#[from] rusqlite::Error` arm. Best-effort write is preserved: any
+        // error (SQLite or overflow) is logged below and the entry is dropped
+        // rather than persisted with a truncated/wrong hash.
+        let res: Result<(), StorageError> = self.conn.retained_write_lock().run(|conn| {
+            // (1) Read the chain tip — the row with the largest seq. Excludes
+            //     legacy NULL-chain rows.
             let tip: Option<(i64, String)> = conn
                 .query_row(
                     "SELECT seq, entry_hash FROM audit_log \
@@ -409,13 +458,13 @@ impl SqliteStorage {
                 )
                 .ok();
 
-            // (2) next_seq / prev_hash 결정.
+            // (2) Determine next_seq / prev_hash.
             let (next_seq, prev_hash) = match tip {
                 Some((tip_seq, tip_hash)) => (tip_seq + 1, tip_hash),
                 None => (0, GENESIS_PREV_HASH.to_string()),
             };
 
-            // (3) canonical 직렬화 후 entry_hash 계산.
+            // (3) Compute entry_hash after canonical serialization.
             let record = CanonicalRecord {
                 entry_id: &entry.entry_id,
                 timestamp_rfc3339: &timestamp_str,
@@ -426,9 +475,9 @@ impl SqliteStorage {
                 details: entry.details.as_deref(),
                 execution_time_ms: entry.execution_time_ms,
             };
-            let entry_hash = compute_entry_hash(&prev_hash, &record);
+            let entry_hash = compute_entry_hash(&prev_hash, &record)?;
 
-            // (4) seq/prev_hash/entry_hash 포함 INSERT OR IGNORE.
+            // (4) INSERT OR IGNORE including seq/prev_hash/entry_hash.
             let affected = conn.execute(
                 "INSERT OR IGNORE INTO audit_log \
                  (entry_id, timestamp, session_id, command_id, action_type, status, \
@@ -448,13 +497,65 @@ impl SqliteStorage {
                     entry_hash,
                 ],
             )?;
-            // affected == 0 → 중복 entry_id no-op. seq 를 소모하지 않았으므로(INSERT
-            // 자체가 무시됨) 체인은 gap-free 로 유지된다.
+            // affected == 0 → duplicate entry_id no-op. Since no seq was consumed
+            // (the INSERT itself was ignored), the chain stays gap-free.
             let _ = affected;
             Ok(())
         });
         if let Err(e) = res {
             warn!("audit persistence: INSERT failed: {e}");
+        }
+    }
+
+    /// Persist one AI conversation session audit entry to `session_audit_log`.
+    ///
+    /// Mirrors [`Self::save_audit_entry`]: synchronous, best-effort, infallible
+    /// (logs `warn!` on SQLite error, never returns/propagates). The session
+    /// audit log is a security/compliance control that must never block or fail
+    /// the conversation path.
+    ///
+    /// `session_audit_log` is a retain-on-erase table (same class as
+    /// `audit_log`), so the write goes through `retained_write_lock` — the
+    /// consent-erasure barrier must not skip session-audit writes.
+    ///
+    /// The `category` enum serializes to its `snake_case` wire string (e.g.
+    /// `ToolUse` → `"tool_use"`); `payload` is stored as compact JSON text.
+    pub fn save_session_audit_entry(
+        &self,
+        entry: &maekon_core::models::ai_session::SessionAuditEntry,
+    ) {
+        let timestamp_str = entry.timestamp.to_rfc3339();
+        // Match the `snake_case` serde rename used everywhere else for the
+        // category column (json string without the surrounding quotes).
+        let category_str = serde_json::to_value(entry.category)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("{:?}", entry.category));
+        let payload_str = entry
+            .payload
+            .as_ref()
+            .and_then(|p| serde_json::to_string(p).ok());
+        let duration = entry.duration_ms.map(|v| v as i64);
+
+        let res: Result<(), rusqlite::Error> = self.conn.retained_write_lock().run(|conn| {
+            conn.execute(
+                "INSERT INTO session_audit_log \
+                 (timestamp, session_id, category, event_type, provider, payload, duration_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    timestamp_str,
+                    entry.session_id,
+                    category_str,
+                    entry.event_type,
+                    entry.provider,
+                    payload_str,
+                    duration,
+                ],
+            )?;
+            Ok(())
+        });
+        if let Err(e) = res {
+            warn!("session audit persistence: INSERT failed: {e}");
         }
     }
 }
@@ -505,14 +606,17 @@ impl SqliteStorage {
         }
     }
 
-    /// 가장 최근 감사 항목을 `timestamp` 내림차순으로 최대 `limit`개 반환한다.
+    /// Return the most recent audit entries ordered by `timestamp` descending,
+    /// up to `limit` rows.
     ///
-    /// OSS 빌드의 로컬 감사 로그 export(#4819, 규제 준수 증거)에서 사용한다.
-    /// 휘발성 `AuditLogger` 버퍼(~1000개 cap)가 아닌 durable SQLite `audit_log`
-    /// 테이블을 source로 삼는다. [`Self::entries_by_command_id`]와 동일한
-    /// row→`AuditEntry` 매핑([`map_audit_row`])을 재사용한다.
+    /// Used by the OSS build's local audit-log export (#4819, regulatory
+    /// compliance evidence). Sources from the durable SQLite `audit_log` table
+    /// rather than the volatile `AuditLogger` buffer (~1000-entry cap). Reuses
+    /// the same row→`AuditEntry` mapping ([`map_audit_row`]) as
+    /// [`Self::entries_by_command_id`].
     ///
-    /// 동기 메서드이며, SQLite 오류 시 `warn!`만 남기고 빈 `Vec`를 반환한다(infallible).
+    /// Synchronous; on a SQLite error it only logs `warn!` and returns an empty
+    /// `Vec` (infallible).
     pub fn recent_audit_entries(
         &self,
         limit: usize,
@@ -546,25 +650,30 @@ impl SqliteStorage {
     }
 }
 
-// ── Audit log 해시 체인 검증 (V37, #4834/E20) ────────────────────────────
+// ── Audit log hash-chain verification (V37, #4834/E20) ────────────────────────────
 
 impl SqliteStorage {
-    /// `audit_log` SHA-256 해시 체인의 무결성을 검증한다 (#4834, ADR-072 mirror).
+    /// Verify the integrity of the `audit_log` SHA-256 hash chain (#4834,
+    /// ADR-072 mirror).
     ///
-    /// 체인 편입 행(`seq IS NOT NULL`)을 `seq` 오름차순으로 순회하며:
-    /// 1. seq 가 연속(gap-free)인지,
-    /// 2. `row[i].prev_hash == row[i-1].entry_hash` 인지(링크 무결성),
-    /// 3. `SHA256(prev_hash || canonical(row)) == entry_hash` 인지(행 변조 탐지),
-    /// 4. 첫 체인 행의 `prev_hash == GENESIS_PREV_HASH` 인지
+    /// Traverses the chained rows (`seq IS NOT NULL`) in ascending `seq` order,
+    /// checking:
+    /// 1. that seq is contiguous (gap-free),
+    /// 2. that `row[i].prev_hash == row[i-1].entry_hash` (link integrity),
+    /// 3. that `SHA256(prev_hash || canonical(row)) == entry_hash` (row-tamper
+    ///    detection),
+    /// 4. that the first chained row's `prev_hash == GENESIS_PREV_HASH`.
     ///
-    /// 를 확인한다. legacy NULL-chain 행은 검증 대상에서 제외하고 개수만 센다.
+    /// Legacy NULL-chain rows are excluded from verification and only counted.
     ///
-    /// 최초 위반에서 `first_break` 를 채우고 순회를 멈춘다. 동기 메서드이며
-    /// SQLite 오류 시 `warn!` 만 남기고 `ok=false` 리포트를 반환한다(infallible).
+    /// Fills `first_break` on the first violation and stops traversal.
+    /// Synchronous; on a SQLite error it only logs `warn!` and returns an
+    /// `ok=false` report (infallible).
     ///
-    /// SHA-256-only 체인은 tamper-**evident**(우발적/부분적 손상·단순 편집·삭제·
-    /// 재정렬 탐지)이지 tamper-**proof**가 아니다 — 전면 재기록 내부자 위협은
-    /// HMAC/Ed25519(out-of-scope, `audit_chain::HASH_VERSION` seam)가 필요하다.
+    /// A SHA-256-only chain is tamper-**evident** (detects accidental/partial
+    /// corruption, simple edits, deletions, and reordering) but not
+    /// tamper-**proof** — a full-rewrite insider threat requires HMAC/Ed25519
+    /// (out of scope, `audit_chain::HASH_VERSION` seam).
     pub fn verify_audit_chain(&self) -> maekon_core::models::audit::AuditChainReport {
         use crate::audit_chain::{compute_entry_hash, CanonicalRecord, GENESIS_PREV_HASH};
         use maekon_core::models::audit::{AuditChainBreak, AuditChainReport};
@@ -572,7 +681,7 @@ impl SqliteStorage {
         let read = self.conn.read_lock();
         let conn = read.conn();
 
-        // legacy(NULL chain) 행 개수.
+        // Count of legacy (NULL-chain) rows.
         let legacy_unchained_count: u64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM audit_log WHERE seq IS NULL",
@@ -602,7 +711,8 @@ impl SqliteStorage {
             }
         };
 
-        // 행을 일괄 수집해 검증 로직을 단순화한다(audit_log 는 bounded).
+        // Collect rows in one batch to simplify the verification logic
+        // (audit_log is bounded).
         struct ChainRow {
             entry_id: String,
             timestamp: String,
@@ -650,7 +760,7 @@ impl SqliteStorage {
         };
 
         if rows.is_empty() {
-            // 체인 편입 행이 없으면 무결한 빈 체인으로 본다.
+            // No chained rows means an intact empty chain.
             return AuditChainReport {
                 ok: true,
                 first_seq: None,
@@ -668,7 +778,7 @@ impl SqliteStorage {
         let mut expected_prev = GENESIS_PREV_HASH.to_string();
 
         for r in &rows {
-            // 1) seq 연속성(gap 탐지).
+            // 1) seq contiguity (gap detection).
             if r.seq != expected_seq {
                 return AuditChainReport {
                     ok: false,
@@ -683,7 +793,8 @@ impl SqliteStorage {
                 };
             }
 
-            // 2) 링크 무결성: prev_hash == 직전 entry_hash (첫 행은 genesis).
+            // 2) Link integrity: prev_hash == the prior row's entry_hash (the
+            //    first row uses genesis).
             if r.prev_hash != expected_prev {
                 let reason = if r.seq == first_seq {
                     "first chained row prev_hash != genesis".to_string()
@@ -700,7 +811,7 @@ impl SqliteStorage {
                 };
             }
 
-            // 3) 행 변조 탐지: 재계산 해시 == 저장된 entry_hash.
+            // 3) Row-tamper detection: recomputed hash == stored entry_hash.
             let record = CanonicalRecord {
                 entry_id: &r.entry_id,
                 timestamp_rfc3339: &r.timestamp,
@@ -711,7 +822,27 @@ impl SqliteStorage {
                 details: r.details.as_deref(),
                 execution_time_ms: r.execution_time_ms.map(|v| v as u64),
             };
-            let recomputed = compute_entry_hash(&r.prev_hash, &record);
+            // Re-derive the hash. A canonical-serialization overflow (a stored
+            // field exceeding the u32 length prefix) is itself a chain break:
+            // the row could never have been written by `save_audit_entry`, so
+            // treat it as tampering rather than panicking on this infallible path.
+            let recomputed = match compute_entry_hash(&r.prev_hash, &record) {
+                Ok(h) => h,
+                Err(e) => {
+                    warn!(seq = r.seq, err = %e, "audit: verify_audit_chain canonicalization failed");
+                    return AuditChainReport {
+                        ok: false,
+                        first_seq: Some(first_seq),
+                        last_seq: Some(last_seq),
+                        verified_count,
+                        legacy_unchained_count,
+                        first_break: Some(AuditChainBreak {
+                            seq: r.seq,
+                            reason: format!("canonicalization failed: {e}"),
+                        }),
+                    };
+                }
+            };
             if recomputed != r.entry_hash {
                 return AuditChainReport {
                     ok: false,
@@ -742,20 +873,22 @@ impl SqliteStorage {
     }
 }
 
-// ── Egress 감사 원장 persistence (V36, #4803/E20) ────────────────────────────
+// ── Egress audit-ledger persistence (V36, #4803/E20) ────────────────────────────
 
 impl SqliteStorage {
-    /// egress 한 건을 `egress_ledger` 테이블에 기록한다 (V36).
+    /// Record one egress event in the `egress_ledger` table (V36).
     ///
-    /// 디바이스를 떠난(`uploaded`) 또는 정책상 차단된(`blocked`) 이벤트를
-    /// 규제 준수 증거로 남긴다. `record_id` UNIQUE 제약으로 `INSERT OR IGNORE`
-    /// 재실행 중복을 제거한다. SQLite 오류 시 `warn!` 만 남기고 `Ok(())` 를
-    /// 반환하지 않고 `StorageError` 로 전파하여 호출자가 실패를 관측할 수 있게 한다.
+    /// Retains events that left the device (`uploaded`) or were blocked by
+    /// policy (`blocked`) as regulatory-compliance evidence. The `record_id`
+    /// UNIQUE constraint dedupes `INSERT OR IGNORE` re-execution. On a SQLite
+    /// error it does not return `Ok(())` after only logging `warn!`; instead it
+    /// propagates a `StorageError` so the caller can observe the failure.
     pub fn record_egress(
         &self,
         record: &maekon_core::models::storage_records::EgressLedgerRecord,
     ) -> Result<(), StorageError> {
-        // `egress_ledger` 는 erase 보존 테이블 — `retained_write_lock`(deletion_flag 무시).
+        // `egress_ledger` is an erase-retained table — `retained_write_lock`
+        // (ignores deletion_flag).
         self.conn.retained_write_lock().run(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO egress_ledger \
@@ -778,9 +911,11 @@ impl SqliteStorage {
         })
     }
 
-    /// 가장 최근 egress 원장 항목을 `occurred_at` 내림차순으로 최대 `limit`개 반환한다.
+    /// Return the most recent egress-ledger entries ordered by `occurred_at`
+    /// descending, up to `limit` rows.
     ///
-    /// 동기 메서드이며, SQLite 오류 시 `warn!` 만 남기고 빈 `Vec` 를 반환한다(infallible).
+    /// Synchronous; on a SQLite error it only logs `warn!` and returns an empty
+    /// `Vec` (infallible).
     pub fn recent_egress(
         &self,
         limit: usize,
@@ -812,10 +947,12 @@ impl SqliteStorage {
         result
     }
 
-    /// `[from, to]` 범위(RFC3339 문자열, inclusive)의 egress 원장 항목을
-    /// `occurred_at` 오름차순으로 반환한다. 규제 준수 증거 export 에 사용한다.
+    /// Return egress-ledger entries in the `[from, to]` range (inclusive RFC3339
+    /// strings) ordered by `occurred_at` ascending. Used for regulatory-
+    /// compliance evidence export.
     ///
-    /// 동기 메서드이며, SQLite 오류 시 `warn!` 만 남기고 빈 `Vec` 를 반환한다(infallible).
+    /// Synchronous; on a SQLite error it only logs `warn!` and returns an empty
+    /// `Vec` (infallible).
     pub fn egress_between(
         &self,
         from: &str,
@@ -880,8 +1017,9 @@ impl maekon_core::ports::erasure_propagation_store::ErasurePropagationStore for 
     }
 }
 
-/// `egress_ledger` 한 행을 [`maekon_core::models::storage_records::EgressLedgerRecord`]로
-/// 매핑한다. 컬럼 순서는 SELECT 절과 일치해야 한다.
+/// Map one `egress_ledger` row to
+/// [`maekon_core::models::storage_records::EgressLedgerRecord`]. The column order
+/// must match the SELECT clause.
 fn map_egress_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<maekon_core::models::storage_records::EgressLedgerRecord> {
@@ -899,11 +1037,12 @@ fn map_egress_row(
     })
 }
 
-/// `audit_log` 한 행을 [`maekon_core::models::audit::AuditEntry`]로 매핑한다.
+/// Map one `audit_log` row to [`maekon_core::models::audit::AuditEntry`].
 ///
-/// `entries_by_command_id`/`recent_audit_entries`가 공유하는 단일 매핑 로직.
-/// 컬럼 순서는 `SELECT entry_id, timestamp, session_id, command_id, action_type,
-/// status, details, execution_time_ms` 와 일치해야 한다.
+/// The single mapping logic shared by `entries_by_command_id` /
+/// `recent_audit_entries`. The column order must match `SELECT entry_id,
+/// timestamp, session_id, command_id, action_type, status, details,
+/// execution_time_ms`.
 fn map_audit_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<maekon_core::models::audit::AuditEntry> {
@@ -952,8 +1091,11 @@ fn apply_sqlcipher_key(
         return Ok(conn);
     };
 
-    // PRAGMA key must be the first statement after opening.
-    let pragma = format!("PRAGMA key = \"x'{}'\";", key.as_hex());
+    // PRAGMA key must be the first statement after opening. The PRAGMA text
+    // embeds the master key in hex, so wrap it in `Zeroizing` to wipe that
+    // plaintext copy from the heap when it drops (#6242). `as_hex()` already
+    // returns a `Zeroizing<String>`.
+    let pragma = zeroize::Zeroizing::new(format!("PRAGMA key = \"x'{}'\";", key.as_hex().as_str()));
     if let Err(e) = conn.execute_batch(&pragma) {
         warn!("SQLCipher PRAGMA key execution failed: {e} — opening without encryption");
         drop(conn);

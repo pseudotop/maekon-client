@@ -50,14 +50,25 @@ static STATS_MEDIUM: CompressionStats = CompressionStats::new();
 static STATS_LOW: CompressionStats = CompressionStats::new();
 
 pub fn encode_webp(image: &DynamicImage, quality: WebPQuality) -> Result<Vec<u8>, VisionError> {
-    // 이미 RGBA8 인 경우(프로덕션 caller 전부 ImageRgba8)에는 borrow 로 8MB clone 을 회피하고,
-    // 다른 픽셀 포맷일 때만 to_rgba8() 로 변환한다.
+    // When the image is already RGBA8 (all production callers pass ImageRgba8),
+    // borrow it to avoid an 8MB clone; only convert via to_rgba8() for other
+    // pixel formats.
     let rgba: Cow<'_, image::RgbaImage> = match image.as_rgba8() {
         Some(rgba8) => Cow::Borrowed(rgba8),
         None => Cow::Owned(image.to_rgba8()),
     };
     let (w, h) = (rgba.width(), rgba.height());
-    let raw_size = (w * h * 4) as usize;
+    // Fail honestly on a zero-dimension image instead of panicking inside webp's
+    // `encode().unwrap()` (VP8_ENC_ERROR_BAD_DIMENSION) — mirrors the zero-guard
+    // already present in fast_resize/resize_to_fit. (review4 V17)
+    if w == 0 || h == 0 {
+        return Err(VisionError::Internal(
+            "cannot encode a zero-dimension image".to_string(),
+        ));
+    }
+    // Widen before multiplying so the raw-size stat never overflows u32 on a huge
+    // image (defense-in-depth alongside the zero guard).
+    let raw_size = (w as usize) * (h as usize) * 4;
 
     let encoder = webp::Encoder::from_rgba(&rgba, w, h);
     let encoded = encoder.encode(quality as u8 as f32);
@@ -70,7 +81,7 @@ pub fn encode_webp(image: &DynamicImage, quality: WebPQuality) -> Result<Vec<u8>
     }
 
     debug!(
-        "WebP encoding: {}x{} → {} bytes (quality {}, compression ratio {:.1}%)",
+        "WebP encoding: {}x{} -> {} bytes (quality {}, compression ratio {:.1}%)",
         w,
         h,
         encoded_vec.len(),
@@ -94,7 +105,7 @@ pub fn encode_adaptive(
     max_bytes: usize,
 ) -> Result<(Vec<u8>, WebPQuality), VisionError> {
     let (w, h) = image.dimensions();
-    let raw_size = (w * h * 4) as usize;
+    let raw_size = (w as usize) * (h as usize) * 4;
 
     let target_ratio = max_bytes as f32 / raw_size as f32;
 
@@ -148,9 +159,9 @@ pub fn encode_smart_adaptive(
     max_bytes: usize,
 ) -> Result<(Vec<u8>, WebPQuality), VisionError> {
     let (w, h) = image.dimensions();
-    let raw_size = (w * h * 4) as usize;
+    let raw_size = (w as usize) * (h as usize) * 4;
 
-    if w * h < 500_000 {
+    if (w as usize) * (h as usize) < 500_000 {
         return encode_adaptive(image, max_bytes);
     }
 
@@ -158,7 +169,7 @@ pub fn encode_smart_adaptive(
     let test_h = (h / 10).max(1);
     let test_image = image.resize_exact(test_w, test_h, image::imageops::FilterType::Nearest);
 
-    let test_raw_size = (test_w * test_h * 4) as usize;
+    let test_raw_size = (test_w as usize) * (test_h as usize) * 4;
     let test_encoded = encode_webp(&test_image, WebPQuality::High)?;
     let test_ratio = test_encoded.len() as f32 / test_raw_size as f32;
 
@@ -218,7 +229,7 @@ mod tests {
 
     #[test]
     fn encode_webp_non_rgba8_falls_back_to_conversion() {
-        // RGBA8 가 아닌 입력(Luma8)도 to_rgba8() fallback 경로로 정상 인코딩되어야 한다.
+        // A non-RGBA8 input (Luma8) must also encode correctly via the to_rgba8() fallback path.
         let luma =
             DynamicImage::ImageLuma8(image::GrayImage::from_pixel(64, 48, image::Luma([200])));
         let bytes = encode_webp(&luma, WebPQuality::Medium).unwrap();

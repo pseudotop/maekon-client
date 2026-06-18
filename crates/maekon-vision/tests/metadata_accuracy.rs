@@ -1,4 +1,5 @@
 use chrono::Utc;
+use maekon_core::config::PiiFilterLevel;
 use maekon_vision::processor::{build_frame_metadata, CaptureMetadataInput};
 
 #[test]
@@ -13,6 +14,7 @@ fn crt_prv_cap_013_frame_metadata_preserves_source_fields() {
         importance: 0.9,
         monitor_id: Some(0),
         app_bundle_id: Some("com.apple.Notes"),
+        pii_level: PiiFilterLevel::Standard,
     });
 
     let after = Utc::now();

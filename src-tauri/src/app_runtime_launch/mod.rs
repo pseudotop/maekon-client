@@ -33,7 +33,7 @@ use crate::magic_overlay::MagicOverlayHandle;
 use crate::runtime_bridges::RuntimeBridgeSpawner;
 use crate::runtime_state::{
     AiSessionRuntimeState, AnalysisHealthFlags, AutomationRuntimeState, ConfigRuntimeState,
-    DetectionRuntimeState, SuggestionRuntimeState,
+    DetectionRuntimeState, EmbeddingRuntimeState, SuggestionRuntimeState, SyncRuntimeState,
 };
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 #[cfg(feature = "server")]
@@ -144,7 +144,7 @@ impl AppRuntimeLaunchBuilder {
         let shared_capture_services = capture_wiring.shared_capture_services.clone();
         let capture_consent_manager = capture_wiring.consent_manager.clone();
 
-        // #4928 + #4801: erasure 배선 마무리 (공유 deletion_flag install + 미완료 로컬 삭제 재시도).
+        // #4928 + #4801: finalize erasure wiring (install the shared deletion_flag + retry incomplete local deletions).
         capture_wiring::install_erasure_wiring(
             &handle,
             &sqlite_storage,
@@ -160,9 +160,17 @@ impl AppRuntimeLaunchBuilder {
         // Focus mode state — transient, not persisted across restarts.
         let focus_mode = Arc::new(crate::focus_mode::FocusModeState::new());
 
-        let coaching_engine = Arc::new(maekon_analysis::CoachingEngine::new(
-            config.coaching.clone(),
-        ));
+        // review4 F14: wire the boundary PII sanitizer onto the production coaching
+        // engine. Without it `pii_sanitizer` is None and the documented template_text
+        // sanitization is inert — raw {app_name}/{regime} interpolations reach the LLM
+        // personalization prompt, the persisted message_template, and the notification
+        // body. VisionPiiSanitizer + the configured level mirror the other surfaces.
+        let coaching_engine = Arc::new(
+            maekon_analysis::CoachingEngine::new(config.coaching.clone()).with_pii_sanitizer(
+                Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
+                config.privacy.pii_filter_level,
+            ),
+        );
         let regime_manager_arc = Arc::new(parking_lot::Mutex::new(
             maekon_analysis::RegimeManager::new(&config.analysis.tiered_memory),
         ));
@@ -251,6 +259,14 @@ impl AppRuntimeLaunchBuilder {
         // threaded into every network adapter (agent, session, automation).
         let breaker_registry = crate::breaker_registry::CircuitBreakerRegistry::new();
 
+        // #6264: create the cross-device-sync IPC state up front so its shared
+        // write-once slot can be threaded into the agent runtime (which builds
+        // the SyncEngine asynchronously) AND registered as managed state below —
+        // both observe the same `Arc<OnceLock<SyncEngine>>`.
+        let sync_runtime_state = SyncRuntimeState::default();
+        // #6266: same shared-slot pattern for the reloadable embedding model.
+        let embedding_runtime_state = EmbeddingRuntimeState::default();
+
         let agent_runtime = {
             let mut builder = AgentRuntimeBuilder::new(
                 sqlite_storage.clone(),
@@ -264,6 +280,8 @@ impl AppRuntimeLaunchBuilder {
                 erasure_requested.clone(),
                 self.app_handle.clone(),
             )
+            .with_sync_runtime_slot(sync_runtime_state.slot())
+            .with_embedding_runtime_slot(embedding_runtime_state.slot())
             .with_vector_store(Arc::new(
                 maekon_storage::sqlite::vector_store_impl::SqliteVectorStore::new(
                     sqlite_storage.connection_arc(),
@@ -328,10 +346,12 @@ impl AppRuntimeLaunchBuilder {
 
         let (session_manager, codex_approval_registry) = build_session_manager(
             &self.app_handle,
+            &handle,
             sqlite_storage.clone(),
             &config,
             &data_dir_path,
             shared_regime_state.clone(),
+            capture_consent_manager.clone(),
             breaker_registry.clone(),
         );
         spawn_idle_reaper(
@@ -367,6 +387,7 @@ impl AppRuntimeLaunchBuilder {
                 coaching_engine.clone(),
                 &session_manager,
                 shared_capture_services.as_ref(),
+                capture_consent_manager.clone(),
                 cli_health_flag.clone(),
                 breaker_registry.clone(),
                 #[cfg(feature = "analysis")]
@@ -469,6 +490,8 @@ impl AppRuntimeLaunchBuilder {
             suggestion_runtime_state,
             detection_runtime_state,
             automation_runtime_state,
+            sync_runtime_state,
+            embedding_runtime_state,
         });
         // C1: provider credentials (OAuth, secret-backend profile) via analysis;
         // integration bindings (auth, session) via server.
@@ -487,8 +510,8 @@ impl AppRuntimeLaunchBuilder {
             frontend_web_port,
             local_auth_token,
             state_builder,
-            // F-RR-C36-01: 핸들을 반환 구조체에 포함해 호출자(setup.rs)가
-            // Tauri managed state 로 등록할 수 있도록 함.
+            // F-RR-C36-01: include the handles in the returned struct so the
+            // caller (setup.rs) can register them as Tauri managed state.
             #[cfg(feature = "grpc-dashboard-external")]
             ext_grpc_supervisor,
             #[cfg(feature = "grpc-dashboard-external")]

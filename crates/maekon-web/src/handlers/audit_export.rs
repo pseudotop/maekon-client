@@ -15,14 +15,15 @@ use maekon_core::models::audit::AuditEntry;
 use crate::error::ApiError;
 use crate::AppState;
 
-/// `GET /api/audit/export` 핸들러
+/// `GET /api/audit/export` handler
 ///
-/// `command_id` 쿼리 파라미터가 있으면 해당 command_id로 필터링한 엔트리를 반환합니다.
-/// 없으면 최근 엔트리를 반환합니다. `limit` 파라미터는 최대 1000개로 제한됩니다.
-/// `status` 파라미터는 예약됨 (현재 no-op).
+/// When the `command_id` query parameter is present, returns entries filtered by
+/// that command_id. Otherwise returns the most recent entries. The `limit`
+/// parameter is capped at 1000. The `status` parameter is reserved (currently a
+/// no-op).
 ///
 /// # Errors
-/// - `503 Service Unavailable`: `automation.audit_logger`가 None인 경우
+/// - `503 Service Unavailable`: when `automation.audit_logger` is None
 pub async fn export_audit(
     State(state): State<AppState>,
     Query(query): Query<AuditExportQuery>,
@@ -55,14 +56,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::broadcast;
 
-    /// 테스트용 AuditLogPort 구현 — 시드된 항목으로 recent_entries 및
-    /// entries_by_command_id 쿼리를 지원합니다.
+    /// Test-only `AuditLogPort` implementation — supports `recent_entries` and
+    /// `entries_by_command_id` queries over seeded entries.
     struct SeedableAuditLog {
         entries: Mutex<Vec<AuditEntry>>,
     }
 
     impl SeedableAuditLog {
-        /// 주어진 항목들로 초기화된 새 인스턴스를 생성합니다.
+        /// Creates a new instance initialized with the given entries.
         fn with_entries(entries: Vec<AuditEntry>) -> Arc<Self> {
             Arc::new(Self {
                 entries: Mutex::new(entries),
@@ -74,7 +75,7 @@ mod tests {
         }
     }
 
-    /// 고정된 command_id와 action_type으로 AuditEntry를 생성하는 헬퍼
+    /// Helper that builds an `AuditEntry` with the given command_id and action_type.
     fn make_entry(command_id: &str, action_type: &str) -> AuditEntry {
         AuditEntry {
             entry_id: generate_id("aud"),
@@ -163,23 +164,23 @@ mod tests {
         async fn record_session_event(&self, _entry: SessionAuditEntry) {}
     }
 
-    /// 기본 AppState를 생성하는 헬퍼 (automation.audit_logger = None)
+    /// Helper that builds a default `AppState` (automation.audit_logger = None).
     fn fixture_state_no_logger() -> AppState {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
         let (event_tx, _) = broadcast::channel(16);
         AppState::with_core(storage, event_tx)
     }
 
-    /// audit_logger가 설정된 AppState를 생성하는 헬퍼
+    /// Helper that builds an `AppState` with the audit_logger configured.
     fn fixture_state_with_logger(logger: Arc<dyn AuditLogPort>) -> AppState {
         let mut state = fixture_state_no_logger();
         state.automation.audit_logger = Some(logger);
         state
     }
 
-    /// 테스트 1: 필터 없이 모든 항목을 반환합니다.
+    /// Test 1: returns all entries when no filter is applied.
     ///
-    /// 5개의 항목이 있을 때, command_id 쿼리 없이 요청하면 5개가 반환됩니다.
+    /// Given 5 entries, a request without a command_id query returns all 5.
     #[tokio::test]
     async fn audit_export_returns_all_entries_when_no_filter() {
         let entries: Vec<AuditEntry> = (0..5)
@@ -197,10 +198,10 @@ mod tests {
         assert_eq!(resp.len(), 5);
     }
 
-    /// 테스트 2: command_id로 필터링합니다.
+    /// Test 2: filters by command_id.
     ///
-    /// command_id "cmd-X"인 3개의 항목과 다른 command_id인 2개가 있을 때,
-    /// ?command_id=cmd-X 쿼리로 3개만 반환됩니다.
+    /// Given 3 entries with command_id "cmd-X" and 2 with a different command_id,
+    /// a `?command_id=cmd-X` query returns only the 3 matching entries.
     #[tokio::test]
     async fn audit_export_filters_by_command_id() {
         let mut entries: Vec<AuditEntry> = (0..3)
@@ -220,9 +221,9 @@ mod tests {
         assert!(resp.iter().all(|e| e.command_id == "cmd-X"));
     }
 
-    /// 테스트 3: limit 파라미터를 준수합니다.
+    /// Test 3: respects the limit parameter.
     ///
-    /// 20개의 항목이 있을 때, ?limit=5 쿼리로 5개만 반환됩니다.
+    /// Given 20 entries, a `?limit=5` query returns only 5.
     #[tokio::test]
     async fn audit_export_respects_limit() {
         let entries: Vec<AuditEntry> = (0..20)
@@ -240,12 +241,12 @@ mod tests {
         assert_eq!(resp.len(), 5);
     }
 
-    /// 테스트 4: limit이 1000을 초과하면 1000으로 제한합니다.
+    /// Test 4: caps the limit at 1000 when it exceeds 1000.
     ///
-    /// ?limit=5000 쿼리로 요청해도 최대 1000개만 반환됩니다.
+    /// Even with a `?limit=5000` query, at most 1000 entries are returned.
     #[tokio::test]
     async fn audit_export_caps_limit_at_1000() {
-        // 1000개를 초과하는 항목을 시드합니다.
+        // Seed more than 1000 entries.
         let entries: Vec<AuditEntry> = (0..1200)
             .map(|i| make_entry("cmd-any", &format!("action-{i}")))
             .collect();
@@ -258,11 +259,11 @@ mod tests {
             limit: Some(5000),
         };
         let resp = export_audit(State(state), Query(query)).await.unwrap().0;
-        // SeedableAuditLog.recent_entries는 clamped limit을 준수합니다.
+        // SeedableAuditLog.recent_entries honors the clamped limit.
         assert_eq!(resp.len(), 1000);
     }
 
-    /// 테스트 5: audit_logger가 None일 때 503을 반환합니다.
+    /// Test 5: returns 503 when audit_logger is None.
     #[tokio::test]
     async fn audit_export_returns_503_when_logger_none() {
         let state = fixture_state_no_logger();
@@ -278,7 +279,7 @@ mod tests {
         );
     }
 
-    /// 테스트 6: 빈 command_id는 필터로 처리되지 않습니다 (recent_entries 호출).
+    /// Test 6: an empty command_id is not treated as a filter (calls recent_entries).
     #[tokio::test]
     async fn audit_export_empty_command_id_falls_back_to_recent() {
         let entries: Vec<AuditEntry> = vec![
@@ -289,16 +290,16 @@ mod tests {
         let state = fixture_state_with_logger(logger);
 
         let query = AuditExportQuery {
-            command_id: Some("".to_string()), // 빈 문자열 → recent_entries 사용
+            command_id: Some("".to_string()), // empty string → uses recent_entries
             status: None,
             limit: None,
         };
         let resp = export_audit(State(state), Query(query)).await.unwrap().0;
-        // 빈 command_id는 필터로 처리되지 않으므로 전체 2개를 반환합니다.
+        // An empty command_id is not treated as a filter, so all 2 entries are returned.
         assert_eq!(resp.len(), 2);
     }
 
-    /// 테스트 7: limit 기본값은 100입니다.
+    /// Test 7: the default limit is 100.
     #[tokio::test]
     async fn audit_export_default_limit_is_100() {
         let entries: Vec<AuditEntry> = (0..200)
@@ -310,13 +311,13 @@ mod tests {
         let query = AuditExportQuery {
             command_id: None,
             status: None,
-            limit: None, // 기본값 사용
+            limit: None, // use the default
         };
         let resp = export_audit(State(state), Query(query)).await.unwrap().0;
         assert_eq!(resp.len(), 100);
     }
 
-    /// 테스트 8: logger가 있고 항목이 없으면 빈 배열을 반환합니다.
+    /// Test 8: returns an empty array when a logger is present but has no entries.
     #[tokio::test]
     async fn audit_export_empty_log_returns_empty_vec() {
         let logger = SeedableAuditLog::empty();

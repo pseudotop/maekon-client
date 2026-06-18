@@ -127,11 +127,12 @@ pub trait SchedulerStorage: MetricsStorage + Send + Sync {
     #[allow(dead_code)] // Called after bulk IVF index builds in maintenance loop
     fn run_analyze(&self) -> Result<(), CoreError>;
 
-    /// egress 한 건을 감사 원장(`egress_ledger`)에 기록한다 (V36, #4803/E20).
+    /// Record a single egress event in the audit ledger (`egress_ledger`) (V36, #4803/E20).
     ///
-    /// 디바이스를 떠난(`uploaded`) 또는 정책상 차단된(`blocked`) 이벤트를
-    /// 규제 준수 증거로 남긴다. 동기 루프(events/monitor)에서 호출하며,
-    /// `record_id` UNIQUE 로 재실행 중복을 제거한다.
+    /// Retains events that left the device (`uploaded`) or were blocked by
+    /// policy (`blocked`) as regulatory-compliance evidence. Called from the
+    /// synchronous loops (events/monitor); the `record_id` UNIQUE constraint
+    /// deduplicates re-runs.
     fn record_egress(
         &self,
         record: &maekon_core::models::storage_records::EgressLedgerRecord,
@@ -274,11 +275,12 @@ impl SchedulerStorage for SqliteStorage {
     }
 }
 
-/// egress 대상(sink 타깃) 문자열 — 배치 업로더는 단일 서버 엔드포인트로 전송한다.
-/// `BatchSink` 포트는 타깃 문자열을 노출하지 않으므로 상수로 기록한다(#4803).
+/// Egress destination (sink target) string — the batch uploader sends to a
+/// single server endpoint. The `BatchSink` port does not expose the target
+/// string, so we record it as a constant (#4803).
 pub(super) const EGRESS_DESTINATION_BATCH_UPLOAD: &str = "server.batch_upload";
 
-/// `Event` 의 유형 식별 문자열을 반환한다(egress_ledger.event_type 용).
+/// Return the type-identifier string for an `Event` (for egress_ledger.event_type).
 pub(super) fn egress_event_type(event: &Event) -> &'static str {
     match event {
         Event::Context(_) => "Context",
@@ -292,22 +294,31 @@ pub(super) fn egress_event_type(event: &Event) -> &'static str {
     }
 }
 
-/// 이벤트의 직렬화 payload 바이트 크기. 직렬화 실패 시 0 을 반환한다.
+/// Serialized payload byte size of the event. Returns 0 on serialization failure.
 pub(super) fn egress_byte_count(event: &Event) -> i64 {
     serde_json::to_vec(event)
         .map(|v| v.len() as i64)
         .unwrap_or(0)
 }
 
-/// egress 한 건을 감사 원장에 기록한다(#4803/E20).
+/// Record a single egress event in the audit ledger (#4803/E20).
 ///
-/// `prepare_event_for_upload` 가 이벤트를 소비하므로, 호출자는 소비 *전* 에
-/// 참조로부터 `event_type`/`byte_count` 를 계산해 이 헬퍼에 전달한다.
-/// `disposition` 은 `uploaded`(sink enqueue 성공) 또는 `blocked`(정책상 제외)다.
-/// `consent_state` 는 egress 시점의 텔레메트리 동의 스냅샷 문자열이다.
-/// 기록 실패는 업로드/캡처 흐름을 방해하지 않도록 `warn!` 로만 남긴다.
+/// Because `prepare_event_for_upload` consumes the event, the caller computes
+/// `event_type`/`byte_count` from a reference *before* consuming it and passes
+/// them into this helper. `disposition` is `uploaded` (sink enqueue succeeded)
+/// or `blocked` (excluded by policy). `consent_state` is the telemetry-consent
+/// snapshot string at the egress moment. A recording failure is only logged via
+/// `warn!` so it never disrupts the upload/capture flow.
+///
+/// #6134: `record_egress` is a synchronous SQLite write (sync `SchedulerStorage`
+/// method). Calling it inline on the async monitor / event_snapshot loops would
+/// block a tokio reactor worker thread on SQLite I/O. We mirror the sibling
+/// `offload_storage` / `with_conn` / `spawn_blocking` pattern: clone the
+/// `Arc<dyn SchedulerStorage>` (it is `Send + Sync`), move an owned
+/// `EgressLedgerRecord` into the blocking pool, and `.await` the handle so a
+/// task panic surfaces as a `JoinError` we can log instead of silently dropping.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_event_egress(
+pub(super) async fn record_event_egress(
     storage: &Arc<dyn SchedulerStorage>,
     event_type: &str,
     byte_count: i64,
@@ -327,8 +338,17 @@ pub(super) fn record_event_egress(
         consent_state: consent_state.to_string(),
         occurred_at: Utc::now().to_rfc3339(),
     };
-    if let Err(e) = storage.record_egress(&record) {
-        tracing::warn!(err.code = %e.code(), "egress ledger 기록 실패: {e}");
+    // Offload the synchronous SQLite INSERT to the blocking pool so the async
+    // monitor/event loops are never blocked on disk I/O (#6134).
+    let storage = storage.clone();
+    match tokio::task::spawn_blocking(move || storage.record_egress(&record)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(err.code = %e.code(), "egress ledger record failure: {e}");
+        }
+        Err(e) => {
+            tracing::warn!("egress ledger record task panicked: {e}");
+        }
     }
 }
 
@@ -342,6 +362,8 @@ pub(super) const REDACTED_WINDOW_TITLE: &str = "[REDACTED_WINDOW_TITLE]";
 
 /// Retention: raw system metrics are kept for 24 hours.
 pub(super) const RAW_METRICS_RETENTION_HOURS: i64 = 24;
+/// Retention: hourly metric rollups are kept for 30 days (V3 migration contract).
+pub(super) const HOURLY_METRICS_RETENTION_DAYS: i64 = 30;
 /// Retention: process snapshots are kept for 7 days.
 pub(super) const PROCESS_SNAPSHOT_RETENTION_DAYS: i64 = 7;
 /// Retention: idle period records are kept for 30 days.
@@ -376,8 +398,9 @@ pub(super) struct PlatformEgressPolicy {
     enabled: bool,
     external_data_policy: ExternalDataPolicy,
     privacy_config: PrivacyConfig,
-    /// 텔레메트리 동의 바인딩. 프로덕션에서 공유 `Arc<dyn ConsentManagerPort>`가 주입되며,
-    /// `None`이면 기존 동작(config.upload_enabled 단독)을 유지한다.
+    /// Telemetry-consent binding. In production a shared `Arc<dyn ConsentManagerPort>`
+    /// is injected; when `None`, the legacy behavior (config.upload_enabled alone)
+    /// is preserved.
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
 }
 
@@ -391,8 +414,8 @@ impl PlatformEgressPolicy {
         }
     }
 
-    /// 텔레메트리 동의(ConsentManager)를 egress 정책에 바인딩한다.
-    /// 프로덕션 sync 루프에서 공유 `Arc<dyn ConsentManagerPort>`를 주입한다.
+    /// Bind telemetry consent (ConsentManager) to the egress policy.
+    /// The production sync loop injects a shared `Arc<dyn ConsentManagerPort>`.
     pub(super) fn with_consent_manager(
         mut self,
         consent_manager: Option<Arc<dyn ConsentManagerPort>>,
@@ -401,30 +424,33 @@ impl PlatformEgressPolicy {
         self
     }
 
-    /// 텔레메트리 동의 여부. ConsentManager 미주입 시 `true`(기존 동작 보존),
-    /// 주입 시 Valid 상태 게이트를 통과한 `telemetry` 권한이 grant 된 경우에만
-    /// `true`(fail-closed).
+    /// Whether telemetry consent is given. When no ConsentManager is injected,
+    /// returns `true` (preserves legacy behavior); when injected, returns `true`
+    /// only if the `telemetry` permission was granted and passes the Valid-state
+    /// gate (fail-closed).
     ///
-    /// `effective_permissions()`(Valid-only)를 사용한다 — raw `is_permitted`는
-    /// Expired/UpdateRequired consent 의 on-disk telemetry=true 비트를 그대로
-    /// 반영해 fail-open 되므로, 형제 게이트(예: system.rs)와 동일하게 Valid
-    /// 게이트를 적용한다. 이렇게 해야 is_enabled()(egress 결정)와
-    /// consent_state_snapshot()(ledger) 모두 만료/무효 동의에서 fail-closed 된다.
+    /// Uses `effective_permissions()` (Valid-only) — raw `is_permitted` would
+    /// reflect the on-disk telemetry=true bit of Expired/UpdateRequired consent
+    /// verbatim and fail open, so we apply the Valid gate just like the sibling
+    /// gates (e.g. system.rs). This ensures both is_enabled() (the egress
+    /// decision) and consent_state_snapshot() (the ledger) fail closed on
+    /// expired/invalid consent.
     fn telemetry_consented(&self) -> bool {
         self.consent_manager
             .as_ref()
             .is_none_or(|cm| cm.effective_permissions().telemetry)
     }
 
-    /// egress 활성 여부 = 업로드 설정 AND 텔레메트리 동의.
+    /// Whether egress is active = upload setting AND telemetry consent.
     pub(super) fn is_enabled(&self) -> bool {
         self.enabled && self.telemetry_consented()
     }
 
-    /// egress 시점의 동의 스냅샷 문자열 (egress_ledger.consent_state 용, #4803).
+    /// Consent snapshot string at the egress moment (for egress_ledger.consent_state, #4803).
     ///
-    /// 업로드 설정과 텔레메트리 동의 여부를 함께 기록해, 차단(blocked) 사유가
-    /// 동의 부재인지 업로드 비활성인지 사후 감사로 구분할 수 있게 한다.
+    /// Records both the upload setting and the telemetry-consent state together
+    /// so a post-hoc audit can distinguish whether a `blocked` reason was a
+    /// missing consent or a disabled upload.
     pub(super) fn consent_state_snapshot(&self) -> String {
         format!(
             "upload_enabled={};telemetry={}",
@@ -434,7 +460,8 @@ impl PlatformEgressPolicy {
     }
 
     pub(super) fn prepare_event_for_upload(&self, mut event: Event) -> Option<Event> {
-        // 업로드 설정 + 텔레메트리 동의(fail-closed)를 모두 통과해야 egress 한다.
+        // Egress requires passing both the upload setting and telemetry consent
+        // (fail-closed).
         if !self.is_enabled() {
             return None;
         }
@@ -465,8 +492,9 @@ impl PlatformEgressPolicy {
                 user.window_title = self.sanitize_title(&title);
             }
             Event::System(_) | Event::Input(_) | Event::Process(_) => {}
-            // 클립보드/파일 접근 이벤트는 민감 데이터를 포함할 수 있으므로
-            // egress 정책상 fail-closed(기본 차단)로 처리하여 업로드에서 제외한다.
+            // Clipboard/file-access events may contain sensitive data, so the
+            // egress policy treats them as fail-closed (blocked by default) and
+            // excludes them from upload.
             Event::Clipboard(_) | Event::FileAccess(_) => return None,
         }
 
@@ -476,7 +504,27 @@ impl PlatformEgressPolicy {
     fn sanitize_title(&self, title: &str) -> String {
         match self.external_data_policy {
             ExternalDataPolicy::AllowFiltered => {
-                sanitize_title_with_level(title, self.privacy_config.pii_filter_level)
+                // Enforce a minimum PII filter floor of Basic when the policy is
+                // AllowFiltered. A configured level of Off would otherwise upload
+                // completely unfiltered data, which contradicts the "filtered"
+                // semantics of this policy variant.
+                //
+                // TODO(#5992): expose a config-validation error at load time so
+                // users get explicit feedback instead of a silent floor upgrade.
+                use maekon_core::config::PiiFilterLevel;
+                let effective_level = self
+                    .privacy_config
+                    .pii_filter_level
+                    .max(PiiFilterLevel::Basic);
+                if effective_level != self.privacy_config.pii_filter_level {
+                    tracing::warn!(
+                        configured = %self.privacy_config.pii_filter_level,
+                        effective  = %effective_level,
+                        "AllowFiltered policy with PiiFilterLevel::Off is invalid; \
+                         upgrading effective filter level to Basic"
+                    );
+                }
+                sanitize_title_with_level(title, effective_level)
             }
             ExternalDataPolicy::PiiFilterStrict | ExternalDataPolicy::PiiFilterStandard => {
                 REDACTED_WINDOW_TITLE.to_string()
@@ -540,9 +588,10 @@ impl Default for SchedulerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maekon_core::config::PiiFilterLevel;
     use maekon_core::consent::ConsentManager;
     use maekon_core::models::event::{
-        ClipboardContentType, ClipboardEvent, FileAccessEvent, FileEventType,
+        ClipboardContentType, ClipboardEvent, ContextEvent, FileAccessEvent, FileEventType,
     };
     use std::path::PathBuf;
 
@@ -571,7 +620,8 @@ mod tests {
     }
 
     fn enabled_policy() -> PlatformEgressPolicy {
-        // 업로드가 활성화된 정책으로도 클립보드/파일 이벤트가 차단되는지 검증한다.
+        // Verify that clipboard/file events are blocked even under an
+        // upload-enabled policy.
         let config = SchedulerConfig {
             upload_enabled: true,
             ..Default::default()
@@ -589,7 +639,7 @@ mod tests {
             preview: Some("sensitive".to_string()),
         });
 
-        // fail-closed: 클립보드 이벤트는 업로드에서 제외되어야 한다.
+        // fail-closed: clipboard events must be excluded from upload.
         assert!(policy.prepare_event_for_upload(event).is_none());
     }
 
@@ -603,15 +653,16 @@ mod tests {
             extension: Some("txt".to_string()),
         });
 
-        // fail-closed: 파일 접근 이벤트는 업로드에서 제외되어야 한다.
+        // fail-closed: file-access events must be excluded from upload.
         assert!(policy.prepare_event_for_upload(event).is_none());
     }
 
-    // --- #4805: egress 를 telemetry 동의에 바인딩 ---
+    // --- #4805: bind egress to telemetry consent ---
 
     fn policy_with_telemetry(consented: bool) -> PlatformEgressPolicy {
         use maekon_core::consent::ConsentPermissions;
-        // grant_consent 가 in-memory 상태를 갱신하므로(파일 재독 없음) tempdir 는 즉시 drop 가능.
+        // grant_consent updates in-memory state (no file re-read), so the
+        // tempdir can be dropped immediately.
         let dir = tempfile::tempdir().expect("tempdir");
         let cm = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
         cm.grant_consent(
@@ -631,7 +682,8 @@ mod tests {
 
     #[test]
     fn egress_blocked_when_telemetry_consent_absent() {
-        // upload_enabled=true 라도 telemetry 동의가 없으면 egress 차단(fail-closed).
+        // Even with upload_enabled=true, egress is blocked without telemetry
+        // consent (fail-closed).
         let policy = policy_with_telemetry(false);
         assert!(!policy.is_enabled());
         let event = Event::Clipboard(ClipboardEvent {
@@ -645,27 +697,30 @@ mod tests {
 
     #[test]
     fn egress_allowed_when_telemetry_consent_present() {
-        // telemetry 동의 + upload_enabled 면 egress 활성.
+        // telemetry consent + upload_enabled → egress active.
         let policy = policy_with_telemetry(true);
         assert!(policy.is_enabled());
     }
 
     #[test]
     fn egress_without_consent_manager_preserves_legacy_behavior() {
-        // ConsentManager 미주입 시 기존 동작(upload_enabled 단독) 유지.
+        // When no ConsentManager is injected, legacy behavior (upload_enabled
+        // alone) is preserved.
         assert!(enabled_policy().is_enabled());
     }
 
     #[test]
     fn egress_blocked_when_telemetry_consent_expired() {
-        // #4803: 만료된 동의 레코드에 telemetry=true 비트가 남아 있어도,
-        // Valid 게이트(effective_permissions)를 거치므로 egress 결정과 ledger
-        // 스냅샷 모두 fail-closed 되어야 한다(fail-open 회귀 방지).
+        // #4803: even if an expired consent record still carries the
+        // telemetry=true bit, passing through the Valid gate
+        // (effective_permissions) must make both the egress decision and the
+        // ledger snapshot fail-closed (prevents a fail-open regression).
         use maekon_core::consent::{ConsentPermissions, ConsentRecord, CURRENT_POLICY_VERSION};
 
         let dir = tempfile::tempdir().expect("tempdir");
-        // 만료된 on-disk 레코드(telemetry=true)를 직접 기록한다 — consent.rs:555
-        // effective_permissions_valid_gates_sub_tier_fields_when_expired 패턴 모방.
+        // Write an expired on-disk record (telemetry=true) directly — mirrors
+        // the consent.rs:555
+        // effective_permissions_valid_gates_sub_tier_fields_when_expired pattern.
         let record = ConsentRecord {
             consent_id: "expired-telemetry".to_string(),
             version: CURRENT_POLICY_VERSION.to_string(),
@@ -690,16 +745,112 @@ mod tests {
         };
         let policy = PlatformEgressPolicy::new(&config).with_consent_manager(Some(cm));
 
-        // egress 결정: 만료 동의 → 차단.
+        // egress decision: expired consent → blocked.
         assert!(
             !policy.is_enabled(),
             "expired consent must fail-closed for egress"
         );
-        // ledger 스냅샷: telemetry=false 로 기록되어야 한다.
+        // ledger snapshot: must be recorded as telemetry=false.
         assert!(
             policy.consent_state_snapshot().contains("telemetry=false"),
             "ledger snapshot must record telemetry=false on expired consent, got: {}",
             policy.consent_state_snapshot()
+        );
+    }
+
+    // --- #5992: AllowFiltered + PiiFilterLevel::Off must apply a Basic floor ---
+
+    /// Builds a PlatformEgressPolicy with AllowFiltered policy and the given PII
+    /// filter level, with upload enabled so prepare_event_for_upload reaches the
+    /// sanitize_title path.
+    fn allow_filtered_policy(level: PiiFilterLevel) -> PlatformEgressPolicy {
+        let privacy_config = PrivacyConfig {
+            pii_filter_level: level,
+            ..Default::default()
+        };
+
+        let config = SchedulerConfig {
+            upload_enabled: true,
+            external_data_policy: ExternalDataPolicy::AllowFiltered,
+            privacy_config,
+            ..Default::default()
+        };
+        PlatformEgressPolicy::new(&config)
+    }
+
+    #[test]
+    fn allow_filtered_with_pii_off_applies_basic_floor() {
+        // A window title containing a plain e-mail address is used as the PII
+        // probe: Basic level masks it as "[EMAIL]", Off would leave it verbatim.
+        let raw_title = "Login - user@example.com";
+
+        let policy = allow_filtered_policy(PiiFilterLevel::Off);
+
+        let event = Event::Context(ContextEvent {
+            app_name: "TestApp".to_string(),
+            window_title: raw_title.to_string(),
+            ..Default::default()
+        });
+
+        let output = policy
+            .prepare_event_for_upload(event)
+            .expect("AllowFiltered should not drop the event");
+
+        let title = match output {
+            Event::Context(ctx) => ctx.window_title,
+            other => panic!("expected Context event, got {:?}", other),
+        };
+
+        // The Basic floor must have masked the e-mail address.
+        assert!(
+            title.contains("[EMAIL]"),
+            "AllowFiltered+Off: expected e-mail to be masked at Basic floor, got: {title:?}"
+        );
+        assert!(
+            !title.contains("user@example.com"),
+            "AllowFiltered+Off: raw e-mail must not appear in upload title, got: {title:?}"
+        );
+    }
+
+    #[test]
+    fn allow_filtered_with_pii_basic_is_unchanged() {
+        // When the configured level is already Basic, the floor has no effect and
+        // the behaviour must be identical to the pre-fix code path.
+        let raw_title = "Login - user@example.com";
+
+        let policy = allow_filtered_policy(PiiFilterLevel::Basic);
+
+        let event = Event::Context(ContextEvent {
+            app_name: "TestApp".to_string(),
+            window_title: raw_title.to_string(),
+            ..Default::default()
+        });
+
+        let output = policy
+            .prepare_event_for_upload(event)
+            .expect("AllowFiltered should not drop the event");
+
+        let title = match output {
+            Event::Context(ctx) => ctx.window_title,
+            other => panic!("expected Context event, got {:?}", other),
+        };
+
+        assert!(
+            title.contains("[EMAIL]"),
+            "AllowFiltered+Basic: e-mail must still be masked, got: {title:?}"
+        );
+    }
+
+    #[test]
+    fn pii_filter_level_ord_off_less_than_basic() {
+        // Verify the Ord derivation encodes Off < Basic < Standard < Strict.
+        assert!(PiiFilterLevel::Off < PiiFilterLevel::Basic);
+        assert!(PiiFilterLevel::Basic < PiiFilterLevel::Standard);
+        assert!(PiiFilterLevel::Standard < PiiFilterLevel::Strict);
+        // max() must produce Basic when combining Off and Basic.
+        assert_eq!(
+            PiiFilterLevel::Off.max(PiiFilterLevel::Basic),
+            PiiFilterLevel::Basic
         );
     }
 }

@@ -31,6 +31,7 @@ use maekon_core::ports::conversation_session::{ConversationSession, ResponseStre
 use crate::codex_app_server::{
     AppServerProcess, ClientInfo, InboundRequest, Notification, ServerInfo, TransportError,
 };
+use crate::mutex_ext::lock_or_recover;
 
 /// Map a transport-level failure onto the shared `CoreError` wire taxonomy.
 fn map_transport_error(err: TransportError) -> CoreError {
@@ -462,7 +463,43 @@ fn approval_payload(decision: ApprovalDecision) -> serde_json::Value {
 #[async_trait]
 impl ConversationSession for CodexAppServerSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
-        // Begin the turn (the server streams its work via notifications).
+        // #6195: the notification receiver is a SINGLE channel fed by ONE
+        // continuous reader task (codex_app_server.rs) that never stops per-turn,
+        // and is drained positionally by this loop. If a PRIOR turn's stream was
+        // abandoned before `turn/completed` (e.g. the caller dropped the stream
+        // after an interrupt, or the turn errored mid-flight), the notifications
+        // that prior turn never consumed stay queued and would BLEED into THIS
+        // turn — stale deltas/usage attributed to the wrong turn.
+        //
+        // Fix: acquire the notifications lock and drain any already-queued
+        // notifications EAGERLY, BEFORE issuing `turn/start`. At this point the
+        // server has been told nothing about this turn, so anything queued is
+        // unambiguously stale (from a prior/abandoned turn) — never this turn's
+        // own events, which the server only emits AFTER it receives `turn/start`.
+        // The same guard is then held across the recv loop below, so this turn
+        // consumes only its OWN notifications.
+        //
+        // (A per-notification turnId would let us filter instead, but the
+        // app-server does NOT carry one on every notification — e.g. agentMessage
+        // deltas, and the fake harness emits none — so a pre-turn positional
+        // drain is the robust choice; see extract_turn_id's note on the unpinned
+        // notification shape.)
+        let mut guard = self.notifications.clone().lock_owned().await;
+        let mut drained_stale = 0u32;
+        while guard.try_recv().is_ok() {
+            drained_stale += 1;
+        }
+        if drained_stale > 0 {
+            tracing::debug!(
+                drained_stale,
+                thread_id = %self.thread_id,
+                "drained stale app-server notifications from a prior/abandoned turn (#6195)"
+            );
+        }
+
+        // Begin the turn (the server streams its work via notifications). Issued
+        // AFTER the drain above, so every notification the server emits for this
+        // turn arrives strictly after this point and is delivered (not drained).
         let start_result = self
             .process
             .request(
@@ -501,14 +538,17 @@ impl ConversationSession for CodexAppServerSession {
             })?;
 
         self.turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock().unwrap() = Utc::now();
+        *lock_or_recover(&self.last_active, "codex_app_server_session.last_active") = Utc::now();
 
         // E21 #5017: capture the in-flight turn id so a concurrent
         // steer/interrupt can target it. Prefer the turn/start result; the drain
         // loop below also captures it from a `turn/started` notification if the
         // result did not carry one. Cleared on `turn/completed`.
         if let Some(turn_id) = extract_turn_id(&start_result) {
-            *self.current_turn_id.lock().unwrap() = Some(turn_id);
+            *lock_or_recover(
+                &self.current_turn_id,
+                "codex_app_server_session.current_turn_id",
+            ) = Some(turn_id);
         }
 
         // Drain this turn's notification stream, normalizing app-server events to
@@ -521,10 +561,13 @@ impl ConversationSession for CodexAppServerSession {
         //     mapping them to chat output here would leak tool-internals into the
         //     answer stream.
         //   - anything else              → graceful debug log, never panic.
-        let notifications = self.notifications.clone();
         let current_turn_id = self.current_turn_id.clone();
+        // `guard` (the pre-drained, still-held owned notifications lock) is moved
+        // into the stream so this turn keeps exclusive access from the drain
+        // point through the recv loop — no other turn can interleave on the
+        // single channel, and the stale-drain baseline established above holds.
         let stream: ResponseStream = Box::pin(try_stream! {
-            let mut guard = notifications.lock().await;
+            let mut guard = guard;
             let mut accumulated = String::new();
             // #5071: per-turn token usage arrives via `thread/tokenUsage/updated`
             // (`tokenUsage.last`) DURING the turn, not on `turn/completed`. Capture
@@ -536,7 +579,10 @@ impl ConversationSession for CodexAppServerSession {
                     // source for the turn id when turn/start's result omitted it.
                     "turn/started" => {
                         if let Some(turn_id) = extract_turn_id(&note.params) {
-                            *current_turn_id.lock().unwrap() = Some(turn_id);
+                            *lock_or_recover(
+                                &current_turn_id,
+                                "codex_app_server_session.current_turn_id",
+                            ) = Some(turn_id);
                         }
                     }
                     "item/agentMessage/delta" => {
@@ -586,7 +632,10 @@ impl ConversationSession for CodexAppServerSession {
                         // E21 #5017: the turn is over — clear the in-flight id so
                         // a late steer/interrupt returns InvalidArguments (no
                         // active turn) rather than targeting a dead turn.
-                        *current_turn_id.lock().unwrap() = None;
+                        *lock_or_recover(
+                            &current_turn_id,
+                            "codex_app_server_session.current_turn_id",
+                        ) = None;
                         yield OutboundMessage::Result {
                             content: accumulated.clone(),
                             done: true,
@@ -620,10 +669,13 @@ impl ConversationSession for CodexAppServerSession {
             session_id: self.thread_id.clone(),
             provider_name: "codex".to_string(),
             model: self.model.clone(),
-            state: *self.state.lock().unwrap(),
+            state: *lock_or_recover(&self.state, "codex_app_server_session.state"),
             transport: SessionTransport::Subprocess,
             created_at: self.created_at,
-            last_active: *self.last_active.lock().unwrap(),
+            last_active: *lock_or_recover(
+                &self.last_active,
+                "codex_app_server_session.last_active",
+            ),
             turn_count: self.turn_count.load(Ordering::Relaxed),
             title: None,
         }
@@ -658,7 +710,11 @@ impl ConversationSession for CodexAppServerSession {
     /// `turn/interrupt`) is a KNOWN #4863 PoC limitation — surfaced as an error,
     /// no re-fallback.
     async fn interrupt(&self) -> Result<(), CoreError> {
-        let turn_id = self.current_turn_id.lock().unwrap().clone();
+        let turn_id = lock_or_recover(
+            &self.current_turn_id,
+            "codex_app_server_session.current_turn_id",
+        )
+        .clone();
         let Some(turn_id) = turn_id else {
             return Err(CoreError::InvalidArguments {
                 code: maekon_core::error_codes::ValidationCode::InvalidArguments,
@@ -690,7 +746,11 @@ impl ConversationSession for CodexAppServerSession {
     /// `InvalidArguments` when no turn is in flight; transport errors map via
     /// [`map_transport_error`]; mid-call `-32601` is the known PoC limitation.
     async fn steer(&self, message: &SessionMessage) -> Result<(), CoreError> {
-        let turn_id = self.current_turn_id.lock().unwrap().clone();
+        let turn_id = lock_or_recover(
+            &self.current_turn_id,
+            "codex_app_server_session.current_turn_id",
+        )
+        .clone();
         let Some(turn_id) = turn_id else {
             return Err(CoreError::InvalidArguments {
                 code: maekon_core::error_codes::ValidationCode::InvalidArguments,
@@ -720,7 +780,7 @@ impl ConversationSession for CodexAppServerSession {
     }
 
     async fn terminate(&self) {
-        *self.state.lock().unwrap() = SessionState::Terminated;
+        *lock_or_recover(&self.state, "codex_app_server_session.state") = SessionState::Terminated;
         // Dropping the process (on session drop) reaps the group; nothing else
         // to do synchronously here.
     }
@@ -732,7 +792,12 @@ impl Drop for CodexAppServerSession {
         // clone; the session's own `Arc` then drops, reaping the process group
         // (the `AppServerProcess` Drop). Without this the task's Arc would keep
         // the process alive until the (unbounded) request channel closed.
-        if let Some(handle) = self.approval_task.lock().unwrap().take() {
+        if let Some(handle) = lock_or_recover(
+            &self.approval_task,
+            "codex_app_server_session.approval_task",
+        )
+        .take()
+        {
             handle.abort();
         }
     }
@@ -1360,6 +1425,84 @@ done"#,
                 assert_eq!((u.input_tokens, u.output_tokens), (12, 34));
             }
             other => panic!("expected terminal Result, got {other:?}"),
+        }
+    }
+
+    /// A fake whose `thread/start` reply is PRECEDED on the wire by a stale
+    /// `item/agentMessage/delta` ("STALE") — simulating notifications left
+    /// queued by a prior/abandoned turn before the next `send_message` runs.
+    /// Because the reader task processes wire lines in order, the stale delta is
+    /// queued onto the shared receiver BEFORE the awaited `thread/start` result
+    /// unblocks `connect` — so by the time the first `send_message` drains, the
+    /// stale delta is deterministically already present (no timing race). The
+    /// turn itself then emits a clean "fresh" delta + `turn/completed`.
+    fn fake_app_server_with_stale_preturn_notification() -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(
+            r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fake/1"}}\n' "$id" ;;
+    *'"thread/start"'*)
+      printf '{"method":"item/agentMessage/delta","params":{"text":"STALE"}}\n'
+      printf '{"id":%s,"result":{"threadId":"thr_42"}}\n' "$id" ;;
+    *'"turn/start"'*)
+      printf '{"id":%s,"result":{}}\n' "$id"
+      printf '{"method":"item/agentMessage/delta","params":{"text":"fresh"}}\n'
+      printf '{"method":"turn/completed","params":{}}\n'
+      ;;
+  esac
+done"#,
+        );
+        cmd
+    }
+
+    #[tokio::test]
+    async fn send_message_drains_stale_preturn_notifications_so_they_do_not_bleed_in() {
+        // #6195 regression: a notification left queued before the turn starts
+        // (here a "STALE" delta emitted at connect-time, standing in for one a
+        // prior/abandoned turn never consumed) MUST NOT bleed into this turn's
+        // stream. send_message drains the already-queued backlog before its recv
+        // loop, so the turn yields only its OWN "fresh" delta + Result("fresh").
+        let session = CodexAppServerSession::connect(
+            fake_app_server_with_stale_preturn_notification(),
+            &client_info(),
+            thread_config(),
+        )
+        .await
+        .expect("connect + thread/start");
+
+        let outputs: Vec<_> = session
+            .send_message(&user_msg("go"))
+            .await
+            .expect("turn/start")
+            .map(|r| r.expect("stream item"))
+            .collect()
+            .await;
+
+        // The stale "STALE" delta was drained — it never appears in this turn.
+        assert!(
+            !outputs.iter().any(|m| matches!(
+                m,
+                OutboundMessage::Text { content, .. } if content == "STALE"
+            )),
+            "stale pre-turn notification must be drained, not bleed in: {outputs:?}"
+        );
+        // The turn still delivers its own fresh delta and a terminal Result whose
+        // accumulated content is ONLY the fresh delta (no stale prefix).
+        assert!(
+            outputs.iter().any(|m| matches!(
+                m,
+                OutboundMessage::Text { content, .. } if content == "fresh"
+            )),
+            "the current turn's own delta must still be delivered: {outputs:?}"
+        );
+        match outputs.last().expect("at least a terminal Result") {
+            OutboundMessage::Result { content, done, .. } => {
+                assert_eq!(content, "fresh", "Result must accumulate only this turn");
+                assert!(done);
+            }
+            other => panic!("expected terminal Result last, got {other:?}"),
         }
     }
 }

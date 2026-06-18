@@ -46,6 +46,14 @@ struct EmbeddingResponse {
 #[derive(Debug, Deserialize)]
 struct EmbeddingData {
     embedding: Vec<f32>,
+    /// Position of this embedding in the original `input` array.
+    ///
+    /// OpenAI-compatible servers echo an `index` field so clients can reorder
+    /// when a strict-spec server returns `data` out of request order.  Defaults
+    /// to `0` when the server omits it; in that case the server-provided order
+    /// is preserved (a stable sort keeps equal-`index` items in place).
+    #[serde(default)]
+    index: usize,
 }
 
 impl RemoteEmbeddingProvider {
@@ -242,10 +250,31 @@ impl RemoteEmbeddingProvider {
             });
         }
 
-        let parsed: EmbeddingResponse = response.json().await.map_err(|e| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: format!("Failed to parse embedding response: {e}"),
-        })?;
+        let mut parsed: EmbeddingResponse =
+            response.json().await.map_err(|e| CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("Failed to parse embedding response: {e}"),
+            })?;
+
+        // Fail loud on partial/over-long responses: a strict-spec server that
+        // drops or duplicates rows would otherwise mis-bind vectors to the
+        // wrong input via positional zip downstream (#6128).
+        if parsed.data.len() != texts.len() {
+            return Err(CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!(
+                    "Embedding API returned {} vectors for {} inputs (count mismatch)",
+                    parsed.data.len(),
+                    texts.len()
+                ),
+            });
+        }
+
+        // Restore request order before positional binding: an OpenAI-compatible
+        // server may return `data` reordered, with the original position carried
+        // in each item's `index` field (#6128). Stable sort keeps the
+        // server-provided order when `index` is absent (defaults to 0).
+        parsed.data.sort_by_key(|d| d.index);
 
         let target_dims = self.dimensions;
         let embeddings: Vec<Vec<f32>> = parsed
@@ -373,6 +402,94 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], vec![0.1, 0.2, 0.3]);
         assert_eq!(result[1], vec![0.4, 0.5, 0.6]);
+        mock.assert_async().await;
+    }
+
+    /// #6128: a strict-spec server may return `data` reordered, carrying the
+    /// original position in each item's `index` field. The provider must sort by
+    /// `index` so vectors bind to the correct input rather than positionally.
+    #[tokio::test]
+    async fn reordered_response_is_bound_by_index() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                // Returned out of request order: index 1 first, index 0 second.
+                serde_json::json!({
+                    "data": [
+                        {"index": 1, "embedding": [0.4, 0.5, 0.6]},
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let result = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+        // Must be reordered back to request order via the `index` field.
+        assert_eq!(result[0], vec![0.1, 0.2, 0.3]);
+        assert_eq!(result[1], vec![0.4, 0.5, 0.6]);
+        mock.assert_async().await;
+    }
+
+    /// #6128: a partial response (fewer vectors than inputs) must fail loud
+    /// rather than silently dropping the missing inputs via positional zip.
+    #[tokio::test]
+    async fn length_mismatch_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                // Two inputs requested but only one vector returned.
+                serde_json::json!({
+                    "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let result = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await;
+
+        let err = result.expect_err("partial response must error, not silently drop");
+        assert!(
+            matches!(err, CoreError::Network { .. }),
+            "count mismatch → Network error, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("mismatch"),
+            "error message should mention the count mismatch, got: {err}"
+        );
         mock.assert_async().await;
     }
 

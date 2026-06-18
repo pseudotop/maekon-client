@@ -6,6 +6,7 @@ use maekon_automation::controller::AutomationController;
 use maekon_automation::policy::PolicyClient;
 use maekon_automation::sandbox::create_platform_sandbox;
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AppConfig};
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::skill_loader::SkillLoader;
 // C1: provider port imports move to 'analysis' — BYOK/OAuth adapters available
 // without 'server' transport feature.
@@ -40,6 +41,7 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     frame_storage: Option<Arc<FrameFileStorage>>,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     #[cfg(feature = "analysis")]
     provider_secret_stores: Option<SecretStoreSet>,
     #[cfg(feature = "analysis")]
@@ -67,6 +69,7 @@ impl<'a> AutomationControllerBuilder<'a> {
             frame_storage,
             app_handle: None,
             cli_health_flag: None,
+            consent_manager: None,
             #[cfg(feature = "analysis")]
             provider_secret_stores: None,
             #[cfg(feature = "analysis")]
@@ -88,6 +91,11 @@ impl<'a> AutomationControllerBuilder<'a> {
 
     pub(crate) fn with_cli_health_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.cli_health_flag = Some(flag);
+        self
+    }
+
+    pub(crate) fn with_consent_manager(mut self, cm: Arc<dyn ConsentManagerPort>) -> Self {
+        self.consent_manager = Some(cm);
         self
     }
 
@@ -119,7 +127,11 @@ impl<'a> AutomationControllerBuilder<'a> {
 
         let process_monitor = Arc::new(ProcessTracker::new());
         let external_ocr_privacy_guard = ExternalOcrPrivacyGuard::new(
-            self.data_dir.join("consent.json"),
+            self.consent_manager.clone().unwrap_or_else(|| {
+                Arc::new(maekon_core::consent::ConsentManager::new(
+                    self.data_dir.join("consent.json"),
+                ))
+            }),
             self.config.privacy.pii_filter_level,
             self.config.ai_provider.external_data_policy,
             self.config.privacy.clone(),
@@ -153,6 +165,7 @@ impl<'a> AutomationControllerBuilder<'a> {
                 validated_oauth_port,
                 self.breaker_registry.clone(),
                 Some(llm_call_health.clone()),
+                self.config.automation.min_llm_confidence,
             )
         });
 
@@ -166,6 +179,7 @@ impl<'a> AutomationControllerBuilder<'a> {
             None,
             self.breaker_registry.clone(),
             Some(llm_call_health.clone()),
+            self.config.automation.min_llm_confidence,
         );
 
         match runtime {
@@ -287,8 +301,8 @@ fn build_controller_from_runtime(
     };
     controller.set_enabled(true);
     controller.set_scene_finder(runtime.element_finder.clone());
-    // #4539: permissive-noop 경로에서 액션이 누락(거짓 성공)되지 않도록
-    // 실제 입력 드라이버를 인라인 실행기로 배선한다.
+    // #4539: wire the real input driver as the inline executor so actions are
+    // not dropped (a false success) on the permissive-noop path.
     controller.set_inline_action_executor(runtime.input_driver.clone());
     controller.set_intent_executor(runtime.intent_executor);
     controller.set_intent_planner(runtime.intent_planner);

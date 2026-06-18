@@ -63,16 +63,29 @@ pub struct CoachingEngine {
     /// Last app name passed to evaluate() — used for implicit feedback.
     pub(super) last_app_name: RwLock<String>,
 
-    /// Auto-tunable parameters — adjusted by feedback, reset on restart.
+    /// Engine-level tuning parameters (overstay_percent, ema_alpha). NOTE
+    /// (review4 F15 sibling): this instance is currently fixed at
+    /// `TunableParams::default()` and only read — it is NOT mutated by feedback.
+    /// The live feedback-adjusted parameters live inside `FeedbackTracker` (its own
+    /// gating) and are not propagated back here. Reset-on-restart (in-memory).
     pub(super) tunable_params: RwLock<TunableParams>,
 
     /// Adaptive scorer — online logistic regression for should-show decisions.
-    /// Used when enough training data has accumulated (50+ feedback events).
+    ///
+    /// DEFERRED / NOT WIRED (review4 F15): `train_on_feedback` — the only path that
+    /// trains this scorer — has no production caller, so `is_ready()` never becomes
+    /// true and the rule-based effectiveness gate is always used. The scaffolding is
+    /// retained for a future feedback-wiring effort and does not currently influence
+    /// coaching decisions.
     pub(super) adaptive_scorer: RwLock<AdaptiveScorer>,
-    /// Last extracted features — cached for feedback update after display.
+    /// Last extracted features — cached for the deferred adaptive-scorer feedback
+    /// update (see `adaptive_scorer`); written but not yet consumed in production.
     pub(super) last_features: RwLock<Option<CoachingFeatures>>,
-    /// Count of coaching messages shown today (for feature extraction).
+    /// Count of coaching messages shown today (feeds the adaptive-scorer feature and
+    /// anti-nag logic). Reset daily via `messages_shown_date` (review4 F16).
     pub(super) messages_shown_today: RwLock<u32>,
+    /// Local date of the last `messages_shown_today` reset (daily rollover).
+    pub(super) messages_shown_date: RwLock<chrono::NaiveDate>,
 
     /// Human-readable label of the current regime (set during evaluate).
     pub(super) current_regime_label: RwLock<Option<String>>,
@@ -109,6 +122,7 @@ impl CoachingEngine {
             adaptive_scorer: RwLock::new(AdaptiveScorer::default()),
             last_features: RwLock::new(None),
             messages_shown_today: RwLock::new(0),
+            messages_shown_date: RwLock::new(chrono::Local::now().date_naive()),
             current_regime_label: RwLock::new(None),
             pii_sanitizer: None,
             pii_level: PiiFilterLevel::Standard,
@@ -210,6 +224,17 @@ impl CoachingEngine {
                 .map(|p| p.percentage as f32 / 100.0)
                 .unwrap_or(0.0)
         };
+        // review4 F16: roll the daily message counter over at local-day boundaries.
+        // Without this it accumulates for the lifetime of the 24/7 process, turning
+        // the "messages today" signal into a lifetime count.
+        {
+            let today = chrono::Local::now().date_naive();
+            let mut date = self.messages_shown_date.write().await;
+            if *date != today {
+                *date = today;
+                *self.messages_shown_today.write().await = 0;
+            }
+        }
         let context_switches = *self.context_switch_count.read().await;
         let messages_today = *self.messages_shown_today.read().await;
         let profile_eff = {
@@ -356,7 +381,12 @@ impl CoachingEngine {
     }
 
     /// Train the adaptive scorer with feedback from the last coaching message.
-    /// Called after explicit or implicit feedback is recorded.
+    ///
+    /// NOT WIRED (review4 F15): no production path currently calls this, so the
+    /// adaptive scorer never accumulates training samples and `is_ready()` stays
+    /// false — coaching gating always uses the rule-based effectiveness path.
+    /// Intended to be invoked from the explicit/implicit feedback paths in a future
+    /// effort; retained so the wiring is a one-line change when that happens.
     pub async fn train_on_feedback(&self, positive: bool) {
         let features = self.last_features.read().await.clone();
         if let Some(features) = features {

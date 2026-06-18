@@ -1,15 +1,15 @@
-//! SandboxCode — Sandbox 카테고리 에러 코드. `sandbox.*` 접두사.
+//! SandboxCode - Sandbox category error codes. `sandbox.*` prefix.
 
 define_code_enum! {
-    /// Sandbox 카테고리 에러 코드.
+    /// Sandbox category error codes.
     pub enum SandboxCode {
-        /// 샌드박스 초기화 실패.
+        /// Sandbox initialization failed.
         InitFailed => "sandbox.init_failed",
-        /// 샌드박스 실행 실패.
+        /// Sandbox execution failed.
         ExecutionFailed => "sandbox.execution_failed",
-        /// 플랫폼 미지원.
+        /// Platform not supported.
         UnsupportedPlatform => "sandbox.unsupported_platform",
-        /// 실행 시간 초과.
+        /// Execution timed out.
         Timeout => "sandbox.timeout",
     }
 }

@@ -24,8 +24,8 @@ use maekon_core::sync::Hlc;
 
 /// SQLite-backed ChangeMerger adapter.
 ///
-/// 공유 [`GuardedConnection`] 을 통해서만 커넥션에 접근한다 — barrier-free 핸들을
-/// 얻을 수 없다(#4928).
+/// Accesses the connection only through the shared [`GuardedConnection`] — a barrier-free
+/// handle cannot be obtained (#4928).
 pub struct SqliteSyncMerger {
     conn: Arc<GuardedConnection>,
     local_device_id: String,
@@ -110,8 +110,8 @@ impl ChangeMerger for SqliteSyncMerger {
         let local_device_id = self.local_device_id.clone();
 
         tokio::task::spawn_blocking(move || {
-            // consent revoke 후(deletion_flag set)에는 모든 동기 merge 쓰기를 스킵한다.
-            // 스킵 시에도 watermark 는 전진시켜 동기 진행을 막지 않는다.
+            // After consent is revoked (deletion_flag set), skip all sync merge writes. Even
+            // when skipping, advance the watermark so sync progress is not blocked.
             let skipped = SyncResult {
                 new_watermark: changes.watermark.clone(),
                 ..Default::default()
@@ -367,13 +367,18 @@ fn merge_segment(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3: suppress if a tombstone with HLC >= this row exists (anti-resurrection).
     if tombstone_suppresses(
         conn,
         "activity_segments",
         id,
         json_u64(row, "hlc_wall_ms")?,
-        json_u32(row, "hlc_counter")?,
+        hlc_counter,
     )? {
         result.skipped_dup += 1;
         return Ok(());
@@ -412,7 +417,7 @@ fn merge_segment(
             json_str_opt(row, "llm_summary"),
             json_str_or_default(row, "content_activities_json", "[]"),
             json_u64(row, "hlc_wall_ms")?,
-            json_u32(row, "hlc_counter")?,
+            hlc_counter,
             json_str(row, "origin_device_id")?,
         ],
     )
@@ -428,7 +433,11 @@ fn merge_regime(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
-    let remote_hlc = extract_hlc(row)?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let Some(remote_hlc) = extract_hlc(row, id)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3: anti-resurrection suppression (gates BOTH the insert and the LWW update).
     if tombstone_suppresses(conn, "regimes", id, remote_hlc.wall_ms, remote_hlc.counter)? {
         result.skipped_dup += 1;
@@ -441,7 +450,8 @@ fn merge_regime(
             rusqlite::params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .ok();
+        .optional()
+        .map_err(|e| StorageError::Internal(format!("lookup regime {id}: {e}")))?;
 
     match local {
         None => {
@@ -541,13 +551,18 @@ fn merge_override(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "override_id")?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3: anti-resurrection suppression.
     if tombstone_suppresses(
         conn,
         "regime_overrides",
         id,
         json_u64(row, "hlc_wall_ms")?,
-        json_u32(row, "hlc_counter")?,
+        hlc_counter,
     )? {
         result.skipped_dup += 1;
         return Ok(());
@@ -578,7 +593,7 @@ fn merge_override(
             json_str_opt(row, "action_data"),
             json_str(row, "created_at")?,
             json_u64(row, "hlc_wall_ms")?,
-            json_u32(row, "hlc_counter")?,
+            hlc_counter,
             json_str(row, "origin_device_id")?,
         ],
     )
@@ -594,7 +609,12 @@ fn merge_embedding(
 ) -> Result<(), StorageError> {
     let segment_id = json_str(row, "segment_id")?;
     let model_id = json_str(row, "model_id")?;
-    let remote_hlc = extract_hlc(row)?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let emb_label = format!("{segment_id}/{model_id}");
+    let Some(remote_hlc) = extract_hlc(row, &emb_label)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3: anti-resurrection suppression by the cross-device-stable composite key
     // (`id` is a per-device autoincrement; the tombstone keys on segment_id+model_id).
     let emb_key = format!("{segment_id}{EMB_KEY_SEP}{model_id}");
@@ -616,13 +636,23 @@ fn merge_embedding(
             rusqlite::params![segment_id, model_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .ok();
+        .optional()
+        .map_err(|e| {
+            StorageError::Internal(format!("lookup embedding {segment_id}/{model_id}: {e}"))
+        })?;
 
     match local {
         None => {
-            // Decode hex-encoded vector back to BLOB
+            // Decode hex-encoded vector back to BLOB. A decode failure (truncated /
+            // odd-length / non-hex from a corrupt or hostile peer) must NOT collapse to
+            // an empty blob — that would silently store a zero-length vector. Reject just
+            // this row (counted as skipped, warning already logged naming the row) and
+            // keep merging the rest of the changeset (#35).
             let vector_hex = json_str(row, "vector")?;
-            let vector_bytes = hex::decode(vector_hex).unwrap_or_default();
+            let Some(vector_bytes) = decode_vector(vector_hex, segment_id, model_id) else {
+                result.skipped_dup += 1;
+                return Ok(());
+            };
 
             conn.execute(
                 "INSERT INTO embedding_vectors \
@@ -657,6 +687,15 @@ fn merge_embedding(
                 device_id: ld,
             };
             if remote_hlc.is_after(&local_hlc) {
+                // Decode BEFORE clobbering: a corrupt remote vector must never overwrite
+                // a valid local vector with an empty blob. Reject just this row (counted
+                // as skipped, warning already logged naming the row) and leave the local
+                // vector untouched (#35).
+                let vector_hex = json_str(row, "vector")?;
+                let Some(vector_bytes) = decode_vector(vector_hex, segment_id, model_id) else {
+                    result.skipped_dup += 1;
+                    return Ok(());
+                };
                 warn!(
                     segment_id = %segment_id,
                     model_id = %model_id,
@@ -664,8 +703,6 @@ fn merge_embedding(
                     remote_device = %remote_hlc.device_id,
                     "sync conflict: embedding overwritten by remote (LWW)"
                 );
-                let vector_hex = json_str(row, "vector")?;
-                let vector_bytes = hex::decode(vector_hex).unwrap_or_default();
 
                 conn.execute(
                     "UPDATE embedding_vectors SET \
@@ -713,7 +750,11 @@ fn merge_suggestion(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let suggestion_id = json_str(row, "suggestion_id")?;
-    let remote_hlc = extract_hlc(row)?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let Some(remote_hlc) = extract_hlc(row, suggestion_id)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3 (the IMPORTANT-2 fix): run the suppression gate BEFORE the status-monotonic
     // merge below. A tombstone is a hard delete already applied; once one exists with HLC >=
     // this row, we return here so a re-synced lower-HLC `acted` row can NEVER resurrect an
@@ -755,7 +796,8 @@ fn merge_suggestion(
                 ))
             },
         )
-        .ok();
+        .optional()
+        .map_err(|e| StorageError::Internal(format!("lookup suggestion {suggestion_id}: {e}")))?;
 
     match local {
         None => {
@@ -871,13 +913,18 @@ fn merge_param_snapshot(
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
     let id = json_str(row, "id")?;
+    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
+    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
     // #5174 S3: anti-resurrection suppression.
     if tombstone_suppresses(
         conn,
         "trigger_params_snapshots",
         id,
         json_u64(row, "hlc_wall_ms")?,
-        json_u32(row, "hlc_counter")?,
+        hlc_counter,
     )? {
         result.skipped_dup += 1;
         return Ok(());
@@ -905,7 +952,7 @@ fn merge_param_snapshot(
             json_str(row, "preset")?,
             json_str(row, "params_json")?,
             json_u64(row, "hlc_wall_ms")?,
-            json_u32(row, "hlc_counter")?,
+            hlc_counter,
             json_str(row, "origin_device_id")?,
         ],
     )
@@ -946,22 +993,72 @@ fn json_u64(v: &serde_json::Value, key: &str) -> Result<u64, StorageError> {
         .ok_or_else(|| StorageError::Internal(format!("missing u64 field: {key}")))
 }
 
-fn json_u32(v: &serde_json::Value, key: &str) -> Result<u32, StorageError> {
-    json_u64(v, key).map(|n| n as u32)
-}
-
 fn json_f64(v: &serde_json::Value, key: &str) -> Result<f64, StorageError> {
     v.get(key)
         .and_then(|v| v.as_f64())
         .ok_or_else(|| StorageError::Internal(format!("missing f64 field: {key}")))
 }
 
-fn extract_hlc(row: &serde_json::Value) -> Result<Hlc, StorageError> {
-    Ok(Hlc {
+/// Extract a wire-supplied HLC counter, rejecting just the offending row on overflow.
+///
+/// #6174: the `hlc_counter` field is part of every synced row's HLC. A missing field is a
+/// structurally malformed changeset and stays a hard error (same as every other required
+/// field below). But a *present* counter that exceeds `u32::MAX` (corrupt/buggy/hostile
+/// peer) must NEVER be silently truncated — that would corrupt causal ordering on merge.
+/// Mirroring [`decode_vector`], an out-of-range counter logs a warning naming the row and
+/// returns `None` so the caller REJECTS just that row and keeps merging the rest of the
+/// changeset, instead of aborting the whole transaction (and stalling sync, since the
+/// watermark would never advance) over one bad peer row.
+fn extract_hlc_counter(
+    row: &serde_json::Value,
+    row_label: &str,
+) -> Result<Option<u32>, StorageError> {
+    let raw = json_u64(row, "hlc_counter")?;
+    match u32::try_from(raw) {
+        Ok(counter) => Ok(Some(counter)),
+        Err(_) => {
+            warn!(
+                row = %row_label,
+                "rejected remote row with out-of-range HLC counter (would corrupt causal ordering): {raw}"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Extract a full HLC from a wire row. Returns `None` (caller skips just this row) when the
+/// counter is out of `u32` range — see [`extract_hlc_counter`] (#6174).
+fn extract_hlc(row: &serde_json::Value, row_label: &str) -> Result<Option<Hlc>, StorageError> {
+    let Some(counter) = extract_hlc_counter(row, row_label)? else {
+        return Ok(None);
+    };
+    Ok(Some(Hlc {
         wall_ms: json_u64(row, "hlc_wall_ms")?,
-        counter: json_u32(row, "hlc_counter")?,
+        counter,
         device_id: json_str(row, "origin_device_id")?.to_string(),
-    })
+    }))
+}
+
+/// Decode a wire-supplied hex embedding vector back to its BLOB bytes.
+///
+/// #35 / #6081: a malformed hex string (truncated, odd-length, or non-hex char from a
+/// corrupt/buggy/hostile peer) must NEVER silently collapse to an empty `Vec<u8>` that
+/// would overwrite a valid local vector with a zero-length blob under last-write-wins.
+/// Returns `None` on a decode failure (logging a warning that names the offending row)
+/// so the caller REJECTS just that row and keeps merging the rest of the changeset,
+/// instead of aborting the whole transaction over one bad peer row.
+fn decode_vector(vector_hex: &str, segment_id: &str, model_id: &str) -> Option<Vec<u8>> {
+    match hex::decode(vector_hex) {
+        Ok(bytes) => Some(bytes),
+        Err(e) => {
+            warn!(
+                segment_id = %segment_id,
+                model_id = %model_id,
+                "rejected corrupt remote embedding vector (malformed hex): {e}"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1514,5 +1611,203 @@ mod tests {
         };
         let result = merger.apply_changes(cs).await.unwrap();
         assert_eq!(result.applied, 1, "acted status should win over dismissed");
+    }
+
+    #[test]
+    fn decode_vector_accepts_valid_hex() {
+        // Round-trips the exact bytes — the happy path the embedding merge depends on.
+        let bytes = decode_vector("0102ff", "seg-d", "m1").unwrap();
+        assert_eq!(bytes, vec![0x01, 0x02, 0xff]);
+    }
+
+    #[test]
+    fn decode_vector_rejects_malformed_hex() {
+        // #35 / #6081: odd length, non-hex char, and truncation must all return None
+        // (so the caller skips the row) rather than collapse to an empty blob.
+        for bad in ["0", "zz", "010"] {
+            assert!(
+                decode_vector(bad, "seg-d", "m1").is_none(),
+                "malformed hex {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_embedding_corrupt_vector_skips_no_empty_blob() {
+        // #35 regression: a peer changeset with a non-hex vector must SKIP just that row,
+        // NOT silently INSERT a zero-length blob and NOT abort the whole merge.
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            embeddings: vec![serde_json::json!({
+                "segment_id": "seg-bad", "model_id": "m1", "content_type": "screen",
+                "original_text": "t", "vector": "nothex", "timestamp": "2026-01-01",
+                "hlc_wall_ms": 100, "hlc_counter": 0, "origin_device_id": "remote-dev"
+            })],
+            ..Default::default()
+        };
+        let result = merger
+            .apply_changes(cs)
+            .await
+            .expect("corrupt vector is skipped, not fatal");
+        assert_eq!(result.applied, 0, "corrupt row not applied");
+        assert_eq!(result.skipped_dup, 1, "corrupt row counted as skipped");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM embedding_vectors WHERE segment_id='seg-bad'"
+            ),
+            0,
+            "no empty blob persisted (row skipped)"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_embedding_corrupt_remote_does_not_zero_local_vector() {
+        // #35 regression for the dangerous LWW path: a valid local vector must NOT be
+        // overwritten by an empty blob when a strictly-newer remote row carries a corrupt
+        // (non-hex) vector. The local bytes survive intact; the bad row is skipped.
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            g.execute(
+                "INSERT INTO embedding_vectors (segment_id, content_type, original_text, vector, \
+                 model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES ('seg-keep', 'screen', 'local text', x'0102ff', 'm1', '2026-01-01', 100, 0, ?1)",
+                rusqlite::params![local_id],
+            )
+            .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        // Strictly-newer HLC (would win LWW) but the vector is non-hex -> must be rejected.
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            embeddings: vec![serde_json::json!({
+                "segment_id": "seg-keep", "model_id": "m1", "content_type": "screen",
+                "original_text": "remote text", "vector": "nothex", "timestamp": "2026-02-01",
+                "hlc_wall_ms": 200, "hlc_counter": 0, "origin_device_id": "remote-dev"
+            })],
+            ..Default::default()
+        };
+        let result = merger.apply_changes(cs).await.expect("corrupt row skipped");
+        assert_eq!(result.applied, 0, "corrupt LWW row not applied");
+        assert_eq!(result.skipped_dup, 1, "corrupt LWW row counted as skipped");
+
+        let stored: Vec<u8> = {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            g.query_row(
+                "SELECT vector FROM embedding_vectors WHERE segment_id='seg-keep' AND model_id='m1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            stored,
+            vec![0x01, 0x02, 0xff],
+            "valid local vector preserved - never zeroed by corrupt remote"
+        );
+    }
+
+    #[test]
+    fn extract_hlc_counter_accepts_max_u32_and_rejects_overflow() {
+        // #6174: the boundary value u32::MAX is a valid counter and must round-trip.
+        let ok = serde_json::json!({ "hlc_counter": u32::MAX as u64 });
+        assert_eq!(
+            extract_hlc_counter(&ok, "row-ok").unwrap(),
+            Some(u32::MAX),
+            "u32::MAX counter is in range"
+        );
+
+        // A counter one past u32::MAX must be REJECTED (return None so the caller skips the
+        // row), NOT silently truncated. The old `as u32` cast wrapped this to 0 — assert we
+        // never produce that corrupting value.
+        let overflow = serde_json::json!({ "hlc_counter": u32::MAX as u64 + 1 });
+        let got = extract_hlc_counter(&overflow, "row-overflow").unwrap();
+        assert_eq!(got, None, "out-of-range counter rejected, not truncated");
+        assert_ne!(
+            got,
+            Some(0),
+            "regression guard: overflow must NOT silently wrap to counter 0"
+        );
+
+        // extract_hlc threads the same rejection through (returns None on overflow).
+        let row = serde_json::json!({
+            "hlc_wall_ms": 100, "hlc_counter": u32::MAX as u64 + 1, "origin_device_id": "d"
+        });
+        assert!(
+            extract_hlc(&row, "row-overflow").unwrap().is_none(),
+            "extract_hlc rejects an out-of-range counter row"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_segment_out_of_range_hlc_counter_is_skipped_not_truncated() {
+        // #6174 regression: a wire segment whose HLC counter exceeds u32 must SKIP just that
+        // row (no silently-truncated counter inserted), NOT abort the whole merge.
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let mut bad = seg_json("seg-of", 100, 0, "remote-dev");
+        // u32::MAX + 1 would `as u32`-truncate to 0 under the old cast.
+        bad["hlc_counter"] = serde_json::json!(u32::MAX as u64 + 1);
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![bad],
+            ..Default::default()
+        };
+        let r = merger
+            .apply_changes(cs)
+            .await
+            .expect("out-of-range counter is skipped, not fatal");
+        assert_eq!(r.applied, 0, "row with overflow counter not applied");
+        assert_eq!(r.skipped_dup, 1, "overflow row counted as skipped");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-of'"
+            ),
+            0,
+            "no row persisted with a truncated HLC counter",
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_one_overflow_counter_row_does_not_block_a_valid_sibling() {
+        // #6174 poison-pill guard: one corrupt peer row (overflow HLC counter) must be
+        // skipped while every other valid row in the SAME changeset still merges. A hard
+        // error here would roll back the transaction AND stall sync (watermark never
+        // advances), so the per-row skip is the correct behavior.
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let mut bad = seg_json("seg-bad", 100, 0, "remote-dev");
+        bad["hlc_counter"] = serde_json::json!(u64::MAX);
+        let good = seg_json("seg-good", 100, 0, "remote-dev");
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![bad, good],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.expect("merge keeps going");
+        assert_eq!(r.applied, 1, "the valid sibling row still merges");
+        assert_eq!(r.skipped_dup, 1, "only the overflow row is skipped");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-good'"
+            ),
+            1,
+            "valid row committed (transaction not aborted by the bad row)",
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-bad'"
+            ),
+            0,
+            "overflow row skipped",
+        );
     }
 }

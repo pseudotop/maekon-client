@@ -21,6 +21,13 @@ impl SuggestionHistory {
     }
 
     pub fn add(&mut self, suggestion: Suggestion) {
+        // Dedup by suggestion_id (review4): the same suggestion can be presented
+        // more than once (defer → resurface → act), and without dedup each
+        // presentation created a separate HistoryEntry, double-counting the same
+        // suggestion in stats(). Keep one authoritative entry per id (the latest
+        // presentation, feedback reset for the fresh presentation).
+        self.entries
+            .retain(|e| e.suggestion.suggestion_id != suggestion.suggestion_id);
         if self.entries.len() >= self.max_size {
             self.entries.pop_front();
         }

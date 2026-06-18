@@ -97,8 +97,8 @@ pub(crate) fn on_capture_pause_toggled<R: tauri::Runtime>(
 /// CONS-PI13; NOT `get()` (deep-clone of 37 sections).
 fn ensure_capture_permitted(state: &AudioRuntimeState) -> Result<(), IpcError> {
     use std::sync::atomic::Ordering;
-    // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-    // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+    // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
+    // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
     let consent = state
         .consent_manager()
         .map(|cm| cm.effective_permissions())
@@ -221,15 +221,11 @@ pub async fn get_audio_status(
 ) -> Result<AudioStatus, IpcError> {
     let live_config = state.config_manager().get();
     let audio_cfg = &live_config.audio;
-    // F-PF-C28-03: model_status 는 내부적으로 std::fs::metadata 를 호출하므로
-    // spawn_blocking 으로 감싸 async executor 스레드 블로킹을 방지.
-    let model_status = match state.audio().model_downloader.clone() {
+    // model_status is async (uses tokio::fs) — await directly; no spawn_blocking needed.
+    let model_status = match state.audio().model_downloader.as_ref() {
         Some(dl) => {
-            let model_size = audio_cfg.model_size;
-            let model_dir = state.audio().model_dir.clone();
-            tokio::task::spawn_blocking(move || dl.model_status(model_size, &model_dir))
+            dl.model_status(audio_cfg.model_size, &state.audio().model_dir)
                 .await
-                .unwrap_or(ModelDownloadStatus::NotInstalled)
         }
         None => ModelDownloadStatus::NotInstalled,
     };
@@ -339,16 +335,15 @@ pub async fn delete_whisper_model(
     state: tauri::State<'_, AudioRuntimeState>,
     model_size: WhisperModelSize,
 ) -> Result<(), IpcError> {
-    let dl =
-        state.audio().model_downloader.clone().ok_or_else(|| {
-            IpcError::new("service.unavailable", "model downloader not available")
-        })?;
-    // F-PF-C28-03: delete_model 은 std::fs::remove_file 을 호출하므로
-    // spawn_blocking 으로 감싸 async executor 스레드 블로킹을 방지.
-    let model_dir = state.audio().model_dir.clone();
-    tokio::task::spawn_blocking(move || dl.delete_model(model_size, &model_dir))
+    let dl = state
+        .audio()
+        .model_downloader
+        .as_ref()
+        .ok_or_else(|| IpcError::new("service.unavailable", "model downloader not available"))?
+        .clone();
+    // delete_model is async (uses tokio::fs) — await directly; no spawn_blocking needed.
+    dl.delete_model(model_size, &state.audio().model_dir)
         .await
-        .map_err(|e| IpcError::new("service.unavailable", e.to_string()))?
         .map_err(IpcError::from)
 }
 
@@ -409,8 +404,8 @@ async fn run_vad_receiver(
     let gate_open = |cfg_mgr: &maekon_core::config_manager::ConfigManager,
                      consent_mgr: &Option<Arc<dyn ConsentManagerPort>>,
                      paused: &std::sync::atomic::AtomicBool| {
-        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+        // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
+        // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
         let consent = consent_mgr
             .as_ref()
             .map(|cm| cm.effective_permissions())
@@ -661,7 +656,18 @@ pub async fn reload_stt_engine(
             #[cfg(not(feature = "download"))]
             let model_path = std::path::PathBuf::from(&config.whisper_model_path);
 
-            if model_path.exists() {
+            // #6344: the download-managed reload path verifies the model's SHA on
+            // load (not bare existence) so a post-download on-disk corruption is not
+            // loaded. The non-download path is a user-supplied model (no pinned SHA).
+            #[cfg(feature = "download")]
+            let model_loadable = maekon_audio::model_downloader::managed_model_verified_on_disk(
+                config.model_size,
+                &state.audio().model_dir,
+            );
+            #[cfg(not(feature = "download"))]
+            let model_loadable = model_path.exists();
+
+            if model_loadable {
                 match maekon_audio::WhisperSttProvider::new(&model_path, config.language) {
                     Ok(p) => {
                         // P1-1: wire PII sanitizer so reload path also sanitizes transcripts.
@@ -1053,12 +1059,12 @@ mod tests {
         assert!(gate_err.code.contains("validation"), "audio capture must be denied when audio.enabled=false even with consent and not paused");
     }
 
-    /// Task 3: `effective_permissions` 마이그레이션 후 합성 게이트 동작 검증.
+    /// Task 3: verify composite-gate behavior after the `effective_permissions` migration.
     ///
-    /// Expired 동의 레코드(microphone=true이지만 만료됨)를 파일에 직접 기록하고
-    /// `ConsentManager::new`로 로드한 뒤 `ensure_capture_permitted`가 거부하는지 확인한다.
-    /// `is_permitted`가 아닌 `effective_permissions`를 사용하면 Valid가 아닌 동의는
-    /// all-false를 반환하므로, 불리언이 true여도 게이트가 닫힌다.
+    /// Writes an Expired consent record (microphone=true but expired) directly to a file,
+    /// loads it via `ConsentManager::new`, then checks that `ensure_capture_permitted` denies.
+    /// Using `effective_permissions` instead of `is_permitted` means a non-Valid consent
+    /// returns all-false, so the gate stays closed even when the boolean is true.
     #[test]
     fn capture_gate_denies_when_consent_expired_even_if_microphone_true() {
         use chrono::Utc;
@@ -1067,8 +1073,8 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let consent_path = temp.path().join("consent.json");
 
-        // microphone=true 이지만 이미 만료된 레코드를 파일에 직접 기록한다
-        // (grant_consent는 expires_at을 None으로 고정하므로 직접 작성한다).
+        // Write a record with microphone=true that is already expired directly to a file
+        // (grant_consent pins expires_at to None, so we author it directly).
         let expired = ConsentRecord {
             consent_id: "test-expired".into(),
             version: CURRENT_POLICY_VERSION.to_string(),
@@ -1085,21 +1091,21 @@ mod tests {
         };
         std::fs::write(&consent_path, serde_json::to_string(&expired).unwrap()).unwrap();
 
-        // ConsentManager는 로드 시 Expired 판정을 내린다.
+        // ConsentManager judges this Expired on load.
         let cm = ConsentManager::new(consent_path);
         assert_eq!(
             cm.check_consent(),
             maekon_core::consent::ConsentStatus::Expired,
             "precondition: consent must be Expired"
         );
-        // effective_permissions()은 Valid가 아니면 all-false를 반환한다.
+        // effective_permissions() returns all-false when not Valid.
         assert!(
             !cm.effective_permissions().microphone,
             "Expired consent must yield microphone=false via effective_permissions"
         );
 
-        // 합성 게이트: Expired 동의로 구성된 AudioRuntimeState는 gate_state 처럼 audio.enabled=true 이지만
-        // 만료 동의이므로 ensure_capture_permitted가 거부해야 한다.
+        // Composite gate: an AudioRuntimeState built with Expired consent has audio.enabled=true (like
+        // gate_state), but because the consent is expired, ensure_capture_permitted must deny.
         let state = gate_state(temp.path(), Some(Arc::new(cm)), false);
         let gate_err = super::ensure_capture_permitted(&state).unwrap_err();
         assert!(gate_err.code.contains("validation"), "ensure_capture_permitted must deny when consent is Expired, even with microphone=true in the record");

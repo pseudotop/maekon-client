@@ -405,7 +405,16 @@ pub async fn serve(cfg: GrpcSpawnConfig) -> Result<(), GrpcServeError> {
 
     let incoming = stream! {
         loop {
-            yield listener.accept().await.map(|(stream, _)| stream);
+            match listener.accept().await {
+                Ok((stream, _)) => yield Ok(stream),
+                Err(e) => {
+                    // #6281 (P-3 sibling of the external accept loop): backoff on a
+                    // persistent accept() error (EMFILE/ENFILE/ENOBUFS) so this
+                    // loopback dashboard accept loop cannot busy-spin at ~100% CPU.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    yield Err(e);
+                }
+            }
         }
     };
 

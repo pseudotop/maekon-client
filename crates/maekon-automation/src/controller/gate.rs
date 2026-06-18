@@ -9,6 +9,7 @@ use crate::error::AutomationError;
 use crate::policy::{AuditLevel, PolicyClient};
 use crate::resolver;
 use maekon_core::config::SandboxConfig;
+use maekon_core::models::audit::AuditStatus;
 use maekon_core::models::automation::{AutomationAction, AutomationCommand, CommandResult};
 
 pub(super) const GUI_SESSION_POLICY_TOKEN: &str = "gui-session";
@@ -147,11 +148,23 @@ impl CommandExecutionGate {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_complete_with_time(
+            // Record the REAL outcome status, not a hardcoded Completed (review4 A1).
+            // Failed dispatches — including sandbox containment failures — must be
+            // durably audited as Failed so entries_by_status/stats and the hash
+            // chain do not misreport them as Completed.
+            let (action_type, status) = match &result {
+                CommandResult::Success => ("complete", AuditStatus::Completed),
+                CommandResult::Failed(_) => ("failed", AuditStatus::Failed),
+                CommandResult::Denied => ("denied", AuditStatus::Denied),
+                CommandResult::Timeout => ("timeout", AuditStatus::Timeout),
+            };
+            logger.log_with_status_and_time(
                 audit_level,
                 &cmd.command_id,
                 &cmd.session_id,
-                &format!("{:?}", result),
+                action_type,
+                status,
+                &format!("{result:?}"),
                 elapsed_ms,
             );
         }

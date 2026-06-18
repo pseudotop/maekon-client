@@ -16,6 +16,7 @@ use maekon_core::ports::integration::IntegrationAuthPort;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tokio::sync::RwLock;
 
+use crate::provider_error_body::provider_error_body_state;
 use crate::resilience::extract_retry_after;
 
 use super::transport::{IntegrationRequestProofFactory, IntegrationTransportConnectRequest};
@@ -62,6 +63,35 @@ impl HttpsIntegrationSessionBindings {
 
     async fn remove(&self, session_id: &str) {
         self.sessions.write().await.remove(session_id);
+    }
+
+    /// Remove the binding for `session_id` and, if it owned a live WebSocket
+    /// channel, signal that channel to close so its detached read_loop task and
+    /// TCP socket are released. Returns `true` when a binding was evicted.
+    ///
+    /// The map write lock is released before awaiting `close()` so the lock is
+    /// never held across an `.await`. Dropping the removed `SessionBinding` (and
+    /// thus the last `Arc<WebSocketIntegrationSessionChannel>` it held) also
+    /// fires the channel's `Drop` cancel signal as a backstop. (#6204)
+    async fn evict(&self, session_id: &str) -> bool {
+        let removed = self.sessions.write().await.remove(session_id);
+        match removed {
+            Some(binding) => {
+                if let Some(channel) = binding.live_session_channel {
+                    if let Err(error) = channel.close().await {
+                        // Best-effort: the read_loop is still aborted via
+                        // cancel_notify even when the Close frame send fails
+                        // (e.g. the socket is already gone on reconnect).
+                        tracing::debug!(
+                            session_id,
+                            "integration binding eviction: live channel close failed: {error}"
+                        );
+                    }
+                }
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -235,20 +265,23 @@ impl HttpsIntegrationHttpShared {
         }
 
         let retry_after = extract_retry_after(&response);
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unreadable response body>"));
+        // Privacy: the remote response body is server-controlled and may carry
+        // PII, secrets, or injection payloads. Read it only to classify the
+        // failure (empty vs. present vs. unreadable) via a fixed marker — never
+        // interpolate the raw body into errors that are logged or persisted.
+        // Mirrors `provider_error_body::provider_error_message`. (#6196)
+        let body = response.text().await.ok();
+        let body_state = provider_error_body_state(body.as_deref());
 
         match status.as_u16() {
             401 | 403 => Err(CoreError::Auth {
                 code: maekon_core::error_codes::AuthCode::Failed,
-                message: format!("{context}: {body}"),
+                message: format!("{context}: {body_state}"),
             }),
             404 => Err(CoreError::NotFound {
                 code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
                 resource_type: context.to_string(),
-                id: body,
+                id: body_state.to_string(),
             }),
             // 408/504 are timeout-class — wire code `network.timeout` (iter-55)
             408 | 504 => Err(CoreError::RequestTimeout {
@@ -262,11 +295,11 @@ impl HttpsIntegrationHttpShared {
             // 502 Bad Gateway is a transient upstream failure (iter-55)
             502 | 503 => Err(CoreError::ServiceUnavailable {
                 code: maekon_core::error_codes::ServiceCode::Unavailable,
-                message: body,
+                message: format!("{context}: {body_state}"),
             }),
             _ => Err(CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
-                message: format!("{context}: HTTP {status} {body}"),
+                message: format!("{context}: HTTP {status} {body_state}"),
             }),
         }
     }

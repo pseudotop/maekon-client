@@ -119,7 +119,13 @@ impl OverrideStore for SqliteStorage {
         let from_str = from.to_rfc3339();
         let to_str = to.to_rfc3339();
 
-        self.with_conn(move |conn| {
+        // Pure SELECT: route through the READ funnel so it always executes.
+        // The WRITE funnel (`with_conn`) is skipped (returns `T::default()`,
+        // i.e. an empty Vec here) while `deletion_flag || erasing` is set, which
+        // would silently return no overrides during an erase window. Reads must
+        // never be blocked by the #4928 erase barrier, matching the other
+        // SELECT-only paths (annotation/habit/work_sessions/...).
+        self.with_conn_read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT override_id, segment_id, original_regime_id, action_type, action_data, created_at
@@ -361,6 +367,55 @@ mod tests {
             matches!(err, CoreError::NotFound { .. }),
             "expected NotFound, got: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_overrides_survives_erase_barrier() {
+        // Regression: `list_overrides` is a pure SELECT and must route through the
+        // READ funnel (`with_conn_read`), not the WRITE funnel (`with_conn`).
+        // The write funnel is skipped while `deletion_flag || erasing` is set,
+        // which previously made this read return an empty Vec during an erase
+        // window (the #4928 erase barrier wrongly blocking a read).
+        use std::sync::atomic::Ordering;
+
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let now = Utc::now();
+
+        let entry = RegimeOverride {
+            override_id: "ovr-erase".to_string(),
+            segment_id: "seg-erase".to_string(),
+            original_regime_id: None,
+            user_action: UserOverrideAction::MarkAsNoise,
+            created_at: now,
+        };
+        storage.save_override(&entry).await.unwrap();
+
+        // Enter an erase window: writes must now be skipped, reads must not.
+        storage.deletion_flag().store(true, Ordering::Release);
+
+        // Control: a write IS skipped while the barrier is set (no error, no-op),
+        // proving the barrier is genuinely active for this connection.
+        let skipped = RegimeOverride {
+            override_id: "ovr-skipped".to_string(),
+            segment_id: "seg-skipped".to_string(),
+            original_regime_id: None,
+            user_action: UserOverrideAction::MarkAsNoise,
+            created_at: now,
+        };
+        storage.save_override(&skipped).await.unwrap();
+
+        // The read MUST still return the row persisted before the barrier.
+        let overrides = storage
+            .list_overrides(now - Duration::hours(1), now + Duration::hours(1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            overrides.len(),
+            1,
+            "pure SELECT must execute through the read funnel during an erase window"
+        );
+        assert_eq!(overrides[0].override_id, "ovr-erase");
     }
 
     #[tokio::test]

@@ -1,32 +1,33 @@
-//! Scheduler loop contract tests — CRT-PRV-SCH (런타임 행위 검증).
+//! Scheduler loop contract tests — CRT-PRV-SCH (runtime behavior verification).
 //!
-//! 이 파일은 과거 "source-text grep" 시어터 테스트(파일에 `spawn_*` 문자열이
-//! 존재하는지만 확인)를 대체합니다. 프로덕션 스케줄러 루프(예:
-//! `src/scheduler/loops/{system,network,health,...}.rs`)는 전부 동일한 동시성
-//! 계약을 따릅니다:
+//! This file replaces the old "source-text grep" theater tests (which only
+//! checked whether a `spawn_*` string was present in a file). The production
+//! scheduler loops (e.g. `src/scheduler/loops/{system,network,health,...}.rs`)
+//! all follow the same concurrency contract:
 //!
 //!   tokio::spawn(async move {
 //!       let mut interval = coalescing_interval(period); // MissedTickBehavior::Skip
 //!       loop {
 //!           tokio::select! {
-//!               _ = interval.tick()           => { /* 틱 작업 */ }
+//!               _ = interval.tick()           => { /* tick work */ }
 //!               _ = shutdown_rx.changed()     => break,
 //!           }
 //!       }
 //!   })
 //!
-//! 프로덕션 spawn 함수들은 전부 `pub(crate)` / private 모듈이라 (이 크레이트에
-//! `[lib]` 타깃이 없어 외부 통합 테스트에서 직접 호출 불가) 여기서는 동일한
-//! tokio 프리미티브로 루프 계약을 **런타임에서 실제로 구동**하여 다음을
-//! 단언합니다:
-//!   1. 루프가 실제로 틱 작업을 실행하고 watch 신호로 깔끔히 종료된다.
-//!   2. 한 루프 본문의 panic 이 다른 루프를 죽이지 않는다 (tokio task 격리).
-//!   3. panic 한 task 는 JoinError::is_panic() 으로 관측 가능하고,
-//!      런타임/형제 task 는 계속 살아 틱을 이어간다.
+//! The production spawn functions are all in `pub(crate)` / private modules (this
+//! crate has no `[lib]` target, so they cannot be called directly from external
+//! integration tests). So here we **actually drive the loop contract at runtime**
+//! with the same tokio primitives and assert:
+//!   1. The loop actually runs tick work and shuts down cleanly on a watch signal.
+//!   2. A panic in one loop body does not kill another loop (tokio task isolation).
+//!   3. A panicked task is observable via JoinError::is_panic(), while the
+//!      runtime/sibling tasks keep living and continue ticking.
 //!
-//! 이는 시어터가 아니라 프로덕션 루프가 의존하는 tokio 런타임의 task-격리/
-//! select-종료 계약을 실제 task 로 구동해 관측 가능한 부수효과(카운터,
-//! JoinError, 종료)로 검증합니다.
+//! This is not theater: it drives the tokio runtime's task-isolation /
+//! select-termination contract — which the production loops depend on — with real
+//! tasks, and verifies it via observable side effects (counters, JoinError,
+//! termination).
 //!
 //! Run via:
 //!   cargo test -p maekon-app --test scheduler_loop_contract
@@ -38,36 +39,38 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::{interval, MissedTickBehavior};
 
-/// 프로덕션 `super::intervals::coalescing_interval` 와 동일한 구성:
-/// 주기적 interval + MissedTickBehavior::Skip (밀린 틱을 합쳐 폭주 방지).
+/// Same configuration as production `super::intervals::coalescing_interval`:
+/// a periodic interval + MissedTickBehavior::Skip (coalesces missed ticks to
+/// prevent bursts).
 fn coalescing_interval(period: Duration) -> tokio::time::Interval {
     let mut i = interval(period);
     i.set_missed_tick_behavior(MissedTickBehavior::Skip);
     i
 }
 
-/// 가상 시계(start_paused)를 `step` 단위로 `total` 만큼 진행하면서, 매 스텝마다
-/// spawn 된 루프 task 가 다음 틱을 re-arm 하도록 yield 한다.
+/// Advances the virtual clock (start_paused) by `total` in `step` increments,
+/// yielding on each step so the spawned loop task can re-arm its next tick.
 ///
-/// 이유: `current_thread` + `start_paused` 에서 `advance()` 를 한 번에 크게
-/// 호출하면 interval task 가 중간 틱을 재-poll 하지 못해 한 틱만 발생한다.
-/// 실제 주기적 틱을 구동하려면 주기 단위로 advance + yield 를 반복해야 한다.
+/// Why: under `current_thread` + `start_paused`, calling `advance()` once with a
+/// large value means the interval task cannot re-poll the intermediate ticks, so
+/// only a single tick fires. To drive real periodic ticks, advance + yield must be
+/// repeated per period.
 async fn drive_clock(total: Duration, step: Duration) {
     let mut elapsed = Duration::ZERO;
     while elapsed < total {
         tokio::time::advance(step).await;
-        // spawn 된 루프 task 가 깨어나 틱 작업을 수행하고 다음 틱을 re-arm 하도록 양보.
+        // Yield so the spawned loop task wakes up, performs its tick work, and re-arms the next tick.
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
         elapsed += step;
     }
 }
 
-/// 프로덕션 루프와 동형(同形)의 틱 루프를 spawn 한다.
+/// Spawns a tick loop isomorphic to the production loops.
 ///
-/// 매 틱마다 `tick_count` 를 증가시키고, watch 신호(`shutdown_rx`)가 들어오면
-/// 루프를 종료한다. `on_tick` 으로 N번째 틱에서 의도적 panic 등 부수효과를
-/// 주입할 수 있다.
+/// Increments `tick_count` on every tick and terminates the loop when the watch
+/// signal (`shutdown_rx`) arrives. `on_tick` can inject side effects such as an
+/// intentional panic on the Nth tick.
 fn spawn_contract_loop<F>(
     period: Duration,
     tick_count: Arc<AtomicU64>,
@@ -82,12 +85,12 @@ where
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    // 프로덕션 select! arm 과 동일하게, 틱마다 작업 수행.
+                    // Same as the production select! arm: perform work on every tick.
                     let n = tick_count.fetch_add(1, Ordering::SeqCst) + 1;
                     on_tick(n);
                 }
                 _ = shutdown_rx.changed() => {
-                    // 프로덕션 루프의 종료 arm 과 동일: 신호 시 break.
+                    // Same as the production loop's termination arm: break on signal.
                     break;
                 }
             }
@@ -96,10 +99,11 @@ where
 }
 
 /// CRT-PRV-SCH-RUNTIME-001:
-/// 루프가 실제로 틱을 실행하고, watch 종료 신호로 깔끔하게 종료된다.
+/// The loop actually runs ticks and shuts down cleanly on a watch termination signal.
 ///
-/// 기존 grep 테스트(`assert_spawns(...)`)를 대체 — 파일에 문자열이 있는지가
-/// 아니라, 루프가 **런타임에서 실제로 동작**하고 종료하는지를 단언한다.
+/// Replaces the old grep test (`assert_spawns(...)`) — instead of checking whether
+/// a string is present in a file, it asserts that the loop **actually runs at
+/// runtime** and terminates.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn crt_prv_sch_runtime_001_loop_ticks_and_shuts_down() {
     let ticks = Arc::new(AtomicU64::new(0));
@@ -107,34 +111,36 @@ async fn crt_prv_sch_runtime_001_loop_ticks_and_shuts_down() {
 
     let handle = spawn_contract_loop(Duration::from_millis(100), ticks.clone(), rx, |_| {});
 
-    // 가상 시계를 50ms 스텝으로 400ms 진행 → interval(100ms) 은 t=0,100,200,300
-    // 에서 틱하므로 최소 3틱(t=0 즉시틱 제외해도 3회) 이상 보장.
+    // Advance the virtual clock by 400ms in 50ms steps → interval(100ms) ticks at
+    // t=0,100,200,300, guaranteeing at least 3 ticks (3 even if the t=0 immediate
+    // tick is excluded).
     drive_clock(Duration::from_millis(400), Duration::from_millis(50)).await;
 
     let observed = ticks.load(Ordering::SeqCst);
     assert!(
         observed >= 3,
-        "루프가 런타임에서 실제로 틱을 실행해야 한다 (350ms/100ms): 관측 {observed}틱"
+        "the loop must actually run ticks at runtime (350ms/100ms): observed {observed} ticks"
     );
 
-    // 종료 신호 → 루프가 select! 종료 arm 으로 break 하고 task 가 완료되어야 한다.
-    tx.send(true).expect("watch 수신자 살아있어야 함");
+    // Termination signal → the loop must break via the select! termination arm and the task must complete.
+    tx.send(true).expect("watch receiver must be alive");
     let joined = tokio::time::timeout(Duration::from_secs(1), handle).await;
     assert!(
         matches!(joined, Ok(Ok(()))),
-        "종료 신호 후 루프 task 는 깔끔히 join 되어야 한다: {joined:?}"
+        "after the termination signal the loop task must join cleanly: {joined:?}"
     );
 }
 
 /// CRT-PRV-SCH-RUNTIME-002:
-/// 한 루프 본문이 panic 해도 형제 루프는 계속 틱하고, 런타임은 살아있다.
+/// Even if one loop body panics, sibling loops keep ticking and the runtime stays alive.
 ///
-/// 핵심 격리 계약: 각 루프는 별도 `tokio::spawn` task 이므로 한 task 의 panic
-/// 이 다른 task 나 런타임을 죽이지 않는다. (supervisor/restart 프로덕션 코드를
-/// 건드리지 않고, 루프들이 의존하는 tokio task-격리를 직접 검증.)
+/// Core isolation contract: each loop is a separate `tokio::spawn` task, so a panic
+/// in one task does not kill another task or the runtime. (Verifies the tokio
+/// task-isolation that the loops depend on directly, without touching the
+/// supervisor/restart production code.)
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn crt_prv_sch_runtime_002_panicking_loop_is_isolated_from_siblings() {
-    // 형제 루프(정상): 계속 틱해야 한다.
+    // Sibling loop (healthy): must keep ticking.
     let sibling_ticks = Arc::new(AtomicU64::new(0));
     let (sib_tx, sib_rx) = watch::channel(false);
     let sibling = spawn_contract_loop(
@@ -144,7 +150,7 @@ async fn crt_prv_sch_runtime_002_panicking_loop_is_isolated_from_siblings() {
         |_| {},
     );
 
-    // panic 루프: 2번째 틱에서 의도적으로 panic.
+    // Panic loop: intentionally panics on the 2nd tick.
     let panic_ticks = Arc::new(AtomicU64::new(0));
     let (_pan_tx, pan_rx) = watch::channel(false);
     let panicker = spawn_contract_loop(
@@ -153,80 +159,83 @@ async fn crt_prv_sch_runtime_002_panicking_loop_is_isolated_from_siblings() {
         pan_rx,
         |n| {
             if n == 2 {
-                panic!("의도적 루프 본문 panic (격리 검증용)");
+                panic!("intentional loop-body panic (for isolation verification)");
             }
         },
     );
 
-    // 시계 진행 → panic 루프는 2번째 틱(t=100)에서 죽고, 형제는 계속 틱.
+    // Advance the clock → the panic loop dies on the 2nd tick (t=100), the sibling keeps ticking.
     drive_clock(Duration::from_millis(500), Duration::from_millis(50)).await;
 
-    // (1) panic 한 task 는 JoinError::is_panic() 으로 관측 가능해야 한다.
+    // (1) The panicked task must be observable via JoinError::is_panic().
     let panic_join = tokio::time::timeout(Duration::from_secs(1), panicker)
         .await
-        .expect("panic task 는 즉시 종료되어 timeout 되지 않아야 함");
-    let join_err = panic_join.expect_err("panic 한 task 의 join 은 Err 여야 한다");
+        .expect("the panic task must terminate immediately and not time out");
+    let join_err = panic_join.expect_err("the join of a panicked task must be Err");
     assert!(
         join_err.is_panic(),
-        "panic 한 루프 task 의 JoinError 는 is_panic()=true 여야 한다: {join_err:?}"
+        "the JoinError of a panicked loop task must have is_panic()=true: {join_err:?}"
     );
 
-    // (2) 형제 루프는 panic 의 영향 없이 계속 틱하고, 런타임도 살아있어야 한다.
+    // (2) The sibling loop must keep ticking unaffected by the panic, and the runtime must stay alive.
     let observed = sibling_ticks.load(Ordering::SeqCst);
     assert!(
         observed >= 3,
-        "형제 루프는 다른 루프의 panic 과 무관하게 계속 틱해야 한다: 관측 {observed}틱"
+        "the sibling loop must keep ticking regardless of another loop's panic: observed {observed} ticks"
     );
 
-    // (3) 런타임이 살아있는지: 형제 루프를 정상 종료시켜 깔끔히 join 되는지 확인.
-    sib_tx.send(true).expect("형제 watch 수신자 살아있어야 함");
+    // (3) Confirm the runtime is alive: terminate the sibling loop normally and verify it joins cleanly.
+    sib_tx
+        .send(true)
+        .expect("sibling watch receiver must be alive");
     let sib_join = tokio::time::timeout(Duration::from_secs(1), sibling).await;
     assert!(
         matches!(sib_join, Ok(Ok(()))),
-        "panic 격리 후에도 형제 루프는 정상 종료되어야 한다: {sib_join:?}"
+        "even after panic isolation the sibling loop must terminate normally: {sib_join:?}"
     );
 }
 
 /// CRT-PRV-SCH-RUNTIME-003:
-/// coalescing interval 은 밀린 틱을 합친다 (MissedTickBehavior::Skip).
+/// The coalescing interval coalesces missed ticks (MissedTickBehavior::Skip).
 ///
-/// 프로덕션 모든 루프가 `coalescing_interval` 을 쓰는 이유: 런타임이 오래
-/// 블록되어 여러 주기를 놓쳐도, 깨어난 뒤 한 번에 폭주(burst)하지 않고
-/// 한 틱만 실행해야 한다. 런타임에서 실제 행위로 검증한다.
+/// Why every production loop uses `coalescing_interval`: even if the runtime is
+/// blocked for a long time and misses several periods, after waking up it must run
+/// only one tick instead of bursting all at once. Verified by real behavior at
+/// runtime.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn crt_prv_sch_runtime_003_coalescing_interval_skips_missed_ticks() {
-    // MissedTickBehavior 설정 자체 검증 (프로덕션 intervals.rs 계약).
+    // Verify the MissedTickBehavior setting itself (production intervals.rs contract).
     let ticker = coalescing_interval(Duration::from_millis(100));
     assert_eq!(
         ticker.missed_tick_behavior(),
         MissedTickBehavior::Skip,
-        "coalescing_interval 은 MissedTickBehavior::Skip 이어야 한다"
+        "coalescing_interval must be MissedTickBehavior::Skip"
     );
 
-    // 런타임 행위: 루프 task 가 park 된 동안 한 번에 1000ms(=10주기 분량)를
-    // 통째로 advance 한다. Skip 모드에서는 놓친 9개 주기를 합쳐(coalesce) 단 한
-    // 번의 틱만 발생해야 한다 — yield 1회 후에도 10틱으로 폭주하지 않아야 한다.
+    // Runtime behavior: while the loop task is parked, advance 1000ms (= 10 periods'
+    // worth) all at once. In Skip mode the 9 missed periods must be coalesced into a
+    // single tick — even after one yield, it must not burst to 10 ticks.
     let ticks = Arc::new(AtomicU64::new(0));
     let (_tx, rx) = watch::channel(false);
     let handle = spawn_contract_loop(Duration::from_millis(100), ticks.clone(), rx, |_| {});
 
-    // 루프 task 가 첫 틱(t=0)을 소비하고 다음 틱을 arm 하도록 양보.
+    // Yield so the loop task consumes the first tick (t=0) and arms the next tick.
     tokio::task::yield_now().await;
     let after_first = ticks.load(Ordering::SeqCst);
 
-    // park 상태에서 10주기 분량을 한 번에 advance → Skip 으로 1틱만 깨어남.
+    // While parked, advance 10 periods' worth at once → only 1 tick wakes up under Skip.
     tokio::time::advance(Duration::from_millis(1000)).await;
     tokio::task::yield_now().await;
 
     let observed = ticks.load(Ordering::SeqCst);
     assert!(
         observed > after_first,
-        "park 후 advance 시 최소 한 틱은 깨어나야 한다: {after_first} → {observed}"
+        "advancing after a park must wake at least one tick: {after_first} → {observed}"
     );
-    // 10주기를 합쳐 1틱만 추가되어야 한다 (Skip). 합산 폭주(>=10)면 Burst 모드.
+    // Only 1 tick must be added by coalescing 10 periods (Skip). An aggregate burst (>=10) means Burst mode.
     assert!(
         observed - after_first <= 2,
-        "Skip 모드는 놓친 9주기를 합쳐 ~1틱만 실행해야 한다 (폭주 금지): \
+        "Skip mode must coalesce the 9 missed periods into ~1 tick (no burst): \
          {after_first} → {observed}"
     );
 

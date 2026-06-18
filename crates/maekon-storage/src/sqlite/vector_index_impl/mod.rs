@@ -21,7 +21,7 @@ use crate::sqlite::GuardedConnection;
 
 /// SQLite-backed vector index supporting IVF clustering and binary code search.
 pub struct SqliteVectorIndex {
-    /// 공유 [`GuardedConnection`](#4928 — barrier-free 핸들 불가).
+    /// Shared [`GuardedConnection`] (#4928 — a barrier-free handle is not allowed).
     conn: Arc<GuardedConnection>,
     /// Cached centroids for query-time probe selection.
     /// Uses `tokio::sync::RwLock` so the guard is `Send` — safe to hold
@@ -44,8 +44,9 @@ impl SqliteVectorIndex {
         }
     }
 
-    /// **쓰기** 클로저를 spawn_blocking 으로 격리하는 funnel.
-    /// deletion_flag set 시 클로저는 실행되지 않고 `Ok(T::default())` 를 반환한다.
+    /// Funnel that isolates a **write** closure onto spawn_blocking.
+    /// When deletion_flag is set, the closure is not run and `Ok(T::default())`
+    /// is returned instead.
     async fn with_conn<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -57,7 +58,8 @@ impl SqliteVectorIndex {
             .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
 
-    /// **읽기** 클로저를 spawn_blocking 으로 격리하는 funnel(deletion_flag 무관).
+    /// Funnel that isolates a **read** closure onto spawn_blocking
+    /// (independent of deletion_flag).
     async fn with_conn_read<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -65,6 +67,24 @@ impl SqliteVectorIndex {
     {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || conn.read_lock().run(f))
+            .await
+            .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+    }
+
+    /// Funnel that isolates a **write** transaction closure onto spawn_blocking.
+    ///
+    /// Passes through the same `write_lock` funnel as [`Self::with_conn`]
+    /// (deletion_flag/erasing re-check, #4928 erase barrier), but hands the closure
+    /// a `&mut Connection` so it can take mutable access such as `conn.transaction()`.
+    /// Used for writes that must atomize multiple DML statements into a single
+    /// transaction, like an IVF rebuild.
+    async fn with_conn_mut<F, T>(&self, f: F) -> Result<T, StorageError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StorageError> + Send + 'static,
+        T: Default + Send + 'static,
+    {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || conn.write_lock().run_mut(T::default(), f))
             .await
             .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
     }
@@ -81,7 +101,7 @@ impl SqliteVectorIndex {
         // Scope the entire SQLite operation so conn + stmt are dropped
         // before the tokio RwLock write-await below.
         let centroids = {
-            // 읽기 — read_lock(deletion_flag 무관).
+            // Read path — read_lock (independent of deletion_flag).
             let read = self.conn.read_lock();
             let conn = read.conn();
 

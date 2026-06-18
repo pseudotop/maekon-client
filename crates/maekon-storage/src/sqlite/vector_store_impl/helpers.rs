@@ -319,19 +319,46 @@ pub fn corpus_dims_guard(
                 // Mark ALL active (non-stale) rows stale so the scheduler sweep
                 // (system.rs: get_stale_vectors → embed_batch → update_vector)
                 // re-embeds them with the new-dimension model.
-                let marked = conn
-                    .execute(
-                        "UPDATE embedding_vectors SET is_stale = 1 WHERE is_stale = 0",
-                        [],
-                    )
-                    .map_err(|e| {
-                        crate::error::StorageError::Internal(format!(
-                            "corpus_dims_guard: bulk stale-mark failed: {e}"
-                        ))
-                    })?;
+                //
+                // Batched UPDATE to avoid a single long-running full-table write that
+                // would hold the GuardedConnection mutex for its entire duration and
+                // starve all other DB operations (#5987).
+                //
+                // Each iteration marks at most STALE_BATCH_SIZE rows. The loop exits
+                // when an iteration reports rows_affected == 0 (no more active rows).
+                //
+                // Net effect is identical to the previous unbounded single UPDATE
+                // (all is_stale=0 rows become is_stale=1). The mutex is still held for
+                // the full duration of all iterations because this closure runs inside
+                // the with_conn spawn_blocking block — interleaving requires a
+                // structurally different call site. The chunk size keeps each individual
+                // SQLite B-tree write-lock short, which reduces per-iteration latency
+                // and allows SQLite WAL readers to make progress between statements.
+                const STALE_BATCH_SIZE: i64 = 1000;
+                let mut total_marked: usize = 0;
+                loop {
+                    let n = conn
+                        .execute(
+                            "UPDATE embedding_vectors SET is_stale = 1 \
+                             WHERE rowid IN \
+                               (SELECT rowid FROM embedding_vectors \
+                                WHERE is_stale = 0 \
+                                LIMIT ?1)",
+                            rusqlite::params![STALE_BATCH_SIZE],
+                        )
+                        .map_err(|e| {
+                            crate::error::StorageError::Internal(format!(
+                                "corpus_dims_guard: bulk stale-mark batch failed: {e}"
+                            ))
+                        })?;
+                    total_marked += n;
+                    if n == 0 {
+                        break;
+                    }
+                }
 
                 warn!(
-                    marked,
+                    marked = total_marked,
                     "corpus_dims_guard: marked old-dim vectors stale (pending re-embed)"
                 );
             }

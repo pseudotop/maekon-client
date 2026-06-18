@@ -648,19 +648,22 @@ impl Default for SyncSettings {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AppSettings 열거형 드리프트 방지 가드
+// AppSettings enum drift-prevention guards
 //
-// `AppSettings` 하위 구조체의 String 필드들은 maekon-core 정의 열거형 값만
-// 허용한다. 아래 테스트들은 각 String 필드의 유효 토큰 집합이 대응하는
-// maekon-core 열거형 변형 집합과 1:1로 일치함을 보장한다.
+// The String fields of `AppSettings` sub-structs only accept the enum values
+// defined in maekon-core. The tests below guarantee that the set of valid tokens
+// for each String field matches the corresponding maekon-core enum's variant set
+// 1:1.
 //
-// 가드 원리:
-//   1. `_assert_variant_coverage` — 각 열거형 변형을 exhaustive match 로
-//      열거한 후 Display 토큰을 수집하여 AppSettings 기본값에 쓰인 토큰과
-//      크기 및 멤버십을 비교한다. 새 변형 추가 시 exhaustive match 가
-//      컴파일 에러를 발생시키므로 이 함수도 함께 갱신해야 한다.
-//   2. `_round_trip_*` — 기본값 토큰을 실제 serde 역직렬화로 검증한다.
-//      열거형 변형 이름/케이스 변환이 바뀌면 즉시 실패한다.
+// Guard principle:
+//   1. `_assert_variant_coverage` — enumerate every enum variant via an
+//      exhaustive match, then collect the Display tokens and compare both size
+//      and membership against the tokens used in the AppSettings defaults. Adding
+//      a new variant makes the exhaustive match a compile error, so this function
+//      must be updated alongside it.
+//   2. `_round_trip_*` — validate the default tokens via real serde
+//      deserialization. They fail immediately if an enum variant name / case
+//      conversion changes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -673,11 +676,11 @@ mod enum_drift_guard {
     use std::collections::BTreeSet;
 
     // ────────────────────────────────────────────────────────────────────
-    // 헬퍼: serde JSON 토큰을 따옴표 없이 반환한다.
+    // Helper: return the serde JSON token without surrounding quotes.
     // ────────────────────────────────────────────────────────────────────
     fn serde_token<T: serde::Serialize>(v: &T) -> String {
         serde_json::to_string(v)
-            .expect("직렬화 실패")
+            .expect("serialization failed")
             .trim_matches('"')
             .to_string()
     }
@@ -686,8 +689,8 @@ mod enum_drift_guard {
     // PiiFilterLevel — PrivacySettings::pii_filter_level
     // ────────────────────────────────────────────────────────────────────
 
-    /// PiiFilterLevel 변형 전체를 exhaustive match 로 열거한다.
-    /// 변형 추가/삭제 시 이 함수의 match 가 컴파일 에러를 낸다.
+    /// Enumerate every PiiFilterLevel variant via an exhaustive match.
+    /// Adding/removing a variant makes this function's match a compile error.
     fn pii_filter_level_all_serde_tokens() -> BTreeSet<String> {
         let mut set = BTreeSet::new();
         for v in [
@@ -696,7 +699,7 @@ mod enum_drift_guard {
             PiiFilterLevel::Standard,
             PiiFilterLevel::Strict,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 PiiFilterLevel::Off => "guard",
                 PiiFilterLevel::Basic => "guard",
@@ -710,13 +713,13 @@ mod enum_drift_guard {
 
     #[test]
     fn pii_filter_level_default_is_valid_variant() {
-        // AppSettings 기본값 "Standard" 가 PiiFilterLevel 로 역직렬화되어야 한다.
+        // The AppSettings default "Standard" must deserialize as a PiiFilterLevel.
         let default_val = &AppSettings::default().privacy.pii_filter_level;
         let quoted = format!("\"{}\"", default_val);
         serde_json::from_str::<PiiFilterLevel>(&quoted).unwrap_or_else(|_| {
             panic!(
-                "pii_filter_level 기본값 {:?} 는 PiiFilterLevel 변형이 아님 — \
-                 열거형이 변경됐거나 문자열 케이스가 드리프트됨",
+                "pii_filter_level default {:?} is not a PiiFilterLevel variant — \
+                 the enum changed or the string case drifted",
                 default_val
             )
         });
@@ -724,22 +727,22 @@ mod enum_drift_guard {
 
     #[test]
     fn pii_filter_level_accepted_tokens_match_enum_variants() {
-        // AppSettings 에서 허용되는 토큰 집합 = PiiFilterLevel serde 토큰 집합.
-        // 열거형에 변형이 추가/삭제되면 이 테스트가 실패한다.
+        // Set of tokens accepted by AppSettings = set of PiiFilterLevel serde tokens.
+        // This test fails if a variant is added to / removed from the enum.
         let all_tokens = pii_filter_level_all_serde_tokens();
-        // 기본값 토큰이 집합에 포함돼 있어야 한다.
+        // The default token must be contained in the set.
         let default_token = serde_token(&PiiFilterLevel::Standard);
         assert!(
             all_tokens.contains(&default_token),
-            "PiiFilterLevel::Standard 의 serde 토큰 {:?} 가 전체 집합에 없음",
+            "the serde token {:?} for PiiFilterLevel::Standard is not in the full set",
             default_token
         );
-        // 집합 크기는 현재 4개여야 한다 (Off/Basic/Standard/Strict).
-        // 변형이 추가되면 exhaustive match + 이 단언이 모두 실패한다.
+        // The set size must currently be 4 (Off/Basic/Standard/Strict).
+        // Adding a variant makes both the exhaustive match and this assertion fail.
         assert_eq!(
             all_tokens.len(),
             4,
-            "PiiFilterLevel 변형 수가 바뀜 — AppSettings 문서와 기본값을 검토하라"
+            "the PiiFilterLevel variant count changed — review the AppSettings docs and defaults"
         );
     }
 
@@ -758,7 +761,7 @@ mod enum_drift_guard {
             Weekday::Sat,
             Weekday::Sun,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 Weekday::Mon => "guard",
                 Weekday::Tue => "guard",
@@ -775,14 +778,14 @@ mod enum_drift_guard {
 
     #[test]
     fn schedule_active_days_defaults_are_valid_weekday_variants() {
-        // ScheduleSettings 기본값의 각 요일 문자열이 Weekday 로 역직렬화되어야 한다.
+        // Each weekday string in the ScheduleSettings defaults must deserialize as a Weekday.
         let defaults = ScheduleSettings::default();
         for day in &defaults.active_days {
             let quoted = format!("\"{}\"", day);
             serde_json::from_str::<Weekday>(&quoted).unwrap_or_else(|_| {
                 panic!(
-                    "active_days 기본값 {:?} 는 Weekday 변형이 아님 — \
-                     열거형이 변경됐거나 문자열 케이스가 드리프트됨",
+                    "active_days default {:?} is not a Weekday variant — \
+                     the enum changed or the string case drifted",
                     day
                 )
             });
@@ -792,11 +795,11 @@ mod enum_drift_guard {
     #[test]
     fn weekday_accepted_tokens_match_enum_variants() {
         let all_tokens = weekday_all_serde_tokens();
-        // Weekday 는 7개 변형이어야 한다.
+        // Weekday must have 7 variants.
         assert_eq!(
             all_tokens.len(),
             7,
-            "Weekday 변형 수가 바뀜 — ScheduleSettings 기본값과 문서를 검토하라"
+            "the Weekday variant count changed — review the ScheduleSettings defaults and docs"
         );
     }
 
@@ -811,7 +814,7 @@ mod enum_drift_guard {
             SandboxProfile::Standard,
             SandboxProfile::Strict,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 SandboxProfile::Permissive => "guard",
                 SandboxProfile::Standard => "guard",
@@ -828,7 +831,7 @@ mod enum_drift_guard {
         let quoted = format!("\"{}\"", default_val);
         serde_json::from_str::<SandboxProfile>(&quoted).unwrap_or_else(|_| {
             panic!(
-                "sandbox.profile 기본값 {:?} 는 SandboxProfile 변형이 아님",
+                "sandbox.profile default {:?} is not a SandboxProfile variant",
                 default_val
             )
         });
@@ -840,16 +843,17 @@ mod enum_drift_guard {
         assert_eq!(
             all_tokens.len(),
             3,
-            "SandboxProfile 변형 수가 바뀜 — SandboxSettings 기본값을 검토하라"
+            "the SandboxProfile variant count changed — review the SandboxSettings defaults"
         );
     }
 
     // ────────────────────────────────────────────────────────────────────
     // AiAccessMode — AiProviderSettings::access_mode
     //
-    // #4874 해소: AiProviderSettings 기본값은 이제 AiAccessMode serde
-    // snake_case 토큰("provider_api_key")과 일치한다. 아래 테스트는 기본값이
-    // 실제로 AiAccessMode 로 역직렬화됨을 보증한다(이전 known_drift 가드 대체).
+    // #4874 resolution: the AiProviderSettings default now matches the AiAccessMode
+    // serde snake_case token ("provider_api_key"). The test below guarantees the
+    // default actually deserializes as an AiAccessMode (replacing the former
+    // known_drift guard).
     // ────────────────────────────────────────────────────────────────────
 
     fn ai_access_mode_all_serde_tokens() -> BTreeSet<String> {
@@ -860,7 +864,7 @@ mod enum_drift_guard {
             AiAccessMode::ProviderSubscriptionCli,
             AiAccessMode::ProviderOAuth,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 AiAccessMode::ProviderApiKey => "guard",
                 AiAccessMode::LocalModel => "guard",
@@ -874,29 +878,30 @@ mod enum_drift_guard {
 
     #[test]
     fn ai_access_mode_accepted_tokens_match_enum_variants() {
-        // AiAccessMode 는 4개 변형이어야 한다.
+        // AiAccessMode must have 4 variants.
         let all_tokens = ai_access_mode_all_serde_tokens();
         assert_eq!(
             all_tokens.len(),
             4,
-            "AiAccessMode 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+            "the AiAccessMode variant count changed — review the AiProviderSettings defaults"
         );
     }
 
     #[test]
     fn ai_access_mode_default_deserializes_to_enum() {
-        // #4874: AiProviderSettings 기본 access_mode 는 canonical AiAccessMode serde
-        // 토큰이어야 저장된 기본값이 역직렬화에 성공한다(이전 "ProviderApiKey" 드리프트).
+        // #4874: the AiProviderSettings default access_mode must be the canonical AiAccessMode
+        // serde token so the stored default deserializes successfully (previously the
+        // "ProviderApiKey" drift).
         let default_access_mode = AiProviderSettings::default().access_mode;
         let all_serde_tokens = ai_access_mode_all_serde_tokens();
         assert!(
             all_serde_tokens.contains(default_access_mode.as_str()),
-            "access_mode 기본값 {:?} 이 AiAccessMode serde 토큰 {:?} 에 없습니다",
+            "access_mode default {:?} is not in the AiAccessMode serde tokens {:?}",
             default_access_mode,
             all_serde_tokens
         );
         let parsed: AiAccessMode = serde_json::from_str(&format!("\"{default_access_mode}\""))
-            .expect("기본 access_mode 가 AiAccessMode 로 역직렬화되어야 함");
+            .expect("the default access_mode must deserialize as an AiAccessMode");
         assert_eq!(parsed, AiAccessMode::ProviderApiKey);
     }
 
@@ -907,7 +912,7 @@ mod enum_drift_guard {
     fn ocr_provider_all_serde_tokens() -> BTreeSet<String> {
         let mut set = BTreeSet::new();
         for v in [OcrProviderType::Local, OcrProviderType::Remote] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 OcrProviderType::Local => "guard",
                 OcrProviderType::Remote => "guard",
@@ -923,7 +928,7 @@ mod enum_drift_guard {
         let quoted = format!("\"{}\"", default_val);
         serde_json::from_str::<OcrProviderType>(&quoted).unwrap_or_else(|_| {
             panic!(
-                "ocr_provider 기본값 {:?} 는 OcrProviderType 변형이 아님",
+                "ocr_provider default {:?} is not an OcrProviderType variant",
                 default_val
             )
         });
@@ -935,7 +940,7 @@ mod enum_drift_guard {
         assert_eq!(
             all_tokens.len(),
             2,
-            "OcrProviderType 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+            "the OcrProviderType variant count changed — review the AiProviderSettings defaults"
         );
     }
 
@@ -946,7 +951,7 @@ mod enum_drift_guard {
     fn llm_provider_all_serde_tokens() -> BTreeSet<String> {
         let mut set = BTreeSet::new();
         for v in [LlmProviderType::Local, LlmProviderType::Remote] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 LlmProviderType::Local => "guard",
                 LlmProviderType::Remote => "guard",
@@ -962,7 +967,7 @@ mod enum_drift_guard {
         let quoted = format!("\"{}\"", default_val);
         serde_json::from_str::<LlmProviderType>(&quoted).unwrap_or_else(|_| {
             panic!(
-                "llm_provider 기본값 {:?} 는 LlmProviderType 변형이 아님",
+                "llm_provider default {:?} is not an LlmProviderType variant",
                 default_val
             )
         });
@@ -974,7 +979,7 @@ mod enum_drift_guard {
         assert_eq!(
             all_tokens.len(),
             2,
-            "LlmProviderType 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+            "the LlmProviderType variant count changed — review the AiProviderSettings defaults"
         );
     }
 
@@ -989,7 +994,7 @@ mod enum_drift_guard {
             ExternalDataPolicy::PiiFilterStandard,
             ExternalDataPolicy::AllowFiltered,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 ExternalDataPolicy::PiiFilterStrict => "guard",
                 ExternalDataPolicy::PiiFilterStandard => "guard",
@@ -1006,7 +1011,7 @@ mod enum_drift_guard {
         let quoted = format!("\"{}\"", default_val);
         serde_json::from_str::<ExternalDataPolicy>(&quoted).unwrap_or_else(|_| {
             panic!(
-                "external_data_policy 기본값 {:?} 는 ExternalDataPolicy 변형이 아님",
+                "external_data_policy default {:?} is not an ExternalDataPolicy variant",
                 default_val
             )
         });
@@ -1018,7 +1023,7 @@ mod enum_drift_guard {
         assert_eq!(
             all_tokens.len(),
             3,
-            "ExternalDataPolicy 변형 수가 바뀜 — AiProviderSettings 기본값을 검토하라"
+            "the ExternalDataPolicy variant count changed — review the AiProviderSettings defaults"
         );
     }
 
@@ -1037,7 +1042,7 @@ mod enum_drift_guard {
             AiProviderType::Copilot,
             AiProviderType::Generic,
         ] {
-            // exhaustive match — 변형 추가 시 여기를 갱신해야 한다
+            // exhaustive match — must be updated here when a variant is added
             let _ = match v {
                 AiProviderType::Anthropic => "guard",
                 AiProviderType::OpenAi => "guard",
@@ -1054,39 +1059,40 @@ mod enum_drift_guard {
 
     #[test]
     fn ai_provider_type_default_provider_type_deserializes_to_enum() {
-        // #4874: ExternalApiSettings 기본 provider_type 은 canonical AiProviderType
-        // serde 토큰("generic")이어야 저장된 기본값이 역직렬화된다(이전 "Generic" 드리프트).
+        // #4874: the ExternalApiSettings default provider_type must be the canonical
+        // AiProviderType serde token ("generic") so the stored default deserializes
+        // (previously the "Generic" drift).
         let default_val = default_provider_type();
         let all_serde_tokens = ai_provider_type_all_serde_tokens();
         assert!(
             all_serde_tokens.contains(default_val.as_str()),
-            "provider_type 기본값 {:?} 이 AiProviderType serde 토큰 {:?} 에 없습니다",
+            "provider_type default {:?} is not in the AiProviderType serde tokens {:?}",
             default_val,
             all_serde_tokens
         );
         let parsed: AiProviderType = serde_json::from_str(&format!("\"{default_val}\""))
-            .expect("기본 provider_type 이 AiProviderType 로 역직렬화되어야 함");
+            .expect("the default provider_type must deserialize as an AiProviderType");
         assert_eq!(parsed, AiProviderType::Generic);
     }
 
     #[test]
     fn ai_provider_type_accepted_tokens_match_enum_variants() {
         let all_tokens = ai_provider_type_all_serde_tokens();
-        // AiProviderType 은 7개 변형이어야 한다.
+        // AiProviderType must have 7 variants.
         assert_eq!(
             all_tokens.len(),
             7,
-            "AiProviderType 변형 수가 바뀜 — ExternalApiSettings 기본값과 \
-             provider_spec 목록을 검토하라"
+            "the AiProviderType variant count changed — review the ExternalApiSettings defaults \
+             and the provider_spec list"
         );
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // AiProviderProfileConfig — access_mode/ocr_provider/llm_provider/
-    //                           external_data_policy 필드 중복 커버리지
+    // AiProviderProfileConfig — overlapping coverage of the
+    //                           access_mode/ocr_provider/llm_provider/external_data_policy fields
     //
-    // AiProviderProfileConfig 는 AiProviderSettings 와 동일한 String 필드를
-    // 공유한다. 기본값이 같은지 확인한다 (별도 Default impl 이 있으므로).
+    // AiProviderProfileConfig shares the same String fields as AiProviderSettings.
+    // Confirm their defaults match (since it has a separate Default impl).
     // ────────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1095,13 +1101,19 @@ mod enum_drift_guard {
         let c = AiProviderProfileConfig::default();
         assert_eq!(
             p.access_mode, c.access_mode,
-            "AiProviderSettings 와 AiProviderProfileConfig 의 access_mode 기본값이 다름"
+            "the access_mode defaults of AiProviderSettings and AiProviderProfileConfig differ"
         );
-        assert_eq!(p.ocr_provider, c.ocr_provider, "ocr_provider 기본값 불일치");
-        assert_eq!(p.llm_provider, c.llm_provider, "llm_provider 기본값 불일치");
+        assert_eq!(
+            p.ocr_provider, c.ocr_provider,
+            "ocr_provider default mismatch"
+        );
+        assert_eq!(
+            p.llm_provider, c.llm_provider,
+            "llm_provider default mismatch"
+        );
         assert_eq!(
             p.external_data_policy, c.external_data_policy,
-            "external_data_policy 기본값 불일치"
+            "external_data_policy default mismatch"
         );
     }
 }

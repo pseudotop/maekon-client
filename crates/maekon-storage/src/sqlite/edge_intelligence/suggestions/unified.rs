@@ -43,7 +43,7 @@ impl SqliteStorage {
         let (context_app, context_window, context_target_id) =
             suggestion_context_columns(suggestion);
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → 빈 id, suggestions ∈ ALL_TABLES).
+        // Write — write_lock (skip when deletion_flag is set → empty id; suggestions ∈ ALL_TABLES).
         self.conn.write_lock().run(String::new(), |conn| {
             // F0/#5186 + D2: stamp a monotonic HLC so this row syncs (LlmServer → skip).
             let (hw, hc, hd) = suggestion_stamp(&self.clock, conn, &suggestion.source)
@@ -84,9 +84,10 @@ impl SqliteStorage {
 
     /// Async `save_rule_suggestion_sync` over the write funnel (ADR-026 PR-2).
     ///
-    /// `spawn_blocking` 으로 격리되어 parking_lot 가드가 블로킹 풀 스레드에서만
-    /// 보유된다(`.await` 가로질러 보유 안 함). #4928 erase 배리어 유지(write_lock
-    /// 재검사 `deletion_flag || erasing` → skip 시 빈 id 반환).
+    /// Isolated via `spawn_blocking` so the parking_lot guard is held only on a
+    /// blocking-pool thread (never across an `.await`). Preserves the #4928 erase
+    /// barrier (write_lock re-checks `deletion_flag || erasing` → returns an empty
+    /// id on skip).
     pub(crate) async fn save_rule_suggestion_async(
         &self,
         suggestion: &maekon_core::models::suggestion::Suggestion,
@@ -154,7 +155,7 @@ impl SqliteStorage {
     /// Mark a unified suggestion as shown by its string suggestion_id.
     /// Returns `true` if a row was updated, `false` otherwise.
     pub fn mark_unified_suggestion_shown(&self, suggestion_id: &str) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        // Write — write_lock (skip when deletion_flag is set → false).
         self.conn.write_lock().run(false, |conn| {
             Self::mark_unified_suggestion_shown_inner(conn, suggestion_id, &self.clock)
         })
@@ -199,7 +200,7 @@ impl SqliteStorage {
             return Ok(Vec::new());
         }
 
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::list_suggestions_inner(read.conn(), limit)
     }
@@ -312,7 +313,7 @@ impl SqliteStorage {
     /// Dismiss a unified suggestion by its string `suggestion_id`.
     /// Returns `true` if a row was updated, `false` otherwise.
     pub fn dismiss_unified_suggestion(&self, suggestion_id: &str) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        // Write — write_lock (skip when deletion_flag is set → false).
         self.conn.write_lock().run(false, |conn| {
             Self::dismiss_unified_suggestion_inner(conn, suggestion_id, &self.clock)
         })
@@ -359,7 +360,7 @@ impl SqliteStorage {
     /// Mark a unified suggestion as acted by its string `suggestion_id`.
     /// Returns `true` if a row was updated, `false` otherwise.
     pub fn mark_unified_suggestion_acted(&self, suggestion_id: &str) -> Result<bool, StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵 → false).
+        // Write — write_lock (skip when deletion_flag is set → false).
         self.conn.write_lock().run(false, |conn| {
             Self::mark_unified_suggestion_acted_inner(conn, suggestion_id, &self.clock)
         })
@@ -407,7 +408,7 @@ impl SqliteStorage {
     /// window. Used by the analysis loop to suppress local analysis when the
     /// server is actively sending suggestions.
     pub fn has_recent_server_suggestions(&self, lookback_secs: u64) -> Result<bool, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         Self::has_recent_server_suggestions_inner(read.conn(), lookback_secs)
     }
@@ -449,7 +450,7 @@ impl SqliteStorage {
         &self,
         days: u32,
     ) -> Result<Vec<maekon_core::models::storage_records::DailyStatRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
         let cutoff = format!("-{days} days");
@@ -559,7 +560,7 @@ impl SqliteStorage {
         state: &str,
         limit: usize,
     ) -> Result<Vec<SuggestionRecord>, StorageError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -618,7 +619,7 @@ impl SqliteStorage {
         let (context_app, context_window, context_target_id) =
             suggestion_context_columns(suggestion);
 
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, suggestions ∈ ALL_TABLES).
+        // Write — write_lock (skip when deletion_flag is set; suggestions ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             // F0/#5186 + D2: stamp a monotonic HLC so this row syncs (LlmServer → skip).
             let (hw, hc, hd) = suggestion_stamp(&self.clock, conn, &suggestion.source)

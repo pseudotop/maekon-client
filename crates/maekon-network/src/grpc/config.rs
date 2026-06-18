@@ -397,18 +397,75 @@ impl GrpcConfig {
             .map_err(|e| NetworkError::Http(format!("gRPC streaming connection failed: {e}")))
     }
 
+    /// Build the ordered list of endpoints to try: the primary `grpc_endpoint`
+    /// followed by one fallback per configured `grpc_fallback_ports` entry.
+    ///
+    /// A fallback endpoint is the primary endpoint with its port swapped. To
+    /// locate the port we first strip the `scheme://` prefix and then treat a
+    /// trailing `:<digits>` (or `]:<digits>` for bracketed IPv6 literals) as the
+    /// port boundary. If the authority carries no explicit numeric port we do
+    /// **not** invent fallbacks: the previous `rsplit_once(':')` implementation
+    /// split on the *scheme* colon for port-less URLs (e.g. `https://host`),
+    /// producing garbage endpoints like `https:50052`.
     pub fn all_endpoints(&self) -> Vec<String> {
         let mut endpoints = vec![self.grpc_endpoint.clone()];
 
-        if let Some(base) = self.grpc_endpoint.rsplit_once(':') {
-            let host = base.0;
+        if let Some(host_prefix) = endpoint_host_prefix(&self.grpc_endpoint) {
             for port in &self.grpc_fallback_ports {
-                endpoints.push(format!("{}:{}", host, port));
+                endpoints.push(format!("{host_prefix}:{port}"));
             }
         }
 
         endpoints
     }
+}
+
+/// Return the endpoint string up to (but excluding) the `:<port>` separator, so
+/// the caller can append a fallback port. Returns `None` when the endpoint has
+/// no explicit numeric port (in which case fallback ports must not be invented).
+///
+/// Parsing rules:
+/// - Strip a leading `scheme://` so the scheme colon is never mistaken for the
+///   port colon.
+/// - For a bracketed IPv6 authority (`[::1]:50051`) the port boundary is the
+///   `:` that immediately follows the closing `]`.
+/// - Otherwise the port boundary is the last `:` in the authority, and the
+///   portion after it must be all ASCII digits.
+fn endpoint_host_prefix(endpoint: &str) -> Option<&str> {
+    // Length of the scheme (incl. "://") that we must keep in the returned
+    // prefix. Splitting here ensures the scheme colon is excluded from the
+    // authority-level port search below.
+    let scheme_len = endpoint.find("://").map(|i| i + 3).unwrap_or(0);
+    let (scheme, authority) = endpoint.split_at(scheme_len);
+
+    // Determine where to start searching for the port colon. For a bracketed
+    // IPv6 host the port can only appear after the closing ']'.
+    let search_start = if authority.starts_with('[') {
+        match authority.find(']') {
+            Some(close) => close + 1,
+            // Malformed bracket — no usable port boundary.
+            None => return None,
+        }
+    } else {
+        0
+    };
+
+    let colon_in_authority = authority[search_start..]
+        .rfind(':')
+        .map(|i| search_start + i)?;
+
+    // The text after the colon must be a non-empty run of ASCII digits to be a
+    // real port; otherwise this colon is not a port separator (e.g. a port-less
+    // IPv6 literal `[::1]` whose last ':' is inside the address).
+    let port_str = &authority[colon_in_authority + 1..];
+    if port_str.is_empty() || !port_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+
+    // Return scheme + authority-up-to-port. `scheme.len()` is a byte offset on
+    // the original string, and `colon_in_authority` is relative to `authority`,
+    // so the host prefix is the original string sliced to that combined offset.
+    Some(&endpoint[..scheme.len() + colon_in_authority])
 }
 
 fn default_grpc_endpoint() -> String {
@@ -521,6 +578,86 @@ mod tests {
         assert_eq!(endpoints[0], "http://example.com:9000");
         assert_eq!(endpoints[1], "http://example.com:9001");
         assert_eq!(endpoints[2], "http://example.com:9002");
+    }
+
+    /// Regression (#11): a port-less endpoint must NOT generate garbage
+    /// fallbacks. The old `rsplit_once(':')` split on the scheme colon, turning
+    /// `https://host` into a host of `https`, yielding `https:50052` etc.
+    #[test]
+    fn test_all_endpoints_portless_no_garbage_fallback() {
+        let config = GrpcConfig {
+            grpc_endpoint: "https://host".to_string(),
+            grpc_fallback_ports: vec![50052, 50053],
+            ..Default::default()
+        };
+        let endpoints = config.all_endpoints();
+        // Only the primary endpoint is returned — no port can be swapped in.
+        assert_eq!(
+            endpoints,
+            vec!["https://host".to_string()],
+            "a port-less endpoint must not synthesize fallback endpoints"
+        );
+        // Explicitly assert none of the classic garbage forms appears.
+        assert!(
+            !endpoints.iter().any(|e| e.starts_with("https:5")),
+            "scheme colon must never be treated as the port boundary: {endpoints:?}"
+        );
+    }
+
+    /// A port-less endpoint with a path (e.g. behind a reverse proxy) likewise
+    /// yields no fallbacks — there is no numeric port to swap.
+    #[test]
+    fn test_all_endpoints_portless_with_path_no_fallback() {
+        let config = GrpcConfig {
+            grpc_endpoint: "https://grpc.example.com/api".to_string(),
+            grpc_fallback_ports: vec![50052],
+            ..Default::default()
+        };
+        let endpoints = config.all_endpoints();
+        assert_eq!(endpoints, vec!["https://grpc.example.com/api".to_string()]);
+    }
+
+    /// A bracketed IPv6 authority WITH a port swaps the port correctly and does
+    /// not get confused by the colons inside the address.
+    #[test]
+    fn test_all_endpoints_ipv6_with_port() {
+        let config = GrpcConfig {
+            grpc_endpoint: "http://[::1]:50051".to_string(),
+            grpc_fallback_ports: vec![50052, 50053],
+            ..Default::default()
+        };
+        let endpoints = config.all_endpoints();
+        assert_eq!(endpoints.len(), 3);
+        assert_eq!(endpoints[0], "http://[::1]:50051");
+        assert_eq!(endpoints[1], "http://[::1]:50052");
+        assert_eq!(endpoints[2], "http://[::1]:50053");
+    }
+
+    /// A bracketed IPv6 authority WITHOUT a port must not treat the address's
+    /// internal colons as a port boundary, so no fallback is produced.
+    #[test]
+    fn test_all_endpoints_ipv6_without_port_no_fallback() {
+        let config = GrpcConfig {
+            grpc_endpoint: "http://[::1]".to_string(),
+            grpc_fallback_ports: vec![50052],
+            ..Default::default()
+        };
+        let endpoints = config.all_endpoints();
+        assert_eq!(endpoints, vec!["http://[::1]".to_string()]);
+    }
+
+    /// An endpoint with no scheme but an explicit port still swaps correctly.
+    #[test]
+    fn test_all_endpoints_no_scheme_with_port() {
+        let config = GrpcConfig {
+            grpc_endpoint: "localhost:50051".to_string(),
+            grpc_fallback_ports: vec![50052],
+            ..Default::default()
+        };
+        let endpoints = config.all_endpoints();
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0], "localhost:50051");
+        assert_eq!(endpoints[1], "localhost:50052");
     }
 
     #[test]

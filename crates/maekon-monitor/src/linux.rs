@@ -1,12 +1,17 @@
 use crate::error::MonitorError;
 use crate::log_privacy::title_digest;
 use maekon_core::models::context::{MousePosition, WindowInfo};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
 const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
+
+/// Guards the one-time `Shell.Eval`-disabled diagnostic so the 1s scheduler loop
+/// does not spam the log every tick on a modern GNOME Wayland session.
+static GNOME_EVAL_DISABLED_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayServer {
@@ -43,20 +48,35 @@ pub async fn get_active_window_linux() -> Result<Option<WindowInfo>, MonitorErro
         DisplayServer::Wayland => {
             debug!("Wayland detected — trying native window detection");
 
-            // 1. Try GNOME Shell via gdbus
-            if let Some(info) = get_active_window_gnome().await {
-                return Ok(Some(info));
+            // 1. Try GNOME Shell via gdbus.
+            match get_active_window_gnome().await {
+                GnomeProbe::Window(info) => return Ok(Some(info)),
+                GnomeProbe::EvalDisabled => {
+                    // org.gnome.Shell.Eval has been disabled by default since
+                    // GNOME 41, so this path can never succeed on a modern GNOME
+                    // Wayland session. Surface a one-time diagnostic instead of
+                    // failing silently, then fall through to the XWayland path.
+                    if !GNOME_EVAL_DISABLED_WARNED.swap(true, Ordering::Relaxed) {
+                        warn!(
+                            "GNOME Shell.Eval is disabled (default since GNOME 41), so native \
+                             GNOME Wayland active-window detection is unavailable on this session. \
+                             Falling back to XWayland — only X11/XWayland apps will be detected. \
+                             To capture native Wayland windows, run the desktop session on X11/Xorg."
+                        );
+                    }
+                }
+                GnomeProbe::Unavailable => {}
             }
 
-            // 2. Try Sway/i3 via swaymsg
+            // 2. Try Sway/i3 via swaymsg.
             if let Some(info) = get_active_window_sway().await {
                 return Ok(Some(info));
             }
 
-            // 3. Fall back to XWayland (works for X11 apps running under Wayland)
-            warn!(
-                "Native Wayland window detection unavailable (GNOME Shell / Sway not found). \
-                 Falling back to XWayland — only X11 apps will be detected."
+            // 3. Fall back to XWayland (works for X11 apps running under Wayland).
+            debug!(
+                "Native Wayland window detection unavailable — falling back to XWayland \
+                 (only X11/XWayland apps will be detected)."
             );
             match get_active_window_x11().await {
                 Ok(result) => Ok(result),
@@ -73,10 +93,41 @@ pub async fn get_active_window_linux() -> Result<Option<WindowInfo>, MonitorErro
     }
 }
 
+/// Outcome of probing GNOME Shell for the active window via `gdbus`.
+///
+/// The caller distinguishes these so a modern GNOME Wayland session (where
+/// `org.gnome.Shell.Eval` is disabled) can be reported explicitly instead of
+/// failing silently (#6094).
+enum GnomeProbe {
+    /// A focused window was resolved.
+    Window(WindowInfo),
+    /// `org.gnome.Shell.Eval` is disabled (default since GNOME 41) — the call
+    /// is rejected by GNOME Shell, so this path can never yield data.
+    EvalDisabled,
+    /// Not a GNOME session, GNOME Shell unreachable, or no focused window.
+    Unavailable,
+}
+
+/// Returns true if a `gdbus`/`org.gnome.Shell.Eval` failure stderr indicates the
+/// Eval method was rejected because it is disabled (GNOME 41+), rather than the
+/// session simply not being GNOME.
+fn is_gnome_eval_disabled(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    // GNOME 41+ rejects Eval; the exact wording varies across versions, but the
+    // reply consistently mentions the disabled/unsafe-mode Eval method.
+    lower.contains("eval") && (lower.contains("disabled") || lower.contains("unsafe mode"))
+}
+
+/// Returns true if a successful `Shell.Eval` reply still indicates refusal: GNOME
+/// 41+ in safe mode returns the tuple `(false, '')`, where the leading `false`
+/// means the script was not evaluated.
+fn is_gnome_eval_refused(stdout: &str) -> bool {
+    stdout.trim_start().starts_with("(false")
+}
+
 /// Try to get the active window title on GNOME Shell via gdbus.
-/// Returns None if GNOME Shell is not running or the call fails.
-async fn get_active_window_gnome() -> Option<WindowInfo> {
-    let output = timeout(
+async fn get_active_window_gnome() -> GnomeProbe {
+    let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("gdbus")
             .args([
@@ -90,24 +141,46 @@ async fn get_active_window_gnome() -> Option<WindowInfo> {
                 "org.gnome.Shell.Eval",
                 r#"global.display.focus_window?.get_title() ?? """#,
             ])
+            .kill_on_drop(true)
             .output(),
     )
     .await
-    .ok()?
-    .ok()?;
+    {
+        Ok(Ok(output)) => output,
+        // Timed out or `gdbus` not installed — treat as not available.
+        _ => return GnomeProbe::Unavailable,
+    };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_gnome_eval_disabled(&stderr) {
+            debug!("GNOME Shell.Eval rejected the call — Eval is disabled (GNOME 41+)");
+            return GnomeProbe::EvalDisabled;
+        }
         debug!("GNOME Shell gdbus call failed — not a GNOME session or Shell not reachable");
-        return None;
+        return GnomeProbe::Unavailable;
     }
 
     // gdbus output format: (true, '"Window Title"')
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let title = parse_gnome_eval_result(&stdout)?;
+
+    // GNOME 41+ can return success but with the tuple's first element `false`,
+    // meaning Eval ran in safe mode and refused to evaluate the script. This is
+    // the silent variant of the disabled path: the call "succeeds" yet yields no
+    // data. Treat it as EvalDisabled so the caller emits the diagnostic (#6094).
+    if is_gnome_eval_refused(&stdout) {
+        debug!("GNOME Shell.Eval returned (false, …) — Eval refused in safe mode (GNOME 41+)");
+        return GnomeProbe::EvalDisabled;
+    }
+
+    let title = match parse_gnome_eval_result(&stdout) {
+        Some(title) => title,
+        None => return GnomeProbe::Unavailable,
+    };
 
     if title.is_empty() {
         debug!("GNOME Shell returned empty window title — no focused window");
-        return None;
+        return GnomeProbe::Unavailable;
     }
 
     // Try to get the WM_CLASS (app name) via a second gdbus call
@@ -121,7 +194,7 @@ async fn get_active_window_gnome() -> Option<WindowInfo> {
         app_name,
         title_digest(&title)
     );
-    Some(WindowInfo {
+    GnomeProbe::Window(WindowInfo {
         title,
         app_name,
         app_bundle_id: None,
@@ -164,6 +237,7 @@ async fn get_gnome_focus_app_name() -> Option<String> {
                 "org.gnome.Shell.Eval",
                 r#"global.display.focus_window?.get_wm_class() ?? """#,
             ])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -188,7 +262,10 @@ async fn get_gnome_focus_app_name() -> Option<String> {
 async fn get_active_window_sway() -> Option<WindowInfo> {
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("swaymsg").args(["-t", "get_tree"]).output(),
+        Command::new("swaymsg")
+            .args(["-t", "get_tree"])
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .ok()?
@@ -217,6 +294,36 @@ async fn get_active_window_sway() -> Option<WindowInfo> {
     })
 }
 
+/// Snap `index` down to the nearest UTF-8 char boundary at or below it.
+///
+/// Mirrors the unstable `str::floor_char_boundary`; reimplemented here so the
+/// crate stays on the workspace MSRV. `index` may be `>= s.len()`.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Snap `index` up to the nearest UTF-8 char boundary at or above it.
+///
+/// Mirrors the unstable `str::ceil_char_boundary`; reimplemented here so the
+/// crate stays on the workspace MSRV. `index` may be `>= s.len()`.
+fn ceil_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Parse swaymsg get_tree JSON output to find the focused window.
 /// Looks for `"focused": true` nodes and extracts `name` and `app_id`.
 fn parse_sway_focused_window(json_str: &str) -> Option<(String, String)> {
@@ -230,9 +337,15 @@ fn parse_sway_focused_window(json_str: &str) -> Option<(String, String)> {
         .find(focused_marker)
         .or_else(|| json_str.find(alt_marker))?;
 
-    // Search backwards from "focused":true for the enclosing object's "name" and "app_id"
-    let search_start = focused_pos.saturating_sub(2000);
-    let block = &json_str[search_start..focused_pos.saturating_add(500).min(json_str.len())];
+    // Search backwards from "focused":true for the enclosing object's "name" and "app_id".
+    // The title is attacker-controllable and may contain multi-byte UTF-8 (CJK, emoji);
+    // snap the raw byte offsets to char boundaries so slicing never panics mid-codepoint.
+    let search_start = floor_char_boundary(json_str, focused_pos.saturating_sub(2000));
+    let search_end = ceil_char_boundary(
+        json_str,
+        focused_pos.saturating_add(500).min(json_str.len()),
+    );
+    let block = &json_str[search_start..search_end];
 
     let name = extract_json_string_field(block, "name").unwrap_or_default();
     let app_id =
@@ -262,7 +375,10 @@ fn extract_json_string_field(block: &str, field: &str) -> Option<String> {
 async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
     let window_id = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool").arg("getactivewindow").output(),
+        Command::new("xdotool")
+            .arg("getactivewindow")
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     {
@@ -296,6 +412,7 @@ async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("xdotool")
             .args(["getwindowname", &window_id])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -309,6 +426,7 @@ async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("xdotool")
             .args(["getwindowpid", &window_id])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -357,6 +475,7 @@ async fn get_window_geometry_x11(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("xdotool")
             .args(["getwindowgeometry", "--shell", window_id])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -393,9 +512,9 @@ async fn get_window_geometry_x11(
     })
 }
 
-/// `/proc/<pid>/comm` 에서 프로세스 이름을 읽습니다.
+/// Reads the process name from `/proc/<pid>/comm`.
 ///
-/// `tokio::fs::read_to_string` 을 사용해 async 런타임을 블로킹하지 않습니다.
+/// Uses `tokio::fs::read_to_string` so the async runtime is not blocked.
 async fn get_process_name(pid: u32) -> Option<String> {
     let comm_path = format!("/proc/{}/comm", pid);
     tokio::fs::read_to_string(&comm_path)
@@ -443,6 +562,7 @@ async fn get_idle_time_gnome_mutter() -> Option<u64> {
                 "/org/gnome/Mutter/IdleMonitor/Core",
                 "org.gnome.Mutter.IdleMonitor.GetIdletime",
             ])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -472,7 +592,7 @@ async fn get_idle_time_gnome_mutter() -> Option<u64> {
 async fn get_idle_time_x11() -> Option<u64> {
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xprintidle").output(),
+        Command::new("xprintidle").kill_on_drop(true).output(),
     )
     .await
     {
@@ -527,7 +647,10 @@ async fn get_mouse_position_x11() -> Option<MousePosition> {
     // x:1234 y:567 screen:0 window:12345678
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool").arg("getmouselocation").output(),
+        Command::new("xdotool")
+            .arg("getmouselocation")
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     {
@@ -636,6 +759,38 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // ── GNOME Shell.Eval disabled detection (#6094) ──
+
+    #[test]
+    fn is_gnome_eval_disabled_detects_disabled_reply() {
+        // Representative GNOME 41+ rejection wordings.
+        assert!(is_gnome_eval_disabled(
+            "Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Eval is disabled"
+        ));
+        assert!(is_gnome_eval_disabled(
+            "Eval method is only available in unsafe mode"
+        ));
+    }
+
+    #[test]
+    fn is_gnome_eval_disabled_ignores_unrelated_failures() {
+        // Service-not-found (not a GNOME session) must NOT be treated as disabled.
+        assert!(!is_gnome_eval_disabled(
+            "Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: \
+             The name org.gnome.Shell was not provided by any .service files"
+        ));
+        assert!(!is_gnome_eval_disabled(""));
+    }
+
+    #[test]
+    fn is_gnome_eval_refused_detects_false_tuple() {
+        // GNOME 41+ safe-mode refusal: the call succeeds but yields (false, '').
+        assert!(is_gnome_eval_refused("(false, '')\n"));
+        assert!(is_gnome_eval_refused("  (false, '')"));
+        // A real result starts with (true, …) and must not be treated as refused.
+        assert!(!is_gnome_eval_refused("(true, '\"Firefox\"')\n"));
+    }
+
     // ── Sway JSON field extraction ──
 
     #[test]
@@ -681,5 +836,45 @@ mod tests {
         let json = r#"{"name": "vim", "app_id": "Alacritty", "focused":false}"#;
         let result = parse_sway_focused_window(json);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn char_boundary_helpers_snap_off_boundary_indices() {
+        // "é" is two bytes (0xC3 0xA9); byte index 2 lands mid-codepoint.
+        let s = "aéb";
+        assert_eq!(floor_char_boundary(s, 2), 1);
+        assert_eq!(ceil_char_boundary(s, 2), 3);
+        // Out-of-range indices clamp to len without panicking.
+        assert_eq!(floor_char_boundary(s, 999), s.len());
+        assert_eq!(ceil_char_boundary(s, 999), s.len());
+    }
+
+    #[test]
+    fn parse_sway_focused_window_non_ascii_title_no_panic() {
+        // Attacker-controllable title with multi-byte CJK + emoji characters.
+        // The 2000/500-byte search window must snap to char boundaries rather
+        // than slice mid-codepoint (#6092).
+        let json = r#"{"name": "프로젝트 보고서 🚀 résumé", "app_id": "kitty", "focused":true}"#;
+        let result = parse_sway_focused_window(json);
+        assert!(result.is_some());
+        let (name, app_id) = result.unwrap();
+        assert_eq!(name, "프로젝트 보고서 🚀 résumé");
+        assert_eq!(app_id, "kitty");
+    }
+
+    #[test]
+    fn parse_sway_focused_window_multibyte_straddling_window_edge() {
+        // Force a multi-byte char to straddle the ±2000-byte backward window
+        // edge: a long CJK prefix pushes "focused":true past 2000 bytes so the
+        // raw `focused_pos - 2000` offset lands inside a 3-byte codepoint.
+        // Pre-fix this slice panicked; post-fix it must return cleanly.
+        let prefix = "한".repeat(800); // 800 * 3 = 2400 bytes of multi-byte text
+        let json =
+            format!(r#"{{"pad": "{prefix}", "name": "에디터", "app_id": "foot", "focused":true}}"#);
+        let result = parse_sway_focused_window(&json);
+        assert!(result.is_some());
+        let (name, app_id) = result.unwrap();
+        assert_eq!(name, "에디터");
+        assert_eq!(app_id, "foot");
     }
 }

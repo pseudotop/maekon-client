@@ -4,6 +4,13 @@ use tauri::command;
 use crate::ipc_error::IpcError;
 use crate::magic_overlay::OverlayFullscreenPolicyPayload;
 use crate::runtime_state::{AppState, ConfigRuntimeState};
+// ADR-026: `state.storage` is the concrete `Arc<SqliteStorage>`, so the inherent
+// (synchronous) coaching/habit twins would shadow the async trait methods of the
+// same name. Import the traits and dispatch via fully-qualified syntax so these
+// async IPC handlers route SQLite work through the `spawn_blocking` funnels
+// rather than holding the `parking_lot` guard on the async reactor.
+use maekon_core::ports::web_storage::{CoachingQueryStorage, HabitStorage};
+use maekon_storage::sqlite::SqliteStorage;
 /// Dismiss a coaching overlay message with the given action.
 /// If "later", snoozes the profile for 15 minutes.
 #[command]
@@ -38,14 +45,30 @@ pub async fn dismiss_coaching_message(
         DismissAction::Timeout => "timeout",
     };
     let dismissed_at = chrono::Utc::now().to_rfc3339();
-    if let Err(e) = state.storage.update_coaching_event_feedback(
-        &message_id,
-        Some(action_str),
-        Some(&dismissed_at),
-        None,
-        None,
-    ) {
-        tracing::warn!("coaching dismiss persist failure: {e}");
+    // `update_coaching_event_feedback` has no async twin (it acquires the
+    // single-connection `parking_lot` write guard synchronously), so offload it
+    // onto `spawn_blocking` to keep the SQLite work off the async reactor. Clone
+    // the storage `Arc` and move owned args into the blocking closure.
+    let storage = state.storage.clone();
+    let event_id = message_id.clone();
+    let action_owned = action_str.to_string();
+    let dismissed_at_owned = dismissed_at.clone();
+    let persist_result = tokio::task::spawn_blocking(move || {
+        storage.update_coaching_event_feedback(
+            &event_id,
+            Some(&action_owned),
+            Some(&dismissed_at_owned),
+            None,
+            None,
+        )
+    })
+    .await;
+    match persist_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("coaching dismiss persist failure: {e}"),
+        Err(join_err) => {
+            tracing::warn!("coaching dismiss persist task join failure: {join_err}")
+        }
     }
 
     // If "Later", snooze the profile for 15 minutes via CoachingPort
@@ -219,10 +242,13 @@ pub async fn get_coaching_history(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<Vec<maekon_core::models::coaching::CoachingEventRow>, IpcError> {
-    state
-        .storage
-        .query_coaching_events(limit.unwrap_or(50), offset.unwrap_or(0))
-        .map_err(IpcError::from)
+    <SqliteStorage as CoachingQueryStorage>::query_coaching_events(
+        &state.storage,
+        limit.unwrap_or(50),
+        offset.unwrap_or(0),
+    )
+    .await
+    .map_err(IpcError::from)
 }
 
 /// Get goal progress for all configured regimes.
@@ -243,9 +269,8 @@ pub async fn get_habit_streaks(
     state: tauri::State<'_, AppState>,
     days: u32,
 ) -> Result<Vec<maekon_core::models::coaching::HabitStreakRow>, IpcError> {
-    state
-        .storage
-        .query_habit_streaks(days)
+    <SqliteStorage as HabitStorage>::query_habit_streaks(&state.storage, days)
+        .await
         .map_err(IpcError::from)
 }
 

@@ -26,16 +26,16 @@ use std::time::Instant;
 
 // ── TsNotifier — narrow port for tracking-schedule notifications ─────────────
 
-/// 트래킹 스케줄 전환 알림을 발송하는 좁은 포트.
+/// Narrow port that emits tracking-schedule transition notifications.
 ///
-/// [`NotificationManager`] 는 이 트레이트를 구현하므로 프로덕션에서 직접 사용된다.
-/// 테스트에서는 [`RecordingNotifier`] 모의 구현을 사용한다.
+/// [`NotificationManager`] implements this trait, so it is used directly in
+/// production. Tests use the [`RecordingNotifier`] mock implementation.
 ///
 /// [`NotificationManager`]: crate::notification_manager::NotificationManager
 #[async_trait]
 pub(crate) trait TsNotifier: Send + Sync {
-    /// 제목과 본문으로 데스크탑 알림을 발송한다.
-    /// 알림 라이브러리 실패는 무시 (best-effort).
+    /// Sends a desktop notification with the given title and body.
+    /// Notification-library failures are ignored (best-effort).
     async fn notify_ts(&self, title: &str, body: &str);
 }
 
@@ -170,26 +170,30 @@ pub(crate) fn audio_capture_permitted_now_with_power(
 
 // ── evaluate_and_notify_transitions ─────────────────────────────────────────
 
-/// 트래킹 스케줄 윈도우의 진입/퇴장 전환을 감지하여 데스크탑 알림을 발송한다.
+/// Detects entry/exit transitions of the tracking-schedule window and emits a
+/// desktop notification.
 ///
-/// # 동작
+/// # Behavior
 ///
-/// 1. `cfg.notification.tracking_schedule_enabled` 가 `false` 면 즉시 반환 (no-op).
-/// 2. `prev_active == now_active` 이면 전환 없음 — 즉시 반환.
-/// 3. 마지막 알림 발송 이후 60초 미만이면 디바운스 — 즉시 반환.
-///    이는 DST 경계나 역방향 클락 점프로 인한 플립-플랍 폭풍을 방지한다.
-/// 4. 위 조건을 통과하면 `last_notified_at` 을 현재 `Instant` 로 갱신하고
-///    `notifier` 를 통해 알림을 발송한다.
+/// 1. If `cfg.notification.tracking_schedule_enabled` is `false`, return
+///    immediately (no-op).
+/// 2. If `prev_active == now_active`, there is no transition — return immediately.
+/// 3. If less than 60 seconds have elapsed since the last notification, debounce
+///    and return immediately. This prevents flip-flop storms caused by DST
+///    boundaries or backward clock jumps.
+/// 4. Once the above conditions pass, update `last_notified_at` to the current
+///    `Instant` and emit the notification through `notifier`.
 ///
-/// `notifier` 가 `None` 이면 알림 없이 상태만 갱신한다.
+/// If `notifier` is `None`, only the state is updated, with no notification.
 ///
-/// # 인자
+/// # Arguments
 ///
-/// * `cfg` — 현재 앱 설정 (알림 토글 및 스케줄 확인용)
-/// * `prev_active` — 이전 틱의 트래킹 스케줄 활성 상태
-/// * `now_active` — 이번 틱의 트래킹 스케줄 활성 상태
-/// * `last_notified_at` — 마지막 알림 시각 (60초 디바운스 상태); 인/아웃 모두 공유
-/// * `notifier` — 알림 발송 구현체 (옵션)
+/// * `cfg` — current app config (for the notification toggle and schedule check)
+/// * `prev_active` — tracking-schedule active state from the previous tick
+/// * `now_active` — tracking-schedule active state for this tick
+/// * `last_notified_at` — timestamp of the last notification (60s debounce state);
+///   shared across both enter and exit
+/// * `notifier` — notification-emitting implementation (optional)
 pub(crate) async fn evaluate_and_notify_transitions<N: TsNotifier>(
     cfg: &AppConfig,
     prev_active: bool,
@@ -197,22 +201,22 @@ pub(crate) async fn evaluate_and_notify_transitions<N: TsNotifier>(
     last_notified_at: &mut Option<Instant>,
     notifier: Option<&N>,
 ) {
-    // Gate 1: 알림 설정 비활성화 시 no-op
+    // Gate 1: no-op when the notification setting is disabled
     if !cfg.notification.tracking_schedule_enabled {
         return;
     }
-    // Gate 2: 전환 없음 시 no-op
+    // Gate 2: no-op when there is no transition
     if prev_active == now_active {
         return;
     }
-    // Gate 3: 60초 디바운스 — 마지막 알림으로부터 60초 미만이면 억제
+    // Gate 3: 60s debounce — suppress if less than 60s since the last notification
     let now = Instant::now();
     if let Some(last) = *last_notified_at {
         if now.duration_since(last).as_secs() < 60 {
             return;
         }
     }
-    // 상태 갱신 + 알림 발송
+    // Update state + emit notification
     *last_notified_at = Some(now);
     if let Some(n) = notifier {
         if now_active {
@@ -230,11 +234,12 @@ pub(crate) async fn evaluate_and_notify_transitions<N: TsNotifier>(
 
 // ── Monitor-loop tick helper ─────────────────────────────────────────────────
 
-/// 매 모니터 틱에서 호출되는 트래킹 스케줄 알림 평가 래퍼.
+/// Tracking-schedule notification evaluation wrapper, called on every monitor tick.
 ///
-/// `config_manager` 스냅샷을 가져오고 `tracking_schedule_active` 를 평가한 뒤
-/// `evaluate_and_notify_transitions` 를 호출한다. 모니터 루프 클로저 크기 제한(500줄)
-/// 을 지키기 위해 인라인 블록을 이 함수로 추출한다 (monitor-loop-size hook).
+/// Takes a `config_manager` snapshot, evaluates `tracking_schedule_active`, then
+/// calls `evaluate_and_notify_transitions`. The inline block is extracted into this
+/// function to stay within the monitor-loop closure size limit (500 lines)
+/// (monitor-loop-size hook).
 pub(super) async fn tick_ts_notifications(
     config_manager: &Option<maekon_core::config_manager::ConfigManager>,
     notifier: Option<&crate::notification_manager::NotificationManager>,
@@ -261,60 +266,66 @@ pub(super) async fn tick_ts_notifications(
 //
 // #4795 (idle adaptive backoff) + #4798 (battery-saver throttle).
 //
-// 모니터 루프는 ~1s 고정 cadence 로 매 틱 osascript(`collect_context`) +
-// 접근성(AX) 추출을 수행한다. 사용자가 idle 이거나 배터리 절약 모드일 때조차
-// 풀 cadence 로 동작하므로 전력을 낭비한다.
+// The monitor loop runs at a fixed ~1s cadence, performing osascript
+// (`collect_context`) + accessibility (AX) extraction on every tick. It runs at
+// full cadence even when the user is idle or in battery-saver mode, wasting power.
 //
-// 이 결정 함수는 *순수*(상태 없음) 하다 — 호출자(monitor 루프)가 1초마다 증가하는
-// `tick_counter` 를 보유하고, 매 틱 이 함수로 "이번 틱에 비싼 작업을 실행할지" 를
-// 묻는다. 16개 루프 전체에 적용 가능한 adaptive-interval 프레임워크를 만들지 않는다
-// (YAGNI — osascript 를 1s 로 돌리는 루프는 monitor 하나뿐).
+// This decision function is *pure* (stateless) — the caller (monitor loop) holds a
+// `tick_counter` that increments once per second and asks this function on every
+// tick "should this tick run the expensive work?". We do NOT build an
+// adaptive-interval framework applicable to all 16 loops (YAGNI — monitor is the
+// only loop that runs osascript at 1s).
 
-/// idle 로 판정하기 시작하는 무입력 임계 (초). IdleTracker 의 5분 idle 임계와는
-/// 별개로, 전력 backoff 는 훨씬 짧은 무활동에서도 cadence 를 늘려야 하므로
-/// 전용 임계를 사용한다.
+/// No-input threshold (seconds) at which we start treating the session as idle.
+/// Distinct from IdleTracker's 5-minute idle threshold: power backoff must
+/// increase the cadence after much shorter inactivity, so it uses a dedicated
+/// threshold.
 pub(super) const MONITOR_IDLE_BACKOFF_SECS: u64 = 30;
 
-/// idle 상태에서 비싼 모니터 틱을 처리하는 주기 (초). 즉, idle 동안에는
-/// 5초에 한 번만 osascript/AX 작업을 수행한다.
+/// Cadence (seconds) for processing expensive monitor ticks while idle. That is,
+/// while idle we only do osascript/AX work once every 5 seconds.
 pub(super) const MONITOR_IDLE_CADENCE_SECS: u64 = 5;
 
-/// 배터리 절약 모드에서 비싼 모니터 틱을 처리하는 주기 (초). idle backoff 보다
-/// 보수적으로 — <3% 배터리 예산이 미측정 상태이므로 과도하게 늘리지 않는다.
+/// Cadence (seconds) for processing expensive monitor ticks in battery-saver mode.
+/// More conservative than idle backoff — the <3% battery budget is unmeasured, so
+/// we don't increase it too aggressively.
 pub(super) const MONITOR_BATTERY_CADENCE_SECS: u64 = 3;
 
-/// 한 모니터 틱의 전력 인지 cadence 결정.
+/// Power-aware cadence decision for a single monitor tick.
 ///
-/// - `process`: 이번 틱에서 `collect_context`(osascript) + 컨텍스트/캡처/분석
-///   파이프라인 전체를 실행할지 여부. `false` 면 호출자는 틱을 건너뛴다.
-/// - `skip_expensive`: 처리하더라도 가장 비싼 선택적 블록(AX 추출 / GUI-LLM
-///   피드백)을 생략할지 여부. 배터리 절약 시 `true`.
+/// - `process`: whether this tick should run `collect_context` (osascript) + the
+///   full context/capture/analysis pipeline. When `false`, the caller skips the tick.
+/// - `skip_expensive`: whether, even when processing, to omit the most expensive
+///   optional blocks (AX extraction / GUI-LLM feedback). `true` in battery-saver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct MonitorTickDecision {
     pub process: bool,
     pub skip_expensive: bool,
 }
 
-/// `tick_counter` (1초마다 1씩 증가), 현재 `idle_secs`, 배터리 절약 플래그로부터
-/// 이번 모니터 틱의 처리 여부를 결정한다.
+/// Decides whether to process this monitor tick, from `tick_counter` (increments
+/// by 1 each second), the current `idle_secs`, and the battery-saver flag.
 ///
 /// # Edge-restore (latency)
-/// 입력 엣지(idle → active) 발생 시 `idle_secs` 가 backoff 임계 미만으로 떨어지면
-/// 즉시 풀 1s cadence 가 복원된다 (별도 상태 없이 `idle_secs` 만으로 판정하므로
-/// 엣지 직후 첫 틱에서 바로 `process=true`). cadence 위상(phase)은 `tick_counter`
-/// 모듈러로 결정되므로, backoff 중에도 활성 복귀를 1틱 이상 지연시키지 않는다.
+/// When an input edge (idle → active) occurs and `idle_secs` drops below the
+/// backoff threshold, full 1s cadence is restored immediately (since the decision
+/// is based solely on `idle_secs` with no separate state, the first tick right
+/// after the edge yields `process=true`). The cadence phase is determined by
+/// `tick_counter` modulo, so a return to activity is never delayed by more than one
+/// tick even during backoff.
 ///
-/// 배터리 절약과 idle 이 동시일 때는 더 긴 cadence(둘 중 큰 주기)를 적용하되,
-/// `skip_expensive` 는 배터리 절약일 때 항상 `true`.
+/// When battery-saver and idle apply simultaneously, the longer cadence (the larger
+/// of the two periods) is used, but `skip_expensive` is always `true` under
+/// battery-saver.
 pub(super) fn decide_monitor_tick(
     tick_counter: u64,
     idle_secs: u64,
     battery_saver: bool,
 ) -> MonitorTickDecision {
-    // 활성 상태(무입력 임계 미만) + AC 전원 → 풀 cadence, 비싼 작업 포함.
+    // Active (below the no-input threshold) + AC power → full cadence, expensive work included.
     let idle = idle_secs >= MONITOR_IDLE_BACKOFF_SECS;
 
-    // 적용할 cadence 주기 선택 (둘 다일 땐 더 긴 쪽).
+    // Select the cadence period to apply (the longer one when both apply).
     let cadence = match (idle, battery_saver) {
         (false, false) => 1,
         (true, false) => MONITOR_IDLE_CADENCE_SECS,
@@ -322,21 +333,22 @@ pub(super) fn decide_monitor_tick(
         (true, true) => MONITOR_IDLE_CADENCE_SECS.max(MONITOR_BATTERY_CADENCE_SECS),
     };
 
-    // cadence == 1 이면 매 틱 처리 (위상 무관).
+    // cadence == 1 → process every tick (phase irrelevant).
     let process = cadence <= 1 || tick_counter.is_multiple_of(cadence);
 
     MonitorTickDecision {
         process,
-        // 배터리 절약 시 가장 비싼 선택 블록(AX/GUI-LLM)을 생략한다.
+        // Under battery-saver, omit the most expensive optional blocks (AX/GUI-LLM).
         skip_expensive: battery_saver,
     }
 }
 
 // ── TsNotifier impl for NotificationManager ──────────────────────────────────
 
-// `NotificationManager` 가 `TsNotifier` 를 구현하므로 monitor 루프에서 직접 전달된다.
-// 이 impl 은 notification_manager 크레이트 모듈이 아닌 helper 내에 위치하여
-// `loops` 모듈의 비공개 경계를 넘지 않도록 한다.
+// `NotificationManager` implements `TsNotifier`, so it is passed directly from the
+// monitor loop. This impl lives inside the helper rather than the
+// notification_manager crate module so that it does not cross the `loops` module's
+// private boundary.
 #[async_trait]
 impl TsNotifier for crate::notification_manager::NotificationManager {
     async fn notify_ts(&self, title: &str, body: &str) {
@@ -1024,7 +1036,8 @@ mod tests {
 
     // ── decide_monitor_tick tests (#4795 idle backoff + #4798 battery) ──────
 
-    /// 활성(무입력 임계 미만) + AC 전원 → 매 틱 처리, 비싼 작업 포함.
+    /// Active (below the no-input threshold) + AC power → process every tick,
+    /// expensive work included.
     #[test]
     fn monitor_tick_active_ac_processes_every_tick() {
         for tick in 0..10 {
@@ -1034,10 +1047,11 @@ mod tests {
         }
     }
 
-    /// idle(무입력 임계 이상) + AC → MONITOR_IDLE_CADENCE_SECS 마다만 처리.
+    /// idle (at or above the no-input threshold) + AC → process only every
+    /// MONITOR_IDLE_CADENCE_SECS.
     #[test]
     fn monitor_tick_idle_backs_off_to_idle_cadence() {
-        let idle_secs = MONITOR_IDLE_BACKOFF_SECS; // 정확히 임계 → idle
+        let idle_secs = MONITOR_IDLE_BACKOFF_SECS; // exactly at threshold → idle
         let mut processed = 0u64;
         for tick in 0..MONITOR_IDLE_CADENCE_SECS * 4 {
             let d = decide_monitor_tick(tick, idle_secs, false);
@@ -1060,12 +1074,13 @@ mod tests {
         );
     }
 
-    /// 입력 엣지(idle → active) 복귀 시 즉시 풀 cadence 복원 (latency 0틱).
-    /// backoff 중 임의 위상에서 active 로 떨어져도 그 즉시 process=true.
+    /// On input edge (idle → active) return, full cadence is restored immediately
+    /// (0-tick latency). Even when dropping to active at an arbitrary phase during
+    /// backoff, process=true on that same tick.
     #[test]
     fn monitor_tick_input_edge_restores_full_cadence_immediately() {
-        // backoff 위상상 "건너뛰는" 틱(예: tick=3, cadence=5)에서
-        // idle_secs 가 임계 미만으로 떨어지면 즉시 처리되어야 한다.
+        // On a tick that backoff phase would "skip" (e.g. tick=3, cadence=5),
+        // when idle_secs drops below the threshold it must be processed immediately.
         let skip_tick = 3u64;
         assert!(!skip_tick.is_multiple_of(MONITOR_IDLE_CADENCE_SECS));
         let idle_d = decide_monitor_tick(skip_tick, MONITOR_IDLE_BACKOFF_SECS, false);
@@ -1081,7 +1096,8 @@ mod tests {
         );
     }
 
-    /// 배터리 절약 + 활성 → MONITOR_BATTERY_CADENCE_SECS 마다 처리 + 비싼 작업 생략.
+    /// Battery-saver + active → process every MONITOR_BATTERY_CADENCE_SECS + omit
+    /// expensive work.
     #[test]
     fn monitor_tick_battery_saver_throttles_and_skips_expensive() {
         let mut processed = 0u64;
@@ -1101,7 +1117,8 @@ mod tests {
         );
     }
 
-    /// idle + 배터리 절약 동시 → 더 긴 cadence(둘 중 큰 주기) 적용 + 비싼 작업 생략.
+    /// idle + battery-saver simultaneously → use the longer cadence (the larger of
+    /// the two periods) + omit expensive work.
     #[test]
     fn monitor_tick_idle_and_battery_use_longer_cadence() {
         let longer = MONITOR_IDLE_CADENCE_SECS.max(MONITOR_BATTERY_CADENCE_SECS);

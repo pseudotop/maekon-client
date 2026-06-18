@@ -78,10 +78,10 @@ async fn server_start_stop() {
     );
     assert!(!server.is_running());
 
-    let port = server.start(b"cert", b"key", 0).await.unwrap();
+    let port = server.start(b"", b"", 0).await.unwrap();
     assert!(port > 0);
     assert!(server.is_running());
-    assert!(!server.is_tls_enabled()); // invalid PEM -> fallback
+    assert!(!server.is_tls_enabled()); // empty cert/key -> TLS disabled (plain HTTP)
 
     server.stop();
     assert!(!server.is_running());
@@ -95,7 +95,7 @@ async fn info_endpoint() {
         "pass".to_string(),
         "fp-info".to_string(),
     );
-    let port = server.start(b"cert", b"key", 0).await.unwrap();
+    let port = server.start(b"", b"", 0).await.unwrap();
 
     let client = reqwest::Client::new();
     let resp = client
@@ -709,4 +709,41 @@ async fn tls_with_real_cert() {
     );
 
     server.stop();
+}
+
+/// #6077 (security): when non-empty cert/key are supplied but fail to parse,
+/// `start()` MUST fail closed (return `Err`) rather than silently downgrading to
+/// cleartext HTTP. A cleartext LAN sync endpoint would expose device metadata and
+/// defeat the TOFU certificate pinning the peer transport relies on.
+#[tokio::test]
+async fn invalid_cert_fails_closed_no_plain_http_fallback() {
+    let mut server = LanPeerServer::new(
+        "dev-bad-tls".to_string(),
+        "Bad TLS".to_string(),
+        "pass".to_string(),
+        "fp-bad-tls".to_string(),
+    );
+
+    // Non-empty but garbage PEM material: TLS was requested but is unusable.
+    let result = server
+        .start(b"not-a-valid-cert", b"not-a-valid-key", 0)
+        .await;
+
+    let err = result
+        .expect_err("non-empty invalid cert/key must fail closed, not fall back to plain HTTP");
+    // try_build_tls_config rejects the unparseable cert PEM as a Config error
+    // (ConfigCode::Invalid) rather than silently downgrading to cleartext.
+    assert!(
+        matches!(
+            err,
+            CoreError::Config {
+                code: maekon_core::error_codes::ConfigCode::Invalid,
+                ..
+            }
+        ),
+        "invalid TLS material must surface as Config::Invalid, got: {err:?}"
+    );
+    // The server must not have started in any mode (no cleartext socket bound).
+    assert!(!server.is_running());
+    assert!(!server.is_tls_enabled());
 }

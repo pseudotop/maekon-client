@@ -241,7 +241,7 @@ pub fn materialize_bridge_file(
         std::fs::create_dir_all(parent).map_err(|e| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!(
-                "브리지 디렉토리 create failure ({}): {}",
+                "bridge directory create failure ({}): {}",
                 parent.display(),
                 e
             ),
@@ -259,7 +259,7 @@ pub fn materialize_bridge_file(
     std::fs::write(&plan.file_path, content).map_err(|e| CoreError::Internal {
         code: maekon_core::error_codes::InternalCode::Generic,
         message: format!(
-            "브리지 file create failure ({}): {}",
+            "bridge file create failure ({}): {}",
             plan.file_path.display(),
             e
         ),

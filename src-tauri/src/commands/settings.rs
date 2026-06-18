@@ -15,7 +15,7 @@ fn validation_error(msg: impl Into<String>) -> IpcError {
     IpcError::new("validation.invalid_arguments", msg)
 }
 
-/// WebView에 노출되는 민감 필드를 마스킹하는 키 목록
+/// List of keys whose sensitive fields are masked before being exposed to the WebView.
 #[cfg(test)]
 const REDACTED_PATHS: &[(&str, &[&str])] = &[
     ("server", &["base_url", "api_key"]),
@@ -34,10 +34,24 @@ const REDACTED_PATHS: &[(&str, &[&str])] = &[
     ),
 ];
 
-const FORBIDDEN_ALLOWED_SUBPATHS: &[(&str, &[&str])] = &[("web", &["integration_auth_token"])];
+const FORBIDDEN_ALLOWED_SUBPATHS: &[(&str, &[&str])] = &[
+    ("web", &["integration_auth_token"]),
+    // #6256: the auto-updater trust chain must not be downgradable from the
+    // WebView. `update` is an allowed top-level key (users toggle channel /
+    // auto-install), but `require_signature_verification` and the
+    // `signature_public_key` override are part of the Ed25519 verification
+    // boundary — a WebView foothold setting `require_signature_verification=false`
+    // would re-enable a forged-release install. Block these sub-paths here
+    // (1st-line) in addition to the ConfigManager chokepoint integrity check
+    // (defense-in-depth); dev self-signing still edits config.json directly.
+    (
+        "update",
+        &["require_signature_verification", "signature_public_key"],
+    ),
+];
 
-/// WebView에서 수정 가능한 설정 키 화이트리스트.
-/// update_setting + get_allowed_setting_keys에서 공유.
+/// Whitelist of setting keys that can be modified from the WebView.
+/// Shared by update_setting + get_allowed_setting_keys.
 pub(crate) const ALLOWED_KEYS: &[&str] = &[
     "monitoring",
     "capture",
@@ -61,7 +75,7 @@ fn redact_sensitive_fields(config: &mut serde_json::Value) {
     for &(section, fields) in REDACTED_PATHS {
         if let Some(sec) = config.get_mut(section) {
             for &field in fields {
-                // "ocr_api.api_key" 같은 중첩 경로 처리
+                // Handle nested paths such as "ocr_api.api_key".
                 let parts: Vec<&str> = field.split('.').collect();
                 let mut target = &mut *sec;
                 let mut found = true;
@@ -85,14 +99,15 @@ fn redact_sensitive_fields(config: &mut serde_json::Value) {
     }
 }
 
-/// WebView에서 수정 가능한 설정 필드 — 화이트리스트 모델
+/// Setting fields modifiable from the WebView — whitelist model.
 ///
-/// 허용: monitoring, capture, notification, web, schedule, telemetry, privacy, update, language, theme
-/// 그 외 모든 키 거부 (sandbox, ai_provider, file_access, server 등)
+/// Allowed: monitoring, capture, notification, web, schedule, telemetry, privacy, update, language, theme
+/// All other keys are rejected (sandbox, ai_provider, file_access, server, etc.)
 ///
-/// #5707: patch 에 `coaching` 키가 있으면 config 저장 후 `CoachingPort::apply_config`를
-/// 호출해 세션 내 설정 변경을 즉시 반영한다. `app_state` 가 None 일 때(비Tauri 환경)는
-/// config 저장만 하고 apply_config 는 건너뛴다.
+/// #5707: if the patch contains a `coaching` key, call `CoachingPort::apply_config`
+/// after saving the config so the in-session setting change takes effect immediately.
+/// When `app_state` is None (non-Tauri environment), only the config is saved and
+/// apply_config is skipped.
 #[command]
 pub async fn update_setting(
     config_json: String,
@@ -110,7 +125,8 @@ pub async fn update_setting(
     reject_forbidden_top_level_keys(patch_obj)?;
 
     reject_forbidden_allowed_subpaths(&patch).map_err(validation_error)?;
-    // #5707: coaching 키 포함 여부를 정규화 전에 저장 (정규화 후 patch 변수가 섀도잉됨).
+    // #5707: record whether the `coaching` key is present before normalization
+    // (the patch variable is shadowed after normalization).
     let has_coaching_patch = patch_obj.contains_key("coaching");
     let patch = normalize_webview_config_patch(patch);
 
@@ -153,8 +169,9 @@ pub async fn update_setting(
         .update(new_config.clone())
         .map_err(IpcError::from)?;
 
-    // #5707: coaching 키가 패치에 포함된 경우 엔진에 즉시 반영한다.
-    // `update_setting` 은 onboarding 완료 시 `coaching.enabled=true` 를 쓰는 경로이기도 하다.
+    // #5707: if the patch contains the coaching key, apply it to the engine
+    // immediately. `update_setting` is also the path that writes
+    // `coaching.enabled=true` when onboarding completes.
     if has_coaching_patch {
         if let Some(ref engine) = app_state.coaching_engine {
             engine.apply_config(new_config.coaching.clone()).await;
@@ -209,11 +226,13 @@ fn validate_config_bounds(config: &maekon_core::config::AppConfig) -> Result<(),
     Ok(())
 }
 
-/// 패치 오브젝트의 최상위 키를 ALLOWED_KEYS 화이트리스트에 대해 검사한다.
+/// Checks the patch object's top-level keys against the ALLOWED_KEYS whitelist.
 ///
-/// WebView에서 sandbox·server·ai_provider 등 민감 섹션을 직접 덮어쓰는 것을
-/// 막는 1차 게이트. `update_setting` 커맨드 경계에서 호출된다.
-/// `reject_forbidden_allowed_subpaths`와 동형 구조 — 순수 함수, Tauri State 무의존.
+/// First-line gate that prevents the WebView from directly overwriting sensitive
+/// sections such as sandbox, server, and ai_provider. Called at the
+/// `update_setting` command boundary. Structurally isomorphic to
+/// `reject_forbidden_allowed_subpaths` — a pure function with no dependency on
+/// Tauri State.
 fn reject_forbidden_top_level_keys(
     patch_obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), IpcError> {
@@ -339,21 +358,23 @@ fn merge_patch_value(
     }
 }
 
-/// 허용된 설정 키 목록 반환 — 프론트엔드 allowlist 검증 및 drift detection용
+/// Returns the list of allowed setting keys — for frontend allowlist validation
+/// and drift detection.
 #[command]
 pub async fn get_allowed_setting_keys() -> Vec<String> {
     ALLOWED_KEYS.iter().map(|s| s.to_string()).collect()
 }
 
-/// 웹 서버 포트 조회 — 프론트엔드 API base URL 결정용
+/// Query the web server port — for determining the frontend API base URL.
 #[command]
 pub async fn get_web_port(state: tauri::State<'_, ConfigRuntimeState>) -> Result<u16, IpcError> {
     Ok(state.web_port())
 }
 
-/// E20-41 (#4833): 프론트엔드가 `/api` 호출에 붙일 per-session local-auth 토큰 조회.
-/// `window.__MAEKON_LOCAL_AUTH__` 주입이 아직 안 됐을 때의 race-safe fallback.
-/// IPC(Tauri 내부 채널)로만 노출 — HTTP로는 절대 반환하지 않는다.
+/// E20-41 (#4833): query the per-session local-auth token the frontend attaches
+/// to `/api` calls. A race-safe fallback for when `window.__MAEKON_LOCAL_AUTH__`
+/// has not been injected yet. Exposed only over IPC (Tauri internal channel) —
+/// never returned over HTTP.
 fn local_auth_token_from_state(state: &crate::runtime_state::LocalAuthTokenState) -> String {
     state.0.to_string()
 }
@@ -599,6 +620,38 @@ mod tests {
         assert!(err.contains("web.integration_auth_token"));
     }
 
+    // #6256: the WebView must not be able to downgrade the auto-updater Ed25519
+    // signature-verification gate. `update` is an allowed top-level key, but
+    // `update.require_signature_verification` is part of the trust chain and is
+    // blocked at the allowed-subpath gate (the ConfigManager chokepoint provides
+    // defense-in-depth for the HTTP API / backup-restore surfaces).
+    #[test]
+    fn reject_forbidden_allowed_subpaths_rejects_update_signature_verification() {
+        let patch = json!({
+            "update": {
+                "require_signature_verification": false
+            }
+        });
+        let err = reject_forbidden_allowed_subpaths(&patch)
+            .expect_err("update signature-verification downgrade must be rejected");
+        assert!(
+            err.contains("update.require_signature_verification"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_forbidden_allowed_subpaths_rejects_update_signature_public_key() {
+        let patch = json!({
+            "update": {
+                "signature_public_key": "attacker-controlled-key"
+            }
+        });
+        let err = reject_forbidden_allowed_subpaths(&patch)
+            .expect_err("update signature_public_key override must be rejected");
+        assert!(err.contains("update.signature_public_key"), "got: {err}");
+    }
+
     // F1 (P1): Security gate — forbidden top-level keys must produce IpcError.
     //
     // `update_setting` checks every top-level key in the patch against ALLOWED_KEYS
@@ -614,8 +667,8 @@ mod tests {
     // that single call site is review-guarded.
     #[test]
     fn forbidden_top_level_key_gate_produces_validation_ipc_code_server() {
-        // "server" — base_url 덮어쓰기는 API 트래픽 전체를 공격자 서버로 돌리는 가장
-        // 심각한 위협이다.
+        // "server" — overwriting base_url is the most serious threat, since it
+        // redirects all API traffic to an attacker-controlled server.
         assert!(
             !ALLOWED_KEYS.contains(&"server"),
             "pre-condition: 'server' must not be in ALLOWED_KEYS"
@@ -641,7 +694,7 @@ mod tests {
 
     #[test]
     fn forbidden_top_level_key_gate_produces_validation_ipc_code_ai_provider() {
-        // "ai_provider" — OCR/LLM API 키 노출 경로, WebView에서 절대 쓰기 불가.
+        // "ai_provider" — an OCR/LLM API key exposure path; never writable from the WebView.
         assert!(
             !ALLOWED_KEYS.contains(&"ai_provider"),
             "pre-condition: 'ai_provider' must not be in ALLOWED_KEYS"
@@ -655,7 +708,7 @@ mod tests {
 
     #[test]
     fn forbidden_top_level_key_gate_produces_validation_ipc_code_sandbox() {
-        // "sandbox" — OS 격리 해제는 WebView에서 절대 허용 불가.
+        // "sandbox" — disabling OS isolation must never be allowed from the WebView.
         assert!(
             !ALLOWED_KEYS.contains(&"sandbox"),
             "pre-condition: 'sandbox' must not be in ALLOWED_KEYS"

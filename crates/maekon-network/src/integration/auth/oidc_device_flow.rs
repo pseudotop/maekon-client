@@ -244,6 +244,19 @@ pub struct OidcDeviceFlowIntegrationAuthPort {
     refresh_lock: Arc<Mutex<()>>,
 }
 
+/// Upper bound (30 days) on a server-supplied OIDC `expires_in` before it is
+/// turned into a `chrono::Duration`. Neutralizes overflow/panic from a
+/// hostile/buggy provider value (u64::MAX casts to -1; a huge positive value
+/// overflows `TimeDelta`/`DateTime`); 30 days is far beyond any real token TTL
+/// and trivially within range (#6201 sibling).
+const MAX_OIDC_TTL_SECS: u64 = 60 * 60 * 24 * 30;
+
+/// Clamp a server `expires_in` (seconds) to a safe TTL and return the future
+/// instant `now + ttl`.
+fn clamped_expiry(seconds: u64) -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::seconds(seconds.min(MAX_OIDC_TTL_SECS) as i64)
+}
+
 impl OidcDeviceFlowIntegrationAuthPort {
     pub fn new(
         config: OidcDeviceFlowAuthConfig,
@@ -359,6 +372,20 @@ impl OidcDeviceFlowIntegrationAuthPort {
         })
     }
 
+    /// Returns `true` for OAuth token error codes (RFC 6749 §5.2) that mean the
+    /// refresh grant is permanently unusable and the user must re-authorize.
+    ///
+    /// `invalid_grant` is the canonical "refresh token expired/revoked/invalid"
+    /// signal; `invalid_client`/`unauthorized_client` mean the client registration
+    /// is no longer accepted. Transient or ambiguous errors are deliberately
+    /// excluded so a retry can recover without losing stored material.
+    fn is_permanent_grant_error(error: &str) -> bool {
+        matches!(
+            error,
+            "invalid_grant" | "invalid_client" | "unauthorized_client"
+        )
+    }
+
     async fn refresh_access_token(
         &self,
         refresh_token: &str,
@@ -380,12 +407,66 @@ impl OidcDeviceFlowIntegrationAuthPort {
             )
             .await?;
 
-        if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            self.auth.clear_material().await?;
+        // Branch on the HTTP status BEFORE consuming the body so that a transient
+        // failure never destroys the stored grant. Clearing material forces a full
+        // re-authorization (the device flow), so we only do it when the grant is
+        // *permanently* invalid. A transient 5xx/429 must surface as an Err the
+        // scheduled refresh can retry, leaving the refresh token intact.
+        let status = response.status();
+        if !status.is_success() {
+            // 429: rate limited. Honor Retry-After (clamped) and keep the grant.
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry_after_secs = crate::resilience::extract_retry_after(&response);
+                return Err(CoreError::RateLimit {
+                    code: maekon_core::error_codes::NetworkCode::RateLimit,
+                    retry_after_secs,
+                });
+            }
+
+            // 5xx: server-side / transient failure. Keep the grant for the next retry.
+            // Do NOT echo the raw remote body into the error (it is logged/persisted
+            // and may carry server-controlled content) — status only (#6196 parity).
+            if status.is_server_error() {
+                return Err(CoreError::ServiceUnavailable {
+                    code: maekon_core::error_codes::ServiceCode::Unavailable,
+                    message: format!(
+                        "integration refresh failed transiently ({status}); body omitted_for_privacy"
+                    ),
+                });
+            }
+
+            // 400/401: the only statuses where an OAuth error body carries a
+            // grant-invalidation signal (RFC 6749 §5.2). Parse it and clear material
+            // ONLY for permanent errors; any other/unparseable 4xx keeps the grant.
+            if status == reqwest::StatusCode::BAD_REQUEST
+                || status == reqwest::StatusCode::UNAUTHORIZED
+            {
+                let error_body: OidcTokenErrorResponse =
+                    response.json().await.unwrap_or(OidcTokenErrorResponse {
+                        error: "unknown_error".to_string(),
+                        error_description: None,
+                    });
+                let message = error_body
+                    .error_description
+                    .clone()
+                    .unwrap_or_else(|| error_body.error.clone());
+
+                if Self::is_permanent_grant_error(&error_body.error) {
+                    self.auth.clear_material().await?;
+                }
+
+                return Err(CoreError::Auth {
+                    code: maekon_core::error_codes::AuthCode::Failed,
+                    message: format!("integration refresh failed: {message}"),
+                });
+            }
+
+            // Any other non-success status (e.g. 403/404): treat as a non-permanent
+            // failure and keep the grant rather than risk an unrecoverable logout.
+            // Raw body omitted from the error (logged/persisted; #6196 parity).
             return Err(CoreError::Auth {
                 code: maekon_core::error_codes::AuthCode::Failed,
-                message: format!("integration refresh failed: {body}"),
+                message: format!("integration refresh failed ({status}); body omitted_for_privacy"),
             });
         }
 
@@ -400,9 +481,7 @@ impl OidcDeviceFlowIntegrationAuthPort {
             refresh_token: payload
                 .refresh_token
                 .or_else(|| Some(refresh_token.to_string())),
-            expires_at: payload
-                .expires_in
-                .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds as i64)),
+            expires_at: payload.expires_in.map(clamped_expiry),
             resource_indicator: self.config.resource_indicator.clone(),
         };
         self.auth.store_material(&material).await?;
@@ -593,7 +672,7 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             user_code: payload.user_code,
             verification_uri: payload.verification_uri,
             verification_uri_complete: payload.verification_uri_complete,
-            expires_at: Utc::now() + chrono::Duration::seconds(payload.expires_in as i64),
+            expires_at: clamped_expiry(payload.expires_in),
             interval_secs: payload.interval.unwrap_or(5),
             requested_scopes: requested_scopes.to_vec(),
             resource_indicator,
@@ -670,9 +749,7 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             let material = StoredAuthMaterial {
                 access_token: payload.access_token,
                 refresh_token: payload.refresh_token,
-                expires_at: payload
-                    .expires_in
-                    .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds as i64)),
+                expires_at: payload.expires_in.map(clamped_expiry),
                 resource_indicator: pending.flow.resource_indicator.clone(),
             };
             self.auth.store_material(&material).await?;
@@ -747,5 +824,39 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
         self.auth.clear_material().await?;
         *self.last_error.write().await = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod permanent_grant_error_tests {
+    use super::OidcDeviceFlowIntegrationAuthPort;
+
+    #[test]
+    fn classifies_permanent_oauth_errors() {
+        // RFC 6749 §5.2 permanent grant-invalidation codes -> re-auth required.
+        for code in ["invalid_grant", "invalid_client", "unauthorized_client"] {
+            assert!(
+                OidcDeviceFlowIntegrationAuthPort::is_permanent_grant_error(code),
+                "{code} must be treated as permanent"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_transient_or_ambiguous_errors_as_non_permanent() {
+        // These must NOT clear stored material; the next refresh should retry.
+        for code in [
+            "temporarily_unavailable",
+            "slow_down",
+            "invalid_request",
+            "invalid_scope",
+            "unknown_error",
+            "",
+        ] {
+            assert!(
+                !OidcDeviceFlowIntegrationAuthPort::is_permanent_grant_error(code),
+                "{code} must NOT be treated as permanent"
+            );
+        }
     }
 }

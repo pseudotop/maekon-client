@@ -15,7 +15,8 @@ pub struct SandboxResponse {
     pub error: Option<String>,
 }
 
-/// 샌드박스 워커 바이너리 경로를 실행 파일 인접 디렉터리 안에서만 찾는다.
+/// Resolve the sandbox worker binary path, searching only within the directory
+/// adjacent to the executable.
 pub fn resolve_worker_path() -> Result<PathBuf, maekon_core::error::CoreError> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

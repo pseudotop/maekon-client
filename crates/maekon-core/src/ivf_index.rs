@@ -8,7 +8,7 @@
 
 use crate::error::CoreError;
 use crate::quantization::{QuantizedVector, ScalarQuantizer};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Configuration for building an IVF index.
 pub struct IvfBuildConfig {
@@ -129,7 +129,18 @@ impl IvfIndex {
             });
         }
 
+        // Dimension homogeneity: every vector must share the same non-zero
+        // dimension. Mixed dimensions later cause an out-of-bounds panic in the
+        // centroid accumulation loop (`new_centroids[c][d]` is sized to `dims`
+        // but indexed by the per-vector length) or, for shorter vectors, silent
+        // centroid corruption. Reject up front as caller-supplied bad input.
         let dims = vectors[0].1.data.len();
+        if dims == 0 || vectors.iter().any(|(_, qv)| qv.data.len() != dims) {
+            return Err(CoreError::InvalidArguments {
+                code: crate::error_codes::ValidationCode::InvalidArguments,
+                message: "all vectors must share the same non-zero dimension".to_string(),
+            });
+        }
         let n = vectors.len();
         let k = config.n_clusters;
 
@@ -211,6 +222,12 @@ impl IvfIndex {
                 counts[c] += 1;
             }
 
+            // Track vectors already chosen to reseed an empty cluster in THIS
+            // iteration. Without this, multiple empty clusters in one Lloyd
+            // round all pick the same farthest vector, producing duplicate
+            // centroids that then collapse together. Skipping taken indices
+            // keeps reseeded centroids distinct.
+            let mut taken: HashSet<usize> = HashSet::new();
             for c in 0..k {
                 if counts[c] > 0 {
                     for val in new_centroids[c].iter_mut() {
@@ -219,20 +236,21 @@ impl IvfIndex {
                     // Spherical k-means: L2-normalize centroids
                     l2_normalize(&mut new_centroids[c]);
                 } else {
-                    // Empty cluster: reassign to the vector furthest from its centroid
-                    let mut max_dist: f32 = 0.0;
-                    let mut max_idx = 0;
-                    for (i, dequant) in dequantized.iter().enumerate() {
-                        let assigned_c = cluster_assignments[i];
-                        let sim = cosine_sim_f32(&centroid_f32[assigned_c], dequant);
-                        let dist = 1.0 - sim;
-                        if dist > max_dist {
-                            max_dist = dist;
-                            max_idx = i;
-                        }
+                    // Empty cluster: reassign to the vector furthest from its
+                    // centroid, excluding vectors already used to reseed another
+                    // empty cluster this iteration. `n >= k` (validated above)
+                    // guarantees at least one untaken vector remains for every
+                    // empty cluster, so a target is always found.
+                    if let Some(idx) = farthest_untaken_vector(
+                        &dequantized,
+                        &cluster_assignments,
+                        &centroid_f32,
+                        &taken,
+                    ) {
+                        taken.insert(idx);
+                        new_centroids[c] = dequantized[idx].clone();
+                        l2_normalize(&mut new_centroids[c]);
                     }
-                    new_centroids[c] = dequantized[max_idx].clone();
-                    l2_normalize(&mut new_centroids[c]);
                 }
             }
 
@@ -385,6 +403,41 @@ impl IvfIndex {
     }
 }
 
+/// Pick the index of the vector farthest (by cosine distance) from its
+/// currently-assigned centroid, skipping any index already in `taken`.
+///
+/// Used to reseed empty clusters during Lloyd's iteration. Skipping `taken`
+/// indices is what keeps multiple empty clusters in the same iteration from all
+/// grabbing the same farthest vector (#6172). Returns `None` only if every index
+/// is already taken (cannot happen while `vectors.len() >= n_clusters`).
+///
+/// `max_dist` starts below the cosine-distance floor (`1 - sim ∈ [0, 2]`) so the
+/// first untaken candidate is always selected even when all distances are ~0;
+/// the old `max_dist = 0.0` / `max_idx = 0` defaults could otherwise return a
+/// taken index 0 and reintroduce a duplicate.
+fn farthest_untaken_vector(
+    dequantized: &[Vec<f32>],
+    cluster_assignments: &[usize],
+    centroid_f32: &[Vec<f32>],
+    taken: &HashSet<usize>,
+) -> Option<usize> {
+    let mut max_dist: f32 = -1.0;
+    let mut max_idx: Option<usize> = None;
+    for (i, dequant) in dequantized.iter().enumerate() {
+        if taken.contains(&i) {
+            continue;
+        }
+        let assigned_c = cluster_assignments[i];
+        let sim = cosine_sim_f32(&centroid_f32[assigned_c], dequant);
+        let dist = 1.0 - sim;
+        if dist > max_dist {
+            max_dist = dist;
+            max_idx = Some(i);
+        }
+    }
+    max_idx
+}
+
 /// Cosine similarity between two f32 vectors.
 fn cosine_sim_f32(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
@@ -491,7 +544,7 @@ mod tests {
             n_iterations: 10,
             seed: 42,
         };
-        // IvfIndex는 Debug를 구현하지 않으므로 .err().unwrap() 패턴 사용
+        // IvfIndex does not implement Debug, so use the .err().unwrap() pattern
         let err = IvfIndex::build(&vectors, &config)
             .err()
             .expect("fewer-vectors-than-clusters must return Err");
@@ -509,7 +562,7 @@ mod tests {
             n_iterations: 10,
             seed: 42,
         };
-        // IvfIndex는 Debug를 구현하지 않으므로 .err().unwrap() 패턴 사용
+        // IvfIndex does not implement Debug, so use the .err().unwrap() pattern
         let err = IvfIndex::build(&vectors, &config)
             .err()
             .expect("empty vector set must return Err");
@@ -641,6 +694,142 @@ mod tests {
             let c2 = index2.assignments()[id];
             assert_eq!(c1, c2, "assignment differs for vector {id}");
         }
+    }
+
+    #[test]
+    fn build_mixed_dimensions_returns_err() {
+        // #6171: mixed-dimension input must be rejected up front rather than
+        // panicking (OOB) or silently corrupting centroids during accumulation.
+        let vectors: Vec<(i64, QuantizedVector)> = vec![
+            (1, make_qv(&[1.0, 0.0, 0.0, 0.0, 0.0])), // 5 dims
+            (2, make_qv(&[0.0, 1.0, 0.0])),           // 3 dims
+            (3, make_qv(&[0.0, 0.0, 1.0, 0.0, 0.0])), // 5 dims
+        ];
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 5,
+            seed: 42,
+        };
+        // IvfIndex does not implement Debug, so use the .err().unwrap() pattern
+        let err = IvfIndex::build(&vectors, &config)
+            .err()
+            .expect("mixed-dimension vectors must return Err");
+        assert!(
+            matches!(err, CoreError::InvalidArguments { .. }),
+            "mixed dimensions must produce InvalidArguments, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn empty_cluster_reseed_picks_distinct_indices() {
+        // #6172 (core fix, deterministic): when several clusters are empty in a
+        // single Lloyd iteration, each reseed must pick a DISTINCT source vector.
+        // The buggy version scanned for the farthest point without excluding
+        // already-chosen indices, so every empty cluster in the iteration grabbed
+        // the SAME farthest vector -> duplicate centroids.
+        //
+        // We exercise the extracted selection helper directly so the assertion is
+        // independent of k-means++ RNG. Five vectors, all assigned to centroid 0,
+        // with strictly decreasing distance from that centroid (idx 0 farthest).
+        let centroid = vec![1.0f32, 0.0, 0.0];
+        let dequantized = vec![
+            vec![0.0f32, 1.0, 0.0],   // idx 0: orthogonal -> dist ~1.0 (farthest)
+            vec![0.30f32, 0.95, 0.0], // idx 1
+            vec![0.60f32, 0.80, 0.0], // idx 2
+            vec![0.85f32, 0.52, 0.0], // idx 3
+            vec![0.97f32, 0.24, 0.0], // idx 4: closest to centroid
+        ];
+        let cluster_assignments = vec![0usize; dequantized.len()];
+        let centroid_f32 = vec![centroid];
+
+        // Simulate three empty clusters reseeding in one iteration.
+        let mut taken: HashSet<usize> = HashSet::new();
+        let mut picks = Vec::new();
+        for _ in 0..3 {
+            let idx =
+                farthest_untaken_vector(&dequantized, &cluster_assignments, &centroid_f32, &taken)
+                    .expect("an untaken vector must remain");
+            assert!(
+                taken.insert(idx),
+                "reseed picked an already-taken index {idx} (duplicate centroid)"
+            );
+            picks.push(idx);
+        }
+
+        // Farthest-first ordering: idx 0, then 1, then 2 — and all distinct.
+        assert_eq!(
+            picks,
+            vec![0, 1, 2],
+            "reseed must pick farthest untaken first"
+        );
+        let unique: HashSet<usize> = picks.iter().copied().collect();
+        assert_eq!(unique.len(), picks.len(), "reseed indices must be distinct");
+    }
+
+    #[test]
+    fn empty_cluster_reseed_all_zero_distance_avoids_taken_index_zero() {
+        // #6172 regression on the default-value collision: if every candidate has
+        // distance ~0 (e.g. each vector sits on its own centroid), the old
+        // `max_dist = 0.0` / `max_idx = 0` defaults returned index 0 even after it
+        // was taken, recreating a duplicate. With `max_dist = -1.0` and an
+        // `Option` result, a *different* untaken index is returned instead.
+        let centroid = vec![1.0f32, 0.0];
+        // All three vectors are identical to the centroid -> dist == 0 for each.
+        let dequantized = vec![vec![1.0f32, 0.0], vec![1.0f32, 0.0], vec![1.0f32, 0.0]];
+        let cluster_assignments = vec![0usize; 3];
+        let centroid_f32 = vec![centroid];
+
+        let mut taken: HashSet<usize> = HashSet::new();
+        let first =
+            farthest_untaken_vector(&dequantized, &cluster_assignments, &centroid_f32, &taken)
+                .expect("first reseed must find a vector");
+        taken.insert(first);
+        let second =
+            farthest_untaken_vector(&dequantized, &cluster_assignments, &centroid_f32, &taken)
+                .expect("second reseed must find a different vector");
+        assert_ne!(
+            first, second,
+            "zero-distance reseed must not reselect the taken index"
+        );
+
+        // When every index is taken, the helper reports exhaustion via None.
+        taken.insert(second);
+        let third =
+            farthest_untaken_vector(&dequantized, &cluster_assignments, &centroid_f32, &taken);
+        taken.insert(third.expect("third (last) reseed must find the final vector"));
+        assert!(
+            farthest_untaken_vector(&dequantized, &cluster_assignments, &centroid_f32, &taken)
+                .is_none(),
+            "all indices taken must return None"
+        );
+    }
+
+    #[test]
+    fn build_with_empty_clusters_succeeds() {
+        // End-to-end sanity: requesting more clusters than distinct directions
+        // forces empty clusters every Lloyd iteration (the reseed path). Build
+        // must still succeed and assign every vector. (Centroid *values* cannot
+        // all be distinct here — there are fewer directions than clusters — so
+        // the distinct-reseed invariant is asserted at the helper level above.)
+        let dims = 5;
+        let mut vectors: Vec<(i64, QuantizedVector)> = Vec::new();
+        let mut id = 1i64;
+        for axis in 0..3 {
+            for _ in 0..10 {
+                let mut v = vec![0.0f32; dims];
+                v[axis] = 1.0;
+                vectors.push((id, make_qv(&v)));
+                id += 1;
+            }
+        }
+        let config = IvfBuildConfig {
+            n_clusters: 5, // 5 clusters, only 3 distinct directions -> 2 empty/iter
+            n_iterations: 5,
+            seed: 42,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("build must succeed");
+        assert_eq!(index.n_clusters(), 5);
+        assert_eq!(index.assignments().len(), vectors.len());
     }
 
     #[test]

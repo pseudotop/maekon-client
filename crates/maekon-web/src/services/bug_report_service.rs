@@ -39,7 +39,7 @@ impl BugReportService {
             .get_diagnostics()
             .await;
 
-        let system = self.collect_system_info();
+        let system = self.collect_system_info().await;
         let connection = self.collect_connection_status();
 
         let runtime_logs = if include_logs {
@@ -75,12 +75,23 @@ impl BugReportService {
         Ok(bundle)
     }
 
-    fn collect_system_info(&self) -> SystemInfoDto {
-        let static_info = self
-            .ctx
-            .system_info_provider
-            .as_ref()
-            .map(|p| p.system_info());
+    /// Collect system info off the tokio worker thread.
+    ///
+    /// `SystemInfoProvider::system_info` acquires a `Mutex` and calls
+    /// `sysinfo::refresh_memory` (a blocking syscall) under the lock.  Calling
+    /// it directly from an async context would stall a tokio worker for the
+    /// duration of the syscall.  We therefore clone the `Arc<dyn …>` and
+    /// dispatch via `tokio::task::spawn_blocking` so the work runs on the
+    /// dedicated blocking thread pool (#5997).
+    async fn collect_system_info(&self) -> SystemInfoDto {
+        let provider = self.ctx.system_info_provider.clone();
+        let static_info = if let Some(p) = provider {
+            tokio::task::spawn_blocking(move || p.system_info())
+                .await
+                .ok()
+        } else {
+            None
+        };
         SystemInfoDto {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             os_name: std::env::consts::OS.to_string(),

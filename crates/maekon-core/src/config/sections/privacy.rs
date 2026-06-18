@@ -1,4 +1,4 @@
-// 개인정보/격리 설정 — PII 필터 수준, 자동화 샌드박스, 제외 앱 목록
+// Privacy/isolation config — PII filter level, automation sandbox, excluded-app list
 use super::super::enums::{ConfirmationRequirement, PiiFilterLevel, SandboxProfile};
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +95,12 @@ pub struct AutomationConfig {
     pub custom_presets: Vec<crate::models::intent::WorkflowPreset>,
     #[serde(default = "default_confirmation_policy")]
     pub confirmation_policy: ConfirmationRequirement,
+    /// #6333 A10: minimum LLM self-reported interpretation confidence (0.0-1.0)
+    /// required to auto-execute an LLM-planned intent. Below this floor the plan is
+    /// rejected rather than executed, so a hallucinated/prompt-injected low-confidence
+    /// interpretation cannot auto-run. Default 0.0 disables the gate (prior behavior).
+    #[serde(default = "default_min_llm_confidence")]
+    pub min_llm_confidence: f64,
 }
 
 impl Default for AutomationConfig {
@@ -104,6 +110,7 @@ impl Default for AutomationConfig {
             sandbox: SandboxConfig::default(),
             custom_presets: Vec::new(),
             confirmation_policy: default_confirmation_policy(),
+            min_llm_confidence: default_min_llm_confidence(),
         }
     }
 }
@@ -111,6 +118,11 @@ impl Default for AutomationConfig {
 /// D2-② sign-off default for the intent-hint confirmation knob.
 fn default_confirmation_policy() -> ConfirmationRequirement {
     ConfirmationRequirement::Auto
+}
+
+/// #6333 A10: the LLM-confidence gate is opt-in — 0.0 disables it (prior behavior).
+fn default_min_llm_confidence() -> f64 {
+    0.0
 }
 
 // ── Private default helpers ─────────────────────────────────────────

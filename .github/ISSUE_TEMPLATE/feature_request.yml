@@ -6,6 +6,17 @@ body:
     attributes:
       value: |
         Maekon Client is exported from an internal source of truth. Accepted public suggestions are applied through the parent source tree before the public repository is regenerated.
+
+        Do not include secrets, tokens, private screenshots, raw capture content, raw audio/input data, customer data, private logs, or local absolute paths. Security vulnerabilities should be reported privately through the Security tab.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This is not a security vulnerability or sensitive data exposure.
+          required: true
+        - label: I have removed secrets, tokens, private screenshots, raw captures, private logs, customer data, and local absolute paths.
+          required: true
   - type: textarea
     id: problem
     attributes:

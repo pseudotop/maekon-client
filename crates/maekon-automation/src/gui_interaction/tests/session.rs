@@ -130,3 +130,47 @@ async fn get_session_rejects_unknown_session() {
         .unwrap_err();
     assert!(matches!(err, GuiInteractionError::NotFound { .. }));
 }
+
+// ── Capability token comparison tests ───────────────────────────────
+
+/// The capability token is compared in constant time (subtle::ConstantTimeEq).
+/// Equal tokens accept; unequal tokens (including a length mismatch) reject.
+#[tokio::test]
+async fn assert_capability_token_accepts_and_rejects() {
+    let scene = make_scene(vec![make_element("el-1", "Save", 0.9)]);
+    let (service, _) = make_service(scene, make_focus());
+
+    let (sid, token) = create_test_session(&service).await;
+
+    // Exact match accepts.
+    service
+        .assert_capability_token(&sid, &token)
+        .await
+        .expect("matching token should be accepted");
+
+    // Surrounding whitespace is trimmed before the comparison.
+    let padded = format!("  {token}\n");
+    service
+        .assert_capability_token(&sid, &padded)
+        .await
+        .expect("whitespace-padded matching token should be accepted");
+
+    // Same-length but differing token rejects (flip the last hex char).
+    let mut wrong_same_len = token.clone();
+    let last = wrong_same_len.pop().unwrap();
+    let flipped = if last == '0' { '1' } else { '0' };
+    wrong_same_len.push(flipped);
+    let err = service
+        .assert_capability_token(&sid, &wrong_same_len)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, GuiInteractionError::Unauthorized { .. }));
+
+    // Length mismatch (truncated) rejects without a length-leaking early return.
+    let truncated = &token[..token.len() - 1];
+    let err = service
+        .assert_capability_token(&sid, truncated)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, GuiInteractionError::Unauthorized { .. }));
+}

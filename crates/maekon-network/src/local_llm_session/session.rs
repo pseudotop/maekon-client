@@ -18,6 +18,31 @@ use super::helpers::{
 };
 use super::types::LocalLlmSession;
 
+/// #6206/#6207: Hard cap on the in-flight NDJSON line buffer. Ollama streams one
+/// JSON object per line, so a single un-terminated line should never approach
+/// this size. A newline-free (or pathologically long) body would otherwise grow
+/// `line_buffer` without bound and OOM the process. Mirrors
+/// `live_channel.rs::MAX_WS_MESSAGE_BYTES` (1 MiB) to stay within the agent's
+/// <100 MB RSS budget.
+const MAX_NDJSON_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
+
+impl LocalLlmSession {
+    /// #6129: Roll back the trailing user message appended at the start of
+    /// `send_message` when the send never reaches the success-commit path.
+    ///
+    /// This keeps history mutation transactional with the send outcome: a
+    /// persistent Ollama outage must not grow history one user entry per failed
+    /// retry. Only a trailing `User` message is popped — assistant replies are
+    /// appended exclusively on the streaming success path, so the last entry is
+    /// guaranteed to be the just-pushed user turn here.
+    async fn pop_pending_user_message(&self) {
+        let mut history = self.history.write().await;
+        if matches!(history.last().map(|m| m.role), Some(ChatRole::User)) {
+            history.pop();
+        }
+    }
+}
+
 #[async_trait]
 impl ConversationSession for LocalLlmSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
@@ -30,9 +55,14 @@ impl ConversationSession for LocalLlmSession {
             content_blocks,
         };
 
+        // #6129: Bound history at push time so a turn that never reaches the
+        // `done` chunk (or fails before truncation on the success path) cannot
+        // grow history across calls. The success path truncates again after the
+        // assistant reply is appended.
         {
             let mut history = self.history.write().await;
             history.push(user_msg);
+            truncate_chat_history(&mut history, self.config.max_history_turns);
         }
 
         // Build request body with full history.
@@ -56,18 +86,19 @@ impl ConversationSession for LocalLlmSession {
             "sending Ollama chat request"
         );
 
-        let response = self
-            .http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
+        let send_result = self.http_client.post(&url).json(&body).send().await;
+
+        let response = match send_result {
+            Ok(response) => response,
+            Err(e) => {
+                // #6129: Roll back the just-pushed user message so a persistent
+                // outage cannot grow history one entry per failed send.
+                self.pop_pending_user_message().await;
                 *self.state.lock() = SessionState::Failed;
                 // Iter-90: Ollama is local, timeouts are rare but possible when
                 // a large model is still loading. Keep the canonical split so
                 // Grafana/logs can distinguish slow-model-load from true failure.
-                if e.is_timeout() {
+                return Err(if e.is_timeout() {
                     CoreError::RequestTimeout {
                         code: maekon_core::error_codes::NetworkCode::Timeout,
                         timeout_ms: 0,
@@ -77,12 +108,16 @@ impl ConversationSession for LocalLlmSession {
                         code: maekon_core::error_codes::NetworkCode::Generic,
                         message: format!("Ollama request failed: {e}"),
                     }
-                }
-            })?;
+                });
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
             let body_text = response.text().await.unwrap_or_default();
+            // #6129: Roll back the just-pushed user message on non-success
+            // status (e.g. 404 model-not-pulled, 5xx) for the same reason.
+            self.pop_pending_user_message().await;
             *self.state.lock() = SessionState::Failed;
             // Ollama runs locally, so timeouts/gateway errors are rare. 404
             // most commonly means "model not pulled" — distinguish it so the
@@ -137,6 +172,26 @@ impl ConversationSession for LocalLlmSession {
                     })?;
                 let text = String::from_utf8_lossy(&bytes);
                 line_buffer.push_str(&text);
+
+                // #6206/#6207: Bound the line buffer. A newline-free body would
+                // otherwise accumulate every chunk into `line_buffer` and OOM
+                // the process. If we are over the cap and there is still no line
+                // terminator to drain against, there is no legitimate NDJSON the
+                // server could be sending — fail the stream instead of growing.
+                if line_buffer.len() > MAX_NDJSON_LINE_BYTES && !line_buffer.contains('\n') {
+                    warn!(
+                        session_id = %session_id,
+                        bytes = line_buffer.len(),
+                        limit = MAX_NDJSON_LINE_BYTES,
+                        "Ollama NDJSON line exceeds size limit with no newline; terminating stream"
+                    );
+                    Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!(
+                            "Ollama NDJSON line exceeded {MAX_NDJSON_LINE_BYTES} bytes without a newline"
+                        ),
+                    })?;
+                }
 
                 // Process complete lines (NDJSON = one JSON object per line).
                 while let Some(newline_pos) = line_buffer.find('\n') {

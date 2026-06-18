@@ -163,10 +163,10 @@ fn create_router(state: Arc<MockServerState>) -> Router {
         .route("/user_context/batches", post(handle_batch_sync))
         .route("/user_context/suggestions/feedback", post(handle_feedback))
         .route("/user_context/suggestions/stream", get(handle_sse_stream))
-        // U2-sse-e2e: 프로덕션 `SseStreamClient::stream_url`이 실제로 GET 하는 경로.
-        // (`crates/maekon-network/src/sse_client.rs::stream_url`는
-        //  `{base_url}/user_context/sessions/stream?session_id=...`를 호출한다.)
-        // 실제 `suggestion` SSE 이벤트를 흘려보내 receiver→queue→notifier 체인을 구동한다.
+        // U2-sse-e2e: the path production `SseStreamClient::stream_url` actually GETs.
+        // (`crates/maekon-network/src/sse_client.rs::stream_url` calls
+        //  `{base_url}/user_context/sessions/stream?session_id=...`.)
+        // Streams real `suggestion` SSE events to drive the receiver→queue→notifier chain.
         .route(
             "/user_context/sessions/stream",
             get(handle_suggestion_sse_stream),
@@ -302,19 +302,20 @@ async fn handle_sse_stream(State(state): State<Arc<MockServerState>>) -> impl In
     )
 }
 
-/// U2-sse-e2e: 실제 `suggestion` 이벤트를 방출하는 SSE 스트림 핸들러.
+/// U2-sse-e2e: SSE stream handler that emits a real `suggestion` event.
 ///
-/// 프로덕션 `SseStreamClient::connect`가 `Eventsource`로 파싱하는 텍스트 형식을 그대로
-/// 내보낸다. 이벤트 순서:
-///   1. `connection` — `SseEvent::Connected` 로 파싱됨 (`session_id` 필요)
-///   2. `suggestion` — `SseEvent::Suggestion(Suggestion)` 로 파싱됨 (JSON 본문은
-///      `maekon_core::models::suggestion::Suggestion` serde 계약을 따름:
-///      enum 은 SCREAMING_SNAKE_CASE)
-///   3. `close`      — `SseEvent::Close` → receiver 의 run() 루프가 종료됨
+/// Emits exactly the text format that production `SseStreamClient::connect` parses
+/// via `Eventsource`. Event order:
+///   1. `connection` — parsed as `SseEvent::Connected` (`session_id` required)
+///   2. `suggestion` — parsed as `SseEvent::Suggestion(Suggestion)` (the JSON body
+///      follows the `maekon_core::models::suggestion::Suggestion` serde contract:
+///      enums are SCREAMING_SNAKE_CASE)
+///   3. `close`      — `SseEvent::Close` → terminates the receiver's run() loop
 ///
-/// `close` 이벤트로 스트림을 끝맺으므로 receiver 가 재연결 루프에 빠지지 않고
-/// 자연스럽게 run() 을 반환한다. 단일 정적 본문이지만 실제 HTTP/SSE 전송 경로를
-/// 통과하므로 in-memory 테스트가 아닌 라이브 e2e 다.
+/// Because the stream ends with a `close` event, the receiver does not fall into a
+/// reconnect loop and returns from run() naturally. Although it is a single static
+/// body, it passes through the real HTTP/SSE transport path, so this is a live e2e
+/// rather than an in-memory test.
 async fn handle_suggestion_sse_stream(
     State(state): State<Arc<MockServerState>>,
 ) -> impl IntoResponse {
@@ -322,12 +323,13 @@ async fn handle_suggestion_sse_stream(
         .request_count
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    // Suggestion serde 계약과 정확히 일치하는 JSON 본문을 직렬화로 생성한다.
-    // (필드명/enum 표기를 손으로 적지 않고 serde_json::json! 으로 구성)
+    // Build a JSON body via serialization that exactly matches the Suggestion serde
+    // contract. (Composed with serde_json::json! rather than hand-writing field
+    // names / enum spellings.)
     let suggestion_json = serde_json::json!({
         "suggestion_id": "u2-sse-e2e-1",
         "suggestion_type": "WORK_GUIDANCE",
-        "content": "라이브 SSE 경로로 전달된 제안",
+        "content": "Suggestion delivered over the live SSE path",
         "priority": "HIGH",
         "confidence_score": 0.91,
         "relevance_score": 0.88,
@@ -337,7 +339,7 @@ async fn handle_suggestion_sse_stream(
     })
     .to_string();
 
-    // SSE 프레임: 각 이벤트는 `event:`/`data:` 라인 + 빈 줄로 구분된다.
+    // SSE frame: each event is separated by `event:`/`data:` lines + a blank line.
     let body = format!(
         "event: connection\ndata: {{\"session_id\":\"u2-sse-session\"}}\n\n\
          event: suggestion\ndata: {suggestion_json}\n\n\

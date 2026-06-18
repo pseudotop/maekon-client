@@ -29,6 +29,26 @@ pub struct ProviderCliDiagnosticSummaryDto {
     pub env_refresh_required: bool,
 }
 
+impl From<maekon_core::models::provider_cli_diagnostics::ProviderCliDiagnosticSummary>
+    for ProviderCliDiagnosticSummaryDto
+{
+    fn from(
+        value: maekon_core::models::provider_cli_diagnostics::ProviderCliDiagnosticSummary,
+    ) -> Self {
+        Self {
+            surface_id: value.surface_id,
+            tool_id: value.tool_id,
+            candidate_name: value.candidate_name,
+            executable_hint: value.executable_hint,
+            readiness: value.readiness,
+            availability: value.availability,
+            dependency_status: value.dependency_status,
+            status_reason: value.status_reason,
+            env_refresh_required: value.env_refresh_required,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiagnosticsBundleDto {

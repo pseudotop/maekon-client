@@ -180,7 +180,7 @@ impl SqliteStorage {
 
     /// List recent weekly digests, newest first.
     pub fn list_weekly_digests(&self, limit: usize) -> Result<Vec<WeeklyDigest>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_weekly_digests_inner(read.conn(), limit).map_err(Into::into)
     }
@@ -240,7 +240,7 @@ impl SqliteStorage {
     /// Save a weekly digest. Upserts by week_start.
     pub fn save_weekly_digest(&self, digest: &WeeklyDigest) -> Result<(), CoreError> {
         let params = Self::weekly_digest_params(digest)?;
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, weekly_digests ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; weekly_digests ∈ ALL_TABLES).
         self.conn
             .write_lock()
             .run((), |conn| Self::save_weekly_digest_inner(conn, &params))
@@ -297,7 +297,7 @@ impl SqliteStorage {
     /// Save a daily digest. Upserts by date.
     pub fn save_daily_digest(&self, digest: &DailyDigest) -> Result<(), CoreError> {
         let params = Self::daily_digest_params(digest)?;
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, daily_digests ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; daily_digests ∈ ALL_TABLES).
         self.conn
             .write_lock()
             .run((), |conn| Self::save_daily_digest_inner(conn, &params))
@@ -355,7 +355,7 @@ impl SqliteStorage {
 
     /// Get the daily digest for a specific date (YYYY-MM-DD).
     pub fn get_daily_digest(&self, date: &str) -> Result<Option<DailyDigest>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_daily_digest_inner(read.conn(), date).map_err(Into::into)
     }
@@ -416,7 +416,7 @@ impl SqliteStorage {
 
     /// List recent daily digests, newest first.
     pub fn list_daily_digests(&self, limit: usize) -> Result<Vec<DailyDigest>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::list_daily_digests_inner(read.conn(), limit).map_err(Into::into)
     }
@@ -484,7 +484,7 @@ impl SqliteStorage {
         &self,
         date: &str,
     ) -> Result<Vec<SegmentSummaryRecord>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         Self::get_segments_for_date_inner(read.conn(), date).map_err(Into::into)
     }

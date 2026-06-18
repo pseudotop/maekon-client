@@ -33,6 +33,17 @@ pub async fn serve_static(uri: Uri) -> Response {
     serve_static_impl(uri)
 }
 
+/// #6281: security headers for the loopback-HTTP-served dashboard. The Tauri
+/// WebView has its own CSP, but the dashboard is ALSO reachable over plain HTTP
+/// on localhost (a browser), where no CSP/nosniff applies otherwise.
+/// `X-Content-Type-Options: nosniff` blocks MIME sniffing; the CSP is permissive
+/// enough for a self-contained Vite SPA (self scripts, inline styles for
+/// Tailwind, self/data images, self API connections) while denying objects,
+/// framing, and base-uri hijack.
+const STATIC_CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
+object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
 fn serve_static_impl(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
@@ -55,6 +66,9 @@ fn serve_static_impl(uri: Uri) -> Response {
                 [
                     (header::CONTENT_TYPE, mime.as_ref()),
                     (header::CACHE_CONTROL, cache_control),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                    (header::CONTENT_SECURITY_POLICY, STATIC_CSP),
+                    (header::REFERRER_POLICY, "no-referrer"),
                 ],
                 content.data.into_owned(),
             )
@@ -62,7 +76,21 @@ fn serve_static_impl(uri: Uri) -> Response {
         }
         None => {
             if let Some(index) = Assets::get("index.html") {
-                Html(String::from_utf8_lossy(&index.data).to_string()).into_response()
+                // #6281: SPA client-route fallback — return the index shell with
+                // the SAME no-cache + security headers as the matched .html arm,
+                // not a bare Html(...) with no Cache-Control / security headers.
+                (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                        (header::CONTENT_SECURITY_POLICY, STATIC_CSP),
+                        (header::REFERRER_POLICY, "no-referrer"),
+                    ],
+                    index.data.into_owned(),
+                )
+                    .into_response()
             } else {
                 (StatusCode::OK, Html(DEV_PLACEHOLDER.to_string())).into_response()
             }
@@ -71,7 +99,7 @@ fn serve_static_impl(uri: Uri) -> Response {
 }
 
 const DEV_PLACEHOLDER: &str = r#"<!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -139,22 +167,22 @@ const DEV_PLACEHOLDER: &str = r#"<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>Maekon</h1>
-        <p class="subtitle">로컬 웹 대시보드</p>
+        <p class="subtitle">Local Web Dashboard</p>
 
         <div class="status">
-            <h2>✅ API server execution 중</h2>
+            <h2>✅ API server running</h2>
             <ul class="api-list">
-                <li><code>GET /api/stats/summary</code> - 오늘 요약</li>
-                <li><code>GET /api/metrics</code> - 시스템 메트릭</li>
-                <li><code>GET /api/processes</code> - 프로세스 스냅샷</li>
-                <li><code>GET /api/frames</code> - 스크린샷 list</li>
-                <li><code>GET /api/events</code> - event 로그</li>
+                <li><code>GET /api/stats/summary</code> - Today's summary</li>
+                <li><code>GET /api/metrics</code> - System metrics</li>
+                <li><code>GET /api/processes</code> - Process snapshot</li>
+                <li><code>GET /api/frames</code> - Screenshot list</li>
+                <li><code>GET /api/events</code> - Event log</li>
                 <li><code>GET /api/idle</code> - idle period</li>
                 <li><code>GET /api/sessions</code> - session list</li>
             </ul>
         </div>
 
-        <p style="margin-bottom: 1rem; color: #888;">프론트엔드 빌드:</p>
+        <p style="margin-bottom: 1rem; color: #888;">Frontend build:</p>
         <div class="build-hint">
             cd crates/maekon-web/frontend<br>
             pnpm install && pnpm build

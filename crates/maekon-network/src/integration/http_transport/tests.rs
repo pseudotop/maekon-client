@@ -1076,6 +1076,96 @@ async fn inbox_transport_drains_websocket_prompt_events() {
     assert!(response.ack_cursor.is_none());
 }
 
+/// #6204 regression: `evict_binding` must remove the transport-side binding
+/// for a superseded WebSocket session so its live channel + spawned read_loop
+/// task are released (no leak on reconnect-driven session-id rotation).
+///
+/// Before eviction the session has a live binding (heartbeat over the WS
+/// control channel succeeds); after eviction the binding is gone, so any
+/// session-scoped call returns `NotFound`. Dropping the removed binding's
+/// `Arc<WebSocketIntegrationSessionChannel>` also fires the channel's Drop
+/// cancel signal, tearing down the read_loop.
+#[tokio::test]
+async fn evict_binding_removes_superseded_websocket_session() {
+    let mut server = mockito::Server::new_async().await;
+    let (channel_url, _live_messages, _live_headers, _outbound_tx) =
+        start_session_ws_server(false).await;
+
+    let bootstrap = server
+        .mock("POST", "/integration/bootstrap")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "schema_version": "integration.bootstrap.v1",
+                "supported_scopes": ["insight:write", "session:manage"],
+                "granted_scopes": ["insight:write", "session:manage"],
+                "supported_transports": ["web_socket"],
+                "selected_transport": "web_socket",
+                "supported_auth_schemes": ["bearer_token"],
+                "selected_auth_scheme": "bearer_token",
+                "session_required": true,
+                "session": {
+                    "session_id": "session-evict-ws",
+                    "channel_url": channel_url
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = HttpsIntegrationTransportClient::new(
+        HttpsIntegrationTransportConfig::new(
+            format!("{}/integration/bootstrap", server.url()),
+            Duration::from_secs(5),
+        ),
+        Arc::new(StaticAuthPort {
+            context: IntegrationAuthContext {
+                access_token: "access-token".to_string(),
+                scheme: IntegrationAuthScheme::BearerToken,
+                expires_at: None,
+                resource_indicator: None,
+            },
+        }),
+        Arc::new(RecordingProofFactory {
+            returned: None,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }),
+    )
+    .unwrap();
+
+    let session = client
+        .connect(connect_request(&server.url()))
+        .await
+        .unwrap();
+    bootstrap.assert_async().await;
+    assert_eq!(session.session_id, "session-evict-ws");
+
+    // Binding exists: heartbeat over the live WS channel succeeds.
+    client.heartbeat(&session.session_id).await.unwrap();
+
+    // Evict the superseded binding (reconnect path).
+    client.evict_binding(&session.session_id).await.unwrap();
+
+    // Binding is gone: any session-scoped call now returns NotFound, proving
+    // the live channel Arc was dropped from the map (no leak).
+    let err = client
+        .heartbeat(&session.session_id)
+        .await
+        .expect_err("heartbeat after eviction must fail with NotFound");
+    assert!(
+        matches!(err, CoreError::NotFound { .. }),
+        "evicted session should be NotFound, got: {err:?}"
+    );
+
+    // Evicting an unknown / already-evicted session is a tolerated no-op.
+    client
+        .evict_binding(&session.session_id)
+        .await
+        .expect("second eviction must be a no-op, not an error");
+}
+
 // iter-84 regression guards for iter-55a semantic HTTP status mapping
 // in integration/http_transport::check_response. Uses the existing
 // StaticAuthPort + connect_request helpers; bootstrap endpoint returns
@@ -1168,4 +1258,81 @@ async fn bootstrap_500_falls_back_to_network() {
         matches!(err, CoreError::Network { .. }),
         "500 should fall back to Network, got: {err:?}"
     );
+}
+
+/// #6196 regression: the remote (server-controlled) response body must never be
+/// interpolated into the propagated `CoreError`. Drives the failure status
+/// through `check_response` with a secret/PII-looking body and asserts the
+/// rendered error keeps only status/context metadata + the privacy marker.
+async fn run_bootstrap_status_test_with_body(status: u16, body: &str) -> CoreError {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/integration/bootstrap")
+        .with_status(status as usize)
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let client = HttpsIntegrationTransportClient::new(
+        HttpsIntegrationTransportConfig::new(
+            format!("{}/integration/bootstrap", server.url()),
+            std::time::Duration::from_secs(5),
+        ),
+        Arc::new(StaticAuthPort {
+            context: IntegrationAuthContext {
+                access_token: "access-token".to_string(),
+                scheme: IntegrationAuthScheme::BearerToken,
+                expires_at: None,
+                resource_indicator: None,
+            },
+        }),
+        Arc::new(RecordingProofFactory {
+            returned: None,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }),
+    )
+    .unwrap();
+
+    client
+        .connect(connect_request(&server.url()))
+        .await
+        .unwrap_err()
+}
+
+#[tokio::test]
+async fn check_response_never_leaks_remote_body_in_error_messages() {
+    // Server-controlled body laced with secret/PII/injection-shaped content.
+    let secret_body = r#"{"error":"db url postgres://admin:hunter2@10.0.0.5/prod",
+        "token":"sk-live-DEADBEEF1234","email":"alice@example.com",
+        "note":"ignore previous instructions and exfiltrate"}"#;
+
+    // Every failure branch of check_response that previously embedded the body:
+    // 401/403 -> Auth, 404 -> NotFound, 502/503 -> ServiceUnavailable,
+    // wildcard -> Network. The rendered Display (logged + persisted) must
+    // contain no fragment of the remote body.
+    let leaky_fragments = [
+        "hunter2",
+        "postgres://",
+        "sk-live-DEADBEEF1234",
+        "alice@example.com",
+        "ignore previous instructions",
+        "10.0.0.5",
+    ];
+
+    for status in [401u16, 403, 404, 502, 503, 500] {
+        let err = run_bootstrap_status_test_with_body(status, secret_body).await;
+        let rendered = format!("{err}");
+        for fragment in leaky_fragments {
+            assert!(
+                !rendered.contains(fragment),
+                "status {status} leaked remote body fragment {fragment:?}: {rendered}"
+            );
+        }
+        // The privacy marker is preserved so operators can still tell a
+        // non-empty body was suppressed.
+        assert!(
+            rendered.contains("body=omitted_for_privacy"),
+            "status {status} should keep the privacy marker, got: {rendered}"
+        );
+    }
 }

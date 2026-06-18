@@ -40,7 +40,10 @@ impl MetricsQueryService {
         &self,
         params: &HourlyQuery,
     ) -> Result<Vec<HourlyMetricsResponse>, ApiError> {
-        let hours = params.hours.unwrap_or(24);
+        // #6281: clamp `hours` before building the Duration — an unclamped
+        // request-controlled value overflows chrono's Duration::hours and panics
+        // (request-driven crash). Cap at ~1 year (mirrors the heatmap sibling).
+        let hours = params.hours.unwrap_or(24).min(24 * 365);
         let now = Utc::now();
         let from = (now - Duration::hours(hours as i64))
             .format("%Y-%m-%dT%H:00:00Z")

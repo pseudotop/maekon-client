@@ -177,10 +177,11 @@ mod tests {
 
     #[test]
     fn decode_title_handles_unicode_and_lone_surrogate() {
-        // '한' (U+D55C) then a lone high surrogate → from_utf16_lossy yields U+FFFD.
+        // U+D55C (a Hangul syllable) then a lone high surrogate → from_utf16_lossy
+        // yields U+FFFD.
         let buf: [u16; 2] = [0xD55C, 0xD800];
         let out = decode_window_title(&buf, 2);
-        assert_eq!(out.chars().next(), Some('한'));
+        assert_eq!(out.chars().next(), Some('\u{D55C}'));
         assert!(
             out.contains('\u{FFFD}'),
             "lone surrogate must become U+FFFD"

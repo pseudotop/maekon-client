@@ -1,26 +1,26 @@
-//! Tauri IPC: OSS 빌드 로컬 감사 로그 export (#4819, 규제 준수 증거).
+//! Tauri IPC: OSS-build local audit log export (#4819, regulatory-compliance evidence).
 //!
-//! durable SQLite `audit_log` 테이블에서 최근 감사 항목을 읽어 사용자가 선택한
-//! 경로에 JSON 또는 CSV로 저장한다. 휘발성 `AuditLogger` 버퍼(~1000개 cap)가
-//! 아닌 durable 스토리지를 source로 삼는다 — 컴플라이언스 증거는 영속 기록에서
-//! 나와야 하기 때문이다.
+//! Reads recent audit entries from the durable SQLite `audit_log` table and saves them as
+//! JSON or CSV to a user-selected path. The source is durable storage, NOT the volatile
+//! `AuditLogger` buffer (~1000-entry cap) — because compliance evidence must come from the
+//! persistent record.
 //!
-//! `export_bug_report`(bug_report.rs)의 save-dialog 패턴을 그대로 따른다.
-//! **반드시 기본 OSS 빌드에 포함**되어야 하므로 `server` feature 게이트 뒤에
-//! 두지 않는다.
+//! Follows the save-dialog pattern of `export_bug_report` (bug_report.rs) verbatim.
+//! It **MUST be included in the default OSS build**, so it is not placed behind the `server`
+//! feature gate.
 //!
-//! # PII 자세 (#4819 — 요구사항 4)
+//! # PII posture (#4819 — requirement 4)
 //!
-//! durable 행의 `details`는 두 경로로만 채워진다:
-//! 1. `AuditLogger` 버퍼 flush — record 경계에서 `PiiFilterLevel::Strict`로 이미
-//!    sanitize됨 (automation `logger.rs::sanitize_details`).
-//! 2. `consent.rs::audit_consent` 직접 write — `permissions`/`version`/`consent_id`
-//!    구조화 메타데이터만 담으며 secret이 없다.
+//! The `details` of a durable row is populated by only two paths:
+//! 1. `AuditLogger` buffer flush — already sanitized at the record boundary with
+//!    `PiiFilterLevel::Strict` (automation `logger.rs::sanitize_details`).
+//! 2. `consent.rs::audit_consent` direct write — carries only `permissions`/`version`/`consent_id`
+//!    structured metadata, with no secrets.
 //!
-//! 그럼에도 automation의 `fail_closed_sanitize_details`는 `pub(super)`라 여기서
-//! 재사용할 수 없다. 따라서 export 시 미래의 직접 writer가 raw secret을 남기더라도
-//! 누출되지 않도록 [`redact_secret_keys`]로 secret-bearing 키 값을 방어적으로
-//! 한 번 더 마스킹한다 (no-new-dep, 작은 inline 스캐너).
+//! Even so, automation's `fail_closed_sanitize_details` is `pub(super)` and cannot be reused
+//! here. Therefore, on export, we defensively mask secret-bearing key values once more via
+//! [`redact_secret_keys`] so that even if a future direct writer leaves a raw secret behind,
+//! it does not leak (no-new-dep, a small inline scanner).
 
 use std::path::Path;
 
@@ -28,7 +28,7 @@ use maekon_core::models::audit::AuditEntry;
 
 use crate::ipc_error::IpcError;
 
-/// export 직렬화 형식.
+/// Export serialization format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuditExportFormat {
     Json,
@@ -44,15 +44,15 @@ impl AuditExportFormat {
     }
 }
 
-/// 문자열을 `RFC 4180` CSV 필드로 quote한다 (+ CSV formula injection 완화, #4819).
+/// Quote a string as an `RFC 4180` CSV field (+ CSV formula-injection mitigation, #4819).
 ///
-/// 1) formula injection 방어: 셀의 첫 문자가 `=` `+` `-` `@` `\t` `\r` 중 하나면
-///    Excel/Sheets가 셀을 수식으로 해석할 수 있으므로 작은따옴표(`'`)를 앞에 붙여
-///    중립화한다 (표준 CSV-injection 완화).
-/// 2) RFC 4180 quote: 쉼표·큰따옴표·CR/LF가 있으면 큰따옴표로 감싸고 내부 따옴표를
-///    이중화한다.
+/// 1) Formula-injection defense: if the cell's first character is one of `=` `+` `-` `@`
+///    `\t` `\r`, Excel/Sheets may interpret the cell as a formula, so we neutralize it by
+///    prefixing a single quote (`'`) (standard CSV-injection mitigation).
+/// 2) RFC 4180 quoting: if there is a comma, double-quote, or CR/LF, wrap in double-quotes
+///    and double any interior quotes.
 fn csv_quote(field: &str) -> String {
-    // 1) formula injection 중립화 — quote 전에 위험한 선두 문자를 ' 로 prefix.
+    // 1) Formula-injection neutralization — prefix a dangerous leading char with ' before quoting.
     let neutralized = neutralize_csv_formula(field);
     // 2) RFC 4180 quoting.
     if neutralized.contains([',', '"', '\n', '\r']) {
@@ -62,10 +62,11 @@ fn csv_quote(field: &str) -> String {
     }
 }
 
-/// CSV formula injection 완화: 셀 선두가 수식 트리거 문자면 작은따옴표로 prefix.
+/// CSV formula-injection mitigation: if a cell starts with a formula-trigger char, prefix
+/// it with a single quote.
 ///
-/// Excel/Google Sheets는 `=` `+` `-` `@`(및 탭/CR) 로 시작하는 셀을 수식으로
-/// 평가할 수 있다. 표준 완화책대로 단일 `'`를 앞에 붙여 리터럴 텍스트로 만든다.
+/// Excel/Google Sheets may evaluate a cell starting with `=` `+` `-` `@` (and tab/CR) as a
+/// formula. Per the standard mitigation, prepend a single `'` to turn it into literal text.
 fn neutralize_csv_formula(field: &str) -> String {
     const TRIGGERS: &[char] = &['=', '+', '-', '@', '\t', '\r'];
     match field.chars().next() {
@@ -74,12 +75,13 @@ fn neutralize_csv_formula(field: &str) -> String {
     }
 }
 
-/// secret-bearing 키의 값을 방어적으로 마스킹한다 (#4819 PII 자세).
+/// Defensively mask the values of secret-bearing keys (#4819 PII posture).
 ///
-/// automation `fail_closed_sanitize_details`가 `pub(super)`라 재사용 불가하므로
-/// 동일 의도의 최소 redactor를 둔다. `"<key>":"<value>"` JSON 패턴과
-/// `<key>=<value>` / `<key>: <value>` 평문 패턴에서 값을 `***REDACTED***`로
-/// 바꾼다. consent 메타데이터(secret 없음)에는 영향이 없다.
+/// Because automation's `fail_closed_sanitize_details` is `pub(super)` and cannot be reused,
+/// this provides a minimal redactor with the same intent. It replaces the value with
+/// `***REDACTED***` in the `"<key>":"<value>"` JSON pattern and the
+/// `<key>=<value>` / `<key>: <value>` plaintext patterns. Consent metadata (no secrets)
+/// is unaffected.
 pub(crate) fn redact_secret_keys(details: &str) -> String {
     const SECRET_KEYS: &[&str] = &[
         "password",
@@ -100,7 +102,7 @@ pub(crate) fn redact_secret_keys(details: &str) -> String {
     out
 }
 
-/// 단일 키에 대해 JSON 따옴표 값 / 평문 값을 마스킹한다.
+/// Mask the JSON quoted value / plaintext value for a single key.
 fn redact_one_key(input: &str, key: &str, marker: &str) -> String {
     let lower = input.to_ascii_lowercase();
     let key_lower = key.to_ascii_lowercase();
@@ -111,7 +113,7 @@ fn redact_one_key(input: &str, key: &str, marker: &str) -> String {
         let key_start = cursor + rel;
         let after_key = key_start + key.len();
 
-        // 키 직후의 구분자를 찾는다 (": ", ":", "=", "\":\"" 등 공백 허용).
+        // Find the separator right after the key (": ", ":", "=", "\":\"" etc., whitespace allowed).
         let rest = &input[after_key..];
         let trimmed = rest.trim_start_matches(['"', ' ', '\t']);
         if let Some(sep) = trimmed
@@ -119,18 +121,19 @@ fn redact_one_key(input: &str, key: &str, marker: &str) -> String {
             .or_else(|| trimmed.strip_prefix('='))
         {
             let value_region = sep.trim_start_matches([' ', '\t']);
-            // 값 시작 절대 오프셋 계산.
+            // Compute the absolute offset of the value start.
             let consumed = input[after_key..].len() - value_region.len();
             let value_start = after_key + consumed;
 
-            // JSON 따옴표 값이면 닫는 따옴표까지, 아니면 다음 구분자(, } 공백)까지.
+            // For a JSON quoted value, go up to the closing quote; otherwise up to the next
+            // separator (, } or whitespace).
             let value_str = &input[value_start..];
             let (value_inner_start, value_end) = if let Some(stripped) = value_str.strip_prefix('"')
             {
                 let inner_start = value_start + 1;
-                // JSON-escape-aware: `\"`/`\\` 를 건너뛰고 진짜 닫는 따옴표를 찾는다.
-                // 단순 find('"')는 escaped quote 에서 조기 종료되어 secret 의 꼬리가
-                // 누출된다 (#4819). 바이트 단위로 escape 상태를 추적한다.
+                // JSON-escape-aware: skip `\"`/`\\` and find the real closing quote.
+                // A naive find('"') would stop early at an escaped quote, leaking the tail of
+                // the secret (#4819). Track the escape state byte by byte.
                 let end_rel = find_json_closing_quote(stripped).unwrap_or(stripped.len());
                 (inner_start, inner_start + end_rel)
             } else {
@@ -146,7 +149,7 @@ fn redact_one_key(input: &str, key: &str, marker: &str) -> String {
             continue;
         }
 
-        // 구분자가 없으면 키만 그대로 통과시키고 진행 (false-positive 회피).
+        // If there is no separator, pass the key through unchanged and advance (avoid false positives).
         out.push_str(&input[cursor..after_key]);
         cursor = after_key;
     }
@@ -155,17 +158,17 @@ fn redact_one_key(input: &str, key: &str, marker: &str) -> String {
     out
 }
 
-/// JSON 문자열 본문(여는 따옴표 제거 후)에서 escape-aware 로 닫는 따옴표의
-/// 상대 바이트 오프셋을 찾는다 (#4819 escaped-quote 누출 방어).
+/// Find, escape-aware, the relative byte offset of the closing quote within a JSON string
+/// body (after the opening quote has been removed) (#4819 escaped-quote leak defense).
 ///
-/// `\"` 와 `\\` 를 건너뛰며 진짜 닫는 `"`를 찾는다. 닫는 따옴표가 없으면 `None`.
-/// (입력은 JSON 값 본문이라 ASCII 따옴표/백슬래시는 항상 1바이트.)
+/// Skips `\"` and `\\` to find the real closing `"`. Returns `None` if there is no closing
+/// quote. (The input is a JSON value body, so ASCII quotes/backslashes are always 1 byte.)
 fn find_json_closing_quote(body: &str) -> Option<usize> {
     let bytes = body.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
-            b'\\' => i += 2, // escape 시퀀스(`\"`, `\\` 등)는 두 바이트를 건너뛴다.
+            b'\\' => i += 2, // an escape sequence (`\"`, `\\`, etc.) skips two bytes.
             b'"' => return Some(i),
             _ => i += 1,
         }
@@ -173,17 +176,17 @@ fn find_json_closing_quote(body: &str) -> Option<usize> {
     None
 }
 
-/// 감사 항목을 export 형식 문자열로 직렬화한다 (UI 비의존, 테스트 가능).
+/// Serialize audit entries into an export-format string (UI-independent, testable).
 ///
-/// JSON: `Vec<AuditEntry>`를 pretty JSON으로. CSV: 고정 헤더 + 행. 두 경로 모두
-/// `details`에 [`redact_secret_keys`]를 적용한다.
+/// JSON: `Vec<AuditEntry>` as pretty JSON. CSV: a fixed header + rows. Both paths apply
+/// [`redact_secret_keys`] to `details`.
 pub(crate) fn serialize_audit_entries(
     entries: &[AuditEntry],
     format: AuditExportFormat,
 ) -> Result<String, IpcError> {
     match format {
         AuditExportFormat::Json => {
-            // details를 redact한 사본을 직렬화한다.
+            // Serialize a copy with details redacted.
             let redacted: Vec<AuditEntry> = entries
                 .iter()
                 .map(|e| {
@@ -201,7 +204,7 @@ pub(crate) fn serialize_audit_entries(
         }
         AuditExportFormat::Csv => {
             let mut out = String::new();
-            // 헤더 — AuditEntry 필드 순서와 일치.
+            // Header — matches the AuditEntry field order.
             out.push_str(
                 "entry_id,timestamp,session_id,command_id,action_type,status,details,execution_time_ms\n",
             );
@@ -235,10 +238,10 @@ pub(crate) fn serialize_audit_entries(
     }
 }
 
-/// 직렬화 + 파일 쓰기를 명시적 경로로 수행하는 **테스트 가능한 inner fn**.
+/// A **testable inner fn** that serializes and writes to a file at an explicit path.
 ///
-/// UI 다이얼로그 없이 항목·경로·형식만으로 동작하므로 단위 테스트가 직접 호출한다.
-/// 성공 시 기록한 절대 경로 문자열을 반환한다.
+/// It operates from just the entries, path, and format (no UI dialog), so unit tests call it
+/// directly. On success it returns the absolute path string it wrote to.
 pub(crate) async fn write_audit_export(
     path: &Path,
     entries: &[AuditEntry],
@@ -251,11 +254,11 @@ pub(crate) async fn write_audit_export(
     Ok(path.display().to_string())
 }
 
-/// 로컬 감사 로그를 사용자가 선택한 파일로 export 한다 (#4819).
+/// Export the local audit log to a user-selected file (#4819).
 ///
-/// durable `SqliteStorage`(`AppState.storage`)에서 최근 `limit`개(기본 10,000)를
-/// 읽어 native save-dialog로 받은 경로에 JSON/CSV로 저장한다. 사용자가 취소하면
-/// `Ok(None)`을 반환한다.
+/// Reads the most recent `limit` entries (default 10,000) from durable `SqliteStorage`
+/// (`AppState.storage`) and saves them as JSON/CSV to the path obtained from the native
+/// save-dialog. Returns `Ok(None)` if the user cancels.
 #[tauri::command]
 pub async fn export_audit_log(
     app: tauri::AppHandle,
@@ -267,7 +270,7 @@ pub async fn export_audit_log(
 
     let export_format = match format.as_deref() {
         Some("csv") => AuditExportFormat::Csv,
-        // 기본은 JSON (None 또는 "json").
+        // Default is JSON (None or "json").
         Some("json") | None => AuditExportFormat::Json,
         Some(other) => {
             return Err(IpcError::new(
@@ -277,7 +280,7 @@ pub async fn export_audit_log(
         }
     };
 
-    // durable 스토리지에서 최근 항목을 blocking으로 읽는다 (SQLite lock).
+    // Read the recent entries from durable storage, blocking (SQLite lock).
     let storage = state.storage.clone();
     let max = limit.unwrap_or(10_000);
     let entries = tokio::task::spawn_blocking(move || storage.recent_audit_entries(max))
@@ -308,18 +311,19 @@ pub async fn export_audit_log(
             let written = write_audit_export(p, &entries, export_format).await?;
             Ok(Some(written))
         }
-        None => Ok(None), // 사용자가 다이얼로그를 취소함.
+        None => Ok(None), // user canceled the dialog.
     }
 }
 
-/// 로컬 감사 로그 해시 체인의 무결성을 검증한다 (#4834, E20).
+/// Verify the integrity of the local audit log's hash chain (#4834, E20).
 ///
-/// durable `SqliteStorage`(`AppState.storage`)의 `audit_log` SHA-256 해시 체인을
-/// 검증하고 [`AuditChainReport`]를 반환한다. tamper-**evident** 검증으로
-/// 우발적/부분적 손상·단순 행 편집·삭제·재정렬을 탐지한다(전면 재기록 내부자
-/// 위협 방어는 out-of-scope — HMAC/Ed25519 필요).
+/// Verifies the `audit_log` SHA-256 hash chain in durable `SqliteStorage`
+/// (`AppState.storage`) and returns an [`AuditChainReport`]. This is tamper-**evident**
+/// verification: it detects accidental/partial corruption, simple row edits, deletions, and
+/// reordering (defense against a full-rewrite insider threat is out-of-scope — that needs
+/// HMAC/Ed25519).
 ///
-/// **반드시 기본 OSS 빌드에 포함**되어야 하므로 feature 게이트 뒤에 두지 않는다.
+/// It **MUST be included in the default OSS build**, so it is not placed behind a feature gate.
 #[tauri::command]
 pub async fn verify_audit_log(
     state: tauri::State<'_, crate::runtime_state::AppState>,
@@ -388,7 +392,7 @@ mod tests {
     fn csv_quotes_fields_with_commas_and_quotes() {
         let entry = sample_entry("e-1", Some("a,b\"c"));
         let csv = serialize_audit_entries(&[entry], AuditExportFormat::Csv).expect("csv");
-        // details 필드는 quote되고 내부 따옴표는 이중화된다.
+        // The details field is quoted and its interior quotes are doubled.
         assert!(csv.contains("\"a,b\"\"c\""), "csv = {csv}");
     }
 
@@ -403,7 +407,7 @@ mod tests {
 
     #[test]
     fn csv_neutralizes_formula_injection_triggers() {
-        // 선두가 = + - @ 인 셀은 ' 로 prefix 되어 수식 평가가 차단된다 (#4819).
+        // A cell starting with = + - @ gets prefixed with ' so formula evaluation is blocked (#4819).
         for (raw, expected_prefix) in [
             ("=cmd|'/c calc'!A1", "'=cmd"),
             ("+1+1", "'+1+1"),
@@ -418,15 +422,15 @@ mod tests {
                 "formula trigger not neutralized for {raw:?}: {csv}"
             );
         }
-        // 직접 csv_quote 단위로도 확인.
+        // Also check at the csv_quote unit level directly.
         assert_eq!(csv_quote("=danger"), "'=danger");
-        // 일반 값은 prefix 되지 않는다.
+        // An ordinary value is not prefixed.
         assert_eq!(csv_quote("hello"), "hello");
     }
 
     #[test]
     fn redact_handles_escaped_quote_in_secret_value() {
-        // escaped quote 가 포함된 secret 은 꼬리까지 전부 redact 되어야 한다 (#4819).
+        // A secret containing an escaped quote must be fully redacted, including its tail (#4819).
         let raw = r#"{"api_key":"sk-ab\"cd","note":"safe"}"#;
         let red = redact_secret_keys(raw);
         assert!(!red.contains("sk-ab"), "secret head leaked: {red}");
@@ -445,7 +449,7 @@ mod tests {
 
     #[test]
     fn redact_leaves_consent_metadata_untouched() {
-        // consent.rs가 쓰는 형태: secret 없음 → 변형 없어야 함.
+        // The shape consent.rs writes: no secrets → must be left unchanged.
         let raw = r#"{"permissions":{"screen":true},"version":3,"consent_id":"c-1"}"#;
         assert_eq!(redact_secret_keys(raw), raw);
     }

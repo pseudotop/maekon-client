@@ -78,6 +78,23 @@ impl FileIntegrationStateInner {
         }
     }
 
+    /// Enforce the store-layer outbox cap by dropping the oldest queued egress
+    /// messages (FIFO) when the queue exceeds `max_outbox_messages`. This is the
+    /// last-resort bound that keeps the persisted outbox from growing unbounded
+    /// when messages are enqueued directly at the store layer (e.g. prompt
+    /// receipts), bypassing the egress coordinator's own caps. Mirrors the
+    /// drop-oldest pruning in `record_audit_sync` / `prune_inbox_locked`.
+    /// `outbox` is insertion-ordered (always `push`ed at the end), so draining
+    /// from the front removes the oldest entries.
+    fn prune_outbox_locked(&self, registry: &mut FileIntegrationStateRegistry) {
+        let max_outbox_messages = self.policy.max_outbox_messages.max(1);
+        if registry.outbox.len() <= max_outbox_messages {
+            return;
+        }
+        let overflow = registry.outbox.len() - max_outbox_messages;
+        registry.outbox.drain(0..overflow);
+    }
+
     fn save_registry(&self, registry: &FileIntegrationStateRegistry) -> Result<(), StorageError> {
         registry.save(&self.registry_path)
     }
@@ -114,6 +131,7 @@ impl FileIntegrationStateInner {
             payload,
             queued_at: Utc::now(),
         });
+        self.prune_outbox_locked(&mut registry);
         self.save_registry(&registry)?;
         Ok(queue_id)
     }
@@ -162,6 +180,14 @@ impl FileIntegrationStateInner {
             if let Some(existing) = registry.inbox.get_mut(&prompt.prompt.prompt_id) {
                 existing.prompt = prompt.prompt;
                 existing.presented_at = existing.presented_at.or(prompt.presented_at);
+                // The incoming body overwrites the stored one, but the lifecycle
+                // status is preserved (not taken from the inbound prompt). If the
+                // existing entry is already in a completed state, re-apply at-rest
+                // redaction so a previously-redacted completed-prompt body is not
+                // resurrected in plaintext on disk. Clone the status to release the
+                // `existing` borrow before the `&mut` redaction call.
+                let status = existing.status.clone();
+                self.redact_prompt_body_if_needed(existing, status);
             } else {
                 registry
                     .inbox
@@ -280,6 +306,7 @@ impl FileIntegrationStateInner {
             payload: IntegrationOutboundPayload::PromptReceipt(receipt),
             queued_at: Utc::now(),
         });
+        self.prune_outbox_locked(&mut registry);
         self.save_registry(&registry)?;
         Ok(queue_id)
     }

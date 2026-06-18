@@ -47,6 +47,16 @@ pub(crate) struct AgentRuntimeBundle {
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Concrete SQLite storage for sync engine wiring.
     sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
+    /// #6264: shared write-once slot the runtime populates with the built
+    /// `SyncEngine` so the 4 cross-device-sync IPC commands gain a live engine.
+    /// `None` when no SyncRuntimeState was wired (e.g. tests).
+    sync_runtime_slot: Option<Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>>,
+    /// #6266: shared write-once slot the runtime populates with the local
+    /// embedding provider's `ReloadableModel` facet so `reload_embedding_model`
+    /// IPC gains a live target. `None` when no EmbeddingRuntimeState was wired.
+    embedding_runtime_slot: Option<
+        Arc<std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>>,
+    >,
     offline_mode: bool,
     event_tx: Option<broadcast::Sender<RealtimeEvent>>,
     #[cfg(feature = "analysis")]
@@ -150,6 +160,9 @@ impl AgentRuntimeBundle {
         builder = builder.with_breaker_registry(self.breaker_registry.clone());
         // Clone before the move into Scheduler::with_config_manager below.
         builder = builder.with_config_manager(self.config_manager.clone());
+        if let Some(ref cm) = self.consent_manager {
+            builder = builder.with_consent_manager(cm.clone());
+        }
         // Wire provider secret stores so the ContextAnalyzer analysis provider
         // resolves OS-keychain-backed BYOK keys at request time.
         #[cfg(feature = "analysis")]
@@ -159,7 +172,11 @@ impl AgentRuntimeBundle {
         let support = builder.build().await?;
         let accessibility_extractor = support.accessibility_extractor.clone();
         let external_llm_privacy_guard = crate::provider_adapters::ExternalOcrPrivacyGuard::new(
-            self.data_dir.join("consent.json"),
+            self.consent_manager.clone().unwrap_or_else(|| {
+                Arc::new(maekon_core::consent::ConsentManager::new(
+                    self.data_dir.join("consent.json"),
+                ))
+            }),
             self.config.privacy.pii_filter_level,
             self.config.ai_provider.external_data_policy,
             self.config.privacy.clone(),
@@ -241,6 +258,17 @@ impl AgentRuntimeBundle {
             self.breaker_registry.clone(),
         );
 
+        // #6266: publish the reloadable embedding model to the shared IPC slot so
+        // `reload_embedding_model` operates on the SAME model the pipeline uses,
+        // instead of returning service.unavailable. set() is a no-op if already
+        // populated; only the local provider yields a reloadable facet.
+        if let (Some(slot), Some(reloadable)) = (
+            &self.embedding_runtime_slot,
+            embedding.reloadable_model.clone(),
+        ) {
+            let _ = slot.set(reloadable);
+        }
+
         // Wire embedding provider + vector store into scheduler if available.
         if let (Some(ref vs), Some(ref ep)) =
             (&embedding.vector_store, &embedding.embedding_provider)
@@ -262,27 +290,45 @@ impl AgentRuntimeBundle {
             };
 
         let embedding_config = &self.config.analysis.embedding;
-        let search_coordinator: Option<Arc<maekon_analysis::AdaptiveSearchCoordinator>> =
-            if let (Some(ref vs), Some(ref vi)) = (&embedding.vector_store, &vector_index) {
-                let sc = maekon_analysis::SearchConfig {
-                    brute_force_threshold: 10_000,
-                    ivf_threshold: 100_000,
-                    hnsw_threshold: 5_000,
-                    oversample_factor: embedding_config.binary_oversample_factor,
-                    default_nprobe: embedding_config.ivf_nprobe,
-                    forced_strategy: match embedding_config.index_strategy.as_str() {
-                        "auto" => None,
-                        other => Some(other.to_string()),
-                    },
-                };
-                Some(Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
-                    vs.clone(),
-                    vi.clone(),
-                    sc,
-                )))
-            } else {
-                None
+        let search_coordinator: Option<Arc<maekon_analysis::AdaptiveSearchCoordinator>> = if let (
+            Some(ref vs),
+            Some(ref vi),
+        ) =
+            (&embedding.vector_store, &vector_index)
+        {
+            let sc = maekon_analysis::SearchConfig {
+                brute_force_threshold: 10_000,
+                ivf_threshold: 100_000,
+                hnsw_threshold: 5_000,
+                oversample_factor: embedding_config.binary_oversample_factor,
+                default_nprobe: embedding_config.ivf_nprobe,
+                forced_strategy: match embedding_config.index_strategy.as_str() {
+                    "auto" => None,
+                    s @ ("brute_force" | "ivf" | "ivf_binary") => Some(s.to_string()),
+                    // "hnsw" is meaningful only when compiled with the feature
+                    // AND an AnnIndex is wired (not the case in production).
+                    #[cfg(feature = "hnsw")]
+                    "hnsw" => Some("hnsw".to_string()),
+                    other => {
+                        // review4 F9: an unrecognized index_strategy previously
+                        // degraded silently to a full brute-force scan. Warn once
+                        // at startup and fall back to auto strategy selection.
+                        tracing::warn!(
+                            index_strategy = %other,
+                            "unrecognized embedding.index_strategy; using auto strategy selection"
+                        );
+                        None
+                    }
+                },
             };
+            Some(Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
+                vs.clone(),
+                vi.clone(),
+                sc,
+            )))
+        } else {
+            None
+        };
 
         if let Some(ref vi) = vector_index {
             scheduler = scheduler.with_vector_index(vi.clone());
@@ -355,6 +401,13 @@ impl AgentRuntimeBundle {
         )
         .await;
         if let Some(sync_engine) = sync.sync_engine {
+            // #6264: publish the built engine to the shared IPC slot so the
+            // cross-device-sync Tauri commands (status/trigger/peers) operate on
+            // the SAME engine the scheduler drives, instead of returning
+            // service.unavailable. set() is a no-op if already populated.
+            if let Some(slot) = &self.sync_runtime_slot {
+                let _ = slot.set(sync_engine.clone());
+            }
             scheduler = scheduler.with_sync_engine(sync_engine);
         }
 
@@ -544,6 +597,14 @@ pub(crate) struct AgentRuntimeBuilder<'a> {
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// Concrete SQLite storage for sync engine wiring.
     sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
+    /// #6264: shared write-once slot for the built `SyncEngine` — see the
+    /// matching field on `AgentRuntimeBundle`.
+    sync_runtime_slot: Option<Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>>,
+    /// #6266: shared write-once slot for the reloadable embedding model — see the
+    /// matching field on `AgentRuntimeBundle`.
+    embedding_runtime_slot: Option<
+        Arc<std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>>,
+    >,
     offline_mode: bool,
     event_tx: Option<broadcast::Sender<RealtimeEvent>>,
     #[cfg(feature = "analysis")]
@@ -618,6 +679,8 @@ impl<'a> AgentRuntimeBuilder<'a> {
             erasure_requested,
             vector_store: None,
             sqlite_storage_concrete,
+            sync_runtime_slot: None,
+            embedding_runtime_slot: None,
             data_dir,
             config,
             config_manager,
@@ -795,6 +858,32 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
+    /// #6264: provide the shared write-once slot the runtime populates with the
+    /// built `SyncEngine`, so the cross-device-sync IPC commands gain a live
+    /// engine. Shares the `Arc<OnceLock<..>>` held by the registered
+    /// `SyncRuntimeState`.
+    pub(crate) fn with_sync_runtime_slot(
+        mut self,
+        slot: Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>,
+    ) -> Self {
+        self.sync_runtime_slot = Some(slot);
+        self
+    }
+
+    /// #6266: provide the shared write-once slot the runtime populates with the
+    /// reloadable embedding model, so `reload_embedding_model` IPC gains a live
+    /// target. Shares the `Arc<OnceLock<..>>` held by the registered
+    /// `EmbeddingRuntimeState`.
+    pub(crate) fn with_embedding_runtime_slot(
+        mut self,
+        slot: Arc<
+            std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>,
+        >,
+    ) -> Self {
+        self.embedding_runtime_slot = Some(slot);
+        self
+    }
+
     pub(crate) fn with_capture_paused(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.capture_paused = Some(flag);
         self
@@ -914,6 +1003,8 @@ impl<'a> AgentRuntimeBuilder<'a> {
             config_manager: self.config_manager,
             consent_manager: self.consent_manager,
             sqlite_storage_concrete: self.sqlite_storage_concrete,
+            sync_runtime_slot: self.sync_runtime_slot,
+            embedding_runtime_slot: self.embedding_runtime_slot,
             offline_mode: self.offline_mode,
             event_tx: self.event_tx,
             #[cfg(feature = "analysis")]

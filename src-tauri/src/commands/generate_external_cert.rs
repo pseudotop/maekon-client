@@ -18,7 +18,7 @@ pub mod tools {
 
     use rcgen::{CertificateParams, KeyPair, SanType};
 
-    /// 생성된 인증서 및 키 파일 경로를 담는 구조체.
+    /// Holds the paths to the generated certificate and key files.
     pub struct GeneratedAssets {
         pub server_cert_path: PathBuf,
         pub server_key_path: PathBuf,
@@ -28,9 +28,9 @@ pub mod tools {
         pub jwt_algorithm: &'static str,
     }
 
-    /// TLS 서버 인증서와 JWT 서명 키쌍을 `out_dir`에 생성한다.
+    /// Generates a TLS server certificate and a JWT signing keypair into `out_dir`.
     ///
-    /// TLS cert: 1년 유효, SAN = [localhost, bind_ip].
+    /// TLS cert: valid for 1 year, SAN = [localhost, bind_ip].
     /// JWT keypair: ring backend → ES256 (ECDSA P-256); aws_lc_rs backend → RSA-2048.
     pub fn generate_external_cert_assets(
         out_dir: &Path,
@@ -49,6 +49,9 @@ pub mod tools {
         let sk = out_dir.join("server.key");
         std::fs::write(&cp, cert.pem())?;
         std::fs::write(&sk, kp.serialize_pem())?;
+        // Restrict the TLS private key to owner-only on Unix. Post-write
+        // set_permissions (not create_new+mode) preserves --force overwrite.
+        restrict_to_owner_only(&sk)?;
 
         // --- JWT keypair ---
         // Try RSA-2048 first; ring will return KeyGenerationUnavailable, so fall back to ES256.
@@ -57,6 +60,8 @@ pub mod tools {
         let js = out_dir.join("jwt_signing.priv");
         std::fs::write(&jp, jwt_kp.public_key_pem())?;
         std::fs::write(&js, jwt_kp.serialize_pem())?;
+        // Restrict the JWT signing private key to owner-only on Unix.
+        restrict_to_owner_only(&js)?;
 
         Ok(GeneratedAssets {
             server_cert_path: cp,
@@ -67,7 +72,8 @@ pub mod tools {
         })
     }
 
-    /// RSA-2048 키 생성을 시도하고, 백엔드가 지원하지 않으면 ES256으로 폴백한다.
+    /// Attempts RSA-2048 key generation and falls back to ES256 if the backend
+    /// does not support it.
     fn try_rsa_or_fallback_ec() -> anyhow::Result<(KeyPair, &'static str)> {
         use rcgen::PKCS_RSA_SHA256;
         match KeyPair::generate_for(&PKCS_RSA_SHA256) {
@@ -88,6 +94,26 @@ pub mod tools {
                 Ok((kp, "ES256"))
             }
         }
+    }
+
+    /// Restricts the private key file permissions to owner-only (0o600).
+    ///
+    /// Uses `set_permissions` *after* the write to preserve `--force` overwrite
+    /// semantics (the create_new+mode approach breaks overwriting an existing
+    /// file). Follows the existing convention in `lan_tls`. No-op on non-Unix
+    /// platforms.
+    fn restrict_to_owner_only(path: &Path) -> anyhow::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, perms)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+        Ok(())
     }
 }
 
@@ -153,6 +179,54 @@ mod tests {
             ok,
             "JWT private key must parse as jsonwebtoken EncodingKey for the active backend"
         );
+    }
+
+    /// Regression (#6122): private key files must be owner-only (0o600) on Unix
+    /// so the TLS and JWT signing keys are not world/group-readable.
+    #[cfg(unix)]
+    #[test]
+    fn private_keys_are_owner_only_mode_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let assets =
+            generate_external_cert_assets(dir.path(), "127.0.0.1".parse().unwrap()).unwrap();
+        for key_path in [&assets.server_key_path, &assets.jwt_priv_path] {
+            let mode = std::fs::metadata(key_path).unwrap().permissions().mode();
+            // Mask to the permission bits; the high bits encode the file type.
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "private key {key_path:?} must be mode 0o600, got {:o}",
+                mode & 0o777
+            );
+        }
+    }
+
+    /// Regression (#6122): permission restriction must survive a --force
+    /// overwrite of pre-existing key files (post-write set_permissions path).
+    #[cfg(unix)]
+    #[test]
+    fn private_keys_are_owner_only_after_force_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        // Pre-create the key files with permissive (world-readable) modes to
+        // simulate stale artifacts before a --force regeneration.
+        for name in ["server.key", "jwt_signing.priv"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"stale").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let assets =
+            generate_external_cert_assets(dir.path(), "127.0.0.1".parse().unwrap()).unwrap();
+        for key_path in [&assets.server_key_path, &assets.jwt_priv_path] {
+            let mode = std::fs::metadata(key_path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "private key {key_path:?} must be mode 0o600 after overwrite, got {:o}",
+                mode & 0o777
+            );
+        }
     }
 }
 

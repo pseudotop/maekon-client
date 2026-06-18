@@ -10,6 +10,7 @@ use crate::server_runtime_context::ServerLaunchContext;
 use crate::web_server_runtime::{
     WebServerLaunchContext, WebServerRuntimeBuilder, WebServerSupportContext,
 };
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use std::sync::Arc;
 
 pub(super) struct WebAutomationWiring {
@@ -40,6 +41,7 @@ pub(super) fn build_web_automation_wiring(
     coaching_engine: Arc<maekon_analysis::CoachingEngine>,
     session_manager: &SessionManagerLaunch,
     shared_capture_services: Option<&Arc<crate::capture_services::SharedCaptureServices>>,
+    capture_consent_manager: Arc<dyn ConsentManagerPort>,
     cli_health_flag: Arc<std::sync::atomic::AtomicBool>,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     // registry from the composition root, forwarded to the web server's
@@ -62,6 +64,7 @@ pub(super) fn build_web_automation_wiring(
     )
     .with_app_handle(app_handle.clone())
     .with_cli_health_flag(cli_health_flag)
+    .with_consent_manager(capture_consent_manager)
     .with_breaker_registry(breaker_registry);
     let mut builder = WebServerRuntimeBuilder::new(
         sqlite_storage.clone(),
@@ -263,10 +266,21 @@ fn spawn_dashboard_grpc_servers(
         let ext_storage = sqlite_storage.clone() as Arc<dyn maekon_web::storage_port::WebStorage>;
         let ext_audit: Arc<dyn maekon_core::ports::audit_log::AuditLogPort> = {
             let storage_for_audit = sqlite_storage.clone();
-            let persistence_cb: Arc<dyn maekon_automation::audit::AuditPersistence> =
+            // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
+            // blocking save in ChannelAuditPersistence so it drains on a
+            // dedicated spawn_blocking task off-reactor.
+            let blocking_persist: Arc<dyn maekon_automation::audit::AuditPersistence> =
                 Arc::new(move |entry: &maekon_core::models::audit::AuditEntry| {
                     storage_for_audit.save_audit_entry(entry);
                 });
+            // #6123: pass the runtime handle explicitly. This wiring runs on the
+            // synchronous Tauri main thread, where `Handle::try_current()` is
+            // `Err`, so spawn the drain task onto the known runtime handle.
+            let persistence_cb: Arc<dyn maekon_automation::audit::AuditPersistence> =
+                Arc::new(maekon_automation::audit::ChannelAuditPersistence::new(
+                    blocking_persist,
+                    handle.clone(),
+                ));
             let audit_query: Arc<dyn maekon_automation::audit::AuditQuery> = Arc::new(
                 crate::audit_query::SqliteAuditQuery::new(sqlite_storage.clone()),
             );

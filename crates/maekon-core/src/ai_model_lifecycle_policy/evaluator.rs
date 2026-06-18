@@ -4,7 +4,10 @@ use chrono::{DateTime, Utc};
 
 use crate::config::AiProviderType;
 use crate::error::CoreError;
-use crate::provider_surface::{canonical_provider_surface_id, provider_type_from_vendor_id};
+use crate::provider_surface::{
+    canonical_provider_surface_id, canonical_vendor_id, provider_surface_spec,
+    provider_type_from_vendor_id,
+};
 
 use super::catalog::parse_utc_opt;
 use super::messages::{build_block_message, build_warning_message};
@@ -118,7 +121,34 @@ pub(super) fn provider_rule_matches(
         return expected_surface_id == actual_surface_id;
     }
 
-    parse_provider_type_label(&rule.provider_type) == Some(provider_type)
+    if parse_provider_type_label(&rule.provider_type) != Some(provider_type) {
+        return false;
+    }
+
+    // Every OpenAI-compatible vendor (groq, deepseek, together, openrouter, ...)
+    // collapses onto `AiProviderType::Generic`, so a `provider_type` match alone
+    // would let a surface_id-less rule keyed on one Generic-family vendor match
+    // calls for every other Generic-family vendor. For the Generic family we
+    // therefore additionally require the rule's literal vendor id to equal the
+    // caller's resolved vendor id (derived from `surface_id`). Non-Generic
+    // provider types map 1:1 to a vendor, so the `provider_type` check above is
+    // already vendor-precise for them.
+    if provider_type == AiProviderType::Generic {
+        let Some(rule_vendor_id) = canonical_vendor_id(&rule.provider_type) else {
+            return false;
+        };
+        let Some(caller_vendor_id) = surface_id
+            .and_then(provider_surface_spec)
+            .map(|spec| spec.vendor_id.as_str())
+        else {
+            // Without a surface_id we cannot tell which Generic-family vendor the
+            // caller is, so a vendor-specific Generic rule must not match.
+            return false;
+        };
+        return rule_vendor_id.eq_ignore_ascii_case(caller_vendor_id);
+    }
+
+    true
 }
 
 pub(super) fn parse_provider_type_label(raw: &str) -> Option<AiProviderType> {

@@ -2,14 +2,16 @@
 //!
 //! Gated behind `#[cfg(feature = "download")]`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -20,17 +22,20 @@ use maekon_core::ports::model_downloader::ModelDownloader;
 
 const DEFAULT_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
-/// F-RC-C22-03: 핀된 SHA-256 해시 테이블 (공급망 무결성).
+/// F-RC-C22-03: pinned SHA-256 hash table (supply-chain integrity).
 ///
-/// whisper.cpp GGML 형식 파일 기준 (ggerganov/whisper.cpp HuggingFace repository).
-/// 업스트림 모델 업데이트 시 이 테이블을 함께 갱신하고 PR 에 증거를 첨부한다.
-/// 출처: https://huggingface.co/ggerganov/whisper.cpp (2026-05-23 기준).
-/// F-RC-C23-01: Medium SHA-256 63자 오타 수정 — LFS 포인터 교차 검증 완료.
+/// Based on the whisper.cpp GGML-format files (ggerganov/whisper.cpp HuggingFace
+/// repository). When upstream models are updated, update this table as well and attach
+/// the evidence to the PR.
+/// Source: https://huggingface.co/ggerganov/whisper.cpp (as of 2026-05-23).
+/// F-RC-C23-01: fixed the 63-char Medium SHA-256 typo — cross-verified against the LFS
+/// pointer.
 ///   `curl -s https://huggingface.co/ggerganov/whisper.cpp/raw/main/ggml-medium.bin`
-///   → `oid sha256:6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208` (64자)
-/// F-RC-C25-05: find_map 선형 탐색 → 전수 match 패턴으로 교체.
-///   새 WhisperModelSize 변형 추가 시 컴파일 타임 오류로 누락 SHA 를 감지한다.
-///   테이블은 64자 검증 테스트 전용으로 유지 (cfg(test)).
+///   → `oid sha256:6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208` (64 chars)
+/// F-RC-C25-05: replaced the find_map linear scan with an exhaustive match pattern.
+///   Adding a new WhisperModelSize variant triggers a compile-time error so a missing
+///   SHA is caught. The table is kept solely for the 64-char verification test
+///   (cfg(test)).
 #[cfg(test)]
 const EXPECTED_SHA256: &[(WhisperModelSize, &str)] = &[
     (
@@ -51,10 +56,12 @@ const EXPECTED_SHA256: &[(WhisperModelSize, &str)] = &[
     ),
 ];
 
-/// F-RC-C22-03: 모델 크기에 대한 기대 SHA-256 해시를 반환한다.
-/// WhisperModelSize 에 새 변형 추가 시 이 함수도 반드시 갱신해야 컴파일이 통과한다.
+/// F-RC-C22-03: returns the expected SHA-256 hash for a model size.
+/// When a new variant is added to WhisperModelSize, this function MUST be updated too,
+/// or compilation fails.
 pub fn model_expected_sha256(size: WhisperModelSize) -> &'static str {
-    // F-RC-C25-05: 전수 match — 신규 모델 변형 추가 시 컴파일 오류로 누락 SHA 감지
+    // F-RC-C25-05: exhaustive match — adding a new model variant triggers a compile
+    // error so a missing SHA is caught
     match size {
         WhisperModelSize::Tiny => {
             "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
@@ -89,9 +96,120 @@ pub fn model_expected_bytes(size: WhisperModelSize) -> u64 {
     }
 }
 
+/// F-RC-C19: Absolute hard ceiling for a single model download (2 GiB).
+/// Bounds the streaming write even if `model_expected_bytes` is ever inflated.
+/// The per-model cap is `min(expected * 110%, this)` so the largest known model
+/// (Medium ~1.53 GB) still fits with slack while an unbounded/oversized stream
+/// is aborted before it can fill the disk (DoS).
+const ABSOLUTE_MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// F-RC-C19: Streaming write ceiling for `model` — `expected * 110%`, clamped to
+/// the absolute 2 GiB hard cap. Once `downloaded` exceeds this the stream is
+/// aborted and the `.part` file removed (disk-fill DoS mitigation).
+fn model_download_cap(model: WhisperModelSize) -> u64 {
+    let slack = model_expected_bytes(model)
+        .saturating_mul(11)
+        .saturating_div(10);
+    slack.min(ABSOLUTE_MAX_DOWNLOAD_BYTES)
+}
+
+/// F-RC-C21: Cache key for verify-on-load SHA-256 results. A file is considered
+/// unchanged when its path, mtime and length all match — re-hashing a 1.5 GB
+/// model on every `model_status` poll would be prohibitively expensive.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct VerifyCacheKey {
+    path: PathBuf,
+    mtime_ns: i128,
+    len: u64,
+}
+
+/// F-RC-C21: Stream a file through SHA-256 in 1 MiB chunks without buffering the
+/// whole file in memory. Returns the lowercase-hex digest.
+async fn hash_file_sha256(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_digest(hasher))
+}
+
+/// Shared lowercase-hex formatting for a finalized SHA-256 hasher.
+fn hex_digest(hasher: Sha256) -> String {
+    hasher.finalize().iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write as _;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
+}
+
+/// Synchronous counterpart to [`hash_file_sha256`]: stream a file through SHA-256
+/// in 1 MiB chunks (no whole-file buffering), lowercase-hex. Used by the
+/// synchronous load-time verify gate where no async runtime is available.
+fn hash_file_sha256_sync(path: &Path) -> Result<String, std::io::Error> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_digest(hasher))
+}
+
+/// #6344: verify-on-load gate for the DOWNLOAD-MANAGED model path. Returns `true`
+/// only if the managed model file for `model` exists under `model_dir` AND its
+/// bytes hash to the pinned [`model_expected_sha256`]. STT load sites must use this
+/// instead of a bare `Path::exists()` so a model corrupted or tampered on disk
+/// *after* a verified download is not loaded (the verify-before-rename fix only
+/// closed the download window). Single source so a new load site cannot regress to
+/// existence-only (ADR-075 P-3).
+///
+/// This is the synchronous, instance-free analogue of the async `model_status`
+/// `Ready` check: it re-hashes on each call (load is infrequent — startup + manual
+/// reload — so this is not the per-poll hot path `model_status` caches against).
+/// User-supplied `whisper_model_path` values have no pinned SHA and stay
+/// existence-gated by design, so callers apply this only to the managed path.
+pub fn managed_model_verified_on_disk(model: WhisperModelSize, model_dir: &Path) -> bool {
+    let path = model_dir.join(model_filename(model));
+    match hash_file_sha256_sync(&path) {
+        Ok(actual) => actual.eq_ignore_ascii_case(model_expected_sha256(model)),
+        Err(_) => false,
+    }
+}
+
+/// F-RC-C21: extract the platform-native mtime as nanoseconds since the UNIX
+/// epoch, falling back to `0` when unavailable. Used only as a cache
+/// invalidation signal, so a coarse/absent value just forces a re-hash.
+fn metadata_mtime_ns(meta: &std::fs::Metadata) -> i128 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0)
+}
+
 pub struct WhisperModelDownloader {
     client: reqwest::Client,
     base_url: String,
+    /// F-RC-C21: memoized verify-on-load hash results keyed by (path, mtime, len).
+    /// Stores the computed lowercase-hex SHA-256 so a Ready report can be
+    /// re-verified without re-hashing an unchanged file.
+    verify_cache: Mutex<HashMap<VerifyCacheKey, String>>,
+    /// F-RC-C19: test-only override of the streaming ceiling so the disk-fill
+    /// abort path can be exercised with a small mock body. `None` in production
+    /// (the real `model_download_cap` applies).
+    #[cfg(test)]
+    cap_override: Option<u64>,
 }
 
 impl Default for WhisperModelDownloader {
@@ -100,11 +218,31 @@ impl Default for WhisperModelDownloader {
     }
 }
 
+/// Build the model-download HTTP client with conservative timeouts (review4).
+///
+/// A model can be ~1.5 GB, so a single total `.timeout()` is wrong — it would
+/// abort legitimate large downloads. Instead bound the connect phase and the
+/// idle-between-reads gap, so a stalled / half-open connection (slow-loris, dead
+/// TCP that never RSTs) fails fast — releasing the task, the `.part` file handle,
+/// and the single-download lock — instead of hanging forever. The previous
+/// `reqwest::Client::new()` set NO timeouts, so a mid-stream stall jammed all
+/// future downloads until process restart.
+fn build_download_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("failed to build whisper-download reqwest client")
+}
+
 impl WhisperModelDownloader {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_download_client(),
             base_url: DEFAULT_BASE_URL.to_string(),
+            verify_cache: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            cap_override: None,
         }
     }
 
@@ -114,8 +252,69 @@ impl WhisperModelDownloader {
     #[doc(hidden)]
     pub fn new_with_base_url(base_url: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_download_client(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            verify_cache: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            cap_override: None,
+        }
+    }
+
+    /// F-RC-C19 (test-only): override the per-download streaming ceiling.
+    #[cfg(test)]
+    fn with_cap_override(mut self, cap: u64) -> Self {
+        self.cap_override = Some(cap);
+        self
+    }
+
+    /// F-RC-C19: the effective streaming ceiling for `model` (test override
+    /// wins when set, otherwise the production `model_download_cap`).
+    fn effective_cap(&self, model: WhisperModelSize) -> u64 {
+        #[cfg(test)]
+        if let Some(c) = self.cap_override {
+            return c;
+        }
+        model_download_cap(model)
+    }
+
+    /// F-RC-C21: Re-hash `path` and compare against `expected_sha256`.
+    /// Returns `Ok(())` on match, `Err(actual_hash)` on mismatch. Results are
+    /// memoized by (path, mtime, len) so an unchanged file is hashed once.
+    /// `len`/`mtime_ns` come from the caller's already-fetched metadata.
+    async fn verify_file_sha256(
+        &self,
+        path: &Path,
+        len: u64,
+        mtime_ns: i128,
+        expected_sha256: &str,
+    ) -> Result<(), String> {
+        let key = VerifyCacheKey {
+            path: path.to_path_buf(),
+            mtime_ns,
+            len,
+        };
+
+        // Fast path: cached hash for this exact (path, mtime, len).
+        if let Some(cached) = self.verify_cache.lock().get(&key).cloned() {
+            return if cached == expected_sha256 {
+                Ok(())
+            } else {
+                Err(cached)
+            };
+        }
+
+        // Slow path: stream the file through the hasher (bounded 1 MiB buffer
+        // so a 1.5 GB model never lands wholesale in memory).
+        let actual = hash_file_sha256(path)
+            .await
+            .map_err(|e| format!("verify-on-load read failed: {e}"))?;
+
+        self.verify_cache.lock().insert(key, actual.clone());
+
+        if actual == expected_sha256 {
+            Ok(())
+        } else {
+            Err(actual)
         }
     }
 }
@@ -195,105 +394,135 @@ impl ModelDownloader for WhisperModelDownloader {
         }
 
         let total_bytes = response.content_length();
-        let mut stream = response.bytes_stream();
-        // F-RR-22: converted from std::fs::File + sync write_all to tokio::fs::File +
-        // AsyncWriteExt::write_all so chunk writes don't block the async runtime.
-        let mut file =
-            tokio::fs::File::create(&part_path)
-                .await
-                .map_err(|e| CoreError::AudioCapture {
-                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                    message: format!("create part file: {e}"),
-                })?;
-        let mut hasher = Sha256::new();
-        let mut downloaded: u64 = 0;
+        // F-RC-C19: hard streaming ceiling — abort once the on-disk bytes exceed
+        // expected*110% (clamped to 2 GiB) so a runaway/oversized response cannot
+        // fill the disk before the post-stream size check would run.
+        let cap = self.effective_cap(model);
 
-        while let Some(chunk_result) = stream.next().await {
-            // Check cancellation
-            if cancelled.load(Ordering::Relaxed) {
-                drop(file);
-                if let Err(e) = tokio::fs::remove_file(&part_path).await {
-                    debug!("remove_file failed: {e}");
+        // F-RC-C23: run the whole streaming write inside one fallible block and
+        // remove the `.part` file on ANY error before the successful rename
+        // (previously only the cancellation arm cleaned up, leaking an orphan
+        // `.part` on mid-stream network/write/ceiling faults).
+        let stream_result: Result<(String, u64), CoreError> = async {
+            let mut stream = response.bytes_stream();
+            // F-RR-22: converted from std::fs::File + sync write_all to tokio::fs::File +
+            // AsyncWriteExt::write_all so chunk writes don't block the async runtime.
+            let mut file =
+                tokio::fs::File::create(&part_path)
+                    .await
+                    .map_err(|e| CoreError::AudioCapture {
+                        code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                        message: format!("create part file: {e}"),
+                    })?;
+            let mut hasher = Sha256::new();
+            let mut downloaded: u64 = 0;
+
+            while let Some(chunk_result) = stream.next().await {
+                // Check cancellation
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(CoreError::AudioCapture {
+                        code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                        message: "download cancelled".into(),
+                    });
                 }
-                return Err(CoreError::AudioCapture {
-                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                    message: "download cancelled".into(),
+
+                let chunk = chunk_result.map_err(|e| {
+                    // Iter-90: stream-read timeout propagates the same wire code
+                    // as send()-time timeout (see top of this function).
+                    if e.is_timeout() {
+                        CoreError::RequestTimeout {
+                            code: maekon_core::error_codes::NetworkCode::Timeout,
+                            timeout_ms: 0,
+                        }
+                    } else {
+                        CoreError::Network {
+                            code: maekon_core::error_codes::NetworkCode::Generic,
+                            message: format!("download stream: {e}"),
+                        }
+                    }
+                })?;
+
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|e| CoreError::AudioCapture {
+                        code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                        message: format!("write chunk: {e}"),
+                    })?;
+                hasher.update(&chunk);
+                downloaded += chunk.len() as u64;
+
+                // F-RC-C19: enforce the ceiling immediately after the write so the
+                // `.part` file can never grow past `cap` (disk-fill DoS guard).
+                if downloaded > cap {
+                    return Err(CoreError::IntegrityCheckFailed {
+                        code: maekon_core::error_codes::AudioCode::IntegrityCheckFailed,
+                        message: format!(
+                            "Whisper model download for {model:?} exceeded size ceiling: \
+                             downloaded={downloaded} > cap={cap} — aborted (disk-fill protection)"
+                        ),
+                    });
+                }
+
+                let progress_pct = total_bytes.map(|total| {
+                    if total == 0 {
+                        0u8
+                    } else {
+                        ((downloaded * 100) / total).min(100) as u8
+                    }
+                });
+
+                let _ = progress_tx.send(DownloadProgress {
+                    progress_pct,
+                    bytes_downloaded: downloaded,
+                    total_bytes,
                 });
             }
 
-            let chunk = chunk_result.map_err(|e| {
-                // Iter-90: stream-read timeout propagates the same wire code
-                // as send()-time timeout (see top of this function).
-                if e.is_timeout() {
-                    CoreError::RequestTimeout {
-                        code: maekon_core::error_codes::NetworkCode::Timeout,
-                        timeout_ms: 0,
-                    }
-                } else {
-                    CoreError::Network {
-                        code: maekon_core::error_codes::NetworkCode::Generic,
-                        message: format!("download stream: {e}"),
-                    }
-                }
-            })?;
-
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| CoreError::AudioCapture {
-                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                    message: format!("write chunk: {e}"),
-                })?;
-            hasher.update(&chunk);
-            downloaded += chunk.len() as u64;
-
-            let progress_pct = total_bytes.map(|total| {
-                if total == 0 {
-                    0u8
-                } else {
-                    ((downloaded * 100) / total).min(100) as u8
-                }
-            });
-
-            let _ = progress_tx.send(DownloadProgress {
-                progress_pct,
-                bytes_downloaded: downloaded,
-                total_bytes,
-            });
-        }
-
-        drop(file);
-
-        // Verify expected size
-        let expected = model_expected_bytes(model);
-        if downloaded != expected {
-            warn!(
-                expected,
-                actual = downloaded,
-                "model size mismatch — upstream may have updated"
-            );
-        }
-
-        // Atomic rename (tokio::fs — stays off the blocking thread pool)
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .map_err(|e| CoreError::AudioCapture {
+            file.flush().await.map_err(|e| CoreError::AudioCapture {
                 code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                message: format!("rename part file: {e}"),
+                message: format!("flush part file: {e}"),
             })?;
+            drop(file);
 
-        let hash = hasher.finalize().iter().fold(String::new(), |mut acc, b| {
-            use std::fmt::Write as _;
-            let _ = write!(acc, "{b:02x}");
-            acc
-        });
+            // Verify expected size
+            let expected = model_expected_bytes(model);
+            if downloaded != expected {
+                warn!(
+                    expected,
+                    actual = downloaded,
+                    "model size mismatch — upstream may have updated"
+                );
+            }
 
-        // F-RC-C22-03: SHA-256 무결성 검사 — 핀된 해시와 불일치 시 즉시 실패.
-        // 파일은 atomic rename 전에 이미 삭제되므로 corrupt 파일이 남지 않는다.
-        // F-RC-C25-05: model_expected_sha256 이 전수 match 로 &str 반환 — 항상 검사 수행.
+            Ok((hex_digest(hasher), downloaded))
+        }
+        .await;
+
+        // F-RC-C23: on ANY streaming error, drop the orphan `.part` before
+        // propagating (matches the former cancellation cleanup for every path).
+        let (hash, downloaded) = match stream_result {
+            Ok(ok) => ok,
+            Err(e) => {
+                if let Err(rm) = tokio::fs::remove_file(&part_path).await {
+                    debug!("remove_file failed: {rm}");
+                }
+                return Err(e);
+            }
+        };
+
+        // F-RC-C22-03 + review4: verify the SHA-256 BEFORE publishing the file at
+        // its loadable `final_path`. Previously the rename happened first, so
+        // `final_path` briefly existed with UNVERIFIED bytes (TOCTOU) — and the STT
+        // load path only checks `.exists()`, so a concurrent load (or any
+        // exists()-gated caller) in that window could parse a corrupt/tampered
+        // model. Verify while the bytes are still at `part_path`; only rename after
+        // the hash matches, so `final_path` never exists with unverified content.
+        // F-RC-C25-05: model_expected_sha256 uses exhaustive match returning &str —
+        // the check is always performed (no Option skip path).
         let expected = model_expected_sha256(model);
         if hash != expected {
-            // part 파일 정리 (rename 전 단계이므로 final_path 는 아직 없음)
-            let _ = tokio::fs::remove_file(&final_path).await;
+            // Mismatch: drop the unverified `.part` and never publish it.
+            let _ = tokio::fs::remove_file(&part_path).await;
             return Err(CoreError::IntegrityCheckFailed {
                 code: maekon_core::error_codes::AudioCode::IntegrityCheckFailed,
                 message: format!(
@@ -301,6 +530,31 @@ impl ModelDownloader for WhisperModelDownloader {
                      expected={expected}, actual={hash} — download aborted (supply-chain integrity)"
                 ),
             });
+        }
+
+        // Atomic rename (tokio::fs — stays off the blocking thread pool). Only
+        // reached once the content is verified, so the loadable path is always sound.
+        if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
+            // F-RC-C23: rename failed — the `.part` is still present, clean it up.
+            if let Err(rm) = tokio::fs::remove_file(&part_path).await {
+                debug!("remove_file failed: {rm}");
+            }
+            return Err(CoreError::AudioCapture {
+                code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                message: format!("rename part file: {e}"),
+            });
+        }
+
+        // F-RC-C21: seed the verify-on-load cache with the just-verified hash so
+        // the next `model_status` poll re-confirms Ready from cache instead of
+        // re-hashing the freshly written (up to 1.5 GB) file.
+        if let Ok(meta) = tokio::fs::metadata(&final_path).await {
+            let key = VerifyCacheKey {
+                path: final_path.clone(),
+                mtime_ns: metadata_mtime_ns(&meta),
+                len: meta.len(),
+            };
+            self.verify_cache.lock().insert(key, hash.clone());
         }
 
         info!(
@@ -313,17 +567,44 @@ impl ModelDownloader for WhisperModelDownloader {
         Ok(final_path)
     }
 
-    fn model_status(&self, model: WhisperModelSize, dest_dir: &Path) -> ModelDownloadStatus {
+    async fn model_status(&self, model: WhisperModelSize, dest_dir: &Path) -> ModelDownloadStatus {
         let path = dest_dir.join(model_filename(model));
-        match std::fs::metadata(&path) {
-            Ok(meta) => ModelDownloadStatus::Ready {
-                path: path.to_string_lossy().into_owned(),
-                size_bytes: meta.len(),
-            },
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) => {
+                // F-RC-C21: verify-on-load — file existence alone is NOT trust.
+                // Re-hash and compare against the pinned SHA-256 before reporting
+                // Ready, so a corrupted/tampered file is demoted to Error and the
+                // STT runtime refuses to load it. The result is cached by
+                // (path, mtime, len) so an unchanged 1.5 GB model is hashed once.
+                let len = meta.len();
+                let mtime_ns = metadata_mtime_ns(&meta);
+                let expected = model_expected_sha256(model);
+                match self
+                    .verify_file_sha256(&path, len, mtime_ns, expected)
+                    .await
+                {
+                    Ok(()) => ModelDownloadStatus::Ready {
+                        path: path.to_string_lossy().into_owned(),
+                        size_bytes: len,
+                    },
+                    Err(actual) => {
+                        warn!(
+                            model = ?model,
+                            expected,
+                            actual = %actual,
+                            "model SHA-256 verify-on-load mismatch — refusing to load"
+                        );
+                        ModelDownloadStatus::Error {
+                            message: "model failed integrity verification — please re-download"
+                                .into(),
+                        }
+                    }
+                }
+            }
             Err(_) => {
                 // Check for partial download
                 let part_path = dest_dir.join(format!("{}.part", model_filename(model)));
-                if part_path.exists() {
+                if tokio::fs::metadata(&part_path).await.is_ok() {
                     ModelDownloadStatus::Error {
                         message: "incomplete download — please re-download".into(),
                     }
@@ -334,17 +615,25 @@ impl ModelDownloader for WhisperModelDownloader {
         }
     }
 
-    fn delete_model(&self, model: WhisperModelSize, dest_dir: &Path) -> Result<(), CoreError> {
+    async fn delete_model(
+        &self,
+        model: WhisperModelSize,
+        dest_dir: &Path,
+    ) -> Result<(), CoreError> {
         let path = dest_dir.join(model_filename(model));
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| CoreError::AudioCapture {
-                code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                message: format!("delete model: {e}"),
-            })?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(CoreError::AudioCapture {
+                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                    message: format!("delete model: {e}"),
+                });
+            }
         }
         // Also clean up any .part file
         let part = dest_dir.join(format!("{}.part", model_filename(model)));
-        if let Err(e) = std::fs::remove_file(&part) {
+        if let Err(e) = tokio::fs::remove_file(&part).await {
             debug!("remove_file failed: {e}");
         }
         debug!(model = ?model, "model deleted");
@@ -365,45 +654,109 @@ mod tests {
         assert_eq!(model_filename(WhisperModelSize::Medium), "ggml-medium.bin");
     }
 
-    #[test]
-    fn model_status_not_installed() {
+    #[tokio::test]
+    async fn model_status_not_installed() {
         let dl = WhisperModelDownloader::new();
         let dir = tempdir().unwrap();
-        let status = dl.model_status(WhisperModelSize::Base, dir.path());
+        let status = dl.model_status(WhisperModelSize::Base, dir.path()).await;
         assert!(matches!(status, ModelDownloadStatus::NotInstalled));
     }
 
-    #[test]
-    fn model_status_ready_when_file_exists() {
+    /// F-RC-C21: verify-on-load — a present-but-unverified file (fake bytes whose
+    /// SHA-256 cannot match the pinned hash) must be demoted to Error, NOT Ready.
+    /// File existence alone is no longer treated as Ready.
+    #[tokio::test]
+    async fn model_status_corrupt_file_demoted_to_error() {
         let dl = WhisperModelDownloader::new();
         let dir = tempdir().unwrap();
         let path = dir.path().join("ggml-base.bin");
         std::fs::write(&path, b"fake model data").unwrap();
-        let status = dl.model_status(WhisperModelSize::Base, dir.path());
-        match status {
-            ModelDownloadStatus::Ready { size_bytes, .. } => {
-                assert_eq!(size_bytes, 15); // "fake model data".len()
-            }
-            _ => panic!("expected Ready"),
-        }
+        let status = dl.model_status(WhisperModelSize::Base, dir.path()).await;
+        assert!(
+            matches!(status, ModelDownloadStatus::Error { .. }),
+            "fake-content model must fail verify-on-load, got: {status:?}"
+        );
     }
 
     #[test]
-    fn delete_model_removes_file() {
+    fn hash_file_sha256_sync_matches_known_vector() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        // NIST SHA-256("abc").
+        assert_eq!(
+            hash_file_sha256_sync(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// #6344: the sync load-gate rejects a missing file and a present-but-corrupt
+    /// file (whose SHA-256 cannot match the pinned hash), so neither is loaded.
+    #[test]
+    fn managed_model_verified_on_disk_rejects_corrupt_and_missing() {
+        let dir = tempdir().unwrap();
+        assert!(
+            !managed_model_verified_on_disk(WhisperModelSize::Base, dir.path()),
+            "a missing managed model must not be considered loadable"
+        );
+        let path = dir.path().join(model_filename(WhisperModelSize::Base));
+        std::fs::write(&path, b"fake model data").unwrap();
+        assert!(
+            !managed_model_verified_on_disk(WhisperModelSize::Base, dir.path()),
+            "a corrupt managed model must not be considered loadable"
+        );
+    }
+
+    /// F-RC-C21: a file whose bytes hash to the pinned SHA-256 reports Ready.
+    /// The expected hash is injected via the verify cache so the test exercises
+    /// the match path without needing the real 77 MB artifact.
+    #[tokio::test]
+    async fn model_status_ready_when_hash_matches() {
+        let dl = WhisperModelDownloader::new();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(model_filename(WhisperModelSize::Tiny));
+        let body = b"verify-on-load-ready-body";
+        std::fs::write(&path, body).unwrap();
+
+        // Pre-seed the cache with the PINNED expected hash for this file's
+        // (path, mtime, len) so verify-on-load takes the cached Ok path.
+        let meta = std::fs::metadata(&path).unwrap();
+        let key = VerifyCacheKey {
+            path: path.clone(),
+            mtime_ns: metadata_mtime_ns(&meta),
+            len: meta.len(),
+        };
+        let expected = model_expected_sha256(WhisperModelSize::Tiny).to_string();
+        dl.verify_cache.lock().insert(key, expected);
+
+        let status = dl.model_status(WhisperModelSize::Tiny, dir.path()).await;
+        match status {
+            ModelDownloadStatus::Ready { size_bytes, .. } => {
+                assert_eq!(size_bytes, body.len() as u64);
+            }
+            other => panic!("expected Ready for matching hash, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_model_removes_file() {
         let dl = WhisperModelDownloader::new();
         let dir = tempdir().unwrap();
         let path = dir.path().join("ggml-tiny.bin");
         std::fs::write(&path, b"data").unwrap();
         assert!(path.exists());
-        dl.delete_model(WhisperModelSize::Tiny, dir.path()).unwrap();
+        dl.delete_model(WhisperModelSize::Tiny, dir.path())
+            .await
+            .unwrap();
         assert!(!path.exists());
     }
 
-    #[test]
-    fn delete_model_noop_when_missing() {
+    #[tokio::test]
+    async fn delete_model_noop_when_missing() {
         let dl = WhisperModelDownloader::new();
         let dir = tempdir().unwrap();
         dl.delete_model(WhisperModelSize::Medium, dir.path())
+            .await
             .unwrap();
     }
 
@@ -478,16 +831,18 @@ mod tests {
         );
     }
 
-    // ---------- F-RC-C22-03: SHA-256 무결성 검사 ----------
+    // ---------- F-RC-C22-03: SHA-256 integrity check ----------
 
-    /// 올바른 SHA-256 를 반환하는 mock 서버 → 다운로드 성공 경로.
-    /// 실제 hash 를 계산해 EXPECTED_SHA256 테이블에 임시 mock 데이터와 매칭.
+    /// A mock server returning the correct SHA-256 → download success path.
+    /// Computes the actual hash and matches it against temporary mock data in the
+    /// EXPECTED_SHA256 table.
     #[tokio::test]
     async fn download_integrity_check_passes_with_correct_hash() {
         use sha2::{Digest, Sha256};
 
-        // 짧은 바이트 본문 — Tiny 모델 크기 불일치 경고가 발생하지만 오류가 아니다.
-        // 핵심: SHA-256 가 일치하면 IntegrityCheckFailed 가 발생하지 않아야 한다.
+        // Short byte body — triggers a Tiny model size-mismatch warning, but that is not
+        // an error. Key point: when the SHA-256 matches, IntegrityCheckFailed must not
+        // occur.
         let body = b"fake-tiny-model-data-for-integrity-test";
         let expected_hash = {
             let mut h = Sha256::new();
@@ -507,9 +862,9 @@ mod tests {
             .create_async()
             .await;
 
-        // EXPECTED_SHA256 를 우회하기 위해 new_with_base_url 사용 후,
-        // hash 가 일치하지 않으면 IntegrityCheckFailed 로 거부된다.
-        // 여기서는 실제 hash 가 테이블 고정값과 다르므로 거부 경로를 테스트한다.
+        // Use new_with_base_url to bypass EXPECTED_SHA256; if the hash does not match,
+        // the download is rejected with IntegrityCheckFailed. Here the actual hash
+        // differs from the pinned table value, so this exercises the rejection path.
         let dl = WhisperModelDownloader::new_with_base_url(server.url());
         let dir = tempdir().unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -522,27 +877,28 @@ mod tests {
             )
             .await;
 
-        // 고정된 EXPECTED_SHA256[Tiny] 와 계산된 hash 가 다르므로 IntegrityCheckFailed.
+        // The computed hash differs from the pinned EXPECTED_SHA256[Tiny] → IntegrityCheckFailed.
         match result {
             Err(CoreError::IntegrityCheckFailed { .. }) => {
-                // 기대 동작: 고정 해시와 불일치 → 거부
+                // Expected behavior: mismatch against the pinned hash → rejected
             }
             Ok(_) => {
-                // 만약 테이블에 hash 가 없으면(None) 통과 — 경고만 출력 (허용 경로)
+                // If the table has no hash (None), it passes — warning only (allowed path)
             }
             Err(other) => {
-                // 다른 에러는 허용하지 않는다.
-                // (예: size mismatch 는 warn 만 발생하고 에러가 아님)
+                // No other error is allowed.
+                // (e.g., a size mismatch only emits a warning and is not an error)
                 panic!("unexpected error variant: {other:?}");
             }
         }
 
-        // 핵심: corrupted-bytes 시나리오 — hash 불일치 → IntegrityCheckFailed 반환
-        let _ = expected_hash; // 계산 완료 확인
+        // Key point: corrupted-bytes scenario — hash mismatch → returns IntegrityCheckFailed
+        let _ = expected_hash; // confirm the computation completed
     }
 
-    /// corrupted-bytes 시나리오: 본문이 0xFF 로 채워진 경우 IntegrityCheckFailed.
-    /// F-RC-C25-05: model_expected_sha256 전수 match — 항상 SHA 가 존재하므로 스킵 가드 제거.
+    /// corrupted-bytes scenario: when the body is filled with 0xFF, IntegrityCheckFailed.
+    /// F-RC-C25-05: model_expected_sha256 is an exhaustive match — a SHA always exists,
+    /// so the skip guard is removed.
     #[tokio::test]
     async fn download_corrupted_bytes_returns_integrity_check_failed() {
         let corrupted_body = vec![0xFFu8; 128];
@@ -572,7 +928,7 @@ mod tests {
             "corrupted download → IntegrityCheckFailed, got: {err:?}"
         );
 
-        // 실패 시 최종 파일이 남아 있으면 안 된다 (공급망 오염 방지).
+        // On failure, the final file must not remain (prevents supply-chain contamination).
         let final_path = dir.path().join("ggml-tiny.bin");
         assert!(
             !final_path.exists(),
@@ -580,11 +936,12 @@ mod tests {
         );
     }
 
-    /// model_expected_sha256 — 전수 match, 모든 변형이 비어 있지 않은 SHA 반환 확인.
-    /// F-RC-C25-05: Option 반환 제거 — is_some() 대신 len() > 0 검사.
+    /// model_expected_sha256 — exhaustive match; verifies every variant returns a
+    /// non-empty SHA.
+    /// F-RC-C25-05: removed the Option return — checks len() > 0 instead of is_some().
     #[test]
     fn model_expected_sha256_returns_hash_for_all_sizes() {
-        // 4개 변형 모두 비어 있지 않은 64자 hex SHA-256 을 반환해야 한다.
+        // All 4 variants must return a non-empty 64-char hex SHA-256.
         for size in [
             WhisperModelSize::Tiny,
             WhisperModelSize::Base,
@@ -597,8 +954,8 @@ mod tests {
         }
     }
 
-    /// F-RC-C23-01: EXPECTED_SHA256 테이블의 모든 해시가 정확히 64자 hex 임을 보장.
-    /// Medium 해시 63자 오타 재발 방지 회귀 게이트.
+    /// F-RC-C23-01: ensures every hash in the EXPECTED_SHA256 table is exactly 64 hex
+    /// chars. Regression gate preventing a recurrence of the 63-char Medium hash typo.
     #[test]
     fn all_expected_sha256_hashes_are_64_chars() {
         for (size, hash) in EXPECTED_SHA256 {
@@ -615,7 +972,7 @@ mod tests {
         }
     }
 
-    /// AudioCode::IntegrityCheckFailed wire code 회귀 방지 (ADR-019 §1).
+    /// Regression guard for the AudioCode::IntegrityCheckFailed wire code (ADR-019 §1).
     #[test]
     fn integrity_check_failed_wire_code() {
         let err = CoreError::IntegrityCheckFailed {
@@ -623,5 +980,138 @@ mod tests {
             message: "test".into(),
         };
         assert_eq!(err.code(), "audio.integrity_check_failed");
+    }
+
+    // ---------- F-RC-C19: streaming size ceiling (disk-fill DoS) ----------
+
+    /// model_download_cap = expected * 110%, clamped to the 2 GiB absolute max.
+    #[test]
+    fn model_download_cap_is_expected_plus_slack_clamped() {
+        // Tiny/Base/Small/Medium all sit under 2 GiB → cap == expected * 110%.
+        for size in [
+            WhisperModelSize::Tiny,
+            WhisperModelSize::Base,
+            WhisperModelSize::Small,
+            WhisperModelSize::Medium,
+        ] {
+            let expected = model_expected_bytes(size);
+            let want = (expected.saturating_mul(11) / 10).min(ABSOLUTE_MAX_DOWNLOAD_BYTES);
+            assert_eq!(model_download_cap(size), want, "cap mismatch for {size:?}");
+            assert!(
+                model_download_cap(size) <= ABSOLUTE_MAX_DOWNLOAD_BYTES,
+                "cap must never exceed the 2 GiB absolute max for {size:?}"
+            );
+        }
+    }
+
+    /// F-RC-C19: a body that exceeds the (overridden) streaming ceiling is
+    /// aborted with IntegrityCheckFailed AND the orphan `.part` is removed.
+    #[tokio::test]
+    async fn download_exceeding_cap_aborts_and_removes_part() {
+        // Serve more bytes than the tiny test cap so the in-loop ceiling trips.
+        let body = vec![0xABu8; 4096];
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/ggml-tiny.bin")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let dl = WhisperModelDownloader::new_with_base_url(server.url()).with_cap_override(1024);
+        let dir = tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = dl
+            .download(
+                WhisperModelSize::Tiny,
+                dir.path(),
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect_err("body over cap must abort");
+
+        assert!(
+            matches!(err, CoreError::IntegrityCheckFailed { .. }),
+            "over-cap download → IntegrityCheckFailed, got: {err:?}"
+        );
+
+        // F-RC-C23: no orphan `.part` and no final file may survive the abort.
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        let final_path = dir.path().join("ggml-tiny.bin");
+        assert!(
+            !part_path.exists(),
+            ".part file must be removed after over-cap abort"
+        );
+        assert!(
+            !final_path.exists(),
+            "final file must not exist after over-cap abort"
+        );
+    }
+
+    // ---------- F-RC-C23: orphan .part cleanup on cancellation ----------
+
+    /// F-RC-C23: a cancelled download removes the `.part` (regression guard for
+    /// the cleanup path now shared by every error arm, not just cancellation).
+    #[tokio::test]
+    async fn download_cancelled_removes_part() {
+        // A non-trivial body so at least one chunk is streamed.
+        let body = vec![0x01u8; 64 * 1024];
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/ggml-tiny.bin")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let dl = WhisperModelDownloader::new_with_base_url(server.url());
+        let dir = tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // Pre-cancel: the first loop iteration observes the flag and bails out.
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let err = dl
+            .download(WhisperModelSize::Tiny, dir.path(), tx, cancelled)
+            .await
+            .expect_err("cancelled download must error");
+
+        assert!(
+            matches!(err, CoreError::AudioCapture { .. }),
+            "cancelled download → AudioCapture, got: {err:?}"
+        );
+
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        assert!(
+            !part_path.exists(),
+            ".part file must be removed after cancellation"
+        );
+    }
+
+    // ---------- F-RC-C21: verify-on-load cache ----------
+
+    /// F-RC-C21: the verify cache short-circuits a `model_status` poll — a cached
+    /// mismatching hash drives the Error result without re-hashing the bytes.
+    #[tokio::test]
+    async fn verify_cache_serves_cached_hash() {
+        let dl = WhisperModelDownloader::new();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(model_filename(WhisperModelSize::Tiny));
+        std::fs::write(&path, b"cache-probe-body").unwrap();
+
+        let meta = std::fs::metadata(&path).unwrap();
+        let key = VerifyCacheKey {
+            path: path.clone(),
+            mtime_ns: metadata_mtime_ns(&meta),
+            len: meta.len(),
+        };
+        // Seed a distinct sentinel hash → Error; confirms the cached value (not a
+        // fresh re-hash) drove the result.
+        dl.verify_cache.lock().insert(key, "0".repeat(64));
+
+        let status = dl.model_status(WhisperModelSize::Tiny, dir.path()).await;
+        assert!(
+            matches!(status, ModelDownloadStatus::Error { .. }),
+            "cached mismatching hash → Error, got: {status:?}"
+        );
     }
 }

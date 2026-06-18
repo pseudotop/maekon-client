@@ -24,7 +24,10 @@ pub fn prepare_input(rgba: &[u8], width: u32, height: u32) -> Result<Vec<f32>, C
             code: maekon_core::error_codes::ValidationCode::InvalidArguments,
             message: format!(
                 "invalid RGBA image: expected {} bytes, got {}",
-                width * height * 4,
+                // Widen before multiplying (review4 V18): width*height*4 in u32
+                // overflows for very large dimensions (debug panic / release wrap to
+                // a misleading byte count). Matches the checked_mul-on-usize norm.
+                (width as usize) * (height as usize) * 4,
                 rgba.len()
             ),
         }

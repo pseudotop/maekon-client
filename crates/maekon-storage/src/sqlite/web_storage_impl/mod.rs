@@ -2,8 +2,8 @@
 //!
 //! ADR-013 split: 1,045-line `web_storage_impl.rs` → 5 focused submodules.
 //!
-//! | 서브모듈 | 담당 Trait |
-//! |---------|-----------|
+//! | Submodule | Traits implemented |
+//! |-----------|--------------------|
 //! | `event_frame_storage` | `EventQueryStorage`, `FrameQueryStorage`, `StorageMaintenanceStorage` |
 //! | `tag_activity_focus_storage` | `TagStorage`, `ActivityStatsStorage`, `FocusQueryStorage` |
 //! | `suggestion_digest_storage` | `SuggestionQueryStorage`, `DigestStorage` |

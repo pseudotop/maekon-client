@@ -20,6 +20,34 @@ const QUEUE_PRESSURE_WARN_RATIO: f64 = 0.80;
 /// Threshold ratio (90%) at which a critical error is emitted.
 const QUEUE_PRESSURE_CRITICAL_RATIO: f64 = 0.90;
 
+/// Classify an upload failure as transient (worth retrying / requeueing) or
+/// permanent (must be dropped). Mirrors the classification used by
+/// `HttpApiClient::execute_with_retry` (`is_retryable`) and
+/// `RemoteSyncTransport::is_retryable`: only transport/timeout/5xx/429 errors
+/// are retryable. Permanent 4xx failures — `Auth` (401/403), `Validation`
+/// (400/422), `NotFound` (404) — are NOT retryable. Retrying them would loop
+/// forever and, because failed batches are requeued, keep the queue full and
+/// drop the newest events (a poison-pill #6078).
+fn is_retryable(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::Network { .. }
+            | CoreError::RequestTimeout {
+                code: maekon_core::error_codes::NetworkCode::Timeout,
+                ..
+            }
+            | CoreError::ServiceUnavailable { .. }
+            | CoreError::RateLimit {
+                code: maekon_core::error_codes::NetworkCode::RateLimit,
+                ..
+            }
+            // Internal/Generic failures are conservatively retryable: they
+            // typically wrap an unclassified transport-layer fault rather than
+            // a deterministic 4xx rejection.
+            | CoreError::Internal { .. }
+    )
+}
+
 pub struct BatchUploader {
     api_client: Arc<dyn ApiClient>,
     queue: Arc<SegQueue<Event>>,
@@ -224,17 +252,22 @@ impl BatchUploader {
             return Ok(0);
         }
 
-        // Circuit breaker fast-fail
-        match self.circuit_breaker.check() {
+        // Circuit breaker fast-fail. When HalfOpen, `check()` admits this caller
+        // as a probe (incrementing the breaker's in-flight probe budget, #31),
+        // which we are then obligated to resolve via record_success/record_failure
+        // before returning — otherwise the probe slot leaks until the self-heal
+        // window elapses.
+        let admitted_as_probe = match self.circuit_breaker.check() {
             CircuitState::Open { .. } => {
                 debug!("circuit open — fast-failing flush");
                 return Err(NetworkError::CircuitOpen);
             }
             CircuitState::HalfOpen => {
                 debug!("circuit half-open — probe flush");
+                true
             }
-            CircuitState::Closed => {}
-        }
+            CircuitState::Closed => false,
+        };
 
         let batch_size = self.compute_batch_size(current_size);
         let drain_count = current_size.min(batch_size);
@@ -250,6 +283,16 @@ impl BatchUploader {
 
         let actual_count = events.len();
         if actual_count == 0 {
+            // A concurrent flush drained the queue between the size snapshot and
+            // the pop loop. Treat the empty drain as a benign no-op success: if
+            // we were admitted as a HalfOpen probe, release the probe slot now
+            // (record_success) so the breaker budget is freed immediately rather
+            // than waiting for the self-heal window. We send nothing, so there is
+            // no real outcome to record — closing the breaker on an empty drain
+            // is harmless because the next real flush re-evaluates connectivity.
+            if admitted_as_probe {
+                self.circuit_breaker.record_success();
+            }
             return Ok(0);
         }
 
@@ -273,6 +316,28 @@ impl BatchUploader {
                     return Ok(actual_count);
                 }
                 Err(e) => {
+                    // Permanent 4xx failures (Auth / Validation / NotFound) will
+                    // never succeed on retry. Retrying + requeueing them is a
+                    // poison pill (#6078): the same batch fails forever, keeping
+                    // the queue full and forcing newer events to be dropped.
+                    // Drop the batch immediately instead of requeueing it.
+                    if !is_retryable(&e) {
+                        error!(
+                            err.code = %e.code(),
+                            "batch upload permanent failure — dropping {actual_count} non-retryable event(s): {e}"
+                        );
+                        if let Some(ref flag) = self.last_upload_ok {
+                            flag.store(false, Ordering::Relaxed);
+                        }
+                        self.circuit_breaker.record_failure();
+                        self.failed_batches.fetch_add(1, Ordering::Relaxed);
+                        self.total_dropped
+                            .fetch_add(actual_count, Ordering::Relaxed);
+                        self.cycle_dropped
+                            .fetch_add(actual_count, Ordering::Relaxed);
+                        return Err(e.into());
+                    }
+
                     if attempt < self.max_retries {
                         warn!(
                             "batch upload failure (attempt {}/{}): {e}",
@@ -475,6 +540,50 @@ mod tests {
         assert_eq!(sent, 0);
     }
 
+    /// Regression (batch-probe-leak): when `flush()` is admitted as a HalfOpen
+    /// probe but a concurrent flush drains the queue first (`actual_count == 0`),
+    /// the empty-drain early-return must RELEASE the admitted probe slot via
+    /// `record_success` rather than leak it. A leaked probe pins the breaker's
+    /// budget and bricks subsequent flushes until the self-heal window elapses.
+    #[tokio::test]
+    async fn flush_empty_drain_releases_half_open_probe() {
+        let client = Arc::new(MockApiClient { should_fail: false });
+        let mut uploader = BatchUploader::new(client, "sess_probe_leak".to_string(), 100, 3);
+
+        // Replace the breaker with a fast-cooldown one so we can reach HalfOpen
+        // deterministically within the test.
+        let fast_breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            initial_cooldown: Duration::from_millis(40),
+            max_cooldown: Duration::from_millis(200),
+            half_open_probes: 1,
+        });
+        // Trip → Open, then wait the cooldown so the next check() yields HalfOpen.
+        fast_breaker.record_failure();
+        assert!(matches!(fast_breaker.check(), CircuitState::Open { .. }));
+        uploader.circuit_breaker = fast_breaker;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        // Simulate the concurrent-drain race: the size counter reports a pending
+        // event (so flush passes the `current_size == 0` guard and is admitted as
+        // a probe), but the underlying queue is empty so the pop loop yields zero
+        // events. This is exactly the window the fix targets.
+        uploader.queue_size.store(1, Ordering::Relaxed);
+        assert!(uploader.queue.pop().is_none(), "queue must be empty");
+
+        let sent = uploader.flush().await.unwrap();
+        assert_eq!(sent, 0, "empty drain returns Ok(0)");
+
+        // The probe slot must have been released. Because record_success() closes
+        // the breaker, a follow-up check() observes Closed — not Open from a
+        // budget that is still pinned by the leaked in-flight probe.
+        assert!(
+            matches!(uploader.circuit_breaker.check(), CircuitState::Closed),
+            "empty-drain probe must be released (breaker closed), not leaked"
+        );
+        assert_eq!(uploader.circuit_breaker.stats().state, "closed");
+    }
+
     #[tokio::test]
     async fn max_batch_size_limit() {
         let client = Arc::new(MockApiClient { should_fail: false });
@@ -656,6 +765,129 @@ mod tests {
             2,
             "failed_batches must increment monotonically with each exhausted flush"
         );
+    }
+
+    /// Counts `upload_batch` calls and always returns a permanent `Auth`
+    /// failure (e.g. a 401). Used to prove non-retryable errors short-circuit
+    /// the retry loop and are dropped rather than requeued (#6078).
+    struct AuthFailApiClient {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl ApiClient for AuthFailApiClient {
+        async fn create_session(
+            &self,
+            client_id: &str,
+        ) -> Result<maekon_core::ports::api_client::SessionCreateResponse, CoreError> {
+            Ok(maekon_core::ports::api_client::SessionCreateResponse {
+                session_id: format!("sess_{client_id}"),
+                user_id: "user_1".to_string(),
+                client_id: client_id.to_string(),
+                capabilities: vec![],
+            })
+        }
+        async fn end_session(&self, _session_id: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn upload_batch(&self, _batch: &EventBatch) -> Result<(), CoreError> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message: "permanent 401".to_string(),
+            })
+        }
+        async fn send_feedback(
+            &self,
+            _feedback: &maekon_core::models::suggestion::SuggestionFeedback,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn send_heartbeat(&self, _session_id: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    /// #6078: a permanent Auth (401) failure is a poison pill — it must NOT be
+    /// retried and must NOT be requeued. Verifies:
+    /// - `upload_batch` is called exactly once (no retry attempts), even though
+    ///   `max_retries = 3`
+    /// - the queue is left empty (batch dropped, not requeued)
+    /// - the dropped events are accounted for in the drop counters
+    #[tokio::test]
+    async fn permanent_auth_failure_is_not_retried_or_requeued() {
+        let client = Arc::new(AuthFailApiClient {
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        });
+        // max_retries = 3: a retryable error would attempt 4 uploads. A
+        // non-retryable Auth error must short-circuit after the first.
+        let uploader = BatchUploader::new(client.clone(), "sess_auth_fail".to_string(), 100, 3);
+
+        uploader.enqueue(make_test_event());
+        uploader.enqueue(make_test_event());
+        assert_eq!(uploader.queue_size(), 2);
+
+        let err = uploader.flush().await.unwrap_err();
+        assert!(
+            matches!(err, NetworkError::Core(CoreError::Auth { .. })),
+            "permanent failure must surface as NetworkError::Core(CoreError::Auth), got: {err:?}"
+        );
+
+        assert_eq!(
+            client.call_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a non-retryable Auth error must not be retried (exactly 1 upload attempt)"
+        );
+        assert_eq!(
+            uploader.queue_size(),
+            0,
+            "a poison-pill batch must be dropped, not requeued"
+        );
+        assert_eq!(
+            uploader.total_dropped(),
+            2,
+            "dropped events from a permanent failure must be counted"
+        );
+        // A failed flush still counts toward failed_batches for observability.
+        assert_eq!(uploader.failed_batches(), 1);
+    }
+
+    #[test]
+    fn is_retryable_classification() {
+        // Transient / 5xx / 429 / timeout → retryable
+        assert!(is_retryable(&CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: "boom".into(),
+        }));
+        assert!(is_retryable(&CoreError::RequestTimeout {
+            code: maekon_core::error_codes::NetworkCode::Timeout,
+            timeout_ms: 1000,
+        }));
+        assert!(is_retryable(&CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "503".into(),
+        }));
+        assert!(is_retryable(&CoreError::RateLimit {
+            code: maekon_core::error_codes::NetworkCode::RateLimit,
+            retry_after_secs: 5,
+        }));
+
+        // Permanent 4xx → NOT retryable
+        assert!(!is_retryable(&CoreError::Auth {
+            code: maekon_core::error_codes::AuthCode::Failed,
+            message: "401".into(),
+        }));
+        assert!(!is_retryable(&CoreError::Validation {
+            code: maekon_core::error_codes::ValidationCode::InvalidField,
+            field: "events".into(),
+            message: "422".into(),
+        }));
+        assert!(!is_retryable(&CoreError::NotFound {
+            code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
+            resource_type: "session".into(),
+            id: "x".into(),
+        }));
     }
 
     #[test]

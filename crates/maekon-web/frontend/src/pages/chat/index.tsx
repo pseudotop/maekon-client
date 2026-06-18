@@ -366,7 +366,7 @@ export default function Chat() {
                           setSearchOpen(false)
                         }
                       }}
-                      placeholder="Search messages..."
+                      placeholder={t('chat.searchMessagesPlaceholder', 'Search messages...')}
                       className={cn(
                         'w-40 border bg-surface-base px-2 py-1 text-xs placeholder-content-tertiary',
                         radius.md,

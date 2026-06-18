@@ -660,8 +660,10 @@ async fn execute_intent_hint_requires_planner() {
         IntentConfig::default(),
     )));
 
+    // Intent-hint test input ("click the save button"); the planner is absent so
+    // the hint is never consumed — Korean is incidental test data (ASCII-escaped).
     let err = controller
-        .execute_intent_hint("hint-1", "sess-1", "save 버튼 클릭")
+        .execute_intent_hint("hint-1", "sess-1", "save \u{bc84}\u{d2bc} \u{d074}\u{b9ad}")
         .await
         .unwrap_err();
     // Iter-100: "IntentPlanner is not configured" now routes via
@@ -791,7 +793,9 @@ async fn run_workflow_empty_steps_succeeds() {
 
     let preset = WorkflowPreset {
         id: "empty".to_string(),
-        name: "빈 워크플로우".to_string(),
+        // Preset name is incidental test data ("empty workflow"), ASCII-escaped to
+        // keep the source ASCII while preserving the exact bytes.
+        name: "\u{be48} \u{c6cc}\u{d06c}\u{d50c}\u{b85c}\u{c6b0}".to_string(),
         description: String::new(),
         category: PresetCategory::Productivity,
         steps: vec![], // 0 steps
@@ -827,7 +831,9 @@ async fn run_workflow_multi_step_with_delay() {
 
     let preset = WorkflowPreset {
         id: "multi".to_string(),
-        name: "멀티 스텝".to_string(),
+        // Preset name is incidental test data ("multi step"), ASCII-escaped to keep
+        // the source ASCII while preserving the exact bytes.
+        name: "\u{ba40}\u{d2f0} \u{c2a4}\u{d15d}".to_string(),
         description: String::new(),
         category: PresetCategory::Productivity,
         steps: vec![
@@ -987,6 +993,94 @@ async fn execute_command_enabled_with_valid_policy() {
 
     let result = controller.execute_command(&cmd).await.unwrap();
     assert!(matches!(result, CommandResult::Success));
+}
+
+#[tokio::test]
+async fn execute_command_block_policy_audits_denial() {
+    // Regression (automation-deny-audit): a ConfirmationRequirement::Block policy
+    // must record a denial audit entry, on the same footing as the policy-allow
+    // and validate_command-denial paths. Previously the Block branch returned
+    // CommandResult::Denied without auditing.
+    let mut policy = make_policy(AuditLevel::Basic, 5000);
+    policy.confirmation = maekon_core::config::ConfirmationRequirement::Block;
+    let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
+    controller.set_enabled(true);
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-blocked".to_string(),
+        session_id: "sess-block".to_string(),
+        action: AutomationAction::KeyType {
+            text: "hello".to_string(),
+        },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_block01".to_string(),
+    };
+
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(matches!(result, CommandResult::Denied));
+
+    let logger = audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(denied.len(), 1, "Block denial must produce one audit entry");
+    assert_eq!(denied[0].command_id, "cmd-blocked");
+    assert_eq!(denied[0].session_id, "sess-block");
+    assert!(
+        denied[0].action_type.starts_with("KeyType"),
+        "denial audit should carry the action label, got: {}",
+        denied[0].action_type
+    );
+}
+
+#[tokio::test]
+async fn execute_command_user_denied_confirmation_audits_denial() {
+    // Regression (automation-deny-audit): a user-denied ConfirmationRequirement::Confirm
+    // command must record a denial audit entry, mirroring the Block branch.
+    let mut policy = make_policy(AuditLevel::Basic, 5000);
+    policy.confirmation = maekon_core::config::ConfirmationRequirement::Confirm;
+    let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
+    controller.set_enabled(true);
+    policy_client.update_policies(vec![policy]).await;
+
+    // Resolve the pending confirmation with `false` (user denied) so the test
+    // does not block on the confirmation timeout.
+    let pending = controller.pending_confirmations.clone();
+    let cmd_id = "cmd-confirm-denied".to_string();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        let mut map = pending.lock().await;
+        if let Some((_, tx)) = map.remove(&cmd_id) {
+            let _ = tx.send(false);
+        }
+    });
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-confirm-denied".to_string(),
+        session_id: "sess-confirm".to_string(),
+        action: AutomationAction::KeyPress {
+            key: "a".to_string(),
+        },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_confirm1".to_string(),
+    };
+
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(matches!(result, CommandResult::Denied));
+
+    let logger = audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(
+        denied.len(),
+        1,
+        "user-denied confirmation must produce one audit entry"
+    );
+    assert_eq!(denied[0].command_id, "cmd-confirm-denied");
+    assert_eq!(denied[0].session_id, "sess-confirm");
+    assert!(
+        denied[0].action_type.starts_with("KeyPress"),
+        "denial audit should carry the action label, got: {}",
+        denied[0].action_type
+    );
 }
 
 #[tokio::test]

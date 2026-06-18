@@ -482,11 +482,73 @@ fn parse_argv(params: &Value) -> Option<Vec<String>> {
     Some(shell_split(cmd))
 }
 
-/// Minimal whitespace shell-split (no quote handling — the dangerous screen and
-/// policy lookup operate on coarse argv; quoting is not security-relevant here
-/// because the dangerous patterns are substring-checked on the whole command too).
+/// Minimal whitespace shell-split (no quote *tokenization* — a full shlex
+/// tokenizer is intentionally out of scope). Quoting IS security-relevant for
+/// the dangerous screen: a quoted target such as `rm -rf "/"` would otherwise
+/// slip past both the token-equality and substring checks. `is_dangerous`
+/// therefore normalizes quote characters out of every token and out of the
+/// joined command before screening, so this coarse split is safe for that gate.
 fn shell_split(cmd: &str) -> Vec<String> {
     cmd.split_whitespace().map(str::to_string).collect()
+}
+
+/// Strip a single matched pair of surrounding quote characters (`'` or `"`)
+/// from a token, e.g. `"/"` → `/` and `'build/'` → `build/`. Only an outermost
+/// matching pair is removed; embedded quotes are handled by the joined-string
+/// normalization in `is_dangerous`. Cross-platform (pure string handling).
+fn strip_surrounding_quotes(token: &str) -> &str {
+    let bytes = token.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return &token[1..token.len() - 1];
+        }
+    }
+    token
+}
+
+/// Maximum recursion depth when unwrapping nested shell-interpreter wrappers
+/// (e.g. `bash -c "sh -c '...'"`). A small cap is enough for any legitimate
+/// command and prevents a crafted, deeply-nested wrapper from blowing the stack
+/// or starving the gate. Once the cap is hit we still screen the wrapper's own
+/// argv (program-gated + joined checks), we just stop re-tokenizing deeper.
+const MAX_WRAPPER_DEPTH: usize = 3;
+
+/// Shell interpreters whose `-c`-family argument carries an embedded command
+/// line. When the program is one of these AND a command-flag is present, the
+/// script string is re-tokenized and screened recursively, so a destructive
+/// command hidden inside a wrapper (e.g. `bash -lc "rm -rf /"`) cannot bypass
+/// the program-gated checks below (which would otherwise see `program=="bash"`).
+const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Flags that introduce an inline command string for a shell interpreter. We
+/// match the canonical `-c` plus the common combined short forms (`-lc`, `-ic`,
+/// `-ec`, …) and the GNU long form `--command`. Any single-dash bundle that
+/// contains a `c` is treated as command-bearing so reordered combos still hit.
+fn is_command_flag(flag: &str) -> bool {
+    if flag == "--command" {
+        return true;
+    }
+    // Single-dash short bundle (e.g. `-c`, `-lc`, `-ic`, `-ec`) — but not a
+    // long `--…` option. The bundle is command-bearing iff it includes `c`.
+    flag.len() >= 2
+        && flag.starts_with('-')
+        && !flag.starts_with("--")
+        && flag[1..].chars().all(|c| c.is_ascii_alphabetic())
+        && flag[1..].contains('c')
+}
+
+/// True iff `token` is a single-dash short-flag bundle (e.g. `-rf`, `-Rv`) whose
+/// letters include `needle` (case-insensitive). Excludes long `--…` options and
+/// `key=value` style args. Used to aggregate `rm` recursion/force flags that the
+/// user may have split or reordered (`-r -f`, `-fr`, `-R --force`, …).
+fn short_bundle_has(token: &str, needle: char) -> bool {
+    token.len() >= 2
+        && token.starts_with('-')
+        && !token.starts_with("--")
+        && token[1..].chars().all(|c| c.is_ascii_alphabetic())
+        && token[1..].chars().any(|c| c.eq_ignore_ascii_case(&needle))
 }
 
 /// Static dangerous-command screen on the parsed argv (and the joined form). A
@@ -494,29 +556,82 @@ fn shell_split(cmd: &str) -> Vec<String> {
 /// Conservative substring/heuristic matching: false positives here only cause a
 /// (safe) decline, never an unsafe accept.
 pub fn is_dangerous(argv: &[String]) -> bool {
+    is_dangerous_inner(argv, 0)
+}
+
+/// Depth-tracked core of [`is_dangerous`]. `depth` counts how many shell-wrapper
+/// layers we have already unwrapped; it is capped at [`MAX_WRAPPER_DEPTH`] to
+/// avoid unbounded recursion on crafted nested wrappers.
+fn is_dangerous_inner(argv: &[String], depth: usize) -> bool {
     if argv.is_empty() {
         return false;
     }
-    let program = argv[0]
+    // Normalize quoting before screening: surrounding quotes are stripped from
+    // every token, and ALL quote characters are removed from the joined form, so
+    // that a quoted destructive target (e.g. `rm -rf "/"`) cannot slip past the
+    // token-equality or substring checks below. Without this, argv would contain
+    // the literal token `"/"` (token checks miss) and the joined string would be
+    // `rm -rf "/"` (the quotes break the `rm -rf /` substring). This gate must
+    // fail closed, so we screen on the normalized forms.
+    let norm: Vec<String> = argv
+        .iter()
+        .map(|a| strip_surrounding_quotes(a).to_string())
+        .collect();
+    let program = norm[0]
         .rsplit('/')
         .next()
-        .unwrap_or(&argv[0])
+        .unwrap_or(&norm[0])
         .to_ascii_lowercase();
-    let joined = argv.join(" ").to_ascii_lowercase();
+    let joined = norm.join(" ").replace(['"', '\''], "").to_ascii_lowercase();
 
-    // rm -rf targeting / or a root-ish path.
+    // Shell-interpreter wrapper unwrap (#6166): a destructive command can hide
+    // inside `bash -lc "rm -rf /"` / `sh -c "dd if=/dev/zero of=/dev/sda"`. The
+    // program-gated checks below see `program=="bash"`/`"sh"` and skip the
+    // `rm`/`dd`/`mkfs` rules, so we must re-tokenize the inline script string and
+    // screen it on its own. Re-tokenize via the same coarse `shell_split` and
+    // recurse (depth-capped) so quote normalization and every rule re-apply.
+    if depth < MAX_WRAPPER_DEPTH && SHELL_INTERPRETERS.contains(&program.as_str()) {
+        // Find the first command-bearing flag, then treat EVERYTHING after it as
+        // the inline script. We must join the remaining tokens rather than take
+        // just the next one, because a command STRING (e.g. `bash -lc "rm -rf /"`)
+        // has already been coarsely whitespace-split upstream into
+        // `["bash","-lc","\"rm","-rf","/\""]` — the script is spread across
+        // tokens. Re-joining, stripping the outer quote pair, and re-splitting
+        // via `shell_split` reconstructs the inner argv for a recursive
+        // (depth-capped) screen, so quote normalization and every rule re-apply.
+        if let Some(flag_idx) = norm[1..].iter().position(|a| is_command_flag(a)) {
+            let script_start = flag_idx + 2; // +1 for the [1..] offset, +1 for next.
+            if script_start < argv.len() {
+                let script = argv[script_start..].join(" ");
+                let inner = shell_split(strip_surrounding_quotes(&script));
+                if is_dangerous_inner(&inner, depth + 1) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // rm targeting / or a root-ish path, with recursion + force.
     if program == "rm" {
-        let has_recursive_force = argv.iter().any(|a| {
+        // Aggregate the recursion and force flags ACROSS ALL tokens (#6167):
+        // `rm -r -f /`, `rm -f -r /`, `rm --recursive -f /`, `rm -R -f /` must
+        // all flag, not just the contiguous `-rf`/`-fr` bundle. A per-token
+        // predicate (one token holding both letters) misses every split form.
+        let recursive = norm.iter().any(|a| {
             let a = a.to_ascii_lowercase();
-            a == "-rf" || a == "-fr" || (a.starts_with('-') && a.contains('r') && a.contains('f'))
+            a == "-r" || a == "--recursive" || short_bundle_has(&a, 'r')
         });
-        let targets_root = argv
+        let force = norm.iter().any(|a| {
+            let a = a.to_ascii_lowercase();
+            a == "--force" || short_bundle_has(&a, 'f')
+        });
+        let targets_root = norm
             .iter()
             .any(|a| a == "/" || a == "/*" || a == "~" || a == "~/" || a.starts_with("/."));
-        if has_recursive_force && targets_root {
+        if recursive && force && targets_root {
             return true;
         }
-        // Be conservative: any `rm -rf /...` literal.
+        // Be conservative: any `rm -rf /...` literal (contiguous-bundle form).
         if joined.contains("rm -rf /") || joined.contains("rm -fr /") {
             return true;
         }
@@ -803,6 +918,97 @@ mod tests {
         assert!(!is_dangerous(&svec(&["git", "status"])));
         assert!(!is_dangerous(&svec(&["rm", "-rf", "build/"])));
         assert!(!is_dangerous(&svec(&["ls", "-la"])));
+    }
+
+    /// Quoting must not let a destructive command slip past the fail-closed
+    /// screen. Without quote normalization, the target token is `"/"`/`'/'` (so
+    /// the token-equality check misses) and the joined form keeps the quotes
+    /// (so the `rm -rf /` substring check misses). Both branches must still fire.
+    #[test]
+    fn dangerous_quoted_rm_rf_root() {
+        // Double-quoted target as a single token (e.g. argv from a shell parse).
+        assert!(is_dangerous(&svec(&["rm", "-rf", "\"/\""])));
+        // Single-quoted target.
+        assert!(is_dangerous(&svec(&["rm", "-rf", "'/'"])));
+        // Quoted flag + quoted target combination.
+        assert!(is_dangerous(&svec(&["rm", "\"-rf\"", "\"/\""])));
+    }
+
+    /// `dd of="/dev/sda"` must flag even when the device path is quoted.
+    #[test]
+    fn dangerous_quoted_dd_and_block_device() {
+        assert!(is_dangerous(&svec(&[
+            "dd",
+            "if=/dev/zero",
+            "of=\"/dev/sda\""
+        ])));
+        assert!(is_dangerous(&svec(&[
+            "dd",
+            "if=/dev/zero",
+            "of='/dev/sda'"
+        ])));
+    }
+
+    /// #6166 — a destructive command hidden inside a shell-interpreter wrapper
+    /// (`bash -lc "…"`, `sh -c "…"`) must be unwrapped and screened. The wrapper
+    /// program is `bash`/`sh`, so the `rm`/`dd` program-gated rules would
+    /// otherwise be skipped entirely.
+    #[test]
+    fn dangerous_shell_wrapper_unwraps_inline_command() {
+        // `bash -lc "rm -rf /"` — program is `bash`, payload is the rm.
+        assert!(is_dangerous(&svec(&["bash", "-lc", "rm -rf /"])));
+        // `sh -c "dd if=/dev/zero of=/dev/sda"` — payload is the dd.
+        assert!(is_dangerous(&svec(&[
+            "sh",
+            "-c",
+            "dd if=/dev/zero of=/dev/sda"
+        ])));
+        // Other interpreters + flag spellings.
+        assert!(is_dangerous(&svec(&["zsh", "-c", "rm -rf /"])));
+        assert!(is_dangerous(&svec(&["bash", "--command", "rm -rf /"])));
+        // Split flags INSIDE the wrapper must also be caught (combines #6166+#6167).
+        assert!(is_dangerous(&svec(&["bash", "-lc", "rm -r -f /"])));
+        // Quoted target inside the wrapper.
+        assert!(is_dangerous(&svec(&["sh", "-c", "rm -rf \"/\""])));
+        // Nested wrapper within the depth cap.
+        assert!(is_dangerous(&svec(&["bash", "-c", "sh -c \"rm -rf /\""])));
+    }
+
+    /// #6166 — a benign wrapped command must NOT be flagged just because it is
+    /// wrapped in a shell interpreter.
+    #[test]
+    fn safe_shell_wrapper_not_dangerous() {
+        assert!(!is_dangerous(&svec(&["bash", "-lc", "ls -la"])));
+        assert!(!is_dangerous(&svec(&["sh", "-c", "rm -rf ./build"])));
+        assert!(!is_dangerous(&svec(&["bash", "-lc", "git status"])));
+    }
+
+    /// #6167 — `rm` recursion + force flags split or reordered across multiple
+    /// tokens must aggregate. A per-token predicate (one token holding both `r`
+    /// and `f`) misses every split form, allowing `rm -r -f /` to bypass.
+    #[test]
+    fn dangerous_rm_split_and_reordered_flags() {
+        assert!(is_dangerous(&svec(&["rm", "-r", "-f", "/"])));
+        assert!(is_dangerous(&svec(&["rm", "-f", "-r", "/"])));
+        assert!(is_dangerous(&svec(&["rm", "--recursive", "-f", "/"])));
+        assert!(is_dangerous(&svec(&["rm", "-R", "-f", "/"])));
+        assert!(is_dangerous(&svec(&["rm", "--recursive", "--force", "/"])));
+        // Reordered relative to the target.
+        assert!(is_dangerous(&svec(&["rm", "-f", "--recursive", "/"])));
+    }
+
+    /// #6167 — split flags that are NOT both recursive AND force, or that do not
+    /// target root, must NOT be flagged by the aggregate path.
+    #[test]
+    fn safe_rm_split_flags_not_dangerous() {
+        // Recursive without force on a non-root target.
+        assert!(!is_dangerous(&svec(&["rm", "-r", "-f", "./build"])));
+        // Recursive + force but NOT root.
+        assert!(!is_dangerous(&svec(&["rm", "-r", "-f", "node_modules"])));
+        // Recursive only (no force) on root → not auto-declined here.
+        assert!(!is_dangerous(&svec(&["rm", "-r", "/"])));
+        // Force only (no recursion) on root.
+        assert!(!is_dangerous(&svec(&["rm", "-f", "/"])));
     }
 
     fn svec(parts: &[&str]) -> Vec<String> {

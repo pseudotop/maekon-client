@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Severity is encoded by variant declaration order: Off < Basic < Standard < Strict.
+/// `PartialOrd` / `Ord` are derived so callers can enforce a minimum floor via `.max()`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PiiFilterLevel {
     Off,
     Basic,
@@ -77,7 +79,7 @@ impl AiAccessMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-// 단일 단어 variant 이므로 lowercase → snake_case 동일 결과 (일관성 통일, F-RC-07)
+// Single-word variants, so lowercase and snake_case produce the same result (consistency unification, F-RC-07).
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderType {
     Anthropic,

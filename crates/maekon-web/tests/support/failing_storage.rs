@@ -145,6 +145,10 @@ impl MetricsStorage for FailingStorage {
         self.inner.cleanup_old_metrics(before).await
     }
 
+    async fn cleanup_old_hourly_metrics(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
+        self.inner.cleanup_old_hourly_metrics(before).await
+    }
+
     async fn save_process_snapshot(&self, snapshot: &ProcessSnapshot) -> Result<(), CoreError> {
         self.inner.save_process_snapshot(snapshot).await
     }

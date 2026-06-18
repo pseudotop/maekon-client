@@ -1,4 +1,4 @@
-// 스토리지/무결성/알림/업데이트/텔레메트리 설정 — 데이터 생명주기 및 시스템 상태 관리
+// Storage/integrity/notification/update/telemetry config — data lifecycle and system-state management
 use crate::error::CoreError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -15,16 +15,42 @@ pub struct StorageConfig {
     pub max_storage_mb: u64,
 }
 
+/// Floor for `storage.retention_days` (#6169).
+pub(crate) const STORAGE_RETENTION_DAYS_FLOOR: u32 = 1;
+/// Floor for `storage.max_storage_mb` (#6169).
+pub(crate) const STORAGE_MAX_STORAGE_MB_FLOOR: u64 = 10;
+
 impl StorageConfig {
     /// Validate that storage configuration values are within acceptable bounds.
     pub fn validate_bounds(&self) -> Result<(), String> {
-        if self.retention_days < 1 {
-            return Err("storage.retention_days must be >= 1".to_string());
+        if self.retention_days < STORAGE_RETENTION_DAYS_FLOOR {
+            return Err(format!(
+                "storage.retention_days must be >= {STORAGE_RETENTION_DAYS_FLOOR}"
+            ));
         }
-        if self.max_storage_mb < 10 {
-            return Err("storage.max_storage_mb must be >= 10".to_string());
+        if self.max_storage_mb < STORAGE_MAX_STORAGE_MB_FLOOR {
+            return Err(format!(
+                "storage.max_storage_mb must be >= {STORAGE_MAX_STORAGE_MB_FLOOR}"
+            ));
         }
         Ok(())
+    }
+
+    /// Raise any sub-floor storage value to its floor in place, returning the
+    /// dotted-path identities of the fields that were clamped (#6169). Used by
+    /// the fail-open INITIAL-LOAD path so the clamped config also satisfies
+    /// [`Self::validate_bounds`].
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if self.retention_days < STORAGE_RETENTION_DAYS_FLOOR {
+            self.retention_days = STORAGE_RETENTION_DAYS_FLOOR;
+            clamped.push("storage.retention_days");
+        }
+        if self.max_storage_mb < STORAGE_MAX_STORAGE_MB_FLOOR {
+            self.max_storage_mb = STORAGE_MAX_STORAGE_MB_FLOOR;
+            clamped.push("storage.max_storage_mb");
+        }
+        clamped
     }
 }
 
@@ -34,7 +60,10 @@ impl StorageConfig {
 pub struct IntegrityConfig {
     #[serde(default = "default_integrity_enabled")]
     pub enabled: bool,
-    #[serde(default)]
+    // Fail-closed by default: a config that omits this field must inherit the
+    // same `true` as `IntegrityConfig::default()`, so the serde default and the
+    // struct Default agree (a plain `#[serde(default)]` would yield `false`).
+    #[serde(default = "default_require_signed_policy_bundle")]
     pub require_signed_policy_bundle: bool,
     #[serde(default)]
     pub policy_file_path: Option<String>,
@@ -367,7 +396,7 @@ impl UpdateConfig {
     }
 }
 
-// ── Default / helper functions (pub(super) — config/mod.rs 에서 사용) ─
+// ── Default / helper functions (pub(super) — used by config/mod.rs) ─
 
 pub(crate) fn default_retention_days() -> u32 {
     30
@@ -384,6 +413,10 @@ fn default_true() -> bool {
 }
 
 fn default_integrity_enabled() -> bool {
+    true
+}
+
+fn default_require_signed_policy_bundle() -> bool {
     true
 }
 
@@ -457,6 +490,28 @@ mod tests {
     #[test]
     fn default_update_signature_public_key_is_empty() {
         assert_eq!(default_update_signature_public_key(), "");
+    }
+
+    #[test]
+    fn integrity_config_default_requires_signed_policy_bundle() {
+        // Fail-closed baseline: the struct Default must keep the gate enabled.
+        assert!(IntegrityConfig::default().require_signed_policy_bundle);
+    }
+
+    #[test]
+    fn integrity_config_serde_default_matches_struct_default() {
+        // A config that omits `require_signed_policy_bundle` must deserialize to
+        // the same `true` as the struct Default. A plain `#[serde(default)]`
+        // would silently yield `false`, opening the fail-closed gate via an
+        // incomplete config file.
+        let parsed: IntegrityConfig =
+            serde_json::from_str("{}").expect("empty IntegrityConfig JSON must deserialize");
+        assert_eq!(
+            parsed.require_signed_policy_bundle,
+            IntegrityConfig::default().require_signed_policy_bundle,
+            "serde default must agree with the struct Default (fail-closed)"
+        );
+        assert!(parsed.require_signed_policy_bundle);
     }
 
     #[test]

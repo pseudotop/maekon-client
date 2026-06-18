@@ -2,9 +2,10 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getConsent } from '../../api/client'
 
-// 와이어 계약 검증: maekon-core/src/consent.rs 의 ConsentPermissions(snake_case,
-// rename_all 없음) + ConsentStatus(rename_all="PascalCase") 필드/문자열과
-// src-tauri/src/commands/consent.rs 의 ConsentSnapshot DTO 를 그대로 미러링한다.
+// Wire contract verification: mirrors exactly the ConsentPermissions (snake_case,
+// no rename_all) + ConsentStatus (rename_all="PascalCase") fields/strings from
+// maekon-core/src/consent.rs and the ConsentSnapshot DTO from
+// src-tauri/src/commands/consent.rs.
 describe('get_consent IPC contract', () => {
   afterEach(() => clearMocks())
 

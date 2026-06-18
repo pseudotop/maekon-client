@@ -15,7 +15,7 @@ interface State {
   error: Error | null
 }
 
-// 네트워크/서버 오프라인 에러 여부 판단 유틸
+// Utility that determines whether the error is a network/server-offline error
 function isNetworkError(error: Error | null): boolean {
   if (!error) return false
   if (error instanceof TypeError && error.message.toLowerCase().includes('fetch')) return true
@@ -23,7 +23,7 @@ function isNetworkError(error: Error | null): boolean {
   return ['failed to fetch', 'offline', 'econnrefused', 'timeout', 'network error'].some((kw) => msg.includes(kw))
 }
 
-// 클래스 컴포넌트는 React Error Boundary 필수 조건이므로 withTranslation HOC로 i18n 연동
+// A class component is a hard requirement for a React Error Boundary, so i18n is wired in via the withTranslation HOC
 class ErrorBoundaryBase extends Component<Props, State> {
   constructor(props: Props) {
     super(props)
@@ -83,5 +83,5 @@ class ErrorBoundaryBase extends Component<Props, State> {
   }
 }
 
-// withTranslation HOC로 감싸 번역 함수 t()를 class 컴포넌트에 주입
+// Wrapped with the withTranslation HOC to inject the translation function t() into the class component
 export default withTranslation()(ErrorBoundaryBase)

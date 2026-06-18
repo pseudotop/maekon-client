@@ -74,7 +74,18 @@ pub async fn subscribe_events(
         streaming_source.load_policy(),
         streaming_source.streaming_enabled(),
     );
-    // Step 0a: authority validation (IMP-V2-A parity with subscribe_metrics)
+    // Step 0a: authority validation (IMP-V2-A parity with subscribe_metrics) —
+    // reject a DNS-rebound (non-loopback) hostname WHEN it is observable.
+    //
+    // tonic 0.14 does NOT propagate the HTTP/2 `:authority` pseudo-header into
+    // request metadata, so `host` is normally ABSENT for gRPC clients (rejecting
+    // on absence rejected every legitimate streaming subscriber). We therefore
+    // validate only when an authority IS observable (e.g. a gRPC-web browser
+    // `fetch` that sets an explicit `Host`, or an integration proxy) and must NOT
+    // reject on absence. The actual transport protections are the loopback
+    // `serve()` bind (default builds) and the Bearer auth gate below (Step 1,
+    // enforced on every bind — including the external/routable one, for which a
+    // loopback-only authority allowlist would be inapplicable anyway).
     if let Some(authority) = req.metadata().get("host").and_then(|v| v.to_str().ok()) {
         validate_authority(Some(authority))?;
     }

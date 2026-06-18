@@ -108,7 +108,7 @@ impl Sandbox for MacOsSandbox {
         tracing::debug!(
             profile_type = %config.profile as u8,
             sbpl_len = profile.len(),
-            action = ?action,
+            action = %super::redact_action(action),
             "macOS Seatbelt sandbox: generated SBPL profile"
         );
 
@@ -142,6 +142,7 @@ impl Sandbox for MacOsSandbox {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| CoreError::SandboxExecution {
                 code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
@@ -168,19 +169,30 @@ impl Sandbox for MacOsSandbox {
             drop(stdin);
         }
 
-        let output = tokio::time::timeout(
+        // `wait_with_output()` reads stdout/stderr to EOF and waits for exit.
+        // On timeout it is dropped, consuming `child`; `kill_on_drop(true)` (set on
+        // the builder above) then SIGKILLs the sandbox-exec worker tree as that
+        // Child drops — no orphan (finding #5967: orphan-on-timeout).
+        let output = match tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
             child.wait_with_output(),
         )
         .await
-        .map_err(|_| CoreError::ExecutionTimeout {
-            code: maekon_core::error_codes::SandboxCode::Timeout,
-            timeout_ms,
-        })?
-        .map_err(|e| CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("wait failed: {}", e),
-        })?;
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!("wait failed: {}", e),
+                });
+            }
+            Err(_elapsed) => {
+                return Err(CoreError::ExecutionTimeout {
+                    code: maekon_core::error_codes::SandboxCode::Timeout,
+                    timeout_ms,
+                });
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -212,7 +224,7 @@ impl Sandbox for MacOsSandbox {
         }
 
         tracing::info!(
-            action = ?action,
+            action = %super::redact_action(action),
             sbpl_len = profile.len(),
             "macOS sandboxed action execution completed"
         );

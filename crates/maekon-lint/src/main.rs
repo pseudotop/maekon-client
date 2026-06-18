@@ -62,8 +62,15 @@ fn main() -> ExitCode {
     print_summary(&findings, strict_i18n);
 
     let has_errors = findings.iter().any(|f| f.severity == Severity::Error);
-    let has_strict_warnings =
-        strict_i18n && findings.iter().any(|f| f.severity == Severity::Warning);
+    // --strict-i18n promotes *hardcoded UI copy* to a build failure (the "no
+    // untranslated UI strings" policy). It deliberately does NOT fail on
+    // `template-literal-i18n-key` (dynamic `t(`ns.${x}`)` keys are legitimate and
+    // cannot be statically resolved) or `extra-locale-key` (informational), which
+    // would otherwise make the strict gate impossible to ever satisfy.
+    let has_strict_warnings = strict_i18n
+        && findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning && f.category == "hardcoded-ui-copy");
 
     if has_errors || has_strict_warnings {
         ExitCode::from(1)

@@ -3,6 +3,7 @@ use maekon_core::error::CoreError;
 use maekon_core::error_codes::InternalCode;
 use maekon_core::models::context::{ProcessInfo, WindowInfo};
 use maekon_core::models::event::ProcessDetail;
+use maekon_core::path_redaction::mask_user_paths;
 use maekon_core::ports::monitor::ProcessMonitor;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -24,13 +25,15 @@ pub struct ProcessTracker {
 
 impl ProcessTracker {
     pub fn new() -> Self {
-        // F-PF-18: System::new_all() 은 초기화 시 프로세스 테이블 전체를 스캔한다.
-        // System::new() 로 교체하여 초기화 비용을 절감한다.
-        // 실제 프로세스 목록은 refresh_if_stale → refresh_processes 에서 lazily 갱신된다.
+        // F-PF-18: System::new_all() scans the entire process table on init.
+        // Replace it with System::new() to cut the initialization cost.
+        // The actual process list is refreshed lazily in
+        // refresh_if_stale → refresh_processes.
         //
-        // last_refresh 를 REFRESH_COOLDOWN 이전으로 초기화하여 첫 호출 시 즉시 refresh
-        // 가 일어나도록 보장한다. Instant::now() 로 초기화하면 첫 호출에서 cooldown 이
-        // 경과하지 않아 프로세스 목록이 비어 있게 된다 (pre-existing test failure).
+        // Initialize last_refresh to before REFRESH_COOLDOWN so the first call
+        // refreshes immediately. Initializing with Instant::now() would mean the
+        // cooldown has not elapsed on the first call, leaving the process list
+        // empty (pre-existing test failure).
         let stale_start = Instant::now()
             .checked_sub(REFRESH_COOLDOWN)
             .unwrap_or_else(Instant::now);
@@ -124,26 +127,12 @@ impl ProcessTracker {
                     0
                 };
 
-                let exe_path = p.exe().map(|path| {
-                    let path_str = path.to_string_lossy().to_string();
-                    if path_str.contains("/Users/") {
-                        path_str
-                            .split("/Users/")
-                            .last()
-                            .and_then(|s| s.split('/').nth(1))
-                            .map(|rest| format!("~/{}", rest))
-                            .unwrap_or_else(|| "~/...".to_string())
-                    } else if path_str.contains("\\Users\\") {
-                        path_str
-                            .split("\\Users\\")
-                            .last()
-                            .and_then(|s| s.split('\\').nth(1))
-                            .map(|rest| format!("~\\{}", rest))
-                            .unwrap_or_else(|| "~\\...".to_string())
-                    } else {
-                        path_str
-                    }
-                });
+                // Mask user-home segments before the path is uploaded as
+                // ProcessSnapshotEvent.executable_path. The canonical masker in
+                // maekon-core covers /Users/, /home/, and C:\Users\ so Linux
+                // usernames are not egressed (2nd-pass #61); the previous inline
+                // redaction handled only macOS/Windows and leaked Linux homes.
+                let exe_path = p.exe().map(|path| mask_user_paths(&path.to_string_lossy()));
 
                 ProcessDetail {
                     name: p.name().to_string_lossy().to_string(),
@@ -176,7 +165,11 @@ impl ProcessTracker {
         }
 
         for detail in all_details {
-            if result.len() > top_n {
+            // Cap the total result length (including any pinned foreground entry)
+            // at exactly `top_n`, matching get_top_processes / truncate(limit)
+            // semantics. The previous `> top_n` guard allowed one extra element
+            // (top_n + 1) to be pushed before breaking (process-offbyone).
+            if result.len() >= top_n {
                 break;
             }
             if !seen_pids.contains(&detail.pid) {
@@ -199,7 +192,8 @@ impl ProcessTracker {
         *self.last_refresh.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Test-only: 초기화 직후 프로세스 수를 반환 (F-PF-18 회귀 검증용).
+    /// Test-only: returns the process count right after init (for F-PF-18
+    /// regression verification).
     #[cfg(test)]
     pub(crate) fn _initial_process_count(&self) -> usize {
         self.sys
@@ -231,9 +225,21 @@ impl ProcessMonitor for ProcessTracker {
                 .await
                 .map_err(Into::into)
         }
+        // F-RR-C23-02: get_active_window_windows() calls get_process_name() which
+        // builds a fresh sysinfo::System and calls refresh_processes() — a blocking
+        // NtQuerySystemInformation syscall (~10–50 ms on a busy host). Wrapping in
+        // spawn_blocking keeps the tokio worker pool free during the 1-second
+        // scheduler hot-path. Mirrors the spawn_blocking pattern used by
+        // get_top_processes / get_detailed_processes above.
         #[cfg(target_os = "windows")]
         {
-            crate::windows::get_active_window_windows().map_err(Into::into)
+            tokio::task::spawn_blocking(|| crate::windows::get_active_window_windows())
+                .await
+                .map_err(|e| CoreError::Internal {
+                    code: InternalCode::Generic,
+                    message: format!("spawn_blocking join error: {e}"),
+                })?
+                .map_err(Into::into)
         }
         #[cfg(target_os = "linux")]
         {
@@ -292,39 +298,40 @@ mod tests {
         assert!(!procs.is_empty());
     }
 
-    /// F-RR-C23-01: get_top_processes_async は spawn_blocking 経由で実行され、
-    /// Some result を返すことを検証する (non-blocking + correct result).
+    /// F-RR-C23-01: verify that get_top_processes_async runs via spawn_blocking
+    /// and returns Some result (non-blocking + correct result).
     #[tokio::test]
     async fn get_top_processes_async_returns_metrics() {
         let tracker = ProcessTracker::new();
-        // spawn_blocking 경유로 Ok(Vec) 반환 — 길이가 0이 아닌 것만 확인.
+        // Returns Ok(Vec) via spawn_blocking — only check that the length is non-zero.
         let procs = tracker
             .get_top_processes(10)
             .await
             .expect("get_top_processes via spawn_blocking must not fail");
         assert!(
             !procs.is_empty(),
-            "spawn_blocking 경유 get_top_processes 가 빈 목록을 반환했다"
+            "get_top_processes via spawn_blocking returned an empty list"
         );
-        assert!(procs.len() <= 10, "limit 준수");
+        assert!(procs.len() <= 10, "must respect the limit");
     }
 
-    /// F-PF-18 회귀 테스트: ProcessTracker::new() 이 System::new() 를 사용하는지 확인.
-    /// System::new_all() 이면 초기화 직후 프로세스가 채워지지만,
-    /// System::new() 에서는 refresh_processes 호출 전 프로세스 목록이 비어 있어야 한다.
+    /// F-PF-18 regression test: verify ProcessTracker::new() uses System::new().
+    /// With System::new_all() the processes would be populated right after init,
+    /// but with System::new() the process list must be empty before
+    /// refresh_processes is called.
     #[tokio::test]
     async fn test_system_sysinfo_new_not_new_all() {
         let tracker = ProcessTracker::new();
         assert_eq!(
             tracker._initial_process_count(),
             0,
-            "System::new() 는 프로세스 테이블을 사전 로드하지 않아야 한다 (F-PF-18)"
+            "System::new() must not pre-load the process table (F-PF-18)"
         );
-        // 첫 get_top_processes 호출 후 refresh 되어 목록이 채워진다.
+        // After the first get_top_processes call the list is refreshed and populated.
         let procs = tracker.get_top_processes(5).await.unwrap();
         assert!(
             !procs.is_empty(),
-            "refresh 후 프로세스 목록이 비어 있으면 안 된다"
+            "process list must not be empty after refresh"
         );
     }
 
@@ -360,14 +367,15 @@ mod tests {
         );
     }
 
-    /// F-QA-C24-01: get_top_processes 의 spawn_blocking 태스크가 panic 하면
-    /// JoinError → CoreError::Internal { code: Generic, message: "spawn_blocking join error: ..." }
-    /// 로 매핑되는지 검증한다.
-    /// system.rs `collect_metrics_propagates_join_error` 와 동일한 패턴.
+    /// F-QA-C24-01: verify that a panicking spawn_blocking task in
+    /// get_top_processes maps to
+    /// JoinError → CoreError::Internal { code: Generic, message: "spawn_blocking join error: ..." }.
+    /// Same pattern as `collect_metrics_propagates_join_error` in system.rs.
     #[tokio::test]
     async fn get_top_processes_returns_internal_on_join_error() {
-        // spawn_blocking 에 panic closure 를 직접 전달하여 JoinError 를 생성한다.
-        // ProcessTracker::get_top_processes 의 .map_err 경로와 동일한 변환을 재현한다.
+        // Pass a panic closure directly to spawn_blocking to produce a JoinError.
+        // Reproduce the same conversion as the .map_err path in
+        // ProcessTracker::get_top_processes.
         let join_result: Result<(), tokio::task::JoinError> =
             tokio::task::spawn_blocking(|| panic!("F-QA-C24-01 get_top_processes test panic"))
                 .await;
@@ -375,10 +383,10 @@ mod tests {
         let join_err = join_result.unwrap_err();
         assert!(
             join_err.is_panic(),
-            "panic 한 spawn_blocking 의 JoinError 는 is_panic() 이어야 한다"
+            "the JoinError of a panicking spawn_blocking must be is_panic()"
         );
 
-        // get_top_processes 내부의 map_err 패턴 재현
+        // Reproduce the map_err pattern inside get_top_processes.
         let core_err: Result<(), CoreError> = Err(join_err).map_err(|e| CoreError::Internal {
             code: InternalCode::Generic,
             message: format!("spawn_blocking join error: {e}"),
@@ -387,21 +395,21 @@ mod tests {
         let err = core_err.unwrap_err();
         assert!(
             matches!(err, CoreError::Internal { .. }),
-            "JoinError 는 CoreError::Internal 변형으로 매핑되어야 한다: {err:?}"
+            "JoinError must map to the CoreError::Internal variant: {err:?}"
         );
         if let CoreError::Internal { message, .. } = err {
             assert!(
                 message.contains("spawn_blocking join error"),
-                "message 가 'spawn_blocking join error' 를 포함해야 한다: {message}"
+                "message must contain 'spawn_blocking join error': {message}"
             );
         }
     }
 
-    /// F-QA-C24-01: get_detailed_processes 의 spawn_blocking 태스크가 panic 하면
-    /// JoinError → CoreError::Internal 로 매핑되는지 검증한다.
+    /// F-QA-C24-01: verify that a panicking spawn_blocking task in
+    /// get_detailed_processes maps to JoinError → CoreError::Internal.
     #[tokio::test]
     async fn get_detailed_processes_returns_internal_on_join_error() {
-        // spawn_blocking 에 panic closure 를 직접 전달하여 JoinError 를 생성한다.
+        // Pass a panic closure directly to spawn_blocking to produce a JoinError.
         let join_result: Result<(), tokio::task::JoinError> =
             tokio::task::spawn_blocking(|| panic!("F-QA-C24-01 get_detailed_processes test panic"))
                 .await;
@@ -409,10 +417,10 @@ mod tests {
         let join_err = join_result.unwrap_err();
         assert!(
             join_err.is_panic(),
-            "panic 한 spawn_blocking 의 JoinError 는 is_panic() 이어야 한다"
+            "the JoinError of a panicking spawn_blocking must be is_panic()"
         );
 
-        // get_detailed_processes 내부의 map_err 패턴 재현
+        // Reproduce the map_err pattern inside get_detailed_processes.
         let core_err: Result<(), CoreError> = Err(join_err).map_err(|e| CoreError::Internal {
             code: InternalCode::Generic,
             message: format!("spawn_blocking join error: {e}"),
@@ -421,52 +429,84 @@ mod tests {
         let err = core_err.unwrap_err();
         assert!(
             matches!(err, CoreError::Internal { .. }),
-            "JoinError 는 CoreError::Internal 변형으로 매핑되어야 한다: {err:?}"
+            "JoinError must map to the CoreError::Internal variant: {err:?}"
         );
         if let CoreError::Internal { message, .. } = err {
             assert!(
                 message.contains("spawn_blocking join error"),
-                "message 가 'spawn_blocking join error' 를 포함해야 한다: {message}"
+                "message must contain 'spawn_blocking join error': {message}"
             );
         }
     }
 
-    /// F-QA-C25-05: refresh_if_stale 내부 Mutex 독(poison) 처리 검증.
+    /// F-RR-C23-02: get_active_window on Windows routes through spawn_blocking.
+    /// Verify that a panicking spawn_blocking closure maps to CoreError::Internal
+    /// with "spawn_blocking join error" in the message — identical to the pattern
+    /// used by get_top_processes and get_detailed_processes (F-QA-C24-01).
     ///
-    /// `last_refresh` Mutex 가 다른 스레드의 panic 으로 독(poisoned)이 되면
-    /// `unwrap_or_else(|e| e.into_inner())` 가 독을 무시하고 내부 값을 반환해야 한다.
-    /// 즉, Mutex 독이 있어도 ProcessTracker 가 패닉 없이 계속 동작하는지 확인한다.
+    /// This test is cfg-gated to windows because the live call site is also
+    /// cfg-gated; the JoinError map_err shape is shared and already exercised on
+    /// all platforms by get_top_processes_returns_internal_on_join_error above.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn get_active_window_returns_internal_on_join_error_windows() {
+        let join_result: Result<(), tokio::task::JoinError> =
+            tokio::task::spawn_blocking(|| panic!("F-RR-C23-02 get_active_window test panic"))
+                .await;
+
+        let join_err = join_result.unwrap_err();
+        assert!(join_err.is_panic());
+
+        let core_err: Result<(), CoreError> = Err(join_err).map_err(|e| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: format!("spawn_blocking join error: {e}"),
+        });
+
+        let err = core_err.unwrap_err();
+        assert!(matches!(err, CoreError::Internal { .. }));
+        if let CoreError::Internal { message, .. } = err {
+            assert!(message.contains("spawn_blocking join error"));
+        }
+    }
+
+    /// F-QA-C25-05: verify poisoned-Mutex handling inside refresh_if_stale.
     ///
-    /// 패턴: spawn_blocking 내에서 Mutex 를 잠근 채 panic → Mutex 독 발생 →
-    ///        다음 호출에서 unwrap_or_else 경로를 거쳐 정상 복구.
+    /// When the `last_refresh` Mutex is poisoned by another thread's panic,
+    /// `unwrap_or_else(|e| e.into_inner())` must ignore the poison and return the
+    /// inner value. In other words, verify that ProcessTracker keeps working
+    /// without panicking even when the Mutex is poisoned.
+    ///
+    /// Pattern: panic while holding the Mutex inside spawn_blocking → Mutex is
+    ///          poisoned → the next call recovers cleanly via the unwrap_or_else path.
     #[tokio::test]
     async fn refresh_if_stale_recovers_from_poisoned_last_refresh_mutex() {
         let tracker = ProcessTracker::new();
 
-        // last_refresh Arc 를 클론하여 별도 스레드에서 독 생성
+        // Clone the last_refresh Arc and poison it from a separate thread.
         let last_refresh_clone = Arc::clone(&tracker.last_refresh);
 
-        // Mutex 를 잠근 채 panic → MutexGuard drop 없이 스레드 종료 → Mutex 독
+        // Panic while holding the Mutex → thread exits without dropping the
+        // MutexGuard → the Mutex becomes poisoned.
         let poison_handle = std::thread::spawn(move || {
             let _guard = last_refresh_clone.lock().unwrap();
-            panic!("F-QA-C25-05: 의도적 Mutex 독 생성 테스트");
+            panic!("F-QA-C25-05: intentional Mutex-poison test");
         });
-        // panic 한 스레드가 JoinError 를 반환하는 것을 확인 (Mutex 독 생성 완료).
+        // Verify the panicking thread returns a JoinError (Mutex poisoning done).
         // thread::JoinHandle::join() returns Err(Box<dyn Any + Send>) on panic — the opaque
         // payload carries no typed variant to match against; Err presence is the full contract.
         // lint:allow-is-err-hedge — Box<dyn Any> has no typed variant
         assert!(
             poison_handle.join().is_err(),
-            "panic 한 스레드는 Err를 반환해야 한다"
+            "a panicking thread must return Err"
         );
 
-        // last_refresh 가 실제로 독(poisoned) 상태인지 확인.
+        // Verify last_refresh is actually poisoned.
         // PoisonError<MutexGuard<T>>::into_inner() is the only meaningful accessor; the error
         // carries no discriminating code or message beyond the fact of being poisoned.
         // lint:allow-is-err-hedge — PoisonError has no typed payload beyond being poisoned
         assert!(
             tracker.last_refresh.lock().is_err(),
-            "last_refresh Mutex 가 독(poisoned) 상태여야 한다"
+            "the last_refresh Mutex must be poisoned"
         );
 
         // get_top_processes on a poisoned ProcessTracker must recover via
@@ -481,5 +521,49 @@ mod tests {
             "recovered result must respect the limit; got {} entries",
             procs.len()
         );
+    }
+
+    /// process-offbyone regression: get_detailed_processes must return at most
+    /// `top_n` entries — including any pinned foreground entry — matching
+    /// get_top_processes / truncate(limit) semantics. The previous `> top_n`
+    /// break guard allowed `top_n + 1` entries to be returned.
+    #[tokio::test]
+    async fn get_detailed_processes_respects_top_n() {
+        let tracker = ProcessTracker::new();
+
+        // Some(pid) case: a pinned foreground entry must still be counted toward
+        // the cap, so the total length must not exceed top_n.
+        let with_fg = tracker
+            .get_detailed_processes(Some(std::process::id()), 5)
+            .await
+            .expect("get_detailed_processes(Some, N) must not fail");
+        assert!(
+            with_fg.len() <= 5,
+            "Some(pid) case exceeded top_n: got {} entries (expected <= 5)",
+            with_fg.len()
+        );
+
+        // None case: no pinned foreground entry, still bounded by top_n.
+        let without_fg = tracker
+            .get_detailed_processes(None, 5)
+            .await
+            .expect("get_detailed_processes(None, N) must not fail");
+        assert!(
+            without_fg.len() <= 5,
+            "None case exceeded top_n: got {} entries (expected <= 5)",
+            without_fg.len()
+        );
+    }
+
+    /// 2nd-pass #61 regression: the masker wired into the ProcessDetail
+    /// `executable_path` builder must redact Linux `/home/<user>/` paths.
+    /// `executable_path` is uploaded verbatim as ProcessSnapshotEvent, so a
+    /// missed Linux home segment leaks the local username to the server.
+    /// (The old inline redaction handled only /Users/ and \Users\.)
+    #[test]
+    fn exe_path_masker_redacts_linux_home() {
+        let masked = mask_user_paths("/home/alice/bin/app");
+        assert_eq!(masked, "/home/[USER]/bin/app");
+        assert!(!masked.contains("alice"), "Linux username leaked: {masked}");
     }
 }

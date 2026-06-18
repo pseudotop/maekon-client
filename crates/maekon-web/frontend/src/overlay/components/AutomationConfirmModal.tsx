@@ -31,10 +31,10 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // 접근성: dialog 의 제목/설명을 연결하기 위한 안정적인 id (a11y — aria-labelledby/aria-describedby)
+  // a11y: stable ids for linking the dialog's title/description (aria-labelledby/aria-describedby)
   const titleId = useId()
   const descId = useId()
-  // 가장 안전한 동작인 Deny 버튼에 초기 포커스를 주기 위한 ref
+  // ref used to give initial focus to the Deny button, which is the safest action
   const denyButtonRef = useRef<HTMLButtonElement | null>(null)
 
   // Countdown timer — resets when a new confirmation arrives (keyed by command_id)
@@ -86,13 +86,13 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
     }
   }, [remaining, handleSubmit, submitting])
 
-  // 접근성: 모달이 새 confirmation 으로 열릴 때 가장 안전한 동작인 Deny 버튼에 포커스
+  // a11y: focus the Deny button (the safest action) when the modal opens for a new confirmation
   useEffect(() => {
     void commandId
     denyButtonRef.current?.focus()
   }, [commandId])
 
-  // 접근성: Escape 키는 명시적 거부(Deny)로 처리 — 보안상 가장 안전한 동작 (full focus-trap 은 단일 윈도우라 보류)
+  // a11y: treat the Escape key as an explicit Deny — the safest action for security (a full focus-trap is deferred since this is a single window)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {

@@ -77,10 +77,11 @@ impl SearchQueryService {
                 .await
                 .map_err(|error| ApiError::Internal(error.to_string()))?;
 
-            // #5097: N+1 제거 — row 당 get_tags_for_frame(쿼리 N회) 대신
-            // frame→tag_id 배치 1회 + 전체 태그 1회 조회 후 메모리 조인한다.
-            // 기존 get_tags_for_frame 의 `INNER JOIN tags ... ORDER BY t.name`
-            // 의미를 collect_frame_tags 가 보존한다(고아 tag_id 제외 + 이름순).
+            // #5097: eliminate N+1 — instead of get_tags_for_frame per row (N
+            // queries), do one frame→tag_id batch + one full-tag lookup, then join
+            // in memory. collect_frame_tags preserves the semantics of the old
+            // get_tags_for_frame `INNER JOIN tags ... ORDER BY t.name` (orphan
+            // tag_ids excluded + name order).
             let mut frame_results = Vec::with_capacity(frame_rows.len());
             if !frame_rows.is_empty() {
                 let frame_ids: Vec<i64> = frame_rows.iter().map(|row| row.id).collect();
@@ -210,13 +211,17 @@ pub(crate) fn build_frame_queries(
     (count_sql, select_sql)
 }
 
-/// frame 한 개의 태그를 메모리 조인으로 모은다 (#5097 N+1 제거 헬퍼).
+/// Collect the tags for a single frame via an in-memory join (#5097 N+1-removal
+/// helper).
 ///
-/// `tag_id_map`(frame→tag_id 배치 조회 결과)과 `tag_lookup`(tag_id→TagInfo,
-/// 전체 태그 1회 조회)로부터 해당 frame 의 TagInfo 목록을 만든다. 기존
-/// `get_tags_for_frame` 의 `INNER JOIN tags ... ORDER BY t.name` 동작을 보존한다:
-/// - 고아 tag_id(삭제된 태그를 가리키는 frame_tags 행)는 `tag_lookup` miss 로 제외.
-/// - 결과는 태그 이름 오름차순 정렬(원본 ORDER BY t.name 복원).
+/// Builds the TagInfo list for the given frame from `tag_id_map` (the frame→tag_id
+/// batch-lookup result) and `tag_lookup` (tag_id→TagInfo, the single full-tag
+/// lookup). Preserves the behaviour of the old `get_tags_for_frame`
+/// `INNER JOIN tags ... ORDER BY t.name`:
+/// - Orphan tag_ids (frame_tags rows pointing at a deleted tag) are excluded via a
+///   `tag_lookup` miss.
+/// - The result is sorted by tag name ascending (restoring the original
+///   ORDER BY t.name).
 fn collect_frame_tags(
     frame_id: i64,
     tag_id_map: &HashMap<i64, Vec<i64>>,
@@ -246,9 +251,9 @@ mod tests {
         }
     }
 
-    /// collect_frame_tags 가 frame 의 tag_id 들을 TagInfo 로 조인하되 이름
-    /// 오름차순으로 정렬한다 — 원본 get_tags_for_frame 의 ORDER BY t.name 보존.
-    /// (입력 tag_id 순서가 3,1 이어도 결과는 Alpha,Bravo 여야 한다.)
+    /// collect_frame_tags joins a frame's tag_ids into TagInfo but sorts by name
+    /// ascending — preserving the original get_tags_for_frame ORDER BY t.name.
+    /// (Even if the input tag_id order is 3,1 the result must be Alpha,Bravo.)
     #[test]
     fn collect_frame_tags_sorts_by_name() {
         let mut tag_id_map = HashMap::new();
@@ -262,25 +267,27 @@ mod tests {
         assert_eq!(
             names,
             vec!["Alpha", "Bravo"],
-            "태그는 이름 오름차순이어야 한다"
+            "tags must be in ascending name order"
         );
     }
 
-    /// 고아 tag_id(전체 태그 lookup 에 없는 = 삭제된 태그)는 제외된다 —
-    /// 원본 INNER JOIN 동작 보존(고아 frame_tags 행은 결과에서 빠진다).
+    /// An orphan tag_id (absent from the full-tag lookup = deleted tag) is
+    /// excluded — preserving the original INNER JOIN behaviour (orphan frame_tags
+    /// rows drop out of the result).
     #[test]
     fn collect_frame_tags_excludes_orphans() {
         let mut tag_id_map = HashMap::new();
-        tag_id_map.insert(1, vec![1, 99]); // 99 는 고아(lookup 부재)
+        tag_id_map.insert(1, vec![1, 99]); // 99 is an orphan (absent from lookup)
         let mut lookup = HashMap::new();
         lookup.insert(1, tag(1, "Alpha"));
 
         let result = collect_frame_tags(1, &tag_id_map, &lookup);
-        assert_eq!(result.len(), 1, "고아 tag_id 99 는 제외되어야 한다");
+        assert_eq!(result.len(), 1, "orphan tag_id 99 must be excluded");
         assert_eq!(result[0].id, 1);
     }
 
-    /// tag_id_map 에 frame 항목이 없으면 빈 벡터를 반환한다 (태그 없는 frame).
+    /// Returns an empty vector when tag_id_map has no entry for the frame (an
+    /// untagged frame).
     #[test]
     fn collect_frame_tags_empty_for_untagged_frame() {
         let tag_id_map: HashMap<i64, Vec<i64>> = HashMap::new();

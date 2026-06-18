@@ -154,7 +154,7 @@ struct SubprocessOcrEnvelope {
 
 pub(crate) use parsing::{
     append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
-    sanitize_subprocess_error_output, SubprocessKind,
+    sanitize_subprocess_error_output, write_prompt_and_collect_output, SubprocessKind,
 };
 #[allow(unused_imports)]
 use parsing::{

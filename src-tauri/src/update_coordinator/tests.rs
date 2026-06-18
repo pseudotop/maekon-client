@@ -15,6 +15,9 @@ struct FakeUpdater {
     check_results: Arc<Mutex<VecDeque<Result<UpdateCheckResult, UpdateError>>>>,
     install_error: Arc<StdMutex<Option<String>>>,
     download_error: Arc<StdMutex<Option<String>>>,
+    // #6258: records the `new_version` threaded into install_and_restart so a
+    // test can assert the D11 pending-marker version is actually passed.
+    last_install_version: Arc<StdMutex<Option<Option<String>>>>,
 }
 
 impl FakeUpdater {
@@ -24,7 +27,15 @@ impl FakeUpdater {
             check_results: Arc::new(Mutex::new(VecDeque::from([result]))),
             install_error: Arc::new(StdMutex::new(None)),
             download_error: Arc::new(StdMutex::new(None)),
+            last_install_version: Arc::new(StdMutex::new(None)),
         }
+    }
+
+    fn last_install_version(&self) -> Option<Option<String>> {
+        self.last_install_version
+            .lock()
+            .expect("last_install_version mutex poisoned")
+            .clone()
     }
 
     fn set_install_error(&self, err: &str) {
@@ -95,7 +106,18 @@ impl UpdateExecutor for FakeUpdater {
         self.download_update(download_url).await
     }
 
-    fn install_and_restart(&self, _downloaded_path: &Path) -> Result<(), UpdateError> {
+    fn install_and_restart(
+        &self,
+        _downloaded_path: &Path,
+        new_version: Option<&str>,
+    ) -> Result<(), UpdateError> {
+        // #6258: capture the threaded version so a test can assert the D11
+        // pending marker would be armed with the pending release version.
+        *self
+            .last_install_version
+            .lock()
+            .expect("last_install_version mutex poisoned") =
+            Some(new_version.map(|v| v.to_string()));
         if let Some(err) = self
             .install_error
             .lock()
@@ -218,6 +240,38 @@ async fn e2e_auto_install_runs_both_phases() {
     let final_state = state.read().await.clone();
     assert_eq!(final_state.phase, UpdatePhase::Updated);
     assert!(final_state.pending.is_none());
+}
+
+/// #6258: the coordinator must thread the pending release version into
+/// install_and_restart so the D11 `.install_pending_{version}` crash-loop marker
+/// is armed. The previous trait method dropped the version (always `None`),
+/// silently disabling auto-rollback for every real update.
+#[tokio::test]
+async fn e2e_install_threads_pending_version_for_d11_marker() {
+    let fake = FakeUpdater::with_result(make_available_result("1.0.0", "1.2.0"));
+    let fake_handle = fake.clone(); // shares the Arc-backed last_install_version
+    let state = Arc::new(RwLock::new(UpdateStatus::default()));
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    let coordinator = tokio::spawn(run_update_coordinator_with_executor(
+        fake,
+        state.clone(),
+        rx,
+        None,
+        true, // auto_install
+        24,
+    ));
+
+    tx.send(UpdateAction::CheckNow).expect("send check");
+    drop(tx);
+    coordinator.await.expect("join coordinator task");
+
+    assert_eq!(state.read().await.phase, UpdatePhase::Updated);
+    assert_eq!(
+        fake_handle.last_install_version(),
+        Some(Some("1.2.0".to_string())),
+        "install must receive the pending release version so write_install_pending arms the D11 probe"
+    );
 }
 
 /// Install failure after successful download sets Error phase

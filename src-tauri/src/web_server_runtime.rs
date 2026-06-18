@@ -3,6 +3,7 @@ use maekon_automation::audit::{AuditLogAdapter, AuditLogger};
 use maekon_automation::controller::AutomationController;
 use maekon_core::config::{AppConfig, CredentialBackendKind};
 use maekon_core::config_manager::ConfigManager;
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 // Integration ports remain server-gated (Oneshim transport only).
 #[cfg(feature = "server")]
@@ -163,6 +164,7 @@ pub(crate) struct WebServerSupportContext {
     integration_runtime_status: IntegrationOutboundRuntimeStatus,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     secret_backend_capabilities: SecretBackendCapabilities,
     /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     /// registry from the composition root. Forwarded to the
@@ -199,6 +201,7 @@ impl WebServerSupportContext {
             integration_runtime_status,
             app_handle: None,
             cli_health_flag: None,
+            consent_manager: None,
             secret_backend_capabilities: secret_backend_capabilities(
                 false,
                 Vec::new(),
@@ -259,6 +262,11 @@ impl WebServerSupportContext {
         self
     }
 
+    pub(crate) fn with_consent_manager(mut self, cm: Arc<dyn ConsentManagerPort>) -> Self {
+        self.consent_manager = Some(cm);
+        self
+    }
+
     // C1: secret backend capabilities come from ProviderRuntimeContext — analysis-gated.
     #[cfg(feature = "analysis")]
     pub(crate) fn with_secret_backend_capabilities(
@@ -290,6 +298,11 @@ impl WebServerSupportContext {
         };
         let builder = if let Some(ref handle) = self.app_handle {
             builder.with_app_handle(handle.clone())
+        } else {
+            builder
+        };
+        let builder = if let Some(ref cm) = self.consent_manager {
+            builder.with_consent_manager(cm.clone())
         } else {
             builder
         };
@@ -549,10 +562,21 @@ impl<'a> WebServerRuntimeBuilder<'a> {
     pub(crate) fn build_and_spawn(mut self) -> WebServerLaunchResult {
         let web_shutdown_rx = self.launch_context.shutdown_tx.subscribe();
         let storage_for_audit = self.storage.clone();
-        let persistence_cb: std::sync::Arc<dyn maekon_automation::audit::AuditPersistence> =
+        // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
+        // blocking save in ChannelAuditPersistence so it drains on a dedicated
+        // spawn_blocking task off-reactor.
+        let blocking_persist: std::sync::Arc<dyn maekon_automation::audit::AuditPersistence> =
             std::sync::Arc::new(move |entry: &maekon_core::models::audit::AuditEntry| {
                 storage_for_audit.save_audit_entry(entry);
             });
+        // #6123: pass the runtime handle explicitly. This wiring runs on the
+        // synchronous Tauri main thread, where `Handle::try_current()` is `Err`,
+        // so the drain task must be spawned onto the known background runtime.
+        let persistence_cb: std::sync::Arc<dyn maekon_automation::audit::AuditPersistence> =
+            std::sync::Arc::new(maekon_automation::audit::ChannelAuditPersistence::new(
+                blocking_persist,
+                self.launch_context.runtime_handle.clone(),
+            ));
         let audit_query: std::sync::Arc<dyn maekon_automation::audit::AuditQuery> =
             std::sync::Arc::new(crate::audit_query::SqliteAuditQuery::new(
                 self.storage.clone(),
@@ -626,6 +650,11 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             recluster_requested: self.recluster_requested,
             coaching_engine: self.coaching_engine,
             model_catalog_client: provider_model_catalog_client(),
+            // #6279: share the SqliteStorage Arc as the FTS TextSearchProvider so
+            // /api/semantic-search (keyword + hybrid-degraded) is functional instead
+            // of permanently service.unavailable (Port Instance Sharing).
+            text_search: Some(self.storage.clone()
+                as Arc<dyn maekon_core::ports::text_search::TextSearchProvider>),
         };
         runtime_bindings.session = SessionRuntimeBindings {
             session_manager: self.session_manager,
@@ -633,12 +662,13 @@ impl<'a> WebServerRuntimeBuilder<'a> {
 
         // Spawn GUI audit forwarder if the automation controller has a GUI service.
         //
-        // #4345 동일 클래스 버그: `build_and_spawn` 은 동기 Tauri 메인 스레드(진입된
-        // tokio 런타임 없음 — 위 line 405/502 의 `runtime_handle.block_on` 가 그 증거)
-        // 에서 실행되므로, 과거 `spawn_gui_audit_forwarder` 내부의
-        // `Handle::try_current()` 가드는 항상 `Err` 를 반환해 forwarder 가 한 번도
-        // 시작되지 않는 dead code 였다. #4345 가 `shutdown_all` 에 적용한 것과 동일하게
-        // 명시적 백그라운드 런타임 핸들을 전달해 forwarder 가 실제로 구동되도록 한다.
+        // #4345 same-class bug: `build_and_spawn` runs on the synchronous Tauri main
+        // thread (no entered tokio runtime — the `runtime_handle.block_on` calls at
+        // lines 405/502 above are the proof of that), so the former
+        // `Handle::try_current()` guard inside `spawn_gui_audit_forwarder` always
+        // returned `Err`, making the forwarder dead code that never started. As with
+        // the fix #4345 applied to `shutdown_all`, pass the explicit background
+        // runtime handle so the forwarder actually runs.
         if let Some(ref controller) = automation_controller {
             spawn_gui_audit_forwarder(
                 self.launch_context.runtime_handle,
@@ -719,10 +749,11 @@ impl<'a> WebServerRuntimeBuilder<'a> {
 
 /// Subscribes to GUI session events and forwards them to the audit logger.
 ///
-/// `runtime_handle` 은 호출자(동기 Tauri 메인 스레드)가 보유한 명시적 백그라운드
-/// 런타임 핸들이다. 과거 구현은 `Handle::try_current()` 로 ambient 런타임을 찾으려
-/// 했으나, 이 함수는 진입된 tokio 런타임이 없는 메인 스레드에서 호출되므로 항상
-/// `Err` 가 되어 forwarder 가 dead code 였다(#4345 와 동일한 inverted-guard 버그).
+/// `runtime_handle` is the explicit background runtime handle held by the caller
+/// (the synchronous Tauri main thread). The former implementation tried to find an
+/// ambient runtime via `Handle::try_current()`, but since this function is called
+/// from the main thread with no entered tokio runtime, that always returned `Err`,
+/// leaving the forwarder dead code (the same inverted-guard bug as #4345).
 fn spawn_gui_audit_forwarder(
     runtime_handle: &Handle,
     automation_controller: &Arc<AutomationController>,
@@ -763,20 +794,22 @@ mod gui_audit_forwarder_tests {
     use maekon_core::models::gui::{GuiSessionEvent, GuiSessionState};
     use tokio::sync::broadcast;
 
-    /// F-RR-C40-01 회귀 방지: GUI 자동화 audit forwarder 는 과거 내부의
-    /// `Handle::try_current()` 가드 때문에 dead code 였다 — `build_and_spawn` 은
-    /// 진입된 tokio 런타임이 없는 동기 Tauri 메인 스레드에서 호출되므로
-    /// `try_current()` 가 항상 `Err` 를 반환했기 때문이다(#4345 와 동일 클래스).
+    /// F-RR-C40-01 regression guard: the GUI automation audit forwarder used to be
+    /// dead code because of its internal `Handle::try_current()` guard — since
+    /// `build_and_spawn` is called from the synchronous Tauri main thread with no
+    /// entered tokio runtime, `try_current()` always returned `Err` (same class as
+    /// #4345).
     ///
-    /// 수정된 forwarder 는 호출자가 보유한 명시적 백그라운드 런타임 핸들로
-    /// `spawn` 한다. 이 테스트는 그 핵심 불변식을 검증한다:
-    ///   1. 런타임 미진입 스레드에서 `Handle::try_current()` 는 `Err` 다
-    ///      (원래 dead-code 조건 재현).
-    ///   2. 동일 스레드에서 forwarder 가 사용하는 *명시적* 핸들의 `spawn` 으로
-    ///      구독한 GUI 세션 이벤트가 실제로 `AuditLogger` 에 forward 된다.
+    /// The fixed forwarder `spawn`s on the explicit background runtime handle held
+    /// by the caller. This test verifies that core invariant:
+    ///   1. On a thread with no entered runtime, `Handle::try_current()` is `Err`
+    ///      (reproduces the original dead-code condition).
+    ///   2. On the same thread, a GUI session event subscribed via `spawn` on the
+    ///      *explicit* handle the forwarder uses is actually forwarded to the
+    ///      `AuditLogger`.
     #[test]
     fn forwarder_forwards_event_via_explicit_handle_from_non_runtime_thread() {
-        // 명시적 백그라운드 런타임 (forwarder 가 받는 핸들과 동일 역할).
+        // Explicit background runtime (same role as the handle the forwarder receives).
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -792,10 +825,10 @@ mod gui_audit_forwarder_tests {
             let logger = logger.clone();
             let event_tx = event_tx.clone();
             move || {
-                // (1) 원래 dead-code 가드 재현: 런타임 미진입 → Err.
+                // (1) Reproduce the original dead-code guard: no entered runtime → Err.
                 let no_current = Handle::try_current().is_err();
 
-                // (2) 수정된 forwarder 와 동일한 구조: 명시적 핸들로 spawn.
+                // (2) Same structure as the fixed forwarder: spawn on the explicit handle.
                 let mut rx = event_tx.subscribe();
                 let forward_logger = logger.clone();
                 handle.spawn(async move {
@@ -807,7 +840,7 @@ mod gui_audit_forwarder_tests {
                     }
                 });
 
-                // forwarder 가 구독을 시작할 시간을 준 뒤 이벤트를 publish.
+                // Give the forwarder time to start subscribing, then publish an event.
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 event_tx
                     .send(GuiSessionEvent {
@@ -832,7 +865,7 @@ mod gui_audit_forwarder_tests {
             "non-runtime thread must have no current Handle (the original dead-code condition)"
         );
 
-        // forward 가 실제로 audit logger 에 기록되었는지 확인 (best-effort polling).
+        // Verify the forward was actually recorded in the audit logger (best-effort polling).
         let mut found = false;
         for _ in 0..50 {
             let entries = handle.block_on(async { logger.read().await.recent_entries(16) });
@@ -967,6 +1000,9 @@ mod provider_secrets_binding_tests {
         let file_store: Arc<dyn SecretStore> = Arc::new(
             maekon_storage::file_secret_store::FileSecretStore::new(
                 temp.path().join("secrets.json"),
+                Some(std::sync::Arc::new(
+                    maekon_storage::encryption::EncryptionKey::from_bytes([0x42; 32]),
+                )),
             )
             .expect("file secret store"),
         );

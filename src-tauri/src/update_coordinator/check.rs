@@ -1,4 +1,4 @@
-use crate::updater::{UpdateCheckResult, UpdateError};
+use crate::updater::{UpdateAssetType, UpdateCheckResult, UpdateError};
 use maekon_web::update_control::{PendingUpdateInfo, UpdatePhase, UpdateStatus};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,8 +41,38 @@ pub(super) async fn run_check<E: UpdateExecutor>(
             release,
             download_url,
             download_size,
-            ..
+            asset_type,
         }) => {
+            // #6266: fail-safe on delta updates. `check_for_updates` can select a
+            // `.patch` (DeltaPatch) asset, but the coordinator's install path
+            // (run_install -> install_and_restart) treats the downloaded file as a
+            // FULL binary — `apply_delta_update` has NO production caller. Installing
+            // a raw `.patch` as the executable would brick the agent. Until delta
+            // apply is actually wired, refuse a delta asset (stay on the current
+            // version) instead of self-bricking.
+            if let UpdateAssetType::DeltaPatch { from_version } = &asset_type {
+                warn!(
+                    from_version = %from_version,
+                    latest = %latest,
+                    "Update server offered a delta .patch asset, but delta apply is not wired; \
+                     refusing to install (would brick the binary). Awaiting a full-binary release."
+                );
+                let mut guard = state.write().await;
+                guard.phase = UpdatePhase::Error;
+                guard.message = Some(format!(
+                    "Update {latest} is delta-only (.patch); this client requires a full-binary \
+                     release and will not install a delta patch."
+                ));
+                guard.pending = None;
+                guard.download_progress = None;
+                guard.touch();
+                broadcast_status(status_tx, &guard);
+                if let Err(e) = updater.save_last_check_time() {
+                    warn!("Failed to persist last update check timestamp: {}", e);
+                }
+                return;
+            }
+
             {
                 let mut guard = state.write().await;
                 guard.phase = UpdatePhase::PendingApproval;

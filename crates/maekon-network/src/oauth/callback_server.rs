@@ -183,14 +183,35 @@ h1{color:#22c55e;margin:0 0 .5rem}p{color:#6b7280}</style></head>
 <body><div class="card"><h1>&#10003; Connected</h1><p>You can close this tab and return to Maekon.</p></div></body></html>"#.to_string()
 }
 
+/// Escape the five HTML special characters so that user-controlled strings cannot
+/// inject markup or script into the callback page (reflected-XSS prevention).
+///
+/// Does NOT depend on any external crate — intentional to keep Cargo.toml clean.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn error_html(error: &str, description: &str) -> String {
+    let error_safe = html_escape(error);
+    let description_safe = html_escape(description);
     format!(
         r#"<!DOCTYPE html>
 <html><head><title>Maekon — Authentication Error</title>
 <style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8f9fa}}
 .card{{background:#fff;border-radius:12px;padding:2rem 3rem;box-shadow:0 2px 8px rgba(0,0,0,.1);text-align:center}}
 h1{{color:#ef4444;margin:0 0 .5rem}}p{{color:#6b7280}}</style></head>
-<body><div class="card"><h1>&#10007; Error</h1><p>{error}: {description}</p><p>Please close this tab and try again in Maekon.</p></div></body></html>"#
+<body><div class="card"><h1>&#10007; Error</h1><p>{error_safe}: {description_safe}</p><p>Please close this tab and try again in Maekon.</p></div></body></html>"#
     )
 }
 
@@ -217,5 +238,45 @@ mod tests {
         let html = error_html("access_denied", "User cancelled");
         assert!(html.contains("access_denied"));
         assert!(html.contains("User cancelled"));
+    }
+
+    #[test]
+    fn html_escape_encodes_special_chars() {
+        assert_eq!(html_escape("&"), "&amp;");
+        assert_eq!(html_escape("<"), "&lt;");
+        assert_eq!(html_escape(">"), "&gt;");
+        assert_eq!(html_escape("\""), "&quot;");
+        assert_eq!(html_escape("'"), "&#x27;");
+        assert_eq!(html_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn error_html_escapes_xss_payload_in_error() {
+        let payload = "<script>alert(1)</script>";
+        let html = error_html(payload, "benign description");
+        // The raw angle-bracket tags must not appear verbatim.
+        assert!(
+            !html.contains("<script>"),
+            "raw <script> tag must not appear in error HTML"
+        );
+        assert!(
+            !html.contains("</script>"),
+            "raw </script> tag must not appear in error HTML"
+        );
+        // The escaped representation must be present instead.
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&lt;/script&gt;"));
+    }
+
+    #[test]
+    fn error_html_escapes_xss_payload_in_description() {
+        let payload = "<img src=x onerror=\"alert('xss')\">";
+        let html = error_html("access_denied", payload);
+        assert!(
+            !html.contains("<img"),
+            "raw <img> tag must not appear in error HTML"
+        );
+        assert!(html.contains("&lt;img"));
+        assert!(html.contains("&quot;"));
     }
 }

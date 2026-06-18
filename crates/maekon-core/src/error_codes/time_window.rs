@@ -1,11 +1,11 @@
-//! TimeWindowCode — TimeWindow 카테고리 에러 코드. `time_window.*` 접두사.
+//! TimeWindowCode — TimeWindow category error codes. `time_window.*` prefix.
 
 define_code_enum! {
-    /// TimeWindow 카테고리 에러 코드.
+    /// TimeWindow category error codes.
     pub enum TimeWindowCode {
-        /// start > end 검증 실패.
+        /// start > end validation failed.
         InvertedBounds => "time_window.inverted_bounds",
-        /// RFC3339 timestamp 파싱 실패.
+        /// RFC3339 timestamp parse failed.
         ParseFailed => "time_window.parse_failed",
     }
 }

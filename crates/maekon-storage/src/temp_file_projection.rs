@@ -275,7 +275,44 @@ impl SecretProjectionPort for TempFileSecretProjection {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("failed to initialize temp file: {e}"),
             })?;
-        // F-RC-10: use tokio::fs::write in async context
+        // #6131: On Windows the owner-only DACL MUST be applied while the file is
+        // still EMPTY — BEFORE the cleartext secret is written. The `tempfile`
+        // builder creates the file inheriting the parent-directory ACL, so if we
+        // wrote the secret first there would be a window where the cleartext key
+        // is exposed under the inherited (potentially world-readable) ACL. This
+        // mirrors `EncryptionKey::save_to_file` (encryption.rs): create empty →
+        // protect → write. DACL failure is a HARD error — we remove the file and
+        // bail rather than leave a cleartext secret unprotected.
+        //
+        // On Unix the analogous protection (chmod 0o600) is applied to the
+        // already-created tempfile after the write below; this is safe because
+        // `tempfile` opens with mode 0o600 by default, so there is no
+        // world-readable window on Unix.
+        #[cfg(windows)]
+        {
+            let temp_path = temp_file.path().to_owned();
+            tokio::task::spawn_blocking(move || {
+                crate::encryption::set_owner_only_dacl(&temp_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&temp_path);
+                    CoreError::Internal {
+                        code: maekon_core::error_codes::InternalCode::Generic,
+                        message: format!(
+                            "failed to secure projected temp file ({}): {}",
+                            temp_path.display(),
+                            e
+                        ),
+                    }
+                })
+            })
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("spawn_blocking join error: {e}"),
+            })??;
+        }
+        // F-RC-10: use tokio::fs::write in async context. On Windows the file is
+        // already protected by the owner-only DACL applied above, so the
+        // cleartext secret never touches disk under an inherited ACL (#6131).
         tokio::fs::write(temp_file.path(), secret)
             .await
             .map_err(|e| CoreError::Internal {
@@ -324,7 +361,24 @@ impl SecretProjectionPort for TempFileSecretProjection {
         }
 
         registry.insert(request.consumer_id, path.clone());
-        self.save_registry(&registry).await?;
+        // #13: If persisting the registry fails AFTER `keep()` succeeded, the
+        // cleartext-secret temp file is already materialized on disk but is NOT
+        // recorded in the registry — `revoke_projection` (which only iterates the
+        // registry) could then never clean it up, leaving an orphaned cleartext
+        // secret. Best-effort remove the just-kept file before propagating the
+        // error so a projection is either fully tracked or fully cleaned up. The
+        // removal error is intentionally swallowed (we only log it): the original
+        // save_registry failure is the more actionable one to surface.
+        if let Err(save_err) = self.save_registry(&registry).await {
+            if let Err(cleanup_err) = Self::remove_file_if_exists(path.clone()).await {
+                tracing::warn!(
+                    "failed to clean up orphaned projected temp file ({}) after registry save error: {}",
+                    path.display(),
+                    cleanup_err
+                );
+            }
+            return Err(save_err.into());
+        }
 
         Ok(SecretProjectionResult::TempFile {
             path,
@@ -443,6 +497,56 @@ mod tests {
         assert!(cleanup_required);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk-temp-file");
         assert!(temp_dir.path().join("registry.json").exists());
+    }
+
+    /// #6080: on Unix the projected cleartext secret temp file must be
+    /// owner-only (0o600). (The Windows owner-only DACL path is applied via the
+    /// shared `encryption::set_owner_only_dacl` helper and exercised on Windows.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_temp_file_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let secret_store = Arc::new(TestSecretStore::new());
+        secret_store
+            .store("provider/openai/llm", "api_key", "sk-temp-file")
+            .await
+            .unwrap();
+
+        let adapter = TempFileSecretProjection::new(
+            secret_store,
+            temp_dir.path().join("proj"),
+            temp_dir.path().join("registry.json"),
+            vec![ProjectionTemplate::temp_file(
+                "provider/openai/llm/api-key-temp-file",
+                "openai-llm-api-key",
+            )],
+        );
+
+        let result = adapter
+            .project(SecretProjectionRequest {
+                namespace: "provider/openai/llm".to_string(),
+                key: "api_key".to_string(),
+                target: ProjectionTarget::TempFile,
+                purpose: ProjectionPurpose::ProviderCliExecution,
+                consumer_id: "provider/openai/llm/api-key-temp-file".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let SecretProjectionResult::TempFile { path, .. } = result else {
+            panic!("expected temp file result");
+        };
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        // Only the owner rw bits may be set; group/other must be clear.
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "projected secret temp file must be 0o600, got {:o}",
+            mode & 0o777
+        );
     }
 
     #[tokio::test]
@@ -571,6 +675,70 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, CoreError::Config { .. }));
+    }
+
+    /// #13: when `save_registry` fails AFTER the temp file is `keep()`-persisted,
+    /// the orphaned cleartext-secret file must be cleaned up before the error is
+    /// propagated — otherwise it stays on disk untracked (and thus uncleanable
+    /// via `revoke_projection`, which only iterates the registry).
+    #[tokio::test]
+    async fn project_temp_file_cleans_up_when_registry_save_fails_after_keep() {
+        let temp_dir = TempDir::new().unwrap();
+        let secret_store = Arc::new(TestSecretStore::new());
+        secret_store
+            .store("provider/openai/llm", "api_key", "sk-temp-file")
+            .await
+            .unwrap();
+
+        // Force save_registry to fail: place a *regular file* where the registry's
+        // parent directory needs to be created. `create_dir_all(parent)` then
+        // fails (NotADirectory), which happens AFTER keep() has materialized the
+        // projected temp file.
+        let parent_as_file = temp_dir.path().join("registry-parent");
+        std::fs::write(&parent_as_file, b"not a dir").unwrap();
+        let registry_path = parent_as_file.join("registry.json");
+
+        let projection_dir = temp_dir.path().join("proj");
+        let adapter = TempFileSecretProjection::new(
+            secret_store,
+            projection_dir.clone(),
+            registry_path,
+            vec![ProjectionTemplate::temp_file(
+                "provider/openai/llm/api-key-temp-file",
+                "openai-llm-api-key",
+            )],
+        );
+
+        let err = adapter
+            .project(SecretProjectionRequest {
+                namespace: "provider/openai/llm".to_string(),
+                key: "api_key".to_string(),
+                target: ProjectionTarget::TempFile,
+                purpose: ProjectionPurpose::ProviderCliExecution,
+                consumer_id: "provider/openai/llm/api-key-temp-file".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        // The registry-save failure is surfaced (StorageError::Internal maps to
+        // CoreError::Storage via `From`), not swallowed.
+        assert!(
+            matches!(err, CoreError::Storage { .. }),
+            "expected Storage from registry-save failure, got {err:?}"
+        );
+
+        // No orphaned `.secret` file may remain in the projection dir.
+        let leftover_secret = std::fs::read_dir(&projection_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("secret"))
+            })
+            .unwrap_or(false);
+        assert!(
+            !leftover_secret,
+            "projected cleartext temp file must be cleaned up when registry save fails after keep()"
+        );
     }
 
     #[test]

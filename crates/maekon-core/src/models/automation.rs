@@ -22,8 +22,8 @@ pub enum AutomationAction {
 }
 
 // ── Automation result types ──
-// 이전에는 maekon-automation::controller::types에 있었으나,
-// AutomationPort 추상화를 위해 maekon-core로 이동 (ADR-001 §7)
+// These previously lived in maekon-automation::controller::types, but were moved
+// to maekon-core to support the AutomationPort abstraction (ADR-001 §7).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationCommand {

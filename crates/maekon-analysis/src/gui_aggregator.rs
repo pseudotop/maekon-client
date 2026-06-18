@@ -71,8 +71,11 @@ impl GuiActivityAggregator {
 
         if let Some(ref window) = self.current_window {
             let content_changed = window.content_label != content_label;
-            let window_expired =
-                (now - window.start_time).num_seconds() as u64 >= self.window_duration_secs;
+            // Clamp a backward clock step to 0 before the unsigned cast (review4
+            // F12): a negative i64 delta cast `as u64` wraps to ~1.8e19 and would
+            // spuriously force-flush the just-opened window. Mirrors flush_inner.
+            let elapsed_secs = (now - window.start_time).num_seconds().max(0) as u64;
+            let window_expired = elapsed_secs >= self.window_duration_secs;
             let max_reached = window.events.len() >= self.max_events;
 
             if content_changed || window_expired || max_reached {
@@ -258,7 +261,8 @@ impl GuiActivityAggregator {
                 event.interaction_type,
                 GuiInteractionType::Click | GuiInteractionType::DoubleClick
             ) {
-                // Save: click on element with "save" / "저장" text
+                // Save: click on element whose text contains "save" or the
+                // Korean equivalent "\u{c800}\u{c7a5}" (jeojang)
                 if text_lower.contains("save") || text_lower.contains("저장") {
                     counts.save_count += 1;
                     continue;

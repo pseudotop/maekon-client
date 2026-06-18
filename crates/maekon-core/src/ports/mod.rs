@@ -45,6 +45,7 @@ pub mod overlay_driver;
 pub mod override_store;
 pub mod pii_sanitizer;
 pub mod preset_storage;
+pub mod provider_cli_diagnostics;
 pub mod provider_model_catalog;
 pub mod rectangle_detector;
 pub mod regime_storage;

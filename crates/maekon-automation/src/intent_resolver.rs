@@ -10,6 +10,21 @@ use maekon_core::models::intent::{
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::input_driver::InputDriver;
 
+/// Reject a synthesized input action whose text/key count exceeds the shared
+/// cap. The action_dispatcher inline path caps its own synthesis (review4 A8);
+/// this closes the same hole on the IntentResolver (template/LLM) path, which
+/// drives the real input driver directly and was previously uncapped (review4
+/// re-verify).
+fn enforce_synth_input_len(len: usize, what: &str) -> Result<(), AutomationError> {
+    if len > crate::input_driver::MAX_SYNTHESIZED_INPUT_LEN {
+        return Err(AutomationError::InvalidArguments(format!(
+            "{what} exceeds {} (synthesized input cap)",
+            crate::input_driver::MAX_SYNTHESIZED_INPUT_LEN
+        )));
+    }
+    Ok(())
+}
+
 pub struct IntentResolver {
     element_finder: Arc<dyn ElementFinder>,
     input_driver: Arc<dyn InputDriver>,
@@ -50,7 +65,7 @@ impl IntentResolver {
                     .find(|e| e.confidence >= self.config.min_confidence)
                     .ok_or_else(|| {
                         AutomationError::ElementNotFound(format!(
-                            "신뢰도 {:.0}% 이상의 요소를 찾지 못함 (text={:?}, role={:?})",
+                            "no element found at or above {:.0}% confidence (text={:?}, role={:?})",
                             self.config.min_confidence * 100.0,
                             text,
                             role
@@ -85,6 +100,7 @@ impl IntentResolver {
                 }
 
                 debug!(text_len = text.len(), "text");
+                enforce_synth_input_len(text.chars().count(), "TypeIntoElement text")?;
                 self.input_driver.type_text(text).await?;
 
                 Ok((true, best))
@@ -92,14 +108,21 @@ impl IntentResolver {
 
             AutomationIntent::ExecuteHotkey { keys } => {
                 debug!(?keys, "key execution");
+                enforce_synth_input_len(keys.len(), "ExecuteHotkey keys")?;
                 self.input_driver.hotkey(keys).await?;
                 Ok((true, None))
             }
 
             AutomationIntent::WaitForText { text, timeout_ms } => {
-                debug!(text, timeout_ms, "text waiting");
+                // Clamp the untrusted preset/LLM-config wait so a malformed
+                // timeout_ms cannot busy-wait the workflow task effectively forever
+                // (review4 re-verify: A19 sibling — A19 clamped the inter-step delay
+                // but left this unbounded).
+                const MAX_WAIT_MS: u64 = 300_000;
+                let effective_timeout_ms = (*timeout_ms).min(MAX_WAIT_MS);
+                debug!(text, timeout_ms = effective_timeout_ms, "text waiting");
                 let start = Instant::now();
-                let timeout = std::time::Duration::from_millis(*timeout_ms);
+                let timeout = std::time::Duration::from_millis(effective_timeout_ms);
 
                 loop {
                     let elements = self
@@ -115,9 +138,13 @@ impl IntentResolver {
                     }
 
                     if start.elapsed() >= timeout {
-                        warn!(text, timeout_ms, "text waiting timeout");
+                        warn!(
+                            text,
+                            timeout_ms = effective_timeout_ms,
+                            "text waiting timeout"
+                        );
                         return Err(AutomationError::ExecutionTimeout {
-                            timeout_ms: *timeout_ms,
+                            timeout_ms: effective_timeout_ms,
                         });
                     }
 
@@ -129,15 +156,25 @@ impl IntentResolver {
             }
 
             AutomationIntent::ActivateApp { app_name } => {
-                debug!(app_name, "app enabled");
-                // macOS: osascript -e 'activate application "..."'
-                // Windows: Win32 SetForegroundWindow
-                info!(app_name, "app enabled request ( required)");
-                Ok((true, None))
+                // review4 A9: app activation is NOT implemented — there is no
+                // platform call here (the InputDriver port has no activate_app), so
+                // returning Ok((true,..)) fabricated success and (with
+                // verify_after_action) a phantom screen-change. Report success=false
+                // so the executor does not claim a focus switch that never happened
+                // and stop_on_failure presets halt before synthesizing input against
+                // the wrong (un-switched) focused window.
+                // TODO: implement real activation (macOS osascript / Windows
+                // SetForegroundWindow / Linux wmctrl) behind the InputDriver port.
+                warn!(
+                    app_name,
+                    "ActivateApp is not implemented (no-op) — reporting failure"
+                );
+                Ok((false, None))
             }
 
             AutomationIntent::Raw(action) => {
-                debug!(?action, "execution");
+                // #5980: redact KeyType text so typed PII never reaches the log sink.
+                debug!(action = %crate::sandbox::redact_action(action), "execution");
                 match action {
                     maekon_core::models::automation::AutomationAction::MouseMove { x, y } => {
                         self.input_driver.mouse_move(*x, *y).await?;
@@ -150,6 +187,7 @@ impl IntentResolver {
                         self.input_driver.mouse_click(button, *x, *y).await?;
                     }
                     maekon_core::models::automation::AutomationAction::KeyType { text } => {
+                        enforce_synth_input_len(text.chars().count(), "Raw KeyType text")?;
                         self.input_driver.type_text(text).await?;
                     }
                     maekon_core::models::automation::AutomationAction::KeyPress { key } => {
@@ -159,6 +197,7 @@ impl IntentResolver {
                         self.input_driver.key_release(key).await?;
                     }
                     maekon_core::models::automation::AutomationAction::Hotkey { keys } => {
+                        enforce_synth_input_len(keys.len(), "Raw Hotkey keys")?;
                         self.input_driver.hotkey(keys).await?;
                     }
                 }
@@ -384,9 +423,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_type_into_element() {
-        let resolver = make_resolver_with_elements(vec![make_element("검색", 0.9)]);
+        // Element/search text is incidental test data ("search"), ASCII-escaped to
+        // keep the source ASCII while preserving the exact bytes under test.
+        let resolver = make_resolver_with_elements(vec![make_element("\u{ac80}\u{c0c9}", 0.9)]);
         let intent = AutomationIntent::TypeIntoElement {
-            element_text: Some("검색".to_string()),
+            element_text: Some("\u{ac80}\u{c0c9}".to_string()),
             role: None,
             text: "hello world".to_string(),
         };
@@ -439,8 +480,10 @@ mod tests {
             },
         );
 
+        // Target text is incidental test data ("does not exist"), ASCII-escaped to
+        // keep the source ASCII while preserving the exact bytes under test.
         let intent = AutomationIntent::ClickElement {
-            text: Some("존재하지않음".to_string()),
+            text: Some("\u{c874}\u{c7ac}\u{d558}\u{c9c0}\u{c54a}\u{c74c}".to_string()),
             role: None,
             app_name: None,
             button: "left".to_string(),
@@ -454,7 +497,9 @@ mod tests {
 
     #[tokio::test]
     async fn executor_succeeds_with_verification() {
-        let resolver = make_resolver_with_elements(vec![make_element("확인", 0.9)]);
+        // Target text is incidental test data ("OK"/"confirm"), ASCII-escaped to keep
+        // the source ASCII while preserving the exact bytes under test.
+        let resolver = make_resolver_with_elements(vec![make_element("\u{d655}\u{c778}", 0.9)]);
         let config = IntentConfig {
             verify_after_action: true,
             verify_delay_ms: 10, // fast verification in test
@@ -463,7 +508,7 @@ mod tests {
         let executor = IntentExecutor::new(resolver, config);
 
         let intent = AutomationIntent::ClickElement {
-            text: Some("확인".to_string()),
+            text: Some("\u{d655}\u{c778}".to_string()),
             role: None,
             app_name: None,
             button: "left".to_string(),
@@ -490,8 +535,75 @@ mod tests {
             app_name: "Visual Studio Code".to_string(),
         };
 
+        // review4 A9: ActivateApp is not implemented (no platform call exists), so
+        // it must report success=false rather than fabricate success. Previously it
+        // returned Ok((true, ..)), which (with verification) also fabricated a
+        // phantom screen-change and let presets continue feeding input to the wrong
+        // window.
         let result = executor.execute(&intent).await.unwrap();
-        assert!(result.success);
+        assert!(
+            !result.success,
+            "unimplemented ActivateApp must report failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn executor_activate_app_does_not_fabricate_screen_change() {
+        // Even when verification runs, an unimplemented ActivateApp must not claim a
+        // screen change happened (review4 A9 regression guard).
+        let resolver = make_resolver_with_elements(vec![]);
+        let executor = IntentExecutor::new(
+            resolver,
+            IntentConfig {
+                verify_after_action: true,
+                verify_delay_ms: 0,
+                ..IntentConfig::default()
+            },
+        );
+        let intent = AutomationIntent::ActivateApp {
+            app_name: "Visual Studio Code".to_string(),
+        };
+        let result = executor.execute(&intent).await.unwrap();
+        assert!(!result.success);
+        let verification = result.verification.expect("verification runs when enabled");
+        assert!(
+            !verification.screen_changed,
+            "must not fabricate a screen change for an unimplemented action"
+        );
+        assert_eq!(verification.changed_regions, 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_synthesized_keytype_is_rejected() {
+        // review4 re-verify (A8 completion): the keystroke-burst cap must hold on
+        // the IntentResolver synthesis path, not only the action_dispatcher inline
+        // path. An over-cap Raw KeyType must error before reaching the driver.
+        let resolver = make_resolver_with_elements(vec![]);
+        let huge = "a".repeat(crate::input_driver::MAX_SYNTHESIZED_INPUT_LEN + 1);
+        let intent =
+            AutomationIntent::Raw(maekon_core::models::automation::AutomationAction::KeyType {
+                text: huge,
+            });
+        let err = resolver
+            .resolve_and_execute(&intent)
+            .await
+            .expect_err("oversized synthesized KeyType must be rejected");
+        assert!(matches!(err, AutomationError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn synthesized_keytype_at_cap_is_accepted() {
+        let resolver = make_resolver_with_elements(vec![]);
+        let at_cap = "a".repeat(crate::input_driver::MAX_SYNTHESIZED_INPUT_LEN);
+        let intent =
+            AutomationIntent::Raw(maekon_core::models::automation::AutomationAction::KeyType {
+                text: at_cap,
+            });
+        let (success, _) = resolver
+            .resolve_and_execute(&intent)
+            .await
+            .expect("input exactly at the cap must be accepted");
+        assert!(success);
     }
 
     #[tokio::test]
@@ -504,8 +616,11 @@ mod tests {
                 ..IntentConfig::default()
             },
         );
+        // Wait-for text is incidental test data ("nonexistent text"), ASCII-escaped
+        // to keep the source ASCII while preserving the exact bytes under test.
         let intent = AutomationIntent::WaitForText {
-            text: "존재하지않는텍스트".to_string(),
+            text: "\u{c874}\u{c7ac}\u{d558}\u{c9c0}\u{c54a}\u{b294}\u{d14d}\u{c2a4}\u{d2b8}"
+                .to_string(),
             timeout_ms: 50,
         };
         let err = resolver.resolve_and_execute(&intent).await.unwrap_err();
@@ -534,8 +649,10 @@ mod tests {
             Arc::new(MockInputDriver),
             IntentConfig::default(),
         );
+        // Target text is incidental test data ("without button"), ASCII-escaped to
+        // keep the source ASCII while preserving the exact bytes under test.
         let intent = AutomationIntent::ClickElement {
-            text: Some("without버튼".to_string()),
+            text: Some("without\u{bc84}\u{d2bc}".to_string()),
             role: None,
             app_name: None,
             button: "left".to_string(),
@@ -567,7 +684,9 @@ mod tests {
 
     #[tokio::test]
     async fn executor_no_verification_success() {
-        let resolver = make_resolver_with_elements(vec![make_element("확인", 0.9)]);
+        // Target text is incidental test data ("OK"/"confirm"), ASCII-escaped to keep
+        // the source ASCII while preserving the exact bytes under test.
+        let resolver = make_resolver_with_elements(vec![make_element("\u{d655}\u{c778}", 0.9)]);
         let config = IntentConfig {
             verify_after_action: false,
             ..IntentConfig::default()
@@ -575,7 +694,7 @@ mod tests {
         let executor = IntentExecutor::new(resolver, config);
 
         let intent = AutomationIntent::ClickElement {
-            text: Some("확인".to_string()),
+            text: Some("\u{d655}\u{c778}".to_string()),
             role: None,
             app_name: None,
             button: "left".to_string(),

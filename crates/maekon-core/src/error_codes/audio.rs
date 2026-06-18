@@ -1,13 +1,13 @@
-//! AudioCode — Audio 카테고리 에러 코드. `audio.*` 접두사.
+//! AudioCode — Audio category error codes. `audio.*` prefix.
 
 define_code_enum! {
-    /// Audio 카테고리 에러 코드.
+    /// Audio category error codes.
     pub enum AudioCode {
-        /// 오디오 캡처 실패.
+        /// Audio capture failed.
         CaptureFailed => "audio.capture_failed",
-        /// 음성→텍스트 변환 실패.
+        /// Speech-to-text conversion failed.
         SttFailed => "audio.stt_failed",
-        /// 다운로드 파일 무결성 검사 실패 (SHA-256 불일치). F-RC-C22-03.
+        /// Downloaded file integrity check failed (SHA-256 mismatch). F-RC-C22-03.
         IntegrityCheckFailed => "audio.integrity_check_failed",
     }
 }

@@ -205,7 +205,12 @@ jobs:
         with:
           key: ci-check
 
-      - name: Check formatting
+      - name: Check formatting (advisory — does not block external PRs)
+        # House-style, like the hedge gate (#6346): annotate external PRs but never
+        # hard-block — `cargo fmt` is a one-command fix and a maintainer runs it
+        # while porting. The source-of-truth (parent) `House-style gate` enforces
+        # fmt, so exported source is always clean regardless of this advisory step.
+        continue-on-error: true
         run: ./scripts/cargo-cache.sh fmt --all -- --check
 
       - name: Verify architecture dependency direction
@@ -241,6 +246,9 @@ jobs:
 
       - name: Verify CI build artifact guardrails
         run: bash scripts/ci/check-build-artifact-guardrails.sh
+
+      - name: Verify public/private CI split
+        run: bash scripts/ci/check-public-private-ci-split.sh
 
       - name: CI grep heuristic for #[instrument] on sensitive fns
         run: bash scripts/ci/grep-no-instrument-on-sensitive-fns.sh
@@ -614,7 +622,24 @@ jobs:
 
       - name: Run tests (default workspace)
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: cargo test --locked --workspace
+        # Exclude maekon-lint from the REQUIRED run: its tests are house-style
+        # gates (value-blind assertion hedges, i18n, language-check) we hold the
+        # core team to but do not hard-block external contributors on (#6346).
+        # House-style is surfaced by the separate advisory step below.
+        run: cargo test --locked --workspace --exclude maekon-lint
+
+      - name: House-style gates (advisory — does not block external PRs)
+        if: env.RUN_HEAVY_TESTS == 'true'
+        # Value-blind assertion hedges (`assert!(x.is_ok()/is_err())`), i18n, and
+        # language-check are project conventions, not correctness bugs. We annotate
+        # PRs with them but never fail the build here (#6346: internal SSOT =
+        # blocking via the parent gate; external/public = advisory). See
+        # CONTRIBUTING.md ("Test assertions") for how to fix or justify a site.
+        continue-on-error: true
+        run: |
+          cargo test --locked -p maekon-lint
+          cargo run --locked -q -p maekon-lint --bin language-check -- non-english --path crates --path src-tauri
+          cargo run --locked -q -p maekon-lint --bin language-check -- i18n --strict-i18n
 
       # F2 (P2): windows-sandbox feature — Win32 Job Object + token-restriction code
       # (`#[cfg(target_os = "windows")]` in maekon-automation/src/sandbox/windows.rs)

@@ -302,10 +302,39 @@ impl GuiInteractionService {
                     name: session_id.to_string(),
                 });
             };
+            // Re-validate expiry + state ATOMICALLY with the nonce burn (review4 A4).
+            // prepare_execution snapshotted these before the focus-drift .await window,
+            // so a session that expired (TTL) or was cancelled during that ~1s window
+            // would otherwise be resurrected into Executing. The gate skips policy for
+            // the gui-session token, so this is the sole execution-time authorization.
+            if is_expired(&stored.session.expires_at) {
+                stored.session.state = GuiSessionState::Expired;
+                return Err(GuiInteractionError::TicketInvalid {
+                    code: maekon_core::error_codes::GuiCode::TicketInvalid,
+                    message: "session expired".to_string(),
+                });
+            }
+            if stored.session.state != GuiSessionState::Confirmed {
+                return Err(GuiInteractionError::TicketInvalid {
+                    code: maekon_core::error_codes::GuiCode::TicketInvalid,
+                    message: format!("session no longer confirmed: {:?}", stored.session.state),
+                });
+            }
             if stored.used_ticket_nonces.contains(&req.ticket.nonce) {
                 return Err(GuiInteractionError::TicketInvalid {
                     code: maekon_core::error_codes::GuiCode::TicketInvalid,
                     message: "ticket nonce replay detected".to_string(),
+                });
+            }
+            // Bound the per-session replay store (review4 A13/A22): it is otherwise
+            // freed only at session TTL, so a confirm→prepare→fail→re-confirm loop
+            // grows it unbounded. Reject past a generous cap (fail-closed; only the
+            // latest ticket is ever valid, and the store self-heals at session TTL).
+            const MAX_USED_TICKET_NONCES: usize = 512;
+            if stored.used_ticket_nonces.len() >= MAX_USED_TICKET_NONCES {
+                return Err(GuiInteractionError::TicketInvalid {
+                    code: maekon_core::error_codes::GuiCode::TicketInvalid,
+                    message: "session ticket-nonce limit exceeded".to_string(),
                 });
             }
             stored.used_ticket_nonces.insert(req.ticket.nonce.clone());

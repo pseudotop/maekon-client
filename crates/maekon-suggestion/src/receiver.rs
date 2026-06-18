@@ -85,7 +85,15 @@ impl SuggestionReceiver {
         *self.on_new.lock().await = Some(callback);
     }
 
-    pub async fn run(&self, session_id: &str) -> Result<(), SuggestionError> {
+    /// Drive the SSE/gRPC suggestion stream until it closes or errors.
+    ///
+    /// Returns `Ok(true)` when the stream delivered at least one suggestion
+    /// before terminating, and `Ok(false)` when it ended without producing any
+    /// suggestion (e.g. an immediate transport failure). The caller's reconnect
+    /// loop uses this signal to reset its backoff only after the stream made
+    /// meaningful progress — a stream that fails before delivering anything must
+    /// escalate the retry delay so a down server is not hammered (#6130).
+    pub async fn run(&self, session_id: &str) -> Result<bool, SuggestionError> {
         let (event_tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(64);
         let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
 
@@ -115,6 +123,10 @@ impl SuggestionReceiver {
 
         info!("suggestion received waiting started");
 
+        // Tracks whether the stream produced at least one suggestion. Reported
+        // back to the reconnect loop so it can reset its backoff (#6130).
+        let mut delivered_suggestion = false;
+
         while let Some(event) = rx.recv().await {
             match event {
                 SseEvent::Connected { session_id } => {
@@ -125,6 +137,7 @@ impl SuggestionReceiver {
                         "suggestion received: {} ({:?})",
                         suggestion.suggestion_id, suggestion.priority
                     );
+                    delivered_suggestion = true;
                     self.handle_suggestion(suggestion).await;
                 }
                 SseEvent::Update(data) => {
@@ -143,7 +156,7 @@ impl SuggestionReceiver {
             }
         }
 
-        Ok(())
+        Ok(delivered_suggestion)
     }
 
     // P2 PR-A: the queue lock is held across an intentional "expiry + dedup

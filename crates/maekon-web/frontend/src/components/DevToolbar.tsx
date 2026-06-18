@@ -4,6 +4,9 @@
  *
  * NOTE: This component intentionally uses raw Tailwind colors (not design tokens).
  * It is dev-only and not part of the shipped UI.
+ *
+ * lint:allow-hardcoded-ui — dev-only debug toolbar; its labels are developer-facing
+ * and intentionally not translated.
  */
 import { useState } from 'react'
 import { Divider } from './ui'

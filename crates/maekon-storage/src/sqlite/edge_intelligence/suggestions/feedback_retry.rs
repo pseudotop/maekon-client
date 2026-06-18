@@ -9,7 +9,7 @@ impl SqliteStorage {
         &self,
         record: &maekon_core::models::storage_records::PendingFeedbackRecord,
     ) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, feedback_retries ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set, feedback_retries ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO feedback_retries \
@@ -34,7 +34,7 @@ impl SqliteStorage {
         limit: usize,
     ) -> Result<Vec<maekon_core::models::storage_records::PendingFeedbackRecord>, StorageError>
     {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
         let mut stmt = conn
@@ -69,7 +69,7 @@ impl SqliteStorage {
     /// Returns the number of rows deleted.
     pub fn cleanup_old_feedback_retries(&self, max_age_days: u32) -> Result<usize, StorageError> {
         let cutoff = format!("-{max_age_days} days");
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run(0usize, |conn| {
             let deleted = conn
                 .execute(
@@ -85,7 +85,7 @@ impl SqliteStorage {
 
     /// Delete a pending feedback after successful retry or exhaustion.
     pub fn delete_pending_feedback(&self, suggestion_id: &str) -> Result<(), StorageError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵).
+        // Write — write_lock (skipped when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "DELETE FROM feedback_retries WHERE suggestion_id = ?1",

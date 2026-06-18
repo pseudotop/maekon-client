@@ -50,8 +50,8 @@ interface OnboardingProps {
 // #5707: TOTAL_STEPS 5→6 (StepCoaching inserted between Features and Ready).
 const TOTAL_STEPS = 6
 
-// 모니터링 동의 번들을 구성하는 6개 마스터 필드(ConsentToggleSection 의 MONITORING_FIELDS 와 동일).
-// 부여 시 이 6개는 true, 나머지 7개(고감도/추가 opt-in)는 false 인 fresh grant 를 전송한다.
+// The 6 master fields that make up the monitoring consent bundle (identical to MONITORING_FIELDS in ConsentToggleSection).
+// On grant, send a fresh grant where these 6 are true and the other 7 (high-sensitivity / additional opt-in) are false.
 const MONITORING_FIELDS = [
   'screen_capture',
   'window_title_collection',
@@ -61,7 +61,7 @@ const MONITORING_FIELDS = [
   'telemetry',
 ] as const satisfies readonly (keyof ConsentPermissions)[]
 
-/** 14개 권한 전부 false 로 시작해 6개 마스터 필드만 true 로 켠 fresh grant 권한 집합을 만든다. */
+/** Builds a fresh grant permission set that starts with all 14 permissions false and turns on only the 6 master fields. */
 function buildMonitoringGrant(): ConsentPermissions {
   const permissions: ConsentPermissions = {
     screen_capture: false,
@@ -567,8 +567,8 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
 
 /* ── Consent step (#4629 A.2 task 4) ── */
 
-// 모니터링 ON 시 수집되는 항목 전체를 열거한다(privacy.consent.monitoring.collected.* 재사용).
-// 온보딩 완료가 OS 권한 + GDPR 동의를 모두 프로비저닝하도록, 정보 제공 후 명시적 클릭으로만 부여한다.
+// Enumerates every item collected when monitoring is ON (reuses privacy.consent.monitoring.collected.*).
+// So that onboarding completion provisions both OS permissions and GDPR consent, grant only via an explicit click after the informational disclosure.
 const CONSENT_COLLECTED_KEYS = [
   'screenFrames',
   'windowTitles',
@@ -590,7 +590,7 @@ function StepConsent() {
   const [granted, setGranted] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // 명시적·정보 제공형 부여: 클릭 시점에만 set_consent 를 호출한다(자동 부여 금지).
+  // Explicit, informed grant: call set_consent only on click (no auto-grant).
   const handleGrant = useCallback(async () => {
     setGranting(true)
     setError(null)
@@ -614,7 +614,7 @@ function StepConsent() {
         {t('onboarding.consent.description')}
       </p>
 
-      {/* 부여 전: 수집 항목 전체 열거 (정보 제공). 부여 후: 확정 상태로 대체. */}
+      {/* Before granting: enumerate all collected items (informational). After granting: replace with the confirmed state. */}
       {granted ? (
         <div className="w-full max-w-md" data-testid="onboarding-consent-granted">
           <Alert variant="success" title={t('onboarding.consent.granted')}>
@@ -803,9 +803,10 @@ function StepReady() {
 /* ── Step indicator dots ── */
 
 function StepDots({ current, total }: { current: number; total: number }) {
+  const { t } = useTranslation()
   const steps = Array.from({ length: total }, (_, i) => ({ id: `step-${i + 1}`, index: i }))
   return (
-    <fieldset className="m-0 flex items-center gap-2 border-none p-0" aria-label="Step indicator">
+    <fieldset className="m-0 flex items-center gap-2 border-none p-0" aria-label={t('onboarding.stepIndicatorLabel')}>
       {steps.map((step) => (
         <div
           key={step.id}

@@ -329,6 +329,20 @@ impl AnalysisClient {
         system_prompt: &str,
         label: &str,
     ) -> Result<String, NetworkError> {
+        // ADR-019 §3: Bedrock is intentionally unsupported. Reject in the shared
+        // dispatch funnel — before resolving credentials or building a request —
+        // so EVERY caller (analyze, summarize_text, extract_relations,
+        // detect_contradictions) fails closed with the typed config code instead
+        // of sending an OpenAI-shaped body to a Bedrock endpoint. Wrapped in
+        // `NetworkError::Core` so the `?`/`From<NetworkError>` round-trip in the
+        // callers preserves the exact `UnsupportedProviderBedrock` code.
+        if matches!(self.provider_type, AiProviderType::Bedrock) {
+            return Err(NetworkError::Core(CoreError::Config {
+                code: maekon_core::error_codes::ConfigCode::UnsupportedProviderBedrock,
+                message: "AWS Bedrock is intentionally unsupported in this build".into(),
+            }));
+        }
+
         // Resolve the bearer token at request time.  NoAuth yields an empty
         // string, ApiKey yields the inline key, StoredSecret/ManagedOAuth
         // performs the async lookup.
@@ -416,15 +430,8 @@ impl AnalysisProvider for AnalysisClient {
             "Calling analysis LLM API"
         );
 
-        // ADR-019 §3: Bedrock is intentionally unsupported. Reject before attempting
-        // to build/send a request with incompatible format + auth.
-        if matches!(self.provider_type, AiProviderType::Bedrock) {
-            return Err(CoreError::Config {
-                code: maekon_core::error_codes::ConfigCode::UnsupportedProviderBedrock,
-                message: "AWS Bedrock is intentionally unsupported in this build".into(),
-            });
-        }
-
+        // ADR-019 §3 Bedrock rejection now lives in `dispatch` (shared by every
+        // funnel), so analyze() inherits the guard without a local copy.
         let response_text = self
             .dispatch(context_json, system_prompt, "Analysis API")
             .await?;

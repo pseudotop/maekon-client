@@ -46,7 +46,8 @@ impl SmAppServiceStatus {
 }
 
 pub fn plist_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME 환경변수 none".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("LaunchAgents")

@@ -1,9 +1,9 @@
-//! NotFoundCode — NotFound 카테고리 에러 코드. `not_found.*` 접두사.
+//! NotFoundCode — NotFound category error codes. `not_found.*` prefix.
 
 define_code_enum! {
-    /// NotFound 카테고리 에러 코드.
+    /// NotFound category error codes.
     pub enum NotFoundCode {
-        /// 지정된 리소스를 찾을 수 없음.
+        /// The specified resource could not be found.
         ResourceMissing => "not_found.resource_missing",
     }
 }

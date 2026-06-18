@@ -1,9 +1,9 @@
-//! StorageCode — Storage 카테고리 에러 코드. `storage.*` 접두사.
+//! StorageCode — Storage category error codes. `storage.*` prefix.
 
 define_code_enum! {
-    /// Storage 카테고리 에러 코드.
+    /// Storage category error codes.
     pub enum StorageCode {
-        /// 스토리지 연산 실패.
+        /// Storage operation failed.
         Failed => "storage.failed",
     }
 }

@@ -1082,20 +1082,20 @@ export async function openDesktopPermissionSettings(permissionKind: DesktopPermi
 }
 
 // ── Consent (GDPR) IPC (Tauri invoke) ────────────────────────
-// 프로덕션 동의 읽기/쓰기 (src-tauri/src/commands/consent.rs). 다른 IPC 래퍼와
-// 동일하게 thin 래퍼로 두고, 에러는 호출자가 isIpcError/errorMessageFromInvoke 로 처리한다.
+// Production consent read/write (src-tauri/src/commands/consent.rs). Like the other
+// IPC wrappers, kept as a thin wrapper; the caller handles errors via isIpcError/errorMessageFromInvoke.
 
-/** 현재 동의 스냅샷(상태 + 원본 부여 권한)을 읽어 반환한다. */
+/** Reads and returns the current consent snapshot (status + originally granted permissions). */
 export async function getConsent(): Promise<ConsentSnapshot> {
   return tauriInvoke<ConsentSnapshot>('get_consent')
 }
 
-/** 지정한 권한 집합으로 동의를 부여하고 결과 스냅샷을 반환한다. */
+/** Grants consent with the given permission set and returns the resulting snapshot. */
 export async function setConsent(permissions: ConsentPermissions): Promise<ConsentSnapshot> {
   return tauriInvoke<ConsentSnapshot>('set_consent', { permissions })
 }
 
-/** 동의를 철회하고(NotGranted) 결과 스냅샷을 반환한다. */
+/** Withdraws consent (NotGranted) and returns the resulting snapshot. */
 export async function withdrawConsent(): Promise<ConsentSnapshot> {
   return tauriInvoke<ConsentSnapshot>('withdraw_consent')
 }

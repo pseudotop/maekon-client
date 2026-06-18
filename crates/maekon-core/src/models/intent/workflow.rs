@@ -79,8 +79,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "save-file".to_string(),
-        name: "file save".to_string(),
-        description: "current file을 save합니다".to_string(),
+        name: "Save File".to_string(),
+        description: "Save the current file".to_string(),
         category: PresetCategory::Productivity,
         steps: vec![WorkflowStep {
             name: format!("{}+S", m),
@@ -97,8 +97,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "undo".to_string(),
-        name: "execution 취소".to_string(),
-        description: "마지막 작업을 execution 취소합니다".to_string(),
+        name: "Undo".to_string(),
+        description: "Undo the last action".to_string(),
         category: PresetCategory::Productivity,
         steps: vec![WorkflowStep {
             name: format!("{}+Z", m),
@@ -115,8 +115,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "select-all-copy".to_string(),
-        name: "전체 선택 후 복사".to_string(),
-        description: "전체 선택(Ctrl+A) 후 복사(Ctrl+C)를 execution합니다".to_string(),
+        name: "Select All and Copy".to_string(),
+        description: "Select all content and copy it to the clipboard".to_string(),
         category: PresetCategory::Productivity,
         steps: vec![
             WorkflowStep {
@@ -143,8 +143,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "find-replace".to_string(),
-        name: "찾기/바꾸기".to_string(),
-        description: "찾기/바꾸기 대화상자를 엽니다".to_string(),
+        name: "Find and Replace".to_string(),
+        description: "Open the Find and Replace dialog".to_string(),
         category: PresetCategory::Productivity,
         steps: vec![WorkflowStep {
             name: format!("{}+H", m),
@@ -161,8 +161,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "switch-next-app".to_string(),
-        name: "next 앱 전환".to_string(),
-        description: "next 애플리케이션으로 전환합니다".to_string(),
+        name: "Switch to Next App".to_string(),
+        description: "Switch focus to the next application".to_string(),
         category: PresetCategory::AppManagement,
         steps: vec![WorkflowStep {
             name: format!("{}+Tab", alt),
@@ -179,8 +179,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "close-window".to_string(),
-        name: "current 창 닫기".to_string(),
-        description: "current active 창을 닫습니다".to_string(),
+        name: "Close Window".to_string(),
+        description: "Close the currently active window".to_string(),
         category: PresetCategory::AppManagement,
         steps: vec![WorkflowStep {
             name: format!("{}+W", m),
@@ -198,8 +198,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     if cfg!(target_os = "macos") {
         presets.push(WorkflowPreset {
             id: "minimize-all".to_string(),
-            name: "전체 최소화".to_string(),
-            description: "all 창을 최소화합니다".to_string(),
+            name: "Minimize All Windows".to_string(),
+            description: "Minimize all open windows".to_string(),
             category: PresetCategory::AppManagement,
             steps: vec![WorkflowStep {
                 name: "Cmd+Option+H+M".to_string(),
@@ -221,8 +221,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     } else {
         presets.push(WorkflowPreset {
             id: "minimize-all".to_string(),
-            name: "전체 최소화".to_string(),
-            description: "all 창을 최소화합니다".to_string(),
+            name: "Minimize All Windows".to_string(),
+            description: "Minimize all open windows".to_string(),
             category: PresetCategory::AppManagement,
             steps: vec![WorkflowStep {
                 name: "Win+D".to_string(),
@@ -240,12 +240,12 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "morning-routine".to_string(),
-        name: "업무 started".to_string(),
-        description: "Mail → Calendar → VSCode 순으로 앱을 active화합니다".to_string(),
+        name: "Start of Day".to_string(),
+        description: "Launch Mail, Calendar, and VS Code to begin your workday".to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Mail 열기".to_string(),
+                name: "Open Mail".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Mail".to_string(),
                 },
@@ -253,7 +253,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Calendar 열기".to_string(),
+                name: "Open Calendar".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Calendar".to_string(),
                 },
@@ -261,7 +261,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "VSCode 열기".to_string(),
+                name: "Open VS Code".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Visual Studio Code".to_string(),
                 },
@@ -276,12 +276,12 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "meeting-prep".to_string(),
-        name: "회의 준비".to_string(),
-        description: "Zoom과 Notes를 열어 회의를 준비합니다".to_string(),
+        name: "Meeting Prep".to_string(),
+        description: "Open Zoom and Notes to get ready for a meeting".to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Zoom 열기".to_string(),
+                name: "Open Zoom".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Zoom".to_string(),
                 },
@@ -289,7 +289,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Notes 열기".to_string(),
+                name: "Open Notes".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Notes".to_string(),
                 },
@@ -304,12 +304,12 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "end-of-day".to_string(),
-        name: "업무 ended".to_string(),
-        description: "file save 후 앱을 ended합니다".to_string(),
+        name: "End of Day".to_string(),
+        description: "Save the current file and quit the application".to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "file save".to_string(),
+                name: "Save file".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
                     keys: vec![m.to_string(), "S".to_string()],
                 },
@@ -317,7 +317,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "앱 ended".to_string(),
+                name: "Quit application".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
                     keys: vec![m.to_string(), "Q".to_string()],
                 },
@@ -332,13 +332,13 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "daily-priority-sync".to_string(),
-        name: "우선순위 점검".to_string(),
-        description: "캘린더, 이슈 보드, 메신저를 순서대로 열어 당일 우선순위를 정리합니다"
+        name: "Daily Priority Review".to_string(),
+        description: "Open Calendar, Jira, and Slack in sequence to align on the day's priorities"
             .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Calendar 열기".to_string(),
+                name: "Open Calendar".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Calendar".to_string(),
                 },
@@ -346,7 +346,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Jira 열기".to_string(),
+                name: "Open Jira".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Jira".to_string(),
                 },
@@ -354,7 +354,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Slack 열기".to_string(),
+                name: "Open Slack".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Slack".to_string(),
                 },
@@ -369,12 +369,13 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "bug-triage-loop".to_string(),
-        name: "버그 트리아지".to_string(),
-        description: "이슈 트래커, 로그/모니터링, IDE를 순환하며 버그를 정리합니다".to_string(),
+        name: "Bug Triage".to_string(),
+        description: "Cycle through the issue tracker, monitoring tools, and IDE to triage bugs"
+            .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Issue Tracker 열기".to_string(),
+                name: "Open Issue Tracker".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Issue Tracker".to_string(),
                 },
@@ -382,7 +383,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Monitoring 열기".to_string(),
+                name: "Open Monitoring".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Monitoring".to_string(),
                 },
@@ -390,7 +391,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "VSCode 열기".to_string(),
+                name: "Open VS Code".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Visual Studio Code".to_string(),
                 },
@@ -405,12 +406,14 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "customer-followup".to_string(),
-        name: "고객 팔로업".to_string(),
-        description: "고객 feedback 확인 후 문서와 메일을 열어 후속 조치를 준비합니다".to_string(),
+        name: "Customer Follow-Up".to_string(),
+        description:
+            "Open CRM, Notion, and Mail to review customer feedback and prepare follow-up actions"
+                .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "CRM 열기".to_string(),
+                name: "Open CRM".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "CRM".to_string(),
                 },
@@ -418,7 +421,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Notion 열기".to_string(),
+                name: "Open Notion".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Notion".to_string(),
                 },
@@ -426,7 +429,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Mail 열기".to_string(),
+                name: "Open Mail".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Mail".to_string(),
                 },
@@ -441,13 +444,13 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "release-readiness".to_string(),
-        name: "릴리스 준비".to_string(),
-        description: "코드 save 후 터미널과 브라우저를 열어 릴리스 체크를 started합니다"
+        name: "Release Readiness".to_string(),
+        description: "Save code, then open Terminal and a browser to kick off release checks"
             .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "file save".to_string(),
+                name: "Save file".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
                     keys: vec![m.to_string(), "S".to_string()],
                 },
@@ -455,7 +458,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Terminal 열기".to_string(),
+                name: "Open Terminal".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Terminal".to_string(),
                 },
@@ -463,7 +466,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Browser 열기".to_string(),
+                name: "Open Browser".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Google Chrome".to_string(),
                 },
@@ -478,12 +481,13 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
 
     presets.push(WorkflowPreset {
         id: "deep-work-start".to_string(),
-        name: "집중 session started".to_string(),
-        description: "IDE를 열고 메신저를 뒤로 보within 집중 session을 started합니다".to_string(),
+        name: "Start Deep Work".to_string(),
+        description: "Open VS Code and dismiss distractions to begin a focused work session"
+            .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "VSCode 열기".to_string(),
+                name: "Open VS Code".to_string(),
                 intent: AutomationIntent::ActivateApp {
                     app_name: "Visual Studio Code".to_string(),
                 },
@@ -491,7 +495,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "next 앱 전환".to_string(),
+                name: "Switch to next app".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
                     keys: vec![alt.to_string(), "Tab".to_string()],
                 },
@@ -499,7 +503,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "current 창 닫기".to_string(),
+                name: "Close current window".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
                     keys: vec![m.to_string(), "W".to_string()],
                 },

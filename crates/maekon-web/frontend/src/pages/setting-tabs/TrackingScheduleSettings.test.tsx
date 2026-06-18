@@ -281,7 +281,7 @@ describe('TrackingScheduleSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('추적 일정')).toBeInTheDocument()
     })
-    // U11 negative assertion: the old "스케줄" label must NOT appear.
+    // U11 negative assertion: the old schedule label must NOT appear.
     expect(screen.queryByText('스케줄')).not.toBeInTheDocument()
 
     // Restore English for subsequent tests.

@@ -145,7 +145,7 @@ test.describe('StatusBar', () => {
     const statusBar = page.locator('.app-shell-statusbar')
     await expect(statusBar).toBeVisible()
 
-    // Should show "Connected" / "연결됨" — NOT "Offline" / "오프라인"
+    // Should show a connected status, NOT an offline one (English or Korean UI).
     const text = await statusBar.textContent()
     expect(text).not.toMatch(/offline|오프라인/i)
     expect(text).toMatch(/connected|연결됨/i)

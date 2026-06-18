@@ -22,15 +22,49 @@ impl DeferredManager {
         }
     }
 
+    /// Defer (snooze) a suggestion. Returns `false` if the deferred set is full
+    /// and the incoming snooze would resurface later than every entry already
+    /// kept (so rejecting it preserves the sooner snoozes).
     pub fn defer(&mut self, suggestion: Suggestion, duration: Duration) -> bool {
         let now = Utc::now();
+        let resurface_at = now + duration;
         if self.items.len() >= self.max_size {
-            self.items.pop_front(); // FIFO eviction
+            // Evict by FARTHEST resurface_at (least urgent), not insertion order
+            // (review4): pop_front() dropped the oldest-inserted entry, which is
+            // frequently the SOONEST to resurface — silently losing a snooze the
+            // user expected back soon while keeping later ones. Keep the soonest
+            // `max_size` entries instead, and make the outcome observable (the
+            // caller previously ignored a bare unconditional `true`).
+            let farthest = self
+                .items
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, e)| e.resurface_at)
+                .map(|(idx, e)| (idx, e.resurface_at));
+            match farthest {
+                Some((idx, far_at)) if far_at > resurface_at => {
+                    if let Some(evicted) = self.items.remove(idx) {
+                        tracing::warn!(
+                            evicted_id = %evicted.suggestion.suggestion_id,
+                            max_size = self.max_size,
+                            "deferred set full — evicted farthest-resurface snooze"
+                        );
+                    }
+                }
+                _ => {
+                    tracing::warn!(
+                        rejected_id = %suggestion.suggestion_id,
+                        max_size = self.max_size,
+                        "deferred set full — rejected (would resurface later than all kept entries)"
+                    );
+                    return false;
+                }
+            }
         }
         self.items.push_back(DeferredEntry {
             suggestion,
             deferred_at: now,
-            resurface_at: now + duration,
+            resurface_at,
         });
         true
     }
@@ -133,19 +167,45 @@ mod tests {
     }
 
     #[test]
-    fn max_size_eviction() {
+    fn max_size_eviction_drops_farthest_resurface() {
+        // review4: eviction must drop the FARTHEST-resurface entry (least urgent),
+        // not the oldest-inserted, so sooner snoozes are preserved.
         let mut mgr = DeferredManager::new(2);
-        assert!(mgr.defer(make_suggestion("s1"), Duration::hours(1)));
-        assert!(mgr.defer(make_suggestion("s2"), Duration::hours(1)));
-        // Third item evicts oldest (s1)
-        assert!(mgr.defer(make_suggestion("s3"), Duration::hours(1)));
+        assert!(mgr.defer(make_suggestion("s1"), Duration::hours(5))); // farthest
+        assert!(mgr.defer(make_suggestion("s2"), Duration::hours(1))); // soonest
+                                                                       // s3 (2h) is sooner than the farthest kept entry (s1, 5h) → evict s1, keep
+                                                                       // the two sooner snoozes (s2, s3).
+        assert!(mgr.defer(make_suggestion("s3"), Duration::hours(2)));
         assert_eq!(mgr.pending_count(), 2);
         let ids: Vec<_> = mgr
             .list_deferred()
             .iter()
             .map(|e| e.suggestion.suggestion_id.as_str())
             .collect();
-        assert!(!ids.contains(&"s1"));
+        assert!(
+            !ids.contains(&"s1"),
+            "farthest-resurface entry must be evicted"
+        );
+        assert!(ids.contains(&"s2"));
+        assert!(ids.contains(&"s3"));
+    }
+
+    #[test]
+    fn defer_rejects_when_full_and_new_is_farthest() {
+        // When the incoming snooze would resurface later than every kept entry,
+        // reject it (return false) rather than displace a sooner snooze.
+        let mut mgr = DeferredManager::new(2);
+        assert!(mgr.defer(make_suggestion("s1"), Duration::hours(1)));
+        assert!(mgr.defer(make_suggestion("s2"), Duration::hours(2)));
+        assert!(!mgr.defer(make_suggestion("s3"), Duration::hours(9)));
+        assert_eq!(mgr.pending_count(), 2);
+        let ids: Vec<_> = mgr
+            .list_deferred()
+            .iter()
+            .map(|e| e.suggestion.suggestion_id.as_str())
+            .collect();
+        assert!(ids.contains(&"s1") && ids.contains(&"s2"));
+        assert!(!ids.contains(&"s3"));
     }
 
     #[test]

@@ -153,21 +153,34 @@ pub fn provider_display_name_or_default(provider_type: AiProviderType) -> &'stat
 }
 
 pub fn provider_type_from_vendor_id(raw: &str) -> Option<AiProviderType> {
+    vendor_info_from_vendor_id(raw).map(|vendor| vendor.provider_type)
+}
+
+/// Resolve a raw vendor string (canonical `vendor_id` or any registered alias)
+/// to its canonical `vendor_id`.
+///
+/// Unlike [`provider_type_from_vendor_id`], which collapses every
+/// OpenAI-compatible vendor onto `AiProviderType::Generic`, this preserves the
+/// vendor identity (e.g. `"open-router"` -> `"openrouter"`). It is the precise
+/// key needed to disambiguate Generic-family vendors that would otherwise be
+/// indistinguishable by `provider_type` alone.
+pub fn canonical_vendor_id(raw: &str) -> Option<&'static str> {
+    vendor_info_from_vendor_id(raw).map(|vendor| vendor.vendor_id.as_str())
+}
+
+fn vendor_info_from_vendor_id(raw: &str) -> Option<&'static ProviderVendorInfo> {
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
     }
 
-    provider_vendors()?
-        .iter()
-        .find(|vendor| {
-            vendor.vendor_id.eq_ignore_ascii_case(&normalized)
-                || vendor
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(&normalized))
-        })
-        .map(|vendor| vendor.provider_type)
+    provider_vendors()?.iter().find(|vendor| {
+        vendor.vendor_id.eq_ignore_ascii_case(&normalized)
+            || vendor
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(&normalized))
+    })
 }
 
 pub fn default_provider_surface_id(

@@ -53,14 +53,16 @@ impl maekon_core::ports::coaching::CoachingPort for CoachingEngine {
         })
     }
 
-    /// 현재 체제 레이블 비동기 반환.
-    /// `_blocking` 변형과 달리 `block_in_place` 없이 RwLock을 직접 await한다 (F-RR-C37-01).
+    /// Asynchronously returns the current regime label.
+    /// Unlike the `_blocking` variant, this awaits the RwLock directly without
+    /// `block_in_place` (F-RR-C37-01).
     async fn current_regime_label(&self) -> Option<String> {
         self.current_regime_label.read().await.clone()
     }
 
-    /// 오늘 체제별 총 분(minutes) 합계 비동기 반환.
-    /// `_blocking` 변형과 달리 `block_in_place` 없이 RwLock을 직접 await한다 (F-RR-C37-01).
+    /// Asynchronously returns today's total minutes summed across regimes.
+    /// Unlike the `_blocking` variant, this awaits the RwLock directly without
+    /// `block_in_place` (F-RR-C37-01).
     async fn regime_minutes_today(&self) -> u32 {
         let gt = self.goal_tracker.read().await;
         gt.all_progress().iter().map(|p| p.current_minutes).sum()

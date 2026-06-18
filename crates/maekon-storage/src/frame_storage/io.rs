@@ -4,9 +4,96 @@ use super::util::list_date_dirs;
 use crate::error::StorageError;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
+
+/// Maximum collision retries before giving up on a single frame write.
+///
+/// Each retry draws a fresh monotonic counter, so exhausting this bound means
+/// the directory is genuinely saturated rather than racing — extremely unlikely
+/// given an `AtomicU32` namespace.
+const FRAME_WRITE_MAX_RETRIES: u32 = 16;
+
+/// Write `data` to an already-created `file` at `file_path`, flushing on success.
+///
+/// On a `write_all`/`flush` failure the partially-written (torn) file is removed
+/// best-effort before the error is returned, so no torn frame is left behind
+/// under the just-claimed (highest) counter for `load_latest_frame` to trip over
+/// (#6244). The removal error is intentionally ignored — the original write
+/// failure is the meaningful one to surface.
+pub(super) async fn write_all_or_cleanup(
+    mut file: fs::File,
+    file_path: &Path,
+    data: &[u8],
+) -> Result<(), StorageError> {
+    if let Err(e) = file.write_all(data).await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(StorageError::Internal(format!(
+            "frame file save failure: {e}"
+        )));
+    }
+    if let Err(e) = file.flush().await {
+        let _ = fs::remove_file(file_path).await;
+        return Err(StorageError::Internal(format!(
+            "frame file save failure: {e}"
+        )));
+    }
+    Ok(())
+}
+
+/// Atomically write `data` to a uniquely-named frame file in `day_dir`.
+///
+/// The filename is `<time_str>-<counter:010>.webp`, where `counter` is drawn
+/// from the shared monotonic `frame_counter`. The full (un-wrapped) counter
+/// value is used so >1000 frames sharing a one-second timestamp never reuse a
+/// suffix. The fixed 10-digit zero-padding keeps the lexicographic filename
+/// ordering aligned with counter order (relied on by `load_latest_frame`).
+///
+/// As defense-in-depth against a counter that restarts at 0 on process restart,
+/// the file is opened with `create_new(true)`; on `AlreadyExists` a fresh
+/// counter is drawn and the write retried, so an existing frame is never
+/// silently clobbered. Returns the chosen filename on success.
+async fn write_frame_atomic(
+    frame_counter: &AtomicU32,
+    day_dir: &Path,
+    time_str: &str,
+    data: &[u8],
+) -> Result<String, StorageError> {
+    for _ in 0..FRAME_WRITE_MAX_RETRIES {
+        let counter = frame_counter.fetch_add(1, Ordering::SeqCst);
+        let filename = format!("{time_str}-{counter:010}.webp");
+        let file_path = day_dir.join(&filename);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(file) => {
+                // Torn-file cleanup on write/flush failure lives in the helper
+                // (#6244) so the same guarantee is unit-testable in isolation.
+                write_all_or_cleanup(file, &file_path, data).await?;
+                return Ok(filename);
+            }
+            // Name already taken (e.g. counter reset to 0 after a restart) —
+            // draw a fresh counter and retry instead of overwriting.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(StorageError::Internal(format!(
+                    "frame file save failure: {e}"
+                )))
+            }
+        }
+    }
+
+    Err(StorageError::Internal(format!(
+        "frame file save failure: could not find a free filename after {FRAME_WRITE_MAX_RETRIES} retries"
+    )))
+}
 
 impl FrameFileStorage {
     /// Save a frame image to disk.
@@ -18,12 +105,14 @@ impl FrameFileStorage {
         timestamp: DateTime<Utc>,
         webp_data: &[u8],
     ) -> Result<PathBuf, StorageError> {
-        // #4928: 프레임 배리어(공유 read) 획득 — delete_all_files 의 write 와 직렬화.
-        // 삭제가 진행 중이면 여기서 대기하고, 삭제 후엔 deletion_flag set 으로 스킵된다.
+        // #4928: acquire the frame barrier (shared read) — serializes against the
+        // write taken by delete_all_files. If a delete is in progress, wait here;
+        // after the delete, the write is skipped because deletion_flag is set.
         let _barrier = self.frame_barrier.read().await;
-        // #4928: erasure 차단 신호(`deletion_flag || erasing`)가 set 이면 파일을 쓰지
-        // 않고 no-op 으로 스킵한다(반환 경로는 빈 PathBuf). #4928 round-3(FIX B):
-        // `erasing` 은 erase 윈도우 안의 재동의 race 를 차단한다(grant_consent 가 clear 불가).
+        // #4928: if the erasure block signal (`deletion_flag || erasing`) is set,
+        // skip the write as a no-op rather than writing a file (the return value
+        // is an empty PathBuf). #4928 round-3 (FIX B): `erasing` blocks the
+        // re-consent race inside the erase window (grant_consent cannot clear it).
         if self.deletion_flag.load(Ordering::Acquire) || self.erasing.load(Ordering::Acquire) {
             debug!("frame save skipped — deletion_flag/erasing set (consent revoked, #4928)");
             return Ok(PathBuf::new());
@@ -46,10 +135,7 @@ impl FrameFileStorage {
             .await
             .map_err(|e| StorageError::Internal(format!("Failed to create dated folder: {e}")))?;
 
-        let counter = self.frame_counter.fetch_add(1, Ordering::SeqCst) % 1000;
         let time_str = timestamp.format("%H-%M-%S").to_string();
-        let filename = format!("{time_str}-{counter:03}.webp");
-        let file_path = day_dir.join(&filename);
 
         let data_to_write = if let Some(ref key) = self.encryption_key {
             key.encrypt(webp_data)?
@@ -58,9 +144,8 @@ impl FrameFileStorage {
         };
 
         let written_len = data_to_write.len() as u64;
-        fs::write(&file_path, &data_to_write)
-            .await
-            .map_err(|e| StorageError::Internal(format!("frame file save failure: {e}")))?;
+        let filename =
+            write_frame_atomic(&self.frame_counter, &day_dir, &time_str, &data_to_write).await?;
 
         self.cached_size_bytes
             .fetch_add(written_len, Ordering::Relaxed);
@@ -81,10 +166,11 @@ impl FrameFileStorage {
         &self,
         frames: Vec<(DateTime<Utc>, Vec<u8>)>,
     ) -> Vec<Result<PathBuf, StorageError>> {
-        // #4928: 프레임 배리어(공유 read) 획득 — delete_all_files 와 직렬화.
+        // #4928: acquire the frame barrier (shared read) — serializes against delete_all_files.
         let _barrier = self.frame_barrier.read().await;
-        // #4928: erasure 차단 신호(`deletion_flag || erasing`)가 set 이면 어떤 파일도
-        // 쓰지 않고 빈 경로로 스킵한다(#4928 round-3 FIX B — erasing 은 재동의 race 차단).
+        // #4928: if the erasure block signal (`deletion_flag || erasing`) is set,
+        // write no files and skip with empty paths (#4928 round-3 FIX B — `erasing`
+        // blocks the re-consent race).
         if self.deletion_flag.load(Ordering::Acquire) || self.erasing.load(Ordering::Acquire) {
             debug!(
                 batch_size = frames.len(),
@@ -109,7 +195,7 @@ impl FrameFileStorage {
 
         for (timestamp, webp_data) in frames {
             let base_dir = self.base_dir.clone();
-            let counter = self.frame_counter.fetch_add(1, Ordering::SeqCst) % 1000;
+            let frame_counter = Arc::clone(&self.frame_counter);
             let enc_key = self.encryption_key.clone();
 
             handles.push(tokio::spawn(async move {
@@ -121,8 +207,6 @@ impl FrameFileStorage {
                 })?;
 
                 let time_str = timestamp.format("%H-%M-%S").to_string();
-                let filename = format!("{time_str}-{counter:03}.webp");
-                let file_path = day_dir.join(&filename);
 
                 let data_to_write = if let Some(ref key) = enc_key {
                     key.encrypt(&webp_data)?
@@ -131,9 +215,8 @@ impl FrameFileStorage {
                 };
 
                 let written_len = data_to_write.len() as u64;
-                fs::write(&file_path, &data_to_write)
-                    .await
-                    .map_err(|e| StorageError::Internal(format!("frame file save failure: {e}")))?;
+                let filename =
+                    write_frame_atomic(&frame_counter, &day_dir, &time_str, &data_to_write).await?;
 
                 let relative_path = PathBuf::from("frames").join(&date_str).join(&filename);
 
@@ -166,25 +249,52 @@ impl FrameFileStorage {
     pub async fn load_frame(&self, relative_path: &Path) -> Result<Vec<u8>, StorageError> {
         let full_path = self.base_dir.join(relative_path);
 
-        if !full_path.exists() {
+        // #6281 (review4 maekon-web): jail the resolved path under base_dir so a
+        // traversal in `relative_path` (e.g. a corrupted/tampered DB-stored path)
+        // cannot read outside the frames root. `canonicalize()` resolves `..` and
+        // symlinks and requires the path to exist, so a missing file maps to the
+        // same NotFound as before; a path that escapes the root is rejected as
+        // NotFound (fail-closed, no traversal-vs-missing information leak). Jails
+        // EVERY caller of load_frame, including the get_frame_image fast path that
+        // previously bypassed the handler's own path-jail.
+        let canonical = match full_path.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(StorageError::NotFound {
+                    resource_type: "Frame".to_string(),
+                    id: relative_path.display().to_string(),
+                });
+            }
+        };
+        let base_canonical = self
+            .base_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.base_dir.clone());
+        if !canonical.starts_with(&base_canonical) {
             return Err(StorageError::NotFound {
                 resource_type: "Frame".to_string(),
                 id: relative_path.display().to_string(),
             });
         }
 
-        let mut buffer = self.buffer_pool.acquire();
-
-        let raw = fs::read(&full_path)
+        // Acquire the pooled buffer only AFTER the fallible read+decrypt so an
+        // early `?`-return cannot drop a pooled `Vec` and permanently deplete
+        // the pool. There must be no `?` between `acquire()` and `release()`.
+        let raw = fs::read(&canonical)
             .await
             .map_err(|e| StorageError::Internal(format!("frame file read failure: {e}")))?;
 
-        let data = if let Some(ref key) = self.encryption_key {
+        // Both branches yield `Zeroizing<Vec<u8>>` so the decrypted plaintext is
+        // wiped on drop (#6242); the unencrypted branch is wrapped to unify the
+        // types and is harmless (raw is already on-disk bytes). `&data` still
+        // derefs to `&[u8]`.
+        let data: zeroize::Zeroizing<Vec<u8>> = if let Some(ref key) = self.encryption_key {
             key.decrypt(&raw)?
         } else {
-            raw
+            zeroize::Zeroizing::new(raw)
         };
 
+        let mut buffer = self.buffer_pool.acquire();
         buffer.extend_from_slice(&data);
         let result = buffer.clone();
 
@@ -234,18 +344,34 @@ impl FrameFileStorage {
                 b_name.cmp(a_name)
             });
 
-            let latest = &files[0];
-            let Some(filename) = latest.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let relative_path = PathBuf::from("frames").join(&day).join(filename);
-            let bytes = self.load_frame(&relative_path).await?;
-            let format = latest
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_lowercase())
-                .unwrap_or_else(|| "webp".to_string());
-            return Ok(Some((bytes, format)));
+            // Try newest-first, descending to the next-lower counter on any
+            // per-file load failure (#6244). A torn/corrupt newest frame (e.g.
+            // a partial write that escaped cleanup, or an undecryptable file)
+            // must not block returning the prior good frame — skip-and-try-next
+            // rather than propagating the error.
+            for latest in &files {
+                let Some(filename) = latest.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let relative_path = PathBuf::from("frames").join(&day).join(filename);
+                match self.load_frame(&relative_path).await {
+                    Ok(bytes) => {
+                        let format = latest
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_lowercase())
+                            .unwrap_or_else(|| "webp".to_string());
+                        return Ok(Some((bytes, format)));
+                    }
+                    Err(e) => {
+                        warn!(
+                            file = %relative_path.display(),
+                            "skipping unreadable frame, trying next-lower counter: {e}"
+                        );
+                        continue;
+                    }
+                }
+            }
         }
 
         Ok(None)
@@ -265,25 +391,43 @@ impl FrameFileStorage {
             handles.push(tokio::spawn(async move {
                 let full_path = base_dir.join(&path);
 
-                if !full_path.exists() {
+                // #6281 (review4 maekon-web): jail under base_dir — same path-jail
+                // as load_frame, applied to this batch sibling so a traversal in a
+                // stored path cannot read outside the frames root (missing/escaping
+                // → NotFound, fail-closed).
+                let canonical = match full_path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        return Err(StorageError::NotFound {
+                            resource_type: "Frame".to_string(),
+                            id: path.display().to_string(),
+                        });
+                    }
+                };
+                let base_canonical = base_dir.canonicalize().unwrap_or_else(|_| base_dir.clone());
+                if !canonical.starts_with(&base_canonical) {
                     return Err(StorageError::NotFound {
                         resource_type: "Frame".to_string(),
                         id: path.display().to_string(),
                     });
                 }
 
-                let mut buffer = buffer_pool.acquire();
-
-                let raw = fs::read(&full_path)
+                // Acquire the pooled buffer only AFTER the fallible read+decrypt so an
+                // early `?`-return cannot drop a pooled `Vec` and permanently deplete
+                // the pool. There must be no `?` between `acquire()` and `release()`.
+                let raw = fs::read(&canonical)
                     .await
                     .map_err(|e| StorageError::Internal(format!("frame file read failure: {e}")))?;
 
-                let data = if let Some(ref key) = enc_key {
+                // Both branches yield `Zeroizing<Vec<u8>>` so the decrypted
+                // plaintext is wiped on drop (#6242); `&data` derefs to `&[u8]`.
+                let data: zeroize::Zeroizing<Vec<u8>> = if let Some(ref key) = enc_key {
                     key.decrypt(&raw)?
                 } else {
-                    raw
+                    zeroize::Zeroizing::new(raw)
                 };
 
+                let mut buffer = buffer_pool.acquire();
                 buffer.extend_from_slice(&data);
                 let result = buffer.clone();
 

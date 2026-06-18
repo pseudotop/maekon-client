@@ -25,6 +25,13 @@ pub struct HdbscanDetector {
     min_samples: Option<usize>,
     /// Stored centroids from the last `detect()` call, for `classify()`.
     cluster_centroids: Mutex<Vec<RegimeFeatures>>,
+    /// Cluster label for each entry in `cluster_centroids`, parallel by index.
+    ///
+    /// Centroids are stored densely (one per distinct non-noise label that was
+    /// actually present), so the centroid array index is NOT the cluster id.
+    /// This remap lets `classify()` translate a nearest-centroid array index
+    /// back to the real cluster label.
+    centroid_labels: Mutex<Vec<i32>>,
     /// Stored labels from the last `detect()` call.
     #[allow(dead_code)]
     cluster_labels: Mutex<Vec<i32>>,
@@ -41,6 +48,7 @@ impl HdbscanDetector {
             min_cluster_size,
             min_samples,
             cluster_centroids: Mutex::new(Vec::new()),
+            centroid_labels: Mutex::new(Vec::new()),
             cluster_labels: Mutex::new(Vec::new()),
         }
     }
@@ -52,12 +60,22 @@ impl HdbscanDetector {
             min_cluster_size: 5,
             min_samples: None,
             cluster_centroids: Mutex::new(Vec::new()),
+            centroid_labels: Mutex::new(Vec::new()),
             cluster_labels: Mutex::new(Vec::new()),
         }
     }
 
-    /// Compute centroids (mean feature vector) per cluster label.
-    fn compute_centroids(features: &[RegimeFeatures], labels: &[i32]) -> Vec<RegimeFeatures> {
+    /// Compute a DENSE centroid list (mean feature vector) keyed only on the
+    /// distinct non-noise labels actually present.
+    ///
+    /// Returns `(centroids, centroid_labels)` where `centroid_labels[i]` is the
+    /// real cluster label of `centroids[i]`. Labels are visited in ascending
+    /// order, and no `0..=max_label` padding is performed, so there are no
+    /// default-filled gaps for absent labels (#6120).
+    fn compute_centroids(
+        features: &[RegimeFeatures],
+        labels: &[i32],
+    ) -> (Vec<RegimeFeatures>, Vec<i32>) {
         let mut sums: HashMap<i32, [f64; RegimeFeatures::DIMENSIONS]> = HashMap::new();
         let mut counts: HashMap<i32, usize> = HashMap::new();
 
@@ -75,28 +93,32 @@ impl HdbscanDetector {
             *counts.entry(label).or_insert(0) += 1;
         }
 
-        // Build centroids ordered by cluster ID (0, 1, 2, ...)
-        let max_label = sums.keys().copied().max().unwrap_or(-1);
-        let mut centroids = Vec::new();
-        for label in 0..=max_label {
-            if let (Some(sum), Some(&cnt)) = (sums.get(&label), counts.get(&label)) {
-                let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
-                for (d, &s) in sum.iter().enumerate() {
-                    arr[d] = (s / cnt as f64) as f32;
-                }
-                centroids.push(RegimeFeatures::from_array(arr));
-            } else {
-                centroids.push(RegimeFeatures::default());
+        // Dense centroids: one per present label, sorted ascending.
+        let mut present_labels: Vec<i32> = sums.keys().copied().collect();
+        present_labels.sort_unstable();
+
+        let mut centroids = Vec::with_capacity(present_labels.len());
+        for &label in &present_labels {
+            // `present_labels` comes from `sums` keys, so both lookups succeed.
+            let sum = &sums[&label];
+            let cnt = counts[&label];
+            let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
+            for (d, &s) in sum.iter().enumerate() {
+                arr[d] = (s / cnt as f64) as f32;
             }
+            centroids.push(RegimeFeatures::from_array(arr));
         }
 
-        centroids
+        (centroids, present_labels)
     }
 
-    /// Store centroids and labels in internal state for `classify()`.
-    fn store_state(&self, centroids: &[RegimeFeatures], labels: &[i32]) {
+    /// Store centroids, the index->label remap, and labels for `classify()`.
+    fn store_state(&self, centroids: &[RegimeFeatures], centroid_labels: &[i32], labels: &[i32]) {
         if let Ok(mut c) = self.cluster_centroids.lock() {
             *c = centroids.to_vec();
+        }
+        if let Ok(mut cl) = self.centroid_labels.lock() {
+            *cl = centroid_labels.to_vec();
         }
         if let Ok(mut l) = self.cluster_labels.lock() {
             *l = labels.to_vec();
@@ -104,18 +126,25 @@ impl HdbscanDetector {
     }
 
     /// Build a ClusteringResult from labels and features.
-    fn build_result(features: &[RegimeFeatures], labels: Vec<i32>) -> ClusteringResult {
+    ///
+    /// Returns the result alongside the dense `centroid_labels` remap so the
+    /// caller can persist it for `classify()`.
+    fn build_result(features: &[RegimeFeatures], labels: Vec<i32>) -> (ClusteringResult, Vec<i32>) {
         let noise_count = labels.iter().filter(|&&l| l < 0).count();
-        let centroids = Self::compute_centroids(features, &labels);
+        let (centroids, centroid_labels) = Self::compute_centroids(features, &labels);
+        // cluster_count == centroids.len(): each dense centroid is exactly one
+        // present cluster, with no phantom padding (#6120).
         let cluster_count = centroids.len();
 
-        ClusteringResult {
+        let result = ClusteringResult {
             labels,
             centroids,
             cluster_count,
             noise_count,
             probabilities: None, // hdbscan crate doesn't expose probabilities
-        }
+        };
+
+        (result, centroid_labels)
     }
 }
 
@@ -153,8 +182,8 @@ impl ClusteringStrategy for HdbscanDetector {
             .cluster()
             .map_err(|e| AnalysisError::Clustering(format!("HDBSCAN clustering failed: {e:?}")))?;
 
-        let result = Self::build_result(features, labels.clone());
-        self.store_state(&result.centroids, &labels);
+        let (result, centroid_labels) = Self::build_result(features, labels.clone());
+        self.store_state(&result.centroids, &centroid_labels, &labels);
 
         Ok(result)
     }
@@ -164,26 +193,25 @@ impl ClusteringStrategy for HdbscanDetector {
         if centroids.is_empty() {
             return None;
         }
+        let centroid_labels = self.centroid_labels.lock().ok()?;
 
-        let mut best_id = -1i32;
+        let mut best_idx: Option<usize> = None;
         let mut best_dist = f32::INFINITY;
 
         for (i, centroid) in centroids.iter().enumerate() {
             let d = euclidean_distance(point, centroid);
             if d < best_dist {
                 best_dist = d;
-                best_id = i as i32;
+                best_idx = Some(i);
             }
         }
 
-        if best_id >= 0 {
-            Some(ClusterAssignment {
-                cluster_id: best_id,
-                probability: 1.0, // nearest-centroid is hard assignment
-            })
-        } else {
-            None
-        }
+        best_idx.map(|i| ClusterAssignment {
+            // Map the dense centroid array index back to the real cluster label
+            // through the remap; fall back to the index if the remap is missing.
+            cluster_id: centroid_labels.get(i).copied().unwrap_or(i as i32),
+            probability: 1.0, // nearest-centroid is hard assignment
+        })
     }
 
     fn detect_with_constraints(
@@ -228,8 +256,8 @@ impl ClusteringStrategy for HdbscanDetector {
         // Apply MustLink / CannotLink post-processing
         apply_link_constraints(features, &mut full_labels, &parsed);
 
-        let result = Self::build_result(features, full_labels.clone());
-        self.store_state(&result.centroids, &full_labels);
+        let (result, centroid_labels) = Self::build_result(features, full_labels.clone());
+        self.store_state(&result.centroids, &centroid_labels, &full_labels);
 
         Ok(result)
     }
@@ -263,6 +291,61 @@ impl ClusteringStrategy for HdbscanDetector {
 
     fn algorithm_name(&self) -> &str {
         "hdbscan (disabled)"
+    }
+}
+
+// Dense-centroid regression tests. These exercise the feature-independent
+// `compute_centroids` / `build_result` helpers and therefore run regardless of
+// whether the `hdbscan` feature is enabled (#6120).
+#[cfg(test)]
+mod dense_centroid_tests {
+    use super::*;
+
+    fn point(rate: f32) -> RegimeFeatures {
+        RegimeFeatures {
+            category_coding: 1.0,
+            category_communication: 0.0,
+            category_browser: 0.0,
+            avg_event_rate: rate,
+            avg_importance: 0.5,
+            context_activity_signal: 0.1,
+            communication_ratio: 0.05,
+        }
+    }
+
+    #[test]
+    fn compute_centroids_is_dense_for_noncontiguous_labels() {
+        // Non-contiguous labels {0, 2, 5} (plus a noise -1) must yield exactly
+        // 3 centroids with no phantom padding for absent labels 1, 3, 4.
+        let features = vec![point(0.10), point(0.20), point(0.30), point(0.40)];
+        let labels = vec![0, 2, 5, -1];
+
+        let (centroids, centroid_labels) = HdbscanDetector::compute_centroids(&features, &labels);
+
+        assert_eq!(
+            centroids.len(),
+            3,
+            "expected one centroid per present label"
+        );
+        assert_eq!(centroid_labels, vec![0, 2, 5]);
+        assert!((centroids[0].avg_event_rate - 0.10).abs() < 1e-5);
+        assert!((centroids[1].avg_event_rate - 0.20).abs() < 1e-5);
+        assert!((centroids[2].avg_event_rate - 0.30).abs() < 1e-5);
+    }
+
+    #[test]
+    fn build_result_cluster_count_matches_centroid_len() {
+        // cluster_count must equal centroids.len() even for non-contiguous
+        // labels (hdbscan_detector.rs:110 fix).
+        let features = vec![point(0.10), point(0.20), point(0.30)];
+        let labels = vec![0, 2, 5];
+
+        let (result, centroid_labels) = HdbscanDetector::build_result(&features, labels);
+
+        assert_eq!(result.cluster_count, result.centroids.len());
+        assert_eq!(result.cluster_count, 3);
+        assert_eq!(centroid_labels, vec![0, 2, 5]);
+        assert_eq!(result.noise_count, 0);
     }
 }
 

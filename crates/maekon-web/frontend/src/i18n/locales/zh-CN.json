@@ -983,7 +983,15 @@
     "low": "低",
     "high": "高",
     "loadError": "数据加载失败",
-    "days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+    "days": [
+      "周一",
+      "周二",
+      "周三",
+      "周四",
+      "周五",
+      "周六",
+      "周日"
+    ],
     "activity": "活动"
   },
   "dateRange": {
@@ -1892,7 +1900,8 @@
     "disabledBannerDesc": "启用教练功能以接收主动提示并追踪习惯。",
     "disabledBannerButton": "启用教练",
     "enableMasterToggle": "启用教练",
-    "enableMasterToggleDesc": "主开关 — 开启或关闭所有教练提示和通知。"
+    "enableMasterToggleDesc": "主开关 — 开启或关闭所有教练提示和通知。",
+    "regimeLabelPlaceholder": "例如：深度编码"
   },
   "onboarding": {
     "step1Title": "欢迎使用 Maekon",
@@ -1968,7 +1977,8 @@
       "activeNote": "更改立即生效 — 无需重启。",
       "monitoringMissingWarning": "尚未授予监控同意。请在上一步中授予同意以使教练功能正常工作。",
       "error": "无法启用教练：{{error}}"
-    }
+    },
+    "stepIndicatorLabel": "步骤指示器"
   },
   "chat": {
     "title": "AI 会话",
@@ -2023,7 +2033,8 @@
     "request_suggestions": "获取 AI 建议",
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
-    "mic_privacy_stopped": "麦克风已停止 — 隐私门已激活"
+    "mic_privacy_stopped": "麦克风已停止 — 隐私门已激活",
+    "searchMessagesPlaceholder": "搜索消息..."
   },
   "policies": {
     "title": "执行策略",
@@ -2117,7 +2128,9 @@
     "snoozeCancel": "取消",
     "panelLabel": "建议面板",
     "closePanelLabel": "关闭建议面板",
-    "badgeNew": "新"
+    "badgeNew": "新",
+    "historyLoadError": "无法加载历史记录。",
+    "badgeLabel": "{{count}} 条新建议"
   },
   "suggestionStats": {
     "acceptanceRate": "接受率",
@@ -2132,7 +2145,8 @@
     "dailyTrends": "每日趋势（7天）",
     "acted": "已处理",
     "total": "总计",
-    "noData": "暂无数据"
+    "noData": "暂无数据",
+    "loadError": "无法加载统计信息。"
   },
   "trackingPanel": {
     "statusUnavailable": "无法获取状态",
@@ -2338,5 +2352,172 @@
     "interrupt": "Interrupt",
     "steerPlaceholder": "Steer the turn…",
     "steerSend": "Send"
+  },
+  "appShell": {
+    "mainContent": "主要内容"
+  },
+  "spinner": {
+    "loading": "加载中"
+  },
+  "insightCard": {
+    "noInsightAvailable": "今天暂无洞察"
+  },
+  "statisticsPanel": {
+    "deepWork": "深度工作",
+    "communication": "沟通",
+    "meetings": "会议",
+    "contextSwitches": "上下文切换",
+    "regimeDistribution": "活动类型分布"
+  },
+  "statusBar": {
+    "lastCaptureTimestamp": "最近一次捕获时间"
+  },
+  "processList": {
+    "pid": "PID:",
+    "memory": "内存"
+  },
+  "coachingPopup": {
+    "thumbsUpTitle": "点赞",
+    "thumbsDownTitle": "点踩"
+  },
+  "detectionOverlay": {
+    "fieldLabel": "标签",
+    "fieldRole": "角色",
+    "fieldBounds": "边界",
+    "fieldSource": "来源",
+    "fieldId": "ID",
+    "emptyValue": "(空)",
+    "unknownRole": "未知"
+  },
+  "messageBubble": {
+    "input": "输入",
+    "result": "结果"
+  },
+  "advancedTab": {
+    "maxConcurrentSessions": "最大并发会话数",
+    "idleTimeoutSeconds": "空闲超时（秒）",
+    "sessionTimeoutSeconds": "会话超时（秒）",
+    "maxRetries": "最大重试次数",
+    "maxHistoryTurns": "最大历史轮次",
+    "healthCheckIntervalSeconds": "健康检查间隔（秒）",
+    "enableSuggestions": "启用建议",
+    "enableSuggestionsDescription": "根据您的活动接收 AI 驱动的建议",
+    "showBorder": "显示边框",
+    "showBorderDescription": "监控时在屏幕周围显示彩色边框",
+    "showPanel": "显示面板",
+    "showPanelDescription": "显示追踪状态面板",
+    "borderOpacity": "边框不透明度（0.0 - 1.0）",
+    "enableAnalysis": "启用分析",
+    "enableAnalysisDescription": "对活动片段运行 LLM 分析",
+    "analysisIntervalSeconds": "分析间隔（秒）",
+    "minConfidence": "最低置信度（0.0 - 1.0）",
+    "maxSuggestions": "最大建议数",
+    "regimeDetectionIntervalHours": "模式检测间隔（小时）",
+    "embedding": "嵌入",
+    "embeddingDescription": "为语义搜索启用向量嵌入",
+    "guiIntelligence": "GUI 智能分析",
+    "guiIntelligenceDescription": "检测并汇总 GUI 交互模式",
+    "textIntelligence": "文本智能分析",
+    "textIntelligenceDescription": "从活动中提取并分类文本模式",
+    "autoTuner": "自动调优器",
+    "autoTunerDescription": "基于 EMA 的漂移检测以及行为模式的自动重新聚类",
+    "serverBaseUrl": "服务器基础 URL",
+    "requestTimeoutMs": "请求超时（毫秒）",
+    "grpcEnabled": "启用 gRPC",
+    "grpcEnabledDescription": "使用 gRPC 进行服务器通信（需要服务器支持）",
+    "grpcEndpoint": "gRPC 端点",
+    "tlsEnabled": "启用 TLS",
+    "tlsEnabledDescription": "使用 TLS 加密出站连接",
+    "enableCoaching": "启用辅导",
+    "enableCoachingDescription": "主动式生产力辅导与目标追踪",
+    "locale": "区域设置",
+    "enableIntegration": "启用集成",
+    "enableIntegrationDescription": "连接到外部集成中心",
+    "integrationRequestTimeoutSeconds": "请求超时（秒）",
+    "integrationSyncIntervalSeconds": "同步间隔（秒）",
+    "enableSync": "启用同步",
+    "enableSyncDescription": "在多个设备之间同步数据",
+    "deviceName": "设备名称",
+    "syncIntervalSeconds": "同步间隔（秒）",
+    "lanDiscovery": "局域网发现",
+    "lanDiscoveryDescription": "在本地网络上发布此设备以进行对等同步",
+    "payloadCompression": "负载压缩",
+    "payloadCompressionDescription": "在加密前压缩变更集负载以减少带宽占用"
+  },
+  "segmentsSection": {
+    "heading": "片段",
+    "columnTime": "时间",
+    "columnDuration": "时长",
+    "columnRegime": "模式",
+    "columnApp": "应用",
+    "columnActions": "操作"
+  },
+  "overridesSection": {
+    "columnSegment": "区段",
+    "columnOriginal": "原始",
+    "columnAction": "操作",
+    "columnCreated": "创建时间"
+  },
+  "presets": {
+    "save-file": {
+      "name": "保存文件",
+      "description": "保存当前文件"
+    },
+    "undo": {
+      "name": "撤销",
+      "description": "撤销上一步操作"
+    },
+    "select-all-copy": {
+      "name": "全选并复制",
+      "description": "选中所有内容并复制到剪贴板"
+    },
+    "find-replace": {
+      "name": "查找和替换",
+      "description": "打开查找和替换对话框"
+    },
+    "switch-next-app": {
+      "name": "切换到下一个应用",
+      "description": "将焦点切换到下一个应用程序"
+    },
+    "close-window": {
+      "name": "关闭窗口",
+      "description": "关闭当前活动窗口"
+    },
+    "minimize-all": {
+      "name": "最小化所有窗口",
+      "description": "最小化所有打开的窗口"
+    },
+    "morning-routine": {
+      "name": "开始一天",
+      "description": "依次打开 Mail、日历和 VS Code，开启工作日"
+    },
+    "meeting-prep": {
+      "name": "准备会议",
+      "description": "打开 Zoom 和备忘录，为会议做好准备"
+    },
+    "end-of-day": {
+      "name": "结束一天",
+      "description": "保存当前文件并退出应用程序"
+    },
+    "daily-priority-sync": {
+      "name": "每日优先级梳理",
+      "description": "依次打开日历、Jira 和 Slack，对齐当天的工作优先级"
+    },
+    "bug-triage-loop": {
+      "name": "Bug 分诊",
+      "description": "轮流查看问题跟踪器、监控工具和 IDE，对 Bug 进行分类处理"
+    },
+    "customer-followup": {
+      "name": "客户跟进",
+      "description": "打开 CRM、Notion 和 Mail，查看客户反馈并准备后续行动"
+    },
+    "release-readiness": {
+      "name": "发布就绪检查",
+      "description": "保存代码后打开终端和浏览器，开始发布前的检查"
+    },
+    "deep-work-start": {
+      "name": "开始深度工作",
+      "description": "打开 VS Code 并关闭干扰，进入专注工作状态"
+    }
   }
 }

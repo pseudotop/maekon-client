@@ -24,6 +24,7 @@ pub mod integration;
 pub mod intent;
 pub mod memory_graph;
 pub mod pomodoro;
+pub mod provider_cli_diagnostics;
 pub mod recalibration;
 pub mod session;
 pub mod skill;

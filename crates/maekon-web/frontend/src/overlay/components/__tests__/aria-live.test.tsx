@@ -6,8 +6,8 @@ import type { CoachingPayload, SuggestionGuiAnchorPayload } from '../../types'
 import CoachingPopup from '../CoachingPopup'
 import { SuggestionBadge } from '../SuggestionBadge'
 
-// 스크린리더 안내(aria-live)가 코칭 팝업/제안 배지에 존재하는지 검증한다 (#4822).
-// Toast 의 polite-region 패턴을 인라인 재사용했는지 확인.
+// Verifies that the screen-reader announcement (aria-live) is present on the coaching popup / suggestion badge (#4822).
+// Confirms that the Toast polite-region pattern is reused inline.
 
 function renderWithI18n(node: React.ReactElement) {
   return render(<I18nextProvider i18n={i18n}>{node}</I18nextProvider>)

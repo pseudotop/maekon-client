@@ -1,4 +1,4 @@
-// 오디오 캡처 및 음성-텍스트 변환 설정
+// Audio capture and speech-to-text configuration
 use super::super::enums::CloudSttBuild;
 use super::super::enums::CloudSttPolicy;
 use super::super::enums::MicInputMode;

@@ -5,15 +5,16 @@ use maekon_core::ports::few_shot_storage::FewShotStorage;
 use super::SqliteStorage;
 
 impl FewShotStorage for SqliteStorage {
-    /// 피드백이 기록된 최근 suggestion을 조회한다.
+    /// Queries the most recent suggestions that have recorded feedback.
     ///
-    /// `local_suggestions` 테이블에서 `feedback_type IS NOT NULL`인 행을 내림차순으로
-    /// 최대 `limit`개 반환한다. `confidence` 컬럼은 V28 마이그레이션에서 추가된다.
+    /// Returns up to `limit` rows from the `local_suggestions` table where
+    /// `feedback_type IS NOT NULL`, ordered descending. The `confidence` column
+    /// is added by the V28 migration.
     fn get_suggestions_with_feedback(
         &self,
         limit: usize,
     ) -> Result<Vec<SuggestionHistoryEntry>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관).
+        // Read — read_lock (independent of deletion_flag).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
@@ -92,10 +93,11 @@ impl FewShotStorage for SqliteStorage {
         Ok(result)
     }
 
-    /// suggestion에 피드백을 기록한다.
+    /// Records feedback for a suggestion.
     ///
-    /// `suggestion_id`로 `local_suggestions` 행을 찾아 `feedback_type`, `feedback_at`,
-    /// `context_app`, `context_window`, `regime_label`을 업데이트한다.
+    /// Finds the `local_suggestions` row by `suggestion_id` and updates
+    /// `feedback_type`, `feedback_at`, `context_app`, `context_window`, and
+    /// `regime_label`.
     fn record_suggestion_feedback(
         &self,
         suggestion_id: &str,
@@ -104,7 +106,7 @@ impl FewShotStorage for SqliteStorage {
         context_window: &str,
         regime_label: Option<&str>,
     ) -> Result<(), CoreError> {
-        // 쓰기 — write_lock(deletion_flag set 시 스킵, local_suggestions ∈ ALL_TABLES).
+        // Write — write_lock (skipped when deletion_flag is set; local_suggestions ∈ ALL_TABLES).
         self.conn.write_lock().run((), |conn| {
             conn.execute(
                 "UPDATE local_suggestions
@@ -138,7 +140,7 @@ mod tests {
     use super::*;
     use maekon_core::ports::few_shot_storage::FewShotStorage;
 
-    /// 피드백이 없는 빈 DB에서 빈 벡터를 반환한다.
+    /// Returns an empty vector for an empty DB with no feedback.
     #[test]
     fn few_shot_storage_empty_returns_empty() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
@@ -146,12 +148,12 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// suggestion을 삽입하고 피드백을 기록한 뒤 올바르게 조회되는지 확인한다.
+    /// Inserts a suggestion, records feedback, then verifies it is retrieved correctly.
     #[test]
     fn few_shot_storage_record_and_retrieve() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
-        // local_suggestions에 직접 삽입 (V28 이후 컬럼 포함, payload는 NOT NULL이므로 빈 JSON 사용)
+        // Insert directly into local_suggestions (includes post-V28 columns; payload is NOT NULL so use empty JSON)
         {
             let conn = storage.conn.test_lock();
             conn.execute(
@@ -163,7 +165,7 @@ mod tests {
             .unwrap();
         }
 
-        // 피드백 기록
+        // Record feedback
         FewShotStorage::record_suggestion_feedback(
             &storage,
             "sugg-001",
@@ -174,7 +176,7 @@ mod tests {
         )
         .unwrap();
 
-        // 조회 및 검증
+        // Query and verify
         let entries = FewShotStorage::get_suggestions_with_feedback(&storage, 10).unwrap();
         assert_eq!(entries.len(), 1);
 
@@ -189,12 +191,12 @@ mod tests {
         assert_eq!(entry.regime_label, Some("deep_work".to_string()));
     }
 
-    /// limit 파라미터가 반환 개수를 제한하는지 확인한다.
+    /// Verifies that the `limit` parameter caps the number of returned rows.
     #[test]
     fn few_shot_storage_limit_respected() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
-        // 3개의 suggestion 삽입 (payload NOT NULL 요건 충족을 위해 빈 JSON 사용)
+        // Insert 3 suggestions (use empty JSON to satisfy the payload NOT NULL constraint)
         {
             let conn = storage.conn.test_lock();
             for i in 1..=3u32 {
@@ -212,7 +214,7 @@ mod tests {
             }
         }
 
-        // 모두 피드백 기록
+        // Record feedback for all of them
         for i in 1..=3u32 {
             FewShotStorage::record_suggestion_feedback(
                 &storage,
@@ -225,19 +227,19 @@ mod tests {
             .unwrap();
         }
 
-        // limit=2로 조회 → 2개만 반환해야 한다
+        // Query with limit=2 → must return only 2
         let entries = FewShotStorage::get_suggestions_with_feedback(&storage, 2).unwrap();
         assert_eq!(entries.len(), 2);
     }
 
-    /// 피드백 없는 suggestion은 조회 결과에 포함되지 않는다.
+    /// Suggestions without feedback are excluded from the query result.
     #[test]
     fn few_shot_storage_only_feedbacked_entries_returned() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
         {
             let conn = storage.conn.test_lock();
-            // 피드백 있는 항목 (payload NOT NULL 요건 충족)
+            // Item with feedback (satisfies the payload NOT NULL constraint)
             conn.execute(
                 "INSERT INTO local_suggestions
                  (suggestion_id, suggestion_type, content, confidence, payload, created_at,
@@ -247,7 +249,7 @@ mod tests {
                 [],
             )
             .unwrap();
-            // 피드백 없는 항목
+            // Item without feedback
             conn.execute(
                 "INSERT INTO local_suggestions
                  (suggestion_id, suggestion_type, content, confidence, payload, created_at)

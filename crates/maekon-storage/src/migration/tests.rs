@@ -168,7 +168,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(version, CURRENT_VERSION);
 
-    // V36: egress_ledger table (egress 감사 원장, #4803).
+    // V36: egress_ledger table (egress audit ledger, #4803).
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='egress_ledger'",
@@ -181,7 +181,7 @@ fn migration_all_versions() {
         "egress_ledger table should exist at CURRENT_VERSION"
     );
 
-    // V37: audit_log 해시 체인 컬럼(seq/prev_hash/entry_hash) + partial unique index (#4834).
+    // V37: audit_log hash-chain columns (seq/prev_hash/entry_hash) + partial unique index (#4834).
     let chain_cols: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(audit_log)").unwrap();
         stmt.query_map([], |row| row.get::<_, String>(1))
@@ -341,7 +341,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V14 — INT8 quantization column exists
+    // V14 - INT8 quantization column exists
     let has_int8: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('embedding_vectors') WHERE name='vector_int8'",
@@ -351,7 +351,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(has_int8, 1);
 
-    // V14 — sync tables
+    // V14 - sync tables
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sync_peers'",
@@ -370,7 +370,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V14 — HLC column on activity_segments
+    // V14 - HLC column on activity_segments
     let has_hlc: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('activity_segments') WHERE name='hlc_wall_ms'",
@@ -380,7 +380,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(has_hlc, 1);
 
-    // V15 — lan_peer_pins table
+    // V15 - lan_peer_pins table
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lan_peer_pins'",
@@ -427,7 +427,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V16 — idx_ivf_assign_cluster index
+    // V16 - idx_ivf_assign_cluster index
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_ivf_assign_cluster'",
@@ -483,7 +483,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V18 — trigram FTS5 table
+    // V18 - trigram FTS5 table
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_trigram'",
@@ -493,7 +493,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V19 — app_meta table
+    // V19 - app_meta table
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_meta'",
@@ -503,7 +503,7 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V34 — memory_claims + memory_edges (ADR-023 substrate)
+    // V34 - memory_claims + memory_edges (ADR-023 substrate)
     for table in ["memory_claims", "memory_edges"] {
         let count: i64 = conn
             .query_row(
@@ -540,7 +540,7 @@ fn backup_created_when_migration_needed() {
     .unwrap();
     conn.close().unwrap();
 
-    // Now run migrations — should create backup since version 0 < CURRENT_VERSION
+    // Now run migrations -- should create backup since version 0 < CURRENT_VERSION
     let conn = Connection::open(&db_path).unwrap();
     run_migrations(&conn).unwrap();
     conn.close().unwrap();
@@ -580,7 +580,7 @@ fn backup_skipped_when_already_current() {
 fn migration_idempotent() {
     let conn = Connection::open_in_memory().unwrap();
     run_migrations(&conn).unwrap();
-    run_migrations(&conn).unwrap(); // execution error none
+    run_migrations(&conn).unwrap(); // running twice must not error
     let version: u32 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
             row.get(0)

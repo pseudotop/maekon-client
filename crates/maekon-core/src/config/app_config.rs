@@ -25,29 +25,29 @@ use crate::config::sections::{
     VisionConfig, WebConfig,
 };
 
-/// 현재 클라이언트가 기록/이해하는 `AppConfig` 스키마 버전.
+/// The `AppConfig` schema version this client writes/understands.
 ///
-/// `maekon-storage`의 `CURRENT_VERSION` 패턴을 미러링한다(#4807, U3).
-/// 이 값보다 큰 `schema_version`을 가진 설정 파일은 더 새로운(호환 불가)
-/// 클라이언트가 기록한 것이므로 다운그레이드 가드로 거부/경고한다.
+/// Mirrors the `CURRENT_VERSION` pattern in `maekon-storage` (#4807, U3).
+/// A config file whose `schema_version` is greater than this value was written
+/// by a newer (incompatible) client, so the downgrade guard refuses/warns on it.
 ///
 /// v2 records the #5056 telemetry default-on intent. Future versions still use
 /// this value as the downgrade guard.
 pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 
-/// `schema_version` 필드의 serde 기본값.
+/// The serde default for the `schema_version` field.
 ///
-/// 필드가 없는 기존(레거시) 설정 파일은 baseline 버전(`CONFIG_SCHEMA_VERSION`)
-/// 으로 로드되어야 하므로 `#[serde(default = ...)]`에 사용한다.
+/// Existing (legacy) config files without the field must load as the baseline
+/// version (`CONFIG_SCHEMA_VERSION`), so this is used in `#[serde(default = ...)]`.
 fn default_config_schema_version() -> u32 {
     CONFIG_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    /// 설정 파일 스키마 버전 — 다운그레이드 가드용(#4807, U3).
+    /// Config file schema version — used for the downgrade guard (#4807, U3).
     ///
-    /// 필드가 없는 레거시 설정은 `CONFIG_SCHEMA_VERSION`(=baseline)으로 로드된다.
+    /// Legacy configs without the field load as `CONFIG_SCHEMA_VERSION` (= baseline).
     #[serde(default = "default_config_schema_version")]
     pub schema_version: u32,
     pub server: ServerConfig,
@@ -80,7 +80,7 @@ pub struct AppConfig {
     pub ai_session: AiSessionConfig,
     #[serde(default)]
     pub integration: IntegrationConfig,
-    /// 아웃바운드 TLS 설정 — 기본값: 활성화
+    /// Outbound TLS configuration — default: enabled.
     #[serde(default)]
     pub tls: TlsConfig,
     #[serde(default)]
@@ -110,11 +110,12 @@ pub struct AppConfig {
 // AppConfig impl
 
 impl AppConfig {
-    /// 현재 클라이언트가 지원하는 설정 스키마 버전(연관 상수).
+    /// The config schema version this client supports (associated constant).
     ///
-    /// `CONFIG_SCHEMA_VERSION`과 동일한 값이지만, `config_manager`처럼
-    /// 사촌 모듈에서도 (private `mod app_config`을 우회해) 재노출된 `AppConfig`
-    /// 경로로 접근할 수 있도록 연관 상수로도 제공한다(#4807, U3).
+    /// Same value as `CONFIG_SCHEMA_VERSION`, but also exposed as an associated
+    /// constant so cousin modules like `config_manager` can reach it via the
+    /// re-exported `AppConfig` path (bypassing the private `mod app_config`)
+    /// (#4807, U3).
     pub const SCHEMA_VERSION: u32 = CONFIG_SCHEMA_VERSION;
 
     pub fn default_config() -> Self {
@@ -175,11 +176,63 @@ impl AppConfig {
         }
     }
 
+    /// Privacy-preserving default used when an existing config file is found
+    /// corrupt and cannot be parsed.
+    ///
+    /// A corrupt config means the user's previously-saved choices (which may
+    /// have been an explicit opt-out) are unrecoverable. Re-seeding the
+    /// fresh-install default-on telemetry intent here would silently re-enable
+    /// collection knobs the user might have turned off. To stay fail-closed we
+    /// start from [`Self::default_config`] and force every collection/export
+    /// intent to its most privacy-preserving setting:
+    ///
+    /// - `telemetry` is forced to [`TelemetryConfig::disabled`] (exporter off),
+    /// - `monitor.upload_enabled` is forced off,
+    /// - `vision.capture_enabled` / `vision.ocr_enabled` are forced off.
+    ///
+    /// The user can re-enable any of these from Settings after the reset; the
+    /// reset itself is surfaced to the UI by the `ConfigManager` (see
+    /// `config_was_reset_from_corruption`).
+    pub fn fail_closed_recovery_default() -> Self {
+        let mut config = Self::default_config();
+        config.telemetry = TelemetryConfig::disabled();
+        config.monitor.upload_enabled = false;
+        config.vision.capture_enabled = false;
+        config.vision.ocr_enabled = false;
+        config
+    }
+
     /// Validate that all config sections have values within acceptable bounds.
     pub fn validate_bounds(&self) -> Result<(), String> {
         self.storage.validate_bounds()?;
         self.vision.validate_bounds()?;
+        // #6102-4: the scheduler reads monitor.* intervals directly; an out-of-range
+        // (e.g. sub-second) interval would spin the 1s loops, so it must be validated too.
+        self.monitor.validate_bounds()?;
+        // #6177: the analysis loop builds a tokio interval from analysis.interval_secs;
+        // a zero period panics the loop, so the same interval floors must be validated.
+        self.analysis.validate_bounds()?;
         Ok(())
+    }
+
+    /// Raise any sub-floor section value to its floor in place, returning the
+    /// dotted-path identities of every field that was clamped (#6169/#6177).
+    ///
+    /// This is the fail-open counterpart to [`Self::validate_bounds`]: the write
+    /// chokepoints (`update`/`update_with`/`reload`) reject out-of-range values,
+    /// but the INITIAL-LOAD path must preserve fail-open startup — a hand-edited /
+    /// downgrade config.json with sub-floor intervals (e.g. `poll_interval_ms: 0`
+    /// or `analysis.interval_secs: 0`) would otherwise reach the scheduler
+    /// unvalidated and panic or hot-spin a `tokio::time::interval`. Clamping at
+    /// load corrects the values to a safe floor instead of aborting boot. The
+    /// returned set satisfies [`Self::validate_bounds`] afterwards.
+    pub fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        clamped.extend(self.storage.clamp_bounds());
+        clamped.extend(self.vision.clamp_bounds());
+        clamped.extend(self.monitor.clamp_bounds());
+        clamped.extend(self.analysis.clamp_bounds());
+        clamped
     }
 
     pub fn request_timeout(&self) -> Duration {
@@ -212,10 +265,10 @@ mod tests {
     #[test]
     fn tls_config_default_enables_tls_and_rejects_self_signed() {
         let config = TlsConfig::default();
-        assert!(config.enabled, "TLS 기본값은 활성화여야 함");
+        assert!(config.enabled, "TLS must be enabled by default");
         assert!(
             !config.allow_self_signed,
-            "자체 서명 인증서는 기본값으로 비허용"
+            "self-signed certificates must be disallowed by default"
         );
     }
 
@@ -237,7 +290,7 @@ mod tests {
     #[test]
     fn app_config_default_includes_tls_enabled() {
         let config = AppConfig::default_config();
-        assert!(config.tls.enabled, "AppConfig 기본값: TLS 활성화");
+        assert!(config.tls.enabled, "AppConfig default: TLS enabled");
         assert!(!config.tls.allow_self_signed);
         assert!(!config.integration.enabled);
     }
@@ -448,6 +501,61 @@ mod tests {
         assert!(
             matches!(err, CoreError::PolicyDenied { .. }),
             "retired model must produce PolicyDenied error, got: {err:?}"
+        );
+        assert!(err.to_string().contains("retired as of"));
+    }
+
+    #[test]
+    fn ai_provider_validation_rejects_retired_model_via_managed_oauth_surface() {
+        // Regression: the model-lifecycle Block decision must be enforced on the
+        // managed-OAuth surface path, not only on the remote HTTP path. A retired
+        // model must not be configurable by hiding behind a managed_oauth surface_id.
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::ProviderOAuth,
+            llm_provider: LlmProviderType::Remote,
+            llm_api: Some(ExternalApiEndpoint {
+                endpoint: "https://api.openai.com/v1".to_string(),
+                api_key: "".to_string(),
+                model: Some("gpt-3.5-turbo".to_string()),
+                timeout_secs: 30,
+                provider_type: AiProviderType::OpenAi,
+                surface_id: Some("provider_surface.openai.managed_oauth".to_string()),
+                credential: None,
+            }),
+            ..AiProviderConfig::default()
+        };
+
+        let err = config.validate_selected_remote_endpoints().unwrap_err();
+        assert!(
+            matches!(err, CoreError::PolicyDenied { .. }),
+            "retired model via managed_oauth surface must produce PolicyDenied error, got: {err:?}"
+        );
+        assert!(err.to_string().contains("retired as of"));
+    }
+
+    #[test]
+    fn ai_provider_validation_rejects_retired_model_via_subprocess_cli_surface() {
+        // Regression: the model-lifecycle Block decision must be enforced on the
+        // subprocess-CLI surface path too (ProviderSubscriptionCli + Remote LLM).
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::ProviderSubscriptionCli,
+            llm_provider: LlmProviderType::Remote,
+            llm_api: Some(ExternalApiEndpoint {
+                endpoint: "https://api.openai.com/v1".to_string(),
+                api_key: "".to_string(),
+                model: Some("gpt-3.5-turbo".to_string()),
+                timeout_secs: 30,
+                provider_type: AiProviderType::OpenAi,
+                surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+                credential: None,
+            }),
+            ..AiProviderConfig::default()
+        };
+
+        let err = config.validate_selected_remote_endpoints().unwrap_err();
+        assert!(
+            matches!(err, CoreError::PolicyDenied { .. }),
+            "retired model via subprocess_cli surface must produce PolicyDenied error, got: {err:?}"
         );
         assert!(err.to_string().contains("retired as of"));
     }
@@ -1004,6 +1112,49 @@ mod tests {
             .expect("AppConfig::default_config() must satisfy all validate_bounds constraints");
     }
 
+    /// #6177: AppConfig::validate_bounds must now cover the analysis section —
+    /// a zero `analysis.interval_secs` would panic the analysis loop's
+    /// tokio::time::interval, so it must be rejected at the write chokepoint.
+    #[test]
+    fn app_config_validate_bounds_rejects_zero_analysis_interval() {
+        let mut config = AppConfig::default_config();
+        config.analysis.interval_secs = 0;
+        let err = config
+            .validate_bounds()
+            .expect_err("zero analysis.interval_secs must fail AppConfig::validate_bounds");
+        assert!(
+            err.contains("interval_secs"),
+            "error must name the offending field, got: {err}"
+        );
+    }
+
+    /// #6169/#6177: clamp_bounds raises sub-floor interval values to their floor
+    /// and the resulting config must satisfy validate_bounds (fail-open path).
+    #[test]
+    fn app_config_clamp_bounds_raises_sub_floor_intervals() {
+        let mut config = AppConfig::default_config();
+        config.monitor.poll_interval_ms = 0; // would hot-spin the 1s loops
+        config.analysis.interval_secs = 0; // would panic the analysis loop
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"monitor.poll_interval_ms"));
+        assert!(clamped.contains(&"analysis.interval_secs"));
+        assert!(config.monitor.poll_interval_ms >= 1_000);
+        assert!(config.analysis.interval_secs >= 10);
+        config
+            .validate_bounds()
+            .expect("a clamped config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn app_config_clamp_bounds_is_noop_for_default() {
+        let mut config = AppConfig::default_config();
+        let clamped = config.clamp_bounds();
+        assert!(
+            clamped.is_empty(),
+            "the default config is in-bounds and must not be clamped, got: {clamped:?}"
+        );
+    }
+
     #[test]
     fn analysis_llm_work_type_enabled_defaults_true() {
         let payload = json!({});
@@ -1018,21 +1169,21 @@ mod tests {
         assert!(!config.llm_work_type_enabled);
     }
 
-    // ── #4807 (U3) schema_version 다운그레이드 가드 ──────────────────
+    // ── #4807 (U3) schema_version downgrade guard ──────────────────
 
     #[test]
     fn default_config_carries_current_schema_version() {
         let config = AppConfig::default_config();
         assert_eq!(
             config.schema_version, CONFIG_SCHEMA_VERSION,
-            "기본 설정은 현재 스키마 버전을 가져야 함"
+            "the default config must carry the current schema version"
         );
     }
 
     #[test]
     fn legacy_config_without_schema_version_loads_as_baseline() {
-        // schema_version 필드가 없는 (기존) 설정 파일은 baseline 버전으로
-        // 로드되어야 한다. 다른 섹션도 모두 생략해 serde(default)에 의존한다.
+        // An (existing) config file without a schema_version field must load as
+        // the baseline version. All other sections are omitted too, relying on serde(default).
         let legacy = json!({
             "server": {
                 "base_url": "http://localhost:8000",
@@ -1065,25 +1216,25 @@ mod tests {
         });
 
         let parsed: AppConfig =
-            serde_json::from_value(legacy).expect("레거시 설정(버전 필드 없음)은 로드되어야 함");
+            serde_json::from_value(legacy).expect("legacy config (no version field) must load");
         assert_eq!(
             parsed.schema_version, CONFIG_SCHEMA_VERSION,
-            "버전 필드가 없는 설정은 baseline(현재) 버전으로 로드되어야 함"
+            "config without a version field must load as the baseline (current) version"
         );
     }
 
     #[test]
     fn future_schema_version_is_preserved_on_deserialize() {
-        // 미래(더 큰) 버전 값은 그대로 보존되어야 다운그레이드 가드가
-        // ConfigManager 로드 경로에서 이를 탐지할 수 있다.
+        // A future (larger) version value must be preserved as-is so the
+        // downgrade guard can detect it on the ConfigManager load path.
         let mut value =
-            serde_json::to_value(AppConfig::default_config()).expect("기본 설정 직렬화");
+            serde_json::to_value(AppConfig::default_config()).expect("serialize default config");
         value
             .as_object_mut()
             .unwrap()
             .insert("schema_version".into(), json!(CONFIG_SCHEMA_VERSION + 1));
 
-        let parsed: AppConfig = serde_json::from_value(value).expect("미래 버전 설정 파싱");
+        let parsed: AppConfig = serde_json::from_value(value).expect("parse future-version config");
         assert_eq!(parsed.schema_version, CONFIG_SCHEMA_VERSION + 1);
     }
 }

@@ -6,6 +6,30 @@ use tracing::{debug, warn};
 
 static TESSDATA_PATH: OnceLock<Option<String>> = OnceLock::new();
 
+/// Load a raw RGBA frame into a `LepTess` instance (review4 V3).
+///
+/// leptess 0.14's `set_image_from_mem` takes a SINGLE encoded-image buffer (it
+/// calls leptonica `pixReadMem` internally), not the 5-arg raw-strided-RGBA shape
+/// the previous code passed. Encode the frame to an in-memory PNG first, then hand
+/// the encoded bytes to Tesseract.
+fn set_leptess_image(
+    lt: &mut leptess::LepTess,
+    rgba_raw: &[u8],
+    w: u32,
+    h: u32,
+) -> Result<(), VisionError> {
+    use image::codecs::png::PngEncoder;
+    use image::ImageEncoder;
+
+    let mut png: Vec<u8> = Vec::new();
+    PngEncoder::new(&mut png)
+        .write_image(rgba_raw, w, h, image::ExtendedColorType::Rgba8)
+        .map_err(|e| VisionError::Ocr(format!("OCR image encode failed: {e}")))?;
+    lt.set_image_from_mem(&png).map_err(|_| {
+        VisionError::Ocr("OCR image setup failed: Image memory setup failed".to_string())
+    })
+}
+
 pub struct OcrExtractor {
     tessdata_path: Option<PathBuf>,
     max_chars: usize,
@@ -20,7 +44,7 @@ impl OcrExtractor {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         if let Err(e) = TESSDATA_PATH.set(path_str) {
-            debug!("set failed: {e}");
+            debug!("set failed: {e:?}");
         }
 
         Self {
@@ -76,12 +100,7 @@ impl OcrExtractor {
         } else {
             // Lock failed — create a temporary instance
             let mut lt = create_new()?;
-            lt.set_image_from_mem(rgba.as_raw(), w as i32, h as i32, 4, (w * 4) as i32)
-                .map_err(|_| {
-                    VisionError::Ocr(
-                        "OCR image setup failed: Image memory setup failed".to_string(),
-                    )
-                })?;
+            set_leptess_image(&mut lt, rgba.as_raw(), w, h)?;
 
             let text = lt
                 .get_utf8_text()
@@ -95,10 +114,7 @@ impl OcrExtractor {
             };
         };
 
-        lt.set_image_from_mem(rgba.as_raw(), w as i32, h as i32, 4, (w * 4) as i32)
-            .map_err(|_| {
-                VisionError::Ocr("OCR image setup failed: Image memory setup failed".to_string())
-            })?;
+        set_leptess_image(lt, rgba.as_raw(), w, h)?;
 
         let text = lt
             .get_utf8_text()
@@ -137,12 +153,7 @@ impl OcrExtractor {
             let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
-            lt.set_image_from_mem(&raw_data, w as i32, h as i32, 4, (w * 4) as i32)
-                .map_err(|_| {
-                    VisionError::Ocr(
-                        "OCR image setup failed: Image memory setup failed".to_string(),
-                    )
-                })?;
+            set_leptess_image(&mut lt, &raw_data, w, h)?;
 
             let text = lt
                 .get_utf8_text()
@@ -237,12 +248,7 @@ impl OcrExtractor {
             let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
-            lt.set_image_from_mem(&raw_data, w as i32, h as i32, 4, (w * 4) as i32)
-                .map_err(|_| {
-                    VisionError::Ocr(
-                        "OCR image setup failed: Image memory setup failed".to_string(),
-                    )
-                })?;
+            set_leptess_image(&mut lt, &raw_data, w, h)?;
 
             let boxes = lt
                 .get_component_boxes(leptess::capi::TessPageIteratorLevel_RIL_WORD, true)
@@ -257,7 +263,7 @@ impl OcrExtractor {
                 .map_err(|e| VisionError::Ocr(format!("OCR text extraction failed: {e}")))?;
             let words: Vec<&str> = full_text.split_whitespace().collect();
 
-            let box_count = boxes.len();
+            let box_count = boxes.get_n();
             if words.len() != box_count {
                 warn!(
                     "OCR word/box count mismatch: {} words vs {} boxes — truncating to shorter",
@@ -269,8 +275,10 @@ impl OcrExtractor {
 
             let mut result = Vec::new();
             for i in 0..count {
-                let Some(b) = boxes.get(i) else { continue };
-                let geom = b.get_geometry();
+                let Some(b) = boxes.get_box(i) else { continue };
+                // get_box returns the plumbing Box; wrap it in the leptess Box to
+                // get the struct-returning get_geometry() -> BoxGeometry. (review4 V3)
+                let geom = leptess::leptonica::Box { raw: b }.get_geometry();
                 let word_text = words[i].to_string();
                 if !word_text.is_empty() {
                     result.push(OcrWordBox {
@@ -308,7 +316,7 @@ fn build_regions_from_leptess(lt: &mut leptess::LepTess) -> Result<Vec<OcrRegion
         .map_err(|e| VisionError::Ocr(format!("OCR text extraction failed: {e}")))?;
     let words: Vec<&str> = full_text.split_whitespace().collect();
 
-    let box_count = boxes.len();
+    let box_count = boxes.get_n();
     if words.len() != box_count {
         warn!(
             "OCR word/box count mismatch: {} words vs {} boxes — truncating to shorter",
@@ -321,8 +329,10 @@ fn build_regions_from_leptess(lt: &mut leptess::LepTess) -> Result<Vec<OcrRegion
 
     let mut regions = Vec::with_capacity(count);
     for i in 0..count {
-        let Some(b) = boxes.get(i) else { continue };
-        let geom = b.get_geometry();
+        let Some(b) = boxes.get_box(i) else { continue };
+        // get_box returns the plumbing Box; wrap it in the leptess Box to get the
+        // struct-returning get_geometry() -> BoxGeometry. (review4 V3)
+        let geom = leptess::leptonica::Box { raw: b }.get_geometry();
         let word_text = words[i].to_string();
         if !word_text.is_empty() {
             regions.push(OcrRegion {
@@ -389,19 +399,11 @@ impl OcrExtractor {
         } else {
             // Lock failed — create a temporary instance
             let mut lt = create_new()?;
-            lt.set_image_from_mem(rgba.as_raw(), w as i32, h as i32, 4, (w * 4) as i32)
-                .map_err(|_| {
-                    VisionError::Ocr(
-                        "OCR image setup failed: Image memory setup failed".to_string(),
-                    )
-                })?;
+            set_leptess_image(&mut lt, rgba.as_raw(), w, h)?;
             return build_regions_from_leptess(&mut lt);
         };
 
-        lt.set_image_from_mem(rgba.as_raw(), w as i32, h as i32, 4, (w * 4) as i32)
-            .map_err(|_| {
-                VisionError::Ocr("OCR image setup failed: Image memory setup failed".to_string())
-            })?;
+        set_leptess_image(lt, rgba.as_raw(), w, h)?;
 
         build_regions_from_leptess(lt)
     }
@@ -432,12 +434,7 @@ impl OcrExtractor {
             let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
-            lt.set_image_from_mem(&raw_data, w as i32, h as i32, 4, (w * 4) as i32)
-                .map_err(|_| {
-                    VisionError::Ocr(
-                        "OCR image setup failed: Image memory setup failed".to_string(),
-                    )
-                })?;
+            set_leptess_image(&mut lt, &raw_data, w, h)?;
 
             build_regions_from_leptess(&mut lt)
         })

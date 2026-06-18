@@ -479,7 +479,15 @@ async fn enqueue_message_rejected_when_byte_cap_exceeded() {
         10,
     );
 
-    // 바이트 카운터를 MAX_OUTBOX_BYTES 바로 아래까지 수동으로 설정
+    // #6127: consume the one-shot reconcile guard first (empty outbox → 0) so
+    // the manual counter override below is not overwritten by the lazy
+    // reconcile that fires on the first enqueue.
+    coordinator
+        .reconcile_pending_bytes()
+        .await
+        .expect("reconcile (empty outbox) should succeed");
+
+    // Manually set the byte counter to just below MAX_OUTBOX_BYTES.
     coordinator
         .pending_bytes
         .store(MAX_OUTBOX_BYTES, Ordering::Relaxed);
@@ -513,7 +521,7 @@ async fn enqueue_message_rejected_when_byte_cap_exceeded() {
     let err = coordinator
         .enqueue_message(envelope, payload)
         .await
-        .expect_err("F-RR-C25-05: byte cap 초과 시 ServiceUnavailable 반환 필수");
+        .expect_err("F-RR-C25-05: must return ServiceUnavailable when the byte cap is exceeded");
 
     assert!(
         matches!(err, CoreError::ServiceUnavailable { .. }),
@@ -522,12 +530,13 @@ async fn enqueue_message_rejected_when_byte_cap_exceeded() {
     assert_eq!(
         outbox.pending_count().await.unwrap(),
         0,
-        "F-RR-C25-05: 바이트 cap 거부 시 outbox에 메시지가 추가되면 안 됨"
+        "F-RR-C25-05: no message must be added to the outbox when rejected by the byte cap"
     );
 }
 
-/// F-RR-C26-01: N개 동시 enqueue 호출이 있어도 pending_bytes 가 MAX_OUTBOX_BYTES 를
-/// 초과하지 않는지 검증한다 (원자적 예약-후-검사 패턴 정합성 확인).
+/// F-RR-C26-01: verifies that `pending_bytes` never exceeds MAX_OUTBOX_BYTES
+/// even with N concurrent enqueue calls (confirms the consistency of the atomic
+/// reserve-then-check pattern).
 #[tokio::test]
 async fn enqueue_message_byte_cap_not_exceeded_under_concurrency() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -611,7 +620,8 @@ async fn enqueue_message_byte_cap_not_exceeded_under_concurrency() {
     );
 }
 
-/// F-RR-C25-05: pending_bytes 카운터가 flush 후 ack된 바이트만큼 감소하는지 검증.
+/// F-RR-C25-05: verifies the `pending_bytes` counter decreases by the acked
+/// bytes after a flush.
 #[tokio::test]
 async fn pending_bytes_decremented_after_successful_flush() {
     use std::sync::atomic::Ordering;
@@ -653,12 +663,12 @@ async fn pending_bytes_decremented_after_successful_flush() {
     let remaining = coordinator.pending_bytes();
     assert_eq!(
         remaining, 0,
-        "F-RR-C25-05: 모든 아이템 ack 후 pending_bytes는 0이어야 함 (got {remaining})"
+        "F-RR-C25-05: pending_bytes must be 0 after all items are acked (got {remaining})"
     );
 }
 
-/// F-RR-C27-01: enqueue 동시 호출과 flush 의 load→store 경합으로
-/// pending_bytes 가 drift 하지 않는지 검증.
+/// F-RR-C27-01: verifies that `pending_bytes` does not drift due to a load→store
+/// race between concurrent enqueue calls and flush.
 #[tokio::test]
 async fn enqueue_concurrent_with_flush_no_pending_bytes_drift() {
     use std::sync::Arc as StdArc;
@@ -735,17 +745,118 @@ async fn enqueue_concurrent_with_flush_no_pending_bytes_drift() {
     let flushed = coordinator.flush().await.unwrap();
     assert_eq!(
         flushed, ENQUEUE_TASKS,
-        "F-RR-C27-01: {ENQUEUE_TASKS}개 enqueue 후 flush 는 전부 ack 해야 함"
+        "F-RR-C27-01: flush must ack all messages after {ENQUEUE_TASKS} enqueues"
     );
 
     let remaining = coordinator.pending_bytes();
     assert_eq!(
         remaining, 0,
-        "F-RR-C27-01: enqueue+flush race 후 pending_bytes drift 감지 (got {remaining})"
+        "F-RR-C27-01: pending_bytes drift detected after enqueue+flush race (got {remaining})"
     );
 }
 
-/// F-QA-C27-03: fetch_add → 초과 → fetch_sub 롤백 정합성 검증.
+/// #6127: reconcile_pending_bytes must seed the counter from the FULL persisted
+/// outbox backlog (not a single batch), so a pre-restart backlog is accounted
+/// for before any flush decrements the counter.
+#[tokio::test]
+async fn reconcile_pending_bytes_seeds_from_full_persisted_backlog() {
+    // Persist more items than max_batch_size to prove the reconcile lists the
+    // whole outbox, not one page.
+    const BACKLOG: usize = 7;
+    let items: VecDeque<QueuedIntegrationEgressMessage> =
+        (0..BACKLOG).map(|i| queued_item(&i.to_string())).collect();
+    let expected_bytes: usize = estimate_queued_bytes(&items.iter().cloned().collect::<Vec<_>>());
+
+    let outbox = Arc::new(MockOutbox {
+        items: Arc::new(Mutex::new(items)),
+        last_cursor: Arc::new(Mutex::new(None)),
+    });
+    let coordinator = IntegrationEgressCoordinator::new(
+        Arc::new(MockSessionPort {
+            state: Arc::new(Mutex::new(Some(connected_session()))),
+        }),
+        outbox.clone(),
+        Arc::new(MockEgressTransport {
+            acknowledged_queue_ids: vec![],
+            cursor: None,
+        }),
+        // max_batch_size deliberately smaller than the backlog.
+        3,
+    );
+
+    // Counter starts at 0 even though the outbox already holds a backlog.
+    assert_eq!(coordinator.pending_bytes(), 0);
+
+    coordinator
+        .reconcile_pending_bytes()
+        .await
+        .expect("#6127: reconcile should succeed");
+
+    assert_eq!(
+        coordinator.pending_bytes(),
+        expected_bytes,
+        "#6127: reconcile must seed pending_bytes to the full on-disk backlog"
+    );
+    assert!(
+        expected_bytes > 0,
+        "#6127: sanity — the {BACKLOG}-item backlog must be non-zero bytes"
+    );
+}
+
+/// #6127: flushing a pre-restart backlog that the counter never accounted for
+/// must clamp pending_bytes at 0 instead of underflowing the unsigned counter.
+///
+/// The flush path calls `reconcile_pending_bytes()` first, so the realistic
+/// pre-restart scenario already lands at 0. To exercise the saturating
+/// decrement directly we drive the counter below the acked bytes after the
+/// one-shot reconcile has already run.
+#[tokio::test]
+async fn flush_decrement_clamps_at_zero_no_underflow() {
+    use std::sync::atomic::Ordering;
+
+    let outbox = Arc::new(MockOutbox {
+        items: Arc::new(Mutex::new(VecDeque::from(vec![
+            queued_item("1"),
+            queued_item("2"),
+        ]))),
+        last_cursor: Arc::new(Mutex::new(None)),
+    });
+    let coordinator = IntegrationEgressCoordinator::new(
+        Arc::new(MockSessionPort {
+            state: Arc::new(Mutex::new(Some(connected_session()))),
+        }),
+        outbox.clone(),
+        Arc::new(MockEgressTransport {
+            acknowledged_queue_ids: vec!["queue-1".to_string(), "queue-2".to_string()],
+            cursor: None,
+        }),
+        10,
+    );
+
+    // Run (and consume) the one-shot reconcile guard. With both items present
+    // this seeds pending_bytes to the real backlog total.
+    coordinator
+        .reconcile_pending_bytes()
+        .await
+        .expect("#6127: reconcile should succeed");
+
+    // Now force the counter BELOW the bytes that flush will try to subtract,
+    // simulating any prior drift / under-count. A naive fetch_sub here would
+    // wrap the usize counter to a gigantic value.
+    coordinator.pending_bytes.store(1, Ordering::Relaxed);
+
+    let flushed = coordinator.flush().await.unwrap();
+    assert_eq!(flushed, 2);
+
+    let remaining = coordinator.pending_bytes();
+    assert_eq!(
+        remaining, 0,
+        "#6127: decrementing more than the tracked bytes must clamp at 0 \
+         (got {remaining} — underflow/wrap detected)"
+    );
+}
+
+/// F-QA-C27-03: verifies fetch_add → exceed → fetch_sub rollback consistency.
 #[tokio::test]
 async fn enqueue_message_byte_cap_rollback_correctness() {
     use std::sync::atomic::Ordering as AtomOrd;
@@ -766,7 +877,7 @@ async fn enqueue_message_byte_cap_rollback_correctness() {
         1024,
     );
 
-    // ── 단계 1: 첫 번째 메시지 정상 enqueue ────────────────────────────
+    // ── Step 1: enqueue the first message normally ─────────────────────
     let small_envelope = IntegrationEnvelope {
         envelope_id: "env-rollback-first".to_string(),
         schema_version: "integration.envelope.v1".to_string(),
@@ -796,21 +907,21 @@ async fn enqueue_message_byte_cap_rollback_correctness() {
     coordinator
         .enqueue_message(small_envelope, small_payload)
         .await
-        .expect("F-QA-C27-03: 첫 번째 소형 메시지 enqueue 성공 필수");
+        .expect("F-QA-C27-03: the first small message must enqueue successfully");
 
     let pre_reject_bytes = coordinator.pending_bytes.load(AtomOrd::Relaxed);
     assert!(
         pre_reject_bytes > 0,
-        "F-QA-C27-03: 첫 번째 enqueue 후 pending_bytes 가 0보다 커야 함"
+        "F-QA-C27-03: pending_bytes must be greater than 0 after the first enqueue"
     );
 
-    // ── 단계 2: cap 초과를 유발하도록 카운터를 MAX_OUTBOX_BYTES - 1 로 올린다 ─
+    // ── Step 2: raise the counter to MAX_OUTBOX_BYTES - 1 to trigger a cap overflow ─
     coordinator
         .pending_bytes
         .store(MAX_OUTBOX_BYTES - 1, AtomOrd::Relaxed);
     let pre_reject_bytes = coordinator.pending_bytes.load(AtomOrd::Relaxed);
 
-    // ── 단계 3: cap 을 초과하는 메시지 enqueue 시도 ─────────────────────
+    // ── Step 3: attempt to enqueue a message that exceeds the cap ──────
     let big_envelope = IntegrationEnvelope {
         envelope_id: "env-rollback-over".to_string(),
         schema_version: "integration.envelope.v1".to_string(),
@@ -840,18 +951,20 @@ async fn enqueue_message_byte_cap_rollback_correctness() {
     let err = coordinator
         .enqueue_message(big_envelope, big_payload)
         .await
-        .expect_err("F-QA-C27-03: cap 초과 메시지는 ServiceUnavailable 로 거부되어야 함");
+        .expect_err(
+            "F-QA-C27-03: a cap-exceeding message must be rejected with ServiceUnavailable",
+        );
 
     assert!(
         matches!(err, CoreError::ServiceUnavailable { .. }),
         "F-QA-C27-03: expected ServiceUnavailable, got: {err:?}"
     );
 
-    // ── 단계 4: pending_bytes 가 거부 전 값으로 정확히 복원되었는지 확인 ─
+    // ── Step 4: confirm pending_bytes was restored exactly to its pre-rejection value ─
     let post_reject_bytes = coordinator.pending_bytes.load(AtomOrd::Relaxed);
     assert_eq!(
         post_reject_bytes, pre_reject_bytes,
-        "F-QA-C27-03: 거부 후 pending_bytes 롤백 불완전 \
-         (pre={pre_reject_bytes}, post={post_reject_bytes}) — fetch_sub 누락 위험"
+        "F-QA-C27-03: incomplete pending_bytes rollback after rejection \
+         (pre={pre_reject_bytes}, post={post_reject_bytes}) — risk of a missing fetch_sub"
     );
 }

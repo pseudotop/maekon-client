@@ -33,6 +33,28 @@ struct ManagedSession {
     total_output_tokens: u64,
 }
 
+/// #6266: reaper-durable daily token ledger. The previous `check_token_budget`
+/// summed tokens only across CURRENTLY-LIVE sessions, so reaping an idle session
+/// discarded its usage and the "daily" budget silently reset (and never rolled
+/// over by date). This counter is incremented in `accumulate_tokens` and survives
+/// session removal; it resets when the (UTC) calendar date changes.
+struct DailyTokenLedger {
+    date: chrono::NaiveDate,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl DailyTokenLedger {
+    /// Roll the ledger over to `today`, zeroing the counters on a new day.
+    fn roll_to(&mut self, today: chrono::NaiveDate) {
+        if self.date != today {
+            self.date = today;
+            self.input_tokens = 0;
+            self.output_tokens = 0;
+        }
+    }
+}
+
 /// Tauri event payload emitted on session state transitions.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionStateEvent {
@@ -75,6 +97,10 @@ pub struct SessionManagerImpl {
     /// `with_local_llm_target`; `None` → `create_local_llm_session` falls back
     /// to the catalog-derived loopback default.
     pub(crate) local_llm_target: Option<crate::session_manager::factory::LocalLlmTarget>,
+    /// #6266: date-keyed cumulative token counter that survives session reaping
+    /// (the live-session sum used previously reset every time an idle session was
+    /// reaped). Used by `check_token_budget` / `get_global_token_usage`.
+    daily_token_ledger: parking_lot::Mutex<DailyTokenLedger>,
 }
 
 impl SessionManagerImpl {
@@ -95,6 +121,11 @@ impl SessionManagerImpl {
             codex_approval_decider: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
             local_llm_target: None,
+            daily_token_ledger: parking_lot::Mutex::new(DailyTokenLedger {
+                date: chrono::Utc::now().date_naive(),
+                input_tokens: 0,
+                output_tokens: 0,
+            }),
         }
     }
 
@@ -216,6 +247,12 @@ impl SessionManagerImpl {
             managed.total_input_tokens += input;
             managed.total_output_tokens += output;
         }
+        // #6266: also fold into the reaper-durable daily ledger so the budget is
+        // not discarded when this session is later reaped. Roll over on date change.
+        let mut ledger = self.daily_token_ledger.lock();
+        ledger.roll_to(chrono::Utc::now().date_naive());
+        ledger.input_tokens = ledger.input_tokens.saturating_add(input);
+        ledger.output_tokens = ledger.output_tokens.saturating_add(output);
     }
 
     /// Check if the daily token budget is exhausted. Returns true if sending is allowed.
@@ -224,21 +261,20 @@ impl SessionManagerImpl {
         if budget == 0 {
             return true; // unlimited
         }
-        let sessions = self.sessions.read().await;
-        // Sum tokens across ALL sessions (daily budget is global)
-        let total: u64 = sessions
-            .values()
-            .map(|m| m.total_input_tokens + m.total_output_tokens)
-            .sum();
+        // #6266: use the date-keyed durable ledger (reaped sessions' tokens still
+        // count toward today's budget) instead of summing only live sessions.
+        let mut ledger = self.daily_token_ledger.lock();
+        ledger.roll_to(chrono::Utc::now().date_naive());
+        let total = ledger.input_tokens.saturating_add(ledger.output_tokens);
         total < budget
     }
 
-    /// Get total token usage across all sessions (for daily budget display).
+    /// Get total token usage for the current day (for daily budget display).
     pub async fn get_global_token_usage(&self) -> (u64, u64) {
-        let sessions = self.sessions.read().await;
-        sessions.values().fold((0, 0), |(ai, ao), m| {
-            (ai + m.total_input_tokens, ao + m.total_output_tokens)
-        })
+        // #6266: report the durable daily ledger, not the live-session sum.
+        let mut ledger = self.daily_token_ledger.lock();
+        ledger.roll_to(chrono::Utc::now().date_naive());
+        (ledger.input_tokens, ledger.output_tokens)
     }
 
     /// Background task: check for idle sessions and terminate them.

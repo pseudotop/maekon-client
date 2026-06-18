@@ -70,8 +70,62 @@ pub fn provider_oauth_session_secret_ref(
     ))
 }
 
+/// ASCII unit separator (0x1F). Used to join the `(namespace, key)` tuple into
+/// a single canonical byte string before hashing. `validate_secret_segment`
+/// only admits ASCII alphanumerics plus `.`, `_`, `-`, so this control byte can
+/// never occur inside either segment — the join is therefore unambiguous and
+/// the hash input is injective in `(namespace, key)`.
+const SECRET_TUPLE_SEPARATOR: u8 = 0x1F;
+
+/// Length (in hex characters) of the collision-resistant suffix appended to the
+/// human-readable env var name. 8 hex chars = 32 bits of SHA-256, ample to
+/// distinguish the small, controlled set of secret tuples this client uses.
+const SECRET_ENV_DIGEST_HEX_LEN: usize = 8;
+
+/// Derive the environment variable name that backs a `(namespace, key)` secret
+/// for the env-backed [`SecretStore`].
+///
+/// The readable `MAEKON_SECRET_<NS>_<KEY>` prefix is produced by uppercasing
+/// alphanumerics and collapsing every other character to `_`. That prefix alone
+/// is **not injective**: distinct tuples whose separator-class characters
+/// differ (e.g. `("a/b", "c")` vs `("a", "b/c")`, or `("a.b", "c")` vs
+/// `("a_b", "c")`) collapse to the same name and would alias to the same
+/// secret. To guarantee injectivity we append `_<digest>`, where `<digest>` is
+/// the first [`SECRET_ENV_DIGEST_HEX_LEN`] hex characters of
+/// `SHA-256(namespace || 0x1F || key)` over the *original* (un-normalized)
+/// segment bytes. Distinct tuples therefore map to distinct names while the
+/// name stays readable and stable across runs.
+///
+/// The same function is used for both writing and lookup, so producers and the
+/// env store always agree on the name.
 pub fn secret_env_var_name(namespace: &str, key: &str) -> String {
-    let normalized_namespace = namespace
+    use sha2::{Digest, Sha256};
+
+    let normalized_namespace = normalize_secret_env_segment(namespace);
+    let normalized_key = normalize_secret_env_segment(key);
+
+    let mut hasher = Sha256::new();
+    hasher.update(namespace.as_bytes());
+    hasher.update([SECRET_TUPLE_SEPARATOR]);
+    hasher.update(key.as_bytes());
+    let digest = hasher.finalize();
+
+    let mut suffix = String::with_capacity(SECRET_ENV_DIGEST_HEX_LEN);
+    // Each byte yields two lowercase hex chars; take only as many bytes as
+    // needed to fill `SECRET_ENV_DIGEST_HEX_LEN` characters.
+    for byte in digest.iter().take(SECRET_ENV_DIGEST_HEX_LEN.div_ceil(2)) {
+        use std::fmt::Write as _;
+        let _ = write!(suffix, "{byte:02x}");
+    }
+    suffix.truncate(SECRET_ENV_DIGEST_HEX_LEN);
+
+    format!("MAEKON_SECRET_{normalized_namespace}_{normalized_key}_{suffix}")
+}
+
+/// Uppercase ASCII alphanumerics and collapse every other character to `_`,
+/// producing the human-readable portion of a secret env var name.
+fn normalize_secret_env_segment(segment: &str) -> String {
+    segment
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() {
@@ -80,18 +134,7 @@ pub fn secret_env_var_name(namespace: &str, key: &str) -> String {
                 '_'
             }
         })
-        .collect::<String>();
-    let normalized_key = key
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("MAEKON_SECRET_{normalized_namespace}_{normalized_key}")
+        .collect()
 }
 
 /// Secure secret storage abstraction.
@@ -298,7 +341,70 @@ mod tests {
     #[test]
     fn env_secret_var_name_normalizes_namespace_and_key() {
         let env_name = secret_env_var_name("provider/openai/default", "api_key");
-        assert_eq!(env_name, "MAEKON_SECRET_PROVIDER_OPENAI_DEFAULT_API_KEY");
+        // Readable prefix (uppercased, separators collapsed to `_`) plus an
+        // 8-hex-char digest suffix of SHA-256(namespace || 0x1F || key).
+        assert_eq!(
+            env_name,
+            "MAEKON_SECRET_PROVIDER_OPENAI_DEFAULT_API_KEY_646c9bd2"
+        );
+    }
+
+    #[test]
+    fn env_secret_var_name_suffix_is_stable_lowercase_hex() {
+        let env_name = secret_env_var_name("provider/openai/default", "api_key");
+        let suffix = env_name
+            .rsplit('_')
+            .next()
+            .expect("env var name has a suffix segment");
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(
+            suffix.chars().all(|ch| !ch.is_ascii_uppercase()),
+            "digest suffix must be lowercase hex so it is visually distinct from the prefix"
+        );
+    }
+
+    #[test]
+    fn env_secret_var_name_is_injective_for_previously_colliding_tuples() {
+        // Before the digest suffix was added, the prefix-only encoding was
+        // non-injective: separator-class characters collapsed to `_`, so these
+        // distinct `(namespace, key)` tuples all produced the SAME env var name
+        // (`MAEKON_SECRET_A_B_C`) and would alias to the same secret.
+        let colliding_tuples = [
+            ("a/b", "c"),
+            ("a", "b/c"),
+            ("a.b", "c"),
+            ("a_b", "c"),
+            ("a-b", "c"),
+        ];
+
+        // Every collapsed prefix is identical — proving the prefix alone cannot
+        // disambiguate these tuples.
+        for (namespace, key) in colliding_tuples {
+            let prefix = format!(
+                "MAEKON_SECRET_{}_{}",
+                normalize_secret_env_segment(namespace),
+                normalize_secret_env_segment(key)
+            );
+            assert_eq!(prefix, "MAEKON_SECRET_A_B_C");
+        }
+
+        // With the digest suffix, all five names are now pairwise distinct.
+        let names: Vec<String> = colliding_tuples
+            .iter()
+            .map(|(namespace, key)| secret_env_var_name(namespace, key))
+            .collect();
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "previously-colliding tuples must map to distinct env var names: {names:?}"
+        );
+
+        // And each name still carries the readable, collision-prone prefix.
+        for name in &names {
+            assert!(name.starts_with("MAEKON_SECRET_A_B_C_"));
+        }
     }
 
     #[test]

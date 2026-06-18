@@ -54,7 +54,7 @@ describe('J5: Update Lifecycle', () => {
 
     const pageText = await $('body').getText()
 
-    // 페이지에 버전 정보가 표시되는지 확인 (semver 패턴)
+    // Verify the page displays version info (semver pattern)
     const semverPattern = /\d+\.\d+\.\d+/
     expect(pageText).toMatch(semverPattern)
   })

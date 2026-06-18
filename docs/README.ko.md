@@ -9,6 +9,11 @@
 - [DOCUMENTATION_POLICY.md](./DOCUMENTATION_POLICY.md): 문서 컨벤션 및 유지보수 규칙
 - [install.ko.md](./install.ko.md): 설치 가이드
 - [testing/source-build-prerequisites.md](./testing/source-build-prerequisites.md): fresh checkout 빌드 및 Tauri sidecar 준비 조건
+- [guides/public-contribution-governance.ko.md](./guides/public-contribution-governance.ko.md): 공개 기여 라벨, CODEOWNERS, branch protection 기준
+- [guides/public-contributor-path.ko.md](./guides/public-contributor-path.ko.md): 공개 안전 기여 lifecycle, evidence checklist, maintainer handoff 기준
+- [guides/public-private-ci-split.ko.md](./guides/public-private-ci-split.ko.md): fork-safe public CI와 maintainer-only validation 경계
+- [guides/hybrid-import-workflow.ko.md](./guides/hybrid-import-workflow.ko.md): public PR import, attribution, parent validation, export handoff 절차
+- [guides/good-first-issues.ko.md](./guides/good-first-issues.ko.md): 공개 안전 첫 기여 가이드와 starter issue batch
 
 ## 하위 디렉터리
 
@@ -31,7 +36,7 @@ public-minimal export 에 포함하지 않습니다. 공개 contributor 에게 �
   crate 문서에서 확인합니다.
 - 내부 유지보수자는 TC catalog 백필이나 아키텍처 승격 전에 parent SSOT의
   plan index를 먼저 확인합니다. 이 내부 색인은 공개 export에서 빠지는
-  planning, research, private TC 기록을 직접 가리킬 수 있습니다.
+  planning, research, maintainer-only validation 기록을 직접 가리킬 수 있습니다.
 - 공개 문서와 export source comment는 자체 완결적이어야 합니다. source
   comment에 영속 설명이 필요하면 먼저 public ADR, guide, contract,
   security doc, crate doc으로 승격합니다.

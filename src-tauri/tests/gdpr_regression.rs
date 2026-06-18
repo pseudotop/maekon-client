@@ -518,10 +518,10 @@ fn fts5_shadow_index_purged_after_erasure() {
 // #4834 + #4928 interaction: audit_log SHA-256 hash chain survives erasure
 // ---------------------------------------------------------------------------
 //
-// `delete_all_data` 는 `audit_log` 를 ALL_TABLES 에서 의도적으로 제외하므로
-// (retained 보존 테이블) GDPR Art.17 전체 소거 후에도 감사 체인이 보존되고
-// 무결해야 한다. consent_revoked 감사가 erase 시점에 일어나며 체인은 erase
-// 중/후에도 연장된다.
+// `delete_all_data` intentionally excludes `audit_log` from ALL_TABLES (it is a
+// retained table), so the audit chain must remain preserved and intact even
+// after a full GDPR Art.17 erasure. The consent_revoked audit happens at erase
+// time and the chain extends during/after the erase.
 #[test]
 fn audit_chain_survives_gdpr_delete_all_data() {
     use maekon_core::models::audit::{AuditEntry, AuditStatus};
@@ -529,7 +529,7 @@ fn audit_chain_survives_gdpr_delete_all_data() {
     let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
     seed_sample_data(&storage);
 
-    // 소거 전 감사 항목 3건 기록(체인 형성).
+    // Record 3 audit entries before erasure (forming a chain).
     for i in 0..3 {
         storage.save_audit_entry(&AuditEntry {
             entry_id: format!("erase-audit-{i}"),
@@ -546,10 +546,10 @@ fn audit_chain_survives_gdpr_delete_all_data() {
     assert!(before.ok, "pre-erase chain must be valid: {before:?}");
     assert_eq!(before.verified_count, 3);
 
-    // GDPR 전체 소거.
+    // Full GDPR erasure.
     storage.delete_all_data().expect("delete_all_data");
 
-    // audit_log 는 보존되어 체인이 살아남고 무결해야 한다.
+    // audit_log is retained, so the chain must survive and remain intact.
     let after = storage.verify_audit_chain();
     assert!(
         after.ok,
@@ -557,10 +557,10 @@ fn audit_chain_survives_gdpr_delete_all_data() {
     );
     assert_eq!(
         after.verified_count, 3,
-        "audit_log 행은 delete_all_data 가 건드리지 않아 체인이 보존된다"
+        "audit_log rows are untouched by delete_all_data, so the chain is preserved"
     );
 
-    // 소거 이후 새 감사 항목을 append 해도 체인이 계속 연장되어야 한다.
+    // Appending a new audit entry after erasure must keep extending the chain.
     storage.save_audit_entry(&AuditEntry {
         entry_id: "post-erase".to_string(),
         timestamp: chrono::Utc::now(),
@@ -576,5 +576,8 @@ fn audit_chain_survives_gdpr_delete_all_data() {
         extended.ok,
         "post-erase append must keep chain valid: {extended:?}"
     );
-    assert_eq!(extended.verified_count, 4, "erase 후에도 체인은 연장된다");
+    assert_eq!(
+        extended.verified_count, 4,
+        "the chain still extends after erase"
+    );
 }

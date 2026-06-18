@@ -107,7 +107,46 @@ impl RegimeManager {
                 }
             }
 
-            // No close match — add as new regime
+            // No close ACTIVE match. Before pushing a brand-new regime, try to
+            // re-bind a *returning* regime to an existing non-Active entry by
+            // centroid proximity (review4 F2). Detector ids are positional cluster
+            // labels (e.g. "cluster-0"), NOT durable identities, so a returning
+            // regime that reuses an Inactive/Archived regime's id would otherwise be
+            // pushed as a SECOND entry sharing that regime_id — corrupting mark_seen
+            // / SharedRegimeState lookups and the SQLite PK upsert. Reactivate the
+            // existing entry in place to preserve identity continuity.
+            let reactivate = self
+                .regimes
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.status != RegimeStatus::Active)
+                .map(|(i, r)| (i, euclidean_distance(&r.centroid, &det.centroid)))
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .filter(|(_, dist)| *dist < self.merge_distance_threshold)
+                .map(|(i, _)| i);
+
+            if let Some(idx) = reactivate {
+                let existing = &mut self.regimes[idx];
+                existing.centroid = weighted_centroid(
+                    &existing.centroid,
+                    existing.sample_count,
+                    &det.centroid,
+                    det.sample_count,
+                );
+                existing.sample_count += det.sample_count;
+                existing.last_seen = det.last_seen;
+                existing.status = RegimeStatus::Active;
+                existing.auto_label = generate_auto_label(&existing.centroid, &[]);
+                continue;
+            }
+
+            // Genuinely new regime. Ensure its detector-supplied id does not collide
+            // with any existing regime (any status) — reuse would create a duplicate
+            // identity key. (review4 F2)
+            let mut det = det;
+            if self.regimes.iter().any(|r| r.regime_id == det.regime_id) {
+                det.regime_id = self.allocate_unique_regime_id(&det.regime_id);
+            }
             self.regimes.push(det);
         }
 
@@ -116,6 +155,21 @@ impl RegimeManager {
 
         // Enforce max_active limit
         self.enforce_max_active();
+    }
+
+    /// Allocate a `regime_id` that does not collide with any existing regime.
+    /// Detector ids are positional cluster labels rather than durable identities,
+    /// so on collision we suffix a monotonic counter to keep the identity key
+    /// unique across the in-memory set and the persisted relational store.
+    fn allocate_unique_regime_id(&self, base: &str) -> String {
+        let mut n = 1u32;
+        loop {
+            let candidate = format!("{base}-r{n}");
+            if !self.regimes.iter().any(|r| r.regime_id == candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
     }
 
     /// Merge two regimes that are similar (distance < threshold) and both
@@ -242,8 +296,17 @@ impl RegimeManager {
 
     /// Mark a regime as seen (update last_seen timestamp).
     pub fn mark_seen(&mut self, regime_id: &str, timestamp: DateTime<Utc>) {
-        if let Some(r) = self.regimes.iter_mut().find(|r| r.regime_id == regime_id) {
-            r.last_seen = timestamp;
+        // Prefer the Active regime with this id (review4 F3): the classifier only
+        // selects Active regimes, so under a duplicate-id condition advancing an
+        // Inactive same-id entry's last_seen would let run_maintenance prematurely
+        // deactivate the genuinely live regime. Fall back to any match otherwise.
+        let idx = self
+            .regimes
+            .iter()
+            .position(|r| r.regime_id == regime_id && r.status == RegimeStatus::Active)
+            .or_else(|| self.regimes.iter().position(|r| r.regime_id == regime_id));
+        if let Some(i) = idx {
+            self.regimes[i].last_seen = timestamp;
         }
     }
 
@@ -394,6 +457,47 @@ mod tests {
             communication_ratio: 0.15,
             ..RegimeFeatures::default()
         }
+    }
+
+    #[test]
+    fn redetection_reusing_inactive_id_keeps_ids_unique() {
+        // review4 F2: a returning detection that reuses an Inactive regime's
+        // positional id but carries a far (different-mode) centroid must NOT be
+        // pushed as a second entry sharing that regime_id — the id is the identity
+        // key for mark_seen / SharedRegimeState / the SQLite PK upsert.
+        let config = TieredMemoryConfig::default();
+        let mut mgr = RegimeManager::new(&config);
+        mgr.update_from_detection(vec![
+            make_regime("cluster-0", coding_centroid(), 100, RegimeStatus::Active),
+            make_regime("cluster-1", comm_centroid(), 100, RegimeStatus::Active),
+        ]);
+        // Simulate run_maintenance flipping the comm regime Inactive after idle.
+        for r in &mut mgr.regimes {
+            if r.regime_id == "cluster-1" {
+                r.status = RegimeStatus::Inactive;
+            }
+        }
+        // Re-detection emits a NEW behavior (browser) that reuses the id "cluster-1".
+        mgr.update_from_detection(vec![make_regime(
+            "cluster-1",
+            browser_centroid(),
+            50,
+            RegimeStatus::Active,
+        )]);
+
+        let ids: Vec<String> = mgr
+            .all_regimes()
+            .iter()
+            .map(|r| r.regime_id.clone())
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "regime_ids must remain unique after re-detection, got {ids:?}"
+        );
     }
 
     #[test]

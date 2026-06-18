@@ -67,6 +67,68 @@ impl Default for AnalysisConfig {
     }
 }
 
+/// Floor for `analysis.interval_secs` (#6177). Mirrors the IPC validator
+/// (`commands::analysis::validate_analysis_config`, `interval_secs >= 10`) so a
+/// hand-edited / downgrade config cannot drive a sub-10s analysis loop.
+pub(crate) const ANALYSIS_INTERVAL_SECS_FLOOR: u64 = 10;
+
+/// Floor for `analysis.throttle_secs` (#6177). Mirrors the IPC validator
+/// (`throttle_secs >= 1`).
+pub(crate) const ANALYSIS_THROTTLE_SECS_FLOOR: u64 = 1;
+
+impl AnalysisConfig {
+    /// Validate that analysis interval values are within acceptable bounds (#6177).
+    ///
+    /// The analysis scheduler loop builds a `tokio::time::interval` from
+    /// `interval_secs` (and gates a full pass on `full_interval_secs`); a zero
+    /// period panics tokio's interval (`period > 0` assertion), so enforce the
+    /// same floors the IPC validator does. The defaults (interval 300s / full
+    /// 1800s / throttle 120s) satisfy these bounds.
+    pub fn validate_bounds(&self) -> Result<(), String> {
+        if self.interval_secs < ANALYSIS_INTERVAL_SECS_FLOOR {
+            return Err(format!(
+                "analysis.interval_secs must be >= {ANALYSIS_INTERVAL_SECS_FLOOR}"
+            ));
+        }
+        if self.full_interval_secs < self.interval_secs {
+            return Err(
+                "analysis.full_interval_secs must be >= analysis.interval_secs".to_string(),
+            );
+        }
+        if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
+            return Err(format!(
+                "analysis.throttle_secs must be >= {ANALYSIS_THROTTLE_SECS_FLOOR}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Raise any sub-floor analysis interval to its floor in place, returning the
+    /// dotted-path identities of the fields that were clamped (#6169/#6177).
+    ///
+    /// Unlike [`Self::validate_bounds`] this never errors — it is used by the
+    /// fail-open INITIAL-LOAD path so a hand-edited / downgrade config.json with
+    /// sub-floor intervals is corrected to a safe value rather than aborting
+    /// startup or reaching the scheduler unvalidated.
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if self.interval_secs < ANALYSIS_INTERVAL_SECS_FLOOR {
+            self.interval_secs = ANALYSIS_INTERVAL_SECS_FLOOR;
+            clamped.push("analysis.interval_secs");
+        }
+        // Re-establish the full >= incremental invariant after the interval clamp.
+        if self.full_interval_secs < self.interval_secs {
+            self.full_interval_secs = self.interval_secs;
+            clamped.push("analysis.full_interval_secs");
+        }
+        if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
+            self.throttle_secs = ANALYSIS_THROTTLE_SECS_FLOOR;
+            clamped.push("analysis.throttle_secs");
+        }
+        clamped
+    }
+}
+
 /// Default D2 supersede confidence threshold — conservatively HIGH (0.9): a wrong
 /// supersede destroys a durable user belief, so only very confident contradictions
 /// auto-supersede.
@@ -583,6 +645,67 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.input_pattern_detail);
         assert!(!config.accessibility_extraction);
+    }
+
+    // ── #6177 analysis interval bounds ────────────────────────────────────
+
+    #[test]
+    fn analysis_validate_bounds_default_passes() {
+        // Contract: the default analysis config (interval 300s / full 1800s /
+        // throttle 120s) must satisfy its own interval floors.
+        AnalysisConfig::default()
+            .validate_bounds()
+            .expect("default AnalysisConfig must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn analysis_validate_bounds_rejects_zero_interval() {
+        // #6177: interval_secs == 0 would panic the analysis loop's
+        // tokio::time::interval (period > 0 assertion).
+        let mut cfg = AnalysisConfig::default();
+        cfg.interval_secs = 0;
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(
+            err.contains("interval_secs"),
+            "zero interval error must name the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn analysis_validate_bounds_rejects_full_below_interval() {
+        let mut cfg = AnalysisConfig::default();
+        cfg.interval_secs = 60;
+        cfg.full_interval_secs = 30;
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(err.contains("full_interval_secs"), "got: {err}");
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_raises_zero_interval_to_floor() {
+        // #6177: clamp_bounds is the fail-open INITIAL-LOAD counterpart — it
+        // raises a sub-floor interval to the floor instead of erroring, and the
+        // result must satisfy validate_bounds.
+        let mut cfg = AnalysisConfig::default();
+        cfg.interval_secs = 0;
+        cfg.full_interval_secs = 0;
+        cfg.throttle_secs = 0;
+        let clamped = cfg.clamp_bounds();
+        assert_eq!(cfg.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+        assert!(cfg.full_interval_secs >= cfg.interval_secs);
+        assert_eq!(cfg.throttle_secs, ANALYSIS_THROTTLE_SECS_FLOOR);
+        assert!(clamped.contains(&"analysis.interval_secs"));
+        cfg.validate_bounds()
+            .expect("clamped analysis config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_is_noop_for_valid_config() {
+        let mut cfg = AnalysisConfig::default();
+        let clamped = cfg.clamp_bounds();
+        assert!(
+            clamped.is_empty(),
+            "a default (in-bounds) config must not be clamped, got: {clamped:?}"
+        );
     }
 
     #[test]

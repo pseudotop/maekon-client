@@ -227,7 +227,15 @@ impl MemoryGraphPort for SqliteStorage {
     }
 
     async fn prune_claims_older_than(&self, cutoff_epoch_secs: i64) -> Result<u64, CoreError> {
-        self.with_conn(move |conn| {
+        // Single transaction so the edge cascade and the claim delete commit
+        // together: a mid-way failure (e.g. the second DELETE) must not leave
+        // edges already gone while their claims survive, nor vice-versa. Mirrors
+        // `supersede_claim`'s tx pattern; routed through `with_conn_mut` since
+        // `Connection::transaction()` needs `&mut Connection`.
+        self.with_conn_mut(move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| StorageError::Internal(format!("prune tx begin: {e}")))?;
             // Child before parent: drop edges that touch a to-be-pruned claim on
             // EITHER end first. Matching only `src_id` would orphan epistemic
             // edges (supports/refines/contradicts/supersedes) that point TO a
@@ -236,7 +244,7 @@ impl MemoryGraphPort for SqliteStorage {
             // edges are unaffected: their `dst_id` is an `activity_segments.id`,
             // never a `claim_id`, so it can't match a pruned claim.
             // `created_at` is epoch seconds per the v34 DDL (not RFC3339 text).
-            conn.execute(
+            tx.execute(
                 "DELETE FROM memory_edges WHERE src_id IN \
                  (SELECT claim_id FROM memory_claims WHERE created_at < ?1) \
                  OR dst_id IN \
@@ -244,12 +252,14 @@ impl MemoryGraphPort for SqliteStorage {
                 params![cutoff_epoch_secs],
             )
             .map_err(|e| StorageError::Internal(format!("prune memory_edges: {e}")))?;
-            let deleted = conn
+            let deleted = tx
                 .execute(
                     "DELETE FROM memory_claims WHERE created_at < ?1",
                     params![cutoff_epoch_secs],
                 )
                 .map_err(|e| StorageError::Internal(format!("prune memory_claims: {e}")))?;
+            tx.commit()
+                .map_err(|e| StorageError::Internal(format!("prune commit: {e}")))?;
             debug!("prune_claims_older_than {cutoff_epoch_secs}: {deleted} claims");
             Ok(deleted as u64)
         })
@@ -652,6 +662,72 @@ mod tests {
         let remaining = storage.edges_from("clm_a", None).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].dst_id, "seg_live");
+    }
+
+    #[tokio::test]
+    async fn prune_claims_older_than_commits_both_deletes_atomically() {
+        // The edge cascade (DELETE memory_edges) and the claim delete
+        // (DELETE memory_claims) now run inside one transaction. On the success
+        // path both must land together — never an edge gone while its claim
+        // lingers (or the reverse). A no-op cutoff exercises the same tx
+        // begin/commit funnel and must leave every row intact while reporting 0.
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage
+            .save_claim(&claim_at("clm_old", 1_000))
+            .await
+            .unwrap();
+        storage
+            .save_claim(&claim_at("clm_new", 9_000))
+            .await
+            .unwrap();
+        storage
+            .add_edge(&evidence_edge("edg_old", "clm_old", "seg_old"))
+            .await
+            .unwrap();
+        // Live → old epistemic edge (kept-src, pruned-dst) to prove the cascade
+        // and the claim delete commit as a unit, not just the src-side rows.
+        storage
+            .add_edge(&MemoryEdge {
+                edge_id: "edg_live_to_old".to_string(),
+                src_id: "clm_new".to_string(),
+                dst_id: "clm_old".to_string(),
+                edge_type: EdgeType::Supports,
+                confidence: 0.8,
+                evidence_ref: None,
+                source: "llm".to_string(),
+                created_at: 1_700_000_000,
+            })
+            .await
+            .unwrap();
+
+        // No-op cutoff: nothing is older, so the tx commits with 0 deletions and
+        // leaves all state untouched.
+        let noop = storage.prune_claims_older_than(500).await.unwrap();
+        assert_eq!(noop, 0, "nothing older than the cutoff is pruned");
+        assert!(storage.get_claim("clm_old").await.unwrap().is_some());
+        assert_eq!(storage.edges_from("clm_new", None).await.unwrap().len(), 1);
+
+        // Effective cutoff: the old claim AND both edges referencing it commit
+        // their deletion together; the new claim and its non-referencing rows
+        // survive intact.
+        let pruned = storage.prune_claims_older_than(5_000).await.unwrap();
+        assert_eq!(pruned, 1, "exactly the old claim is pruned");
+        assert!(storage.get_claim("clm_old").await.unwrap().is_none());
+        assert!(storage.get_claim("clm_new").await.unwrap().is_some());
+        // Both the src-side and the dst-side edge are cascaded atomically.
+        assert!(storage
+            .edges_from("clm_old", None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(
+            storage
+                .edges_from("clm_new", None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the live→old edge is cascaded with the claim delete, not orphaned"
+        );
     }
 
     #[tokio::test]

@@ -27,6 +27,13 @@ pub struct KmeansDetector {
     min_cluster_samples: u64,
     /// Stored centroids from the last `detect()` call, for `classify()`.
     centroids: Mutex<Vec<RegimeFeatures>>,
+    /// Cluster label for each stored centroid, parallel by index.
+    ///
+    /// Centroids are stored densely (one per distinct non-noise label that was
+    /// actually present), so the array index is not necessarily the cluster id
+    /// after constraint-driven relabeling. This remap lets `classify()`
+    /// translate a nearest-centroid array index back to the real cluster label.
+    centroid_labels: Mutex<Vec<i32>>,
 }
 
 impl KmeansDetector {
@@ -37,6 +44,7 @@ impl KmeansDetector {
             max_iterations: 50,
             min_cluster_samples: 50,
             centroids: Mutex::new(Vec::new()),
+            centroid_labels: Mutex::new(Vec::new()),
         }
     }
 
@@ -96,9 +104,14 @@ impl KmeansDetector {
             })
             .collect();
 
-        // Store centroids for classify()
+        // Store centroids for classify(). In the unconstrained path the label
+        // assigned to each point is the centroid array index, so the remap is
+        // the identity 0..centroids.len().
         if let Ok(mut stored) = self.centroids.lock() {
             *stored = centroids.clone();
+        }
+        if let Ok(mut stored_labels) = self.centroid_labels.lock() {
+            *stored_labels = (0..centroids.len() as i32).collect();
         }
 
         ClusteringResult {
@@ -111,11 +124,18 @@ impl KmeansDetector {
     }
 }
 
-/// Recompute centroids from labels after link-constraint modifications.
+/// Recompute a DENSE centroid list from labels after link-constraint
+/// modifications.
+///
+/// Returns `(centroids, centroid_labels)` where `centroid_labels[i]` is the
+/// real cluster label of `centroids[i]`. Only distinct non-noise labels that
+/// are actually present produce a centroid (sorted ascending); there is no
+/// `0..=max_label` padding, so the array has no default-filled gaps and its
+/// length equals the real cluster count (#6120).
 fn recompute_centroids_from_labels(
     features: &[RegimeFeatures],
     labels: &[i32],
-) -> Vec<RegimeFeatures> {
+) -> (Vec<RegimeFeatures>, Vec<i32>) {
     let mut sums: HashMap<i32, [f64; RegimeFeatures::DIMENSIONS]> = HashMap::new();
     let mut counts: HashMap<i32, usize> = HashMap::new();
 
@@ -133,21 +153,22 @@ fn recompute_centroids_from_labels(
         *counts.entry(label).or_insert(0) += 1;
     }
 
-    let max_label = sums.keys().copied().max().unwrap_or(-1);
-    let mut centroids = Vec::new();
-    for label in 0..=max_label {
-        if let (Some(sum), Some(&cnt)) = (sums.get(&label), counts.get(&label)) {
-            let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
-            for (d, &s) in sum.iter().enumerate() {
-                arr[d] = (s / cnt as f64) as f32;
-            }
-            centroids.push(RegimeFeatures::from_array(arr));
-        } else {
-            centroids.push(RegimeFeatures::default());
+    let mut present_labels: Vec<i32> = sums.keys().copied().collect();
+    present_labels.sort_unstable();
+
+    let mut centroids = Vec::with_capacity(present_labels.len());
+    for &label in &present_labels {
+        // `present_labels` comes from `sums` keys, so both lookups succeed.
+        let sum = &sums[&label];
+        let cnt = counts[&label];
+        let mut arr = [0.0f32; RegimeFeatures::DIMENSIONS];
+        for (d, &s) in sum.iter().enumerate() {
+            arr[d] = (s / cnt as f64) as f32;
         }
+        centroids.push(RegimeFeatures::from_array(arr));
     }
 
-    centroids
+    (centroids, present_labels)
 }
 
 impl Default for KmeansDetector {
@@ -167,26 +188,25 @@ impl ClusteringStrategy for KmeansDetector {
         if centroids.is_empty() {
             return None;
         }
+        let centroid_labels = self.centroid_labels.lock().ok()?;
 
-        let mut best_id = -1i32;
+        let mut best_idx: Option<usize> = None;
         let mut best_dist = f32::INFINITY;
 
         for (i, centroid) in centroids.iter().enumerate() {
             let d = euclidean_distance(point, centroid);
             if d < best_dist {
                 best_dist = d;
-                best_id = i as i32;
+                best_idx = Some(i);
             }
         }
 
-        if best_id >= 0 {
-            Some(ClusterAssignment {
-                cluster_id: best_id,
-                probability: 1.0,
-            })
-        } else {
-            None
-        }
+        best_idx.map(|i| ClusterAssignment {
+            // Map the dense centroid array index back to the real cluster label
+            // through the remap; fall back to the index if the remap is missing.
+            cluster_id: centroid_labels.get(i).copied().unwrap_or(i as i32),
+            probability: 1.0,
+        })
     }
 
     fn detect_with_constraints(
@@ -227,12 +247,15 @@ impl ClusteringStrategy for KmeansDetector {
             ids.len()
         };
 
-        // Recompute centroids after link-constraint modifications
-        let centroids = recompute_centroids_from_labels(features, &full_labels);
+        // Recompute dense centroids after link-constraint modifications.
+        let (centroids, centroid_labels) = recompute_centroids_from_labels(features, &full_labels);
 
-        // Store centroids for classify()
+        // Store centroids + index->label remap for classify().
         if let Ok(mut stored) = self.centroids.lock() {
             *stored = centroids.clone();
+        }
+        if let Ok(mut stored_labels) = self.centroid_labels.lock() {
+            *stored_labels = centroid_labels;
         }
 
         Ok(ClusteringResult {
@@ -362,6 +385,57 @@ mod tests {
     fn algorithm_name_returns_kmeans() {
         let detector = KmeansDetector::new();
         assert_eq!(detector.algorithm_name(), "kmeans");
+    }
+
+    #[test]
+    fn recompute_centroids_is_dense_for_noncontiguous_labels() {
+        // Non-contiguous labels {0, 2, 5} (plus a noise -1) must produce
+        // exactly 3 centroids with no phantom padding for absent labels
+        // 1, 3, 4 (#6120).
+        let features = vec![
+            coding_point(0.10, 0.10), // label 0
+            coding_point(0.20, 0.20), // label 2
+            coding_point(0.30, 0.30), // label 5
+            coding_point(0.40, 0.40), // noise (-1) -> skipped
+        ];
+        let labels = vec![0, 2, 5, -1];
+
+        let (centroids, centroid_labels) = recompute_centroids_from_labels(&features, &labels);
+
+        assert_eq!(
+            centroids.len(),
+            3,
+            "expected one centroid per present label"
+        );
+        // Remap is dense and sorted ascending by present label.
+        assert_eq!(centroid_labels, vec![0, 2, 5]);
+
+        // Each centroid equals its single member point.
+        assert!((centroids[0].avg_event_rate - 0.10).abs() < 1e-5);
+        assert!((centroids[1].avg_event_rate - 0.20).abs() < 1e-5);
+        assert!((centroids[2].avg_event_rate - 0.30).abs() < 1e-5);
+    }
+
+    #[test]
+    fn classify_remaps_dense_centroid_index_to_real_label() {
+        // Drive the detector into a state with non-contiguous stored labels by
+        // injecting dense centroids + remap directly, then verify classify()
+        // returns the REAL label, not the array index.
+        let detector = KmeansDetector::new();
+        {
+            let mut c = detector.centroids.lock().unwrap();
+            *c = vec![coding_point(0.10, 0.10), coding_point(0.90, 0.90)];
+            let mut cl = detector.centroid_labels.lock().unwrap();
+            *cl = vec![0, 5]; // index 1 -> real label 5
+        }
+
+        // A point nearest the second (index 1) centroid must classify to 5.
+        let a = detector.classify(&coding_point(0.88, 0.88)).unwrap();
+        assert_eq!(a.cluster_id, 5);
+
+        // A point nearest the first (index 0) centroid must classify to 0.
+        let b = detector.classify(&coding_point(0.11, 0.11)).unwrap();
+        assert_eq!(b.cluster_id, 0);
     }
 
     #[test]

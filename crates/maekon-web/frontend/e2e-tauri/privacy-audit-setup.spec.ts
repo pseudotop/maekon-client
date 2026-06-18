@@ -11,23 +11,23 @@ describe('J2: Privacy & Settings Persistence', () => {
    * @tauri_only_reason IPC update_setting writes config JSON to disk
    */
   it('T110: Settings write persists PII filter level after reload', async () => {
-    // 현재 설정 저장
+    // Save the current settings
     const before = await fetchApiJson<Record<string, any>>('/settings')
     const originalLevel = before?.privacy?.pii_filter_level
 
-    // PII filter를 Strict로 변경
+    // Change the PII filter to Strict
     const patch = { privacy: { pii_filter_level: 'Strict' } }
     await invokeIpc('update_setting', { config_json: JSON.stringify(patch) })
 
-    // 페이지 리로드 (디스크에서 다시 읽기)
+    // Reload the page (re-read from disk)
     await browser.url('tauri://localhost/')
-    await browser.pause(2000) // config reload 대기
+    await browser.pause(2000) // wait for config reload
 
-    // 변경 사항이 유지되는지 확인
+    // Verify the change is persisted
     const after = await fetchApiJson<Record<string, any>>('/settings')
     expect(after.privacy.pii_filter_level).toBe('Strict')
 
-    // 원래 값 복원
+    // Restore the original value
     if (originalLevel && originalLevel !== 'Strict') {
       const restore = { privacy: { pii_filter_level: originalLevel } }
       await invokeIpc('update_setting', { config_json: JSON.stringify(restore) })
@@ -46,7 +46,7 @@ describe('J2: Privacy & Settings Persistence', () => {
     const before = await fetchApiJson<Record<string, any>>('/settings')
     const originalEnabled = before?.capture?.capture_enabled
 
-    // capture 비활성화
+    // Disable capture
     const patch = { capture: { capture_enabled: false } }
     await invokeIpc('update_setting', { config_json: JSON.stringify(patch) })
 
@@ -56,7 +56,7 @@ describe('J2: Privacy & Settings Persistence', () => {
     const after = await fetchApiJson<Record<string, any>>('/settings')
     expect(after.capture.capture_enabled).toBe(false)
 
-    // 원래 값 복원
+    // Restore the original value
     if (originalEnabled !== false) {
       const restore = { capture: { capture_enabled: true } }
       await invokeIpc('update_setting', { config_json: JSON.stringify(restore) })
@@ -72,26 +72,26 @@ describe('J2: Privacy & Settings Persistence', () => {
    * @tauri_only_reason ConfirmModal exists in real Tauri app (Privacy.tsx:14-43)
    */
   it('T113: Data deletion requires confirmation dialog', async () => {
-    // Privacy 페이지로 이동
+    // Navigate to the Privacy page
     await browser.url('tauri://localhost/privacy')
     await browser.pause(2000)
 
-    // "Delete All Data" 버튼 찾기 (danger variant)
+    // Find the "Delete All Data" button (danger variant)
     const deleteBtn = await $('button*=Delete All')
     if (await deleteBtn.isExisting()) {
       await deleteBtn.click()
 
-      // ConfirmModal이 표시되는지 확인 (fixed inset-0 z-50 overlay)
+      // Verify the ConfirmModal is shown (fixed inset-0 z-50 overlay)
       const modal = await $('.fixed.inset-0.z-50')
       await modal.waitForExist({ timeout: 3000 })
       expect(await modal.isDisplayed()).toBe(true)
 
-      // Cancel 버튼으로 닫기
+      // Close via the Cancel button
       const cancelBtn = await modal.$('button*=Cancel')
       if (await cancelBtn.isExisting()) {
         await cancelBtn.click()
       }
-      // 또는 한국어: 취소
+      // Or the Korean cancel button (localized fallback).
       else {
         const cancelKo = await modal.$('button*=취소')
         if (await cancelKo.isExisting()) await cancelKo.click()
@@ -108,35 +108,35 @@ describe('J2: Privacy & Settings Persistence', () => {
     await browser.url('tauri://localhost/privacy')
     await browser.pause(2000)
 
-    // Delete All 버튼 클릭
+    // Click the Delete All button
     const deleteBtn = await $('button*=Delete All')
     if (!(await deleteBtn.isExisting())) {
-      // 한국어 UI
+      // Korean UI
       const deleteBtnKo = await $('button*=모든 데이터 삭제')
       if (await deleteBtnKo.isExisting()) await deleteBtnKo.click()
-      else return // 버튼 없으면 skip
+      else return // skip if the button is absent
     } else {
       await deleteBtn.click()
     }
 
     await browser.pause(500)
 
-    // role="alertdialog" 확인
+    // Verify role="alertdialog"
     const dialog = await $('div[role="alertdialog"]')
     await dialog.waitForExist({ timeout: 3000 })
     expect(await dialog.isDisplayed()).toBe(true)
 
-    // aria-describedby 확인
+    // Verify aria-describedby
     const describedBy = await dialog.getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
 
-    // Focus trap: Tab을 여러 번 눌러도 다이얼로그 안에 포커스 유지
+    // Focus trap: focus stays inside the dialog even after pressing Tab multiple times
     await browser.keys('Tab')
     await browser.keys('Tab')
     await browser.keys('Tab')
     await browser.keys('Tab')
 
-    // 현재 포커스된 요소가 다이얼로그 내부인지 확인
+    // Verify the currently focused element is inside the dialog
     const activeEl = await browser.execute(() => {
       const active = document.activeElement
       const dialog = document.querySelector('div[role="alertdialog"]')
@@ -144,7 +144,7 @@ describe('J2: Privacy & Settings Persistence', () => {
     })
     expect(activeEl).toBe(true)
 
-    // Escape로 닫기
+    // Close with Escape
     await browser.keys('Escape')
     await browser.pause(500)
     expect(await dialog.isExisting()).toBe(false)

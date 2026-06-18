@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use crate::sqlite::GuardedConnection;
 
-/// 공유 [`GuardedConnection`](`SqliteStorage::connection_arc()` 반환)을 통해서만
-/// 커넥션에 접근한다 — barrier-free 핸들을 얻을 수 없다(#4928).
+/// Accesses the connection only through the shared [`GuardedConnection`] (returned by
+/// `SqliteStorage::connection_arc()`) — a barrier-free handle cannot be obtained (#4928).
 pub struct SqliteRegimeManagerStateStore {
     conn: Arc<GuardedConnection>,
 }
@@ -24,11 +24,12 @@ impl SqliteRegimeManagerStateStore {
 #[async_trait]
 impl RegimeStoragePort for SqliteRegimeManagerStateStore {
     async fn load_all(&self) -> Result<Vec<Regime>, CoreError> {
-        // 읽기 — read_lock(deletion_flag 무관). SELECT 만 read_lock 으로 수행하고,
-        // 파싱 실패 시 quarantine UPDATE 는 ALL_TABLES mutation 이므로 read_lock 을
-        // 해제한 뒤 write_lock funnel 로 발행한다(#4928 round-3 FIX A — read 경로로
-        // mutation 밀반입 금지). parking_lot 뮤텍스는 reentrant 가 아니므로 read 가드는
-        // write_lock 획득 전에 반드시 drop 한다.
+        // Read — read_lock (independent of deletion_flag). Only the SELECT runs under
+        // read_lock; on a parse failure the quarantine UPDATE is an ALL_TABLES mutation,
+        // so it is issued through the write_lock funnel after releasing read_lock (#4928
+        // round-3 FIX A — no smuggling mutations through the read path). parking_lot
+        // mutexes are not reentrant, so the read guard must be dropped before acquiring
+        // write_lock.
         let payload: Option<String> = {
             let read = self.conn.read_lock();
             read.conn()
@@ -52,8 +53,9 @@ impl RegimeStoragePort for SqliteRegimeManagerStateStore {
                         error = %e,
                         "regime_manager_state payload failed to parse; quarantining to payload_backup and starting fresh. Recover via manual inspection of the backup column."
                     );
-                    // 쓰기 — write_lock(deletion_flag set 시 스킵). 곧 wipe 될 행을
-                    // quarantine 하는 것은 무의미하므로 skip-on-flag 가 올바르다.
+                    // Write — write_lock (skipped when deletion_flag is set).
+                    // Quarantining a row that is about to be wiped is pointless, so
+                    // skip-on-flag is the correct behavior.
                     let quarantine: Result<(), rusqlite::Error> =
                         self.conn.write_lock().run((), |conn| {
                             conn.execute(
@@ -153,7 +155,7 @@ impl RegimeStoragePort for SqliteRegimeManagerStateStore {
         //   UPDATE — label, occurrence_count, avg_density, avg_importance,
         //   dominant_category, is_active reflect local latest.  last_seen_at
         //   advances only if the stored value is older (max-preserve guard mirrors
-        //   the sync_merger comment: "과거로 되돌리지 않음").
+        //   the sync_merger comment: "never go backward in time").
         //
         //   hlc_wall_ms / hlc_counter / origin_device_id are left at their current
         //   values if the row already existed (the UPDATE omits them) so that a
@@ -329,9 +331,10 @@ mod tests {
         assert!(backup_at.is_some(), "backup timestamp must be set");
     }
 
-    /// #4928 round-3 (FIX A): quarantine UPDATE 는 write_lock funnel 을 통과하므로
-    /// deletion_flag 가 set 이면 self-skip 한다 — 곧 wipe 될 corrupt 행을 quarantine 하지
-    /// 않는다. load_all 자체는 Ok(빈 Vec)로 반환되어야 한다(읽기/fresh-start 정상).
+    /// #4928 round-3 (FIX A): the quarantine UPDATE goes through the write_lock funnel,
+    /// so it self-skips when deletion_flag is set — a corrupt row that is about to be
+    /// wiped is not quarantined. load_all itself must still return Ok(empty Vec) (the
+    /// read / fresh-start path succeeds normally).
     #[tokio::test]
     async fn quarantine_self_skips_when_deletion_flag_set() {
         use std::sync::atomic::Ordering;
@@ -345,7 +348,7 @@ mod tests {
             )
             .unwrap();
         }
-        // deletion_flag set → quarantine write_lock 가 스킵되어야 한다.
+        // deletion_flag set → the quarantine write_lock must be skipped.
         conn.deletion_flag().store(true, Ordering::Release);
 
         let store = SqliteRegimeManagerStateStore::new(conn.clone());
@@ -353,10 +356,10 @@ mod tests {
         // Line 230: even with deletion_flag set, load_all must return Ok — the
         // quarantine UPDATE is skipped but the read itself succeeds.
         // Immediately destructure to validate the empty Vec (line 234 assertion).
-        let states = result.expect("quarantine 스킵 시에도 load_all 은 Ok 여야 한다");
+        let states = result.expect("load_all must be Ok even when quarantine is skipped");
         assert_eq!(states.len(), 0, "fresh start expected");
 
-        // payload_backup 이 set 되지 않아야 한다(quarantine UPDATE 가 스킵됨).
+        // payload_backup must not be set (the quarantine UPDATE was skipped).
         let c = conn.test_lock();
         let backup: Option<String> = c
             .query_row(
@@ -367,7 +370,7 @@ mod tests {
             .unwrap();
         assert!(
             backup.is_none(),
-            "deletion_flag set 시 quarantine UPDATE 는 스킵되어 payload_backup 이 비어 있어야 한다"
+            "when deletion_flag is set the quarantine UPDATE is skipped, so payload_backup must be empty"
         );
     }
 

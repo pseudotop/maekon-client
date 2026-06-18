@@ -106,9 +106,9 @@ impl Scheduler {
                 .map(|cm| cm.get().analysis.text_intelligence.pii_extraction_level)
                 .unwrap_or_default();
             let mut ts_notify_state = (false, None::<Instant>); // A.18: (prev_active, last_notified)
-                                                                // #4795/#4798: 전력 인지 cadence 카운터 (1s 틱마다 1씩 증가).
-                                                                // idle backoff + 배터리 절약 throttle 위상 결정에 사용 — idle/TS 알림 틱은
-                                                                // 영향받지 않고, 비싼 collect_context/AX/분석 블록만 게이팅한다.
+                                                                // #4795/#4798: power-aware cadence counter (increments by 1 each 1s tick).
+                                                                // Used to decide the idle-backoff + battery-saver throttle phase — idle/TS notification
+                                                                // ticks are unaffected; only the expensive collect_context/AX/analysis blocks are gated.
             let mut power_tick_counter: u64 = 0;
 
             loop {
@@ -145,26 +145,26 @@ impl Scheduler {
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
                         focus_block.tick(&mut prev_idle_secs, new_idle_secs, idle_threshold, app_handle.as_ref(), config_manager1.as_ref());
-                        // effective_permissions()은 Valid 상태일 때만 권한을 반환한다 — Expired/UpdateRequired는
-                        // all-false를 반환하므로 스테일 동의 레코드도 fail-closed 처리된다 (Task 3).
+                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
+                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
                         let consent = consent_manager1.as_ref()
                             .map(|cm| cm.effective_permissions())
                             .unwrap_or_default();
                         let paused = capture_paused.load(std::sync::atomic::Ordering::Relaxed);
                         let capture_permitted_for_tick = config_manager1.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(!paused);
+                            .unwrap_or(false);
                         if !capture_permitted_for_tick {
                             debug!("monitor loop: capture gate closed - skipping context, accessibility, capture, and analysis tick");
                             continue;
                         }
 
                         // ── #4795 idle adaptive backoff + #4798 battery-saver throttle ──
-                        // idle(무입력 ≥ MONITOR_IDLE_BACKOFF_SECS) 또는 배터리 절약 시
-                        // 비싼 osascript(collect_context) + AX + 분석 cadence 를 늘린다.
-                        // idle/TS 알림 + focus_block 틱은 위에서 이미 매 틱 실행되었으므로
-                        // 엣지 검출은 지연되지 않는다. 입력 엣지(active 복귀) 시 idle_secs 가
-                        // 임계 미만이 되어 즉시 1s cadence 가 복원된다.
+                        // When idle (no input ≥ MONITOR_IDLE_BACKOFF_SECS) or in battery-saver mode,
+                        // stretch the cadence of the expensive osascript (collect_context) + AX + analysis.
+                        // The idle/TS notification + focus_block ticks already ran every tick above, so
+                        // edge detection is not delayed. On an input edge (return to active), idle_secs
+                        // drops below the threshold and the 1s cadence is restored immediately.
                         let battery_saver = crate::scheduler::schedule::BATTERY_SAVER_ACTIVE
                             .load(std::sync::atomic::Ordering::Relaxed);
                         let tick_decision = super::tracking_schedule_helper::decide_monitor_tick(
@@ -181,24 +181,47 @@ impl Scheduler {
                             );
                             continue;
                         }
-                        // 배터리 절약 시 가장 비싼 선택 블록(AX 추출 / GUI-LLM 피드백)을 생략.
+                        // In battery-saver mode, skip the most expensive optional blocks (AX extraction / GUI-LLM feedback).
                         let skip_expensive = tick_decision.skip_expensive;
 
                         match act_mon.collect_context().await {
                             Ok(ctx) => {
                                 let active_window = ActiveWindowSnapshot::from_context(&ctx);
                                 let app_name = active_window.app_name;
-                                // Own-field gate: 윈도우 제목 수집은 window_title_collection 동의가 있어야 한다.
-                                // 복합 게이트(screen_capture)만 부여돼도 window_title_collection 은 기본 false
-                                // 이므로 제목은 빈 문자열로 redact 된다. CRITICAL: ConsentPermissions 의
-                                // window_title_collection (effective_permissions() 의 Valid-only 값)이지,
-                                // config 토글이 아니다. 빈 문자열로 통일해 모든 다운스트림 소비자
-                                // (ContextEvent / window_tracker / capture_req / focus / analysis)가
-                                // redact 된 값을 보게 한다.
-                                let window_title = redact_window_title(
-                                    active_window.window_title,
-                                    consent.window_title_collection,
-                                );
+                                // Own-field gate: collecting the window title requires window_title_collection consent.
+                                // Even if only the composite gate (screen_capture) is granted, window_title_collection
+                                // defaults to false, so the title is redacted to an empty string. CRITICAL: this is
+                                // ConsentPermissions.window_title_collection (the Valid-only value from
+                                // effective_permissions()), NOT a config toggle. Unifying on an empty string ensures
+                                // every downstream consumer (ContextEvent / window_tracker / capture_req / focus /
+                                // analysis) sees the redacted value.
+                                // review4 monitor re-verify: PII-mask the (consented)
+                                // title before any downstream use. redact_window_title
+                                // is consent-only (raw title when granted, else empty)
+                                // with NO PII masking, and the raw title was persisted
+                                // at rest via save_event(Event::Window) + save_event(
+                                // Event::Context) and embedded into the Context
+                                // event_id PK — while every other at-rest title sink
+                                // (frame metadata, analysis pipeline, egress) masks via
+                                // sanitize_title_with_level. This was the lone unmasked
+                                // sink (sibling of the #6298 file-path fix). Masking at
+                                // the source covers window_tracker + context + the PK
+                                // uniformly and matches analysis_pipeline, which masks
+                                // the title before its own downstream use.
+                                let window_title = {
+                                    let redacted = redact_window_title(
+                                        active_window.window_title,
+                                        consent.window_title_collection,
+                                    );
+                                    let title_pii_level = config_snapshot
+                                        .as_ref()
+                                        .map(|cfg| cfg.privacy.pii_filter_level)
+                                        .unwrap_or_default();
+                                    maekon_vision::privacy::sanitize_title_with_level(
+                                        &redacted,
+                                        title_pii_level,
+                                    )
+                                };
                                 let focus_window_title = window_title.clone();
                                 let window_bounds = active_window.window_bounds;
                                 let app_bundle_id = active_window.app_bundle_id;
@@ -210,8 +233,8 @@ impl Scheduler {
                                 // ── Accessibility API extraction (Phase 2) ──
                                 // Extract focused element info per tick when enabled.
                                 // Result is stored for the GUI pipeline to consume.
-                                // #4798: 배터리 절약 시 AX 추출(가장 비싼 선택 블록)을 생략하고
-                                // 하이라이트를 정리한다 (collect_context 의 실패 분기와 동일 처리).
+                                // #4798: in battery-saver mode, skip AX extraction (the most expensive optional block)
+                                // and clear the highlight (same handling as the collect_context failure branch).
                                 if skip_expensive {
                                     super::detection_helper::clear_focus_highlight(
                                         &mut focus_hl, &overlay_driver_ref,
@@ -273,8 +296,8 @@ impl Scheduler {
                                         warn!(err.code = %e.code(), "window event save failure: {e}");
                                     }
                                     if let Some(ref sink) = uploader1 {
-                                        // #4803: egress 감사 — 소비 전에 유형/크기를 계산하고
-                                        // uploaded/blocked disposition 을 원장에 기록한다.
+                                        // #4803: egress audit — compute the type/size before consumption and
+                                        // record the uploaded/blocked disposition in the ledger.
                                         let etype = super::super::config::egress_event_type(&win_event);
                                         let bytes = super::super::config::egress_byte_count(&win_event);
                                         let consent_state = egress1.consent_state_snapshot();
@@ -282,11 +305,11 @@ impl Scheduler {
                                             sink.enqueue(upload_event);
                                             super::super::config::record_event_egress(
                                                 &sqlite1, etype, bytes, "uploaded", &consent_state,
-                                            );
+                                            ).await;
                                         } else {
                                             super::super::config::record_event_egress(
                                                 &sqlite1, etype, bytes, "blocked", &consent_state,
-                                            );
+                                            ).await;
                                         }
                                     }
                                 }
@@ -358,15 +381,21 @@ impl Scheduler {
 
                                         // D5 iter-3: pii_level for OCR sanitization at storage boundary.
                                         let capture_pii = config_snapshot.as_ref().map(|cfg| cfg.privacy.pii_filter_level).unwrap_or_default();
-                                        // Own-field gate: OCR 텍스트 추출은 ocr_processing 동의가 있어야 한다.
-                                        // 복합 게이트(screen_capture)만 부여돼도 ocr_processing 은 기본 false 이므로
-                                        // 프레임은 캡처되나 OCR 텍스트/영역은 폐기된다 (ConsentPermissions 의 ocr_processing).
+                                        // Own-field gate: extracting OCR text requires ocr_processing consent.
+                                        // Even if only the composite gate (screen_capture) is granted, ocr_processing defaults
+                                        // to false, so the frame is captured but the OCR text/regions are discarded
+                                        // (ConsentPermissions.ocr_processing).
                                         let (ocr_hint, regions, frame_rgba) = handle_frame_capture(&capture_req, &processor, &frame_storage1, &sqlite1, &session1, capture_pii, consent.ocr_processing, &event_tx_mon).await;
                                         focus_ocr_hint = ocr_hint;
                                         if !regions.is_empty() {
                                             last_ocr_regions = regions;
                                             last_frame_rgba = frame_rgba;
                                         } else {
+                                            // Reset OCR regions and the frame they describe in
+                                            // lockstep: an empty-region frame must not leave stale
+                                            // regions paired with a None frame (geometry/staleness
+                                            // mismatch in the GUI pipeline).
+                                            last_ocr_regions.clear();
                                             last_frame_rgba = None;
                                         }
                                     } else if force_post {
@@ -389,7 +418,7 @@ impl Scheduler {
                                     debug!("increment_session_counters failed: {e}");
                                 }
                                 if let Some(ref sink) = uploader1 {
-                                    // #4803: egress 감사 (uploaded/blocked).
+                                    // #4803: egress audit (uploaded/blocked).
                                     let etype = super::super::config::egress_event_type(&ctx_event);
                                     let bytes = super::super::config::egress_byte_count(&ctx_event);
                                     let consent_state = egress1.consent_state_snapshot();
@@ -397,19 +426,19 @@ impl Scheduler {
                                         sink.enqueue(upload_event);
                                         super::super::config::record_event_egress(
                                             &sqlite1, etype, bytes, "uploaded", &consent_state,
-                                        );
+                                        ).await;
                                     } else {
                                         super::super::config::record_event_egress(
                                             &sqlite1, etype, bytes, "blocked", &consent_state,
-                                        );
+                                        ).await;
                                     }
                                 }
                                 let app_changed = prev_app.as_ref() != Some(&app_name);
                                 if app_changed {
                                     if let Some(ref focus) = focus1 {
-                                        // Own-field gate: 앱-사용 집계는 app_usage_analytics 동의가 있어야 한다.
-                                        // 포커스 세션 추적은 복합 게이트로 이미 보호되고, 여기서는 사용 집계
-                                        // 경로만 own-field 로 게이트한다 (ConsentPermissions 의 app_usage_analytics).
+                                        // Own-field gate: app-usage aggregation requires app_usage_analytics consent.
+                                        // Focus-session tracking is already protected by the composite gate; here only
+                                        // the usage-aggregation path is own-field gated (ConsentPermissions.app_usage_analytics).
                                         let rule_suggestions = focus
                                             .on_app_switch_with_context(
                                                 &app_name,
@@ -464,17 +493,30 @@ impl Scheduler {
                                     // no-op (no server ⇒ has_recent_server_suggestions == false).
                                     #[cfg(feature = "local-suggestions")]
                                     let event_queue_for_push = {
-                                        let server_recent = config_snapshot
-                                            .as_ref()
-                                            .map(|cfg| {
-                                                let lookback = cfg
-                                                    .analysis
-                                                    .server_coexistence_lookback_secs;
-                                                sqlite1
-                                                    .has_recent_server_suggestions(lookback)
-                                                    .unwrap_or(false)
-                                            })
-                                            .unwrap_or(false);
+                                        // #6083: offload the SYNCHRONOUS SqliteStorage
+                                        // read off the monitor loop's tokio worker — it
+                                        // takes the shared connection mutex and can park
+                                        // under a concurrent VACUUM/optimize pass.
+                                        let server_recent = match config_snapshot.as_ref().map(
+                                            |cfg| cfg.analysis.server_coexistence_lookback_secs,
+                                        ) {
+                                            Some(lookback) => {
+                                                let sqlite_coexist = sqlite1.clone();
+                                                tokio::task::spawn_blocking(move || {
+                                                    sqlite_coexist
+                                                        .has_recent_server_suggestions(lookback)
+                                                })
+                                                .await
+                                                .unwrap_or_else(|join_err| {
+                                                    tracing::warn!(
+                                                        "event coexistence check task panicked: {join_err}"
+                                                    );
+                                                    Ok(false) // fail-open
+                                                })
+                                                .unwrap_or(false)
+                                            }
+                                            None => false,
+                                        };
                                         if server_recent {
                                             None
                                         } else {
@@ -519,6 +561,12 @@ impl Scheduler {
                                 // Feed GUI summary from the previous cycle (N-1) into
                                 // the current analysis tick (N).
                                 if let Some(ref mut ts) = adaptive_trigger_state {
+                                    // Live PII level so the source-masked content label
+                                    // (review4 F6) tracks runtime privacy-level changes.
+                                    let content_pii_level = config_snapshot
+                                        .as_ref()
+                                        .map(|cfg| cfg.privacy.pii_filter_level)
+                                        .unwrap_or_default();
                                     super::super::analysis_pipeline::run_analysis_tick(
                                         ts,
                                         &app_name,
@@ -529,6 +577,7 @@ impl Scheduler {
                                         last_gui_summary.as_ref(),
                                         last_focused_element.as_ref(),
                                         &storage1,
+                                        content_pii_level,
                                     ).await;
                                 }
                                 // Update ContextAnalyzer with current segment stats
@@ -537,10 +586,16 @@ impl Scheduler {
                                     let stats = build_segment_stats_snapshot(ts);
                                     analyzer.set_segment_stats(stats).await;
                                 }
-                                // Update accessibility text for LLM context enrichment
+                                // Update accessibility text for LLM context enrichment.
+                                // Scrub argument-borne secrets (API keys, bearer tokens,
+                                // passwords, connection-string userinfo) before this raw
+                                // extracted text reaches the LLM payload: the PII floor
+                                // masks email/phone but NOT secrets at the Basic level
+                                // where accessibility text is exposed. (review4 F4 sibling)
                                 if let Some(ref analyzer) = context_analyzer1 {
                                     let a11y_text = last_focused_element.as_ref()
-                                        .and_then(|fe| fe.extracted_text.clone());
+                                        .and_then(|fe| fe.extracted_text.clone())
+                                        .map(|t| maekon_analysis::terminal_detector::scrub_text_secrets(&t));
                                     analyzer.set_accessibility_text(a11y_text).await;
                                 }
 
@@ -551,11 +606,20 @@ impl Scheduler {
                                 // regime is classified — consumers pass suggestions through.
                                 let current_regime_owned = adaptive_trigger_state.as_ref().and_then(|ts| {
                                     ts.current_regime_id.as_deref().and_then(|id| {
-                                        ts.regime_manager
-                                            .lock()
-                                            .all_regimes()
+                                        let mgr = ts.regime_manager.lock();
+                                        let regimes = mgr.all_regimes();
+                                        // Prefer the Active entry for this id (review4 F3
+                                        // defense-in-depth): under a duplicate-id condition a
+                                        // stale Inactive entry must not publish the wrong
+                                        // regime label/centroid into SharedRegimeState.
+                                        regimes
                                             .iter()
-                                            .find(|r| r.regime_id == id)
+                                            .find(|r| {
+                                                r.regime_id == id
+                                                    && r.status
+                                                        == maekon_core::models::tiered_memory::RegimeStatus::Active
+                                            })
+                                            .or_else(|| regimes.iter().find(|r| r.regime_id == id))
                                             .cloned()
                                     })
                                 });
@@ -588,9 +652,9 @@ impl Scheduler {
 
                                         // Persist GUI interaction to SQLite (V13 table)
                                         if input_snap.mouse.click_count > 0 {
-                                            // F-PF-19: save_gui_interaction 은 sync SQLite 쓰기이므로
-                                            // tokio worker thread 를 블로킹하지 않도록 spawn_blocking 으로 분리.
-                                            // NewGuiInteraction 의 라이프타임 필드를 owned String 으로 캡처.
+                                            // F-PF-19: save_gui_interaction is a sync SQLite write, so offload it via
+                                            // spawn_blocking to avoid blocking the tokio worker thread.
+                                            // Capture NewGuiInteraction's lifetime fields as owned Strings.
                                             let event_id = uuid::Uuid::new_v4().to_string();
                                             let timestamp_str = chrono::Utc::now().to_rfc3339();
                                             let app_name_owned = app_name.clone();
@@ -615,7 +679,7 @@ impl Scheduler {
                                         }
 
                                         // LLM feedback: process uncertain GUI elements periodically
-                                        // #4798: 배터리 절약 시 GUI-LLM 피드백(원격 LLM 호출)을 생략.
+                                        // #4798: in battery-saver mode, skip GUI-LLM feedback (a remote LLM call).
                                         gui_state.feedback_tick_counter += 1;
                                         if !skip_expensive && gui_state.feedback_tick_counter >= 30 && !gui_state.uncertain_queue.is_empty() {
                                             gui_state.feedback_tick_counter = 0;

@@ -325,6 +325,57 @@ async fn integration_inbox_store_redacts_completed_prompt_bodies_by_default() {
     );
 }
 
+/// #6241: re-upserting a prompt that is already in a completed (redacted) state
+/// must not resurrect the prompt body in plaintext at rest. The upsert update
+/// branch overwrites the stored body with the inbound one, so it must re-apply
+/// the at-rest redaction against the preserved lifecycle status.
+#[tokio::test]
+async fn integration_inbox_store_upsert_does_not_resurrect_redacted_completed_body() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let inbox = store.inbox_store();
+
+    // Store a prompt, then complete it so its body is redacted at rest.
+    inbox
+        .upsert_prompts(vec![sample_prompt("prompt-resurrect", "body-secret")])
+        .await
+        .unwrap();
+    inbox
+        .update_status(
+            "prompt-resurrect",
+            IntegrationInboxItemStatus::Dismissed,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A subsequent upsert carrying the plaintext body again (e.g. a server
+    // re-delivery) must not resurrect the body — the completed lifecycle status
+    // is preserved and redaction re-applied.
+    inbox
+        .upsert_prompts(vec![sample_prompt("prompt-resurrect", "body-secret")])
+        .await
+        .unwrap();
+
+    let registry =
+        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
+            .unwrap();
+    let stored = registry
+        .inbox
+        .get("prompt-resurrect")
+        .expect("prompt must still be present");
+    assert_eq!(
+        stored.status,
+        IntegrationInboxItemStatus::Dismissed,
+        "lifecycle status must be preserved across upsert"
+    );
+    assert_eq!(
+        stored.prompt.body.as_str(),
+        "",
+        "completed-prompt body must stay redacted at rest after re-upsert"
+    );
+}
+
 #[tokio::test]
 async fn integration_inbox_store_prunes_oldest_completed_prompts_when_retention_limit_exceeded() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -333,6 +384,7 @@ async fn integration_inbox_store_prunes_oldest_completed_prompts_when_retention_
         IntegrationStateStorePolicy {
             max_stored_prompts: 2,
             redact_completed_prompt_bodies: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -361,6 +413,51 @@ async fn integration_inbox_store_prunes_oldest_completed_prompts_when_retention_
     assert!(!registry.inbox.contains_key("prompt-1"));
     assert!(registry.inbox.contains_key("prompt-2"));
     assert!(registry.inbox.contains_key("prompt-3"));
+}
+
+#[tokio::test]
+async fn integration_outbox_store_prunes_oldest_messages_at_the_cap() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = FileIntegrationStateStore::with_policy(
+        temp_dir.path().join("integration.json"),
+        IntegrationStateStorePolicy {
+            max_outbox_messages: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let outbox = store.outbox_store();
+
+    // Enqueue more than the cap directly at the store layer (this path bypasses
+    // the egress coordinator caps, so the store-level cap is the only bound).
+    let mut queue_ids = Vec::new();
+    for index in 0..5 {
+        let queue_id = outbox
+            .enqueue_message(
+                sample_envelope(),
+                IntegrationOutboundPayload::Insight(sample_packet(&format!("packet-{index}"))),
+            )
+            .await
+            .unwrap();
+        queue_ids.push(queue_id);
+    }
+
+    // Only the most recent `max_outbox_messages` survive; the two oldest are
+    // dropped (FIFO drop-oldest), keeping the persisted outbox bounded.
+    let pending = outbox.list_pending(100).await.unwrap();
+    assert_eq!(pending.len(), 3);
+    let surviving_ids: Vec<_> = pending.iter().map(|item| item.queue_id.clone()).collect();
+    assert!(!surviving_ids.contains(&queue_ids[0]));
+    assert!(!surviving_ids.contains(&queue_ids[1]));
+    assert!(surviving_ids.contains(&queue_ids[2]));
+    assert!(surviving_ids.contains(&queue_ids[3]));
+    assert!(surviving_ids.contains(&queue_ids[4]));
+
+    // The cap is enforced at rest as well (after reload from disk).
+    let registry =
+        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
+            .unwrap();
+    assert_eq!(registry.outbox.len(), 3);
 }
 
 #[tokio::test]
@@ -446,5 +543,41 @@ async fn integration_checkpoint_store_roundtrips_namespaced_cursors() {
             .unwrap()
             .as_deref(),
         Some("cursor-7")
+    );
+}
+
+/// #6102-6: the persisted registry must be owner-only (mode 0o600) at rest — it
+/// can carry integration session/insight metadata, so it must not be
+/// world-readable like a default-umask file.
+#[cfg(unix)]
+#[tokio::test]
+async fn integration_registry_file_is_owner_only_0o600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("integration.json");
+    let store = FileIntegrationStateStore::new(path.clone()).unwrap();
+    // Trigger a persist.
+    store
+        .session_store()
+        .store(IntegrationSessionState {
+            session_id: "session-1".to_string(),
+            device_id: "device-1".to_string(),
+            status: IntegrationSessionStatus::Connected,
+            transport_kind: Default::default(),
+            auth_scheme: Default::default(),
+            connected_at: Some(Utc::now()),
+            last_heartbeat_at: Some(Utc::now()),
+            requested_scopes: vec![IntegrationCapabilityScope::InsightWrite],
+            granted_scopes: vec![IntegrationCapabilityScope::InsightWrite],
+            ack_cursors: vec![],
+        })
+        .await
+        .unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "integration registry must be persisted owner-only (0o600), got {mode:o}"
     );
 }

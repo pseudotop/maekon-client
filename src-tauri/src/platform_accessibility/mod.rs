@@ -1,4 +1,5 @@
 pub(crate) mod benchmark;
+mod command_timeout;
 pub(super) mod types;
 
 #[cfg(target_os = "macos")]
@@ -45,9 +46,9 @@ impl ElementFinder for PlatformAccessibilityElementFinder {
         role: Option<&str>,
         region: Option<&ElementBounds>,
     ) -> Result<Vec<UiElement>, CoreError> {
-        // F-RR-C22-04: query_accessibility_nodes 는 std::process::Command (osascript /
-        // powershell / xdotool) 를 호출하는 동기 블로킹 함수다. tokio worker 스레드를
-        // 블로킹하지 않도록 spawn_blocking 으로 격리한다.
+        // F-RR-C22-04: query_accessibility_nodes is a synchronous blocking function
+        // that invokes std::process::Command (osascript / powershell / xdotool).
+        // Isolate it with spawn_blocking so it does not block a tokio worker thread.
         let nodes = tokio::task::spawn_blocking(query_accessibility_nodes)
             .await
             .map_err(|join_err| CoreError::Internal {
@@ -55,7 +56,8 @@ impl ElementFinder for PlatformAccessibilityElementFinder {
                 message: format!("spawn_blocking join error (find_element): {join_err}"),
             })??;
 
-        // 필터 클로저에 필요한 값은 'static 이 아니므로 spawn_blocking 밖에서 처리한다.
+        // The values the filter closure needs are not 'static, so handle them
+        // outside spawn_blocking.
         let text_owned = text.map(ToString::to_string);
         let role_owned = role.map(ToString::to_string);
         let region_owned = region.cloned();
@@ -111,7 +113,8 @@ impl ElementFinder for PlatformAccessibilityElementFinder {
         app_name: Option<&str>,
         screen_id: Option<&str>,
     ) -> Result<UiScene, CoreError> {
-        // F-RR-C22-04: spawn_blocking 으로 동기 Command 격리 (find_element 와 동일 패턴).
+        // F-RR-C22-04: isolate the synchronous Command via spawn_blocking (same
+        // pattern as find_element).
         let nodes = tokio::task::spawn_blocking(query_accessibility_nodes)
             .await
             .map_err(|join_err| CoreError::Internal {

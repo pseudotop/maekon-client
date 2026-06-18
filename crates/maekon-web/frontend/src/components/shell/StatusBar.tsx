@@ -99,14 +99,14 @@ export default function StatusBar() {
           {lastCaptureTimestamp ? (
             <time
               role="timer"
-              aria-label="LastCaptureTimestamp"
+              aria-label={t('statusBar.lastCaptureTimestamp')}
               dateTime={lastCaptureTimestamp}
               className={cn('max-w-[180px] truncate tabular-nums', typography.family.mono)}
             >
               {lastCaptureTimestamp}
             </time>
           ) : (
-            <span role="timer" aria-label="LastCaptureTimestamp" className={cn('tabular-nums', typography.family.mono)}>
+            <span role="timer" aria-label={t('statusBar.lastCaptureTimestamp')} className={cn('tabular-nums', typography.family.mono)}>
               --
             </span>
           )}

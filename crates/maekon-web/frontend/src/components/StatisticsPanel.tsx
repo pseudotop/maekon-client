@@ -1,6 +1,7 @@
 /**
  * StatisticsPanel — KPI cards, regime distribution bar, and longest focus highlight.
  */
+import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { chart, chartPalette, colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
@@ -61,6 +62,7 @@ function ContextSwitchDelta({ delta }: { delta: number }) {
 // Deterministic palette for regime bars — reuse shared chartPalette from tokens
 
 export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
+  const { t } = useTranslation()
   const regimeData = Object.entries(statistics.regime_distribution).map(([label, percentage], idx) => ({
     label,
     percentage,
@@ -72,24 +74,24 @@ export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Card padding="md">
-          <p className={cn(typography.body, colors.text.secondary)}>Deep Work</p>
+          <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.deepWork')}</p>
           <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.deep_work_hours.toFixed(1)}h</p>
           {statistics.comparison && <DeltaArrow delta={statistics.comparison.deep_work_delta} />}
         </Card>
 
         <Card padding="md">
-          <p className={cn(typography.body, colors.text.secondary)}>Communication</p>
+          <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.communication')}</p>
           <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.communication_hours.toFixed(1)}h</p>
           {statistics.comparison && <DeltaArrow delta={statistics.comparison.communication_delta} invertPositive />}
         </Card>
 
         <Card padding="md">
-          <p className={cn(typography.body, colors.text.secondary)}>Meetings</p>
+          <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.meetings')}</p>
           <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.meeting_hours.toFixed(1)}h</p>
         </Card>
 
         <Card padding="md">
-          <p className={cn(typography.body, colors.text.secondary)}>Context Switches</p>
+          <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.contextSwitches')}</p>
           <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.context_switches}</p>
           {statistics.comparison && <ContextSwitchDelta delta={statistics.comparison.context_switch_delta} />}
         </Card>
@@ -98,7 +100,7 @@ export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
       {/* Regime distribution bar */}
       {regimeData.length > 0 && (
         <Card padding="md">
-          <CardTitle className="mb-4">Regime Distribution</CardTitle>
+          <CardTitle className="mb-4">{t('statisticsPanel.regimeDistribution')}</CardTitle>
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={regimeData} layout="vertical" barCategoryGap="20%">

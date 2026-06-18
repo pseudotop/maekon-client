@@ -983,7 +983,15 @@
     "low": "低",
     "high": "高",
     "loadError": "データの読み込みに失敗しました",
-    "days": ["月", "火", "水", "木", "金", "土", "日"],
+    "days": [
+      "月",
+      "火",
+      "水",
+      "木",
+      "金",
+      "土",
+      "日"
+    ],
     "activity": "アクティビティ"
   },
   "dateRange": {
@@ -1892,7 +1900,8 @@
     "disabledBannerDesc": "コーチングを有効にすると、プロアクティブなナッジと習慣トラッキングが使用できます。",
     "disabledBannerButton": "コーチングを有効にする",
     "enableMasterToggle": "コーチングを有効にする",
-    "enableMasterToggleDesc": "マスタースイッチ — すべてのコーチングナッジと通知をオン/オフします。"
+    "enableMasterToggleDesc": "マスタースイッチ — すべてのコーチングナッジと通知をオン/オフします。",
+    "regimeLabelPlaceholder": "例: ディープコーディング"
   },
   "onboarding": {
     "step1Title": "Maekonへようこそ",
@@ -1968,7 +1977,8 @@
       "activeNote": "変更はすぐに反映されます — 再起動は不要です。",
       "monitoringMissingWarning": "モニタリングの同意がまだ付与されていません。コーチングを機能させるには、前のステップで同意を許可してください。",
       "error": "コーチングを有効にできませんでした: {{error}}"
-    }
+    },
+    "stepIndicatorLabel": "ステップインジケーター"
   },
   "chat": {
     "title": "AIセッション",
@@ -2023,7 +2033,8 @@
     "request_suggestions": "AI提案を取得",
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
-    "mic_privacy_stopped": "マイクが停止しました — プライバシーゲートが有効です"
+    "mic_privacy_stopped": "マイクが停止しました — プライバシーゲートが有効です",
+    "searchMessagesPlaceholder": "メッセージを検索..."
   },
   "policies": {
     "title": "実行ポリシー",
@@ -2117,7 +2128,9 @@
     "snoozeCancel": "キャンセル",
     "panelLabel": "提案パネル",
     "closePanelLabel": "提案パネルを閉じる",
-    "badgeNew": "新着"
+    "badgeNew": "新着",
+    "historyLoadError": "履歴を読み込めませんでした。",
+    "badgeLabel": "新しい提案 {{count}}件"
   },
   "suggestionStats": {
     "acceptanceRate": "承認率",
@@ -2132,7 +2145,8 @@
     "dailyTrends": "日次トレンド (7日)",
     "acted": "実行済み",
     "total": "合計",
-    "noData": "データがまだありません"
+    "noData": "データがまだありません",
+    "loadError": "統計を読み込めませんでした。"
   },
   "trackingPanel": {
     "statusUnavailable": "ステータスを取得できません",
@@ -2338,5 +2352,172 @@
     "interrupt": "中断",
     "steerPlaceholder": "ターンを誘導…",
     "steerSend": "送信"
+  },
+  "appShell": {
+    "mainContent": "メインコンテンツ"
+  },
+  "spinner": {
+    "loading": "読み込み中"
+  },
+  "insightCard": {
+    "noInsightAvailable": "本日のインサイトはありません"
+  },
+  "statisticsPanel": {
+    "deepWork": "ディープワーク",
+    "communication": "コミュニケーション",
+    "meetings": "会議",
+    "contextSwitches": "コンテキストスイッチ",
+    "regimeDistribution": "活動タイプの分布"
+  },
+  "statusBar": {
+    "lastCaptureTimestamp": "最終キャプチャ時刻"
+  },
+  "processList": {
+    "pid": "PID:",
+    "memory": "メモリ"
+  },
+  "coachingPopup": {
+    "thumbsUpTitle": "高評価",
+    "thumbsDownTitle": "低評価"
+  },
+  "detectionOverlay": {
+    "fieldLabel": "ラベル",
+    "fieldRole": "ロール",
+    "fieldBounds": "境界",
+    "fieldSource": "ソース",
+    "fieldId": "ID",
+    "emptyValue": "(空)",
+    "unknownRole": "不明"
+  },
+  "messageBubble": {
+    "input": "入力",
+    "result": "結果"
+  },
+  "advancedTab": {
+    "maxConcurrentSessions": "最大同時セッション数",
+    "idleTimeoutSeconds": "アイドルタイムアウト（秒）",
+    "sessionTimeoutSeconds": "セッションタイムアウト（秒）",
+    "maxRetries": "最大リトライ回数",
+    "maxHistoryTurns": "最大履歴ターン数",
+    "healthCheckIntervalSeconds": "ヘルスチェック間隔（秒）",
+    "enableSuggestions": "提案を有効にする",
+    "enableSuggestionsDescription": "アクティビティに基づいてAIによる提案を受け取ります",
+    "showBorder": "枠線を表示",
+    "showBorderDescription": "モニタリング中に画面の周囲に色付きの枠線を表示します",
+    "showPanel": "パネルを表示",
+    "showPanelDescription": "トラッキング状態パネルを表示します",
+    "borderOpacity": "枠線の不透明度（0.0 - 1.0）",
+    "enableAnalysis": "分析を有効にする",
+    "enableAnalysisDescription": "アクティビティセグメントに対してLLM分析を実行します",
+    "analysisIntervalSeconds": "分析間隔（秒）",
+    "minConfidence": "最小信頼度（0.0 - 1.0）",
+    "maxSuggestions": "最大提案数",
+    "regimeDetectionIntervalHours": "レジーム検出間隔（時間）",
+    "embedding": "埋め込み",
+    "embeddingDescription": "セマンティック検索のためのベクトル埋め込みを有効にします",
+    "guiIntelligence": "GUIインテリジェンス",
+    "guiIntelligenceDescription": "GUI操作パターンを検出して集約します",
+    "textIntelligence": "テキストインテリジェンス",
+    "textIntelligenceDescription": "アクティビティからテキストパターンを抽出して分類します",
+    "autoTuner": "オートチューナー",
+    "autoTunerDescription": "EMAベースのドリフト検出と行動レジームの自動再クラスタリング",
+    "serverBaseUrl": "サーバーのベースURL",
+    "requestTimeoutMs": "リクエストタイムアウト（ms）",
+    "grpcEnabled": "gRPCを有効にする",
+    "grpcEnabledDescription": "サーバー通信にgRPCを使用します（サーバー側のサポートが必要）",
+    "grpcEndpoint": "gRPCエンドポイント",
+    "tlsEnabled": "TLSを有効にする",
+    "tlsEnabledDescription": "TLSで送信接続を暗号化します",
+    "enableCoaching": "コーチングを有効にする",
+    "enableCoachingDescription": "プロアクティブな生産性コーチングと目標トラッキング",
+    "locale": "ロケール",
+    "enableIntegration": "連携を有効にする",
+    "enableIntegrationDescription": "外部の連携ハブに接続します",
+    "integrationRequestTimeoutSeconds": "リクエストタイムアウト（秒）",
+    "integrationSyncIntervalSeconds": "同期間隔（秒）",
+    "enableSync": "同期を有効にする",
+    "enableSyncDescription": "デバイス間でデータを同期します",
+    "deviceName": "デバイス名",
+    "syncIntervalSeconds": "同期間隔（秒）",
+    "lanDiscovery": "LAN検出",
+    "lanDiscoveryDescription": "ピア同期のためにこのデバイスをローカルネットワーク上で公開します",
+    "payloadCompression": "ペイロード圧縮",
+    "payloadCompressionDescription": "帯域幅を削減するため、暗号化前に変更セットのペイロードを圧縮します"
+  },
+  "segmentsSection": {
+    "heading": "セグメント",
+    "columnTime": "時刻",
+    "columnDuration": "継続時間",
+    "columnRegime": "レジーム",
+    "columnApp": "アプリ",
+    "columnActions": "操作"
+  },
+  "overridesSection": {
+    "columnSegment": "セグメント",
+    "columnOriginal": "元の値",
+    "columnAction": "アクション",
+    "columnCreated": "作成日時"
+  },
+  "presets": {
+    "save-file": {
+      "name": "ファイルを保存",
+      "description": "現在のファイルを保存します"
+    },
+    "undo": {
+      "name": "元に戻す",
+      "description": "直前の操作を元に戻します"
+    },
+    "select-all-copy": {
+      "name": "すべて選択してコピー",
+      "description": "すべての内容を選択してクリップボードにコピーします"
+    },
+    "find-replace": {
+      "name": "検索と置換",
+      "description": "検索と置換ダイアログを開きます"
+    },
+    "switch-next-app": {
+      "name": "次のアプリに切り替え",
+      "description": "次のアプリケーションにフォーカスを切り替えます"
+    },
+    "close-window": {
+      "name": "ウィンドウを閉じる",
+      "description": "現在アクティブなウィンドウを閉じます"
+    },
+    "minimize-all": {
+      "name": "すべてのウィンドウを最小化",
+      "description": "開いているすべてのウィンドウを最小化します"
+    },
+    "morning-routine": {
+      "name": "1日の開始",
+      "description": "Mail、カレンダー、VS Code を起動して業務を開始します"
+    },
+    "meeting-prep": {
+      "name": "会議の準備",
+      "description": "Zoom と Notes を開いて会議の準備をします"
+    },
+    "end-of-day": {
+      "name": "1日の終了",
+      "description": "現在のファイルを保存してアプリケーションを終了します"
+    },
+    "daily-priority-sync": {
+      "name": "日次優先事項の確認",
+      "description": "カレンダー、Jira、Slack を順番に開いてその日の優先事項を整理します"
+    },
+    "bug-triage-loop": {
+      "name": "バグトリアージ",
+      "description": "イシュートラッカー、モニタリングツール、IDE を巡回してバグを整理します"
+    },
+    "customer-followup": {
+      "name": "顧客フォローアップ",
+      "description": "CRM、Notion、Mail を開いて顧客フィードバックを確認し、フォローアップの準備をします"
+    },
+    "release-readiness": {
+      "name": "リリース準備",
+      "description": "コードを保存してからターミナルとブラウザを開き、リリース確認を開始します"
+    },
+    "deep-work-start": {
+      "name": "集中作業の開始",
+      "description": "VS Code を開き、気を散らすものを排除して集中作業セッションを開始します"
+    }
   }
 }

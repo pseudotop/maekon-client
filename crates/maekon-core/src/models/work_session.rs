@@ -118,8 +118,9 @@ impl AppCategory {
 
     /// Parse a category name string (case-insensitive) into an `AppCategory`.
     ///
-    /// This is the inverse of the serde `rename_all = "snake_case"` names
-    /// and the `label_ko()` labels. Falls back to `Other` for unknown values.
+    /// This is the inverse of the serde `rename_all = "snake_case"` names.
+    /// Falls back to `Other` for unknown values. Display labels are the frontend's
+    /// concern (it receives the serde variant and translates it via i18n).
     pub fn from_category_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "communication" => Self::Communication,
@@ -155,19 +156,6 @@ impl AppCategory {
     /// Convenience: classify an app name as a browser.
     pub fn is_browser(app_name: &str) -> bool {
         matches!(Self::from_app_name(app_name), AppCategory::Browser)
-    }
-
-    pub fn label_ko(&self) -> &'static str {
-        match self {
-            Self::Communication => "소통",
-            Self::Development => "개발",
-            Self::Documentation => "문서",
-            Self::Browser => "브라우저",
-            Self::Design => "디자인",
-            Self::Media => "미디어",
-            Self::System => "시스템",
-            Self::Other => "기타",
-        }
     }
 }
 

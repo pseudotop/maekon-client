@@ -171,40 +171,65 @@ impl Updater {
     where
         F: FnOnce(&maekon_api_contracts::update::RollbackInfo),
     {
-        Self::execute_rollback_swap_only(
-            backup_path,
-            current_exe_path,
-            from_version,
-            to_version,
-            reason,
-            rollback_event,
-        )?;
-
-        #[cfg(unix)]
-        {
-            std::process::Command::new(current_exe_path)
-                .spawn()
-                .map_err(|e| {
-                    UpdateError::Install(format!("rollback spawn of restored binary failed: {e}"))
-                })?;
-            std::process::exit(ROLLBACK_EXIT_CODE);
-        }
-
+        // #5988: Windows in-place rollback (swapping the RUNNING .exe) is NOT yet
+        // implemented. `execute_rollback_swap_only`'s `std::fs::copy(backup, running_exe)`
+        // would fail with an opaque ERROR_SHARING_VIOLATION on the live executable, so the
+        // health-probe crash-loop recovery hit an obscure copy error rather than a clear
+        // signal. Fail LOUD and EARLY here — before the doomed swap — with an actionable
+        // error and an error-level log. The verified backup is left in place so the user
+        // (or a future Windows-verified Task 12 self_replace implementation) can recover.
         #[cfg(windows)]
         {
-            let _ = current_exe_path;
-            tracing::warn!("rollback swap not implemented on Windows (Task 12 pending)");
-            return Err(UpdateError::Install(
-                "Windows rollback helper pending (§4.8 spike — Task 12)".to_string(),
-            ));
+            let _ = (
+                current_exe_path,
+                from_version,
+                to_version,
+                reason,
+                rollback_event,
+            );
+            tracing::error!(
+                backup_path = %backup_path.display(),
+                "Windows update rollback is NOT implemented (Task 12 / #5988): the agent \
+                 cannot self-restore the previous version after repeated startup failures. \
+                 The verified backup is preserved at the path above — recover by reinstalling \
+                 the previous version or restoring that backup manually."
+            );
+            return Err(UpdateError::Install(format!(
+                "Windows rollback not implemented (#5988 / Task 12); verified backup preserved at {}",
+                backup_path.display()
+            )));
         }
 
-        #[cfg(not(any(unix, windows)))]
+        #[cfg(not(windows))]
         {
-            let _ = current_exe_path;
-            return Err(UpdateError::Install(
-                "rollback not implemented for this platform".to_string(),
-            ));
+            Self::execute_rollback_swap_only(
+                backup_path,
+                current_exe_path,
+                from_version,
+                to_version,
+                reason,
+                rollback_event,
+            )?;
+
+            #[cfg(unix)]
+            {
+                std::process::Command::new(current_exe_path)
+                    .spawn()
+                    .map_err(|e| {
+                        UpdateError::Install(format!(
+                            "rollback spawn of restored binary failed: {e}"
+                        ))
+                    })?;
+                std::process::exit(ROLLBACK_EXIT_CODE);
+            }
+
+            #[cfg(not(any(unix, windows)))]
+            {
+                let _ = current_exe_path;
+                return Err(UpdateError::Install(
+                    "rollback not implemented for this platform".to_string(),
+                ));
+            }
         }
     }
 
@@ -282,10 +307,12 @@ impl Updater {
         Ok(())
     }
 
-    /// # Safety
-    pub fn install_and_restart(&self, downloaded_path: &Path) -> Result<(), UpdateError> {
-        self.install_and_restart_versioned(downloaded_path, None)
-    }
+    // #6258: the version-dropping `install_and_restart(path)` convenience was
+    // removed. It always passed `None`, so any caller that reached for it would
+    // silently disarm the D11 `.install_pending_{ver}` crash-loop marker — the
+    // exact bug this fixes. Callers must use `install_and_restart_versioned`
+    // (the `UpdateExecutor::install_and_restart` trait method threads the
+    // pending version through), making the version a required, visible argument.
 
     /// Install-and-restart, writing the D11 health-probe pending marker when
     /// `new_version` is `Some`.

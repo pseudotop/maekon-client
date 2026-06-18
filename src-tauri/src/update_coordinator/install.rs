@@ -25,14 +25,17 @@ pub(super) async fn run_install<E: UpdateExecutor>(
         }
     };
 
-    let version_label = {
+    // #6258: capture the pending version both for status messages and to thread
+    // into install so the D11 `.install_pending_{ver}` crash-loop marker is
+    // written. When `pending` is genuinely absent, the marker is skipped (None)
+    // rather than written as `.install_pending_unknown`.
+    let pending_version: Option<String> = {
         let guard = state.read().await;
-        guard
-            .pending
-            .as_ref()
-            .map(|p| p.latest_version.clone())
-            .unwrap_or_else(|| "unknown".to_string())
+        guard.pending.as_ref().map(|p| p.latest_version.clone())
     };
+    let version_label = pending_version
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Transition to Installing
     {
@@ -50,9 +53,11 @@ pub(super) async fn run_install<E: UpdateExecutor>(
     // current-thread runtime used by focused tests cannot call block_in_place, so
     // it falls back to a direct call instead of panicking.
     let install_result = if Handle::current().runtime_flavor() == RuntimeFlavor::MultiThread {
-        tokio::task::block_in_place(|| updater.install_and_restart(&path))
+        tokio::task::block_in_place(|| {
+            updater.install_and_restart(&path, pending_version.as_deref())
+        })
     } else {
-        updater.install_and_restart(&path)
+        updater.install_and_restart(&path, pending_version.as_deref())
     };
 
     match install_result {

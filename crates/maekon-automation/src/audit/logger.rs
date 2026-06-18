@@ -362,6 +362,33 @@ impl AuditLogger {
 
         self.buffer.push_back(entry);
     }
+
+    /// #6277: record a completion with the caller's REAL status + action_type
+    /// (not the hardcoded `Completed`/`"complete"` of `log_complete_with_time`),
+    /// so the durable audit row reflects the true outcome.
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_with_status_and_time(
+        &mut self,
+        level: AuditLevel,
+        command_id: &str,
+        session_id: &str,
+        action_type: &str,
+        status: AuditStatus,
+        details: &str,
+        execution_time_ms: u64,
+    ) {
+        if matches!(level, AuditLevel::None) {
+            return;
+        }
+        self.push_entry_with_time(
+            command_id,
+            session_id,
+            action_type,
+            status,
+            Some(details.to_string()),
+            Some(execution_time_ms),
+        );
+    }
 }
 
 impl Default for AuditLogger {

@@ -1,4 +1,4 @@
-//! Migrations V1–V8: foundation tables.
+//! Migrations V1-V8: foundation tables.
 //!
 //! V1: events + frames
 //! V2: frames.file_path
@@ -13,11 +13,11 @@ use rusqlite::Connection;
 use tracing::{debug, info};
 
 pub(super) fn migrate_v1(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V1 execution: events + frames table");
+    debug!("running migration V1: events + frames tables");
 
     conn.execute_batch(
         "
-        -- event save table
+        -- event store table
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT NOT NULL UNIQUE,
@@ -50,7 +50,7 @@ pub(super) fn migrate_v1(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_frames_timestamp ON frames(timestamp);
         CREATE INDEX IF NOT EXISTS idx_frames_app_name ON frames(app_name);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (1);
         ",
     )?;
@@ -60,17 +60,17 @@ pub(super) fn migrate_v1(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V2 execution: frames.file_path column add");
+    debug!("running migration V2: add frames.file_path column");
 
     conn.execute_batch(
         "
-        -- frames table에 file path column add
+        -- add file path column to the frames table
         ALTER TABLE frames ADD COLUMN file_path TEXT;
 
         -- file path index
         CREATE INDEX IF NOT EXISTS idx_frames_file_path ON frames(file_path);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (2);
         ",
     )?;
@@ -80,11 +80,11 @@ pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v3(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V3 execution: system_metrics table");
+    debug!("running migration V3: system_metrics table");
 
     conn.execute_batch(
         "
-        -- 시스템 메트릭 (5초 간격)
+        -- system metrics (5-second interval)
         CREATE TABLE IF NOT EXISTS system_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -100,7 +100,7 @@ pub(super) fn migrate_v3(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON system_metrics(timestamp);
 
-        -- 시간별 집계 (30일 보존)
+        -- hourly aggregates (30-day retention)
         CREATE TABLE IF NOT EXISTS system_metrics_hourly (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             hour TEXT NOT NULL UNIQUE,
@@ -114,7 +114,7 @@ pub(super) fn migrate_v3(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_metrics_hourly_hour ON system_metrics_hourly(hour);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (3);
         ",
     )?;
@@ -124,11 +124,11 @@ pub(super) fn migrate_v3(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V4 execution: process/idle/session table");
+    debug!("running migration V4: process/idle/session tables");
 
     conn.execute_batch(
         "
-        -- 프로세스 스냅샷 (10초 간격)
+        -- process snapshots (10-second interval)
         CREATE TABLE IF NOT EXISTS process_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -138,7 +138,7 @@ pub(super) fn migrate_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_process_timestamp ON process_snapshots(timestamp);
 
-        -- idle period
+        -- idle periods
         CREATE TABLE IF NOT EXISTS idle_periods (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             start_time TEXT NOT NULL,
@@ -149,7 +149,7 @@ pub(super) fn migrate_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_idle_start ON idle_periods(start_time);
 
-        -- session 통계
+        -- session statistics
         CREATE TABLE IF NOT EXISTS session_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL UNIQUE,
@@ -163,13 +163,13 @@ pub(super) fn migrate_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_session_id ON session_stats(session_id);
 
-        -- frames table에 창 위치 column add
+        -- add window position columns to the frames table
         ALTER TABLE frames ADD COLUMN window_x INTEGER;
         ALTER TABLE frames ADD COLUMN window_y INTEGER;
         ALTER TABLE frames ADD COLUMN window_width INTEGER;
         ALTER TABLE frames ADD COLUMN window_height INTEGER;
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (4);
         ",
     )?;
@@ -179,11 +179,11 @@ pub(super) fn migrate_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v5(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V5 execution: tags + frame_tags table");
+    debug!("running migration V5: tags + frame_tags tables");
 
     conn.execute_batch(
         "
-        -- 태그 table
+        -- tags table
         CREATE TABLE IF NOT EXISTS tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
@@ -193,7 +193,7 @@ pub(super) fn migrate_v5(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
 
-        -- frame-태그 connection table
+        -- frame-tag join table
         CREATE TABLE IF NOT EXISTS frame_tags (
             frame_id INTEGER NOT NULL,
             tag_id INTEGER NOT NULL,
@@ -206,7 +206,7 @@ pub(super) fn migrate_v5(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_frame_tags_frame ON frame_tags(frame_id);
         CREATE INDEX IF NOT EXISTS idx_frame_tags_tag ON frame_tags(tag_id);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (5);
         ",
     )?;
@@ -216,11 +216,11 @@ pub(super) fn migrate_v5(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V6 execution: Edge Intelligence table");
+    debug!("running migration V6: Edge Intelligence tables");
 
     conn.execute_batch(
         "
-        -- 작업 session table (앱 카테고리별 집중 시간 추적)
+        -- work session table (tracks focus time per app category)
         CREATE TABLE IF NOT EXISTS work_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at TEXT NOT NULL,
@@ -238,7 +238,7 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_work_sessions_category ON work_sessions(category);
         CREATE INDEX IF NOT EXISTS idx_work_sessions_state ON work_sessions(state);
 
-        -- 인터럽션 table (앱 전환 context 추적)
+        -- interruptions table (tracks app-switch context)
         CREATE TABLE IF NOT EXISTS interruptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             interrupted_at TEXT NOT NULL,
@@ -256,7 +256,7 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_interruptions_time ON interruptions(interrupted_at);
         CREATE INDEX IF NOT EXISTS idx_interruptions_from ON interruptions(from_app);
 
-        -- 집중도 메트릭 table (일별 집계)
+        -- focus metrics table (daily aggregates)
         CREATE TABLE IF NOT EXISTS focus_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL UNIQUE,
@@ -274,7 +274,7 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_metrics_date ON focus_metrics(date);
 
-        -- 로컬 suggestion table (client 단독 suggestion)
+        -- local suggestion table (client-only suggestions)
         CREATE TABLE IF NOT EXISTS local_suggestions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             suggestion_type TEXT NOT NULL,
@@ -288,7 +288,7 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_local_suggestions_type ON local_suggestions(suggestion_type);
         CREATE INDEX IF NOT EXISTS idx_local_suggestions_created ON local_suggestions(created_at);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (6);
         ",
     )?;
@@ -298,28 +298,28 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v7(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V7 execution: composite index performance optimization");
+    debug!("running migration V7: composite index performance optimization");
 
     conn.execute_batch(
         "
-        -- events: sent되지 않은 event query 최적화 (is_sent=0 AND timestamp 정렬)
+        -- events: optimize the unsent-event query (is_sent=0 AND timestamp ordering)
         CREATE INDEX IF NOT EXISTS idx_events_sent_timestamp ON events(is_sent, timestamp);
 
-        -- work_sessions: active session query 최적화 (state='active' AND started_at)
+        -- work_sessions: optimize the active-session query (state='active' AND started_at)
         CREATE INDEX IF NOT EXISTS idx_work_sessions_state_started ON work_sessions(state, started_at);
 
-        -- interruptions: 미복귀 인터럽션 query 최적화 (resumed_at IS NULL)
+        -- interruptions: optimize the not-yet-resumed interruption query (resumed_at IS NULL)
         CREATE INDEX IF NOT EXISTS idx_interruptions_not_resumed ON interruptions(resumed_at)
             WHERE resumed_at IS NULL;
 
-        -- focus_metrics: 날짜 범위 query 최적화
+        -- focus_metrics: optimize the date-range query
         CREATE INDEX IF NOT EXISTS idx_focus_metrics_date_score ON focus_metrics(date, focus_score);
 
-        -- local_suggestions: 미확인 suggestion query 최적화
+        -- local_suggestions: optimize the pending-suggestion query
         CREATE INDEX IF NOT EXISTS idx_suggestions_pending ON local_suggestions(shown_at, acted_at, dismissed_at)
             WHERE shown_at IS NULL OR (acted_at IS NULL AND dismissed_at IS NULL);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (7);
         ",
     )?;
@@ -329,7 +329,7 @@ pub(super) fn migrate_v7(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 pub(super) fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
-    debug!("migration V8 execution: unified suggestions table");
+    debug!("running migration V8: unified suggestions table");
 
     conn.execute_batch(
         "
@@ -357,7 +357,7 @@ pub(super) fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_suggestions_created ON suggestions(created_at);
         CREATE INDEX IF NOT EXISTS idx_suggestions_type ON suggestions(suggestion_type);
 
-        -- 버전 record
+        -- version record
         INSERT INTO schema_version (version) VALUES (8);
         ",
     )?;

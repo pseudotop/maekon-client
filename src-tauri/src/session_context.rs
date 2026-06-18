@@ -15,6 +15,34 @@ use tracing::warn;
 
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 
+/// #6266: recursively mask every JSON STRING VALUE in `value` at `level`, in
+/// place. Object keys are left untouched (they are field names, not PII).
+/// Masking each leaf string individually — rather than the joined serialized
+/// document — keeps a PII match within its own JSON string so it cannot consume
+/// the closing quote and corrupt the structure. `PiiFilterLevel::Off` makes the
+/// masker a no-op, so this is a cheap pass for users who opted out.
+fn mask_json_string_values(
+    value: &mut serde_json::Value,
+    level: maekon_core::config::PiiFilterLevel,
+) {
+    match value {
+        serde_json::Value::String(s) => {
+            *s = maekon_vision::privacy::sanitize_title_with_level(s, level);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                mask_json_string_values(item, level);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                mask_json_string_values(v, level);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Maximum number of recent events to query for activity summary.
 const RECENT_EVENTS_LIMIT: usize = 200;
 
@@ -62,7 +90,23 @@ impl SessionContextAssembler {
 
     pub async fn build_system_message(&self) -> SessionMessage {
         let context = self.build_system_prompt().await;
-        let content = serde_json::to_string_pretty(&context).unwrap_or_else(|_| "{}".to_string());
+        // #6266: mask PII in the assembled context (top_apps / window titles /
+        // regime / active_app) at the configured level BEFORE it is baked into
+        // the system prompt. For external sessions this prompt egresses to the
+        // provider, and unlike per-turn user messages it bypasses the conversation
+        // privacy guard (GuardedConversationSession sanitizes only send_message
+        // content, not the create-time system prompt).
+        //
+        // Mask each STRING VALUE of the serialized context INDIVIDUALLY (via a
+        // serde_json::Value walk), not the flat serialized string: the PII maskers
+        // do not respect JSON token boundaries, so masking the joined string could
+        // let an email/path span consume a closing `"` and corrupt the structure
+        // (#6266 verify). Per-value masking keeps each string self-contained and
+        // re-serialization yields valid JSON. Keys are untouched; Off level is a
+        // no-op (honors the user's choice).
+        let mut value = serde_json::to_value(&context).unwrap_or(serde_json::Value::Null);
+        mask_json_string_values(&mut value, self.config.privacy.pii_filter_level);
+        let content = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
 
         SessionMessage {
             role: MessageRole::System,
@@ -300,6 +344,51 @@ impl SessionContextAssembler {
 mod tests {
     use super::*;
     use maekon_storage::sqlite::SqliteStorage;
+
+    #[test]
+    fn mask_json_string_values_masks_pii_and_preserves_valid_json() {
+        // #6266 regression guard: the previous fix masked the FLAT serialized
+        // string, so an email at the end of a value (e.g. a webmail window title)
+        // consumed the closing quote and corrupted the JSON. Per-value masking
+        // must (a) mask the PII, (b) keep keys intact, and (c) re-serialize to
+        // VALID JSON (re-parseable) — exactly the case the old approach broke.
+        let mut value = serde_json::json!({
+            "current_regime": "deep_work",
+            "system_info": { "active_app": "Mail - alice@example.com", "os": "macos" },
+            "recent_activity": { "top_apps": ["Slack — bob@example.com", "VSCode"] },
+        });
+        mask_json_string_values(&mut value, maekon_core::config::PiiFilterLevel::Standard);
+
+        // (c) Re-serializes to valid JSON (the old flat-string masking did not).
+        let serialized = serde_json::to_string(&value).expect("masked value serializes");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&serialized).expect("masked context must remain valid JSON");
+
+        // (a) PII masked, raw addresses gone.
+        assert!(
+            !serialized.contains("alice@example.com"),
+            "email must be masked"
+        );
+        assert!(
+            !serialized.contains("bob@example.com"),
+            "list email must be masked"
+        );
+        // (b) keys + non-PII values preserved, structure intact.
+        assert_eq!(reparsed["system_info"]["os"], "macos");
+        assert_eq!(reparsed["current_regime"], "deep_work");
+        assert_eq!(reparsed["recent_activity"]["top_apps"][1], "VSCode");
+        assert!(reparsed["system_info"]["active_app"]
+            .as_str()
+            .expect("active_app stays a string")
+            .starts_with("Mail - "));
+    }
+
+    #[test]
+    fn mask_json_string_values_off_level_is_noop() {
+        let mut value = serde_json::json!({ "active_app": "Mail - alice@example.com" });
+        mask_json_string_values(&mut value, maekon_core::config::PiiFilterLevel::Off);
+        assert_eq!(value["active_app"], "Mail - alice@example.com");
+    }
 
     #[test]
     fn build_system_message_has_system_role() {

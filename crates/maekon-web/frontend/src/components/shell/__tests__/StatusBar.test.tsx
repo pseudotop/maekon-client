@@ -107,7 +107,7 @@ describe('StatusBar', () => {
     renderWithProviders(<StatusBar />)
 
     expect(screen.getByLabelText('Capture active')).toHaveClass('bg-status-connected')
-    expect(screen.getByLabelText('LastCaptureTimestamp')).toHaveAttribute('dateTime', timestamp)
-    expect(screen.getByLabelText('LastCaptureTimestamp')).toHaveTextContent(timestamp)
+    expect(screen.getByLabelText('Last capture timestamp')).toHaveAttribute('dateTime', timestamp)
+    expect(screen.getByLabelText('Last capture timestamp')).toHaveTextContent(timestamp)
   })
 })

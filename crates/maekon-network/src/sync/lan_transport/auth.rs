@@ -79,22 +79,52 @@ impl LanSyncTransport {
         } else {
             Some(peer.fingerprint.clone())
         };
-        let (client, captured, first_contact) =
+        let (client, captured, pin_mismatch, first_contact) =
             self.build_peer_client(peer_id, advertised_fp).await?;
 
         let base = Self::peer_url(peer, "");
 
-        // Step 1: Request challenge nonce
-        let challenge_resp = client
+        // Step 1: Request challenge nonce. This drives the TLS handshake, so the
+        // `TofuVerifier` runs here. If the verifier rejected because the presented
+        // cert differs from an existing pin, the handshake fails with a transport
+        // error and `pin_mismatch` is set — revoke the pin so the changed peer key
+        // is recorded and every subsequent contact is hard-blocked.
+        let challenge_resp = match client
             .post(format!("{base}/sync/challenge"))
             .json(&ChallengeRequest {
                 device_id: self.local_device_id.clone(),
             })
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                if *pin_mismatch.lock() {
+                    // Best-effort: a revoke failure must not mask the original TOFU
+                    // rejection (the handshake already refused the connection).
+                    if let Err(revoke_err) = self.pin_store.revoke_pin(peer_id).await {
+                        debug!(
+                            peer_id,
+                            error = %revoke_err,
+                            "failed to revoke LAN peer pin after TOFU mismatch"
+                        );
+                    } else {
+                        self.peer_clients.write().remove(peer_id);
+                        self.token_cache.invalidate(peer_id);
+                        tracing::warn!(
+                            peer_id,
+                            "LAN peer cert fingerprint changed — pin revoked (possible MITM)"
+                        );
+                    }
+                    return Err(CoreError::Auth {
+                        code: maekon_core::error_codes::AuthCode::Failed,
+                        message: format!(
+                            "LAN peer {peer_id} cert fingerprint mismatch — pin revoked"
+                        ),
+                    });
+                }
                 // Iter-90: split timeout vs generic per canonical pattern.
-                if e.is_timeout() {
+                return Err(if e.is_timeout() {
                     CoreError::RequestTimeout {
                         code: maekon_core::error_codes::NetworkCode::Timeout,
                         timeout_ms: 0,
@@ -104,13 +134,15 @@ impl LanSyncTransport {
                         code: maekon_core::error_codes::NetworkCode::Generic,
                         message: format!("challenge request to {peer_id}: {e}"),
                     }
-                }
-            })?;
+                });
+            }
+        };
 
         if !challenge_resp.status().is_success() {
-            return Err(map_challenge_status_to_error(
+            return Err(map_peer_auth_status_to_error(
                 challenge_resp.status().as_u16(),
                 peer_id,
+                "challenge",
             ));
         }
 
@@ -161,13 +193,14 @@ impl LanSyncTransport {
             })?;
 
         if !verify_resp.status().is_success() {
-            return Err(CoreError::Network {
-                code: maekon_core::error_codes::NetworkCode::Generic,
-                message: format!(
-                    "authentication with {peer_id} failed (status {})",
-                    verify_resp.status()
-                ),
-            });
+            // Route through the canonical mapper (same as `/sync/challenge`) so a
+            // 401/403 on verify reports `auth.failed`, 429 reports `network.rate_limit`,
+            // etc. — instead of collapsing every non-2xx into `network.generic`.
+            return Err(map_peer_auth_status_to_error(
+                verify_resp.status().as_u16(),
+                peer_id,
+                "verify",
+            ));
         }
 
         let verify: VerifyResponse = verify_resp.json().await.map_err(|e| CoreError::Network {
@@ -230,8 +263,14 @@ impl LanSyncTransport {
     }
 }
 
-/// Map an HTTP status code from the `/sync/challenge` endpoint to a semantic
-/// `CoreError` per the canonical pattern in `docs/guides/http-status-error-mapping.md`.
+/// Map an HTTP status code from a peer-auth handshake step (`/sync/challenge`
+/// or `/sync/verify`) to a semantic `CoreError` per the canonical pattern in
+/// `docs/guides/http-status-error-mapping.md`.
+///
+/// The mapping is endpoint-agnostic apart from `step`, which is interpolated
+/// into the message so both handshake steps surface the same wire codes
+/// (otherwise a 401 on `/sync/verify` collapses to `network.generic` while the
+/// identical 401 on `/sync/challenge` correctly reports `auth.failed`).
 ///
 /// 401/403 → `Auth { AuthCode::Failed }`
 /// 408/504 → `RequestTimeout { NetworkCode::Timeout }` (timeout_ms=0 is the
@@ -241,8 +280,8 @@ impl LanSyncTransport {
 ///           (60s default until we parse an actual `Retry-After` header here)
 /// 502/503 → `ServiceUnavailable { ServiceCode::Unavailable }`
 /// other   → `Network { NetworkCode::Generic }` (domain fallback)
-fn map_challenge_status_to_error(status_code: u16, peer_id: &str) -> CoreError {
-    let message = format!("challenge request to {peer_id} returned {status_code}");
+fn map_peer_auth_status_to_error(status_code: u16, peer_id: &str, step: &str) -> CoreError {
+    let message = format!("{step} request to {peer_id} returned {status_code}");
     match status_code {
         401 | 403 => CoreError::Auth {
             code: maekon_core::error_codes::AuthCode::Failed,
@@ -278,12 +317,13 @@ mod tests {
 
     #[test]
     fn map_challenge_status_401_maps_to_auth_failed() {
-        let err = map_challenge_status_to_error(401, "peer-a");
+        let err = map_peer_auth_status_to_error(401, "peer-a", "challenge");
         assert_eq!(err.code(), "auth.failed");
         match err {
             CoreError::Auth { message, .. } => {
                 assert!(message.contains("peer-a"));
                 assert!(message.contains("401"));
+                assert!(message.contains("challenge"));
             }
             other => panic!("expected Auth, got {other:?}"),
         }
@@ -291,13 +331,13 @@ mod tests {
 
     #[test]
     fn map_challenge_status_403_maps_to_auth_failed() {
-        let err = map_challenge_status_to_error(403, "peer-b");
+        let err = map_peer_auth_status_to_error(403, "peer-b", "challenge");
         assert_eq!(err.code(), "auth.failed");
     }
 
     #[test]
     fn map_challenge_status_429_maps_to_rate_limit() {
-        let err = map_challenge_status_to_error(429, "peer-c");
+        let err = map_peer_auth_status_to_error(429, "peer-c", "challenge");
         assert_eq!(err.code(), "network.rate_limit");
         match err {
             CoreError::RateLimit {
@@ -314,13 +354,13 @@ mod tests {
 
     #[test]
     fn map_challenge_status_503_maps_to_service_unavailable() {
-        let err = map_challenge_status_to_error(503, "peer-d");
+        let err = map_peer_auth_status_to_error(503, "peer-d", "challenge");
         assert_eq!(err.code(), "service.unavailable");
     }
 
     #[test]
     fn map_challenge_status_504_maps_to_request_timeout() {
-        let err = map_challenge_status_to_error(504, "peer-e");
+        let err = map_peer_auth_status_to_error(504, "peer-e", "challenge");
         assert_eq!(err.code(), "network.timeout");
         match err {
             CoreError::RequestTimeout { timeout_ms, .. } => {
@@ -338,7 +378,7 @@ mod tests {
         // Domain-fallback assertion per the canonical pattern — unknown statuses
         // must not silently become Auth or ServiceUnavailable, they collapse
         // into network.generic with the status number surfaced in the message.
-        let err = map_challenge_status_to_error(500, "peer-f");
+        let err = map_peer_auth_status_to_error(500, "peer-f", "challenge");
         assert_eq!(err.code(), "network.generic");
         match err {
             CoreError::Network { message, .. } => {
@@ -347,5 +387,35 @@ mod tests {
             }
             other => panic!("expected Network, got {other:?}"),
         }
+    }
+
+    /// Regression for `syncverify-status-map`: a 401 on the `/sync/verify` step
+    /// must report `auth.failed`, not collapse into `network.generic` like it did
+    /// before the verify path was routed through the canonical mapper.
+    #[test]
+    fn map_verify_status_401_maps_to_auth_not_generic() {
+        let err = map_peer_auth_status_to_error(401, "peer-v", "verify");
+        assert_eq!(
+            err.code(),
+            "auth.failed",
+            "401 on /sync/verify must be auth.failed, not network.generic"
+        );
+        match err {
+            CoreError::Auth { message, .. } => {
+                assert!(message.contains("peer-v"));
+                assert!(message.contains("401"));
+                assert!(
+                    message.contains("verify"),
+                    "message should identify the verify step: {message}"
+                );
+            }
+            other => panic!("expected Auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_verify_status_429_maps_to_rate_limit() {
+        let err = map_peer_auth_status_to_error(429, "peer-w", "verify");
+        assert_eq!(err.code(), "network.rate_limit");
     }
 }

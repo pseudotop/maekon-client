@@ -30,23 +30,23 @@ describe('J1: Dashboard Live Metrics', () => {
    * @tauri_only_reason StatusBar displays real SSE metrics, not mocked data
    */
   it('T101: StatusBar CPU matches SSE metric within 5%', async () => {
-    // StatusBar의 CPU 표시 텍스트 가져오기
+    // Get the CPU display text from the StatusBar
     const statusBar = await $('.app-shell-statusbar')
     await statusBar.waitForExist({ timeout: 10000 })
     const statusText = await statusBar.getText()
 
-    // SSE로 실제 메트릭 가져오기
+    // Get the actual metrics via SSE
     const event = await waitForSseEvent('metrics', 15000)
     const metrics = (event as any).data ?? event
 
-    // StatusBar에 CPU 퍼센트가 표시되는지 확인
+    // Verify that a CPU percentage is shown in the StatusBar
     const cpuMatch = statusText.match(/(\d+(?:\.\d+)?)\s*%/)
     if (cpuMatch) {
       const displayedCpu = parseFloat(cpuMatch[1])
-      // IPC 값과 5% 이내 오차 허용 (polling 타이밍 차이)
+      // Allow up to 5% deviation from the IPC value (polling timing difference)
       expect(Math.abs(displayedCpu - metrics.cpu_usage)).toBeLessThanOrEqual(5)
     }
-    // CPU가 표시되지 않는 경우 (로딩 중 등), SSE 값 자체가 유효하면 통과
+    // When the CPU is not displayed (e.g. while loading), pass if the SSE value itself is valid
     expect(metrics.cpu_usage).toBeGreaterThanOrEqual(0)
   })
 })

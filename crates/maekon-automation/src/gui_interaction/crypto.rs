@@ -91,12 +91,16 @@ pub(super) fn encode_hex(bytes: &[u8]) -> String {
 }
 
 pub(super) fn decode_hex(input: &str) -> Option<Vec<u8>> {
-    if !input.len().is_multiple_of(2) {
+    // Reject non-ASCII up front and decode over bytes, never &str slices (review4
+    // A3/A14): the previous `&input[i..i+2]` slicing panicked on a non-ASCII
+    // even-byte-length string (the 2-byte window split a multi-byte UTF-8 char) —
+    // a reachable DoS on the attacker-controlled ticket.signature verify path.
+    let bytes = input.as_bytes();
+    if !input.is_ascii() || !bytes.len().is_multiple_of(2) {
         return None;
     }
-
-    (0..input.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&input[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
