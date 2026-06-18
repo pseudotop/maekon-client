@@ -1143,6 +1143,75 @@ fn sqlcipher_fallback_for_unencrypted_db() {
     assert_eq!(storage.get_meta("hello"), Some("world".to_string()));
 }
 
+#[test]
+fn sqlcipher_wrong_key_fails_closed_not_plaintext() {
+    use crate::encryption::EncryptionKey;
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("encrypted.db");
+
+    // Create an encrypted database with key A and write data.
+    {
+        let storage =
+            SqliteStorage::open(&db_path, 30, Some(&EncryptionKey::from_bytes([0x42; 32])))
+                .expect("create encrypted DB with key A");
+        storage.set_meta("secret", "value");
+    }
+
+    // #6438 (F8): reopening the encrypted DB with the WRONG key must FAIL CLOSED. The
+    // on-disk file is SQLCipher-encrypted (no plaintext magic header), so the key
+    // verification failure is a wrong/rotated key — NOT a legacy-unencrypted migration —
+    // and must not silently reopen as plaintext.
+    let wrong = EncryptionKey::from_bytes([0x99; 32]);
+    let msg = match SqliteStorage::open(&db_path, 30, Some(&wrong)) {
+        Ok(_) => panic!("wrong key must fail closed, not reopen as plaintext"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("wrong or rotated key"),
+        "expected a fail-closed wrong-key error, got: {msg}"
+    );
+}
+
+#[test]
+fn is_plaintext_sqlite_detects_magic_header() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+
+    // A real plaintext SQLite file starts with the 16-byte magic header.
+    let plain = dir.path().join("plain.bin");
+    std::fs::File::create(&plain)
+        .unwrap()
+        .write_all(b"SQLite format 3\0trailing data")
+        .unwrap();
+    assert!(
+        super::is_plaintext_sqlite(&plain),
+        "the SQLite magic header must be detected as plaintext"
+    );
+
+    // Encrypted-looking bytes (no magic) must NOT be treated as plaintext.
+    let enc = dir.path().join("enc.bin");
+    std::fs::File::create(&enc)
+        .unwrap()
+        .write_all(&[0xAB_u8; 64])
+        .unwrap();
+    assert!(
+        !super::is_plaintext_sqlite(&enc),
+        "a non-magic file (encrypted / wrong key) must not be treated as plaintext"
+    );
+
+    // Empty and missing files are not legacy plaintext DBs.
+    let empty = dir.path().join("empty.bin");
+    std::fs::File::create(&empty).unwrap();
+    assert!(
+        !super::is_plaintext_sqlite(&empty),
+        "an empty file is not a legacy plaintext DB"
+    );
+    assert!(
+        !super::is_plaintext_sqlite(&dir.path().join("missing.bin")),
+        "a missing file is not a legacy plaintext DB"
+    );
+}
+
 // ── PR3 underlying-impl gap coverage ───────────────────────────────
 //
 // Phase 5-D8 PR3 audit identified 4 underlying SqliteStorage methods

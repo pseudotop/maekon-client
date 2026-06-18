@@ -434,6 +434,18 @@ pub async fn serve(cfg: GrpcSpawnConfig) -> Result<(), GrpcServeError> {
         .add_service(DashboardServiceServer::with_interceptor(
             service,
             move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
+                // #6440 (F3): apply the DNS-rebind authority allowlist to EVERY loopback
+                // method here. Previously only the 2 streaming handlers called
+                // validate_authority; the 6 unary RPCs lacked it. Centralizing in the
+                // interceptor (the tonic-recommended place for cross-cutting checks)
+                // covers all methods uniformly. Validates only when an authority is
+                // observable — tonic does not propagate `:authority` into metadata — so
+                // loopback clients that send no `Host` are unaffected. (The streaming
+                // handlers keep their own call: they are shared with the external variant,
+                // which uses a separate AuthLayer stack rather than this interceptor.)
+                if let Some(authority) = req.metadata().get("host").and_then(|v| v.to_str().ok()) {
+                    auth_gate::validate_authority(Some(authority))?;
+                }
                 auth_gate::check_local_auth(req.metadata(), local_auth.as_deref())?;
                 Ok(req)
             },

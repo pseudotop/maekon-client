@@ -449,7 +449,7 @@ mod tests {
     /// bounded number of consecutive failures.
     #[test]
     fn give_up_bound_is_positive() {
-        assert!(RECONNECT_MAX_ATTEMPTS > 0);
+        const _: () = assert!(RECONNECT_MAX_ATTEMPTS > 0);
     }
 
     /// sse-shutdown-deterministic: when the SSE loop receives a shutdown signal

@@ -1085,8 +1085,10 @@ fn map_audit_row(
 
 /// Apply SQLCipher `PRAGMA key` and verify the key works.
 ///
-/// If the key is rejected (e.g. database was previously unencrypted), falls back
-/// to a fresh connection without encryption so existing data is preserved.
+/// If verification fails, fall back to plaintext ONLY when the file is a positively
+/// identified legacy plaintext SQLite database (16-byte magic header). A wrong or
+/// rotated key (a non-plaintext file that still fails verification) fails CLOSED
+/// rather than silently reopening the database as plaintext (#6438).
 fn apply_sqlcipher_key(
     conn: Connection,
     path: &Path,
@@ -1116,16 +1118,50 @@ fn apply_sqlcipher_key(
     // Verify the key actually works by reading sqlite_master.
     match conn.execute_batch("SELECT count(*) FROM sqlite_master;") {
         Ok(()) => Ok(conn),
-        Err(_) => {
-            warn!(
-                "SQLCipher key verification failed — database may be unencrypted, reopening without encryption"
-            );
+        Err(verify_err) => {
             drop(conn);
-            let fallback = Connection::open(path).map_err(|e| {
-                StorageError::Internal(format!("Failed to reopen SQLite database: {e}"))
-            })?;
-            Ok(fallback)
+            // #6438 (F8): verification failed. Reopening as plaintext is the documented
+            // legacy-migration path ONLY when the file is an actual plaintext SQLite
+            // database (positively identified by its 16-byte magic header). A non-empty,
+            // non-plaintext file that fails verification means the key is WRONG or ROTATED
+            // — handing back a plaintext connection the caller believes is encrypted would
+            // make every subsequent write plaintext. Distinguish the two and FAIL CLOSED on
+            // the wrong-key case rather than silently degrading.
+            if is_plaintext_sqlite(path) {
+                warn!(
+                    "SQLCipher key verification failed but {} is a plaintext SQLite database \
+                     (legacy migration) — reopening without encryption to preserve existing data",
+                    path.display()
+                );
+                let fallback = Connection::open(path).map_err(|e| {
+                    StorageError::Internal(format!("Failed to reopen SQLite database: {e}"))
+                })?;
+                Ok(fallback)
+            } else {
+                Err(StorageError::Internal(format!(
+                    "SQLCipher key verification failed and {} is not a plaintext SQLite \
+                     database (wrong or rotated key); refusing to reopen as plaintext: {verify_err}",
+                    path.display()
+                )))
+            }
         }
+    }
+}
+
+/// #6438: positively detect a plaintext SQLite database by its 16-byte file-header
+/// magic (`"SQLite format 3\0"`). An SQLCipher-encrypted database does not start with
+/// this (the header bytes are ciphertext), so a key-verification failure on a file
+/// WITHOUT this magic indicates a wrong/rotated key rather than a legacy-unencrypted DB.
+fn is_plaintext_sqlite(path: &Path) -> bool {
+    use std::io::Read;
+    const MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 16];
+    match file.read_exact(&mut header) {
+        Ok(()) => &header == MAGIC,
+        Err(_) => false, // empty / shorter than the header → not a legacy plaintext DB
     }
 }
 

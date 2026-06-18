@@ -22,7 +22,6 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use maekon_api_contracts::stream::RealtimeEvent;
-use maekon_core::config::PiiFilterLevel;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::Stream;
@@ -318,11 +317,12 @@ fn build_ai_runtime_status_event(
             llm_fallback_reason: String::new(),
         },
         Some(s) => {
-            let sanitize = |raw: &str| -> String {
-                match pii_sanitizer {
-                    Some(sanitizer) => sanitizer.sanitize_text(raw, PiiFilterLevel::Standard),
-                    None => raw.to_string(),
-                }
+            // #6440 (F1): route through the fail-closed helper (redacts when no sanitizer
+            // is wired) — the same path build_frame_event uses — instead of an inline
+            // `None => raw` that emitted unsanitized fallback_reason text on this gRPC
+            // surface. Mirrors the #6421 fix.
+            let sanitize = |raw: &str| {
+                crate::grpc::privacy::sanitize_dashboard_text(raw.to_string(), pii_sanitizer)
             };
             AiRuntimeStatusEvent {
                 ocr_source: s.ocr_source.clone(),
@@ -346,6 +346,7 @@ fn build_ai_runtime_status_event(
 mod tests {
     use super::*;
     use maekon_api_contracts::stream::FrameUpdate;
+    use maekon_core::config::PiiFilterLevel;
 
     struct MarkerSanitizer;
 
@@ -374,5 +375,31 @@ mod tests {
         assert_eq!(event.window_title, "[TITLE]");
         assert_eq!(event.frame_id, 42);
         assert_eq!(event.trigger_type, "timer");
+    }
+
+    #[test]
+    fn ai_runtime_status_fallback_reason_redacted_without_sanitizer() {
+        use maekon_api_contracts::stream::AiRuntimeStatus;
+        let status = AiRuntimeStatus {
+            ocr_source: "ocr".to_string(),
+            llm_source: "llm".to_string(),
+            ocr_fallback_reason: Some("sensitive ocr reason".to_string()),
+            llm_fallback_reason: Some("sensitive llm reason".to_string()),
+            llm_healthy: None,
+        };
+        // #6440 (F1): with no PII sanitizer wired, fallback_reason text must be REDACTED
+        // (fail-closed), not emitted raw — mirroring build_frame_event / #6421.
+        let event = build_ai_runtime_status_event(Some(&status), None);
+        assert_eq!(
+            event.ocr_fallback_reason,
+            "[redacted: PII sanitizer unavailable]"
+        );
+        assert_eq!(
+            event.llm_fallback_reason,
+            "[redacted: PII sanitizer unavailable]"
+        );
+        // Non-PII source identifiers pass through unchanged.
+        assert_eq!(event.ocr_source, "ocr");
+        assert_eq!(event.llm_source, "llm");
     }
 }
