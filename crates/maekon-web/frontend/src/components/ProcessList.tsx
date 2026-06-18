@@ -24,7 +24,9 @@ export default function ProcessList({ snapshot }: ProcessListProps) {
             <span className={cn('w-6 text-content-tertiary', typography.body)}>{index + 1}</span>
             <div>
               <div className={cn('text-content', typography.label)}>{proc.name}</div>
-              <div className={cn('text-content-tertiary', typography.caption)}>{t('processList.pid')} {proc.pid}</div>
+              <div className={cn('text-content-tertiary', typography.caption)}>
+                {t('processList.pid')} {proc.pid}
+              </div>
             </div>
           </div>
           <div className="flex items-center space-x-4 text-right">

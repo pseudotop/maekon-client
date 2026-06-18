@@ -153,7 +153,10 @@ const Inspector = forwardRef<HTMLDivElement, InspectorProps>(function Inspector(
       <div className="space-y-1 text-[11px]">
         <Row label={t('detectionOverlay.fieldLabel')} value={element.label || t('detectionOverlay.emptyValue')} />
         <Row label={t('detectionOverlay.fieldRole')} value={element.role ?? t('detectionOverlay.unknownRole')} />
-        <Row label={t('detectionOverlay.fieldBounds')} value={`(${element.x}, ${element.y}, ${element.width}, ${element.height})`} />
+        <Row
+          label={t('detectionOverlay.fieldBounds')}
+          value={`(${element.x}, ${element.y}, ${element.width}, ${element.height})`}
+        />
         <Row label={t('detectionOverlay.fieldSource')} value={element.source} />
         <Row label={t('detectionOverlay.fieldId')} value={element.element_id} mono />
       </div>

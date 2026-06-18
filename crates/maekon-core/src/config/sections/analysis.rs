@@ -662,8 +662,10 @@ mod tests {
     fn analysis_validate_bounds_rejects_zero_interval() {
         // #6177: interval_secs == 0 would panic the analysis loop's
         // tokio::time::interval (period > 0 assertion).
-        let mut cfg = AnalysisConfig::default();
-        cfg.interval_secs = 0;
+        let cfg = AnalysisConfig {
+            interval_secs: 0,
+            ..Default::default()
+        };
         let err = cfg.validate_bounds().unwrap_err();
         assert!(
             err.contains("interval_secs"),
@@ -673,9 +675,11 @@ mod tests {
 
     #[test]
     fn analysis_validate_bounds_rejects_full_below_interval() {
-        let mut cfg = AnalysisConfig::default();
-        cfg.interval_secs = 60;
-        cfg.full_interval_secs = 30;
+        let cfg = AnalysisConfig {
+            interval_secs: 60,
+            full_interval_secs: 30,
+            ..Default::default()
+        };
         let err = cfg.validate_bounds().unwrap_err();
         assert!(err.contains("full_interval_secs"), "got: {err}");
     }
@@ -685,10 +689,12 @@ mod tests {
         // #6177: clamp_bounds is the fail-open INITIAL-LOAD counterpart — it
         // raises a sub-floor interval to the floor instead of erroring, and the
         // result must satisfy validate_bounds.
-        let mut cfg = AnalysisConfig::default();
-        cfg.interval_secs = 0;
-        cfg.full_interval_secs = 0;
-        cfg.throttle_secs = 0;
+        let mut cfg = AnalysisConfig {
+            interval_secs: 0,
+            full_interval_secs: 0,
+            throttle_secs: 0,
+            ..Default::default()
+        };
         let clamped = cfg.clamp_bounds();
         assert_eq!(cfg.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
         assert!(cfg.full_interval_secs >= cfg.interval_secs);

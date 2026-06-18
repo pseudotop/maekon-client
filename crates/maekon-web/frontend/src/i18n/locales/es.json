@@ -983,15 +983,7 @@
     "low": "Bajo",
     "high": "Alto",
     "loadError": "Error al cargar los datos",
-    "days": [
-      "Lun",
-      "Mar",
-      "Mié",
-      "Jue",
-      "Vie",
-      "Sáb",
-      "Dom"
-    ],
+    "days": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
     "activity": "Actividad"
   },
   "dateRange": {

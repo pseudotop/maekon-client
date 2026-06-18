@@ -80,6 +80,7 @@ pub trait AuditLogPort: Send + Sync {
     /// The default implementation delegates to `log_complete_with_time` (so the
     /// trait stays non-breaking) — the actual durable implementation (the
     /// `AuditLogger` adapter) overrides this to preserve `status`/`action_type`.
+    #[allow(clippy::too_many_arguments)]
     async fn log_with_status_and_time(
         &self,
         level: AuditLevel,
