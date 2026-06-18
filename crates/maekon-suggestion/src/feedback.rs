@@ -1,6 +1,8 @@
 use chrono::Utc;
+use maekon_core::models::storage_records::EgressLedgerRecord;
 use maekon_core::models::suggestion::{FeedbackType, SuggestionFeedback};
 use maekon_core::ports::api_client::ApiClient;
+use maekon_core::ports::egress_ledger::EgressLedgerSink;
 use maekon_core::ports::feedback_signal_sink::FeedbackSignalSink;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -11,6 +13,9 @@ use crate::feedback_retry::PendingFeedback;
 pub struct FeedbackSender {
     api_client: Arc<dyn ApiClient>,
     sink: Option<Arc<dyn FeedbackSignalSink>>,
+    /// #6442 (F9): audit-ledger sink for recording feedback egress. `None` → not wired
+    /// (tests / unconfigured builds); production wiring injects the SqliteStorage.
+    egress_ledger: Option<Arc<dyn EgressLedgerSink>>,
 }
 
 impl FeedbackSender {
@@ -24,7 +29,18 @@ impl FeedbackSender {
         api_client: Arc<dyn ApiClient>,
         sink: Option<Arc<dyn FeedbackSignalSink>>,
     ) -> Self {
-        Self { api_client, sink }
+        Self {
+            api_client,
+            sink,
+            egress_ledger: None,
+        }
+    }
+
+    /// #6442 (F9): inject the egress audit-ledger sink (chainable). When set, every
+    /// successful feedback send records one egress-ledger row.
+    pub fn with_egress_ledger(mut self, ledger: Arc<dyn EgressLedgerSink>) -> Self {
+        self.egress_ledger = Some(ledger);
+        self
     }
 
     pub async fn accept(
@@ -110,12 +126,45 @@ impl FeedbackSender {
         match self.api_client.send_feedback(&feedback).await {
             Ok(()) => {
                 debug!("feedback sent success");
+                self.record_feedback_egress(suggestion_id, &feedback);
                 Ok(())
             }
             Err(e) => {
                 warn!("feedback sent failure: {e}");
                 Err(SuggestionError::Core(e))
             }
+        }
+    }
+
+    /// #6442 (F9): record the feedback egress in the audit ledger. Feedback is
+    /// user-initiated — its own lawful basis, NOT telemetry-consent-gated — so we record
+    /// it rather than gate the send. `record_id` is deterministic so the initial send and
+    /// any retry re-send (both routed through `send_feedback`) collapse to a single audit
+    /// row (the ledger de-dups on `record_id`). Best-effort: a ledger failure must never
+    /// fail the feedback flow it audits.
+    fn record_feedback_egress(&self, suggestion_id: &str, feedback: &SuggestionFeedback) {
+        let Some(ref ledger) = self.egress_ledger else {
+            return;
+        };
+        let byte_count = serde_json::to_vec(feedback)
+            .map(|v| v.len() as i64)
+            .unwrap_or(0);
+        let record = EgressLedgerRecord {
+            record_id: format!(
+                "suggestion_feedback|{}|{:?}",
+                suggestion_id, feedback.feedback_type
+            ),
+            event_type: "SuggestionFeedback".to_string(),
+            event_id: Some(suggestion_id.to_string()),
+            byte_count,
+            recipient_count: 1,
+            destination: "server.suggestion_feedback".to_string(),
+            disposition: "uploaded".to_string(),
+            consent_state: "user_initiated".to_string(),
+            occurred_at: Utc::now().to_rfc3339(),
+        };
+        if let Err(e) = ledger.record_egress(&record) {
+            warn!("feedback egress-ledger write failed (non-fatal): {e}");
         }
     }
 }
@@ -175,6 +224,57 @@ mod tests {
     async fn defer_feedback() {
         let sender = FeedbackSender::new(Arc::new(MockApiClient));
         sender.defer("sug_003", None).await.unwrap();
+    }
+
+    struct MockEgressLedger {
+        records: std::sync::Mutex<Vec<EgressLedgerRecord>>,
+    }
+
+    impl EgressLedgerSink for MockEgressLedger {
+        fn record_egress(&self, record: &EgressLedgerRecord) -> Result<(), CoreError> {
+            self.records.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn feedback_records_egress_ledger_on_success() {
+        let ledger = Arc::new(MockEgressLedger {
+            records: std::sync::Mutex::new(Vec::new()),
+        });
+        let sender =
+            FeedbackSender::new(Arc::new(MockApiClient)).with_egress_ledger(ledger.clone());
+        sender
+            .accept("sug_777", Some("useful".to_string()))
+            .await
+            .unwrap();
+
+        let records = ledger.records.lock().unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "a successful feedback send must record exactly one egress-ledger row"
+        );
+        let r = &records[0];
+        // #6442 (F9): feedback egress is audited under a user-initiated lawful basis (not
+        // telemetry-gated), with a deterministic record_id so retries de-dup in the store.
+        assert_eq!(r.destination, "server.suggestion_feedback");
+        assert_eq!(r.consent_state, "user_initiated");
+        assert_eq!(r.disposition, "uploaded");
+        assert_eq!(r.event_type, "SuggestionFeedback");
+        assert_eq!(r.event_id.as_deref(), Some("sug_777"));
+        assert_eq!(r.record_id, "suggestion_feedback|sug_777|Accepted");
+        assert!(
+            r.byte_count > 0,
+            "byte_count should reflect the egressed payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_without_ledger_is_noop() {
+        // No ledger wired (the None branch) — the send still succeeds, no panic.
+        let sender = FeedbackSender::new(Arc::new(MockApiClient));
+        sender.accept("sug_888", None).await.unwrap();
     }
 
     #[tokio::test]

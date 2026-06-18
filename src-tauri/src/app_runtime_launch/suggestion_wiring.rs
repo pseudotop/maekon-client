@@ -106,10 +106,12 @@ fn build_suggestion_manager(
     let history = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::history::SuggestionHistory::new(100),
     ));
-    let feedback = Arc::new(maekon_suggestion::feedback::FeedbackSender::new_with_sink(
-        api,
-        Some(feedback_sink),
-    ));
+    let feedback = Arc::new(
+        maekon_suggestion::feedback::FeedbackSender::new_with_sink(api, Some(feedback_sink))
+            // #6442 (F9): record feedback egress in the audit ledger (SqliteStorage impls
+            // EgressLedgerSink); captures the initial send + retry re-sends.
+            .with_egress_ledger(sqlite_storage.clone()),
+    );
     let deferred = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::deferred::DeferredManager::new(50),
     ));
@@ -218,10 +220,15 @@ fn build_suggestion_manager(
             let history = Arc::new(tokio::sync::Mutex::new(
                 maekon_suggestion::history::SuggestionHistory::new(100),
             ));
-            let feedback = Arc::new(maekon_suggestion::feedback::FeedbackSender::new_with_sink(
-                api,
-                Some(feedback_sink),
-            ));
+            let feedback = Arc::new(
+                maekon_suggestion::feedback::FeedbackSender::new_with_sink(
+                    api,
+                    Some(feedback_sink),
+                )
+                // #6442 (F9): record feedback egress in the audit ledger (SqliteStorage
+                // impls EgressLedgerSink); captures the initial send + retry re-sends.
+                .with_egress_ledger(sqlite_storage.clone()),
+            );
             let deferred = Arc::new(tokio::sync::Mutex::new(
                 maekon_suggestion::deferred::DeferredManager::new(50),
             ));

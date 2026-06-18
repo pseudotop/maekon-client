@@ -540,8 +540,9 @@ mod tests {
 
         // #6333 A16: make_command defaults to External origin, which now requires a
         // signature regardless of the policy flag — sign a valid token to exercise accept.
-        let sig = compute_policy_token_signature("pol-1", "nonce_1234", None, "test-secret");
-        let valid = make_command(&format!("pol-1:nonce_1234:{sig}"));
+        let nonce = issue_policy_nonce();
+        let sig = compute_policy_token_signature("pol-1", &nonce, None, "test-secret");
+        let valid = make_command(&format!("pol-1:{nonce}:{sig}"));
         assert!(client.validate_command(&valid).await.unwrap());
         drop(env_guard);
     }
@@ -554,8 +555,9 @@ mod tests {
         client.update_policies(vec![make_policy("pol-1")]).await;
 
         // #6333 A16: external-origin command must be signed to reach the replay check.
-        let sig = compute_policy_token_signature("pol-1", "nonce_1234", None, "test-secret");
-        let cmd = make_command(&format!("pol-1:nonce_1234:{sig}"));
+        let nonce = issue_policy_nonce();
+        let sig = compute_policy_token_signature("pol-1", &nonce, None, "test-secret");
+        let cmd = make_command(&format!("pol-1:{nonce}:{sig}"));
         assert!(client.validate_command(&cmd).await.unwrap());
         assert!(!client.validate_command(&cmd).await.unwrap());
         drop(env_guard);

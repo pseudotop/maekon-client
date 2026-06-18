@@ -474,13 +474,55 @@ fn build_seccomp_bpf(
         }
     }
 
+    // F4 (#6439): close the seccomp siblings that defeat the containment this filter
+    // relies on. Denied whenever any containment is active (same gate as io_uring above).
+    if !allowlist.allow_network || !allowlist.allow_process {
+        for &nr in &[
+            // memfd_create + execveat(.., AT_EMPTY_PATH) executes an anonymous in-memory
+            // image with NO path — bypassing the Landlock executable-PATH restriction the
+            // intentional execve/execveat allow (above) depends on. Deny the memfd so the
+            // only reachable executables stay Landlock's path-allowed set. (execve itself
+            // stays allowed — the child must exec the worker binary.)
+            libc::SYS_memfd_create,
+            // mount family: remount / bind / pivot the filesystem view to escape the
+            // Landlock path restriction. unshare(CLONE_NEWUSER)+setns is already denied in
+            // the process block; deny the direct new + legacy mount API too (defense in
+            // depth — a pre-existing namespace or future capability would otherwise
+            // re-open the bypass).
+            libc::SYS_mount,
+            libc::SYS_open_tree,
+            libc::SYS_move_mount,
+            libc::SYS_fsopen,
+            libc::SYS_fsconfig,
+            libc::SYS_mount_setattr,
+            libc::SYS_pivot_root,
+            libc::SYS_chroot,
+            // Kernel attack-surface / privilege primitives the worker never needs (it
+            // deserializes one JSON line and drives enigo): bpf (load programs),
+            // keyctl / add_key (kernel keyring), userfaultfd (an exploit-friendly
+            // userspace page-fault handler, a common heap-grooming / TOCTOU primitive).
+            libc::SYS_bpf,
+            libc::SYS_keyctl,
+            libc::SYS_add_key,
+            libc::SYS_userfaultfd,
+        ] {
+            rules.insert(nr, deny.clone());
+        }
+    }
+
     if rules.is_empty() {
         tracing::debug!("seccomp: no syscalls to block (all categories allowed)");
         // Return an empty allow-all program
         let filter = SeccompFilter::new(
             BTreeMap::new(),
+            // mismatch (default): with no rules, every syscall hits this — the allow-all.
             SeccompAction::Allow,
-            SeccompAction::Allow,
+            // match action: unused (there are no rules), but seccompiler rejects equal
+            // match/mismatch actions ("match_action and mismatch_action are equal").
+            // #6439 F5: this allow-all path (reached by a Permissive profile with
+            // allow_network=true) was never executed until the new linux-sandbox CI leg
+            // ran it — Allow/Allow made build_seccomp_bpf error at runtime.
+            SeccompAction::Errno(libc::EPERM as u32),
             std::env::consts::ARCH.try_into().map_err(|_| {
                 AutomationError::SandboxEnforcement("unsupported arch for seccomp".into())
             })?,
@@ -819,6 +861,31 @@ mod tests {
         });
         assert!(!standard.allow_network);
         assert!(!standard.allow_process);
+    }
+
+    #[test]
+    #[cfg(feature = "linux-sandbox")]
+    fn seccomp_filter_builds_for_all_profiles() {
+        // #6439 F5: actually RUN build_seccomp_bpf for every profile. The sandbox
+        // enforcement was previously only compile/clippy-checked, never executed
+        // (ADR-075 P-4 dead-spot). This exercises both the deny-list path (Standard/
+        // Strict) and the permissive allow-all path, and catches an invalid SYS_*
+        // number, seccompiler's empty-rule rejection, or an unsupported arch — including
+        // the F4 mount/memfd_create siblings just added.
+        for profile in [
+            SandboxProfile::Permissive,
+            SandboxProfile::Standard,
+            SandboxProfile::Strict,
+        ] {
+            let allowlist = LinuxSandbox::build_seccomp_allowlist(&SandboxConfig {
+                profile,
+                allow_network: matches!(profile, SandboxProfile::Permissive),
+                ..Default::default()
+            });
+            let _bpf = build_seccomp_bpf(&allowlist).unwrap_or_else(|e| {
+                panic!("build_seccomp_bpf must produce a valid BPF program for {profile:?}: {e:?}")
+            });
+        }
     }
 
     #[test]

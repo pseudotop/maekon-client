@@ -69,6 +69,10 @@ fn get_window_bounds(hwnd: HWND) -> Option<WindowBounds> {
 fn get_process_name(pid: u32) -> Option<String> {
     use sysinfo::{Pid, System};
 
+    if pid == 0 {
+        return None;
+    }
+
     let mut sys = System::new();
     sys.refresh_processes(
         sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
