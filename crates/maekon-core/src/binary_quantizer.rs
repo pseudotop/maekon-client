@@ -220,7 +220,7 @@ mod tests {
             q75: vec![0.0; 2],
             dimensions: 4,
         };
-        let err = BinaryQuantizer::encode(&vec![0.5f32; 4], &thresholds).unwrap_err();
+        let err = BinaryQuantizer::encode(&[0.5f32; 4], &thresholds).unwrap_err();
         assert!(matches!(err, CoreError::InvalidArguments { .. }));
     }
 

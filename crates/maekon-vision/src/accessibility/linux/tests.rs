@@ -226,7 +226,7 @@ async fn extractor_completes_within_timeout_on_no_dbus() {
     // Timing contract: the outer Result must be Ok (not Elapsed). The inner Result
     // (which may itself be Ok or Err depending on D-Bus availability) is irrelevant
     // here — only the wall-clock bound is asserted.
-    completed
+    let _ = completed
         .expect("extract_focused_element must complete within 5 s on no-D-Bus host (got Elapsed)");
 
     // extract_window_elements must also *complete* within 5 s.
@@ -235,7 +235,7 @@ async fn extractor_completes_within_timeout_on_no_dbus() {
         extractor.extract_window_elements(2, 50, PiiFilterLevel::Standard, false),
     )
     .await;
-    completed
+    let _ = completed
         .expect("extract_window_elements must complete within 5 s on no-D-Bus host (got Elapsed)");
 }
 

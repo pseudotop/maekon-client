@@ -55,7 +55,9 @@ pub(super) fn build_web_automation_wiring(
         shutdown_tx,
         event_tx.clone(),
         web_port,
-        local_auth_token,
+        // #6420: clone so the loopback gRPC dashboard can require the same per-session
+        // local-auth token the REST server enforces (the original is threaded below).
+        local_auth_token.clone(),
     );
     let support_context = WebServerSupportContext::new(
         config_manager.clone(),
@@ -166,6 +168,7 @@ pub(super) fn build_web_automation_wiring(
         sqlite_storage.clone(),
         config,
         config_manager,
+        local_auth_token,
         #[cfg(feature = "grpc-dashboard-external")]
         &mut web_server_runtime,
         #[cfg(not(feature = "grpc-dashboard-external"))]
@@ -198,6 +201,9 @@ fn spawn_dashboard_grpc_servers(
     sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
     config: &maekon_core::config::AppConfig,
     config_manager: maekon_core::config_manager::ConfigManager,
+    // #6420: per-session local-auth token — the loopback gRPC dashboard requires it
+    // (same token the REST `/api` surface enforces via `require_local_auth`).
+    local_auth_token: Arc<str>,
     #[cfg(feature = "grpc-dashboard-external")]
     web_server_runtime: &mut crate::web_server_runtime::WebServerLaunchResult,
     #[cfg(not(feature = "grpc-dashboard-external"))]
@@ -227,6 +233,7 @@ fn spawn_dashboard_grpc_servers(
             system_monitor: shared_grpc_monitor.clone(),
             event_tx: event_tx.clone(),
             integration_auth_token: config.web.integration_auth_token.clone(),
+            local_auth_token: Some(local_auth_token),
             pii_sanitizer: Some(grpc_pii_sanitizer),
             ai_runtime_status_snapshot: web_server_runtime.ai_runtime_status.clone(),
             load_policy,

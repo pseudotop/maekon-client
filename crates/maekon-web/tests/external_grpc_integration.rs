@@ -887,6 +887,7 @@ async fn loopback_server_unaffected_when_external_disabled() {
         system_monitor: MockSystemMonitor::new(20.0, 2048, 8192),
         event_tx,
         integration_auth_token: None,
+        local_auth_token: None,
         pii_sanitizer: None,
         ai_runtime_status_snapshot: None,
         load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),

@@ -395,6 +395,11 @@ pub async fn serve(cfg: GrpcSpawnConfig) -> Result<(), GrpcServeError> {
     info!(%addr, "starting gRPC dashboard server (D13-v2b)");
 
     let service = DashboardServiceImpl::from_spawn_config(&cfg);
+    // #6420: per-session local-auth gate, mirroring the REST `require_local_auth`
+    // middleware. Applied to the dashboard service ONLY — the health service stays open
+    // so `grpc_health_probe` liveness checks work without a token. `None` disables the
+    // gate (matches REST's behavior for test / unconfigured builds).
+    let local_auth = cfg.local_auth_token.clone();
 
     // Register the standard grpc.health.v1 health service for external
     // liveness checks (`grpc_health_probe -addr=localhost:10080`).
@@ -426,7 +431,13 @@ pub async fn serve(cfg: GrpcSpawnConfig) -> Result<(), GrpcServeError> {
         // (AWS ELB 350s, GCP 600s, Cloudflare 100s).
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-        .add_service(DashboardServiceServer::new(service))
+        .add_service(DashboardServiceServer::with_interceptor(
+            service,
+            move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
+                auth_gate::check_local_auth(req.metadata(), local_auth.as_deref())?;
+                Ok(req)
+            },
+        ))
         .add_service(health_service)
         .serve_with_incoming(incoming)
         .await
@@ -646,6 +657,7 @@ mod tests {
                 system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
                 event_tx,
                 integration_auth_token: None,
+                local_auth_token: None,
                 pii_sanitizer: None,
                 ai_runtime_status_snapshot: None,
                 load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
