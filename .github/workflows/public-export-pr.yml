@@ -44,6 +44,8 @@ jobs:
         with:
           client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
 
       - name: Open or update public export PR
         env:

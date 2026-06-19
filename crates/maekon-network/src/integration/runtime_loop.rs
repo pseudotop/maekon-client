@@ -72,6 +72,66 @@ impl Default for IntegrationRuntimeLoopProfile {
     }
 }
 
+/// Upper bound on how far the egress/inbox backstop polls are stretched while
+/// the integration is quiet (#6516). 4× the base interval (e.g. 15s → 60s).
+const POLL_BACKOFF_MAX_FACTOR: u32 = 4;
+
+/// Adaptive backoff for the egress/inbox *backstop* polls (#6516).
+///
+/// Those polls fire every base interval to flush queued egress / pull the remote
+/// inbox even without a push signal. When the integration is quiet (consecutive
+/// polls find nothing) we stretch the next poll up to `base * max_factor`, so an
+/// idle integration stops waking the network every base interval. Any real work
+/// (a non-empty cycle) or a push signal snaps the cadence back to base, so
+/// delivery latency stays bounded and recovers the moment traffic resumes.
+///
+/// Deliberately scoped: heartbeat is NOT backed off (it keeps the session
+/// alive), and this keys on *integration traffic* — never on capture-pause,
+/// which is a privacy control for screen capture, not a reason to stop syncing.
+struct PollBackoff {
+    base: Duration,
+    max_factor: u32,
+    empty_streak: u32,
+}
+
+impl PollBackoff {
+    fn new(base: Duration, max_factor: u32) -> Self {
+        Self {
+            base,
+            max_factor: max_factor.max(1),
+            empty_streak: 0,
+        }
+    }
+
+    /// Delay until the next backstop poll after a completed cycle. `did_work`
+    /// means the cycle flushed or received something. Empty cycles grow the
+    /// delay exponentially (capped at `base * max_factor`); any work resets it.
+    fn after_cycle(&mut self, did_work: bool) -> Duration {
+        if did_work {
+            self.empty_streak = 0;
+        } else {
+            self.empty_streak = self.empty_streak.saturating_add(1);
+        }
+        self.current_delay()
+    }
+
+    /// Snap back to the base cadence — called when a push signal shows the
+    /// integration is active again.
+    fn reset_to_base(&mut self) -> Duration {
+        self.empty_streak = 0;
+        self.base
+    }
+
+    fn current_delay(&self) -> Duration {
+        // 1×, 2×, 4×, … capped at max_factor. Cap the shift to avoid overflow.
+        let factor = 1u32
+            .checked_shl(self.empty_streak.min(16))
+            .unwrap_or(u32::MAX)
+            .min(self.max_factor);
+        self.base * factor
+    }
+}
+
 #[derive(Clone)]
 pub struct IntegrationRuntimeLoop {
     session: Arc<dyn IntegrationSessionPort>,
@@ -226,6 +286,13 @@ impl IntegrationRuntimeLoop {
         egress_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         inbox_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // #6516: quiet-backoff for the egress/inbox backstop polls. Heartbeat and
+        // connect keep their base cadence (session keep-alive / cheap no-op).
+        let mut egress_backoff =
+            PollBackoff::new(self.profile.egress_interval, POLL_BACKOFF_MAX_FACTOR);
+        let mut inbox_backoff =
+            PollBackoff::new(self.profile.inbox_refresh_interval, POLL_BACKOFF_MAX_FACTOR);
+
         loop {
             tokio::select! {
                 _ = connect_interval.tick() => {
@@ -261,13 +328,19 @@ impl IntegrationRuntimeLoop {
                     if !egress_gate.is_ready(now) {
                         continue;
                     }
-                    if let Err(error) = self.run_egress_cycle().await {
-                        let delay = egress_gate.on_failure(now, &core_to_network_error(&error));
-                        self.record_cycle_failure(IntegrationRuntimeLane::Egress, &error, delay).await;
-                        warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime egress cycle failed");
-                    } else {
-                        egress_gate.on_success();
-                        self.record_cycle_success(IntegrationRuntimeLane::Egress).await;
+                    match self.run_egress_cycle().await {
+                        Ok(flushed) => {
+                            egress_gate.on_success();
+                            self.record_cycle_success(IntegrationRuntimeLane::Egress).await;
+                            // #6516: stretch the next backstop flush while quiet; an
+                            // empty flush grows the delay, a non-empty one resets it.
+                            egress_interval.reset_after(egress_backoff.after_cycle(flushed > 0));
+                        }
+                        Err(error) => {
+                            let delay = egress_gate.on_failure(now, &core_to_network_error(&error));
+                            self.record_cycle_failure(IntegrationRuntimeLane::Egress, &error, delay).await;
+                            warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime egress cycle failed");
+                        }
                     }
                 }
                 signal = self.wait_for_egress_signal(), if self.egress_signal.is_some() => {
@@ -281,6 +354,8 @@ impl IntegrationRuntimeLoop {
                             } else {
                                 egress_gate.on_success();
                                 self.record_cycle_success(IntegrationRuntimeLane::Egress).await;
+                                // #6516: a push signal means egress is active — snap the backstop back to base.
+                                egress_interval.reset_after(egress_backoff.reset_to_base());
                             }
                         }
                         Ok(_) => {}
@@ -296,13 +371,20 @@ impl IntegrationRuntimeLoop {
                     if !inbox_gate.is_ready(now) {
                         continue;
                     }
-                    if let Err(error) = self.run_inbox_cycle().await {
-                        let delay = inbox_gate.on_failure(now, &core_to_network_error(&error));
-                        self.record_cycle_failure(IntegrationRuntimeLane::Inbox, &error, delay).await;
-                        warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime inbox cycle failed");
-                    } else {
-                        inbox_gate.on_success();
-                        self.record_cycle_success(IntegrationRuntimeLane::Inbox).await;
+                    match self.run_inbox_cycle().await {
+                        Ok(received) => {
+                            inbox_gate.on_success();
+                            self.record_cycle_success(IntegrationRuntimeLane::Inbox).await;
+                            // #6516: stretch the next backstop poll while quiet. The
+                            // inbox push signal still fires immediately on new inbound
+                            // (resetting to base), so inbound latency stays bounded.
+                            inbox_interval.reset_after(inbox_backoff.after_cycle(received > 0));
+                        }
+                        Err(error) => {
+                            let delay = inbox_gate.on_failure(now, &core_to_network_error(&error));
+                            self.record_cycle_failure(IntegrationRuntimeLane::Inbox, &error, delay).await;
+                            warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime inbox cycle failed");
+                        }
                     }
                 }
                 signal = self.wait_for_inbox_signal(), if self.inbox_signal.is_some() => {
@@ -316,6 +398,8 @@ impl IntegrationRuntimeLoop {
                             } else {
                                 inbox_gate.on_success();
                                 self.record_cycle_success(IntegrationRuntimeLane::Inbox).await;
+                                // #6516: a push signal means new inbound — snap the backstop poll back to base.
+                                inbox_interval.reset_after(inbox_backoff.reset_to_base());
                             }
                         }
                         Ok(_) => {}
@@ -649,5 +733,33 @@ mod tests {
         task.await.unwrap();
 
         assert!(*inbox.refresh_calls.lock().await >= 2);
+    }
+
+    #[test]
+    fn poll_backoff_grows_on_empty_and_resets_on_work() {
+        let base = Duration::from_secs(15);
+        let mut backoff = PollBackoff::new(base, POLL_BACKOFF_MAX_FACTOR);
+
+        // Empty cycles grow the delay exponentially, capped at base * max_factor.
+        assert_eq!(backoff.after_cycle(false), base * 2); // 1 empty → 2×
+        assert_eq!(backoff.after_cycle(false), base * 4); // 2 empties → 4× (cap)
+        assert_eq!(backoff.after_cycle(false), base * 4); // stays capped at 4×
+
+        // A non-empty cycle snaps the cadence back to base...
+        assert_eq!(backoff.after_cycle(true), base);
+        assert_eq!(backoff.after_cycle(false), base * 2); // ...then grows again.
+
+        // A push signal also resets to base.
+        assert_eq!(backoff.reset_to_base(), base);
+        assert_eq!(backoff.after_cycle(false), base * 2);
+    }
+
+    #[test]
+    fn poll_backoff_max_factor_clamped_to_at_least_one() {
+        let base = Duration::from_secs(10);
+        // max_factor 0 is clamped to 1 → cadence never deviates from base.
+        let mut backoff = PollBackoff::new(base, 0);
+        assert_eq!(backoff.after_cycle(false), base);
+        assert_eq!(backoff.after_cycle(false), base);
     }
 }

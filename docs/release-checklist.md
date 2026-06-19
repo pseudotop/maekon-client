@@ -97,6 +97,12 @@ Required before stable promotion:
 - `MAEKON_RELEASE_APP_CLIENT_ID`
 - `MAEKON_RELEASE_APP_PRIVATE_KEY`
 
+The release App installation on `pseudotop/maekon-client` must grant
+`Contents: read` and `Pull requests: write`. The public export workflow requests
+those installation-token permissions explicitly so App-authored public export
+PR creation fails during token generation if the GitHub App permission update is
+missing.
+
 The release App installation must be able to read repository security alerts
 used by `release.yml` (`Dependabot alerts` and `Code scanning alerts`). If the
 App permission update is still pending, use a short-lived
