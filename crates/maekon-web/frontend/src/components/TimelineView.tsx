@@ -80,9 +80,7 @@ export default function TimelineView({
   if (timeline.length === 0) {
     return (
       <Card padding="md">
-        <p className={cn(typography.body, colors.text.secondary, 'py-8 text-center')}>
-          No activity recorded for this day
-        </p>
+        <p className={cn(typography.body, colors.text.secondary, 'py-8 text-center')}>{t('timeline.noActivity')}</p>
       </Card>
     )
   }

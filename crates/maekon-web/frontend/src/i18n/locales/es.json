@@ -216,7 +216,8 @@
     "filters": "Filters",
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions"
+    "tagSuggestions": "Tag suggestions",
+    "noActivity": "No hay actividad registrada para este día"
   },
   "settings": {
     "title": "Configuración",
@@ -2511,5 +2512,9 @@
       "name": "Iniciar trabajo profundo",
       "description": "Abre VS Code y elimina distracciones para comenzar una sesión de trabajo enfocado"
     }
+  },
+  "metrics": {
+    "cpuPercent": "CPU %",
+    "memoryGb": "Memoria (GB)"
   }
 }

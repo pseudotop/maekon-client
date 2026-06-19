@@ -216,7 +216,8 @@
     "filters": "Filters",
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions"
+    "tagSuggestions": "Tag suggestions",
+    "noActivity": "这一天没有记录的活动"
   },
   "settings": {
     "title": "设置",
@@ -2511,5 +2512,9 @@
       "name": "开始深度工作",
       "description": "打开 VS Code 并关闭干扰，进入专注工作状态"
     }
+  },
+  "metrics": {
+    "cpuPercent": "CPU %",
+    "memoryGb": "内存 (GB)"
   }
 }

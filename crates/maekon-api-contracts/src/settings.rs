@@ -74,13 +74,22 @@ pub struct NotificationSettings {
     pub high_usage_threshold: u32,
 }
 
+/// serde default for `UpdateSettings::channel`: a missing channel (e.g. legacy
+/// settings persisted before the field existed) deserializes to the valid
+/// "stable" channel rather than an empty string (which is not a valid channel).
+/// Matches the struct `Default` and the TS/openapi contract, which treat
+/// `channel` as a required, always-present field.
+fn default_update_channel() -> String {
+    "stable".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateSettings {
     pub enabled: bool,
     pub check_interval_hours: u32,
     /// Update channel: "stable", "pre_release", or "nightly".
-    #[serde(default)]
+    #[serde(default = "default_update_channel")]
     pub channel: String,
     /// Legacy field — kept for backward compatibility. New code uses `channel`.
     #[serde(default, skip_serializing)]

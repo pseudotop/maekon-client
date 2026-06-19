@@ -144,7 +144,7 @@ impl ConversationSession for LocalLlmSession {
 
         // Pre-increment turn count.
         turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock() = std::time::Instant::now();
+        *self.last_active.lock() = Utc::now();
 
         // We need to move owned values into the stream closure.
         let session_id = self.session_id.clone();
@@ -300,8 +300,11 @@ impl ConversationSession for LocalLlmSession {
     }
 
     fn info(&self) -> ConversationSessionInfo {
-        let elapsed = self.last_active.lock().elapsed();
-        let last_active_utc = Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default();
+        // #6506 follow-up: read the stored wall-clock directly. Previously this
+        // subtracted a monotonic `Instant::elapsed()` from `Utc::now()`, which
+        // produced a skewed (or future) timestamp if the system clock shifted
+        // between the last activity and this call.
+        let last_active_utc = *self.last_active.lock();
         ConversationSessionInfo {
             session_id: self.session_id.clone(),
             provider_name: "ollama".to_string(),

@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -72,7 +72,10 @@ pub struct LocalLlmSession {
     pub(super) state: parking_lot::Mutex<SessionState>,
     pub(super) turn_count: AtomicU32,
     pub(super) created_at: DateTime<Utc>,
-    pub(super) last_active: parking_lot::Mutex<Instant>,
+    // #6506 follow-up: wall-clock so `info()` reports it directly without
+    // subtracting a monotonic elapsed from `Utc::now()` (which skews if the
+    // system clock shifts). Used only for the displayed last-active timestamp.
+    pub(super) last_active: parking_lot::Mutex<DateTime<Utc>>,
     pub(super) http_client: reqwest::Client,
     pub(super) config: Arc<AiSessionConfig>,
 }
@@ -104,7 +107,7 @@ impl LocalLlmSession {
             state: parking_lot::Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
-            last_active: parking_lot::Mutex::new(Instant::now()),
+            last_active: parking_lot::Mutex::new(Utc::now()),
             // #6205: connect + per-read idle timeouts so a stalled Ollama
             // endpoint cannot hang the turn forever (see build_ollama_http_client).
             http_client: build_ollama_http_client(),

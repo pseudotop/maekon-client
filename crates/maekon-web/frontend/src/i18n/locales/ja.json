@@ -216,7 +216,8 @@
     "filters": "Filters",
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions"
+    "tagSuggestions": "Tag suggestions",
+    "noActivity": "この日に記録されたアクティビティはありません"
   },
   "settings": {
     "title": "設定",
@@ -2511,5 +2512,9 @@
       "name": "集中作業の開始",
       "description": "VS Code を開き、気を散らすものを排除して集中作業セッションを開始します"
     }
+  },
+  "metrics": {
+    "cpuPercent": "CPU %",
+    "memoryGb": "メモリ (GB)"
   }
 }
