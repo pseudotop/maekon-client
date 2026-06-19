@@ -1,0 +1,80 @@
+name: Public Export PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_branch:
+        description: 'Public export branch to open against main'
+        required: true
+        type: string
+      title:
+        description: 'Pull request title'
+        required: false
+        default: 'chore: refresh public SSOT export'
+        type: string
+      body:
+        description: 'Pull request body'
+        required: false
+        default: 'Public export snapshot from the internal Maekon Client SSOT.'
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  open-public-export-pr:
+    name: Open App-Authored Public Export PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate public export branch
+        env:
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${HEAD_BRANCH}" != codex/public-export-* && "${HEAD_BRANCH}" != release/public-export-* ]]; then
+            echo "::error::head_branch must be a public export branch"
+            exit 1
+          fi
+
+      - name: Generate release App token
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Open or update public export PR
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          PR_TITLE: ${{ inputs.title }}
+          PR_BODY: ${{ inputs.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api /installation/repositories >/dev/null
+
+          existing_pr="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${HEAD_BRANCH}" \
+            --base main \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${PR_TITLE}" \
+              --body "${PR_BODY}"
+            echo "Updated existing public export PR #${existing_pr}"
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base main \
+              --head "${HEAD_BRANCH}" \
+              --title "${PR_TITLE}" \
+              --body "${PR_BODY}"
+          fi

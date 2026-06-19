@@ -75,7 +75,7 @@ pub struct TrayActionOutcome {
     pub state: TrayDebugState,
 }
 
-fn focus_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) fn focus_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         window.show().unwrap_or_default();
         window.set_focus().unwrap_or_default();
@@ -623,7 +623,11 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                 {
                     debug!("emit magic-overlay failed: {e}");
                 }
-                let _ = app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload);
+                if let Err(e) =
+                    app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload)
+                {
+                    debug!("emit tracking-panel failed: {e}");
+                }
                 if let Err(e) = sync_tray_state(app, new_paused, indicator_visible) {
                     debug!("sync_tray_state failed: {e}");
                 }
@@ -662,7 +666,11 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                 {
                     debug!("emit magic-overlay failed: {e}");
                 }
-                let _ = app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload);
+                if let Err(e) =
+                    app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload)
+                {
+                    debug!("emit tracking-panel failed: {e}");
+                }
                 if let Some(panel) = app.get_webview_window("tracking-panel") {
                     if new_visible {
                         if let Err(e) = panel.show() {

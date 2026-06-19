@@ -42,6 +42,20 @@ pub trait EmbeddingProvider: Send + Sync {
 
     /// Identifier of the embedding model (used for versioning stored vectors).
     fn model_id(&self) -> &str;
+
+    /// Evict an idle, lazily-loaded model to reclaim RSS (#6441 F18).
+    ///
+    /// Providers that hold a heavyweight resident model (the local
+    /// fastembed/ONNX adapter) override this to drop the model when it has not
+    /// been used within `idle_after`; the next `embed` lazily reloads it. The
+    /// default is a no-op returning `false` — stateless/remote/no-op providers
+    /// hold nothing to evict, so a periodic caller can invoke this on any
+    /// provider without per-implementor changes (low-ripple default method).
+    ///
+    /// Returns `true` when a resident model was actually evicted.
+    fn evict_if_idle(&self, _idle_after: std::time::Duration) -> bool {
+        false
+    }
 }
 
 /// Port for embedding models that support runtime hot-reloading.

@@ -114,12 +114,20 @@ impl UnifiedClient {
             -> Pin<Box<dyn Future<Output = Result<R, CoreError>> + Send + 'a>>,
     {
         self.ensure_grpc_context().await?;
-        let mut guard = self.grpc_context.lock().await;
-        let client = guard.as_mut().ok_or_else(|| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: format!("gRPC context client initialize failure ({op})"),
-        })?;
-        f(client).await
+        // #6442 F11: clone the client out of the lock and drop the guard before f()
+        // awaits its RPC. Holding the context Mutex across the await serializes every
+        // context call and defeats the tonic channel's HTTP/2 multiplexing.
+        let mut client = {
+            let guard = self.grpc_context.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: format!("gRPC context client initialize failure ({op})"),
+                })?
+                .clone()
+        };
+        f(&mut client).await
     }
 
     /// Authenticate via gRPC GetToken or REST login.
@@ -146,11 +154,17 @@ impl UnifiedClient {
     ) -> Result<AuthResponse, CoreError> {
         self.ensure_grpc_auth().await?;
 
-        let mut guard = self.grpc_auth.lock().await;
-        let client = guard.as_mut().ok_or_else(|| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: "Failed to initialize gRPC auth client".to_string(),
-        })?;
+        // #6442 F11: clone out of the lock before the RPC await (see the helper note).
+        let mut client = {
+            let guard = self.grpc_auth.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: "Failed to initialize gRPC auth client".to_string(),
+                })?
+                .clone()
+        };
 
         let response = client
             .get_token(identifier, credential, organization_id)
@@ -229,11 +243,17 @@ impl UnifiedClient {
     ) -> Result<SessionResponse, CoreError> {
         self.ensure_grpc_session().await?;
 
-        let mut guard = self.grpc_session.lock().await;
-        let client = guard.as_mut().ok_or_else(|| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: "gRPC session client initialize failure".to_string(),
-        })?;
+        // #6442 F11: clone out of the lock before the RPC await.
+        let mut client = {
+            let guard = self.grpc_session.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: "gRPC session client initialize failure".to_string(),
+                })?
+                .clone()
+        };
 
         let response = client.create_session(client_id, metadata).await?;
 
@@ -259,11 +279,17 @@ impl UnifiedClient {
         let access_token = self.token_manager.get_token().await?;
         self.ensure_grpc_session().await?;
 
-        let mut guard = self.grpc_session.lock().await;
-        let client = guard.as_mut().ok_or_else(|| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: "gRPC session client initialize failure".to_string(),
-        })?;
+        // #6442 F11: clone out of the lock before the RPC await.
+        let mut client = {
+            let guard = self.grpc_session.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: "gRPC session client initialize failure".to_string(),
+                })?
+                .clone()
+        };
 
         // Heartbeat now returns Empty — success means the server acknowledged.
         client.heartbeat(session_id, &access_token).await?;
@@ -304,11 +330,19 @@ impl UnifiedClient {
 
         self.ensure_grpc_context().await?;
 
-        let mut guard = self.grpc_context.lock().await;
-        let client = guard.as_mut().ok_or_else(|| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: "gRPC context client initialize failure".to_string(),
-        })?;
+        // #6442 F11: clone out of the lock before subscribing. A streaming RPC holds its
+        // result for the stream's whole lifetime — holding the context Mutex across it
+        // would block every other context call for as long as the stream stays open.
+        let mut client = {
+            let guard = self.grpc_context.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: "gRPC context client initialize failure".to_string(),
+                })?
+                .clone()
+        };
 
         let stream = client
             .subscribe_suggestions_with_token(session_id, &access_token)

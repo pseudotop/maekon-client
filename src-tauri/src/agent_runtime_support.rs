@@ -431,6 +431,21 @@ impl<'a> AgentSupportContextBuilder<'a> {
             cross_device_sync_interval: Duration::from_secs(300), // 5 min default
         };
 
+        // #6442 F10: surface an incoherent egress-privacy pairing (AllowFiltered + PII
+        // filtering Off) ONCE, loudly, at config load — replacing #5992's silent per-call
+        // upgrade warn with explicit user feedback. Egress proceeds safely: both the
+        // window-title and OCR-image paths floor to Basic via
+        // ExternalDataPolicy::effective_egress_pii_level.
+        if scheduler_config.has_incoherent_egress_privacy() {
+            tracing::error!(
+                "Incoherent privacy config: external_data_policy=AllowFiltered with PII \
+                 filter level Off. AllowFiltered means 'egress, but filter PII', so Off is \
+                 contradictory. Egress (window titles AND OCR images) is filtered at the \
+                 Basic floor; set a PII filter level of at least Basic, or change the data \
+                 policy, to resolve this. (#6442 F10)"
+            );
+        }
+
         Ok(AgentSupportContext {
             frame_storage,
             system_monitor,

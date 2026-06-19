@@ -109,7 +109,7 @@ jobs:
           a maintainer workstation with a verified signing key:
 
           ```bash
-          ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }}
+          MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }}
           ```
 
           The stable tag push triggers `release.yml`.
@@ -142,4 +142,4 @@ jobs:
           echo "  RC tag:     ${{ steps.versions.outputs.rc_tag }}"
           echo "  Stable tag: ${{ steps.versions.outputs.stable_tag }}"
           echo "  Branch:     ${{ steps.promotion.outputs.promotion_branch }}"
-          echo "After merge, run ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }} from protected main."
+          echo "After merge, run MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/publish-stable-tag.sh ${{ steps.versions.outputs.stable_version }} from protected main."
