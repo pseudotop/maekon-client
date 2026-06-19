@@ -8,6 +8,7 @@ import type {
   FocusHighlightPayload,
   FocusModePayload,
   GoalProgressItem,
+  OverlayFullscreenPolicyPayload,
   OverlayMode,
   OverlayState,
   PendingConfirmationDto,
@@ -39,6 +40,7 @@ type OverlayAction =
   | { type: 'automation-confirm-dismiss' }
   | { type: 'codex-approval-request'; payload: CodexApprovalDto }
   | { type: 'codex-approval-dismiss' }
+  | { type: 'set-fullscreen-policy'; payload: OverlayFullscreenPolicyPayload }
 
 const initialState: OverlayState = {
   mode: 'minimal',
@@ -59,6 +61,7 @@ const initialState: OverlayState = {
   detectionSelectedId: null,
   pendingConfirmation: null,
   pendingCodexApproval: null,
+  fullscreenPolicy: null,
 }
 
 function reducer(state: OverlayState, action: OverlayAction): OverlayState {
@@ -147,6 +150,8 @@ function reducer(state: OverlayState, action: OverlayAction): OverlayState {
       return { ...state, pendingCodexApproval: action.payload }
     case 'codex-approval-dismiss':
       return { ...state, pendingCodexApproval: null }
+    case 'set-fullscreen-policy':
+      return { ...state, fullscreenPolicy: action.payload }
     default:
       return state
   }
@@ -156,102 +161,144 @@ export function useOverlayEvents() {
   const [state, dispatch] = useReducer(reducer, initialState)
 
   useEffect(() => {
-    let unlisten: Array<() => void> = []
+    const unlisten: Array<() => void> = []
 
     async function setup() {
-      const { listen } = await import('@tauri-apps/api/event')
-
-      const u1 = await listen<CoachingPayload>('overlay:show-coaching', (e) => {
-        dispatch({ type: 'show-coaching', payload: e.payload })
-      })
-      const u2 = await listen<{ message_id: string; personalized_text: string }>('overlay:upgrade-message', (e) => {
-        dispatch({ type: 'upgrade-message', payload: e.payload })
-      })
-      const u3 = await listen('overlay:dismiss', () => {
-        dispatch({ type: 'dismiss' })
-      })
-      const u4 = await listen<FocusHighlightPayload>('overlay:update-focus', (e) => {
-        dispatch({ type: 'update-focus', payload: e.payload })
-      })
-      const u5 = await listen<{ goals: GoalProgressItem[] }>('overlay:update-goals', (e) => {
-        dispatch({ type: 'update-goals', payload: e.payload.goals })
-      })
-      const u6 = await listen<{ mode: OverlayMode }>('overlay:set-mode', (e) => {
-        dispatch({ type: 'set-mode', payload: e.payload.mode })
-      })
-
-      const u7 = await listen('overlay:clear-focus', () => {
-        dispatch({ type: 'clear-focus' })
-      })
-
-      const u8 = await listen<CaptureStatePayload>('overlay:capture-state-changed', (e) => {
-        dispatch({ type: 'capture-state-changed', payload: e.payload })
-      })
-
-      const u9 = await listen<FocusModePayload>('overlay:focus-mode', (e) => {
-        dispatch({ type: 'set-focus-mode', payload: { active: e.payload.active, auto: e.payload.auto ?? false } })
-      })
-
-      // u10: Suggestions panel toggle (from Cmd+Shift+S)
-      const u10 = await listen('overlay:toggle-suggestions', () => {
-        dispatch({ type: 'toggle-suggestions-panel' })
-      })
-
-      // u11: Explicit suggestions panel open/close request (from tracking panel)
-      const u11 = await listen<{ open: boolean }>('overlay:set-suggestions-panel', (e) => {
-        dispatch({ type: 'toggle-suggestions-panel', payload: !!e.payload.open })
-      })
-
-      // u12: Suggestions changed — re-fetch
-      const u12 = await listen<{ count: number }>('overlay:suggestions-changed', async () => {
-        const { invoke } = await import('@tauri-apps/api/core')
-        try {
-          const suggestions = await invoke<SuggestionViewDto[]>('get_pending_suggestions')
-          dispatch({ type: 'set-suggestions', payload: redactSuggestionViews(suggestions) })
-        } catch (_e) {
-          console.warn('get_pending_suggestions failed')
-        }
-      })
-
-      // u13: Capture feedback flash
-      const u13 = await listen<{ timestamp: string }>('overlay:capture-feedback', (e) => {
-        dispatch({ type: 'capture-feedback', payload: e.payload.timestamp })
-      })
-
-      const u14 = await listen<DetectionScenePayload>('overlay:detection-update', (e) => {
-        dispatch({ type: 'detection-update', payload: e.payload })
-      })
-
-      const u15 = await listen('overlay:detection-clear', () => {
-        dispatch({ type: 'detection-clear' })
-      })
-
-      const u16 = await listen<PendingConfirmationDto>('automation:confirm-request', (e) => {
-        dispatch({ type: 'automation-confirm-request', payload: e.payload })
-      })
-
-      const u17 = await listen<SuggestionSurfacePayload>('overlay:set-suggestion-surface', (e) => {
-        dispatch({ type: 'set-suggestion-surface', payload: e.payload })
-      })
-
-      // u18: Codex app-server approval request (E21 #5044) → CodexApprovalModal
-      const u18 = await listen<CodexApprovalDto>('codex:approval-request', (e) => {
-        dispatch({ type: 'codex-approval-request', payload: e.payload })
-      })
-
-      const u19 = await listen<PointerContextPayload>('overlay:pointer-context-update', (e) => {
-        dispatch({ type: 'pointer-context-update', payload: e.payload })
-      })
-
-      unlisten = [u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17, u18, u19]
-
-      // Query actual backend state (overlay window may be created after state changes)
+      // Register each listener and track its unlisten fn immediately by pushing
+      // onto `unlisten`. Previously the unlisten fns were collected into one
+      // array only AFTER all registrations, so if any `await listen()` threw
+      // mid-setup the remaining listeners were silently skipped AND the ones
+      // already registered leaked (cleanup saw an empty array). Incremental push
+      // + the surrounding try/catch make a partial failure both visible and
+      // cleanly torn down by the effect's cleanup.
       try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const status = await invoke<CaptureStatePayload>('get_capture_status')
-        dispatch({ type: 'capture-state-changed', payload: status })
+        const { listen } = await import('@tauri-apps/api/event')
+
+        unlisten.push(
+          await listen<CoachingPayload>('overlay:show-coaching', (e) => {
+            dispatch({ type: 'show-coaching', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen<{ message_id: string; personalized_text: string }>('overlay:upgrade-message', (e) => {
+            dispatch({ type: 'upgrade-message', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen('overlay:dismiss', () => {
+            dispatch({ type: 'dismiss' })
+          }),
+        )
+        unlisten.push(
+          await listen<FocusHighlightPayload>('overlay:update-focus', (e) => {
+            dispatch({ type: 'update-focus', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen<{ goals: GoalProgressItem[] }>('overlay:update-goals', (e) => {
+            dispatch({ type: 'update-goals', payload: e.payload.goals })
+          }),
+        )
+        unlisten.push(
+          await listen<{ mode: OverlayMode }>('overlay:set-mode', (e) => {
+            dispatch({ type: 'set-mode', payload: e.payload.mode })
+          }),
+        )
+        unlisten.push(
+          await listen('overlay:clear-focus', () => {
+            dispatch({ type: 'clear-focus' })
+          }),
+        )
+        unlisten.push(
+          await listen<CaptureStatePayload>('overlay:capture-state-changed', (e) => {
+            dispatch({ type: 'capture-state-changed', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen<FocusModePayload>('overlay:focus-mode', (e) => {
+            dispatch({ type: 'set-focus-mode', payload: { active: e.payload.active, auto: e.payload.auto ?? false } })
+          }),
+        )
+        // Suggestions panel toggle (from Cmd+Shift+S)
+        unlisten.push(
+          await listen('overlay:toggle-suggestions', () => {
+            dispatch({ type: 'toggle-suggestions-panel' })
+          }),
+        )
+        // Explicit suggestions panel open/close request (from tracking panel)
+        unlisten.push(
+          await listen<{ open: boolean }>('overlay:set-suggestions-panel', (e) => {
+            dispatch({ type: 'toggle-suggestions-panel', payload: !!e.payload.open })
+          }),
+        )
+        // Suggestions changed — re-fetch
+        unlisten.push(
+          await listen<{ count: number }>('overlay:suggestions-changed', async () => {
+            const { invoke } = await import('@tauri-apps/api/core')
+            try {
+              const suggestions = await invoke<SuggestionViewDto[]>('get_pending_suggestions')
+              dispatch({ type: 'set-suggestions', payload: redactSuggestionViews(suggestions) })
+            } catch (_e) {
+              console.warn('get_pending_suggestions failed')
+            }
+          }),
+        )
+        // Capture feedback flash
+        unlisten.push(
+          await listen<{ timestamp: string }>('overlay:capture-feedback', (e) => {
+            dispatch({ type: 'capture-feedback', payload: e.payload.timestamp })
+          }),
+        )
+        unlisten.push(
+          await listen<DetectionScenePayload>('overlay:detection-update', (e) => {
+            dispatch({ type: 'detection-update', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen('overlay:detection-clear', () => {
+            dispatch({ type: 'detection-clear' })
+          }),
+        )
+        unlisten.push(
+          await listen<PendingConfirmationDto>('automation:confirm-request', (e) => {
+            dispatch({ type: 'automation-confirm-request', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen<SuggestionSurfacePayload>('overlay:set-suggestion-surface', (e) => {
+            dispatch({ type: 'set-suggestion-surface', payload: e.payload })
+          }),
+        )
+        // Codex app-server approval request (E21 #5044) → CodexApprovalModal
+        unlisten.push(
+          await listen<CodexApprovalDto>('codex:approval-request', (e) => {
+            dispatch({ type: 'codex-approval-request', payload: e.payload })
+          }),
+        )
+        unlisten.push(
+          await listen<PointerContextPayload>('overlay:pointer-context-update', (e) => {
+            dispatch({ type: 'pointer-context-update', payload: e.payload })
+          }),
+        )
+        // Fullscreen overlay-policy decisions pushed from Rust: mirror the policy
+        // in state so the overlay UI/diagnostics can reflect it (Rust still
+        // enforces the policy itself by hiding the overlay window).
+        unlisten.push(
+          await listen<OverlayFullscreenPolicyPayload>('overlay:fullscreen-policy', (e) => {
+            dispatch({ type: 'set-fullscreen-policy', payload: e.payload })
+          }),
+        )
+
+        // Query actual backend state (overlay window may be created after state changes)
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          const status = await invoke<CaptureStatePayload>('get_capture_status')
+          dispatch({ type: 'capture-state-changed', payload: status })
+        } catch (e) {
+          console.warn('get_capture_status failed:', e)
+        }
       } catch (e) {
-        console.warn('get_capture_status failed:', e)
+        console.warn('overlay event listener setup failed:', e)
       }
     }
 

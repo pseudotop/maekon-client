@@ -77,7 +77,7 @@ export default function MetricsChart({ data }: MetricsChartProps) {
             yAxisId="cpu"
             type="monotone"
             dataKey="cpu"
-            name="CPU %"
+            name={t('metrics.cpuPercent')}
             stroke={chartPalette[0]}
             strokeWidth={2}
             dot={false}
@@ -86,7 +86,7 @@ export default function MetricsChart({ data }: MetricsChartProps) {
             yAxisId="memory"
             type="monotone"
             dataKey="memory"
-            name="Memory (GB)"
+            name={t('metrics.memoryGb')}
             stroke={chartPalette[1]}
             strokeWidth={2}
             dot={false}

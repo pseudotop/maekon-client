@@ -180,6 +180,21 @@ export interface ToastItem {
   duration?: number
 }
 
+/**
+ * Fullscreen overlay-policy decision pushed from Rust via the
+ * `overlay:fullscreen-policy` event (magic_overlay). Rust enforces the policy
+ * itself (it hides the overlay window when `overlay_allowed` is false); this
+ * payload lets the frontend mirror the decision in state for UI/diagnostics.
+ * Field names are snake_case to match the serialized Rust payload
+ * (`OverlayFullscreenPolicyPayload` has no serde rename).
+ */
+export interface OverlayFullscreenPolicyPayload {
+  fullscreen_detected: boolean
+  policy: string
+  overlay_allowed: boolean
+  reason: string
+}
+
 export interface OverlayState {
   mode: OverlayMode
   coaching: CoachingPayload | null
@@ -200,4 +215,6 @@ export interface OverlayState {
   pendingConfirmation: PendingConfirmationDto | null
   /** A pending Codex app-server approval awaiting an accept/decline/cancel (E21 #5044). */
   pendingCodexApproval: CodexApprovalDto | null
+  /** Latest fullscreen overlay-policy decision from Rust; null until the first emit. */
+  fullscreenPolicy: OverlayFullscreenPolicyPayload | null
 }

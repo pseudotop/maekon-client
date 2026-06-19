@@ -277,7 +277,7 @@ mod tests {
         let samples = [
             "contact user@example.com for access",
             "call +82-10-1234-5678 for approval",
-            "server 10.0.24 has alert",
+            "server 10.0.0.24 has alert",
             "token sk-abc123def456ghi789jkl0 detected",
             "normal productivity dashboard event",
             "file path /Users/alice/Documents/client-plan.md",

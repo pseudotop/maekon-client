@@ -216,7 +216,8 @@
     "filters": "Filters",
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions"
+    "tagSuggestions": "Tag suggestions",
+    "noActivity": "No activity recorded for this day"
   },
   "settings": {
     "title": "Settings",
@@ -2511,5 +2512,9 @@
       "name": "Start Deep Work",
       "description": "Open VS Code and dismiss distractions to begin a focused work session"
     }
+  },
+  "metrics": {
+    "cpuPercent": "CPU %",
+    "memoryGb": "Memory (GB)"
   }
 }

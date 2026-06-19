@@ -216,7 +216,8 @@
     "filters": "Filters",
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions"
+    "tagSuggestions": "Tag suggestions",
+    "noActivity": "이 날 기록된 활동이 없습니다"
   },
   "settings": {
     "title": "설정",
@@ -2511,5 +2512,9 @@
       "name": "집중 세션 시작",
       "description": "VS Code를 열고 방해 요소를 제거하여 집중 작업 세션을 시작합니다"
     }
+  },
+  "metrics": {
+    "cpuPercent": "CPU %",
+    "memoryGb": "메모리 (GB)"
   }
 }
