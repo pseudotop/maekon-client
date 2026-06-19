@@ -13,13 +13,6 @@ when = "2025-12-26"
 user-id = 429
 user-login = "diwic"
 
-[[publisher.arbitrary]]
-version = "1.4.2"
-when = "2025-08-14"
-user-id = 696
-user-login = "fitzgen"
-user-name = "Nick Fitzgerald"
-
 [[publisher.aws-lc-rs]]
 version = "1.16.2"
 when = "2026-03-19"
@@ -222,13 +215,6 @@ user-id = 3623
 user-login = "sdroege"
 user-name = "Sebastian Dröge"
 
-[[publisher.gif]]
-version = "0.14.1"
-when = "2025-12-04"
-user-id = 11453
-user-login = "HeroicKatora"
-user-name = "Aurelia Molzer"
-
 [[publisher.gio]]
 version = "0.22.6"
 when = "2026-04-27"
@@ -327,13 +313,6 @@ user-id = 11453
 user-login = "HeroicKatora"
 user-name = "Aurelia Molzer"
 
-[[publisher.imgref]]
-version = "1.12.0"
-when = "2025-09-23"
-user-id = 988
-user-login = "kornelski"
-user-name = "Kornel"
-
 [[publisher.jni-sys]]
 version = "0.3.1"
 when = "2026-03-22"
@@ -409,13 +388,6 @@ when = "2025-12-23"
 user-id = 6825
 user-login = "sunfishcode"
 user-name = "Dan Gohman"
-
-[[publisher.loop9]]
-version = "0.1.5"
-when = "2024-01-15"
-user-id = 988
-user-login = "kornelski"
-user-name = "Kornel"
 
 [[publisher.lzma-rust2]]
 version = "0.15.7"
@@ -600,14 +572,14 @@ user-login = "madsmtm"
 user-name = "Mads Marquart"
 
 [[publisher.ort]]
-version = "2.0.0-rc.11"
-when = "2026-01-07"
+version = "2.0.0-rc.12"
+when = "2026-03-05"
 user-id = 152041
 user-login = "decahedron1"
 
 [[publisher.ort-sys]]
-version = "2.0.0-rc.11"
-when = "2026-01-07"
+version = "2.0.0-rc.12"
+when = "2026-03-05"
 user-id = 152041
 user-login = "decahedron1"
 
@@ -673,13 +645,6 @@ when = "2025-07-31"
 user-id = 2668
 user-login = "jackpot51"
 user-name = "Jeremy Soller"
-
-[[publisher.rgb]]
-version = "0.8.53"
-when = "2026-02-25"
-user-id = 988
-user-login = "kornelski"
-user-name = "Kornel"
 
 [[publisher.rustfft]]
 version = "6.4.1"
@@ -877,13 +842,6 @@ user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
 
-[[publisher.tiff]]
-version = "0.11.3"
-when = "2026-02-10"
-user-id = 11453
-user-login = "HeroicKatora"
-user-name = "Aurelia Molzer"
-
 [[publisher.tokenizers]]
 version = "0.22.2"
 when = "2025-12-02"
@@ -991,13 +949,6 @@ user-id = 131438
 user-login = "wravery"
 user-name = "Bill Avery"
 
-[[publisher.weezl]]
-version = "0.1.12"
-when = "2025-11-11"
-user-id = 11453
-user-login = "HeroicKatora"
-user-name = "Aurelia Molzer"
-
 [[publisher.window-vibrancy]]
 version = "0.6.0"
 when = "2025-02-21"
@@ -1054,7 +1005,7 @@ notes = "No new unsafe functions, most of the changes are formatting and the new
 [[audits.bytecodealliance.wildcard-audits.arbitrary]]
 who = "Nick Fitzgerald <fitzgen@gmail.com>"
 criteria = "safe-to-deploy"
-user-id = 696 # Nick Fitzgerald (fitzgen)
+user-id = 696
 start = "2020-01-14"
 end = "2026-08-21"
 notes = "I am an author of this crate."

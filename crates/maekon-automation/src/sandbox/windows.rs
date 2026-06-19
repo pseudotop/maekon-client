@@ -552,6 +552,86 @@ mod tests {
         std::mem::forget(valid_h);
     }
 
+    /// #6439 F5 — prove the Job Object resource limits actually BIND in the kernel,
+    /// not merely that `create_job_object` returns `Ok`. Builds the job from a Strict
+    /// config, then queries the object back via `QueryInformationJobObject` and asserts
+    /// the limit flags + values the kernel stored match what was set (a round-trip).
+    /// Runs on the `windows-latest` `--features windows-sandbox` CI job; `windows.rs`
+    /// is `#[cfg(target_os = "windows")]` so it is not compiled on Linux/macOS.
+    #[cfg(feature = "windows-sandbox")]
+    #[test]
+    fn job_object_limits_actually_bind() {
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, QueryInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        };
+
+        let config = SandboxConfig {
+            profile: SandboxProfile::Strict,
+            ..Default::default()
+        };
+        let limits = build_job_limits(&config);
+        // Strict sets a non-zero memory limit (pinned by the win_limits policy tests);
+        // the round-trip below would be vacuous otherwise.
+        assert!(
+            limits.max_memory_bytes > 0,
+            "fixture: Strict must configure a memory limit"
+        );
+
+        let job = create_job_object(&limits).expect("create_job_object must succeed");
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        let mut returned: u32 = 0;
+        let ok = unsafe {
+            QueryInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &mut info as *mut _ as *mut core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                &mut returned,
+            )
+        };
+        assert_ne!(
+            ok,
+            0,
+            "QueryInformationJobObject failed: error {}",
+            unsafe { GetLastError() }
+        );
+
+        let flags = info.BasicLimitInformation.LimitFlags;
+        // KILL_ON_JOB_CLOSE is always set (orphan prevention) — must be bound.
+        assert_ne!(
+            flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            0,
+            "KILL_ON_JOB_CLOSE must be bound in the kernel"
+        );
+        // The memory limit must be bound, with the exact configured value.
+        assert_ne!(
+            flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            0,
+            "PROCESS_MEMORY limit flag must be bound"
+        );
+        assert_eq!(
+            info.ProcessMemoryLimit, limits.max_memory_bytes as usize,
+            "kernel-stored memory limit must equal the configured value"
+        );
+        // When a process-count cap is configured it too must round-trip.
+        if limits.max_processes > 0 {
+            assert_ne!(
+                flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+                0,
+                "ACTIVE_PROCESS limit flag must be bound"
+            );
+            assert_eq!(
+                info.BasicLimitInformation.ActiveProcessLimit, limits.max_processes,
+                "kernel-stored active-process limit must equal the configured value"
+            );
+        }
+        // `job` (OwnedHandle) drops here → CloseHandle, terminating the empty job.
+    }
+
     #[test]
     fn windows_sandbox_capabilities() {
         let sandbox = WindowsSandbox::new();

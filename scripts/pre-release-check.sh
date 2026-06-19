@@ -22,6 +22,39 @@ pass() { echo -e "  ${GREEN}✓${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; errors=$((errors + 1)); }
 warn() { echo -e "  ${YELLOW}!${NC} $1"; warnings=$((warnings + 1)); }
 
+PYTHON_CMD=()
+resolve_python_cmd() {
+  if [ -n "${PYTHON_BIN:-}" ]; then
+    PYTHON_CMD=("$PYTHON_BIN")
+    return 0
+  fi
+
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PYTHON_CMD=("$candidate")
+      return 0
+    fi
+  done
+
+  if command -v py >/dev/null 2>&1; then
+    PYTHON_CMD=(py -3)
+    return 0
+  fi
+
+  return 1
+}
+
+run_python() {
+  if [ "${#PYTHON_CMD[@]}" -eq 0 ]; then
+    echo "Python 3 is required for release validation" >&2
+    return 127
+  fi
+  "${PYTHON_CMD[@]}" "$@"
+}
+
+resolve_python_cmd || true
+
 # --- Resolve version ---
 CARGO_VERSION="$(workspace_version)"
 
@@ -227,6 +260,38 @@ if [ -x "scripts/check-config-sync.sh" ]; then
   echo ""
 fi
 
+# --- Desktop Release Decision Gate ---
+echo "[Desktop Release Decision]"
+if [ -z "${MAEKON_RELEASE_DECISION_MANIFEST:-}" ]; then
+  fail "MAEKON_RELEASE_DECISION_MANIFEST must point to an accepted E19 release-decision manifest"
+elif [ ! -f "$MAEKON_RELEASE_DECISION_MANIFEST" ]; then
+  fail "Release-decision manifest not found: $MAEKON_RELEASE_DECISION_MANIFEST"
+elif ! run_python scripts/release_decision_manifest.py validate --manifest "$MAEKON_RELEASE_DECISION_MANIFEST"; then
+  fail "Release-decision manifest failed contract validation"
+elif run_python - "$MAEKON_RELEASE_DECISION_MANIFEST" "v$VERSION" "$(git rev-parse HEAD)" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    manifest = json.load(fh)
+
+expected_tag = sys.argv[2]
+expected_sha = sys.argv[3]
+state = (manifest.get("release_decision") or {}).get("state")
+if state != "pass":
+    raise SystemExit(f"release_decision.state must be pass, got {state}")
+if manifest.get("release_tag") != expected_tag:
+    raise SystemExit(f"release_tag must be {expected_tag}, got {manifest.get('release_tag')}")
+if manifest.get("commit_sha") != expected_sha:
+    raise SystemExit(f"commit_sha must be {expected_sha}, got {manifest.get('commit_sha')}")
+PY
+then
+  pass "Release-decision manifest accepted"
+else
+  fail "Release-decision manifest is not release-accepted"
+fi
+echo ""
+
 # --- Dependency Security Gate ---
 echo "[Dependency Security]"
 if command -v gh >/dev/null 2>&1; then
@@ -281,7 +346,7 @@ if command -v gh >/dev/null 2>&1; then
     if [ "$ALERT_QUERY_FAILED" -ne 0 ]; then
       fail "Release security alert query failed — cannot prove Dependabot/CodeQL queues are clean"
     else
-      if python3 - "$ACCEPTANCE_FILE" "$DEPENDABOT_ALERTS_FILE" "$CODEQL_ALERTS_FILE" <<'PY'
+      if run_python - "$ACCEPTANCE_FILE" "$DEPENDABOT_ALERTS_FILE" "$CODEQL_ALERTS_FILE" <<'PY'
 import datetime as dt
 import json
 import sys

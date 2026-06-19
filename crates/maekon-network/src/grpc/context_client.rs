@@ -21,6 +21,10 @@ use crate::proto::client_v1::{
 ///   channel-level timeout so that `SubscribeSuggestions` (server-streaming) can remain open
 ///   indefinitely.  Liveness is enforced by the per-message `MSG_TIMEOUT` (60 s) in
 ///   `GrpcSseAdapter`.  See F-RR-C25-02 / F-RR-C25-06.
+// #6442 F11: Clone lets UnifiedClient clone this out of its Mutex and drop the guard
+// before the RPC await — the three tonic clients + GrpcConfig are all cheap to clone
+// (each tonic client is an HTTP/2 channel handle; cloning shares the connection).
+#[derive(Clone)]
 pub struct GrpcContextClient {
     context_client: ClientContextClient<Channel>,
     /// Unary suggestion RPC client (send_feedback).  Uses the standard 30 s channel timeout.

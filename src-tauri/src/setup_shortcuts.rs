@@ -69,21 +69,25 @@ fn register_capture_shortcut(app: &App) {
                                 "paused": new_paused,
                                 "indicator_visible": indicator_visible
                             });
-                            let _ = handle.emit_to(
+                            if let Err(e) = handle.emit_to(
                                 "magic-overlay",
                                 "overlay:capture-state-changed",
                                 &payload,
-                            );
-                            let _ = handle.emit_to(
+                            ) {
+                                tracing::debug!("emit magic-overlay failed: {e}");
+                            }
+                            if let Err(e) = handle.emit_to(
                                 "tracking-panel",
                                 "overlay:capture-state-changed",
                                 &payload,
-                            );
-                            let _ = crate::tray::sync_tray_state(
-                                &handle,
-                                new_paused,
-                                indicator_visible,
-                            );
+                            ) {
+                                tracing::debug!("emit tracking-panel failed: {e}");
+                            }
+                            if let Err(e) =
+                                crate::tray::sync_tray_state(&handle, new_paused, indicator_visible)
+                            {
+                                tracing::debug!("sync_tray_state failed: {e}");
+                            }
                             crate::magic_overlay::sync_passive_tracking_surface(
                                 &handle,
                                 new_paused,
@@ -343,9 +347,12 @@ fn register_detection_refresh_shortcut(app: &App) {
     }
 }
 
-/// Register Cmd+Shift+A (macOS) / Ctrl+Shift+A (Windows/Linux) to open
-/// the automation quick-access panel. Emits an event to the main window
-/// so the frontend can show the automation modal.
+/// Register Cmd+Shift+A (macOS) / Ctrl+Shift+A (Windows/Linux) to open the
+/// automation page. Brings the main window forward and emits the unified
+/// `navigate` deep-link event (matching the tray menu). The earlier
+/// `automation:quick-access` event was folded into `navigate` (see
+/// useTauriEventBridge.ts) and had no frontend listener, so the shortcut was a
+/// silent no-op; route it to `/automation` like the tray "run-preset" entry.
 fn register_automation_shortcut(app: &App) {
     use tauri::Emitter;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -355,7 +362,10 @@ fn register_automation_shortcut(app: &App) {
             .on_shortcut("CmdOrCtrl+Shift+A", |app_handle, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
                     info!("automation quick-access triggered via shortcut");
-                    let _ = app_handle.emit("automation:quick-access", ());
+                    crate::tray::focus_main_window(app_handle);
+                    if let Err(e) = app_handle.emit_to("main", "navigate", "/automation") {
+                        tracing::warn!("emit navigate(/automation) failed: {e}");
+                    }
                 }
             })
     {

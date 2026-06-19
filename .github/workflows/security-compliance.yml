@@ -1,10 +1,18 @@
 name: Security & Compliance
 
 on:
-  # Public repo manual supply-chain gate. Scheduled variants may run in release
-  # infrastructure; public maintainers can dispatch this workflow before
-  # release/export merges that touch dependencies.
+  # #6442 F19: the public-export supply-chain gate now runs automatically on PRs and
+  # pushes to main — not workflow_dispatch-only — so the self-contained cargo-audit /
+  # cargo-deny / cargo-vet / exemption-expiry checks gate every export change. Manual
+  # dispatch is kept for ad-hoc re-validation.
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -68,12 +76,21 @@ jobs:
       - name: License/advisory/source policy
         run: ./scripts/cargo-cache.sh deny check licenses advisories sources bans
 
-      # F-SC-01: Gate — every exemption must carry notes + reason + expiry.
-      # DEPRECATED (F-SC-C34-01): This step calls check-vet-exemption-annotations.sh
-      # which enforces a 3-field schema (notes + reason + expiry) that is absent
-      # from all existing exemptions (~635, varies).  The script now exits 0 with a warning.
-      # Enforcement is via verify_exemption_expiry.py in cargo-supply-chain.yml.
-      # OOS-TBD F-SC-C34-01 tracks 3-field schema backfill + strict gate re-enable.
+      # #6442 F19: real, self-contained exemption-expiry gate. verify_exemption_expiry.py
+      # now ships in the export (clients/maekon-client/scripts/supply_chain/), so the
+      # public gate enforces the deny.toml + cargo-vet config Review-by dates itself —
+      # no longer relying on the parent-only cargo-supply-chain.yml. Hard gate
+      # (--fail-on-expired): a lapsed review-by date fails the export build.
+      - name: Verify exemption expiry dates (F-SC-C30-03)
+        run: |
+          python3 scripts/supply_chain/verify_exemption_expiry.py \
+            --fail-on-expired \
+            --deny-file deny.toml \
+            supply-chain/config.toml
+
+      # F-SC-01: the 3-field annotation schema (notes + reason + expiry) is still
+      # deprecated (exits 0 with a warning) — OOS-TBD F-SC-C34-01 tracks the backfill +
+      # strict re-enable. The active expiry enforcement is the self-contained step above.
       - name: Exemption annotation gate (F-SC-01)
         run: ./scripts/ci/check-vet-exemption-annotations.sh
 

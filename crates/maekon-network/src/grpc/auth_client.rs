@@ -9,6 +9,10 @@ use crate::proto::client_v1::{
     client_auth_client::ClientAuthClient, GetTokenRequest, RefreshTokenRequest, TokenResponse,
 };
 
+// #6442 F11: Clone lets UnifiedClient clone this out of its Mutex and drop the guard
+// before the RPC await — the inner tonic client + GrpcConfig are both cheap to clone
+// (the tonic client is an HTTP/2 channel handle).
+#[derive(Clone)]
 pub struct GrpcAuthClient {
     client: ClientAuthClient<Channel>,
     config: GrpcConfig,

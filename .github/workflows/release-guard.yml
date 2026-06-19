@@ -10,6 +10,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-guard-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 

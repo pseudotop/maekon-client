@@ -16,6 +16,9 @@
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
   `MAEKON_RELEASE_REQUIRE_ARTIFACTS=1 ./scripts/pre-release-check.sh <VERSION>` is run
   from a checkout with frontend artifacts already built)
+- [ ] `MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/pre-release-check.sh <VERSION>`
+  passes from the exact commit to be tagged; the manifest `release_tag`,
+  `commit_sha`, and `release_decision.state=pass` must match the release.
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
@@ -49,6 +52,7 @@
 - [ ] Parent repository PR for the release/export change is merged before the public export PR is marked ready or merged
 - [ ] Internal export dry-run passed from the parent source tree: `clients/maekon-client/scripts/export-public-repo.sh --dry-run --worktree`
 - [ ] Public export was generated from the merged parent source SHA, not from an unmerged local-only branch
+- [ ] Public export PR was opened by the Maekon GitHub App/bot via `public-export-pr.yml` or `update-public-repo-clone.sh --open-pr`, not by the maintainer user who must approve it
 - [ ] Any early public PR used for CI preview stayed draft until the merged parent source SHA was re-exported or confirmed to produce no public diff
 - [ ] Public export PR merged into `pseudotop/maekon-client`
 - [ ] Public pull-request CI alone was not used as cross-platform build proof; for runtime/build-impacting exports, the public branch has a successful manual `CI` `workflow_dispatch` run

@@ -504,26 +504,14 @@ impl PlatformEgressPolicy {
     fn sanitize_title(&self, title: &str) -> String {
         match self.external_data_policy {
             ExternalDataPolicy::AllowFiltered => {
-                // Enforce a minimum PII filter floor of Basic when the policy is
-                // AllowFiltered. A configured level of Off would otherwise upload
-                // completely unfiltered data, which contradicts the "filtered"
-                // semantics of this policy variant.
-                //
-                // TODO(#5992): expose a config-validation error at load time so
-                // users get explicit feedback instead of a silent floor upgrade.
-                use maekon_core::config::PiiFilterLevel;
+                // #6442 F10: resolve the effective level via the shared SSOT floor so the
+                // window-title and OCR-image egress paths resolve identically.
+                // AllowFiltered floors Off -> Basic; the incoherent pairing is surfaced
+                // once, loudly, at config load (SchedulerConfig::has_incoherent_egress_privacy)
+                // — replacing #5992's silent per-call upgrade warn.
                 let effective_level = self
-                    .privacy_config
-                    .pii_filter_level
-                    .max(PiiFilterLevel::Basic);
-                if effective_level != self.privacy_config.pii_filter_level {
-                    tracing::warn!(
-                        configured = %self.privacy_config.pii_filter_level,
-                        effective  = %effective_level,
-                        "AllowFiltered policy with PiiFilterLevel::Off is invalid; \
-                         upgrading effective filter level to Basic"
-                    );
-                }
+                    .external_data_policy
+                    .effective_egress_pii_level(self.privacy_config.pii_filter_level);
                 sanitize_title_with_level(title, effective_level)
             }
             ExternalDataPolicy::PiiFilterStrict | ExternalDataPolicy::PiiFilterStandard => {
@@ -585,6 +573,18 @@ impl Default for SchedulerConfig {
     }
 }
 
+impl SchedulerConfig {
+    /// #6442 (F10): true when the egress policy/level pairing is incoherent — AllowFiltered
+    /// ("egress, but filter PII") with PII filtering turned Off. The egress paths floor to
+    /// Basic regardless (`ExternalDataPolicy::effective_egress_pii_level`), but the caller
+    /// surfaces this as a loud, one-time config-validation error at load so the user gets
+    /// explicit feedback instead of the old silent per-call floor upgrade (#5992).
+    pub fn has_incoherent_egress_privacy(&self) -> bool {
+        self.external_data_policy == ExternalDataPolicy::AllowFiltered
+            && self.privacy_config.pii_filter_level == maekon_core::config::PiiFilterLevel::Off
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +617,44 @@ mod tests {
         assert_eq!(rows[0].minutes_logged, 75);
         assert_eq!(rows[0].target_minutes, 60);
         assert!(rows[0].met);
+    }
+
+    #[test]
+    fn detects_incoherent_egress_privacy_pairing() {
+        // #6442 F10: AllowFiltered + Off is the incoherent "filter PII but disable the
+        // filter" pairing the loud load-time validation flags.
+        let incoherent = SchedulerConfig {
+            external_data_policy: ExternalDataPolicy::AllowFiltered,
+            privacy_config: PrivacyConfig {
+                pii_filter_level: PiiFilterLevel::Off,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(incoherent.has_incoherent_egress_privacy());
+
+        // AllowFiltered with a real filter level is coherent.
+        let coherent = SchedulerConfig {
+            external_data_policy: ExternalDataPolicy::AllowFiltered,
+            privacy_config: PrivacyConfig {
+                pii_filter_level: PiiFilterLevel::Basic,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!coherent.has_incoherent_egress_privacy());
+
+        // A redacting policy never relies on the configured level, so Off is not
+        // incoherent there.
+        let strict = SchedulerConfig {
+            external_data_policy: ExternalDataPolicy::PiiFilterStrict,
+            privacy_config: PrivacyConfig {
+                pii_filter_level: PiiFilterLevel::Off,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!strict.has_incoherent_egress_privacy());
     }
 
     fn enabled_policy() -> PlatformEgressPolicy {

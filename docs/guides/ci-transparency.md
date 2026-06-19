@@ -110,10 +110,10 @@ The release workflow is defined in [`.github/workflows/release.yml`](../../.gith
 
 - `./scripts/release.sh <x.y.z-rc.N>` to prepare the RC version/changelog commit on a PR branch
 - merge that PR into `main`
-- `./scripts/publish-rc-tag.sh <x.y.z-rc.N>` on the merged `main` commit to publish the signed RC tag
+- `MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/publish-rc-tag.sh <x.y.z-rc.N>` on the merged `main` commit to publish the signed RC tag
 - [`.github/workflows/promote-stable.yml`](../../.github/workflows/promote-stable.yml) to let GitHub Actions create or update the stable promotion PR without creating a release tag in CI
 - `./scripts/promote-stable.sh <x.y.z-rc.N>` locally only for rehearsal or manual promotion-commit verification; the workflow runs it with `PROMOTE_STABLE_SKIP_TAG=1`
-- after the stable promotion PR is merged into `main`, `./scripts/publish-stable-tag.sh <x.y.z>` from latest `main` to create and push the signed annotated stable tag; that tag triggers `release.yml`
+- after the stable promotion PR is merged into `main`, `MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/publish-stable-tag.sh <x.y.z>` from latest `main` to create and push the signed annotated stable tag; that tag triggers `release.yml`
 - [`.github/workflows/release-guard.yml`](../../.github/workflows/release-guard.yml) automatically deletes manual GitHub releases that bypass the workflow path or publish without assets
 
 Direct stable preparation via the old `prepare-release.sh` path is intentionally blocked.

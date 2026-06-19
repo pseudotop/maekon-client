@@ -9,6 +9,21 @@
 //! [`SandboxRequest`] and the result is read from stdout as a
 //! [`SandboxResponse`].
 //!
+//! **Containment policy** (#6443 F6): the deny-by-default profiles scope
+//! `process-exec` to the single worker-binary literal and do not grant
+//! `process-fork` (see [`super::sbpl::generate_sbpl_profile`]). `sandbox-exec`
+//! must still be allowed to exec the worker itself — that is the one authorised
+//! exec — but the worker, a single-shot stdin→stdout process, can no longer exec
+//! a shell or any other binary.
+//!
+//! **`sandbox-exec` deprecation**: `/usr/bin/sandbox-exec` is deprecated by Apple
+//! (since macOS 10.10) yet remains functional and is still used in production by
+//! Chromium, Bazel, and Nix. The long-term replacement is the App Sandbox via
+//! signed `.app`-bundle entitlements, which is a build/signing/Info.plist change
+//! rather than a profile-string change and is out of scope here; it is tracked as
+//! the remaining roadmap item on #6443 F6. Until then this adapter fails closed
+//! when `sandbox-exec` is absent (see [`super::create_platform_sandbox`]).
+//!
 //! **Resource limits**: `apply_resource_limits()` logs the configured values
 //! but does **not** call `setrlimit(2)`. The sandbox-exec model spawns a
 //! child via Seatbelt, and there is no hook to inject `setrlimit` into the
@@ -16,6 +31,7 @@
 //! Filesystem and network isolation ARE enforced by the SBPL profile.
 
 use async_trait::async_trait;
+use std::path::Path;
 use std::process::Command;
 
 use crate::error::AutomationError;
@@ -57,9 +73,18 @@ impl MacOsSandbox {
     /// Returns `(sandbox_exec_path, args)` where `args` is:
     /// `["-p", profile, "--", worker_binary_path]`.
     ///
+    /// `worker_path` is resolved by the caller and passed in (rather than
+    /// resolved here) so the exact same path is woven into the profile's
+    /// `process-exec` literal and used as the exec target — the SBPL constraint
+    /// and the real exec must reference the identical path (#6443 F6).
+    ///
     /// The action is no longer passed as a command-line argument; it is
     /// written to the worker's stdin as a JSON-encoded [`SandboxRequest`].
-    fn build_sandbox_command(&self, profile: &str) -> Result<(String, Vec<String>), CoreError> {
+    fn build_sandbox_command(
+        &self,
+        profile: &str,
+        worker_path: &Path,
+    ) -> Result<(String, Vec<String>), CoreError> {
         let exec_path = self
             .sandbox_exec_path
             .as_deref()
@@ -68,8 +93,6 @@ impl MacOsSandbox {
                 message: "sandbox-exec not found".to_string(),
             })?
             .to_string();
-
-        let worker_path = ipc::resolve_worker_path()?;
 
         let args = vec![
             "-p".to_string(),
@@ -104,7 +127,15 @@ impl Sandbox for MacOsSandbox {
             });
         }
 
-        let profile = super::sbpl::generate_sbpl_profile(config);
+        // Resolve the worker path up front and canonicalize it so the profile's
+        // `process-exec` literal and the actual exec target are the same canonical
+        // path Seatbelt matches against (#6443 F6). If canonicalization fails the
+        // raw path is used for both (kept consistent); the spawn below then
+        // surfaces any genuinely-missing worker as a clear error.
+        let worker_path = ipc::resolve_worker_path()?;
+        let worker_path = worker_path.canonicalize().unwrap_or(worker_path);
+
+        let profile = super::sbpl::generate_sbpl_profile(config, &worker_path.to_string_lossy());
         tracing::debug!(
             profile_type = %config.profile as u8,
             sbpl_len = profile.len(),
@@ -114,7 +145,7 @@ impl Sandbox for MacOsSandbox {
 
         apply_resource_limits(config).map_err(CoreError::from)?;
 
-        let (exec_path, args) = self.build_sandbox_command(&profile)?;
+        let (exec_path, args) = self.build_sandbox_command(&profile, &worker_path)?;
 
         tracing::debug!(
             sandbox_exec = %exec_path,
@@ -308,22 +339,91 @@ mod tests {
     fn build_sandbox_command_uses_worker() {
         let sandbox = MacOsSandbox::with_exec_path(Some("/usr/bin/sandbox-exec".to_string()));
         let profile = "(version 1)\n(allow default)\n";
-        if let Ok((exec_path, args)) = sandbox.build_sandbox_command(profile) {
-            assert_eq!(exec_path, "/usr/bin/sandbox-exec");
-            assert_eq!(args[0], "-p");
-            assert_eq!(args[1], profile);
-            assert_eq!(args[2], "--");
-            assert!(args[3].contains("maekon-sandbox-worker"));
-        }
+        let worker = Path::new("/opt/maekon/maekon-sandbox-worker");
+        let (exec_path, args) = sandbox
+            .build_sandbox_command(profile, worker)
+            .expect("command builds when exec path is present");
+        assert_eq!(exec_path, "/usr/bin/sandbox-exec");
+        assert_eq!(args[0], "-p");
+        assert_eq!(args[1], profile);
+        assert_eq!(args[2], "--");
+        // The caller-supplied worker path is the exec target verbatim, so it
+        // matches the profile's process-exec literal (#6443 F6).
+        assert_eq!(args[3], "/opt/maekon/maekon-sandbox-worker");
     }
 
     #[test]
     fn build_sandbox_command_without_exec_path_fails() {
         let sandbox = MacOsSandbox::with_exec_path(None);
-        let err = sandbox.build_sandbox_command("(version 1)\n").unwrap_err();
+        let worker = Path::new("/opt/maekon/maekon-sandbox-worker");
+        let err = sandbox
+            .build_sandbox_command("(version 1)\n", worker)
+            .unwrap_err();
         assert!(
             matches!(err, CoreError::SandboxUnsupported { .. }),
             "missing exec path must produce SandboxUnsupported, got: {err:?}"
+        );
+    }
+
+    /// #6443 F6 — real-`sandbox-exec` enforcement proof.
+    ///
+    /// The cfg-free `sbpl` unit tests assert the profile *string* scopes
+    /// `process-exec` to the worker literal. This test closes the loop on macOS:
+    /// it runs the actual `/usr/bin/sandbox-exec` to prove that
+    /// `(allow process-exec (literal "<path>"))` — the rule form the generator
+    /// emits for the deny-by-default tiers — genuinely blocks execution of any
+    /// binary other than the authorised one. A pre-#6443 blanket
+    /// `(allow process-exec)` would let the worker exec an arbitrary shell.
+    ///
+    /// The base is `(allow default)` + a blanket `(deny process-exec*)` so the
+    /// test isolates the `process-exec` literal from unrelated file-read/dyld
+    /// concerns (a deny-default profile can fail to map the dyld shared cache on
+    /// some macOS versions, which would confound "exec denied" with "binary
+    /// failed to load"). The literal rule under test is byte-identical to the
+    /// generator's. There is no macOS CI runner, so this runs locally / on any
+    /// future macOS leg; it skips cleanly where `sandbox-exec` is unavailable.
+    #[test]
+    fn process_exec_literal_constraint_is_enforced_by_real_sandbox_exec() {
+        let sandbox_exec = "/usr/bin/sandbox-exec";
+        let authorised = "/usr/bin/true"; // exec authorised → must run (exit 0)
+        let forbidden = "/bin/echo"; // not authorised → exec must be denied
+        if !Path::new(sandbox_exec).exists()
+            || !Path::new(authorised).exists()
+            || !Path::new(forbidden).exists()
+        {
+            eprintln!("skipping: sandbox-exec or stand-in system binaries not found");
+            return;
+        }
+
+        // Build the literal rule exactly as generate_sbpl_profile does, but on an
+        // allow-default base scoped to process-exec only.
+        let authorised_canon = std::fs::canonicalize(authorised)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| authorised.to_string());
+        let profile = format!(
+            "(version 1)\n(allow default)\n(deny process-exec*)\n(allow process-exec (literal \"{authorised_canon}\"))\n"
+        );
+
+        let run = |target: &str| {
+            Command::new(sandbox_exec)
+                .args(["-p", profile.as_str(), "--", target])
+                .output()
+                .expect("sandbox-exec spawns")
+        };
+
+        let allowed = run(&authorised_canon);
+        let denied = run(forbidden);
+
+        assert!(
+            allowed.status.success(),
+            "exec of the authorised literal must be allowed; stderr: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        assert!(
+            !denied.status.success(),
+            "exec of a non-authorised binary must be denied by the process-exec \
+             literal, but it succeeded (stdout: {:?})",
+            String::from_utf8_lossy(&denied.stdout)
         );
     }
 
