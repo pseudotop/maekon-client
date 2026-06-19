@@ -11,6 +11,9 @@ use crate::proto::client_v1::{
     EndSessionRequest, HeartbeatRequest,
 };
 
+// #6442 F11: Clone lets UnifiedClient clone this out of its Mutex and drop the guard
+// before the RPC await — the inner tonic client + GrpcConfig are both cheap to clone.
+#[derive(Clone)]
 pub struct GrpcSessionClient {
     client: ClientSessionClient<Channel>,
     config: GrpcConfig,

@@ -201,18 +201,19 @@ jobs:
 
       - name: Build release smoke
         shell: bash
-        # Mirror release.yml: scope to `-p maekon-app` and enable
-        # `--features grpc`. Without `-p` cargo defaults to a workspace
-        # build that drags in maekon-embedding -> fastembed -> ort-sys,
-        # whose 2.0.0-rc.11 release ships no prebuilt ONNX Runtime for
-        # x86_64-apple-darwin under the default (no-features) feature
-        # set, breaking macOS x64 + Windows smoke. maekon-embedding is
-        # optional = true on maekon-app and NOT enabled by default, so
-        # scoping the build excludes the offending dependency entirely
-        # while still smoking the path the release pipeline produces.
+        # Mirror release.yml: scope to `-p maekon-app` and use the same
+        # OS-conditional feature set. Linux needs `systemd-notify` because
+        # the released DEB ships a Type=notify unit; Windows/macOS use `grpc`.
         env:
           TARGET: ${{ matrix.target }}
-        run: ./scripts/cargo-cache.sh build --locked --release --target "$TARGET" -p maekon-app --features grpc
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            FEATURES="grpc,systemd-notify"
+          else
+            FEATURES="grpc"
+          fi
+          ./scripts/cargo-cache.sh build --locked --release --target "$TARGET" -p maekon-app --features "$FEATURES"
 
       - name: Binary smoke (Unix)
         if: runner.os != 'Windows'

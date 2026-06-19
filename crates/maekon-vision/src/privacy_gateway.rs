@@ -458,11 +458,12 @@ impl PrivacyGateway {
             return PiiFilterLevel::Off;
         }
 
-        match external_data_policy {
-            ExternalDataPolicy::PiiFilterStrict => PiiFilterLevel::Strict,
-            ExternalDataPolicy::PiiFilterStandard => PiiFilterLevel::Standard,
-            ExternalDataPolicy::AllowFiltered => pii_filter_level,
-        }
+        // #6442 F10: delegate to the shared SSOT floor. AllowFiltered floors the
+        // configured level to Basic so OCR images are masked identically to window
+        // titles. Previously this arm returned the configured level verbatim — so
+        // AllowFiltered + PiiFilterLevel::Off egressed images COMPLETELY UNREDACTED while
+        // the window-title path floored to Basic.
+        external_data_policy.effective_egress_pii_level(pii_filter_level)
     }
 }
 
@@ -526,7 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allow_normal_app_when_unredacted_mode_is_explicit() {
+    async fn allow_normal_app_when_unredacted_override_is_explicit() {
         let consent = make_consent_manager(true);
         let gw = PrivacyGateway::new(
             consent,
@@ -535,10 +536,9 @@ mod tests {
             PrivacyConfig::default(),
         );
         let result = gw
-            .prepare_image_for_external(b"img", "VSCode", "main.rs")
+            .prepare_image_for_external_with_override(b"img", "VSCode", "main.rs", true)
             .await;
-        let sanitized = result
-            .expect("prepare_image_for_external must succeed with consent + PiiFilterLevel::Off");
+        let sanitized = result.expect("explicit unredacted override must succeed with consent");
         assert!(sanitized.metadata_stripped);
         assert_eq!(sanitized.redacted_regions, 0);
     }
@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_image_off_level_skips_blur() {
+    async fn prepare_image_unredacted_override_skips_blur() {
         let consent = make_consent_manager(true);
         let gw = PrivacyGateway::new(
             consent,
@@ -649,12 +649,12 @@ mod tests {
             PrivacyConfig::default(),
         );
         let result = gw
-            .prepare_image_for_external(b"img", "VSCode", "main.rs")
+            .prepare_image_for_external_with_override(b"img", "VSCode", "main.rs", true)
             .await;
         let sanitized = result.expect(
-            "PiiFilterLevel::Off must not invoke blur pipeline; even invalid bytes succeed",
+            "explicit unredacted override must not invoke blur pipeline; even invalid bytes succeed",
         );
-        // Off-level contract: image bytes are passed through unmodified, no regions redacted.
+        // Override contract: image bytes are passed through unmodified, no regions redacted.
         assert_eq!(sanitized.image_data, b"img".to_vec());
         assert_eq!(sanitized.redacted_regions, 0);
     }
@@ -759,7 +759,19 @@ mod tests {
                 false,
             ),
             PiiFilterLevel::Basic,
-            "AllowFiltered must delegate to the user-configured pii_filter_level"
+            "AllowFiltered honours a configured level at or above the Basic floor"
+        );
+        // #6442 F10: AllowFiltered floors Off -> Basic so OCR images are not egressed
+        // unredacted (previously this returned Off, leaving images completely unmasked
+        // while the window-title path floored to Basic).
+        assert_eq!(
+            PrivacyGateway::resolve_filter_level(
+                PiiFilterLevel::Off,
+                ExternalDataPolicy::AllowFiltered,
+                false,
+            ),
+            PiiFilterLevel::Basic,
+            "AllowFiltered must floor Off to Basic (unify with the window-title egress)"
         );
     }
 

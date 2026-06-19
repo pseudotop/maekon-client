@@ -16,6 +16,9 @@
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
   `MAEKON_RELEASE_REQUIRE_ARTIFACTS=1 ./scripts/pre-release-check.sh <VERSION>` is run
   from a checkout with frontend artifacts already built)
+- [ ] `MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/pre-release-check.sh <VERSION>`
+  passes from the exact commit to be tagged; the manifest `release_tag`,
+  `commit_sha`, and `release_decision.state=pass` must match the release.
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`

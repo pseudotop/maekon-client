@@ -48,7 +48,21 @@ impl ProcessTracker {
     fn refresh_if_stale(last_refresh: &Arc<Mutex<Instant>>, sys: &mut System) {
         let mut last = last_refresh.lock().unwrap_or_else(|e| e.into_inner());
         if last.elapsed() >= REFRESH_COOLDOWN {
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            // #6441 F14: refresh only the fields the collectors actually read.
+            // `refresh_processes(All, true)` is shorthand for
+            // `ProcessRefreshKind::everything()`, which additionally collects
+            // per-process disk I/O, cmd line, environ, cwd, root, user, and (on
+            // Linux) the thread-task table — none of which collect_top_sync /
+            // collect_detailed_sync read. Narrow to cpu + memory + exe (exe only
+            // when not already set); pid/name/start_time are basic fields populated
+            // regardless, and `nothing()` already excludes the Linux task walk.
+            // Cuts per-refresh syscalls/allocations for the <100MB RSS / low-CPU
+            // edge-client budget.
+            let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
+            sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, refresh_kind);
             *last = Instant::now();
         }
     }
@@ -313,6 +327,33 @@ mod tests {
             "get_top_processes via spawn_blocking returned an empty list"
         );
         assert!(procs.len() <= 10, "must respect the limit");
+    }
+
+    /// #6441 F14 regression: the narrowed `refresh_processes_specifics`
+    /// (cpu + memory + exe only) must still populate the fields the collectors
+    /// read. A too-narrow `ProcessRefreshKind` (e.g. dropping `.with_memory()`)
+    /// would silently return zeroed memory or empty names. Asserts at least one
+    /// process — this test process is guaranteed present — carries a non-empty
+    /// name and non-zero memory.
+    #[tokio::test]
+    async fn narrowed_refresh_still_populates_name_and_memory() {
+        let tracker = ProcessTracker::new();
+        let procs = tracker
+            .get_top_processes(50)
+            .await
+            .expect("get_top_processes must not fail");
+        assert!(
+            !procs.is_empty(),
+            "process list must be populated after the narrowed refresh"
+        );
+        assert!(
+            procs.iter().any(|p| !p.name.is_empty()),
+            "narrowed refresh dropped process names (ProcessRefreshKind too narrow)"
+        );
+        assert!(
+            procs.iter().any(|p| p.memory_bytes > 0),
+            "narrowed refresh dropped process memory (missing .with_memory())"
+        );
     }
 
     /// F-PF-18 regression test: verify ProcessTracker::new() uses System::new().

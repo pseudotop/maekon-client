@@ -273,6 +273,11 @@ impl Scheduler {
             Arc::new(parking_lot::Mutex::new(None));
 
         tokio::spawn(async move {
+            // #6441 F18: evict the local embedding model after this long idle so an
+            // enabled-but-unused provider does not pin ONNX RSS for the process
+            // lifetime. Generous enough that an actively-used model (analysis
+            // pipeline embeds) is never evicted mid-use; the next embed reloads it.
+            const EMBEDDING_IDLE_EVICT: Duration = Duration::from_secs(600);
             let mut interval = super::intervals::coalescing_interval(aggregation_interval);
             let mut last_reindex_check: Option<chrono::DateTime<Utc>> = None;
             let mut last_index_maintenance: Option<chrono::DateTime<Utc>> = None;
@@ -299,6 +304,14 @@ impl Scheduler {
                             consent_manager.as_ref(),
                             capture_paused.load(Ordering::Relaxed),
                         );
+
+                        // [HOUSEKEEPING] #6441 F18: reclaim ONNX RSS by evicting the
+                        // local embedding model when it has been idle. No-op for
+                        // remote/no-op providers (default trait impl) and when nothing
+                        // is resident. Memory-only → runs outside the consent gate.
+                        if let Some(ref ep) = embedding_provider {
+                            ep.evict_if_idle(EMBEDDING_IDLE_EVICT);
+                        }
 
                         // [COLLECT] Hourly metric aggregation — derive and persist
                         // rollups from raw metrics.

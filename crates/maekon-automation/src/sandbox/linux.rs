@@ -888,6 +888,101 @@ mod tests {
         }
     }
 
+    /// #6439 F5(a) — prove the seccomp filter is actually ENFORCED at runtime, not
+    /// merely built (`seccomp_filter_builds_for_all_profiles` covers construction).
+    ///
+    /// Forks a child, applies the Strict filter, and asserts that a denied syscall
+    /// (`memfd_create` — an F4 escape sibling — and `socket` — the network family)
+    /// returns `EPERM`, while an allowed syscall (`getpid`) still succeeds. This is
+    /// the executing counterpart that mechanically catches a future regression where
+    /// a deny entry is dropped or the filter's match action is wrong.
+    ///
+    /// Fork safety: the BPF is built BEFORE the fork (the only heap allocation); the
+    /// child then performs ONLY async-signal-safe work — `apply_filter` (a `prctl`
+    /// with no allocation), raw syscalls, and `_exit` — so this is safe to run from
+    /// the multithreaded test harness. Runs on the `linux-sandbox-enforcement` CI
+    /// leg (real kernel); `cfg(linux-sandbox)` is not compilable on macOS.
+    #[test]
+    #[cfg(feature = "linux-sandbox")]
+    fn seccomp_strict_enforces_eperm_on_denied_syscalls() {
+        let allowlist = LinuxSandbox::build_seccomp_allowlist(&SandboxConfig {
+            profile: SandboxProfile::Strict,
+            ..Default::default()
+        });
+        // Strict denies both the network and process/memfd families.
+        assert!(!allowlist.allow_network && !allowlist.allow_process);
+        // Build the BPF BEFORE forking (heap allocation) — same contract as
+        // execute_sandboxed's pre_exec path.
+        let bpf = build_seccomp_bpf(&allowlist).expect("strict seccomp BPF must build");
+
+        // SAFETY: post-fork the child only calls apply_filter (prctl, no alloc), raw
+        // syscalls, and _exit — all async-signal-safe.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+
+        if pid == 0 {
+            // ── CHILD ──
+            if apply_seccomp_bpf_sync(&bpf).is_err() {
+                unsafe { libc::_exit(40) };
+            }
+
+            // memfd_create (F4 sibling) — denied under Strict (allow_process=false).
+            let name = b"sbx\0";
+            let memfd = unsafe {
+                libc::syscall(
+                    libc::SYS_memfd_create,
+                    name.as_ptr() as *const libc::c_char,
+                    0 as libc::c_uint,
+                )
+            };
+            let memfd_errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+
+            // socket (network family) — denied under Strict (allow_network=false).
+            let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+            let sock_errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+
+            // getpid — NOT in any deny set; the default-allow filter must let it run.
+            let pid_ok = unsafe { libc::getpid() } > 0;
+
+            let code = if memfd != -1 {
+                41 // memfd_create was NOT denied — containment hole
+            } else if memfd_errno != libc::EPERM {
+                42 // memfd denied, but not with EPERM
+            } else if sock != -1 {
+                43 // socket was NOT denied
+            } else if sock_errno != libc::EPERM {
+                44 // socket denied, but not with EPERM
+            } else if !pid_ok {
+                45 // filter too aggressive — blocked an allowed syscall
+            } else {
+                0 // correct: denied → EPERM, allowed → ok
+            };
+            unsafe { libc::_exit(code) };
+        }
+
+        // ── PARENT ──
+        let mut status: libc::c_int = 0;
+        let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(
+            waited,
+            pid,
+            "waitpid failed: {}",
+            std::io::Error::last_os_error()
+        );
+        assert!(
+            libc::WIFEXITED(status),
+            "sandbox child did not exit normally (status {status}) — a denied syscall \
+             may have raised SIGSYS instead of returning EPERM"
+        );
+        let code = libc::WEXITSTATUS(status);
+        assert_eq!(
+            code, 0,
+            "Strict seccomp enforcement failed (child exit {code}): 40=filter apply error, \
+             41=memfd_create NOT denied, 42=memfd not EPERM, 43=socket NOT denied, \
+             44=socket not EPERM, 45=allowed syscall (getpid) wrongly blocked"
+        );
+    }
+
     #[test]
     fn build_resource_limits_defaults() {
         let standard = LinuxSandbox::build_resource_limits(&SandboxConfig {

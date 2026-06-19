@@ -101,6 +101,24 @@ pub enum ExternalDataPolicy {
     AllowFiltered,
 }
 
+impl ExternalDataPolicy {
+    /// #6442 (F10): the effective PII filter level for data egressing under this policy,
+    /// given the user-configured level. Single source of truth shared by the window-title
+    /// egress (scheduler `sanitize_title`) and the OCR-image egress
+    /// (`PrivacyGateway::resolve_filter_level`) so both paths resolve identically.
+    ///
+    /// `AllowFiltered` floors the configured level to `Basic`: a configured `Off` would
+    /// otherwise egress completely unfiltered, contradicting the policy's "filtered"
+    /// semantics. `PiiFilterStrict` / `PiiFilterStandard` pin their named level.
+    pub fn effective_egress_pii_level(self, configured: PiiFilterLevel) -> PiiFilterLevel {
+        match self {
+            ExternalDataPolicy::PiiFilterStrict => PiiFilterLevel::Strict,
+            ExternalDataPolicy::PiiFilterStandard => PiiFilterLevel::Standard,
+            ExternalDataPolicy::AllowFiltered => configured.max(PiiFilterLevel::Basic),
+        }
+    }
+}
+
 /// Rollout stage for the Codex `app-server` JSON-RPC transport (E21 #4871).
 ///
 /// The app-server transport is preview/experimental (R1) and pinned to the
@@ -614,5 +632,28 @@ mod tests {
             let d: SandboxProfile = serde_json::from_str(&s).expect("must deserialise");
             assert_eq!(d, variant);
         }
+    }
+
+    #[test]
+    fn effective_egress_pii_level_floors_allow_filtered() {
+        // #6442 F10: AllowFiltered floors a configured Off up to Basic so egress is never
+        // unfiltered; a level at or above Basic is honoured. The redacting policies pin
+        // their named level regardless of the configured one.
+        assert_eq!(
+            ExternalDataPolicy::AllowFiltered.effective_egress_pii_level(PiiFilterLevel::Off),
+            PiiFilterLevel::Basic
+        );
+        assert_eq!(
+            ExternalDataPolicy::AllowFiltered.effective_egress_pii_level(PiiFilterLevel::Standard),
+            PiiFilterLevel::Standard
+        );
+        assert_eq!(
+            ExternalDataPolicy::PiiFilterStrict.effective_egress_pii_level(PiiFilterLevel::Off),
+            PiiFilterLevel::Strict
+        );
+        assert_eq!(
+            ExternalDataPolicy::PiiFilterStandard.effective_egress_pii_level(PiiFilterLevel::Off),
+            PiiFilterLevel::Standard
+        );
     }
 }

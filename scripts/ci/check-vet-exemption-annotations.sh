@@ -24,7 +24,8 @@
 #   ./scripts/ci/check-vet-exemption-annotations.sh [supply-chain/config.toml]
 
 echo "WARN: check-vet-exemption-annotations.sh is deprecated."
-echo "      Parent active expiry enforcement uses verify_exemption_expiry.py in cargo-supply-chain.yml."
-echo "      Public security-compliance.yml keeps this as a compatibility warning only."
+echo "      Active expiry enforcement: verify_exemption_expiry.py (#6442 F19: self-contained in"
+echo "      this repo's security-compliance.yml + the parent cargo-supply-chain.yml)."
+echo "      This annotation gate stays as a compatibility warning only."
 echo "      See OOS-TBD F-SC-C34-01 for 3-field schema rollout plan."
 exit 0

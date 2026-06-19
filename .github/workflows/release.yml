@@ -17,6 +17,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
@@ -202,6 +206,7 @@ jobs:
         if: steps.release.outputs.release_kind == 'stable'
         env:
           GH_TOKEN: ${{ secrets.MAEKON_RELEASE_SECURITY_TOKEN || steps.app_token.outputs.token }}
+          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -267,6 +272,76 @@ jobs:
               raise SystemExit(f"Latest RC release {tag} has no assets")
 
           print(f"Verified RC release {tag}: prerelease={release.get('prerelease')} assets={assets}")
+          PY
+
+          if [[ -z "${MAEKON_UPDATE_PUBLIC_KEY:-}" ]]; then
+            echo "::error::MAEKON_UPDATE_PUBLIC_KEY is required to verify RC final-byte signatures"
+            exit 1
+          fi
+
+          rm -rf rc-release-assets
+          mkdir -p rc-release-assets
+          gh release download "$RC_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir rc-release-assets \
+            --pattern 'maekon-macos-universal.dmg*' \
+            --pattern 'maekon-macos-universal.pkg*' \
+            --pattern 'notarization-final-byte-manifest.json*'
+
+          python3 -m pip install --upgrade pynacl
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from nacl.exceptions import BadSignatureError
+          from nacl.signing import VerifyKey
+
+          root = Path("rc-release-assets")
+          verify_key = VerifyKey(base64.b64decode(os.environ["MAEKON_UPDATE_PUBLIC_KEY"]))
+          required_assets = [
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.dmg.sha256",
+              "maekon-macos-universal.dmg.sig",
+              "maekon-macos-universal.pkg",
+              "maekon-macos-universal.pkg.sha256",
+              "maekon-macos-universal.pkg.sig",
+              "notarization-final-byte-manifest.json",
+              "notarization-final-byte-manifest.json.sha256",
+              "notarization-final-byte-manifest.json.sig",
+          ]
+
+          missing = [asset for asset in required_assets if not (root / asset).is_file()]
+          if missing:
+              raise SystemExit(f"RC release is missing notarized final-byte assets: {', '.join(missing)}")
+
+          manifest = json.loads((root / "notarization-final-byte-manifest.json").read_text(encoding="utf-8"))
+          manifest_sha_by_name = {
+              asset["name"]: asset["sha256"]
+              for asset in manifest.get("macos_assets", [])
+          }
+
+          for asset_name in (
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+              "notarization-final-byte-manifest.json",
+          ):
+              asset = root / asset_name
+              data = asset.read_bytes()
+              actual_sha = hashlib.sha256(data).hexdigest()
+              expected_sha = (root / f"{asset_name}.sha256").read_text(encoding="utf-8").split()[0]
+              if actual_sha != expected_sha:
+                  raise SystemExit(f"stale checksum sidecar for {asset_name}: expected {actual_sha}, got {expected_sha}")
+              if asset_name in manifest_sha_by_name and manifest_sha_by_name[asset_name] != actual_sha:
+                  raise SystemExit(f"notarization manifest checksum mismatch for {asset_name}")
+
+              signature = base64.b64decode((root / f"{asset_name}.sig").read_text(encoding="utf-8").strip())
+              try:
+                  verify_key.verify(data, signature)
+              except BadSignatureError as exc:
+                  raise SystemExit(f"stale signature sidecar for {asset_name}") from exc
           PY
 
       - name: Check release security alerts
@@ -551,7 +626,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
         run: |
-          ./scripts/cargo-cache.sh build --release --target "$TARGET_TRIPLE" -p maekon-sandbox-worker
+          ./scripts/cargo-cache.sh build --locked --release --target "$TARGET_TRIPLE" -p maekon-sandbox-worker
           SRC="target/$TARGET_TRIPLE/release/maekon-sandbox-worker"
           DST="src-tauri/maekon-sandbox-worker-$TARGET_TRIPLE"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -592,7 +667,7 @@ jobs:
           else
             FEATURES="grpc"
           fi
-          ./scripts/cargo-cache.sh build --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
+          ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
 
       - name: Validate WiX assets
         if: runner.os == 'Windows'
@@ -611,7 +686,7 @@ jobs:
       - name: Install cargo-wix
         if: runner.os == 'Windows'
         shell: bash
-        run: ./scripts/cargo-cache.sh install cargo-wix --force
+        run: ./scripts/cargo-cache.sh install cargo-wix --version 0.3.9 --locked --force
 
       - name: Install Tauri CLI
         if: runner.os == 'Windows'
@@ -647,7 +722,7 @@ jobs:
       # ── DEB 패키지 (Linux only) ──
       - name: Install cargo-deb
         if: runner.os == 'Linux'
-        run: ./scripts/cargo-cache.sh install cargo-deb --force
+        run: ./scripts/cargo-cache.sh install cargo-deb --version 3.7.0 --locked --force
 
       - name: Build DEB package
         if: runner.os == 'Linux'
@@ -1250,7 +1325,7 @@ jobs:
         shell: bash
         run: |
           TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
-          ./scripts/cargo-cache.sh build --release -p maekon-sandbox-worker
+          ./scripts/cargo-cache.sh build --locked --release -p maekon-sandbox-worker
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             SOURCE="target/release/maekon-sandbox-worker.exe"
             DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}.exe"
@@ -1620,6 +1695,15 @@ jobs:
 
           if gh release view "$RELEASE_TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG_NAME} already exists; updating notes and assets"
+            gh release view "$RELEASE_TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name' > existing_release_assets.txt
+            if grep -Fxq "notarization-final-byte-manifest.json" existing_release_assets.txt &&
+              find dist -maxdepth 1 -type f \( -name 'maekon-macos-universal.dmg*' -o -name 'maekon-macos-universal.pkg*' \) -print -quit | grep -q .; then
+              echo "::error::Refusing to clobber notarized macOS final-byte assets. Use notarize-macos-release-assets.yml to republish final macOS bytes."
+              exit 1
+            fi
             gh release edit "$RELEASE_TAG_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$RELEASE_NAME" \

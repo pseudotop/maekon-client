@@ -20,7 +20,19 @@ use maekon_core::config::{SandboxConfig, SandboxProfile};
 /// writes); `Standard` and `Strict` are deny-by-default and only re-allow the
 /// minimum plus the configured paths. `Strict` **always** denies the network,
 /// regardless of `config.allow_network` — that is the point of the strict tier.
-pub(crate) fn generate_sbpl_profile(config: &SandboxConfig) -> String {
+///
+/// `worker_path` is the absolute path of the `maekon-sandbox-worker` binary that
+/// `sandbox-exec` will launch. `sandbox-exec` applies this profile to itself and
+/// then `execve`s the worker, so that one exec MUST be authorised or the worker
+/// can never start. The deny-by-default tiers therefore re-allow `process-exec`
+/// **only for that single literal path** (#6443 F6): the worker is a single-shot
+/// stdin→stdout process that never forks or execs anything post-launch (see
+/// `crates/maekon-sandbox-worker`), so a compromised or buggy worker cannot exec
+/// a shell or any other binary, and `process-fork` is not granted at all. Pass a
+/// canonical path — Seatbelt matches the literal against the canonical vnode path
+/// of the exec target, so the caller must hand the same canonical path to both
+/// this function and `sandbox-exec`.
+pub(crate) fn generate_sbpl_profile(config: &SandboxConfig, worker_path: &str) -> String {
     let mut rules = String::new();
     rules.push_str("(version 1)\n");
 
@@ -32,8 +44,12 @@ pub(crate) fn generate_sbpl_profile(config: &SandboxConfig) -> String {
         }
         SandboxProfile::Standard => {
             rules.push_str("(deny default)\n");
-            rules.push_str("(allow process-exec)\n");
-            rules.push_str("(allow process-fork)\n");
+            // #6443 F6: scope exec to the worker binary only (see fn doc). The
+            // worker never forks, so `process-fork` is intentionally NOT granted.
+            rules.push_str(&format!(
+                "(allow process-exec (literal \"{}\"))\n",
+                escape_sbpl_path(worker_path)
+            ));
             rules.push_str("(allow sysctl-read)\n");
             rules.push_str("(allow mach-lookup)\n");
 
@@ -60,7 +76,12 @@ pub(crate) fn generate_sbpl_profile(config: &SandboxConfig) -> String {
         }
         SandboxProfile::Strict => {
             rules.push_str("(deny default)\n");
-            rules.push_str("(allow process-exec)\n");
+            // #6443 F6: same single-binary exec constraint as Standard; Strict
+            // already withholds process-fork.
+            rules.push_str(&format!(
+                "(allow process-exec (literal \"{}\"))\n",
+                escape_sbpl_path(worker_path)
+            ));
             rules.push_str("(allow sysctl-read)\n");
 
             rules.push_str("(allow file-read* (subpath \"/usr/lib\"))\n");
@@ -79,11 +100,12 @@ pub(crate) fn generate_sbpl_profile(config: &SandboxConfig) -> String {
     rules
 }
 
-/// Escape a path for safe inclusion inside an SBPL `(subpath "...")` string
-/// literal. Backslash and double-quote are the only metacharacters that can
-/// terminate or break out of the quoted string — escaping them prevents a
-/// crafted `allowed_*_paths` entry from injecting additional SBPL rules (e.g.
-/// closing the subpath and appending `(allow network*)`).
+/// Escape a path for safe inclusion inside an SBPL `(subpath "...")` or
+/// `(literal "...")` string. Backslash and double-quote are the only
+/// metacharacters that can terminate or break out of the quoted string —
+/// escaping them prevents a crafted `allowed_*_paths` entry (or worker path)
+/// from injecting additional SBPL rules (e.g. closing the string and appending
+/// `(allow network*)`).
 ///
 /// The replace **order matters**: backslash MUST be doubled before the quote is
 /// escaped, otherwise the `\` introduced by quote-escaping would itself be
@@ -102,6 +124,11 @@ fn escape_sbpl_path(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Stand-in worker path used by the profile tests. Any absolute path works —
+    /// the tests assert how it is woven into the `process-exec` rule, not the
+    /// value itself.
+    const TEST_WORKER: &str = "/opt/maekon/maekon-sandbox-worker";
+
     fn config(profile: SandboxProfile) -> SandboxConfig {
         SandboxConfig {
             profile,
@@ -109,9 +136,14 @@ mod tests {
         }
     }
 
+    /// Generate a profile with the stand-in worker path.
+    fn gen(cfg: &SandboxConfig) -> String {
+        generate_sbpl_profile(cfg, TEST_WORKER)
+    }
+
     #[test]
     fn permissive_allows_default_but_hardens_system_writes() {
-        let p = generate_sbpl_profile(&config(SandboxProfile::Permissive));
+        let p = gen(&config(SandboxProfile::Permissive));
         assert!(p.contains("(version 1)"));
         assert!(p.contains("(allow default)"));
         assert!(p.contains("(deny file-write* (subpath \"/System\"))"));
@@ -133,12 +165,12 @@ mod tests {
 
     #[test]
     fn standard_is_deny_by_default_before_allows() {
-        let p = generate_sbpl_profile(&config(SandboxProfile::Standard));
+        let p = gen(&config(SandboxProfile::Standard));
         let deny_idx = p
             .find("(deny default)")
             .expect("standard must deny by default");
         let allow_idx = p
-            .find("(allow process-exec)")
+            .find("(allow process-exec ")
             .expect("standard re-allows exec");
         assert!(
             deny_idx < allow_idx,
@@ -147,15 +179,80 @@ mod tests {
     }
 
     #[test]
+    fn standard_constrains_process_exec_to_the_worker_binary() {
+        // #6443 F6: deny-by-default tiers must scope exec to the single worker
+        // literal, never grant a blanket `(allow process-exec)`. A blanket grant
+        // would let a compromised worker exec an arbitrary shell.
+        let p = gen(&config(SandboxProfile::Standard));
+        assert!(
+            p.contains("(allow process-exec (literal \"/opt/maekon/maekon-sandbox-worker\"))"),
+            "Standard must scope process-exec to the worker literal: {p}"
+        );
+        assert!(
+            !p.contains("(allow process-exec)\n"),
+            "Standard must NOT grant blanket (allow process-exec): {p}"
+        );
+    }
+
+    #[test]
+    fn standard_no_longer_grants_process_fork() {
+        // #6443 F6: the worker never forks, so process-fork is withheld.
+        let p = gen(&config(SandboxProfile::Standard));
+        assert!(
+            !p.contains("process-fork"),
+            "Standard must not grant process-fork (the worker never forks): {p}"
+        );
+    }
+
+    #[test]
+    fn strict_constrains_process_exec_to_the_worker_binary() {
+        let p = gen(&config(SandboxProfile::Strict));
+        assert!(
+            p.contains("(allow process-exec (literal \"/opt/maekon/maekon-sandbox-worker\"))"),
+            "Strict must scope process-exec to the worker literal: {p}"
+        );
+        assert!(
+            !p.contains("(allow process-exec)\n"),
+            "Strict must NOT grant blanket (allow process-exec): {p}"
+        );
+        // Strict has never granted process-fork; keep it that way.
+        assert!(
+            !p.contains("process-fork"),
+            "Strict must not grant process-fork: {p}"
+        );
+    }
+
+    #[test]
+    fn process_exec_literal_escapes_a_crafted_worker_path() {
+        // The worker path is app-controlled, but escape it anyway (defence in
+        // depth + consistency with the allowed_*_paths handling): a `"` in the
+        // path must not be able to close the literal and append a sibling rule.
+        let cfg = config(SandboxProfile::Strict);
+        let p = generate_sbpl_profile(&cfg, "/x\") (allow network*) (literal \"/y");
+        // The injected quote is escaped, so the whole payload stays inside ONE
+        // literal string — the parser never sees a standalone (allow network*).
+        assert!(
+            p.contains(r#"(literal "/x\")"#),
+            "the injected quote must be escaped: {p}"
+        );
+        assert!(
+            !p.contains(r#"(literal "/x") (allow network*)"#),
+            "the escaped worker path must not break out of the literal: {p}"
+        );
+        // Strict still denies the network.
+        assert!(p.contains("(deny network*)"));
+    }
+
+    #[test]
     fn standard_honors_network_toggle() {
         let mut cfg = config(SandboxProfile::Standard);
         cfg.allow_network = false;
-        let denied = generate_sbpl_profile(&cfg);
+        let denied = gen(&cfg);
         assert!(denied.contains("(deny network*)"));
         assert!(!denied.contains("(allow network*)"));
 
         cfg.allow_network = true;
-        let allowed = generate_sbpl_profile(&cfg);
+        let allowed = gen(&cfg);
         assert!(allowed.contains("(allow network*)"));
         assert!(!allowed.contains("(deny network*)"));
     }
@@ -165,7 +262,7 @@ mod tests {
         // Security contract: the strict tier ignores `allow_network`.
         let mut cfg = config(SandboxProfile::Strict);
         cfg.allow_network = true;
-        let p = generate_sbpl_profile(&cfg);
+        let p = gen(&cfg);
         assert!(
             p.contains("(deny network*)"),
             "Strict must deny the network regardless of allow_network"
@@ -181,7 +278,7 @@ mod tests {
         let mut cfg = config(SandboxProfile::Standard);
         cfg.allowed_read_paths = vec!["/tmp/r".to_string()];
         cfg.allowed_write_paths = vec!["/tmp/w".to_string()];
-        let p = generate_sbpl_profile(&cfg);
+        let p = gen(&cfg);
         assert!(p.contains("(allow file-read* (subpath \"/tmp/r\"))"));
         assert!(p.contains("(allow file-write* (subpath \"/tmp/w\"))"));
     }
@@ -216,7 +313,7 @@ mod tests {
         // text the Seatbelt parser reads as part of the path, not a rule.)
         let mut cfg = config(SandboxProfile::Strict);
         cfg.allowed_read_paths = vec!["/x\") (allow network*) (subpath \"/y".to_string()];
-        let p = generate_sbpl_profile(&cfg);
+        let p = gen(&cfg);
 
         // Escaped form (safe): the quote after `/x` is `\"`, still inside the string.
         assert!(

@@ -315,14 +315,17 @@ jobs:
       #   `maekon-automation/src/sandbox/windows.rs`, which is itself
       #   `#[cfg(target_os = "windows")]`. On this ubuntu runner the
       #   windows.rs module is not compiled regardless of the feature flag,
-      #   so `cargo check --features windows-sandbox` verifies that the
-      #   feature declaration and Cargo.toml wiring are not broken and that
-      #   the remaining platform-neutral code (win_limits.rs, sbpl.rs) still
-      #   compiles cleanly. Real enforcement is exercised by
-      #   `test-platform: windows-latest` default-workspace run.
+      #   so this lints the platform-neutral code (win_limits.rs, sbpl.rs) and
+      #   the test targets under the feature and verifies the feature
+      #   declaration + Cargo.toml wiring are not broken. #6439 F5: promoted
+      #   from `check` to `clippy --all-targets` for parity with the other
+      #   feature cells above. Real Win32 enforcement — including the
+      #   Job-Object limit-binding assertion (job_object_limits_actually_bind)
+      #   — is exercised by the `test-platform: windows-latest` `--features
+      #   windows-sandbox` run further below.
       #   Estimated CI cost: ~3–5 s (incremental, no new native deps).
-      - name: Check maekon-automation (--features windows-sandbox)
-        run: ./scripts/cargo-cache.sh check -p maekon-automation --features windows-sandbox
+      - name: Clippy maekon-automation (--features windows-sandbox)
+        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features windows-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
 
       # F2 (P2): whisper — promoted from excluded to a live CI cell (#5812).
       #   whisper-rs builds whisper.cpp via cmake (cmake is now installed in the
