@@ -110,7 +110,9 @@ impl ClipboardMonitor {
         Some(ClipboardEvent {
             timestamp: chrono::Utc::now(),
             content_type: ClipboardContentType::Text,
-            char_count: text.len(),
+            // `chars().count()`, not `len()`: `str::len()` is the UTF-8 byte length,
+            // which over-reports 2-4x for CJK/emoji content for a field named char_count.
+            char_count: text.chars().count(),
             preview,
         })
     }

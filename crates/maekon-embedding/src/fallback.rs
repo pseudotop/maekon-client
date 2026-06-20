@@ -70,4 +70,15 @@ impl EmbeddingProvider for FallbackEmbeddingProvider {
     fn model_id(&self) -> &str {
         self.primary.model_id()
     }
+
+    /// #6477 F18: forward idle-eviction to both wrapped providers. Without this
+    /// override the trait's no-op default is used, so a resident model behind
+    /// either arm (e.g. `LocalEmbeddingProvider`'s ONNX session) is never evicted
+    /// and its RSS is pinned for the whole process lifetime — defeating the wired
+    /// idle-eviction loop.
+    fn evict_if_idle(&self, idle_after: std::time::Duration) -> bool {
+        let primary = self.primary.evict_if_idle(idle_after);
+        let fallback = self.fallback.evict_if_idle(idle_after);
+        primary || fallback
+    }
 }

@@ -159,30 +159,58 @@ impl ChangeMerger for SqliteSyncMerger {
                 // Applied FIRST so the local suppression set is populated before any merge
                 // below attempts an insert (anti-resurrection within the same changeset).
                 for t in &changes.tombstones {
+                    // Far-future poison guard: a tombstone with an implausibly
+                    // far-future HLC would suppress all legitimate future writes.
+                    if !Hlc::wall_ms_within_drift_bound(t.hlc_wall_ms) {
+                        warn!(
+                            table = %t.table_name,
+                            hlc_wall_ms = t.hlc_wall_ms,
+                            "rejecting sync tombstone: HLC wall-clock exceeds max clock drift (far-future poison guard)"
+                        );
+                        continue;
+                    }
                     apply_tombstone(&tx, t, &mut result)?;
                 }
 
                 // --- Append-only tables ---
                 for row in &changes.segments {
+                    if hlc_drift_rejected(row, "segments") {
+                        continue;
+                    }
                     merge_segment(&tx, row, &mut result)?;
                 }
                 for row in &changes.overrides {
+                    if hlc_drift_rejected(row, "overrides") {
+                        continue;
+                    }
                     merge_override(&tx, row, &mut result)?;
                 }
                 for row in &changes.param_snapshots {
+                    if hlc_drift_rejected(row, "param_snapshots") {
+                        continue;
+                    }
                     merge_param_snapshot(&tx, row, &mut result)?;
                 }
 
                 // --- LWW tables ---
                 for row in &changes.regimes {
+                    if hlc_drift_rejected(row, "regimes") {
+                        continue;
+                    }
                     merge_regime(&tx, row, &mut result)?;
                 }
                 for row in &changes.embeddings {
+                    if hlc_drift_rejected(row, "embeddings") {
+                        continue;
+                    }
                     merge_embedding(&tx, row, &mut result)?;
                 }
 
                 // --- Monotonic status merge (suggestions) ---
                 for row in &changes.suggestions {
+                    if hlc_drift_rejected(row, "suggestions") {
+                        continue;
+                    }
                     merge_suggestion(&tx, row, &mut result)?;
                 }
 
@@ -991,6 +1019,29 @@ fn json_u64(v: &serde_json::Value, key: &str) -> Result<u64, StorageError> {
     v.get(key)
         .and_then(|v| v.as_u64())
         .ok_or_else(|| StorageError::Internal(format!("missing u64 field: {key}")))
+}
+
+/// Far-future poison guard for cross-device sync ingestion.
+///
+/// `Hlc::merge` rejects peer HLCs more than `MAX_CLOCK_DRIFT_MS` (1h) ahead of the
+/// local clock, but the merge path here writes peer `hlc_wall_ms` straight into the
+/// LWW/tombstone tables without calling `merge`. A buggy or compromised paired
+/// device could otherwise stamp a far-future wall-clock to permanently win every
+/// LWW conflict and have its tombstones suppress legitimate future writes. Returns
+/// `true` (skip the row) only when the HLC is present and implausibly far ahead;
+/// a missing/invalid HLC returns `false` so the per-table merge surfaces that error.
+fn hlc_drift_rejected(row: &serde_json::Value, table: &str) -> bool {
+    match json_u64(row, "hlc_wall_ms") {
+        Ok(wall) if !Hlc::wall_ms_within_drift_bound(wall) => {
+            warn!(
+                table = %table,
+                hlc_wall_ms = wall,
+                "rejecting sync row: HLC wall-clock exceeds max clock drift (far-future poison guard)"
+            );
+            true
+        }
+        _ => false,
+    }
 }
 
 fn json_f64(v: &serde_json::Value, key: &str) -> Result<f64, StorageError> {

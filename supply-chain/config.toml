@@ -882,6 +882,18 @@ review-by: 2026-10-31
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
+[[exemptions.num-conv]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: companion crate of the time 0.3.47 → 0.3.49 bump (#6220). num-conv major bump
+0.1 → 0.2.2 (+161/-146) pulled in unvetted by the same Dependabot update (the existing
+audit covers an older 0.1.x). Unaudited acceptance (NOT a safe-to-deploy attestation)
+pending the same supply-chain-compliance review as time.
+review-by: 2026-09-20
+follow-up: #6220 — review together with the time 0.3.49 unsafe audit.
+"""
+
 [[exemptions.numkong]]
 version = "7.6.0"
 criteria = "safe-to-deploy"
@@ -1345,6 +1357,46 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-23
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.time]]
+version = "0.3.49"
+criteria = "safe-to-deploy"
+notes = """
+reason: Dependabot bump 0.3.47 → 0.3.49 (#6220). NOT a routine patch — a ~37k-line
+internal rewrite of the formatting/parsing path that adds net +122 lines of `unsafe`
+(mem::transmute lifetime-extension on FormatDescriptionV3Inner, str::from_utf8_unchecked,
+raw-pointer string construction via str_from_raw_parts). The existing 0.3.47 audit called
+time's unsafe "gated and minimal"; 0.3.49 makes it non-minimal. No trusted registry
+(mozilla/google/...) audits the `time` crate at 0.3.49. Accepted as an EXEMPTION (an
+unaudited acceptance, NOT a safe-to-deploy attestation) pending an expert soundness review
+of the new unsafe by the supply-chain-compliance owner.
+review-by: 2026-09-20
+follow-up: #6220 — hand-audit the new num_fmt / FormatDescriptionV3 unsafe (transmute +
+from_utf8_unchecked soundness), or pin time to 0.3.47 until a trusted audit appears.
+"""
+
+[[exemptions.time-core]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+notes = """
+reason: companion crate of the time 0.3.47 → 0.3.49 bump (#6220). Pulled in unvetted
+(0.1.9, +173/-39 vs 0.1.8) by the same Dependabot update. Unaudited acceptance (NOT a
+safe-to-deploy attestation) pending the same supply-chain-compliance review as time.
+review-by: 2026-09-20
+follow-up: #6220 — review together with the time 0.3.49 unsafe audit.
+"""
+
+[[exemptions.time-macros]]
+version = "0.2.29"
+criteria = "safe-to-deploy"
+notes = """
+reason: companion proc-macro crate of the time 0.3.47 → 0.3.49 bump (#6220). Pulled in
+unvetted (0.2.29, +1612/-600 vs 0.2.27; the mozilla import covers only up to 0.2.27) by
+the same Dependabot update. Unaudited acceptance (NOT a safe-to-deploy attestation)
+pending the same review.
+review-by: 2026-09-20
+follow-up: #6220 — review together with the time 0.3.49 unsafe audit.
 """
 
 [[exemptions.tinystr]]

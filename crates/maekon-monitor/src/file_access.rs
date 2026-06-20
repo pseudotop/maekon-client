@@ -2,7 +2,7 @@ use maekon_core::config::{FileAccessConfig, PiiFilterLevel};
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -12,6 +12,11 @@ pub use maekon_core::models::event::{FileAccessEvent, FileEventType};
 pub struct FileAccessFilter {
     config: FileAccessConfig,
     events_this_minute: Arc<AtomicU32>,
+    /// Start of the current rate-limit window (ms since epoch). The counter is
+    /// only cleared once ≥60 s have elapsed since this point — the watcher polls
+    /// far more often than once a minute, so an unconditional reset every poll
+    /// would silently multiply the effective `max_events_per_minute`.
+    window_start_ms: Arc<AtomicU64>,
     /// D5 iter-11: sanitize file paths before FileAccessEvent construction.
     /// Filenames can contain PII (`Resume_JohnDoe.pdf`, `2024_TaxReturn.xlsx`).
     /// The `/Users/<name>/` prefix is stripped by `to_relative_path`, but the
@@ -25,6 +30,7 @@ impl FileAccessFilter {
         Self {
             config,
             events_this_minute: Arc::new(AtomicU32::new(0)),
+            window_start_ms: Arc::new(AtomicU64::new(0)),
             pii_sanitizer: None,
             pii_level: PiiFilterLevel::Standard,
         }
@@ -78,6 +84,28 @@ impl FileAccessFilter {
 
     pub fn reset_minute_counter(&self) {
         self.events_this_minute.store(0, Ordering::Relaxed);
+    }
+
+    /// Clear the per-minute counter only when ≥60 s have elapsed since the window
+    /// start. The poll loop ticks far more often than once a minute, so it must
+    /// call this (not the unconditional `reset_minute_counter`) — otherwise the
+    /// counter resets every poll and `max_events_per_minute` is enforced per poll
+    /// instead of per minute.
+    pub fn maybe_reset_minute_window(&self) {
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let start = self.window_start_ms.load(Ordering::Relaxed);
+        if start == 0 {
+            // Lazy init: start the first window now without wiping the count.
+            self.window_start_ms.store(now_ms, Ordering::Relaxed);
+            return;
+        }
+        if now_ms.saturating_sub(start) >= 60_000 {
+            self.events_this_minute.store(0, Ordering::Relaxed);
+            self.window_start_ms.store(now_ms, Ordering::Relaxed);
+        }
     }
 
     pub fn to_relative_path(&self, absolute_path: &Path) -> PathBuf {
@@ -295,8 +323,9 @@ impl FileAccessWatcher {
         // Replace the stored mtimes with the current scan
         *mtimes = current_files;
 
-        // Reset rate limiter for next minute
-        self.filter.reset_minute_counter();
+        // Reset the rate-limit counter only once the 60 s window has actually
+        // elapsed — this loop polls far more often than once a minute.
+        self.filter.maybe_reset_minute_window();
 
         events
     }

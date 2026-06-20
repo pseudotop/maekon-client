@@ -17,6 +17,7 @@ use super::helpers::{
     local_content_blocks, ollama_message_payload, parse_ndjson_line, render_local_message_content,
 };
 use super::types::LocalLlmSession;
+use crate::provider_error_body::provider_error_message;
 
 /// #6206/#6207: Hard cap on the in-flight NDJSON line buffer. Ollama streams one
 /// JSON object per line, so a single un-terminated line should never approach
@@ -123,15 +124,22 @@ impl ConversationSession for LocalLlmSession {
             // most commonly means "model not pulled" — distinguish it so the
             // frontend can hint at `ollama pull <model>` rather than generic
             // "network error". (iter-55c)
+            // Never echo the raw Ollama response body: a non-loopback (LAN/remote)
+            // Ollama is an untrusted endpoint, and the body can echo the user's
+            // prompt or other private content. Mirror the http_api_session masking
+            // standard (`provider_error_body`) — keep status + a model hint only.
             return Err(match status.as_u16() {
                 404 => CoreError::NotFound {
                     code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
                     resource_type: "ollama_model".to_string(),
-                    id: format!("{body_text} (hint: try `ollama pull <model>`)"),
+                    id: format!(
+                        "model `{0}` not pulled (hint: try `ollama pull {0}`)",
+                        self.model
+                    ),
                 },
                 _ => CoreError::Network {
                     code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: format!("Ollama API error {status}: {body_text}"),
+                    message: provider_error_message("Ollama", status, Some(&body_text)),
                 },
             });
         }

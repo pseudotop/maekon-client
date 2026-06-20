@@ -52,26 +52,41 @@ fn is_english_compatible_letter(ch: char) -> bool {
 /// inspected on the line bearing `/*` — a deliberate approximation: the priority is
 /// to never FALSE-POSITIVE on a Korean string literal, and comments are English, so
 /// a missed block-comment continuation line is immaterial.
+///
+/// Test-only Rust-mode convenience wrapper; production scanning calls
+/// `first_non_english_in_comment_impl` directly with the per-file `js_like` flag.
+#[cfg(test)]
 fn first_non_english_in_comment(line: &str) -> Option<(usize, char)> {
+    // Rust/default mode: only double-quoted strings are tracked (`'` denotes char
+    // literals and lifetimes in Rust, not strings).
+    first_non_english_in_comment_impl(line, false)
+}
+
+/// `js_like`: when true, single-quoted (`'...'`) and template-literal (`` `...` ``)
+/// strings are ALSO treated as string literals, so a `//` inside a JS/TS string
+/// (e.g. `'http://...'`) is not mistaken for a comment start. Disabled for Rust,
+/// where `'` denotes char literals / lifetimes (`'static`) rather than strings.
+fn first_non_english_in_comment_impl(line: &str, js_like: bool) -> Option<(usize, char)> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0usize;
-    let mut in_string = false;
+    // The active string delimiter (`"`, or `'`/`` ` `` in js_like mode), or None.
+    let mut string_delim: Option<char> = None;
     let mut escaped = false;
     while i < chars.len() {
         let ch = chars[i];
-        if in_string {
+        if let Some(delim) = string_delim {
             if escaped {
                 escaped = false;
             } else if ch == '\\' {
                 escaped = true;
-            } else if ch == '"' {
-                in_string = false;
+            } else if ch == delim {
+                string_delim = None;
             }
             i += 1;
             continue;
         }
-        if ch == '"' {
-            in_string = true;
+        if ch == '"' || (js_like && (ch == '\'' || ch == '`')) {
+            string_delim = Some(ch);
             i += 1;
             continue;
         }
@@ -142,8 +157,15 @@ pub(crate) fn scan_non_english_text(
             continue;
         }
 
+        // JS-family files use `'` and `` ` `` for strings; Rust uses `'` for char
+        // literals / lifetimes, so single-quote string-tracking must stay off there.
+        let js_like = matches!(
+            file.extension().and_then(|e| e.to_str()),
+            Some("ts" | "tsx" | "js" | "jsx")
+        );
+
         for (line_idx, line) in content.lines().enumerate() {
-            if let Some((col, ch)) = first_non_english_in_comment(line) {
+            if let Some((col, ch)) = first_non_english_in_comment_impl(line, js_like) {
                 findings.push(Finding::new(
                     Severity::Error,
                     "non-english-comment",
@@ -165,7 +187,26 @@ pub(crate) fn scan_non_english_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{first_non_english_in_comment, is_english_compatible_letter};
+    use super::{
+        first_non_english_in_comment, first_non_english_in_comment_impl,
+        is_english_compatible_letter,
+    };
+
+    #[test]
+    fn js_mode_tracks_single_quote_and_template_strings() {
+        // JS mode: `//` inside single-quote / template strings is NOT a comment, so
+        // non-English inside such a string must not be flagged (the false positive).
+        assert!(
+            first_non_english_in_comment_impl("const u = 'http://\u{D55C}.example';", true)
+                .is_none()
+        );
+        assert!(first_non_english_in_comment_impl("const t = `http://\u{D55C}`;", true).is_none());
+        // A genuine JS line comment with non-English is still flagged in JS mode.
+        assert!(first_non_english_in_comment_impl("const x = 1; // \u{D55C}", true).is_some());
+        // Rust mode: `'` is a lifetime/char, NOT a string — a real comment after a
+        // lifetime must still be scanned (no regression for `.rs`).
+        assert!(first_non_english_in_comment_impl("fn f<'a>() {} // \u{D55C}", false).is_some());
+    }
 
     // Non-ASCII test characters are written as `\u{...}` escapes so THIS source
     // file stays pure-ASCII and the scanner never flags its own test data.

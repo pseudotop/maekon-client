@@ -4,6 +4,13 @@ use std::path::{Component, Path, PathBuf};
 
 use super::super::{UpdateError, Updater};
 
+/// Hard cap on the *cumulative uncompressed* output of an archive extraction.
+/// `download.rs` caps the COMPRESSED artifact (`MAX_UPDATE_BYTES`, 2 GiB), but
+/// gzip/deflate routinely reach >1000:1 on repetitive data, so without this cap an
+/// archive that passed the download check could still decompress to hundreds of
+/// GiB and exhaust the disk. 4 GiB is far above any real maekon release payload.
+const MAX_EXTRACTED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 impl Updater {
     pub(crate) fn is_safe_archive_path(path: &Path) -> bool {
         path.components()
@@ -21,6 +28,7 @@ impl Updater {
         let extract_dir = archive_path
             .parent()
             .unwrap_or(std::path::Path::new("/tmp"));
+        let mut total_extracted: u64 = 0;
         for entry in archive.entries()? {
             let mut entry = entry?;
             let entry_path = entry.path()?;
@@ -51,6 +59,15 @@ impl Updater {
                 )));
             }
 
+            // tar `unpack` reads exactly `header.size()` bytes from the (decompressing)
+            // gz stream, so the declared size is authoritative — tracking it bounds the
+            // total decompressed output and aborts a gzip bomb before it fills the disk.
+            total_extracted = total_extracted.saturating_add(entry.header().size().unwrap_or(0));
+            if total_extracted > MAX_EXTRACTED_BYTES {
+                return Err(UpdateError::Install(format!(
+                    "Archive decompressed size exceeds {MAX_EXTRACTED_BYTES} bytes — possible decompression bomb"
+                )));
+            }
             entry.unpack(&outpath)?;
         }
 
@@ -59,6 +76,7 @@ impl Updater {
 
     pub(crate) fn extract_zip(&self, archive_path: &Path) -> Result<PathBuf, UpdateError> {
         use std::fs::File;
+        use std::io::Read;
 
         let file = File::open(archive_path)?;
         let mut archive = zip::ZipArchive::new(file)
@@ -68,6 +86,7 @@ impl Updater {
             .parent()
             .unwrap_or(std::path::Path::new("/tmp"));
 
+        let mut total_extracted: u64 = 0;
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
@@ -95,7 +114,17 @@ impl Updater {
                     }
                 }
                 let mut outfile = std::fs::File::create(&outpath)?;
-                std::io::copy(&mut file, &mut outfile)?;
+                // Bound the actual decompressed copy: the zip reader yields the real
+                // decompressed bytes, which a malicious local header can under-declare
+                // in `file.size()`. `take(remaining + 1)` lets us detect an overflow.
+                let remaining = MAX_EXTRACTED_BYTES.saturating_sub(total_extracted);
+                let written = std::io::copy(&mut (&mut file).take(remaining + 1), &mut outfile)?;
+                total_extracted = total_extracted.saturating_add(written);
+                if total_extracted > MAX_EXTRACTED_BYTES {
+                    return Err(UpdateError::Install(format!(
+                        "Archive decompressed size exceeds {MAX_EXTRACTED_BYTES} bytes — possible decompression bomb"
+                    )));
+                }
             }
         }
 

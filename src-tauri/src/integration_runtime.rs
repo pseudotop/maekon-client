@@ -463,6 +463,7 @@ fn integration_state_store_path(config_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[test]
@@ -509,7 +510,10 @@ mod tests {
         assert!(bindings.session.is_some());
     }
 
+    // `#[serial]`: this test mutates process-global env (`set_var`/`remove_var`),
+    // which is `unsafe` and races other tests in the binary. Serialize it.
     #[test]
+    #[serial]
     fn build_runtime_reports_auth_material_presence() {
         let temp_dir = TempDir::new().expect("temp dir");
         let mut config = AppConfig::default_config();

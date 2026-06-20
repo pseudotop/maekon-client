@@ -197,6 +197,12 @@ impl InputActivityCollector {
         let now_ms = Utc::now().timestamp_millis() as u64;
         let last_ms = self.last_activity_ms.swap(now_ms, Ordering::Relaxed);
 
+        // `typing_bursts` counts the number of distinct activity bursts (sessions),
+        // NOT individual rapid keystrokes: it increments once each time activity
+        // RESUMES after a gap exceeding `burst_threshold_ms` (2 s — a session-break
+        // gap, deliberately too long to be an inter-keystroke interval). The first
+        // event of each post-pause burst is the one counted. (Intentional: do not
+        // invert the comparison — that would turn this into a keystroke-rate count.)
         if last_ms > 0 && now_ms.saturating_sub(last_ms) > self.burst_threshold_ms {
             self.typing_bursts.fetch_add(1, Ordering::Relaxed);
         }

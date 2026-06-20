@@ -114,6 +114,18 @@ impl Hlc {
     pub fn is_after(&self, other: &Hlc) -> bool {
         self > other
     }
+
+    /// Returns `true` when a peer-supplied wall-clock is within the plausible
+    /// drift bound (≤ `MAX_CLOCK_DRIFT_MS` ahead of the local clock).
+    ///
+    /// `merge` applies this same guard when advancing the *local* clock, but the
+    /// cross-device sync-merge ingestion path writes peer HLCs straight into
+    /// LWW/tombstone tables without ever calling `merge`. Callers on that path use
+    /// this to reject implausibly-far-future timestamps that would otherwise
+    /// permanently win every LWW conflict and suppress legitimate future writes.
+    pub fn wall_ms_within_drift_bound(remote_wall_ms: u64) -> bool {
+        remote_wall_ms <= current_time_ms().saturating_add(MAX_CLOCK_DRIFT_MS)
+    }
 }
 
 fn current_time_ms() -> u64 {
@@ -264,5 +276,22 @@ mod tests {
             "wall_ms should not adopt far-future remote timestamp"
         );
         assert_eq!(local.device_id, "dev-a", "device_id must remain local");
+    }
+
+    #[test]
+    fn wall_ms_within_drift_bound_rejects_far_future_peer_hlc() {
+        let now = current_time_ms();
+        // Plausible peer wall-clocks (recent / slightly ahead / in the past) pass.
+        assert!(Hlc::wall_ms_within_drift_bound(now));
+        assert!(Hlc::wall_ms_within_drift_bound(
+            now + MAX_CLOCK_DRIFT_MS / 2
+        ));
+        assert!(Hlc::wall_ms_within_drift_bound(0));
+        // A far-future peer wall-clock (> 1h drift) is rejected — this is the
+        // ingestion-path guard the sync merger relies on so a buggy/compromised
+        // paired device cannot permanently win every LWW conflict.
+        assert!(!Hlc::wall_ms_within_drift_bound(
+            now + 2 * MAX_CLOCK_DRIFT_MS
+        ));
     }
 }

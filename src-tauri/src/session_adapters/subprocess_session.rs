@@ -2,11 +2,11 @@
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
@@ -48,7 +48,9 @@ pub struct GenericSubprocessSession {
     state: Mutex<SessionState>,
     turn_count: AtomicU32,
     created_at: chrono::DateTime<chrono::Utc>,
-    last_active: Mutex<Instant>,
+    // #6518 parity: store wall-clock directly (was Mutex<Instant> + skew-prone
+    // `Utc::now() - elapsed()` reconstruction).
+    last_active: Mutex<DateTime<Utc>>,
     timeout: Duration,
     max_history_turns: u32,
     cancel_requested: Arc<AtomicBool>,
@@ -101,7 +103,7 @@ impl GenericSubprocessSession {
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
-            last_active: Mutex::new(Instant::now()),
+            last_active: Mutex::new(Utc::now()),
             timeout: Duration::from_secs(session_config.session_timeout_secs),
             max_history_turns: session_config.max_history_turns,
             cancel_requested: Arc::new(AtomicBool::new(false)),
@@ -244,7 +246,7 @@ impl GenericSubprocessSession {
         };
 
         self.turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock() = Instant::now();
+        *self.last_active.lock() = Utc::now();
 
         let temp_dir = tempdir().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -489,7 +491,7 @@ impl ConversationSession for GenericSubprocessSession {
         };
 
         self.turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock() = Instant::now();
+        *self.last_active.lock() = Utc::now();
 
         let output = self.invoke_surface(&prompt).await.inspect_err(|_| {
             *self.state.lock() = SessionState::Failed;
@@ -531,8 +533,7 @@ impl ConversationSession for GenericSubprocessSession {
     }
 
     fn info(&self) -> ConversationSessionInfo {
-        let elapsed = self.last_active.lock().elapsed();
-        let last_active_utc = Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default();
+        let last_active_utc = *self.last_active.lock();
         ConversationSessionInfo {
             session_id: self.session_id.clone(),
             provider_name: self.provider_name.clone(),
@@ -1068,7 +1069,7 @@ mod tests {
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
-            last_active: Mutex::new(Instant::now()),
+            last_active: Mutex::new(Utc::now()),
             timeout: Duration::from_secs(30),
             max_history_turns: 8,
             cancel_requested: Arc::new(AtomicBool::new(false)),
@@ -1190,7 +1191,7 @@ mod tests {
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
-            last_active: Mutex::new(Instant::now()),
+            last_active: Mutex::new(Utc::now()),
             timeout: Duration::from_secs(30),
             max_history_turns: 8,
             cancel_requested: Arc::new(AtomicBool::new(false)),

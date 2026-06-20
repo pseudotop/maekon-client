@@ -16,7 +16,6 @@ mod tests;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -56,7 +55,10 @@ pub struct HttpApiSession {
     state: parking_lot::Mutex<SessionState>,
     turn_count: AtomicU32,
     created_at: DateTime<Utc>,
-    last_active: parking_lot::Mutex<Instant>,
+    // #6518 parity: store wall-clock directly. The old `Mutex<Instant>` +
+    // `Utc::now() - elapsed()` reconstruction skews (or lands in the future) if
+    // the system clock steps between the write and `info()`.
+    last_active: parking_lot::Mutex<DateTime<Utc>>,
     http_client: reqwest::Client,
     config: Arc<AiSessionConfig>,
     /// D7: per-endpoint circuit breaker. Three-tier semantics for streaming
@@ -195,7 +197,7 @@ impl HttpApiSession {
             state: parking_lot::Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
-            last_active: parking_lot::Mutex::new(Instant::now()),
+            last_active: parking_lot::Mutex::new(Utc::now()),
             http_client,
             breaker,
             config: init.config,
@@ -527,7 +529,7 @@ impl ConversationSession for HttpApiSession {
         let max_turns = self.config.max_history_turns;
         let turn_count = &self.turn_count;
         turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock() = Instant::now();
+        *self.last_active.lock() = Utc::now();
 
         // Build the ResponseStream using SSE parsing
         let stream: ResponseStream = Box::pin(try_stream! {
@@ -681,8 +683,7 @@ impl ConversationSession for HttpApiSession {
     }
 
     fn info(&self) -> ConversationSessionInfo {
-        let elapsed = self.last_active.lock().elapsed();
-        let last_active_utc = Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default();
+        let last_active_utc = *self.last_active.lock();
         ConversationSessionInfo {
             session_id: self.session_id.clone(),
             provider_name: format!("{:?}", self.provider_type).to_lowercase(),

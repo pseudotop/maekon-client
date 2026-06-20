@@ -190,6 +190,13 @@ impl FrameFileStorage {
                 .map(|_| Err(StorageError::Internal("disk space critical".into())))
                 .collect();
         }
+        if free_mb < DISK_SPACE_WARN_MB {
+            warn!(
+                free_mb,
+                batch_size = frames.len(),
+                "disk space low — frame batch save proceeding with caution"
+            );
+        }
 
         let mut handles = Vec::with_capacity(frames.len());
 

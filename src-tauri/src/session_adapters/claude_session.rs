@@ -3,7 +3,6 @@
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Maximum byte length accepted for the combined bare-argv arguments passed to
 /// the Claude CLI.  Windows `CreateProcess` imposes a ~32 KiB command-line
@@ -18,7 +17,7 @@ use std::time::Instant;
 const MAX_ARGV_PROMPT_BYTES: usize = 32_767;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -53,7 +52,9 @@ pub struct ClaudeSubprocessSession {
     state: Mutex<SessionState>,
     turn_count: AtomicU32,
     created_at: chrono::DateTime<chrono::Utc>,
-    last_active: Mutex<Instant>,
+    // #6518 parity: store wall-clock directly (was Mutex<Instant> + skew-prone
+    // `Utc::now() - elapsed()` reconstruction).
+    last_active: Mutex<DateTime<Utc>>,
     config: Arc<AiSessionConfig>,
     cancel_requested: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
@@ -76,7 +77,7 @@ impl ClaudeSubprocessSession {
             default_tools,
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
-            last_active: Mutex::new(Instant::now()),
+            last_active: Mutex::new(Utc::now()),
             config: session_config,
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
@@ -193,7 +194,7 @@ impl ConversationSession for ClaudeSubprocessSession {
         })?;
 
         self.turn_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_active.lock() = Instant::now();
+        *self.last_active.lock() = Utc::now();
 
         let timeout_secs = self.config.session_timeout_secs;
         let surface_id = self.surface.surface_id.clone();
@@ -301,8 +302,7 @@ impl ConversationSession for ClaudeSubprocessSession {
     }
 
     fn info(&self) -> ConversationSessionInfo {
-        let elapsed = self.last_active.lock().elapsed();
-        let last_active_utc = Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default();
+        let last_active_utc = *self.last_active.lock();
         ConversationSessionInfo {
             session_id: self.session_id.clone(),
             provider_name: "claude".to_string(),

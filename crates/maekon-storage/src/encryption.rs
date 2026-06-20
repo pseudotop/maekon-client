@@ -6,9 +6,13 @@
 //!    The file is created with restrictive permissions **atomically** — no world-readable
 //!    window between creation and chmod (TOCTOU fix, issue #5991).
 //!
-//! # Future work
-//! Integration with SQLCipher or an at-rest encryption layer is planned.
-//! Currently only the key generation / storage / load infrastructure is provided.
+//! # At-rest encryption (wired)
+//! This module owns key generation / storage / loading. The 32-byte key it
+//! produces is applied to the SQLite connection via SQLCipher (`PRAGMA key`) in
+//! `sqlite::apply_sqlcipher_key` — with fail-closed key verification and legacy
+//! plaintext detection — and is activated unconditionally in the production
+//! composition root (`storage_runtime`). The database is therefore encrypted at
+//! rest; this is no longer "planned" future work.
 
 use crate::error::StorageError;
 use std::path::{Path, PathBuf};
