@@ -45,7 +45,7 @@ jobs:
       MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
       MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Resolve release tag and source run id
         id: release
@@ -236,7 +236,7 @@ jobs:
 
       - name: Upload notarization logs artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-notary-logs-${{ env.RELEASE_TAG }}
           path: dist/notary-logs/*.json
@@ -244,7 +244,7 @@ jobs:
           retention-days: 14
 
       - name: Upload notarized final bytes artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-notarized-assets-${{ env.RELEASE_TAG }}
           path: |
@@ -271,7 +271,7 @@ jobs:
       UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
       MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Download notarized final bytes
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -326,7 +326,7 @@ jobs:
           ls -la dist
 
       - name: Attest final notarized provenance
-        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd  # v2.3.0
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: dist/*
 
