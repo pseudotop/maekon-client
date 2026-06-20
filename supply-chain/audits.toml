@@ -3036,6 +3036,23 @@ criteria = "safe-to-deploy"
 version = "0.7.0"
 notes = "Phase 6 #3908 batch 2 grace-baseline reduction. Pure Rust k-dimensional tree implementation for nearest-neighbor lookup; no unsafe code, build script, filesystem/network/process access. Optional serde feature derives serialization only; rand is dev/bench-only. License: MIT OR Apache-2.0."
 
+[[audits.landlock]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.4 -> 0.4.5"
+notes = """
+Dependabot bump 0.4.4 → 0.4.5 (#6219). Diff reviewed via `cargo vet diff --mode=local`:
+~1.5k insertions / 117 deletions, but the bulk is non-shipping (CHANGELOG, README, CI
+workflow, examples/sandboxer.rs). Net +3 `unsafe`, all the crate's inherent Linux
+Landlock syscall/ABI surface and nothing beyond it:
+- libc::prctl(PR_SET_NO_NEW_PRIVS / PR_GET_NO_NEW_PRIVS)
+- uapi::landlock_restrict_self(-1, self.actual_flags)
+- BitFlags::from_bits_unchecked on kernel-returned ABI flag bits
+A `LANDLOCK_CRATE_TEST_ABI` env override is test-only. No new external dependencies,
+no build-script/network/process surface beyond the Landlock syscalls. License unchanged
+(Apache-2.0 OR MIT). No new RustSec advisories. Base 0.4.4 carries an existing exemption.
+"""
+
 [[audits.lazy_static]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -4712,6 +4729,28 @@ Phase 4B async/network audit re-apply (OOS #4191) — reqwest 0.13.3.
 High-level async HTTP client built on hyper. 0.13.x switches to rustls-default TLS.
 No unsafe code in the reqwest layer itself. Actively maintained. MIT OR Apache-2.0.
 No active RustSec advisories.
+"""
+
+[[audits.reqwest]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.13.3 -> 0.13.4"
+notes = """
+Dependabot bump 0.13.3 → 0.13.4 (#6218). Diff reviewed via `cargo vet diff --mode=local`:
+9 files, 240 insertions / 59 deletions, ZERO new `unsafe`, no new C/native dependencies.
+
+Delta summary:
+- redirect.rs: cross-origin sensitive-header stripping now ALSO triggers on a scheme
+  change (e.g. https→http downgrade) — a security hardening, not a regression.
+- async_impl/client.rs + tls.rs: opt-in SSLKEYLOGFILE support, gated behind the
+  `__rustls` feature and only active when the caller installs `KeyLogFile`; plus
+  `rustls-no-provider` docs/feature. Inert unless explicitly enabled by the consumer.
+- async_impl/response.rs: JSON/error decode now attaches the request URL to errors.
+- async_impl/h3_client/connect.rs: Happy-Eyeballs 250ms delay; `local_addr` made Option.
+- blocking/client.rs: opt-in HTTP/2 keep-alive ping interval.
+- Cargo.toml: MSRV 1.64.0 → 1.85.0 (workspace already requires 1.88.0); optional deps
+  hickory-resolver 0.25→0.26 and native-tls 0.2.10→0.2.16, both behind non-default features.
+No new RustSec advisories. License unchanged (MIT OR Apache-2.0).
 """
 
 [[audits.ring]]

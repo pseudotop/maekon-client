@@ -418,7 +418,12 @@ pub(super) async fn proxy_to_focused_info(
             Ok(n) => n.unwrap_or_default(),
             Err(_elapsed) => String::new(), // timeout — omit label
         };
-        Some(name)
+        // Mask the accessibility name at the configured level (review4 V15). This
+        // focused-element path previously returned the raw name, leaking it at
+        // Standard/Basic — which is exactly the level forced when the user has NOT
+        // consented (mod.rs maps Off + no-consent -> Standard). Mirror the sibling
+        // tree-walk extractor, which already masks via `sanitize_title_with_level`.
+        Some(crate::privacy::sanitize_title_with_level(&name, pii_level))
     } else {
         None
     };

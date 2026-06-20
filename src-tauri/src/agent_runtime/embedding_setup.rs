@@ -623,6 +623,16 @@ impl maekon_core::ports::embedding_provider::EmbeddingProvider for RemoteFallbac
     fn model_id(&self) -> &str {
         self.primary.model_id()
     }
+
+    /// #6477 F18 (sibling of `FallbackEmbeddingProvider`): forward idle-eviction
+    /// to both wrapped providers instead of using the trait's no-op default, so a
+    /// future local/resident primary under this `not(feature = "embedding")` arm is
+    /// still evicted when idle.
+    fn evict_if_idle(&self, idle_after: std::time::Duration) -> bool {
+        let primary = self.primary.evict_if_idle(idle_after);
+        let fallback = self.fallback.evict_if_idle(idle_after);
+        primary || fallback
+    }
 }
 
 /// Pure-function tests for `resolve_remote_embedding_target`.

@@ -142,10 +142,14 @@ impl ExternalOcrPrivacyGuard {
             Ok(sanitized) => {
                 self.log_event(
                     "privacy.external_ocr.allowed",
+                    // Do not write the raw window title to the audit log: it can carry
+                    // document/page names (e.g. "2024_TaxReturn.xlsx") that are NOT
+                    // PII-pattern-matched and so survive the Strict audit sanitizer.
+                    // Record only a length marker for forensics.
                     &format!(
-                        "provider={provider_name} app={} title={} redacted_regions={} metadata_stripped={}",
+                        "provider={provider_name} app={} title_chars={} redacted_regions={} metadata_stripped={}",
                         active_window.app_name,
-                        active_window.title,
+                        active_window.title.chars().count(),
                         sanitized.redacted_regions,
                         sanitized.metadata_stripped
                     ),
@@ -157,8 +161,10 @@ impl ExternalOcrPrivacyGuard {
                 self.log_event(
                     "privacy.external_ocr.denied",
                     &format!(
-                        "provider={provider_name} app={} title={} reason={}",
-                        active_window.app_name, active_window.title, err
+                        "provider={provider_name} app={} title_chars={} reason={}",
+                        active_window.app_name,
+                        active_window.title.chars().count(),
+                        err
                     ),
                 )
                 .await;

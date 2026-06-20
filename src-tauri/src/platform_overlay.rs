@@ -141,6 +141,11 @@ impl OverlayDriver for PlatformOverlayDriver {
         let Some(mut process) = active.remove(handle_id) else {
             return Ok(());
         };
+        // Release the lock before the (up to 5 s) blocking kill+wait and the file
+        // removal: the entry is already removed and `process` is owned here, so
+        // holding the guard only needlessly serializes every concurrent
+        // show_highlights/clear_highlights behind this call's wait window.
+        drop(active);
 
         let payload_path = process.payload_path.clone();
 

@@ -98,16 +98,18 @@ Required before stable promotion:
 - `MAEKON_RELEASE_APP_PRIVATE_KEY`
 
 The release App installation on `pseudotop/maekon-client` must grant
-`Contents: read` and `Pull requests: write`. The public export workflow requests
-those installation-token permissions explicitly so App-authored public export
-PR creation fails during token generation if the GitHub App permission update is
-missing.
+`Contents: write`, `Pull requests: write`, `Dependabot alerts: read`, and
+`Code scanning alerts: read`. Release workflows request narrower
+installation-token permissions explicitly per job: public export PR creation
+uses `Contents: read` + `Pull requests: write`, stable-promotion PR preparation
+uses `Contents: write` + `Pull requests: write`, and release verification uses
+`Contents: read` + security-alert read permissions. Missing GitHub App
+permissions fail during token generation instead of failing later inside `gh`
+commands.
 
-The release App installation must be able to read repository security alerts
-used by `release.yml` (`Dependabot alerts` and `Code scanning alerts`). If the
-App permission update is still pending, use a short-lived
-`MAEKON_RELEASE_SECURITY_TOKEN` repository secret with equivalent read access
-for the release rerun, then remove it after the release completes.
+`MAEKON_RELEASE_SECURITY_TOKEN` may still override the security-alert read token
+for an emergency release rerun, but the release App installation itself must
+also carry the alert-read permissions above.
 
 Optional but recommended for release freshness:
 

@@ -651,13 +651,18 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             .send_form(&self.config.device_authorization_url, &form, false)
             .await?;
         if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            *self.last_error.write().await = Some(format!(
-                "integration device authorization bootstrap failed: {body}"
-            ));
+            let status = response.status();
+            // Do NOT echo the raw remote body: `last_error` is persisted and surfaced
+            // to the console/UI (current_auth_status().message), and the IdP body can
+            // carry server-controlled content or PII — status only (#6196 parity,
+            // matching the refresh_access_token sibling above).
+            let message = format!(
+                "integration device authorization bootstrap failed ({status}); body omitted_for_privacy"
+            );
+            *self.last_error.write().await = Some(message.clone());
             return Err(CoreError::Auth {
                 code: maekon_core::error_codes::AuthCode::Failed,
-                message: format!("integration device authorization bootstrap failed: {body}"),
+                message,
             });
         }
 

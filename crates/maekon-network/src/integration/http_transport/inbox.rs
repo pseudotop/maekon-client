@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use maekon_core::error::CoreError;
 use maekon_core::models::integration::{IntegrationAckCursor, ProactivePrompt};
 use std::time::Duration;
+use tracing::warn;
 
 #[derive(Debug, serde::Serialize)]
 struct PromptPullRequest {
@@ -81,7 +82,13 @@ impl IntegrationInboxTransportClient for HttpsIntegrationInboxTransportClient {
 
         let mut prompts = Vec::with_capacity(payload.events.len());
         for event in payload.events {
-            prompts.push(prompt_from_cloudevent(event)?);
+            // Log-and-skip per event (matching the live_channel WS path): a single
+            // malformed/unsupported event must not abort the whole pull and discard
+            // every valid sibling prompt in the same page.
+            match prompt_from_cloudevent(event) {
+                Ok(prompt) => prompts.push(prompt),
+                Err(err) => warn!("integration prompt pull: skipping unparseable event: {err}"),
+            }
         }
 
         Ok(IntegrationInboxTransportResponse {

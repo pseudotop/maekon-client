@@ -153,6 +153,16 @@ impl PolicyClient {
             }
         }
 
+        // Command-scope binding (intentional two-tier design): this only runs when
+        // the token carries a command_hash. A policy-level token (command_hash = None,
+        // from `issue_command_token`) authorizes ANY command under the policy, while
+        // `issue_command_token_for_command` mints a command-BOUND token. External-origin
+        // commands are already signed (A16), nonce-deduped, and TTL-bound, so a
+        // policy-level token is a signed single-use grant for the policy's command
+        // class — not unbounded. External origin is currently a dormant path (production
+        // commands are Internal); when it is productionized, requiring command-binding
+        // for External here (reject `command_hash.is_none()`) is the natural hardening,
+        // deliberately deferred to that point rather than retrofitted onto a dead path.
         if let Some(token_command_hash) = parsed_token.command_hash {
             let expected_hash = compute_command_scope_hash(cmd)?;
             if !token_command_hash.eq_ignore_ascii_case(&expected_hash) {

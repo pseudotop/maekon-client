@@ -55,6 +55,9 @@ jobs:
         with:
           client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-security-events: read
+          permission-vulnerability-alerts: read
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
