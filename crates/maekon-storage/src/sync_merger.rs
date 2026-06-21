@@ -117,6 +117,22 @@ impl ChangeMerger for SqliteSyncMerger {
                 ..Default::default()
             };
             conn.write_lock().run_mut(skipped, move |guard| {
+                // SECURITY (#6560): reject any changeset claiming THIS device as origin BEFORE
+                // dispatching on kind. The merger only ever applies REMOTE changes; a changeset
+                // (data OR a DeletionEvent) whose origin == the local device can only come from a
+                // hostile/relaying peer spoofing our identity. A self-origin DeletionEvent would
+                // otherwise run `DELETE ... WHERE origin_device_id = <local>`, hard-deleting ALL of
+                // this device's own data. The push receiver binds origin to the authenticated peer
+                // (lan_server/handlers.rs #5211); this is the symmetric guard that ALSO covers the
+                // pull path (which performs no such bind) — one chokepoint for both transports.
+                if changes.origin_device_id == local_device_id {
+                    debug!("skipping self-originated changeset (origin == local device)");
+                    return Ok(SyncResult {
+                        new_watermark: changes.watermark,
+                        ..Default::default()
+                    });
+                }
+
                 // Handle GDPR deletion event
                 if changes.kind == ChangeSetKind::DeletionEvent {
                     // #5181: the watermark carries the sender's erasure HLC anchor; bound
@@ -138,15 +154,6 @@ impl ChangeMerger for SqliteSyncMerger {
                     });
                 }
 
-                // Skip self-originated changesets
-                if changes.origin_device_id == local_device_id {
-                    debug!("skipping self-originated changeset");
-                    return Ok(SyncResult {
-                        new_watermark: changes.watermark,
-                        ..Default::default()
-                    });
-                }
-
                 let mut result = SyncResult::default();
 
                 // All merge operations run inside a single transaction
@@ -159,6 +166,22 @@ impl ChangeMerger for SqliteSyncMerger {
                 // Applied FIRST so the local suppression set is populated before any merge
                 // below attempts an insert (anti-resurrection within the same changeset).
                 for t in &changes.tombstones {
+                    // SECURITY (#6560): `apply_tombstone` hard-deletes
+                    // `WHERE <pk> = row_id AND origin_device_id = t.origin_device_id`. A peer-origin
+                    // changeset (which passes the changeset-level self guard above) can still carry a
+                    // tombstone forged with OUR origin + one of our row ids, letting a hostile peer
+                    // delete this device's own rows by id. We never need a remote peer to erase our
+                    // own-origin data — local erasure is driven locally. (Legit tombstones carry the
+                    // ERASED row's original origin so relays can forward content-free erasures, so the
+                    // reject is scoped to the local-origin case; peer-origin tombstones still apply.)
+                    if t.origin_device_id == local_device_id {
+                        warn!(
+                            table = %t.table_name,
+                            row_id = %t.row_id,
+                            "rejecting sync tombstone: origin claims the local device (self-erasure spoofing guard)"
+                        );
+                        continue;
+                    }
                     // Far-future poison guard: a tombstone with an implausibly
                     // far-future HLC would suppress all legitimate future writes.
                     if !Hlc::wall_ms_within_drift_bound(t.hlc_wall_ms) {
@@ -1246,6 +1269,102 @@ mod tests {
             ),
             1,
             "post-re-grant row (HLC > anchor) survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn self_origin_deletion_event_does_not_delete_local_rows() {
+        // SECURITY (#6560): a DeletionEvent spoofing THIS device's own origin_device_id must NOT
+        // run a device-wide DELETE of our own data. Before the fix the DeletionEvent branch ran
+        // ahead of the self-origin skip, so a hostile/relaying peer answering /sync/pull (or a
+        // compromised push peer) could return a self-origin DeletionEvent and hard-delete the
+        // victim's own-origin rows across every synced table.
+        let (storage, local_id) = setup();
+        // A LOCAL-origin segment authored by this device.
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments \
+                     (id, start_time, end_time, duration_secs, trigger_reason, \
+                      dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-local', '2026-01-01', '2026-01-01', 3600, 'timer', \
+                             'Dev', 100, 1, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id.clone());
+        // Hostile DeletionEvent spoofing our own origin.
+        let cs = ChangeSet {
+            kind: ChangeSetKind::DeletionEvent,
+            origin_device_id: local_id.clone(),
+            origin_device_name: "Spoofed".to_string(),
+            ..Default::default()
+        };
+        let result = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(
+            result.tombstoned, 0,
+            "a self-origin DeletionEvent must delete nothing"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-local'"
+            ),
+            1,
+            "local-origin data survives a spoofed self-DeletionEvent"
+        );
+    }
+
+    #[tokio::test]
+    async fn self_origin_tombstone_in_peer_changeset_is_rejected() {
+        // SECURITY (#6560): a peer-origin changeset (which passes the changeset-level self guard)
+        // can still carry a tombstone forged with OUR origin + one of our row ids. apply_tombstone
+        // deletes `WHERE <pk> = ? AND origin_device_id = t.origin`, so without the per-tombstone
+        // guard a hostile peer could delete this device's own rows by id.
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments \
+                     (id, start_time, end_time, duration_secs, trigger_reason, \
+                      dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-local', '2026-01-01', '2026-01-01', 3600, 'timer', \
+                             'Dev', 100, 1, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id.clone());
+        // Peer-origin changeset carrying a tombstone that spoofs OUR origin to target our row.
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            origin_device_name: "Remote".to_string(),
+            tombstones: vec![tombstone(
+                "activity_segments",
+                "seg-local",
+                999,
+                0,
+                &local_id,
+            )],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(
+            r.tombstoned, 0,
+            "a self-origin tombstone must be rejected, not applied"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-local'"
+            ),
+            1,
+            "local row survives a spoofed self-origin tombstone"
         );
     }
 

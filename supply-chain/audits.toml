@@ -7189,7 +7189,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.gif]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-06-01"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7301,7 +7301,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.image]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-04-13"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7595,14 +7595,14 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): objc
 
 [[trusted.ort]]
 criteria = "safe-to-deploy"
-user-id = 152041 # decahedron1
+user-id = 152041 # Carson M. (decahedron1)
 start = "2022-11-26"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
 [[trusted.ort-sys]]
 criteria = "safe-to-deploy"
-user-id = 152041 # decahedron1
+user-id = 152041 # Carson M. (decahedron1)
 start = "2023-11-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7693,14 +7693,14 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): RustFFT/trans
 
 [[trusted.scc]]
 criteria = "safe-to-deploy"
-user-id = 19682 # Changgyoo Park (wvwwvwwv)
+user-id = 19682
 start = "2020-11-20"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): scc/sdd concurrent data-structure maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
 [[trusted.sdd]]
 criteria = "safe-to-deploy"
-user-id = 19682 # Changgyoo Park (wvwwvwwv)
+user-id = 19682
 start = "2024-04-14"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): scc/sdd concurrent data-structure maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7910,7 +7910,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Tolnay 
 
 [[trusted.tiff]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-04-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -8008,7 +8008,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Microsoft Web
 
 [[trusted.weezl]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2020-06-29"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -8029,7 +8029,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.y4m]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2020-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."

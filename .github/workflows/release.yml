@@ -59,7 +59,7 @@ jobs:
           permission-security-events: read
           permission-vulnerability-alerts: read
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
@@ -477,7 +477,7 @@ jobs:
     needs: verify-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
@@ -512,7 +512,7 @@ jobs:
         run: tar -czf crates/maekon-web/frontend/frontend-dist.tar.gz -C crates/maekon-web/frontend dist
 
       - name: Upload frontend dist artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: frontend-dist-bundle
           path: crates/maekon-web/frontend/frontend-dist.tar.gz
@@ -543,12 +543,12 @@ jobs:
             asset_ext: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -769,7 +769,7 @@ jobs:
           "$($hash.Hash.ToLower())  ${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" | Out-File -Encoding ascii "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256"
 
       - name: Upload zip/tar artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}-archive
           path: |
@@ -826,7 +826,7 @@ jobs:
 
       - name: Upload MSI artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-windows-x64-msi
           path: |
@@ -836,7 +836,7 @@ jobs:
 
       - name: Upload NSIS setup artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-windows-x64-setup-exe
           path: |
@@ -846,7 +846,7 @@ jobs:
 
       - name: Upload DEB artifact
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-linux-x64-deb
           path: target/${{ matrix.target }}/debian/*.deb
@@ -867,12 +867,12 @@ jobs:
       MACOS_APP_SIGNING_IDENTITY: ${{ secrets.MACOS_APP_SIGNING_IDENTITY }}
       MACOS_INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -921,7 +921,7 @@ jobs:
           shasum -a 256 dist/maekon-macos-universal.tar.gz > dist/maekon-macos-universal.tar.gz.sha256
 
       - name: Upload universal artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-universal
           path: |
@@ -1184,14 +1184,14 @@ jobs:
           rm -f "$UNSIGNED_PKG_TMP"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-universal-dmg
           path: dist/maekon-macos-universal.dmg
           if-no-files-found: error
 
       - name: Upload PKG artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-universal-pkg
           path: dist/maekon-macos-universal.pkg
@@ -1226,12 +1226,12 @@ jobs:
             run_updater_tests: true
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -1399,7 +1399,7 @@ jobs:
 
       - name: Upload macOS release smoke sanitized bundle
         if: failure() && matrix.name == 'macos'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: release-smoke-sanitized-bundle-${{ matrix.name }}
           path: ${{ runner.temp }}/maekon-release-smoke-sanitized
@@ -1413,12 +1413,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: release-signing
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ needs.verify-version.outputs.release_sha }}
 
       - name: Checkout workflow tools
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
@@ -1476,14 +1476,14 @@ jobs:
           done
 
       - name: Generate CycloneDX SBOM (F-SC-09/F-SC-13)
-        # F-SC-13: anchore/sbom-action SHA-pinned to the v0.18.0 commit.
+        # F-SC-13: anchore/sbom-action SHA-pinned to the v0.24.0 commit.
         # The prior pin (61119d4) became unresolvable once anchore re-pointed
-        # the v0.18.0 tag and GC'd the old commit — this is the first release
+        # an older tag and GC'd the old commit — this is the first release
         # since that pin landed, so it surfaced now. Re-resolved to the current
-        # v0.18.0 commit (which `git/ref/tags/v0.18.0` reports as type=commit;
+        # v0.24.0 commit (which `git/ref/tags/v0.24.0` reports as type=commit;
         # for lightweight tags object.sha IS the commit, no dereference needed).
         # 생성된 sbom.cdx.json 은 dist/ 에 추가되어 릴리스 어셋으로 첨부된다.
-        uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0  # v0.18.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           path: .
           format: cyclonedx-json
@@ -1545,7 +1545,7 @@ jobs:
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature
 
       - name: Attest release artifacts provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: dist/*
 
