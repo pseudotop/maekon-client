@@ -149,14 +149,12 @@ impl ElementFinder for MatchingElementFinder {
     }
 }
 
-struct SlowSandbox {
-    delay_ms: u64,
-}
+struct HangingSandbox;
 
 #[async_trait::async_trait]
-impl Sandbox for SlowSandbox {
+impl Sandbox for HangingSandbox {
     fn platform(&self) -> &str {
-        "slow"
+        "hanging"
     }
 
     fn is_available(&self) -> bool {
@@ -168,8 +166,7 @@ impl Sandbox for SlowSandbox {
         _action: &AutomationAction,
         _config: &SandboxConfig,
     ) -> Result<(), CoreError> {
-        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
-        Ok(())
+        std::future::pending::<Result<(), CoreError>>().await
     }
 
     fn capabilities(&self) -> SandboxCapabilities {
@@ -945,7 +942,7 @@ async fn execute_intent_internal_timeout_reports_effective_limit() {
 
     let policy_client = Arc::new(PolicyClient::new());
     let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
-    let sandbox: Arc<dyn Sandbox> = Arc::new(SlowSandbox { delay_ms: 25 });
+    let sandbox: Arc<dyn Sandbox> = Arc::new(HangingSandbox);
     let sandbox_config = SandboxConfig {
         max_cpu_time_ms: 10,
         ..SandboxConfig::default()
