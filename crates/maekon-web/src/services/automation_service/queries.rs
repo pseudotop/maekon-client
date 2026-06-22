@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use chrono::Utc;
 
 use maekon_api_contracts::automation::{
@@ -116,7 +118,7 @@ impl AutomationQueryService {
                 .entries_by_action_prefix("automation.policy.", limit)
                 .await,
         );
-        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        entries.sort_by_key(|entry| Reverse(entry.timestamp));
         entries.truncate(limit);
 
         Ok(entries.into_iter().map(map_audit_entry).collect())
