@@ -221,9 +221,21 @@ mod tests {
 
     #[tokio::test]
     async fn check_port_available_on_unused_port() {
-        // High port is very likely available
-        let available = check_port_available(19876).await;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("read local addr").port();
+        drop(listener);
+
+        let available = check_port_available(port).await;
         assert!(available);
+    }
+
+    #[tokio::test]
+    async fn check_port_available_returns_false_for_bound_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("read local addr").port();
+
+        let available = check_port_available(port).await;
+        assert!(!available);
     }
 
     #[test]

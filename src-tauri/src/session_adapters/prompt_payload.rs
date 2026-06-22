@@ -190,6 +190,16 @@ fn attachment_content_previews(attachments: &[Attachment]) -> Vec<serde_json::Va
                     return None;
                 }
 
+                if is_secrets_prone_attachment(path) {
+                    return Some(serde_json::json!({
+                        "kind": "file",
+                        "path": path,
+                        "mime": mime_ref,
+                        "preview_omitted": true,
+                        "reason": "secrets_prone_extension",
+                    }));
+                }
+
                 let decoded = BASE64.decode(encoded).ok()?;
                 let truncated = decoded.len() > MAX_ATTACHMENT_PREVIEW_BYTES;
                 let preview_bytes = if truncated {
@@ -217,6 +227,20 @@ fn attachment_content_previews(attachments: &[Attachment]) -> Vec<serde_json::Va
         .collect()
 }
 
+fn attachment_extension(path: &str) -> String {
+    path.rsplit('.')
+        .next()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn is_secrets_prone_attachment(path: &str) -> bool {
+    matches!(
+        attachment_extension(path).as_str(),
+        "cfg" | "conf" | "env" | "ini" | "log" | "sql"
+    )
+}
+
 fn is_text_like_attachment(path: &str, mime: Option<&str>) -> bool {
     if let Some(mime) = mime.map(|value| value.trim().to_ascii_lowercase()) {
         if mime.starts_with("text/") {
@@ -241,11 +265,7 @@ fn is_text_like_attachment(path: &str, mime: Option<&str>) -> bool {
         }
     }
 
-    let ext = path
-        .rsplit('.')
-        .next()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .unwrap_or_default();
+    let ext = attachment_extension(path);
 
     matches!(
         ext.as_str(),
@@ -382,6 +402,28 @@ mod tests {
 
         let rendered = render_message_payload(&message, None);
         assert!(!rendered.contains("Attachment content previews JSON"));
+    }
+
+    #[test]
+    fn render_message_payload_omits_secrets_prone_attachment_preview() {
+        let message = SessionMessage {
+            role: MessageRole::User,
+            content: "Check the env".to_string(),
+            attachments: vec![Attachment::File {
+                path: ".env".to_string(),
+                mime: Some("text/plain".to_string()),
+                data: Some(BASE64.encode("API_KEY=secret-value\n")),
+            }],
+            tools: None,
+            context: None,
+            response_format: None,
+        };
+
+        let rendered = render_message_payload(&message, None);
+        assert!(rendered.contains("Attachment content previews JSON"));
+        assert!(rendered.contains("preview_omitted"));
+        assert!(rendered.contains("secrets_prone_extension"));
+        assert!(!rendered.contains("secret-value"));
     }
 
     #[test]

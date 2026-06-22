@@ -110,12 +110,16 @@ impl AutomationQueryService {
         };
 
         let limit = query.limit.clamp(1, 500);
-        Ok(logger
-            .entries_by_action_prefix("policy.", limit)
-            .await
-            .into_iter()
-            .map(map_audit_entry)
-            .collect())
+        let mut entries = logger.entries_by_action_prefix("policy.", limit).await;
+        entries.extend(
+            logger
+                .entries_by_action_prefix("automation.policy.", limit)
+                .await,
+        );
+        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        entries.truncate(limit);
+
+        Ok(entries.into_iter().map(map_audit_entry).collect())
     }
 
     pub fn policies(&self) -> PoliciesDto {
@@ -233,21 +237,30 @@ mod tests {
     use crate::runtime_bindings::LlmCallHealth;
     use crate::services::web_contexts::AutomationWebContext;
     use crate::storage_port::WebStorage;
+    use maekon_core::ports::audit_log::AuditLogPort;
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-    fn test_ctx(llm_call_health: Option<Arc<LlmCallHealth>>) -> AutomationWebContext {
+    fn test_ctx_with_audit(
+        llm_call_health: Option<Arc<LlmCallHealth>>,
+        audit_logger: Option<Arc<dyn AuditLogPort>>,
+    ) -> AutomationWebContext {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"))
             as Arc<dyn WebStorage>;
         AutomationWebContext {
             storage,
             frames_dir: None,
             config_manager: None,
-            audit_logger: None,
+            audit_logger,
             automation_controller: None,
             ai_runtime_status: None,
             llm_call_health,
         }
+    }
+
+    fn test_ctx(llm_call_health: Option<Arc<LlmCallHealth>>) -> AutomationWebContext {
+        test_ctx_with_audit(llm_call_health, None)
     }
 
     /// `automation_status()` returns `confirmation_policy = "AUTO"` when no config manager
@@ -333,5 +346,36 @@ mod tests {
         handle.record_failed();
         let s3 = svc.automation_status().await.expect("should succeed");
         assert_eq!(s3.llm_healthy, Some(false), "after fail → Some(false)");
+    }
+
+    #[tokio::test]
+    async fn policy_events_includes_automation_policy_prefix() {
+        let logger = Arc::new(RwLock::new(maekon_automation::audit::AuditLogger::new(
+            100, 10,
+        )));
+        {
+            let mut logger = logger.write().await;
+            logger.log_event("policy.legacy", "automation-policy", "legacy");
+            logger.log_event(
+                "automation.policy.create",
+                "automation-policy",
+                "policy_id=policy-1",
+            );
+        }
+        let audit_logger: Arc<dyn AuditLogPort> =
+            Arc::new(maekon_automation::audit::AuditLogAdapter::new(logger));
+        let svc = AutomationQueryService::new(test_ctx_with_audit(None, Some(audit_logger)));
+
+        let events = svc
+            .policy_events(PolicyEventQuery { limit: 10 })
+            .await
+            .expect("policy events query must succeed");
+        let action_types = events
+            .iter()
+            .map(|event| event.action_type.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(action_types.contains(&"policy.legacy"));
+        assert!(action_types.contains(&"automation.policy.create"));
     }
 }

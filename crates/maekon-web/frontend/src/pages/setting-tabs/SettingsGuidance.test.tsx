@@ -270,6 +270,9 @@ describe('Settings guidance copy', () => {
       if (cmd === 'get_sync_status') {
         return Promise.resolve({
           enabled: false,
+          runtime_available: false,
+          runtime_state: 'disabled',
+          unavailable_reason: null,
           device_id: 'device-1',
           device_name: 'Work Mac',
         })

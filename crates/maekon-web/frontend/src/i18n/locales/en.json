@@ -927,6 +927,17 @@
           "dismiss": "Dismiss"
         }
       },
+      "unredactedExternalOcr": {
+        "label": "Unredacted external OCR",
+        "description": "Highest-sensitivity, off by default. Turn this on only if you intentionally allow raw screenshots to be sent to an external OCR provider.",
+        "collectedTitle": "When on, this can send:",
+        "collected": {
+          "rawScreenImage": "Raw screenshot image data before local PII masking",
+          "windowContext": "Safe decision metadata such as app name and title length",
+          "providerResult": "The external OCR provider's text result after processing"
+        },
+        "disclosure": "This consent is required in addition to OCR processing consent and the AI setting that allows unredacted external OCR. Without this explicit consent, raw off-device OCR is blocked even if the setting is enabled."
+      },
       "withdraw": {
         "label": "Withdraw consent",
         "description": "Withdrawing stops all collection and requests erasure of data already collected. This is stronger than simply turning monitoring off.",
@@ -2244,6 +2255,8 @@
     "loading": "Loading sync status...",
     "title": "Cross-Device Sync",
     "notEnabled": "Sync is not enabled. To activate cross-device sync:",
+    "unavailable": "Sync is enabled, but the local sync runtime is not available.",
+    "unavailableHint": "Restart the app after saving sync settings. If this persists, check the sync transport and passphrase configuration.",
     "step1": "Set",
     "step1Suffix": "in config",
     "step2": "Set the",

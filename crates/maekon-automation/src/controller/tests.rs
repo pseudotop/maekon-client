@@ -17,7 +17,10 @@ fn make_controller() -> AutomationController {
     let audit_logger = Arc::new(RwLock::new(AuditLogger::default()));
     let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
     let sandbox_config = SandboxConfig::default();
-    AutomationController::new(policy_client, audit_logger, sandbox, sandbox_config)
+    let mut controller =
+        AutomationController::new(policy_client, audit_logger, sandbox, sandbox_config);
+    wire_noop_inline_action_executor(&mut controller);
+    controller
 }
 
 fn make_controller_with_policy(
@@ -39,6 +42,12 @@ fn make_controller_with_policy(
     );
     let _ = policy; // policy is applied in tests via update_policies
     (controller, policy_client, audit_logger)
+}
+
+fn wire_noop_inline_action_executor(controller: &mut AutomationController) {
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(crate::input_driver::NoOpInputDriver);
+    controller.set_inline_action_executor(input_driver);
 }
 
 fn make_policy(audit: AuditLevel, timeout: u64) -> ExecutionPolicy {
@@ -289,6 +298,7 @@ async fn execute_with_timeout_returns_timeout_result() {
     let policy = make_policy(AuditLevel::Basic, 0);
     let (mut controller, policy_client, _) = make_controller_with_policy(policy.clone());
     controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
     policy_client.update_policies(vec![policy]).await;
 
     let cmd = AutomationCommand {
@@ -310,6 +320,7 @@ async fn audit_level_none_skips_logging() {
     let policy = make_policy(AuditLevel::None, 0);
     let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
     controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
     policy_client.update_policies(vec![policy]).await;
 
     let cmd = AutomationCommand {
@@ -521,6 +532,7 @@ async fn execute_intent_success_with_audit_log() {
     let mut controller =
         AutomationController::new(policy_client, audit_logger.clone(), sandbox, sandbox_config);
     controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
 
     let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
         Arc::new(NoOpInputDriver);
@@ -563,6 +575,7 @@ async fn gui_session_key_type_audit_masks_raw_text_payload() {
     let mut controller =
         AutomationController::new(policy_client, audit_logger.clone(), sandbox, sandbox_config);
     controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
 
     let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
         Arc::new(NoOpInputDriver);
@@ -944,6 +957,7 @@ async fn execute_intent_internal_timeout_reports_effective_limit() {
     let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
     let sandbox: Arc<dyn Sandbox> = Arc::new(HangingSandbox);
     let sandbox_config = SandboxConfig {
+        enabled: true,
         max_cpu_time_ms: 10,
         ..SandboxConfig::default()
     };
@@ -989,6 +1003,7 @@ async fn execute_command_enabled_with_valid_policy() {
     let policy = make_policy(AuditLevel::Basic, 5000);
     let (mut controller, policy_client, _) = make_controller_with_policy(policy.clone());
     controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
     policy_client.update_policies(vec![policy]).await;
 
     let cmd = AutomationCommand {
@@ -1005,6 +1020,48 @@ async fn execute_command_enabled_with_valid_policy() {
 
     let result = controller.execute_command(&cmd).await.unwrap();
     assert!(matches!(result, CommandResult::Success));
+}
+
+#[tokio::test]
+async fn execute_command_default_disabled_sandbox_without_inline_audits_failed() {
+    let policy = make_policy(AuditLevel::Basic, 5000);
+    let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
+    controller.set_enabled(true);
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-disabled-no-inline".to_string(),
+        session_id: "sess-disabled".to_string(),
+        action: AutomationAction::MouseMove { x: 0, y: 0 },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_disabled01".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    };
+
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(
+        matches!(result, CommandResult::Failed(ref message) if message.contains("disabled")),
+        "disabled sandbox without inline executor must fail, got {result:?}"
+    );
+
+    let logger = audit_logger.read().await;
+    let failed = logger.entries_by_status(&crate::audit::AuditStatus::Failed, 10);
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].command_id, "cmd-disabled-no-inline");
+    assert!(
+        failed[0]
+            .details
+            .as_deref()
+            .is_some_and(|details| details.contains("disabled")),
+        "failed audit should explain the disabled/no-inline path: {:?}",
+        failed[0].details
+    );
+    assert!(
+        logger
+            .entries_by_status(&crate::audit::AuditStatus::Completed, 10)
+            .is_empty(),
+        "skipped no-op actions must not be audited as Completed"
+    );
 }
 
 #[tokio::test]

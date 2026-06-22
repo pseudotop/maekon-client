@@ -8,6 +8,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::integration::{
     default_integration_runtime_scopes, IntegrationAuthProfileKind, IntegrationAuthScheme,
 };
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::integration::{
     IntegrationAuditPort, IntegrationAuthPort, IntegrationCheckpointStorePort,
     IntegrationEgressPort, IntegrationEgressSignalPort, IntegrationInboxPort,
@@ -16,6 +17,7 @@ use maekon_core::ports::integration::{
     IntegrationSessionPort, LocalSuggestionQueryPort,
 };
 use maekon_core::ports::secret_store::SecretStore;
+use maekon_core::{error_codes::ConsentCode, models::integration::IntegrationAckCursor};
 use maekon_network::integration::{
     assemble_https_transport, EnvIntegrationAuthPort, IntegrationEgressCoordinator,
     IntegrationInboxCoordinator, IntegrationInsightProducerCoordinator,
@@ -27,6 +29,7 @@ use maekon_network::integration::{
 use maekon_storage::integration_state_store::{
     FileIntegrationStateStore, IntegrationStateStorePolicy,
 };
+use parking_lot::RwLock;
 use tokio::sync::watch;
 
 use crate::integration_insight_source::LocalSuggestionIntegrationSource;
@@ -89,6 +92,7 @@ pub(crate) struct IntegrationRuntimeBundle {
     egress: Option<Arc<dyn IntegrationEgressPort>>,
     checkpoint_store: Option<Arc<dyn IntegrationCheckpointStorePort>>,
     runtime_loop: Option<IntegrationRuntimeLoop>,
+    consent_gate: IntegrationConsentGate,
     device_id: Option<String>,
     max_batch_size: usize,
     produce_interval: Duration,
@@ -98,6 +102,10 @@ pub(crate) struct IntegrationRuntimeBundle {
 impl IntegrationRuntimeBundle {
     pub(crate) fn bindings(&self) -> IntegrationRuntimeBindings {
         self.bindings.clone()
+    }
+
+    pub(crate) fn set_consent_manager(&self, consent_manager: Arc<dyn ConsentManagerPort>) {
+        self.consent_gate.set_consent_manager(consent_manager);
     }
 
     pub(crate) fn background_loops(
@@ -149,6 +157,79 @@ impl IntegrationRuntimeBundle {
             producer,
             delivery,
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct IntegrationConsentGate {
+    consent_manager: Arc<RwLock<Option<Arc<dyn ConsentManagerPort>>>>,
+}
+
+impl IntegrationConsentGate {
+    fn set_consent_manager(&self, consent_manager: Arc<dyn ConsentManagerPort>) {
+        *self.consent_manager.write() = Some(consent_manager);
+    }
+
+    fn telemetry_permitted(&self) -> bool {
+        self.consent_manager
+            .read()
+            .as_ref()
+            .map(|consent| consent.effective_permissions().telemetry)
+            .unwrap_or(false)
+    }
+}
+
+struct ConsentGatedIntegrationEgress {
+    inner: Arc<dyn IntegrationEgressPort>,
+    gate: IntegrationConsentGate,
+}
+
+impl ConsentGatedIntegrationEgress {
+    #[cfg(test)]
+    fn new(
+        inner: Arc<dyn IntegrationEgressPort>,
+        consent_manager: Arc<dyn ConsentManagerPort>,
+    ) -> Self {
+        let gate = IntegrationConsentGate::default();
+        gate.set_consent_manager(consent_manager);
+        Self { inner, gate }
+    }
+
+    fn with_gate(inner: Arc<dyn IntegrationEgressPort>, gate: IntegrationConsentGate) -> Self {
+        Self { inner, gate }
+    }
+
+    fn consent_required() -> CoreError {
+        CoreError::ConsentRequired {
+            code: ConsentCode::Required,
+            message: "Telemetry consent is required before integration egress can leave the device"
+                .to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IntegrationEgressPort for ConsentGatedIntegrationEgress {
+    async fn enqueue_message(
+        &self,
+        envelope: maekon_core::models::integration::IntegrationEnvelope,
+        payload: maekon_core::models::integration::IntegrationOutboundPayload,
+    ) -> Result<(), CoreError> {
+        if !self.gate.telemetry_permitted() {
+            return Err(Self::consent_required());
+        }
+        self.inner.enqueue_message(envelope, payload).await
+    }
+
+    async fn flush(&self) -> Result<usize, CoreError> {
+        if !self.gate.telemetry_permitted() {
+            return Ok(0);
+        }
+        self.inner.flush().await
+    }
+
+    async fn last_ack_cursor(&self) -> Result<Option<IntegrationAckCursor>, CoreError> {
+        self.inner.last_ack_cursor().await
     }
 }
 
@@ -286,6 +367,7 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             runtime_telemetry: None,
         };
 
+        let consent_gate = IntegrationConsentGate::default();
         let mut bundle = IntegrationRuntimeBundle {
             bindings: IntegrationRuntimeBindings {
                 status,
@@ -300,6 +382,7 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             egress: None,
             checkpoint_store: None,
             runtime_loop: None,
+            consent_gate: consent_gate.clone(),
             device_id: None,
             max_batch_size: integration.max_batch_size,
             produce_interval: Duration::from_secs(integration.produce_interval_secs),
@@ -379,7 +462,7 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             integration.max_batch_size,
         ));
         let egress_signal = base_egress.clone() as Arc<dyn IntegrationEgressSignalPort>;
-        let egress = Arc::new(
+        let policy_egress = Arc::new(
             PolicyAwareIntegrationEgressCoordinator::new(
                 base_egress as Arc<dyn IntegrationEgressPort>,
                 Arc::new(DefaultIntegrationEgressPolicy),
@@ -390,6 +473,10 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
                 self.config.privacy.pii_filter_level,
             ),
         ) as Arc<dyn IntegrationEgressPort>;
+        let egress = Arc::new(ConsentGatedIntegrationEgress::with_gate(
+            policy_egress,
+            consent_gate,
+        )) as Arc<dyn IntegrationEgressPort>;
         // #6198: thread the policy-aware egress coordinator into the inbox so
         // acknowledge/dismiss prompt receipts (including free-text reasons) are
         // PII-sanitized and egress-policy-authorized like every other outbound
@@ -463,8 +550,150 @@ fn integration_state_store_path(config_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
+    use maekon_core::models::integration::{
+        InsightPacket, InsightSourceWindow, IntegrationCapabilityScope, IntegrationEnvelope,
+        IntegrationMessageType, IntegrationOrigin, IntegrationOutboundPayload,
+        IntegrationPrivacyClassification,
+    };
+    use maekon_core::ports::consent_manager::ConsentManagerPort;
     use serial_test::serial;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[derive(Default)]
+    struct CountingIntegrationEgress {
+        enqueued: AtomicUsize,
+        flushed: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl IntegrationEgressPort for CountingIntegrationEgress {
+        async fn enqueue_message(
+            &self,
+            _envelope: IntegrationEnvelope,
+            _payload: IntegrationOutboundPayload,
+        ) -> Result<(), CoreError> {
+            self.enqueued.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<usize, CoreError> {
+            self.flushed.fetch_add(1, Ordering::Relaxed);
+            Ok(1)
+        }
+
+        async fn last_ack_cursor(
+            &self,
+        ) -> Result<Option<maekon_core::models::integration::IntegrationAckCursor>, CoreError>
+        {
+            Ok(None)
+        }
+    }
+
+    fn integration_envelope() -> IntegrationEnvelope {
+        IntegrationEnvelope {
+            envelope_id: "env-test".to_string(),
+            schema_version: "1".to_string(),
+            message_type: IntegrationMessageType::InsightPacket,
+            timestamp: chrono::Utc::now(),
+            nonce: "nonce".to_string(),
+            origin: IntegrationOrigin {
+                device_id: "device-test".to_string(),
+                workspace_id: None,
+                session_id: None,
+                source: "test".to_string(),
+            },
+            capability_scope: IntegrationCapabilityScope::InsightWrite,
+        }
+    }
+
+    fn integration_payload() -> IntegrationOutboundPayload {
+        let now = chrono::Utc::now();
+        IntegrationOutboundPayload::Insight(InsightPacket {
+            packet_id: "packet-test".to_string(),
+            summary: "derived local summary".to_string(),
+            derived_tags: vec!["test".to_string()],
+            source_window: InsightSourceWindow {
+                started_at: now,
+                ended_at: now,
+            },
+            privacy_classification: IntegrationPrivacyClassification::DerivedSummary,
+            audit_reference_id: None,
+        })
+    }
+
+    fn consent_with_telemetry(telemetry: bool) -> (Arc<dyn ConsentManagerPort>, TempDir) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let manager = Arc::new(ConsentManager::new(temp_dir.path().join("consent.json")));
+        if telemetry {
+            manager
+                .grant_consent(
+                    ConsentPermissions {
+                        telemetry: true,
+                        ..Default::default()
+                    },
+                    30,
+                )
+                .expect("grant telemetry consent");
+        }
+        (manager, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn integration_egress_enqueue_requires_telemetry_consent() {
+        let inner = Arc::new(CountingIntegrationEgress::default());
+        let (consent, _dir) = consent_with_telemetry(false);
+        let gated = ConsentGatedIntegrationEgress::new(inner.clone(), consent);
+
+        let err = gated
+            .enqueue_message(integration_envelope(), integration_payload())
+            .await
+            .expect_err("enqueue must fail closed without telemetry consent");
+
+        assert!(matches!(err, CoreError::ConsentRequired { .. }));
+        assert_eq!(inner.enqueued.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn integration_egress_flush_is_noop_after_telemetry_consent_revoked() {
+        let inner = Arc::new(CountingIntegrationEgress::default());
+        let (consent, _dir) = consent_with_telemetry(true);
+        let gated = ConsentGatedIntegrationEgress::new(inner.clone(), consent.clone());
+
+        consent
+            .revoke_consent()
+            .expect("revocation should persist in temp consent file");
+
+        let flushed = gated
+            .flush()
+            .await
+            .expect("flush should not error on denial");
+
+        assert_eq!(flushed, 0);
+        assert_eq!(inner.flushed.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn integration_egress_allows_after_telemetry_consent_granted() {
+        let inner = Arc::new(CountingIntegrationEgress::default());
+        let (consent, _dir) = consent_with_telemetry(true);
+        let gated = ConsentGatedIntegrationEgress::new(inner.clone(), consent);
+
+        gated
+            .enqueue_message(integration_envelope(), integration_payload())
+            .await
+            .expect("telemetry consent should allow enqueue");
+        let flushed = gated
+            .flush()
+            .await
+            .expect("telemetry consent should allow flush");
+
+        assert_eq!(flushed, 1);
+        assert_eq!(inner.enqueued.load(Ordering::Relaxed), 1);
+        assert_eq!(inner.flushed.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn build_runtime_requires_bootstrap_url_for_runtime() {

@@ -1,4 +1,4 @@
-import { resolveApiUrl, withLocalAuthHeaders } from '../utils/api-base'
+import { resolveApiUrl, resolveLocalAuthToken, withResolvedLocalAuthHeaders } from '../utils/api-base'
 import type {
   AppSettings,
   AppUsage,
@@ -108,7 +108,39 @@ const BASE_URL = '/api'
 const DEFAULT_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 2
 
-async function fetchWithRetry(url: string, options?: RequestInit, retries = MAX_RETRIES): Promise<Response> {
+class ApiClientError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(code: string, message: string, status: number) {
+    super(message)
+    this.name = 'ApiClientError'
+    this.code = code
+    this.status = status
+  }
+}
+
+async function apiErrorFromResponse(response: Response): Promise<ApiClientError> {
+  const fallbackCode = response.status >= 500 ? 'service.unavailable' : 'validation.invalid_arguments'
+  const fallbackMessage = `HTTP request failed (${response.status})`
+
+  try {
+    const body = (await response.clone().json()) as { code?: unknown; error?: unknown; status?: unknown }
+    const code = typeof body.code === 'string' && body.code.trim() ? body.code : fallbackCode
+    const message = typeof body.error === 'string' && body.error.trim() ? body.error : fallbackMessage
+    const status = typeof body.status === 'number' ? body.status : response.status
+    return new ApiClientError(code, message, status)
+  } catch {
+    return new ApiClientError(fallbackCode, fallbackMessage, response.status)
+  }
+}
+
+async function fetchWithRetry(
+  url: string,
+  options?: RequestInit,
+  retries = MAX_RETRIES,
+  authRetry = true,
+): Promise<Response> {
   const resolvedUrl = await resolveApiUrl(url)
 
   if (isStandaloneModeEnabled()) {
@@ -122,11 +154,15 @@ async function fetchWithRetry(url: string, options?: RequestInit, retries = MAX_
   const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
 
   try {
-    // E20-41 (#4833): attach the X-Local-Auth header at the single fetch chokepoint.
+    // E20-41 (#4833): resolve and attach the X-Local-Auth header at the single fetch chokepoint.
     const response = await fetch(resolvedUrl, {
-      ...withLocalAuthHeaders(options),
+      ...(await withResolvedLocalAuthHeaders(options)),
       signal: controller.signal,
     })
+    if (response.status === 401 && authRetry) {
+      await resolveLocalAuthToken({ forceRefresh: true })
+      return fetchWithRetry(url, options, retries, false)
+    }
     if (response.status >= 500) {
       if (retries > 0) {
         await new Promise((r) => setTimeout(r, 1000 * (MAX_RETRIES - retries + 1)))
@@ -137,8 +173,14 @@ async function fetchWithRetry(url: string, options?: RequestInit, retries = MAX_
         return standaloneResponse
       }
     }
+    if (!response.ok && response.status < 500) {
+      throw await apiErrorFromResponse(response)
+    }
     return response
   } catch (error) {
+    if (error instanceof ApiClientError) {
+      throw error
+    }
     if (retries > 0) {
       await new Promise((r) => setTimeout(r, 1000 * (MAX_RETRIES - retries + 1)))
       return fetchWithRetry(url, options, retries - 1)
@@ -847,16 +889,15 @@ export async function executeIntentHint(payload: ExecuteIntentHintRequest): Prom
 
   try {
     const res = await fetch(resolvedUrl, {
-      ...withLocalAuthHeaders({
+      ...(await withResolvedLocalAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }),
+      })),
       signal: controller.signal,
     })
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Natural language intent execution failed' }))
-      throw new Error(err.error || 'Natural language intent execution failed')
+      throw await apiErrorFromResponse(res)
     }
     return res.json()
   } finally {

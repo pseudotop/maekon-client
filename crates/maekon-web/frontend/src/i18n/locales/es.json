@@ -927,6 +927,17 @@
           "dismiss": "Descartar"
         }
       },
+      "unredactedExternalOcr": {
+        "label": "OCR externo sin censura",
+        "description": "Máxima sensibilidad, desactivado de forma predeterminada. Actívalo solo si autorizas intencionalmente enviar capturas de pantalla sin procesar a un proveedor externo de OCR.",
+        "collectedTitle": "Cuando está activado, puede enviar:",
+        "collected": {
+          "rawScreenImage": "Datos de imagen de captura de pantalla sin procesar antes del enmascarado local de datos personales",
+          "windowContext": "Metadatos seguros de decisión, como el nombre de la aplicación y la longitud del título",
+          "providerResult": "El resultado de texto del proveedor externo de OCR tras el procesamiento"
+        },
+        "disclosure": "Este consentimiento es necesario además del consentimiento de procesamiento OCR y del ajuste de IA que permite OCR externo sin censura. Sin este consentimiento explícito, el OCR externo sin procesar se bloquea aunque el ajuste esté activado."
+      },
       "withdraw": {
         "label": "Retirar el consentimiento",
         "description": "Retirarlo detiene toda la recopilación y solicita la eliminación de los datos ya recopilados. Es más contundente que simplemente desactivar la monitorización.",
@@ -2244,6 +2255,8 @@
     "loading": "Cargando estado de sincronización...",
     "title": "Sincronización entre dispositivos",
     "notEnabled": "La sincronización no está habilitada. Para activar la sincronización entre dispositivos:",
+    "unavailable": "La sincronización está habilitada, pero el runtime local de sincronización no está disponible.",
+    "unavailableHint": "Reinicie la app después de guardar los ajustes de sincronización. Si persiste, revise el transporte y la frase de paso.",
     "step1": "Establezca",
     "step1Suffix": "en la configuración",
     "step2": "Establezca la variable de entorno",

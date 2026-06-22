@@ -331,11 +331,8 @@ impl ExternalOcrPrivacyGuard {
     }
 
     fn external_llm_filter_level(&self) -> PiiFilterLevel {
-        match self.external_data_policy {
-            ExternalDataPolicy::PiiFilterStrict => PiiFilterLevel::Strict,
-            ExternalDataPolicy::PiiFilterStandard => PiiFilterLevel::Standard,
-            ExternalDataPolicy::AllowFiltered => self.pii_filter_level,
-        }
+        self.external_data_policy
+            .effective_egress_pii_level(self.pii_filter_level)
     }
 
     fn audit_safe_fragment(&self, text: &str) -> String {

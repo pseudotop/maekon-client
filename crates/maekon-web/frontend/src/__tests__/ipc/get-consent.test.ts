@@ -32,6 +32,7 @@ describe('get_consent IPC contract', () => {
             full_text_extraction: false,
             memory_graph_enrichment: false,
             microphone: false,
+            unredacted_external_ocr: false,
           },
         }
       }
@@ -43,5 +44,6 @@ describe('get_consent IPC contract', () => {
     expect(result.status).toBe('Valid')
     expect(result.permissions.screen_capture).toBe(true)
     expect(result.permissions.memory_graph_enrichment).toBe(false)
+    expect(result.permissions.unredacted_external_ocr).toBe(false)
   })
 })

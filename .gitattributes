@@ -1,5 +1,10 @@
 * text=auto
 
+reviews/**/*.png filter=lfs diff=lfs merge=lfs -text
+reviews/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+reviews/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+reviews/**/*.webp filter=lfs diff=lfs merge=lfs -text
+
 .gitattributes text eol=lf
 *.sh text eol=lf
 *.bash text eol=lf

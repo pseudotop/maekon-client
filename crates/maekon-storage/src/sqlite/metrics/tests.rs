@@ -417,14 +417,21 @@ async fn concurrent_save_metrics_preserves_count() {
 async fn concurrent_writer_plus_reader_yield_consistent_snapshot() {
     let storage = Arc::new(open_storage());
     let ts_start = Utc::now();
+    let (first_write_tx, first_write_rx) = tokio::sync::oneshot::channel();
 
     let writer = {
         let s = storage.clone();
+        let mut first_write_tx = Some(first_write_tx);
         tokio::spawn(async move {
             for i in 0..50_i64 {
                 s.save_metrics(&sample_metrics(ts_start + Duration::milliseconds(i), 20.0))
                     .await
                     .unwrap();
+                if i == 0 {
+                    if let Some(tx) = first_write_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
             }
         })
     };
@@ -432,6 +439,9 @@ async fn concurrent_writer_plus_reader_yield_consistent_snapshot() {
     let reader = {
         let s = storage.clone();
         tokio::spawn(async move {
+            first_write_rx
+                .await
+                .expect("writer should commit at least one metric before reader starts");
             let mut max_observed = 0usize;
             for _ in 0..10 {
                 let results = s
@@ -444,19 +454,16 @@ async fn concurrent_writer_plus_reader_yield_consistent_snapshot() {
                     .unwrap();
                 // Invariant: count monotonic via Arc<Mutex> serialization;
                 // never observe more than the writer has committed.
+                assert!(
+                    !results.is_empty(),
+                    "reader should observe the writer after the first committed metric"
+                );
                 assert!(results.len() <= 50);
                 max_observed = max_observed.max(results.len());
                 // Yield so writer gets a chance to make progress.
                 tokio::task::yield_now().await;
             }
-            // Without this the test trivially passes if the reader completes
-            // before the writer runs (observing 0 each iteration). Requiring
-            // a non-zero observation somewhere forces the reader to witness
-            // the writer's effect.
-            assert!(
-                max_observed > 0,
-                "reader never observed writer's effect — test may be racing trivially"
-            );
+            assert!(max_observed > 0);
         })
     };
 

@@ -133,6 +133,15 @@ export function withLocalAuthHeaders(init?: RequestInit): RequestInit {
   return { ...init, headers }
 }
 
+/** Await Tauri token resolution before building fetch headers. */
+export async function withResolvedLocalAuthHeaders(
+  init?: RequestInit,
+  options?: { forceRefresh?: boolean },
+): Promise<RequestInit> {
+  await resolveLocalAuthToken(options)
+  return withLocalAuthHeaders(init)
+}
+
 /**
  * Append the local-auth token as a `?local_auth=` query param — the ONLY channel
  * that works for EventSource/SSE in a Tauri WebView (cross-origin tauri://localhost
@@ -148,9 +157,16 @@ export function withLocalAuthQuery(url: string): string {
 }
 
 /** Race-safe token resolver: injected global first, then the get_local_auth_token IPC. */
-export async function resolveLocalAuthToken(): Promise<string> {
-  if (getLocalAuthToken()) return resolvedToken
+export async function resolveLocalAuthToken(options?: { forceRefresh?: boolean }): Promise<string> {
+  if (!options?.forceRefresh && getLocalAuthToken()) return resolvedToken
   if (!IS_TAURI) return ''
+  if (options?.forceRefresh) {
+    resolvedToken = ''
+    if (typeof window !== 'undefined') {
+      delete window.__MAEKON_LOCAL_AUTH__
+    }
+    tokenPromise = null
+  }
   if (!tokenPromise) {
     tokenPromise = import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke<string>('get_local_auth_token'))

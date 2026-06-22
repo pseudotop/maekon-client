@@ -58,6 +58,8 @@ fn provider_model_catalog_client() -> Option<ProviderModelCatalogClient> {
 }
 
 pub(crate) struct WebServerLaunchResult {
+    pub(crate) frontend_web_port: u16,
+    pub(crate) web_server_startup_error: Option<String>,
     pub(crate) automation_controller: Option<Arc<AutomationController>>,
     /// Snapshot captured from automation_build.ai_runtime_status at
     /// server build time. Consumed by DashboardServiceImpl for
@@ -590,6 +592,7 @@ impl<'a> WebServerRuntimeBuilder<'a> {
                 .with_pii_sanitizer(audit_pii_sanitizer),
         ));
         let (bound_port_tx, bound_port_rx) = tokio::sync::oneshot::channel::<u16>();
+        let (startup_error_tx, startup_error_rx) = tokio::sync::oneshot::channel::<String>();
 
         let automation_frame_storage = match self.launch_context.runtime_handle.block_on(async {
             FrameFileStorage::new(
@@ -723,20 +726,42 @@ impl<'a> WebServerRuntimeBuilder<'a> {
                 ws
             };
             if let Err(error) = web_server.run(web_shutdown_rx).await {
+                let _ = startup_error_tx.send(error.to_string());
                 error!("WebServer error: {error}");
             }
         });
 
-        let frontend_port = self.launch_context.runtime_handle.block_on(async {
-            tokio::time::timeout(Duration::from_secs(3), bound_port_rx)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_else(|| self.launch_context.web_port_state.load(Ordering::Relaxed))
+        let (frontend_port, startup_error) = self.launch_context.runtime_handle.block_on(async {
+            tokio::select! {
+                port = bound_port_rx => {
+                    (
+                        port.unwrap_or_else(|_| self.launch_context.web_port_state.load(Ordering::Relaxed)),
+                        None,
+                    )
+                }
+                error = startup_error_rx => {
+                    (
+                        self.launch_context.web_port_state.load(Ordering::Relaxed),
+                        Some(error.unwrap_or_else(|_| "web server startup failed before binding".to_string())),
+                    )
+                }
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                    (
+                        self.launch_context.web_port_state.load(Ordering::Relaxed),
+                        Some("web server startup did not report a bound port within 3s".to_string()),
+                    )
+                }
+            }
         });
-        info!("WebServer: http://localhost:{frontend_port}");
+        if let Some(error) = &startup_error {
+            warn!(%error, frontend_port, "WebServer startup degraded");
+        } else {
+            info!("WebServer: http://localhost:{frontend_port}");
+        }
 
         WebServerLaunchResult {
+            frontend_web_port: frontend_port,
+            web_server_startup_error: startup_error,
             automation_controller: automation_controller_for_state,
             ai_runtime_status: ai_runtime_status_for_result,
             #[cfg(feature = "grpc-dashboard-external")]

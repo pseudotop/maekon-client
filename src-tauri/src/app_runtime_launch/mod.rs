@@ -62,7 +62,7 @@ impl AppRuntimeLaunchBuilder {
     }
 
     pub(crate) fn build_and_spawn(self) -> Result<AppRuntimeLaunchResult> {
-        let frontend_web_port = self.bootstrap.frontend_web_port();
+        let mut frontend_web_port = self.bootstrap.frontend_web_port();
         // E20-41 (#4833): per-session local-API auth token — see launch_result.rs.
         let local_auth_token = generate_local_auth_token();
         let integration_runtime_status = self.bootstrap.integration_runtime_status();
@@ -154,6 +154,13 @@ impl AppRuntimeLaunchBuilder {
             &shared_capture_services,
         );
 
+        #[cfg(feature = "server")]
+        server_context.spawn_integration_loops(
+            &core_resources.background_runtime,
+            sqlite_storage.clone(),
+            capture_consent_manager.clone(),
+        );
+
         // Connection status flags — start disconnected, updated by health check loop.
         let server_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let llm_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -212,10 +219,6 @@ impl AppRuntimeLaunchBuilder {
         // (written on success/failure) and AppState (read by get_analysis_health IPC).
         // Starts `true` (optimistic); flipped to `false` on first primary failure.
         let analysis_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-
-        #[cfg(feature = "server")]
-        server_context
-            .spawn_integration_loops(&core_resources.background_runtime, sqlite_storage.clone());
 
         // CoachingEngine was already constructed above (Phase 3 composition
         // root) so the FeedbackSender sink could be wired at the FeedbackSender
@@ -382,6 +385,20 @@ impl AppRuntimeLaunchBuilder {
         } else {
             None
         };
+        if let Some(wiring) = web_automation_wiring.as_ref() {
+            frontend_web_port = wiring.frontend_web_port;
+            if let Some(error) = wiring.web_server_startup_error.as_deref() {
+                if error.contains("did not report a bound port within 3s") {
+                    tracing::warn!(
+                        %error,
+                        frontend_web_port,
+                        "web server startup degraded before UI injection"
+                    );
+                } else {
+                    anyhow::bail!("web server startup failed: {error}");
+                }
+            }
+        }
         let automation_controller = web_automation_wiring
             .as_ref()
             .and_then(|wiring| wiring.automation_controller.clone());

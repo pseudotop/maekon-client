@@ -3,6 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use maekon_analysis::gui_aggregator::GuiActivityAggregator;
+use maekon_core::models::gui_activity::GuiActivitySummary;
 use maekon_core::models::gui_interaction::GuiElementType;
 use maekon_vision::contour_classifier::feedback::UncertainElement;
 use maekon_vision::gui_detector::GuiElementDetector;
@@ -23,4 +24,6 @@ pub(crate) struct GuiPipelineState {
     pub feedback_tick_counter: u32,
     /// Cached LLM corrections per app: app_name → [(from_type, to_type)].
     pub app_type_cache: HashMap<String, Vec<(GuiElementType, GuiElementType)>>,
+    /// Flushes produced after the first summary in a single tick.
+    pub pending_summaries: VecDeque<GuiActivitySummary>,
 }

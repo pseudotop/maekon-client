@@ -8,6 +8,9 @@ import { cn } from '../../utils/cn'
 
 interface SyncStatus {
   enabled: boolean
+  runtime_available: boolean
+  runtime_state: 'ready' | 'disabled' | 'unavailable'
+  unavailable_reason?: string | null
   device_id: string
   device_name: string
 }
@@ -26,6 +29,9 @@ interface SyncPeer {
 
 const DISABLED_SYNC_STATUS: SyncStatus = {
   enabled: false,
+  runtime_available: false,
+  runtime_state: 'unavailable',
+  unavailable_reason: 'tauri-unavailable',
   device_id: 'local-dev',
   device_name: 'Local device',
 }
@@ -47,9 +53,11 @@ export default function SyncTab() {
     try {
       const s = await tauriInvoke<SyncStatus>('get_sync_status')
       setStatus(s)
-      if (s.enabled) {
+      if (s.runtime_state === 'ready') {
         const p = await tauriInvoke<SyncPeer[]>('discover_sync_peers')
         setPeers(p)
+      } else {
+        setPeers([])
       }
     } catch {
       setStatus(DISABLED_SYNC_STATUS)
@@ -88,7 +96,35 @@ export default function SyncTab() {
     )
   }
 
-  if (!status.enabled) {
+  if (status.runtime_state === 'unavailable') {
+    return (
+      <div className="space-y-4">
+        <h2 className={cn(typography.h2, colors.text.primary)}>{t('syncTab.title')}</h2>
+        <GuidancePanel
+          title={t('settings.guidance.sync.title')}
+          description={t('settings.guidance.sync.description')}
+          items={[
+            {
+              title: t('settings.guidance.sync.transport.title'),
+              description: t('settings.guidance.sync.transport.description'),
+            },
+            {
+              title: t('settings.guidance.sync.restart.title'),
+              description: t('settings.guidance.sync.restart.description'),
+            },
+          ]}
+        />
+        <div className={cn('rounded-lg border p-4', colors.surface.muted)}>
+          <p className={cn('text-sm', colors.text.secondary)}>{t('syncTab.unavailable')}</p>
+          {status.unavailable_reason && (
+            <p className={cn('mt-2 text-xs', colors.text.tertiary)}>{t('syncTab.unavailableHint')}</p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (status.runtime_state === 'disabled' || !status.enabled) {
     return (
       <div className="space-y-4">
         <h2 className={cn(typography.h2, colors.text.primary)}>{t('syncTab.title')}</h2>

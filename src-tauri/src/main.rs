@@ -191,6 +191,81 @@ fn app_help_text() -> &'static str {
     )
 }
 
+const SUGGESTION_SHUTDOWN_PERSIST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(250);
+const SUGGESTION_SHUTDOWN_LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[derive(Default)]
+struct SuggestionShutdownPersistSummary {
+    pending_saved: usize,
+    pending_failed: usize,
+    deferred_saved: usize,
+    deferred_failed: usize,
+    pending_lock_skipped: bool,
+    deferred_lock_skipped: bool,
+}
+
+fn try_lock_until<T>(
+    mutex: &tokio::sync::Mutex<T>,
+    deadline: std::time::Instant,
+) -> Option<tokio::sync::MutexGuard<'_, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(_) if std::time::Instant::now() >= deadline => return None,
+            Err(_) => std::thread::sleep(SUGGESTION_SHUTDOWN_LOCK_RETRY),
+        }
+    }
+}
+
+fn persist_suggestions_on_shutdown(
+    mgr: &crate::suggestion_manager::SuggestionManager,
+) -> SuggestionShutdownPersistSummary {
+    let deadline = std::time::Instant::now() + SUGGESTION_SHUTDOWN_PERSIST_TIMEOUT;
+    let storage = mgr.storage().clone();
+    let mut summary = SuggestionShutdownPersistSummary::default();
+
+    let pending = match try_lock_until(mgr.queue(), deadline) {
+        Some(queue) => queue.iter().cloned().collect::<Vec<_>>(),
+        None => {
+            summary.pending_lock_skipped = true;
+            Vec::new()
+        }
+    };
+    for suggestion in pending {
+        if let Err(e) = storage.save_suggestion_with_state(&suggestion, "pending", None) {
+            summary.pending_failed += 1;
+            warn!(id = %suggestion.suggestion_id, "shutdown: failed to persist suggestion: {e}");
+        } else {
+            summary.pending_saved += 1;
+        }
+    }
+
+    let deferred = match try_lock_until(mgr.deferred(), deadline) {
+        Some(deferred) => deferred
+            .list_deferred()
+            .into_iter()
+            .map(|entry| (entry.suggestion.clone(), entry.resurface_at.to_rfc3339()))
+            .collect::<Vec<_>>(),
+        None => {
+            summary.deferred_lock_skipped = true;
+            Vec::new()
+        }
+    };
+    for (suggestion, resurface) in deferred {
+        if let Err(e) =
+            storage.save_suggestion_with_state(&suggestion, "deferred", Some(&resurface))
+        {
+            summary.deferred_failed += 1;
+            warn!(id = %suggestion.suggestion_id, "shutdown: failed to persist deferred suggestion: {e}");
+        } else {
+            summary.deferred_saved += 1;
+        }
+    }
+
+    summary
+}
+
 #[cfg(debug_assertions)]
 fn debug_runtime_smoke_cli_requested_from<I, S>(args: I, env_value: Option<&str>) -> bool
 where
@@ -229,6 +304,7 @@ fn consent_permissions_any_enabled(permissions: &maekon_core::consent::ConsentPe
         || permissions.full_text_extraction
         || permissions.memory_graph_enrichment
         || permissions.microphone
+        || permissions.unredacted_external_ocr
 }
 
 #[cfg(debug_assertions)]
@@ -242,7 +318,23 @@ fn debug_runtime_smoke_tcp_reachable(port: u16) -> bool {
 }
 
 #[cfg(debug_assertions)]
-fn debug_runtime_smoke_http_get_ok(port: u16, path: &str) -> bool {
+fn debug_runtime_smoke_http_get_ok(port: u16, path: &str, local_auth_token: Option<&str>) -> bool {
+    for _ in 0..10 {
+        if debug_runtime_smoke_http_get_once_ok(port, path, local_auth_token) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    false
+}
+
+#[cfg(debug_assertions)]
+fn debug_runtime_smoke_http_get_once_ok(
+    port: u16,
+    path: &str,
+    local_auth_token: Option<&str>,
+) -> bool {
     use std::io::{Read, Write};
 
     if port == 0 {
@@ -258,8 +350,7 @@ fn debug_runtime_smoke_http_get_ok(port: u16, path: &str) -> bool {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
 
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let request = debug_runtime_smoke_http_request(port, path, local_auth_token);
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
@@ -271,6 +362,22 @@ fn debug_runtime_smoke_http_get_ok(port: u16, path: &str) -> bool {
             .map(|head| head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200"))
             .unwrap_or(false),
     }
+}
+
+#[cfg(debug_assertions)]
+fn debug_runtime_smoke_http_request(
+    port: u16,
+    path: &str,
+    local_auth_token: Option<&str>,
+) -> String {
+    let auth_header = local_auth_token
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("x-local-auth: {token}\r\n"))
+        .unwrap_or_default();
+
+    format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{auth_header}Connection: close\r\n\r\n"
+    )
 }
 
 #[cfg(debug_assertions)]
@@ -305,6 +412,10 @@ fn run_debug_runtime_smoke_cli_command(app_handle: &tauri::AppHandle) -> i32 {
             )
         })
         .unwrap_or_else(|| (0, true, true, "Unavailable".to_string()));
+
+    let local_auth_token = app_handle
+        .try_state::<runtime_state::LocalAuthTokenState>()
+        .map(|state| state.0.clone());
 
     let (
         consent_status,
@@ -343,7 +454,8 @@ fn run_debug_runtime_smoke_cli_command(app_handle: &tauri::AppHandle) -> i32 {
         });
 
     let web_port_reachable = debug_runtime_smoke_tcp_reachable(web_port);
-    let settings_endpoint_ok = debug_runtime_smoke_http_get_ok(web_port, "/api/settings");
+    let settings_endpoint_ok =
+        debug_runtime_smoke_http_get_ok(web_port, "/api/settings", local_auth_token.as_deref());
     let raw_consent_any_enabled = consent_permissions_any_enabled(&consent_permissions);
     let effective_consent_any_enabled = consent_permissions_any_enabled(&effective_permissions);
     let default_consent_closed = consent_status == ConsentStatus::NotGranted
@@ -916,28 +1028,22 @@ fn main() {
             // Persist suggestion queue before shutdown (best-effort).
             if let Some(srs) = app_handle.try_state::<runtime_state::SuggestionRuntimeState>() {
                 if let Some(ref mgr) = srs.manager() {
-                    let storage = mgr.storage();
-                    // Save pending queue items.
-                    if let Ok(queue) = mgr.queue().try_lock() {
-                        for suggestion in queue.iter() {
-                            if let Err(e) = storage.save_suggestion_with_state(suggestion, "pending", None) {
-                                warn!(id = %suggestion.suggestion_id, "shutdown: failed to persist suggestion: {e}");
-                            }
-                        }
+                    let summary = persist_suggestions_on_shutdown(mgr);
+                    if summary.pending_lock_skipped {
+                        warn!("shutdown: skipped pending suggestion persistence because queue lock stayed busy");
                     }
-                    // Save deferred items with their resurface time.
-                    if let Ok(deferred) = mgr.deferred().try_lock() {
-                        for entry in deferred.list_deferred() {
-                            let resurface = entry.resurface_at.to_rfc3339();
-                            if let Err(e) = storage.save_suggestion_with_state(
-                                &entry.suggestion,
-                                "deferred",
-                                Some(&resurface),
-                            ) {
-                                warn!(id = %entry.suggestion.suggestion_id, "shutdown: failed to persist deferred suggestion: {e}");
-                            }
-                        }
+                    if summary.deferred_lock_skipped {
+                        warn!("shutdown: skipped deferred suggestion persistence because queue lock stayed busy");
                     }
+                    info!(
+                        pending_saved = summary.pending_saved,
+                        pending_failed = summary.pending_failed,
+                        deferred_saved = summary.deferred_saved,
+                        deferred_failed = summary.deferred_failed,
+                        pending_lock_skipped = summary.pending_lock_skipped,
+                        deferred_lock_skipped = summary.deferred_lock_skipped,
+                        "shutdown suggestion persistence completed"
+                    );
                 }
             }
 
@@ -1078,6 +1184,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     #[test]
     fn app_help_requested_from_recognizes_exit_flags() {
         assert!(crate::app_help_requested_from(["--help"]));
@@ -1095,5 +1203,38 @@ mod tests {
         assert!(help.contains("--version"));
         assert!(help.contains("debug-runtime-smoke"));
         assert!(help.contains("MAEKON_DEBUG_RUNTIME_SMOKE_CLI"));
+    }
+
+    #[test]
+    fn try_lock_until_is_bounded_when_mutex_is_busy() {
+        let mutex = tokio::sync::Mutex::new(1);
+        let guard = mutex.try_lock().expect("test mutex must lock");
+
+        let result = crate::try_lock_until(&mutex, Instant::now() + Duration::from_millis(25));
+
+        assert!(result.is_none());
+        drop(guard);
+        assert!(crate::try_lock_until(&mutex, Instant::now()).is_some());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_runtime_smoke_http_request_sends_local_auth_header() {
+        let request =
+            crate::debug_runtime_smoke_http_request(10090, "/api/settings", Some("token-123"));
+
+        assert!(request.starts_with("GET /api/settings HTTP/1.1\r\n"));
+        assert!(request.contains("Host: 127.0.0.1:10090\r\n"));
+        assert!(request.contains("x-local-auth: token-123\r\n"));
+        assert!(!request.contains("local_auth=token-123"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_runtime_smoke_http_request_omits_empty_local_auth_header() {
+        let request = crate::debug_runtime_smoke_http_request(10090, "/api/settings", Some(""));
+
+        assert!(!request.contains("x-local-auth:"));
+        assert!(request.ends_with("Connection: close\r\n\r\n"));
     }
 }

@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 use uuid::Uuid;
 
 use maekon_core::config::AiSessionConfig;
@@ -38,7 +38,8 @@ use crate::session_adapters::prompt_payload::{
 };
 use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
-    classify_subprocess_error_with_redactions, DetectedSubprocessCli, SubprocessKind,
+    append_session_tool_restriction_flags, classify_subprocess_error_with_redactions,
+    DetectedSubprocessCli, SubprocessKind,
 };
 use tracing::debug;
 
@@ -58,6 +59,7 @@ pub struct ClaudeSubprocessSession {
     config: Arc<AiSessionConfig>,
     cancel_requested: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
+    turn_lock: Arc<AsyncMutex<()>>,
 }
 
 impl ClaudeSubprocessSession {
@@ -81,6 +83,7 @@ impl ClaudeSubprocessSession {
             config: session_config,
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
+            turn_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -120,6 +123,7 @@ impl ClaudeSubprocessSession {
         cmd.arg("--include-partial-messages");
         cmd.arg("--permission-mode")
             .arg(&self.config.permission_mode);
+        append_session_tool_restriction_flags(&mut cmd, &self.surface.surface_id);
         cmd.arg("--model").arg(&self.model);
         cmd.arg("--session-id").arg(&self.cli_session_id);
 
@@ -146,6 +150,7 @@ impl ClaudeSubprocessSession {
 #[async_trait]
 impl ConversationSession for ClaudeSubprocessSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
+        let turn_guard = self.turn_lock.clone().lock_owned().await;
         let prompt = render_message_payload(message, self.default_tools.as_deref());
         let response_schema = extract_native_response_schema(message.response_format.as_ref());
         let mut cmd = self
@@ -204,6 +209,7 @@ impl ConversationSession for ClaudeSubprocessSession {
         let prompt_redaction = prompt.clone();
 
         let stream = async_stream::try_stream! {
+            let _turn_guard = turn_guard;
             // #6266 (P-3 sibling): keep the concurrent stdin writer alive for the
             // stream's lifetime (aborted on drop) — it drains the prompt into the
             // child while the loop below drains stdout, avoiding the pipe deadlock.
@@ -339,6 +345,7 @@ impl ConversationSession for ClaudeSubprocessSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maekon_core::models::ai_session::MessageRole;
     use std::path::PathBuf;
 
     #[tokio::test]
@@ -392,6 +399,39 @@ mod tests {
             None,
         );
         assert!(session.is_external());
+    }
+
+    #[tokio::test]
+    async fn claude_send_message_waits_for_inflight_cli_turn() {
+        let session = Arc::new(session_with_system_prompt(None));
+        let guard = session.turn_lock.clone().lock_owned().await;
+        let message = SessionMessage {
+            role: MessageRole::User,
+            content: "hello".to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        };
+
+        let send_task = {
+            let session = session.clone();
+            tokio::spawn(async move { session.send_message(&message).await })
+        };
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(
+            !send_task.is_finished(),
+            "second Claude turn must wait until the in-flight stream releases the turn lock"
+        );
+
+        drop(guard);
+        let stream = tokio::time::timeout(tokio::time::Duration::from_secs(1), send_task)
+            .await
+            .expect("send_message should proceed after the lock is released")
+            .expect("send task should not panic")
+            .expect("send_message should build a stream");
+        drop(stream);
     }
 
     fn session_with_system_prompt(system_prompt: Option<String>) -> ClaudeSubprocessSession {
@@ -454,5 +494,25 @@ mod tests {
         session
             .build_command(None)
             .expect("argv arguments at exactly the limit must be accepted");
+    }
+
+    #[test]
+    fn build_command_disables_claude_tools_for_conversation_sessions() {
+        let session = session_with_system_prompt(None);
+        let command = session.build_command(None).expect("command builds");
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            args.iter().any(|arg| arg == "--tools="),
+            "Claude conversation sessions must mirror the one-shot tool denial"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--no-session-persistence"),
+            "conversation sessions keep --session-id/--continue semantics"
+        );
     }
 }

@@ -11,6 +11,8 @@ use maekon_core::config::AppConfig;
 #[cfg(feature = "server")]
 use maekon_core::config_manager::ConfigManager;
 #[cfg(feature = "server")]
+use maekon_core::ports::consent_manager::ConsentManagerPort;
+#[cfg(feature = "server")]
 use maekon_storage::sqlite::SqliteStorage;
 #[cfg(feature = "server")]
 use std::path::Path;
@@ -89,7 +91,10 @@ impl ServerLaunchContext {
         &self,
         background_runtime: &BackgroundRuntimeCoordinator<'_>,
         sqlite_storage: Arc<SqliteStorage>,
+        consent_manager: Arc<dyn ConsentManagerPort>,
     ) {
+        self.integration_runtime
+            .set_consent_manager(consent_manager);
         background_runtime.spawn_integration_loops(&self.integration_runtime, sqlite_storage);
     }
 

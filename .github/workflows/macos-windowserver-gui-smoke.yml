@@ -41,6 +41,22 @@ jobs:
         with:
           key: macos-windowserver-gui-smoke
 
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+        with:
+          version: '10'
+          lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
+
+      - name: Build frontend assets for Tauri frontendDist
+        working-directory: crates/maekon-web/frontend
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Create sandbox worker stub for Tauri externalBin
         shell: bash
         run: |
