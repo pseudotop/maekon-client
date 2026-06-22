@@ -935,7 +935,7 @@ fn estimate_token_count(text: &str) -> u64 {
     if chars == 0 {
         0
     } else {
-        ((chars + 3) / 4).max(1)
+        chars.div_ceil(4).max(1)
     }
 }
 
