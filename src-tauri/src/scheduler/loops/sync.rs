@@ -390,6 +390,7 @@ impl Scheduler {
                     uncertain_queue: std::collections::VecDeque::new(),
                     feedback_tick_counter: 0,
                     app_type_cache: std::collections::HashMap::new(),
+                    pending_summaries: std::collections::VecDeque::new(),
                 });
                 info!("GUI Activity Intelligence pipeline enabled");
             }

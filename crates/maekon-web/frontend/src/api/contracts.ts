@@ -1849,7 +1849,7 @@ export type ConsentStatus = 'NotGranted' | 'Valid' | 'Expired' | 'UpdateRequired
 
 /**
  * Matches Rust's `ConsentPermissions` struct (snake_case fields, no rename_all).
- * 14 tiered boolean permissions; all default to false (fail-closed) on the Rust side.
+ * 15 tiered boolean permissions; all default to false (fail-closed) on the Rust side.
  */
 export interface ConsentPermissions {
   // Tier 1
@@ -1874,6 +1874,8 @@ export interface ConsentPermissions {
   memory_graph_enrichment: boolean
   // Tier 8: Audio/Voice
   microphone: boolean
+  // Tier 9: Raw Off-Device OCR
+  unredacted_external_ocr: boolean
 }
 
 /** Matches Rust's `ConsentSnapshot` DTO returned by the consent IPC commands. */

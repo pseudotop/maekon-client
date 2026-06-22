@@ -123,6 +123,7 @@ describe('Onboarding', () => {
           full_text_extraction: false,
           memory_graph_enrichment: false,
           microphone: false,
+          unredacted_external_ocr: false,
         },
       })
     })
@@ -199,6 +200,7 @@ describe('Onboarding', () => {
       full_text_extraction: false,
       memory_graph_enrichment: false,
       microphone: false,
+      unredacted_external_ocr: false,
     }
     mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === 'get_consent') {

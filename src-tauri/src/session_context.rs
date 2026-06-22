@@ -43,6 +43,13 @@ fn mask_json_string_values(
     }
 }
 
+fn system_prompt_egress_pii_level(config: &AppConfig) -> maekon_core::config::PiiFilterLevel {
+    config
+        .ai_provider
+        .external_data_policy
+        .effective_egress_pii_level(config.privacy.pii_filter_level)
+}
+
 /// Maximum number of recent events to query for activity summary.
 const RECENT_EVENTS_LIMIT: usize = 200;
 
@@ -102,10 +109,12 @@ impl SessionContextAssembler {
         // do not respect JSON token boundaries, so masking the joined string could
         // let an email/path span consume a closing `"` and corrupt the structure
         // (#6266 verify). Per-value masking keeps each string self-contained and
-        // re-serialization yields valid JSON. Keys are untouched; Off level is a
-        // no-op (honors the user's choice).
+        // re-serialization yields valid JSON. Keys are untouched. For external
+        // sessions, resolve the same effective egress floor as the per-turn chat
+        // path so the create-time system prompt cannot bypass stricter provider
+        // policy.
         let mut value = serde_json::to_value(&context).unwrap_or(serde_json::Value::Null);
-        mask_json_string_values(&mut value, self.config.privacy.pii_filter_level);
+        mask_json_string_values(&mut value, system_prompt_egress_pii_level(&self.config));
         let content = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
 
         SessionMessage {
@@ -388,6 +397,29 @@ mod tests {
         let mut value = serde_json::json!({ "active_app": "Mail - alice@example.com" });
         mask_json_string_values(&mut value, maekon_core::config::PiiFilterLevel::Off);
         assert_eq!(value["active_app"], "Mail - alice@example.com");
+    }
+
+    #[test]
+    fn system_prompt_egress_level_uses_external_policy_floor() {
+        let mut config = AppConfig::default_config();
+        config.privacy.pii_filter_level = maekon_core::config::PiiFilterLevel::Off;
+        config.ai_provider.external_data_policy =
+            maekon_core::config::ExternalDataPolicy::PiiFilterStrict;
+
+        let mut value = serde_json::json!({ "active_app": "Mail - alice@example.com" });
+        mask_json_string_values(&mut value, system_prompt_egress_pii_level(&config));
+
+        assert_eq!(
+            system_prompt_egress_pii_level(&config),
+            maekon_core::config::PiiFilterLevel::Strict
+        );
+        assert!(
+            !value["active_app"]
+                .as_str()
+                .expect("active_app stays a string")
+                .contains("alice@example.com"),
+            "system prompt context must follow external egress policy, not base Off"
+        );
     }
 
     #[test]

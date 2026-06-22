@@ -12,8 +12,27 @@ fn sync_not_enabled() -> IpcError {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncAvailabilityDto {
+    Ready,
+    Disabled,
+    Unavailable,
+}
+
+fn classify_sync_availability(enabled: bool, runtime_available: bool) -> SyncAvailabilityDto {
+    match (enabled, runtime_available) {
+        (false, _) => SyncAvailabilityDto::Disabled,
+        (true, true) => SyncAvailabilityDto::Ready,
+        (true, false) => SyncAvailabilityDto::Unavailable,
+    }
+}
+
+#[derive(Serialize)]
 pub struct SyncStatusDto {
     pub enabled: bool,
+    pub runtime_available: bool,
+    pub runtime_state: SyncAvailabilityDto,
+    pub unavailable_reason: Option<String>,
     pub device_id: String,
     pub device_name: String,
     pub last_sync_at: Option<String>,
@@ -64,6 +83,9 @@ pub async fn get_sync_status(
 
             Ok(SyncStatusDto {
                 enabled: config_enabled,
+                runtime_available: true,
+                runtime_state: classify_sync_availability(config_enabled, true),
+                unavailable_reason: None,
                 device_id: engine.device_id().to_string(),
                 device_name: engine.device_name().to_string(),
                 last_sync_at: sync_at,
@@ -73,6 +95,11 @@ pub async fn get_sync_status(
         }
         None => Ok(SyncStatusDto {
             enabled: config_enabled,
+            runtime_available: false,
+            runtime_state: classify_sync_availability(config_enabled, false),
+            unavailable_reason: config_enabled.then(|| {
+                "Sync is enabled, but the runtime engine is not available yet".to_string()
+            }),
             device_id: String::new(),
             device_name: String::new(),
             last_sync_at: None,
@@ -150,4 +177,25 @@ pub async fn forget_peer(
 ) -> Result<(), IpcError> {
     let engine = state.engine().ok_or_else(sync_not_enabled)?;
     engine.forget_peer(&device_id).await.map_err(IpcError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_availability_distinguishes_disabled_from_unavailable() {
+        assert!(matches!(
+            classify_sync_availability(false, false),
+            SyncAvailabilityDto::Disabled
+        ));
+        assert!(matches!(
+            classify_sync_availability(true, false),
+            SyncAvailabilityDto::Unavailable
+        ));
+        assert!(matches!(
+            classify_sync_availability(true, true),
+            SyncAvailabilityDto::Ready
+        ));
+    }
 }

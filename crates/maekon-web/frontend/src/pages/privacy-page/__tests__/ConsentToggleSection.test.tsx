@@ -23,7 +23,7 @@ import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../.
 import en from '../../../i18n/locales/en.json'
 import ConsentToggleSection from '../ConsentToggleSection'
 
-// Baseline permission set with all 14 permissions false.
+// Baseline permission set with all 15 permissions false.
 const ALL_FALSE: ConsentPermissions = {
   screen_capture: false,
   ocr_processing: false,
@@ -39,6 +39,7 @@ const ALL_FALSE: ConsentPermissions = {
   full_text_extraction: false,
   memory_graph_enrichment: false,
   microphone: false,
+  unredacted_external_ocr: false,
 }
 
 function snapshot(status: ConsentStatus, overrides: Partial<ConsentPermissions> = {}): ConsentSnapshot {
@@ -138,6 +139,45 @@ describe('ConsentToggleSection', () => {
     expect(sent.telemetry).toBe(true)
     expect(sent.clipboard_monitoring).toBe(true)
     expect(sent.file_access_monitoring).toBe(true)
+  })
+
+  it('toggling the unredacted external OCR opt-in → set_consent flips only that consent tier', async () => {
+    const { setSpy } = mockConsentIpc(
+      snapshot('Valid', {
+        screen_capture: true,
+        ocr_processing: true,
+        clipboard_monitoring: true,
+        microphone: true,
+      }),
+    )
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const rawOcr = await screen.findByTestId('consent-unredacted-external-ocr-toggle')
+    await waitFor(() => expect(rawOcr).not.toBeChecked())
+    fireEvent.click(rawOcr)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.unredacted_external_ocr).toBe(true)
+    expect(sent.screen_capture).toBe(true)
+    expect(sent.ocr_processing).toBe(true)
+    expect(sent.clipboard_monitoring).toBe(true)
+    expect(sent.microphone).toBe(true)
+  })
+
+  it('associates the unredacted external OCR disclosure with its toggle via aria-describedby', async () => {
+    mockConsentIpc(snapshot('Valid', { screen_capture: true }))
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const rawOcr = await screen.findByTestId('consent-unredacted-external-ocr-toggle')
+    const describedBy = rawOcr.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const described = document.getElementById(describedBy as string)
+    expect(described).not.toBeNull()
+    expect(described).toHaveTextContent(en.privacy.consent.unredactedExternalOcr.disclosure)
+    expect(described?.getAttribute('role')).toBe('alert')
   })
 
   it('an Expired snapshot reads the microphone toggle as OFF even though microphone is true (status gating)', async () => {

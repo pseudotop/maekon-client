@@ -24,8 +24,7 @@ pub struct SandboxActionDispatcher {
 
 impl SandboxActionDispatcher {
     /// Construct without an inline driver. On the permissive-noop path this preserves
-    /// the legacy behavior of skipping execution and returning `Success` (for legacy
-    /// call sites).
+    /// fail-closed behavior instead of reporting a skipped action as `Success`.
     pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
         Self {
             sandbox,
@@ -88,10 +87,38 @@ impl SandboxActionDispatcher {
 #[async_trait]
 impl AutomationActionDispatcher for SandboxActionDispatcher {
     async fn dispatch(&self, action: &AutomationAction, config: &SandboxConfig) -> CommandResult {
+        if !config.enabled {
+            return match &self.inline_driver {
+                Some(driver) => {
+                    tracing::info!(
+                        action = %crate::sandbox::redact_action(action),
+                        driver = driver.platform(),
+                        "sandbox disabled: executing action via explicit inline input driver"
+                    );
+                    match Self::execute_inline(driver, action).await {
+                        Ok(()) => CommandResult::Success,
+                        Err(e) => {
+                            tracing::error!(error = %e, "inline action execution failed");
+                            CommandResult::Failed(format!("Inline execution failed: {}", e))
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        action = %crate::sandbox::redact_action(action),
+                        "sandbox disabled and no inline input driver is wired; refusing skipped no-op success"
+                    );
+                    CommandResult::Failed(
+                        "Sandbox disabled and no inline input driver is wired".to_string(),
+                    )
+                }
+            };
+        }
+
         // Permissive-noop path: there is no need to spawn a subprocess sandbox.
         // But silently dropping the action would be a false success (#4539). If an
-        // inline driver is wired, execute in-process; otherwise preserve the legacy
-        // behavior.
+        // inline driver is wired, execute in-process; otherwise fail closed so the
+        // audit trail cannot record a skipped no-op as Completed.
         if is_permissive_noop(config) {
             match &self.inline_driver {
                 Some(driver) => {
@@ -110,15 +137,14 @@ impl AutomationActionDispatcher for SandboxActionDispatcher {
                     };
                 }
                 None => {
-                    // Legacy call site: with no inline driver, return Success without
-                    // executing (preserves the legacy silent-skip behavior). The sandbox
-                    // is not invoked.
-                    tracing::debug!(
+                    tracing::warn!(
                         action = %crate::sandbox::redact_action(action),
                         profile = ?config.profile,
-                        "permissive-noop: no inline driver wired, skipping execution"
+                        "permissive-noop: no inline input driver is wired; refusing skipped no-op success"
                     );
-                    return CommandResult::Success;
+                    return CommandResult::Failed(
+                        "Permissive no-op requires an inline input driver".to_string(),
+                    );
                 }
             }
         }
@@ -192,7 +218,10 @@ mod tests {
         let sandbox = Arc::new(MockSandbox { should_fail: false });
         let dispatcher = SandboxActionDispatcher::new(sandbox);
         let action = AutomationAction::MouseMove { x: 100, y: 200 };
-        let config = SandboxConfig::default();
+        let config = SandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let result = dispatcher.dispatch(&action, &config).await;
         assert!(matches!(result, CommandResult::Success));
     }
@@ -204,7 +233,10 @@ mod tests {
         let action = AutomationAction::KeyType {
             text: "hello world".to_string(),
         };
-        let config = SandboxConfig::default();
+        let config = SandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let result = dispatcher.dispatch(&action, &config).await;
         assert!(matches!(result, CommandResult::Success));
     }
@@ -216,7 +248,10 @@ mod tests {
         let action = AutomationAction::KeyPress {
             key: "Enter".to_string(),
         };
-        let config = SandboxConfig::default();
+        let config = SandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let result = dispatcher.dispatch(&action, &config).await;
         assert!(matches!(result, CommandResult::Failed(_)));
     }
@@ -228,9 +263,26 @@ mod tests {
         let action = AutomationAction::Hotkey {
             keys: vec!["ctrl".to_string(), "c".to_string()],
         };
-        let config = SandboxConfig::default();
+        let config = SandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let result = dispatcher.dispatch(&action, &config).await;
         assert!(matches!(result, CommandResult::Success));
+    }
+
+    #[tokio::test]
+    async fn default_disabled_sandbox_without_inline_driver_fails_closed() {
+        let sandbox = Arc::new(MockSandbox { should_fail: false });
+        let dispatcher = SandboxActionDispatcher::new(sandbox);
+        let action = AutomationAction::MouseMove { x: 100, y: 200 };
+        let result = dispatcher
+            .dispatch(&action, &SandboxConfig::default())
+            .await;
+        assert!(
+            matches!(result, CommandResult::Failed(ref message) if message.contains("disabled")),
+            "disabled sandbox without an inline driver must not be a completed no-op, got {result:?}"
+        );
     }
 
     // --- #4539: regression tests for the permissive-noop inline execution path ---
@@ -286,6 +338,7 @@ mod tests {
     /// as permissive-noop.
     fn permissive_noop_config() -> SandboxConfig {
         SandboxConfig {
+            enabled: true,
             profile: SandboxProfile::Permissive,
             max_memory_bytes: 0,
             max_cpu_time_ms: 0,
@@ -322,11 +375,10 @@ mod tests {
         // 3) The should_fail sandbox was not invoked (it would have returned Failed)
     }
 
-    /// With no inline driver (legacy call site) the permissive-noop path preserves the
-    /// legacy behavior: returns Success without executing, sandbox not invoked.
+    /// With no inline driver, the permissive-noop path fails closed instead of
+    /// reporting a skipped action as Success.
     #[tokio::test]
-    async fn permissive_noop_without_inline_driver_preserves_skip() {
-        // Must be Success even though should_fail=true — proves the sandbox is not invoked.
+    async fn permissive_noop_without_inline_driver_fails_closed() {
         let sandbox = Arc::new(MockSandbox { should_fail: true });
         let dispatcher = SandboxActionDispatcher::new(sandbox);
 
@@ -338,8 +390,8 @@ mod tests {
             .await;
 
         assert!(
-            matches!(result, CommandResult::Success),
-            "expected Success (skip preserved), got {result:?}"
+            matches!(result, CommandResult::Failed(ref message) if message.contains("inline input driver")),
+            "expected a failed no-inline result, got {result:?}"
         );
     }
 

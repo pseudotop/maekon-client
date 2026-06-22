@@ -14,7 +14,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge, Button, Card, Input } from '../../components/ui'
 import { colors, motion, radius, typography } from '../../styles/tokens'
 import type { BadgeColor } from '../../styles/variants'
-import { withLocalAuthHeaders } from '../../utils/api-base'
+import { resolveApiUrl, withResolvedLocalAuthHeaders } from '../../utils/api-base'
 import { cn } from '../../utils/cn'
 
 interface ProviderDef {
@@ -201,11 +201,11 @@ export default function ProviderWizard({ onSelect, className }: ProviderWizardPr
     setTesting(true)
     setTestResult('idle')
     try {
-      // E20-41 (#4833): raw fetch outside the client.ts chokepoint — attach the
-      // X-Local-Auth header explicitly so the local-API gate admits it.
+      // E20-41 (#4833): resolve loopback URL and local-auth before the provider probe.
+      const url = await resolveApiUrl('/api/ai/providers/models')
       const resp = await fetch(
-        '/api/ai/providers/models',
-        withLocalAuthHeaders({
+        url,
+        await withResolvedLocalAuthHeaders({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

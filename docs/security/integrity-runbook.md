@@ -24,11 +24,17 @@ Expected output:
 The following workflows enforce integrity in CI:
 
 - `CI` (`.github/workflows/ci.yml`): lint + tests for the fast PR lane
-- `Security & Compliance` (`.github/workflows/security-compliance.yml`): supply-chain checks + SBOM on `main`/`develop`, schedule, or manual dispatch
-- `Integrity Gates` (`.github/workflows/integrity-gates.yml`): policy + signature + supply-chain checks on `main`/`develop`, schedule, or manual dispatch
-- `Release Smoke` (`.github/workflows/release-smoke.yml`): cross-platform desktop release smoke on `main`/`develop` or manual dispatch
+- `Security & Compliance` (`.github/workflows/security-compliance.yml`): supply-chain checks + SBOM on pull requests, pushes to `main`, or manual dispatch
+- `Integrity Gates` (`.github/workflows/integrity-gates.yml`): manual-only standalone policy + signature + supply-chain checks. Run explicitly before release promotion.
+- `Release Smoke` (`.github/workflows/release-smoke.yml`): manual-only cross-platform desktop release smoke. Run explicitly before RC/stable promotion when release evidence is required.
 
-PRs must not bypass the fast-lane workflows. Full integrity, supply-chain, and release smoke validation continues after merge, on schedule, and before release promotion.
+PRs must not bypass the fast-lane workflows. Full integrity and release-smoke validation must be produced by explicit manual dispatch before release promotion; `security-compliance.yml` contributes PR/main supply-chain evidence but is not a release-promotion substitute.
+
+Current trigger boundary:
+
+- Public PR blocking evidence comes from `ci.yml` plus parent/private required checks.
+- `integrity-gates.yml` and `release-smoke.yml` do not run automatically today; release operators must dispatch them and attach the resulting run URLs or artifacts to the release-decision manifest.
+- `security-compliance.yml` runs on PRs, pushes to `main`, and manual dispatch; do not treat a green fast PR lane as a substitute for release-promotion evidence.
 
 Current documented exception:
 

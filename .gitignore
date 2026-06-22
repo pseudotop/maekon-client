@@ -58,6 +58,7 @@ src-tauri/sbom.cdx.json
 # Local agent/tooling state
 .serena/
 .claude/
+.codex-remote-attachments/
 /docs/superpowers
 .public-worktrees/
 

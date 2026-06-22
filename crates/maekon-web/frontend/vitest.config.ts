@@ -1,4 +1,5 @@
 /// <reference types="vitest" />
+import { fileURLToPath } from 'node:url'
 import { defineConfig, mergeConfig } from 'vitest/config'
 import viteConfig from './vite.config'
 
@@ -12,7 +13,7 @@ export default mergeConfig(
       include: ['src/**/*.test.{ts,tsx}'],
       resolve: {
         alias: {
-          '@src': new URL('./src', import.meta.url).pathname,
+          '@src': fileURLToPath(new URL('./src', import.meta.url)),
         },
       },
       coverage: {

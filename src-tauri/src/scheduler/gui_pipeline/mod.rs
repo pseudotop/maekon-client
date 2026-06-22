@@ -56,6 +56,7 @@ mod tests {
             uncertain_queue: VecDeque::new(),
             feedback_tick_counter: 0,
             app_type_cache: HashMap::new(),
+            pending_summaries: VecDeque::new(),
         }
     }
 
@@ -289,6 +290,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_gui_tick_queues_multiple_flushes_in_fifo_order() {
+        let mut state = make_state(60, 1);
+
+        let seed_input = make_input(1, Some((500.0, 300.0)), 0, 0);
+        run_gui_tick(
+            &mut state,
+            &[],
+            &seed_input,
+            &[],
+            "VS Code",
+            "alpha.rs",
+            "alpha.rs",
+            None,
+            None,
+            0,
+            0,
+        )
+        .await;
+
+        let mixed_input = make_input(1, Some((500.0, 300.0)), 1, 1);
+        let first = run_gui_tick(
+            &mut state,
+            &[],
+            &mixed_input,
+            &["Cmd+S".to_string()],
+            "VS Code",
+            "beta.rs",
+            "beta.rs",
+            None,
+            None,
+            0,
+            0,
+        )
+        .await
+        .expect("first flush should be returned");
+
+        assert_eq!(first.content_label, "alpha.rs");
+
+        let pending = run_gui_tick(
+            &mut state,
+            &[],
+            &make_input(0, None, 0, 0),
+            &[],
+            "VS Code",
+            "beta.rs",
+            "beta.rs",
+            None,
+            None,
+            0,
+            0,
+        )
+        .await
+        .expect("second same-tick flush should be queued");
+
+        assert_eq!(pending.content_label, "beta.rs");
+    }
+
+    #[tokio::test]
+    async fn feedback_cache_uses_latest_correction_for_same_app_and_source_type() {
+        let mut state = make_state(60, 1);
+        state.app_type_cache.insert(
+            "Notes".to_string(),
+            vec![
+                (GuiElementType::Button, GuiElementType::MenuItem),
+                (GuiElementType::Button, GuiElementType::TextInput),
+            ],
+        );
+
+        let input = make_input(1, Some((500.0, 300.0)), 0, 0);
+        let regions = vec![make_ocr_region("Save", 490, 290, 60, 30)];
+
+        run_gui_tick(
+            &mut state,
+            &regions,
+            &input,
+            &[],
+            "Notes",
+            "note.md",
+            "note.md",
+            None,
+            None,
+            0,
+            0,
+        )
+        .await;
+
+        let summary = run_gui_tick(
+            &mut state,
+            &regions,
+            &input,
+            &[],
+            "Notes",
+            "note.md",
+            "note.md",
+            None,
+            None,
+            0,
+            0,
+        )
+        .await
+        .expect("max_events should flush the corrected element");
+
+        assert_eq!(summary.text_entries, 1);
+        assert_eq!(summary.menu_accesses, 0);
+    }
+
+    #[tokio::test]
     async fn mixed_clicks_and_typing() {
         let mut state = make_state(60, 100);
 
@@ -408,6 +516,7 @@ mod tests {
             uncertain_queue: VecDeque::new(),
             feedback_tick_counter: 0,
             app_type_cache: HashMap::new(),
+            pending_summaries: VecDeque::new(),
         }
     }
 

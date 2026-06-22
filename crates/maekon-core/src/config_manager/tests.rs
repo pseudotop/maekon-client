@@ -17,6 +17,16 @@ fn restore_env_var(key: &str, original: Option<OsString>) {
     }
 }
 
+fn test_web_port(offset: u16) -> u16 {
+    let span = crate::config::DEFAULT_WEB_PORT_END - crate::config::DEFAULT_WEB_PORT + 1;
+    crate::config::DEFAULT_WEB_PORT + (offset % span)
+}
+
+fn shifted_test_web_port(current: u16, offset: u16) -> u16 {
+    let span = crate::config::DEFAULT_WEB_PORT_END - crate::config::DEFAULT_WEB_PORT + 1;
+    crate::config::DEFAULT_WEB_PORT + ((current - crate::config::DEFAULT_WEB_PORT + offset) % span)
+}
+
 #[test]
 fn create_and_load_config() {
     let temp_dir = TempDir::new().unwrap();
@@ -53,10 +63,11 @@ fn update_and_persist_config() {
     let config_path = temp_dir.path().join("config.json");
 
     let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+    let updated_port = test_web_port(1);
 
     manager
         .update_with(|c| {
-            c.web.port = 8080;
+            c.web.port = updated_port;
             c.storage.retention_days = 60;
             Ok(())
         })
@@ -65,7 +76,7 @@ fn update_and_persist_config() {
     let manager2 = ConfigManager::with_path(config_path).unwrap();
     let config = manager2.get();
 
-    assert_eq!(config.web.port, 8080);
+    assert_eq!(config.web.port, updated_port);
     assert_eq!(config.storage.retention_days, 60);
 }
 
@@ -112,14 +123,15 @@ fn reload_config() {
     let config_path = temp_dir.path().join("config.json");
 
     let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+    let updated_port = test_web_port(2);
 
     let mut config = manager.get();
-    config.web.port = 7777;
+    config.web.port = updated_port;
     let content = serde_json::to_string_pretty(&config).unwrap();
     fs::write(&config_path, content).unwrap();
 
     manager.reload().unwrap();
-    assert_eq!(manager.get().web.port, 7777);
+    assert_eq!(manager.get().web.port, updated_port);
 }
 
 #[test]
@@ -272,11 +284,12 @@ fn save_then_load_round_trip() {
     let config_path = temp_dir.path().join("config.json");
 
     let manager = ConfigManager::with_path(config_path.clone()).unwrap();
+    let updated_port = test_web_port(3);
 
     // Mutate several fields across different sections.
     manager
         .update_with(|c| {
-            c.web.port = 9999;
+            c.web.port = updated_port;
             c.storage.retention_days = 90;
             c.server.base_url = "https://prod.example.com".to_string();
             c.monitor.idle_threshold_secs = 600;
@@ -289,7 +302,7 @@ fn save_then_load_round_trip() {
     let manager2 = ConfigManager::with_path(config_path).unwrap();
     let loaded = manager2.get();
 
-    assert_eq!(loaded.web.port, 9999);
+    assert_eq!(loaded.web.port, updated_port);
     assert_eq!(loaded.storage.retention_days, 90);
     assert_eq!(loaded.server.base_url, "https://prod.example.com");
     assert_eq!(loaded.monitor.idle_threshold_secs, 600);
@@ -452,13 +465,14 @@ async fn update_notifies_subscribers() {
     let before = rx.borrow_and_update().web.port;
 
     let mut new_cfg = mgr.get();
-    new_cfg.web.port = before.wrapping_add(7);
+    let updated_port = shifted_test_web_port(before, 7);
+    new_cfg.web.port = updated_port;
     mgr.update(new_cfg).unwrap();
 
     rx.changed()
         .await
         .expect("changed() must resolve after update()");
-    assert_eq!(rx.borrow().web.port, before.wrapping_add(7));
+    assert_eq!(rx.borrow().web.port, updated_port);
 }
 
 /// T-X1-3
@@ -471,8 +485,9 @@ async fn update_with_notifies_subscribers() {
     let mut rx = mgr.subscribe();
     let before = rx.borrow_and_update().web.port;
 
+    let updated_port = shifted_test_web_port(before, 1);
     mgr.update_with(|c| {
-        c.web.port = before.wrapping_add(11);
+        c.web.port = updated_port;
         Ok(())
     })
     .unwrap();
@@ -480,7 +495,7 @@ async fn update_with_notifies_subscribers() {
     rx.changed()
         .await
         .expect("changed() must resolve after update_with()");
-    assert_eq!(rx.borrow().web.port, before.wrapping_add(11));
+    assert_eq!(rx.borrow().web.port, updated_port);
 }
 
 /// T-X1-4
@@ -495,7 +510,8 @@ async fn reload_notifies_subscribers() {
 
     // Rewrite the file out-of-band so reload() observes a different value.
     let mut forced = crate::config::AppConfig::default_config();
-    forced.web.port = before.wrapping_add(13);
+    let updated_port = shifted_test_web_port(before, 2);
+    forced.web.port = updated_port;
     let json = serde_json::to_string_pretty(&forced).unwrap();
     std::fs::write(&cfg_path, json).unwrap();
 
@@ -503,7 +519,7 @@ async fn reload_notifies_subscribers() {
     rx.changed()
         .await
         .expect("changed() must resolve after reload()");
-    assert_eq!(rx.borrow().web.port, before.wrapping_add(13));
+    assert_eq!(rx.borrow().web.port, updated_port);
 }
 
 /// T-X1-7 — pins latest-wins: identical-content updates still fire.
@@ -1295,7 +1311,7 @@ mod managed_policy {
         let manager = ConfigManager::with_path(config_path.clone()).unwrap();
         manager
             .update_with(|c| {
-                c.web.port = 8123;
+                c.web.port = super::test_web_port(4);
                 Ok(())
             })
             .unwrap();

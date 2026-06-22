@@ -15,7 +15,7 @@ For the public/fork-safe versus maintainer-only split, see
 
 | Step | Command | Blocks merge on failure |
 |------|---------|------------------------|
-| Format check | `cargo fmt --all -- --check` | Yes |
+| Format check | `cargo fmt --all -- --check` | No (public advisory; parent house-style gate is blocking) |
 | Clippy (standalone) | `cargo clippy --workspace --all-targets -- -D warnings` | Yes |
 | Clippy (server features) | `cargo clippy --workspace --all-targets --features server` | Yes |
 | Clippy (gRPC features) | `cargo clippy --workspace --all-targets --features grpc` | Yes |
@@ -23,7 +23,7 @@ For the public/fork-safe versus maintainer-only split, see
 | HTTP interface manifest | `scripts/verify-http-interface-manifest.sh` | Yes |
 | Commit message hygiene | `scripts/verify-commit-message-hygiene.sh` | Yes |
 
-`RUSTFLAGS=-Dwarnings` is set globally, so any compiler warning is a build failure.
+`RUSTFLAGS=-W warnings` is set globally so vendored path dependencies do not hard-block public PRs. First-party clippy steps still pass `-D warnings`, so lint warnings in owned code remain blocking.
 
 ### Tests
 
@@ -49,7 +49,7 @@ of truth for launch, signing, packaging, and OS permission behavior.
 
 ### Release Smoke (post-merge / manual)
 
-Release-grade desktop smoke is intentionally separated from the fast PR lane. The workflow lives in [`.github/workflows/release-smoke.yml`](../../.github/workflows/release-smoke.yml) and runs on pushes to `main` / `develop` or via manual dispatch.
+Release-grade desktop smoke is intentionally separated from the fast PR lane. The workflow lives in [`.github/workflows/release-smoke.yml`](../../.github/workflows/release-smoke.yml) and is manual-only today. Maintainers must dispatch it explicitly before treating a candidate as release-promotion ready.
 
 After the fast PR lane merges, a release build is compiled on all four targets to catch platform-specific compilation errors:
 
@@ -62,7 +62,7 @@ After the fast PR lane merges, a release build is compiled on all four targets t
 
 A GUI bootstrap smoke test runs on macOS and Windows: the binary is launched for 3 seconds and inspected for Rust panics or tokio runtime failures.
 
-This split keeps the merge-blocking PR checks focused on fast feedback while preserving release-grade platform coverage after merge and before promotion.
+This split keeps the merge-blocking PR checks focused on fast feedback while preserving release-grade platform coverage as explicit release-promotion evidence.
 
 ### Frontend (web dashboard)
 
@@ -168,7 +168,7 @@ MAEKON checks GitHub Releases for updates using the updater module in `src-tauri
 4. If a newer version is found, the user is prompted via a desktop notification.
 5. On approval, the installer is downloaded, its signature verified, and the update applied.
 
-All update downloads are verified with signature checking. Signature verification can only be disabled if `update.require_signature_verification` is explicitly set to `false` in config; the CI `integrity-gates` workflow enforces that this field remains `true` in production configurations.
+All update downloads are verified with signature checking. Signature verification can only be disabled if `update.require_signature_verification` is explicitly set to `false` in config; the manual `integrity-gates` workflow verifies that this field remains `true` in production configurations before promotion.
 
 ---
 
@@ -176,9 +176,9 @@ All update downloads are verified with signature checking. Signature verificatio
 
 | Workflow | Trigger | Purpose |
 |---------|---------|---------|
-| `integrity-gates.yml` | Push to main / manual / schedule | Integrity policy + dependency audit |
-| `security-compliance.yml` | Manual | Public supply-chain controls + SBOM; scheduled variants may run in release infrastructure |
-| `release-smoke.yml` | Push to main / manual | Cross-platform desktop release smoke |
+| `integrity-gates.yml` | Manual dispatch only | Standalone integrity policy + dependency audit for release-promotion evidence |
+| `security-compliance.yml` | PR / push to `main` / manual dispatch | Public supply-chain controls + SBOM |
+| `release-smoke.yml` | Manual dispatch only | Cross-platform desktop release smoke for release-promotion evidence |
 | `grpc-governance.yml` | Push to main | gRPC contract stability |
 | `ai-integration-smoke.yml` | Push to main | AI provider integration smoke |
-| `macos-windowserver-gui-smoke.yml` | Push to main | Full macOS GUI smoke with WindowServer |
+| `macos-windowserver-gui-smoke.yml` | Manual dispatch only | Full macOS GUI smoke with WindowServer |

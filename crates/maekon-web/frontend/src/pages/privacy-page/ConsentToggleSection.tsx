@@ -30,6 +30,7 @@ const CONSENT_QUERY_KEY = ['consent'] as const
 // Stable id of the microphone cloud-egress disclosure Alert. The microphone toggle's Checkbox
 // points to this id via aria-describedby, so the screen reader also reads the disclosure when it reads the toggle.
 const MICROPHONE_DISCLOSURE_ID = 'consent-microphone-disclosure'
+const UNREDACTED_OCR_DISCLOSURE_ID = 'consent-unredacted-external-ocr-disclosure'
 
 // The 6 master fields that make up the monitoring bundle. All true when ON, all false when OFF.
 const MONITORING_FIELDS = [
@@ -173,6 +174,7 @@ export default function ConsentToggleSection() {
   // The high-sensitivity opt-in is considered active if either of the two fields is on.
   const clipboardOn = isActive(status, permissions.clipboard_monitoring || permissions.file_access_monitoring)
   const microphoneOn = isActive(status, permissions.microphone)
+  const unredactedExternalOcrOn = isActive(status, permissions.unredacted_external_ocr)
   const mutating = setMutation.isPending || withdrawMutation.isPending
 
   const statusLabel: Record<ConsentStatus, string> = {
@@ -202,6 +204,10 @@ export default function ConsentToggleSection() {
   const handleMicrophone = (next: boolean) => {
     // Preserve (spread) the entire current set of permissions and flip only microphone (to avoid losing other opt-ins).
     setMutation.mutate({ ...permissions, microphone: next })
+  }
+
+  const handleUnredactedExternalOcr = (next: boolean) => {
+    setMutation.mutate({ ...permissions, unredacted_external_ocr: next })
   }
 
   const lastError = setMutation.isError
@@ -305,6 +311,27 @@ export default function ConsentToggleSection() {
           />
           <Alert id={MICROPHONE_DISCLOSURE_ID} variant="warning">
             {t('privacy.consent.microphone.disclosure')}
+          </Alert>
+        </div>
+
+        <div className="space-y-2">
+          <EnumeratedToggle
+            testId="consent-unredacted-external-ocr-toggle"
+            label={t('privacy.consent.unredactedExternalOcr.label')}
+            description={t('privacy.consent.unredactedExternalOcr.description')}
+            collectedTitle={t('privacy.consent.unredactedExternalOcr.collectedTitle')}
+            collected={[
+              t('privacy.consent.unredactedExternalOcr.collected.rawScreenImage'),
+              t('privacy.consent.unredactedExternalOcr.collected.windowContext'),
+              t('privacy.consent.unredactedExternalOcr.collected.providerResult'),
+            ]}
+            checked={unredactedExternalOcrOn}
+            disabled={mutating}
+            onChange={handleUnredactedExternalOcr}
+            describedById={UNREDACTED_OCR_DISCLOSURE_ID}
+          />
+          <Alert id={UNREDACTED_OCR_DISCLOSURE_ID} variant="warning">
+            {t('privacy.consent.unredactedExternalOcr.disclosure')}
           </Alert>
         </div>
       </div>

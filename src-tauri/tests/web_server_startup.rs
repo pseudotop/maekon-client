@@ -21,10 +21,10 @@ const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
 async fn web_server_starts_responds_and_shuts_down() {
     let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
 
-    // Use port 0 via a high ephemeral base to avoid collisions; the server's
-    // fallback logic will find an available port.
+    // Start inside the production-allowed fallback range; WebServer::run only
+    // probes DEFAULT_WEB_PORT..=DEFAULT_WEB_PORT_END.
     let config = WebConfig {
-        port: 19090,
+        port: maekon_core::config::DEFAULT_WEB_PORT,
         ..WebConfig::default()
     };
 

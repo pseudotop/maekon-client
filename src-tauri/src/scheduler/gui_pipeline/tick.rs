@@ -45,7 +45,7 @@ pub(crate) async fn run_gui_tick(
     use maekon_vision::gui_detector::GuiElementDetector;
 
     let now = Utc::now();
-    let mut result: Option<GuiActivitySummary> = None;
+    let mut result: Option<GuiActivitySummary> = state.pending_summaries.pop_front();
 
     // 1. Correlate mouse clicks with OCR regions
     if input_snap.mouse.click_count > 0 {
@@ -83,7 +83,7 @@ pub(crate) async fn run_gui_tick(
         // Apply cached LLM corrections for this app
         if let Some(ref mut elem) = element {
             if let Some(corrections) = state.app_type_cache.get(app_name) {
-                for (from, to) in corrections {
+                for (from, to) in corrections.iter().rev() {
                     if elem.element_type == *from {
                         elem.element_type = to.clone();
                         elem.type_confidence = 1.0; // Prevent re-queuing corrected elements
@@ -169,7 +169,7 @@ pub(crate) async fn run_gui_tick(
         };
 
         if let Some(summary) = state.aggregator.push(interaction_event, content_label) {
-            result = Some(summary);
+            record_summary(&mut result, &mut state.pending_summaries, summary);
         }
     }
 
@@ -201,7 +201,7 @@ pub(crate) async fn run_gui_tick(
             };
 
             if let Some(summary) = state.aggregator.push(shortcut_event, content_label) {
-                result = Some(summary);
+                record_summary(&mut result, &mut state.pending_summaries, summary);
             }
         }
     }
@@ -239,9 +239,21 @@ pub(crate) async fn run_gui_tick(
         };
 
         if let Some(summary) = state.aggregator.push(text_event, content_label) {
-            result = Some(summary);
+            record_summary(&mut result, &mut state.pending_summaries, summary);
         }
     }
 
     result
+}
+
+fn record_summary(
+    result: &mut Option<GuiActivitySummary>,
+    pending: &mut std::collections::VecDeque<GuiActivitySummary>,
+    summary: GuiActivitySummary,
+) {
+    if result.is_none() {
+        *result = Some(summary);
+    } else {
+        pending.push_back(summary);
+    }
 }
