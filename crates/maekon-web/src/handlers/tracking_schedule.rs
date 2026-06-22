@@ -66,6 +66,7 @@ pub async fn put_config(
             // so callers can pattern-match without inspecting the free-text portion.
             let msg = format!("validation.invalid_arguments: {}", rejection.body_text());
             let resp = ErrorResponse {
+                code: "validation.invalid_arguments".to_string(),
                 error: msg,
                 status: 400,
             };
@@ -86,6 +87,7 @@ pub async fn put_config(
         Ok(_) => Json(cfg).into_response(),
         Err(e) => {
             let resp = ErrorResponse {
+                code: "internal.generic".to_string(),
                 error: format!("internal: {e}"),
                 status: 500,
             };

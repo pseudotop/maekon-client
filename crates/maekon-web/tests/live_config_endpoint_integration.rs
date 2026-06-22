@@ -256,17 +256,20 @@ async fn live_config_endpoint_503_when_external_disabled() {
     // `Deserialize` so we can validate the JSON shape from the wire side.
     #[derive(Debug, Deserialize)]
     struct ErrorResponseDe {
+        code: String,
         error: String,
         status: u16,
     }
 
-    // Compile-time proof that ErrorResponse retains { error, status }.
+    // Compile-time proof that ErrorResponse retains { code, error, status }.
     // The destructure pattern fails to compile if either field is renamed
     // or removed — catches both rename and removal regressions.
     let ErrorResponse {
+        code: _,
         error: _,
         status: _,
     } = ErrorResponse {
+        code: String::new(),
         error: String::new(),
         status: 503,
     };
@@ -276,6 +279,10 @@ async fn live_config_endpoint_503_when_external_disabled() {
          ({ error: String, status: u16 })",
     );
 
+    assert_eq!(
+        body.code, "service.unavailable",
+        "503 response body must include a typed wire code"
+    );
     assert_eq!(
         body.status, 503,
         "ErrorResponse.status must equal the HTTP status (503)"

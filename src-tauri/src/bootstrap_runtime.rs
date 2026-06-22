@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -15,6 +16,8 @@ use crate::bootstrap_preflight::BootstrapPreflightCoordinator;
 use crate::provider_runtime_context::ProviderRuntimeContext;
 #[cfg(feature = "server")]
 use crate::server_runtime_context::ServerBootstrapContext;
+
+const BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct ManagedBackgroundRuntime {
     handle: Handle,
@@ -194,6 +197,12 @@ fn resolve_db_path(data_dir: Option<&Path>) -> PathBuf {
 }
 
 pub(crate) fn spawn_background_runtime() -> Result<Arc<ManagedBackgroundRuntime>> {
+    spawn_background_runtime_with_timeout(BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT)
+}
+
+fn spawn_background_runtime_with_timeout(
+    shutdown_timeout: Duration,
+) -> Result<Arc<ManagedBackgroundRuntime>> {
     let runtime = Runtime::new()?;
     let handle = runtime.handle().clone();
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -205,6 +214,7 @@ pub(crate) fn spawn_background_runtime() -> Result<Arc<ManagedBackgroundRuntime>
                 }
             }
         });
+        runtime.shutdown_timeout(shutdown_timeout);
     });
     Ok(Arc::new(ManagedBackgroundRuntime {
         handle,
@@ -292,6 +302,29 @@ mod tests {
     fn managed_background_runtime_shuts_down_cleanly() {
         let runtime = spawn_background_runtime().expect("background runtime");
         runtime.shutdown_blocking();
+    }
+
+    #[test]
+    fn managed_background_runtime_shutdown_is_bounded_when_blocking_task_lingers() {
+        let runtime = spawn_background_runtime_with_timeout(std::time::Duration::from_millis(50))
+            .expect("background runtime");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        runtime.handle().spawn_blocking(move || {
+            let _ = started_tx.send(());
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("blocking task should start");
+        let start = std::time::Instant::now();
+
+        runtime.shutdown_blocking();
+
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "shutdown_blocking should not wait indefinitely for lingering blocking tasks"
+        );
     }
 
     /// #4345 regression guard: the `RunEvent::Exit` callback runs on the

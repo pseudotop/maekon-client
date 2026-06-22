@@ -187,6 +187,22 @@ fn make_external_privacy_guard_with_permissions(
     active_window: Option<WindowInfo>,
     audit_logger: Option<Arc<RwLock<AuditLogger>>>,
 ) -> (ExternalOcrPrivacyGuard, TempDir) {
+    make_external_privacy_guard_with_options(
+        permissions,
+        active_window,
+        audit_logger,
+        PiiFilterLevel::Standard,
+        ExternalDataPolicy::PiiFilterStandard,
+    )
+}
+
+fn make_external_privacy_guard_with_options(
+    permissions: Option<ConsentPermissions>,
+    active_window: Option<WindowInfo>,
+    audit_logger: Option<Arc<RwLock<AuditLogger>>>,
+    pii_filter_level: PiiFilterLevel,
+    external_data_policy: ExternalDataPolicy,
+) -> (ExternalOcrPrivacyGuard, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let consent_path = temp_dir.path().join("consent.json");
     if let Some(permissions) = permissions {
@@ -197,8 +213,8 @@ fn make_external_privacy_guard_with_permissions(
     (
         ExternalOcrPrivacyGuard::new(
             consent_manager,
-            PiiFilterLevel::Standard,
-            ExternalDataPolicy::PiiFilterStandard,
+            pii_filter_level,
+            external_data_policy,
             PrivacyConfig::default(),
             Arc::new(StaticProcessMonitor { active_window }),
             audit_logger,
@@ -215,6 +231,7 @@ fn make_external_ocr_guard(
     let permissions = ocr_permitted.then_some(ConsentPermissions {
         ocr_processing: true,
         screen_capture: true,
+        unredacted_external_ocr: true,
         ..Default::default()
     });
 
@@ -1289,6 +1306,167 @@ async fn guarded_llm_provider_sanitizes_screen_context_before_external_call() {
         .as_deref()
         .unwrap_or_default()
         .contains("user@example.com"));
+}
+
+#[tokio::test]
+async fn guarded_llm_provider_floors_allow_filtered_off_before_external_call() {
+    let seen_context = Arc::new(std::sync::Mutex::new(None));
+    let inner = Arc::new(FakeExternalLlmProvider {
+        seen_context: seen_context.clone(),
+    }) as Arc<dyn LlmProvider>;
+    let (privacy_guard, _temp_dir) = make_external_privacy_guard_with_options(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        Some(WindowInfo {
+            title: "Inbox user@example.com".to_string(),
+            app_name: "Code".to_string(),
+            app_bundle_id: None,
+            pid: 22,
+            bounds: None,
+        }),
+        None,
+        PiiFilterLevel::Off,
+        ExternalDataPolicy::AllowFiltered,
+    );
+    let guarded = super::guarded_llm::GuardedLlmProvider::new(inner, privacy_guard);
+
+    guarded
+        .interpret_intent(
+            &ScreenContext {
+                visible_texts: vec!["email user@example.com".to_string()],
+                active_app: "Code".to_string(),
+                active_window_title: "Inbox user@example.com".to_string(),
+                layout_description: Some("Contact user@example.com".to_string()),
+            },
+            "click save",
+        )
+        .await
+        .expect("AllowFiltered + Off must floor to a masking level before egress");
+
+    let sent = seen_context
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("inner provider should receive sanitized context");
+    assert!(
+        !sent.visible_texts[0].contains("user@example.com"),
+        "AllowFiltered + Off must not egress raw visible text: {:?}",
+        sent.visible_texts
+    );
+    assert!(
+        !sent.active_window_title.contains("user@example.com"),
+        "AllowFiltered + Off must not egress raw window titles: {}",
+        sent.active_window_title
+    );
+    assert!(
+        !sent
+            .layout_description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("user@example.com"),
+        "AllowFiltered + Off must not egress raw layout text: {:?}",
+        sent.layout_description
+    );
+}
+
+#[tokio::test]
+async fn guarded_llm_provider_pins_strict_and_standard_policy_before_external_call() {
+    for policy in [
+        ExternalDataPolicy::PiiFilterStrict,
+        ExternalDataPolicy::PiiFilterStandard,
+    ] {
+        let seen_context = Arc::new(std::sync::Mutex::new(None));
+        let inner = Arc::new(FakeExternalLlmProvider {
+            seen_context: seen_context.clone(),
+        }) as Arc<dyn LlmProvider>;
+        let (privacy_guard, _temp_dir) = make_external_privacy_guard_with_options(
+            Some(ConsentPermissions {
+                ocr_processing: true,
+                screen_capture: true,
+                full_text_extraction: true,
+                ..Default::default()
+            }),
+            Some(WindowInfo {
+                title: "Inbox user@example.com".to_string(),
+                app_name: "Code".to_string(),
+                app_bundle_id: None,
+                pid: 23,
+                bounds: None,
+            }),
+            None,
+            PiiFilterLevel::Off,
+            policy,
+        );
+        let guarded = super::guarded_llm::GuardedLlmProvider::new(inner, privacy_guard);
+
+        guarded
+            .interpret_intent(
+                &ScreenContext {
+                    visible_texts: vec!["email user@example.com".to_string()],
+                    active_app: "Code".to_string(),
+                    active_window_title: "Inbox user@example.com".to_string(),
+                    layout_description: Some("Contact user@example.com".to_string()),
+                },
+                "click save",
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{policy:?} should allow sanitized context: {err}"));
+
+        let sent = seen_context
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("inner provider should receive sanitized context");
+        assert!(
+            !sent.visible_texts[0].contains("user@example.com"),
+            "{policy:?} must pin filtering even when configured level is Off"
+        );
+    }
+}
+
+#[tokio::test]
+async fn guarded_llm_provider_denies_sensitive_apps_before_external_call() {
+    let seen_context = Arc::new(std::sync::Mutex::new(None));
+    let inner = Arc::new(FakeExternalLlmProvider {
+        seen_context: seen_context.clone(),
+    }) as Arc<dyn LlmProvider>;
+    let (privacy_guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        Some(WindowInfo {
+            title: "Vault".to_string(),
+            app_name: "1Password".to_string(),
+            app_bundle_id: None,
+            pid: 24,
+            bounds: None,
+        }),
+        None,
+    );
+    let guarded = super::guarded_llm::GuardedLlmProvider::new(inner, privacy_guard);
+
+    let err = guarded
+        .interpret_intent(
+            &ScreenContext {
+                visible_texts: vec!["password".to_string()],
+                active_app: "1Password".to_string(),
+                active_window_title: "Vault".to_string(),
+                layout_description: None,
+            },
+            "read password",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("sensitive app"));
+    assert!(seen_context.lock().unwrap().is_none());
 }
 
 #[test]

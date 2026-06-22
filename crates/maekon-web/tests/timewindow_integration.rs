@@ -1,8 +1,7 @@
 //! E2E test verifying TimeWindow flows correctly through REST → handler → service → storage layer.
 //!
-//! Per Phase 2 iter-1 C3: assertions limited to status code + error message
-//! substring (ApiError IntoResponse emits `{ error, status }` only — NO `code`
-//! field in the response body).
+//! Per Phase 2 iter-1 C3 + typed error-code follow-up: assertions cover status
+//! code, stable typed error code, and error message substring.
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
@@ -143,8 +142,8 @@ async fn delete_range_request_preserves_external_from_to_shape() {
 // ── Test 3: inverted bounds → 400 BadRequest ────────────────────────────────
 
 /// Per spec §5.1 + §7.2: invalid TimeWindow construction (start > end) maps
-/// via CoreError::TimeWindow → ApiError::BadRequest → HTTP 400. Body schema
-/// is `{ error, status }` — no `code` field per Phase 2 iter-1 C3.
+/// via the REST query validation path → ApiError::BadRequest → HTTP 400. Body
+/// schema is `{ code, error, status }`, preserving the stable validation code.
 #[tokio::test]
 async fn invalid_time_window_returns_400() {
     let (app, _storage) = loopback_app_with_storage();
@@ -178,9 +177,9 @@ async fn invalid_time_window_returns_400() {
         body["status"], 400,
         "ErrorResponse.status mirrors HTTP code"
     );
-    assert!(
-        body.get("code").is_none(),
-        "ErrorResponse must NOT carry a `code` field per ApiError schema"
+    assert_eq!(
+        body["code"], "validation.invalid_arguments",
+        "ErrorResponse.code preserves the BadRequest validation code"
     );
 }
 

@@ -161,11 +161,16 @@ fn make_controller() -> Arc<AutomationController> {
         Arc::new(NoOpInputDriver);
     let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
         Arc::new(NoOpElementFinder);
-    let resolver = IntentResolver::new(element_finder, input_driver, IntentConfig::default());
+    let resolver = IntentResolver::new(
+        element_finder,
+        input_driver.clone(),
+        IntentConfig::default(),
+    );
     controller.set_intent_executor(Arc::new(IntentExecutor::new(
         resolver,
         IntentConfig::default(),
     )));
+    controller.set_inline_action_executor(input_driver);
 
     controller.set_enabled(true);
     Arc::new(controller)

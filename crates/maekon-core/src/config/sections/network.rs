@@ -135,6 +135,18 @@ impl Default for WebConfig {
     }
 }
 
+impl WebConfig {
+    pub fn validate_bounds(&self) -> Result<(), String> {
+        if !(DEFAULT_WEB_PORT..=DEFAULT_WEB_PORT_END).contains(&self.port) {
+            return Err(format!(
+                "web.port must be within the local dashboard CSP range {}-{}",
+                DEFAULT_WEB_PORT, DEFAULT_WEB_PORT_END
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ── LoadThresholds (D13-v2b) ───────────────────────────────────────
 
 /// Thresholds for `maekon-web::grpc::LoadPolicy` CPU%/memory-GiB classification.
@@ -198,13 +210,14 @@ fn default_grpc_request_timeout() -> u64 {
     30
 }
 
-/// Default port for the local web server — IANA Dynamic/Ephemeral range (49152-65535).
+/// Default port for the local web server.
 ///
 /// Well-Known/Registered ports such as 9090 can collide with Prometheus, Cockpit,
-/// etc. 10090 sits in the IANA-unregistered Registered Port range (1024-49151), so
-/// it does not overlap OS ephemeral outbound allocation and has a low collision risk.
-/// With MAX_PORT_ATTEMPTS=10, it auto-falls back across the 10090-10099 range.
+/// etc. 10090 sits in the unassigned Registered Port range (1024-49151), so it
+/// avoids common service defaults while staying in the static Tauri CSP allowlist.
 pub const DEFAULT_WEB_PORT: u16 = 10090;
+pub const WEB_PORT_FALLBACK_ATTEMPTS: u16 = 10;
+pub const DEFAULT_WEB_PORT_END: u16 = DEFAULT_WEB_PORT + WEB_PORT_FALLBACK_ATTEMPTS - 1;
 
 fn default_web_enabled() -> bool {
     true
@@ -282,6 +295,30 @@ mod tests {
     fn web_config_default_wires_grpc_port() {
         let cfg = WebConfig::default();
         assert_eq!(cfg.grpc_port, DEFAULT_GRPC_DASHBOARD_PORT);
+    }
+
+    #[test]
+    fn web_config_default_port_matches_csp_fallback_range() {
+        let cfg = WebConfig::default();
+        assert_eq!(cfg.port, DEFAULT_WEB_PORT);
+        assert_eq!(DEFAULT_WEB_PORT_END, 10099);
+        cfg.validate_bounds()
+            .expect("default web port must satisfy CSP range bounds");
+    }
+
+    #[test]
+    fn web_config_rejects_ports_outside_csp_fallback_range() {
+        let low = WebConfig {
+            port: DEFAULT_WEB_PORT - 1,
+            ..WebConfig::default()
+        };
+        let high = WebConfig {
+            port: DEFAULT_WEB_PORT_END + 1,
+            ..WebConfig::default()
+        };
+
+        assert!(low.validate_bounds().unwrap_err().contains("web.port"));
+        assert!(high.validate_bounds().unwrap_err().contains("web.port"));
     }
 
     #[test]

@@ -1,14 +1,14 @@
-import { withLocalAuthHeaders } from '../utils/api-base'
+import { resolveApiUrl, withResolvedLocalAuthHeaders } from '../utils/api-base'
 import type { BugReportBundle, ProviderCliDiagnosticSummary } from './contracts'
 
 const BASE_URL = '/api'
 
 export async function createBugReport(includeLogs = true, piiLevel?: string): Promise<BugReportBundle> {
-  // E20-41 (#4833): carry the X-Local-Auth header (the local-API gate). This is a
-  // raw fetch outside the client.ts chokepoint, so attach it explicitly.
+  // E20-41 (#4833): resolve loopback URL and local-auth before leaving the shared client chokepoint.
+  const url = await resolveApiUrl(`${BASE_URL}/support/bug-report`)
   const res = await fetch(
-    `${BASE_URL}/support/bug-report`,
-    withLocalAuthHeaders({
+    url,
+    await withResolvedLocalAuthHeaders({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

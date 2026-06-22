@@ -1,4 +1,4 @@
-import { resolveApiUrl } from '../utils/api-base'
+import { resolveApiUrl, withResolvedLocalAuthHeaders } from '../utils/api-base'
 import { IS_TAURI } from '../utils/platform'
 
 export interface CoachingEvent {
@@ -41,7 +41,7 @@ export async function fetchCoachingHistory(limit = 50, offset = 0): Promise<Coac
     return tauriInvoke<CoachingEvent[]>('get_coaching_history', { limit, offset })
   }
   const url = await resolveApiUrl(`/api/coaching/history?limit=${limit}&offset=${offset}`)
-  const response = await fetch(url)
+  const response = await fetch(url, await withResolvedLocalAuthHeaders())
   if (!response.ok) throw new Error(`Failed to fetch coaching history: ${response.statusText}`)
   return response.json()
 }
@@ -51,7 +51,7 @@ export async function fetchGoalProgress(): Promise<GoalProgress[]> {
     return tauriInvoke<GoalProgress[]>('get_goal_progress')
   }
   const url = await resolveApiUrl('/api/coaching/goals')
-  const response = await fetch(url)
+  const response = await fetch(url, await withResolvedLocalAuthHeaders())
   if (!response.ok) throw new Error(`Failed to fetch goal progress: ${response.statusText}`)
   return response.json()
 }
@@ -61,7 +61,7 @@ export async function fetchHabitStreaks(days = 7): Promise<HabitStreak[]> {
     return tauriInvoke<HabitStreak[]>('get_habit_streaks', { days })
   }
   const url = await resolveApiUrl(`/api/coaching/habits?days=${days}`)
-  const response = await fetch(url)
+  const response = await fetch(url, await withResolvedLocalAuthHeaders())
   if (!response.ok) throw new Error(`Failed to fetch habit streaks: ${response.statusText}`)
   return response.json()
 }
@@ -71,10 +71,13 @@ export async function updateRegimeGoals(goals: Record<string, number>): Promise<
     return tauriInvoke<void>('update_regime_goals', { goals })
   }
   const url = await resolveApiUrl('/api/coaching/goals')
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goals }),
-  })
+  const response = await fetch(
+    url,
+    await withResolvedLocalAuthHeaders({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goals }),
+    }),
+  )
   if (!response.ok) throw new Error(`Failed to update goals: ${response.statusText}`)
 }

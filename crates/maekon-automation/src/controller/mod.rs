@@ -195,9 +195,9 @@ impl AutomationController {
     /// (#4539). Together with the retained sandbox handle, this rebuilds the dispatcher
     /// via `SandboxActionDispatcher::with_inline_driver`.
     ///
-    /// When unwired (legacy), the permissive-noop path keeps the legacy behavior of
-    /// returning Success without executing. The real controller calls this setter from
-    /// the src-tauri wiring to prevent dropped actions (false success).
+    /// When unwired, disabled/permissive-noop dispatch fails closed so the audit trail
+    /// cannot record a skipped action as Completed. The real controller calls this
+    /// setter from the src-tauri wiring to execute explicit no-sandbox paths inline.
     pub fn set_inline_action_executor(&mut self, driver: Arc<dyn InputDriver>) {
         self.action_dispatcher = Arc::new(SandboxActionDispatcher::with_inline_driver(
             self.sandbox.clone(),

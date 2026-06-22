@@ -126,9 +126,9 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
 
-      - name: Build release binary (linux-sandbox)
+      - name: Build release binary (Linux release feature parity)
         if: runner.os == 'Linux'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,linux-sandbox
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify
 
       - name: Run clippy (warnings only, non-blocking)
         continue-on-error: true

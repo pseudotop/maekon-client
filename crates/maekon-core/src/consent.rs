@@ -112,6 +112,14 @@ pub struct ConsentPermissions {
     /// consent must never silently authorize the mic).
     #[serde(default)]
     pub microphone: bool,
+
+    // --- Tier 9: Raw Off-Device OCR ---
+    /// Permits sending unredacted screenshots to an external OCR provider when
+    /// `allow_unredacted_external_ocr` is explicitly enabled. This is separate
+    /// from generic OCR processing consent because it bypasses local PII
+    /// filtering before off-device transfer.
+    #[serde(default)]
+    pub unredacted_external_ocr: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1396,9 +1404,8 @@ mod tests {
 
     #[test]
     fn consent_permissions_legacy_json_without_microphone() {
-        // Records written before the microphone tier (Tier 8) was added must
-        // deserialize, defaulting microphone to false (fail-closed): a pre-Tier-8
-        // user who had screen consent must NOT have the mic silently authorized.
+        // Records written before later high-sensitivity tiers were added must
+        // deserialize, defaulting each new permission to false (fail-closed).
         let legacy_json = r#"{
             "screen_capture": true,
             "ocr_processing": false,
@@ -1419,6 +1426,10 @@ mod tests {
         assert!(
             !perms.microphone,
             "missing microphone field must default to false (fail-closed)"
+        );
+        assert!(
+            !perms.unredacted_external_ocr,
+            "missing unredacted_external_ocr field must default to false (fail-closed)"
         );
     }
 

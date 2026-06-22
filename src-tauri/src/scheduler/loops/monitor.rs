@@ -1,5 +1,5 @@
 use chrono::Utc;
-use maekon_core::models::event::Event;
+use maekon_core::models::event::{Event, InputActivityEvent, KeyboardActivity, MouseActivity};
 use maekon_core::models::frame::OcrRegion;
 use maekon_monitor::idle::IdleTracker;
 use maekon_monitor::input_activity::InputActivityCollector;
@@ -558,7 +558,10 @@ impl Scheduler {
                                 }
 
                                 // ── Take input snapshot once for both pipelines ──
-                                let input_snap = input_collector.take_snapshot();
+                                let input_snap = monitor_input_snapshot(
+                                    &input_collector,
+                                    consent.input_activity,
+                                );
 
                                 // ── Adaptive tiered-memory pipeline ──
                                 // Feed GUI summary from the previous cycle (N-1) into
@@ -640,7 +643,10 @@ impl Scheduler {
                                             .map(|c| c.content_label)
                                             .unwrap_or_default();
 
-                                        let recent_shortcuts = input_collector.take_recent_shortcuts();
+                                        let recent_shortcuts = monitor_recent_shortcuts(
+                                            &input_collector,
+                                            consent.input_activity,
+                                        );
 
                                         let (fs, fw, fh) = last_frame_rgba.as_ref().map_or((None, 0, 0), |(r, w, h)| (Some(r.as_slice()), *w, *h));
                                         let gui_summary = super::super::gui_pipeline::run_gui_tick(
@@ -782,5 +788,88 @@ impl Scheduler {
                 }
             }
         })
+    }
+}
+
+fn empty_monitor_input_snapshot() -> InputActivityEvent {
+    InputActivityEvent {
+        timestamp: Utc::now(),
+        period_secs: 1,
+        mouse: MouseActivity::default(),
+        keyboard: KeyboardActivity::default(),
+        app_name: String::new(),
+        keystroke_profile: None,
+    }
+}
+
+fn monitor_input_snapshot(
+    input_collector: &InputActivityCollector,
+    input_activity_allowed: bool,
+) -> InputActivityEvent {
+    if input_activity_allowed {
+        input_collector.take_snapshot()
+    } else {
+        empty_monitor_input_snapshot()
+    }
+}
+
+fn monitor_recent_shortcuts(
+    input_collector: &InputActivityCollector,
+    input_activity_allowed: bool,
+) -> Vec<String> {
+    if input_activity_allowed {
+        input_collector.take_recent_shortcuts()
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_input_helpers_do_not_drain_without_input_activity_consent() {
+        let collector = InputActivityCollector::new();
+        collector.record_click();
+        collector.record_scroll();
+        collector.record_shortcut_name("Cmd+S");
+
+        let blocked_snapshot = monitor_input_snapshot(&collector, false);
+        let blocked_shortcuts = monitor_recent_shortcuts(&collector, false);
+
+        assert_eq!(blocked_snapshot.mouse.click_count, 0);
+        assert_eq!(blocked_snapshot.mouse.scroll_count, 0);
+        assert_eq!(blocked_snapshot.keyboard.total_keystrokes, 0);
+        assert!(blocked_shortcuts.is_empty());
+
+        let retained_snapshot = collector.take_snapshot();
+        let retained_shortcuts = collector.take_recent_shortcuts();
+
+        assert_eq!(retained_snapshot.mouse.click_count, 1);
+        assert_eq!(retained_snapshot.mouse.scroll_count, 1);
+        assert_eq!(retained_snapshot.keyboard.total_keystrokes, 1);
+        assert_eq!(retained_shortcuts, vec!["Cmd+S".to_string()]);
+    }
+
+    #[test]
+    fn monitor_input_helpers_drain_when_input_activity_consent_is_granted() {
+        let collector = InputActivityCollector::new();
+        collector.record_click();
+        collector.record_shortcut_name("Cmd+S");
+
+        let allowed_snapshot = monitor_input_snapshot(&collector, true);
+        let allowed_shortcuts = monitor_recent_shortcuts(&collector, true);
+
+        assert_eq!(allowed_snapshot.mouse.click_count, 1);
+        assert_eq!(allowed_snapshot.keyboard.total_keystrokes, 1);
+        assert_eq!(allowed_shortcuts, vec!["Cmd+S".to_string()]);
+
+        let drained_snapshot = collector.take_snapshot();
+        let drained_shortcuts = collector.take_recent_shortcuts();
+
+        assert_eq!(drained_snapshot.mouse.click_count, 0);
+        assert_eq!(drained_snapshot.keyboard.total_keystrokes, 0);
+        assert!(drained_shortcuts.is_empty());
     }
 }

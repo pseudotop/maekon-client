@@ -29,22 +29,71 @@ pub enum ApiError {
 
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+
+    #[error("{message}")]
+    Coded {
+        status: u16,
+        code: String,
+        message: String,
+    },
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
-            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
-            ApiError::Unprocessable(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.clone()),
-            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+        let (status, code, message) = match &self {
+            ApiError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal.generic".to_string(),
+                msg.clone(),
+            ),
+            ApiError::NotFound(msg) => (
+                StatusCode::NOT_FOUND,
+                "not_found.resource_missing".to_string(),
+                msg.clone(),
+            ),
+            ApiError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                "validation.invalid_arguments".to_string(),
+                msg.clone(),
+            ),
+            ApiError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "auth.failed".to_string(),
+                msg.clone(),
+            ),
+            ApiError::Forbidden(msg) => (
+                StatusCode::FORBIDDEN,
+                "permission.permission_denied".to_string(),
+                msg.clone(),
+            ),
+            ApiError::Conflict(msg) => (
+                StatusCode::CONFLICT,
+                "conflict.resource_state".to_string(),
+                msg.clone(),
+            ),
+            ApiError::Unprocessable(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation.invalid_arguments".to_string(),
+                msg.clone(),
+            ),
+            ApiError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service.unavailable".to_string(),
+                msg.clone(),
+            ),
+            ApiError::Coded {
+                status,
+                code,
+                message,
+            } => (
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                code.clone(),
+                message.clone(),
+            ),
         };
 
         let body = ErrorResponse {
+            code,
             error: message,
             status: status.as_u16(),
         };
@@ -56,42 +105,79 @@ impl IntoResponse for ApiError {
 impl From<maekon_core::error::CoreError> for ApiError {
     fn from(err: maekon_core::error::CoreError) -> Self {
         use maekon_core::error::CoreError;
+        let code = err.code().to_string();
         match err {
-            CoreError::Validation { field, message, .. } => {
-                ApiError::BadRequest(format!("{field}: {message}"))
-            }
+            CoreError::Validation { field, message, .. } => ApiError::Coded {
+                status: StatusCode::BAD_REQUEST.as_u16(),
+                code,
+                message: format!("{field}: {message}"),
+            },
             CoreError::Auth { message, .. }
             | CoreError::ConsentRequired { message, .. }
             | CoreError::OAuthError { message, .. }
-            | CoreError::OAuthRefreshError { message, .. } => ApiError::Unauthorized(message),
-            CoreError::ConsentExpired { .. } => {
-                ApiError::Unauthorized("consent expired".to_string())
-            }
+            | CoreError::OAuthRefreshError { message, .. } => ApiError::Coded {
+                status: StatusCode::UNAUTHORIZED.as_u16(),
+                code,
+                message,
+            },
+            CoreError::ConsentExpired { .. } => ApiError::Coded {
+                status: StatusCode::UNAUTHORIZED.as_u16(),
+                code,
+                message: "consent expired".to_string(),
+            },
             CoreError::NotFound {
                 resource_type, id, ..
-            } => ApiError::NotFound(format!("{resource_type}: {id}")),
+            } => ApiError::Coded {
+                status: StatusCode::NOT_FOUND.as_u16(),
+                code,
+                message: format!("{resource_type}: {id}"),
+            },
             CoreError::ServiceUnavailable { message, .. }
             | CoreError::SandboxUnsupported { message, .. }
             // #6280: a network/transport failure (upstream unreachable, connection
             // reset, etc.) is NOT a client error — map it to 503 alongside
             // RateLimit/RequestTimeout, not 400 BadRequest.
-            | CoreError::Network { message, .. } => ApiError::ServiceUnavailable(message),
+            | CoreError::Network { message, .. } => ApiError::Coded {
+                status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                code,
+                message,
+            },
             rate_or_timeout @ (CoreError::RateLimit { .. } | CoreError::RequestTimeout { .. }) => {
-                ApiError::ServiceUnavailable(rate_or_timeout.to_string())
+                ApiError::Coded {
+                    status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    code,
+                    message: rate_or_timeout.to_string(),
+                }
             }
             CoreError::PolicyDenied { message, .. }
             | CoreError::PrivacyDenied { message, .. }
-            | CoreError::PermissionDenied { message, .. } => ApiError::Forbidden(message),
+            | CoreError::PermissionDenied { message, .. } => ApiError::Coded {
+                status: StatusCode::FORBIDDEN.as_u16(),
+                code,
+                message,
+            },
             CoreError::InvalidArguments { message, .. }
             | CoreError::Config { message, .. }
             | CoreError::OcrError { message, .. }
             | CoreError::SecretStoreError { message, .. }
             | CoreError::SandboxInit { message, .. }
             | CoreError::SandboxExecution { message, .. }
-            | CoreError::TimeWindow { message, .. } => ApiError::BadRequest(message),
-            CoreError::ElementNotFound { name, .. } => ApiError::BadRequest(name),
+            | CoreError::TimeWindow { message, .. } => ApiError::Coded {
+                status: StatusCode::BAD_REQUEST.as_u16(),
+                code,
+                message,
+            },
+            CoreError::ElementNotFound { name, .. } => ApiError::Coded {
+                status: StatusCode::BAD_REQUEST.as_u16(),
+                code,
+                message: name,
+            },
 
-            other => ApiError::Internal(other.to_string()),
+            other => ApiError::Coded {
+                status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                code,
+                message: other.to_string(),
+            },
         }
     }
 }
@@ -100,10 +186,36 @@ impl From<maekon_core::error::CoreError> for ApiError {
 mod tests {
     use super::*;
 
+    fn assert_coded(api: ApiError, expected_status: StatusCode, expected_code: &str) {
+        match api {
+            ApiError::Coded { status, code, .. } => {
+                assert_eq!(status, expected_status.as_u16());
+                assert_eq!(code, expected_code);
+            }
+            other => panic!("expected coded ApiError, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn error_display() {
         let err = ApiError::NotFound("session".to_string());
         assert!(err.to_string().contains("session"));
+    }
+
+    #[tokio::test]
+    async fn conflict_response_uses_conflict_wire_code() {
+        let response = ApiError::Conflict("preset already exists".to_string()).into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("conflict response body must be readable");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("conflict response body must be JSON");
+
+        assert_eq!(body["status"], StatusCode::CONFLICT.as_u16());
+        assert_eq!(body["code"], "conflict.resource_state");
+        assert_eq!(body["error"], "preset already exists");
     }
 
     /// Regression guard: CoreError::PermissionDenied must map to HTTP 403
@@ -118,10 +230,7 @@ mod tests {
             message: "macOS Accessibility denied".to_string(),
         };
         let api: ApiError = core.into();
-        assert!(
-            matches!(api, ApiError::Forbidden(_)),
-            "PermissionDenied must map to 403 Forbidden, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::FORBIDDEN, "permission.permission_denied");
     }
 
     /// Regression guard: CoreError::ConsentExpired must map to HTTP 401
@@ -134,10 +243,7 @@ mod tests {
             code: maekon_core::error_codes::ConsentCode::Expired,
         };
         let api: ApiError = core.into();
-        assert!(
-            matches!(api, ApiError::Unauthorized(_)),
-            "ConsentExpired must map to 401 Unauthorized, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::UNAUTHORIZED, "consent.expired");
     }
 
     /// Regression guard: transient-unavailability variants (RateLimit,
@@ -151,20 +257,14 @@ mod tests {
             retry_after_secs: 30,
         };
         let api: ApiError = rate.into();
-        assert!(
-            matches!(api, ApiError::ServiceUnavailable(_)),
-            "RateLimit must map to 503 ServiceUnavailable, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::SERVICE_UNAVAILABLE, "network.rate_limit");
 
         let timeout = maekon_core::error::CoreError::RequestTimeout {
             code: maekon_core::error_codes::NetworkCode::Timeout,
             timeout_ms: 5000,
         };
         let api: ApiError = timeout.into();
-        assert!(
-            matches!(api, ApiError::ServiceUnavailable(_)),
-            "RequestTimeout must map to 503 ServiceUnavailable, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::SERVICE_UNAVAILABLE, "network.timeout");
     }
 
     /// #6280 regression guard: CoreError::Network (transport/upstream failure)
@@ -177,10 +277,7 @@ mod tests {
             message: "connection reset by upstream".to_string(),
         };
         let api: ApiError = core.into();
-        assert!(
-            matches!(api, ApiError::ServiceUnavailable(_)),
-            "Network must map to 503 ServiceUnavailable, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::SERVICE_UNAVAILABLE, "network.generic");
     }
 
     /// Regression guard: CoreError::TimeWindow (InvertedBounds) must map to
@@ -193,10 +290,7 @@ mod tests {
             message: "start > end".to_string(),
         };
         let api: ApiError = core.into();
-        assert!(
-            matches!(api, ApiError::BadRequest(_)),
-            "TimeWindow::InvertedBounds must map to 400 BadRequest, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::BAD_REQUEST, "time_window.inverted_bounds");
     }
 
     /// Regression guard: CoreError::TimeWindow (ParseFailed) must map to
@@ -209,9 +303,6 @@ mod tests {
             message: "not a date".to_string(),
         };
         let api: ApiError = core.into();
-        assert!(
-            matches!(api, ApiError::BadRequest(_)),
-            "TimeWindow::ParseFailed must map to 400 BadRequest, got: {api:?}"
-        );
+        assert_coded(api, StatusCode::BAD_REQUEST, "time_window.parse_failed");
     }
 }

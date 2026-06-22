@@ -14,6 +14,8 @@ use maekon_core::ports::consent_manager::ConsentManagerPort;
 use std::sync::Arc;
 
 pub(super) struct WebAutomationWiring {
+    pub(super) frontend_web_port: u16,
+    pub(super) web_server_startup_error: Option<String>,
     pub(super) automation_controller:
         Option<Arc<maekon_automation::controller::AutomationController>>,
     #[cfg(feature = "grpc-dashboard-external")]
@@ -185,6 +187,8 @@ pub(super) fn build_web_automation_wiring(
     let ext_cert_watcher = web_server_runtime.ext_cert_watcher.take();
 
     WebAutomationWiring {
+        frontend_web_port: web_server_runtime.frontend_web_port,
+        web_server_startup_error: web_server_runtime.web_server_startup_error,
         automation_controller: web_server_runtime.automation_controller,
         #[cfg(feature = "grpc-dashboard-external")]
         ext_grpc_supervisor,

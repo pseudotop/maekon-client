@@ -108,7 +108,7 @@ pub use runtime_bindings::{
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-const MAX_PORT_ATTEMPTS: u16 = 10;
+const MAX_PORT_ATTEMPTS: u16 = maekon_core::config::WEB_PORT_FALLBACK_ATTEMPTS;
 const INTEGRATION_TOKEN_HEADER: &str = "x-maekon-integration-token";
 /// E20-41 (#4833): per-session local-API auth token channels. The header is the
 /// primary channel for `fetch` (works cross-origin via CORS). EventSource/SSE
@@ -438,7 +438,8 @@ impl WebServer {
         }
 
         // Allow localhost origins only (tauri:// + http://127.0.0.1:{port range})
-        let allowed_origins: Vec<HeaderValue> = (10090..=10099)
+        let allowed_origins: Vec<HeaderValue> = (maekon_core::config::DEFAULT_WEB_PORT
+            ..=maekon_core::config::DEFAULT_WEB_PORT_END)
             .flat_map(|port| {
                 [
                     format!("http://127.0.0.1:{port}").parse().ok(),
@@ -527,9 +528,15 @@ impl WebServer {
         let app = Self::build_router(state);
 
         let base_port = config.port;
+        let final_port = maekon_core::config::DEFAULT_WEB_PORT_END;
+        let max_attempts = if base_port <= final_port {
+            MAX_PORT_ATTEMPTS.min(final_port - base_port + 1)
+        } else {
+            0
+        };
         let mut last_error = None;
 
-        for attempt in 0..MAX_PORT_ATTEMPTS {
+        for attempt in 0..max_attempts {
             let port = base_port.saturating_add(attempt);
 
             if port < base_port && attempt > 0 {
@@ -595,8 +602,7 @@ impl WebServer {
                 std::io::ErrorKind::AddrInUse,
                 format!(
                     "ports {}-{} are all in use, none available",
-                    base_port,
-                    base_port.saturating_add(MAX_PORT_ATTEMPTS - 1)
+                    base_port, final_port
                 ),
             )
         }))
@@ -1006,10 +1012,19 @@ mod tests {
 
     #[tokio::test]
     async fn web_server_fallback_updates_bound_port_state() {
-        // Bind port 0 to let the OS assign a free port, then use that port as the
-        // "occupied" port. This avoids the flaky AddrInUse panic when another test
-        // concurrently holds DEFAULT_WEB_PORT.
-        let reserved_listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+        let mut reserved_listener = None;
+        for port in maekon_core::config::DEFAULT_WEB_PORT..maekon_core::config::DEFAULT_WEB_PORT_END
+        {
+            let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await else {
+                continue;
+            };
+            if TcpListener::bind(("127.0.0.1", port + 1)).await.is_ok() {
+                reserved_listener = Some(listener);
+                break;
+            }
+        }
+        let reserved_listener =
+            reserved_listener.expect("an allowed web port with a free fallback must be available");
         let occupied_port = reserved_listener.local_addr().unwrap().port();
 
         let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
@@ -1058,12 +1073,17 @@ mod tests {
     }
 
     #[test]
-    fn port_overflow_protection() {
-        let base_port: u16 = 65530;
-        for attempt in 0..MAX_PORT_ATTEMPTS {
-            let port = base_port.saturating_add(attempt);
-            assert!(port >= base_port || port == u16::MAX);
-        }
+    fn fallback_attempts_never_exceed_csp_range() {
+        let base_port = maekon_core::config::DEFAULT_WEB_PORT_END - 4;
+        let final_port = maekon_core::config::DEFAULT_WEB_PORT_END;
+        let max_attempts = MAX_PORT_ATTEMPTS.min(final_port - base_port + 1);
+        let attempted: Vec<u16> = (0..max_attempts)
+            .map(|attempt| base_port.saturating_add(attempt))
+            .collect();
+
+        assert_eq!(attempted.first().copied(), Some(base_port));
+        assert_eq!(attempted.last().copied(), Some(final_port));
+        assert!(attempted.iter().all(|port| *port <= final_port));
     }
 
     fn test_state_with_config_manager(config_manager: Option<ConfigManager>) -> AppState {

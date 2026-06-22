@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../../utils/api-base', () => ({
+const apiBaseMock = vi.hoisted(() => ({
   resolveApiUrl: vi.fn(async (url: string) => url),
-  withLocalAuthHeaders: vi.fn((init?: RequestInit) => init ?? {}),
+  resolveLocalAuthToken: vi.fn(async () => 'retry-token'),
+  withResolvedLocalAuthHeaders: vi.fn(async (init?: RequestInit) => init ?? {}),
+}))
+
+vi.mock('../../utils/api-base', () => ({
+  resolveApiUrl: apiBaseMock.resolveApiUrl,
+  resolveLocalAuthToken: apiBaseMock.resolveLocalAuthToken,
+  withResolvedLocalAuthHeaders: apiBaseMock.withResolvedLocalAuthHeaders,
 }))
 
 vi.mock('../standalone', () => ({
@@ -17,6 +24,9 @@ describe('api client settings/update transport', () => {
 
   beforeEach(() => {
     fetchMock.mockReset()
+    apiBaseMock.resolveApiUrl.mockClear()
+    apiBaseMock.resolveLocalAuthToken.mockClear()
+    apiBaseMock.withResolvedLocalAuthHeaders.mockClear()
     vi.stubGlobal('fetch', fetchMock)
   })
 
@@ -73,6 +83,45 @@ describe('api client settings/update transport', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(result.phase).toBe('idle')
+  })
+
+  it('re-resolves local auth and retries once after a local-auth 401', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('unauthorized', { status: 401 })).mockResolvedValueOnce(
+      new Response(JSON.stringify({ phase: 'idle' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const result = await fetchUpdateStatus()
+
+    expect(result.phase).toBe('idle')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(apiBaseMock.resolveLocalAuthToken).toHaveBeenCalledWith({ forceRefresh: true })
+    expect(apiBaseMock.withResolvedLocalAuthHeaders).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws typed API errors from the shared fetch chokepoint without retrying 4xx', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 'config.invalid',
+          error: 'web.port must be within the local dashboard CSP range 10090-10099',
+          status: 400,
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+
+    await expect(fetchSettings()).rejects.toMatchObject({
+      code: 'config.invalid',
+      message: 'web.port must be within the local dashboard CSP range 10090-10099',
+      status: 400,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('postUpdateAction posts JSON to /api/update/action', async () => {

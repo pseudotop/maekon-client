@@ -32,7 +32,6 @@
 
 use async_trait::async_trait;
 use std::path::Path;
-use std::process::Command;
 
 use crate::error::AutomationError;
 use crate::sandbox::ipc;
@@ -277,24 +276,30 @@ impl Sandbox for MacOsSandbox {
     }
 }
 
+const TRUSTED_SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
+
 fn find_sandbox_exec() -> Option<String> {
-    let default_path = "/usr/bin/sandbox-exec";
-    if std::path::Path::new(default_path).exists() {
-        return Some(default_path.to_string());
+    trusted_sandbox_exec_path(Path::new(TRUSTED_SANDBOX_EXEC_PATH))
+}
+
+fn trusted_sandbox_exec_path(path: &Path) -> Option<String> {
+    if path != Path::new(TRUSTED_SANDBOX_EXEC_PATH) || !path.is_absolute() {
+        return None;
+    }
+    if !path.is_file() {
+        return None;
     }
 
-    if let Ok(output) = Command::new("which").arg("sandbox-exec").output() {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim().to_string();
-                if !path.is_empty() {
-                    return Some(path);
-                }
-            }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path).ok()?;
+        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return None;
         }
     }
 
-    None
+    Some(path.to_string_lossy().to_string())
 }
 
 fn apply_resource_limits(config: &SandboxConfig) -> Result<(), AutomationError> {
@@ -320,6 +325,7 @@ mod tests {
     use super::*;
     use crate::sandbox::is_permissive_noop;
     use maekon_core::config::SandboxProfile;
+    use std::process::Command;
 
     // SBPL profile-generation tests moved to the cfg-free `super::super::sbpl`
     // module (#5120) so the security policy is verified on every OS.
@@ -362,6 +368,22 @@ mod tests {
         assert!(
             matches!(err, CoreError::SandboxUnsupported { .. }),
             "missing exec path must produce SandboxUnsupported, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn path_only_sandbox_exec_discovery_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = dir.path().join("sandbox-exec");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake sandbox-exec");
+
+        assert!(
+            trusted_sandbox_exec_path(&fake).is_none(),
+            "PATH-discovered sandbox-exec candidates must not be trusted"
+        );
+        assert!(
+            trusted_sandbox_exec_path(Path::new("sandbox-exec")).is_none(),
+            "relative sandbox-exec candidates must not be trusted"
         );
     }
 

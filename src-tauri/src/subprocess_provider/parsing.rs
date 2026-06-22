@@ -590,6 +590,38 @@ pub(crate) fn append_oneshot_flags(command: &mut Command, surface_id: &str) {
     }
 }
 
+fn is_tool_restriction_flag(flag: &str) -> bool {
+    matches!(flag, "--tools" | "--allowedTools")
+        || flag.starts_with("--tools=")
+        || flag.starts_with("--allowedTools=")
+}
+
+pub(crate) fn session_tool_restriction_flags(surface_id: &str) -> Vec<String> {
+    let Ok(transport) = catalog_subprocess_transport(surface_id) else {
+        return Vec::new();
+    };
+
+    let mut flags = Vec::new();
+    let mut iter = transport.oneshot_flags.iter();
+    while let Some(flag) = iter.next() {
+        if is_tool_restriction_flag(flag) {
+            flags.push(flag.clone());
+            if matches!(flag.as_str(), "--tools" | "--allowedTools") {
+                if let Some(value) = iter.next() {
+                    flags.push(value.clone());
+                }
+            }
+        }
+    }
+    flags
+}
+
+pub(crate) fn append_session_tool_restriction_flags(command: &mut Command, surface_id: &str) {
+    for flag in session_tool_restriction_flags(surface_id) {
+        command.arg(flag);
+    }
+}
+
 pub(super) fn find_executable(name: &str) -> Option<PathBuf> {
     find_executable_in_path(name, std::env::var_os("PATH"), std::env::var_os("PATHEXT"))
 }
@@ -1013,6 +1045,12 @@ mod tests {
         let message = err.to_string();
         assert!(!message.contains("alice@example.com"));
         assert!(!message.contains("org_123"));
+    }
+
+    #[test]
+    fn claude_session_tool_restriction_flags_are_extracted_from_catalog() {
+        let flags = session_tool_restriction_flags("provider_surface.anthropic.subprocess_cli");
+        assert_eq!(flags, vec!["--tools=".to_string()]);
     }
 
     #[cfg(windows)]

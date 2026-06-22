@@ -2,7 +2,7 @@
 
 use super::*;
 use chrono::{DateTime, Utc};
-use maekon_core::config::{PiiFilterLevel, TieredMemoryConfig};
+use maekon_core::config::{ClusteringAlgorithm, PiiFilterLevel, TieredMemoryConfig};
 use maekon_core::error::CoreError;
 use maekon_core::models::event::{InputActivityEvent, KeyboardActivity, MouseActivity};
 use maekon_core::models::tiered_memory::{CalibrationEntry, PresetProfile, ResolvedParams};
@@ -33,6 +33,24 @@ impl CalibrationReader for NoopCalibrationReader {
         _exclude_noise: bool,
     ) -> Result<Vec<CalibrationEntry>, CoreError> {
         Ok(vec![])
+    }
+    async fn enforce_retention(&self, _max_days: u32, _max_rows: u64) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+}
+
+struct FewCalibrationReader {
+    entries: Vec<CalibrationEntry>,
+}
+
+#[async_trait::async_trait]
+impl CalibrationReader for FewCalibrationReader {
+    async fn get_entries(
+        &self,
+        _window: &TimeWindow,
+        _exclude_noise: bool,
+    ) -> Result<Vec<CalibrationEntry>, CoreError> {
+        Ok(self.entries.clone())
     }
     async fn enforce_retention(&self, _max_days: u32, _max_rows: u64) -> Result<u64, CoreError> {
         Ok(0)
@@ -160,6 +178,26 @@ fn make_input_snap() -> InputActivityEvent {
     }
 }
 
+fn make_calibration_entry(timestamp: DateTime<Utc>) -> CalibrationEntry {
+    CalibrationEntry {
+        timestamp,
+        event_type: "window".to_string(),
+        app_name: "VS Code".to_string(),
+        app_category: maekon_core::models::work_session::AppCategory::Development,
+        event_importance: 0.5,
+        density_signal: 0.5,
+        importance_signal: 0.5,
+        context_signal: 0.5,
+        buffer_signal: 0.5,
+        trigger_score: 0.5,
+        trigger_action: None,
+        active_regime_id: None,
+        params_version_id: "test".to_string(),
+        params_json: "{}".to_string(),
+        is_noise: false,
+    }
+}
+
 #[tokio::test]
 async fn app_switch_triggers_trigger_evaluation() {
     let mut ts = make_trigger_state();
@@ -186,6 +224,25 @@ async fn app_switch_triggers_trigger_evaluation() {
     assert!(ts.trigger.current_density_signal() > 0.0);
     // Context signal should be boosted (AppSwitchNew is a context event)
     assert!(ts.trigger.current_context_signal() > 0.0);
+}
+
+#[test]
+fn constrained_clustering_panic_restores_regime_analysis_facade() {
+    let mut ts = make_trigger_state();
+    ts.regime_analysis = Some(maekon_analysis::RegimeAnalysisFacade::new(
+        ClusteringAlgorithm::Kmeans,
+    ));
+
+    let facade = ts.regime_analysis.take().expect("facade should be present");
+    let (facade_back, result, algorithm): (_, Result<(), CoreError>, _) =
+        super::regime::recluster_with_panic_capture(facade, |_facade| {
+            panic!("synthetic clustering panic")
+        });
+    ts.regime_analysis = Some(facade_back);
+
+    assert_eq!(algorithm, "kmeans");
+    assert!(matches!(result, Err(CoreError::Internal { .. })));
+    assert!(ts.regime_analysis.is_some());
 }
 
 #[tokio::test]
@@ -372,4 +429,30 @@ async fn drift_detection_sets_last_drift_flag() {
     assert!(ts
         .last_drift_detected
         .load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn on_demand_recluster_keeps_request_when_samples_are_insufficient() {
+    let mut ts = make_trigger_state();
+    let now = Utc::now();
+    let previous_detection = now - chrono::Duration::minutes(10);
+    ts.last_detection_time = Some(previous_detection);
+    ts.calibration_reader = Arc::new(FewCalibrationReader {
+        entries: vec![make_calibration_entry(now)],
+    });
+    ts.recluster_requested
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    super::regime::run_periodic_regime_detection(&mut ts, now).await;
+
+    assert!(
+        ts.recluster_requested
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "insufficient samples must not consume the on-demand request"
+    );
+    assert_eq!(
+        ts.last_detection_time,
+        Some(previous_detection),
+        "insufficient on-demand data must not make the scheduler look recently detected"
+    );
 }

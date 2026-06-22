@@ -81,6 +81,7 @@ pub(crate) async fn process_gui_feedback(
                                 .app_type_cache
                                 .entry(elem.app_name.clone())
                                 .or_default();
+                            entries.retain(|(existing_from, _)| existing_from != &from_type);
                             if entries.len() >= 24 {
                                 entries.remove(0);
                             }

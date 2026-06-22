@@ -51,7 +51,7 @@ interface OnboardingProps {
 const TOTAL_STEPS = 6
 
 // The 6 master fields that make up the monitoring consent bundle (identical to MONITORING_FIELDS in ConsentToggleSection).
-// On grant, send a fresh grant where these 6 are true and the other 7 (high-sensitivity / additional opt-in) are false.
+// On grant, send a fresh grant where these 6 are true and the other 8 (high-sensitivity / additional opt-in) are false.
 const MONITORING_FIELDS = [
   'screen_capture',
   'window_title_collection',
@@ -61,7 +61,7 @@ const MONITORING_FIELDS = [
   'telemetry',
 ] as const satisfies readonly (keyof ConsentPermissions)[]
 
-/** Builds a fresh grant permission set that starts with all 14 permissions false and turns on only the 6 master fields. */
+/** Builds a fresh grant permission set that starts with all 15 permissions false and turns on only the 6 master fields. */
 function buildMonitoringGrant(): ConsentPermissions {
   const permissions: ConsentPermissions = {
     screen_capture: false,
@@ -78,6 +78,7 @@ function buildMonitoringGrant(): ConsentPermissions {
     full_text_extraction: false,
     memory_graph_enrichment: false,
     microphone: false,
+    unredacted_external_ocr: false,
   }
   for (const field of MONITORING_FIELDS) {
     permissions[field] = true

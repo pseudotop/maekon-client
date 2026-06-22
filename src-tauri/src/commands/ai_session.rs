@@ -22,6 +22,9 @@ use crate::runtime_state::{
 };
 use tracing::debug;
 
+const MAX_SESSION_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
+const MAX_SESSION_ATTACHMENTS: usize = 16;
+
 /// Require a live session manager; returns a service.unavailable IpcError
 /// when the manager is not wired (non-AI-enabled builds or early startup).
 fn require_session_manager_impl(
@@ -48,6 +51,57 @@ pub struct SendSessionMessageRequest {
     pub tools: Option<Vec<ToolDefinition>>,
     pub context: Option<MessageContext>,
     pub response_format: Option<serde_json::Value>,
+}
+
+fn attachment_wire_bytes(attachment: &Attachment) -> usize {
+    match attachment {
+        Attachment::Image { mime, path, data } => {
+            mime.len() + path.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
+        }
+        Attachment::File { path, mime, data } => {
+            path.len() + mime.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
+        }
+        Attachment::Directory { path } => path.len(),
+        Attachment::Skill {
+            skill_id,
+            display_name,
+        } => skill_id.len() + display_name.as_ref().map_or(0, String::len),
+        Attachment::AppReference {
+            app_name,
+            window_title,
+        } => app_name.len() + window_title.as_ref().map_or(0, String::len),
+    }
+}
+
+fn validate_session_input_size(
+    label: &str,
+    message: &str,
+    attachments: &[Attachment],
+) -> Result<(), IpcError> {
+    if attachments.len() > MAX_SESSION_ATTACHMENTS {
+        return Err(IpcError::new(
+            "input.too_large",
+            format!(
+                "{label} has too many attachments ({} > {})",
+                attachments.len(),
+                MAX_SESSION_ATTACHMENTS
+            ),
+        ));
+    }
+
+    let attachment_bytes = attachments.iter().map(attachment_wire_bytes).sum::<usize>();
+    let total_bytes = message.len().saturating_add(attachment_bytes);
+    if total_bytes > MAX_SESSION_INPUT_BYTES {
+        return Err(IpcError::new(
+            "input.too_large",
+            format!(
+                "{label} exceeds maximum allowed size ({} bytes > {} bytes)",
+                total_bytes, MAX_SESSION_INPUT_BYTES
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Create a new AI conversation session.
@@ -109,19 +163,8 @@ pub async fn send_session_message(
         ));
     }
 
-    // Guard: reject inputs exceeding 256 KiB to prevent OOM on AI providers
-    // and stop malformed IPC frames from amplifying into multi-MB gRPC calls.
-    const MAX_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
-    if request.message.len() > MAX_INPUT_BYTES {
-        return Err(IpcError::new(
-            "input.too_large",
-            format!(
-                "message exceeds maximum allowed size ({} bytes > {} bytes)",
-                request.message.len(),
-                MAX_INPUT_BYTES
-            ),
-        ));
-    }
+    let attachments = request.attachments.unwrap_or_default();
+    validate_session_input_size("message", &request.message, &attachments)?;
 
     let session = mgr
         .get_session(&request.session_id)
@@ -135,7 +178,7 @@ pub async fn send_session_message(
     let msg = SessionMessage {
         role: MessageRole::User,
         content: request.message,
-        attachments: request.attachments.unwrap_or_default(),
+        attachments,
         tools: request.tools,
         context: request.context,
         response_format: request.response_format,
@@ -474,18 +517,7 @@ pub async fn steer_session_turn(
     session_id: String,
     message: String,
 ) -> Result<(), IpcError> {
-    // Guard: reject oversized steering input (same limit as send_session_message).
-    const MAX_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
-    if message.len() > MAX_INPUT_BYTES {
-        return Err(IpcError::new(
-            "input.too_large",
-            format!(
-                "steer message exceeds maximum allowed size ({} bytes > {} bytes)",
-                message.len(),
-                MAX_INPUT_BYTES
-            ),
-        ));
-    }
+    validate_session_input_size("steer message", &message, &[])?;
     let mgr = require_session_manager_impl(&state)?;
 
     // Check daily token budget before steering — mirrors send_session_message
@@ -556,7 +588,11 @@ pub struct TokenUsageResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::decision_to_bool;
+    use super::{
+        decision_to_bool, validate_session_input_size, MAX_SESSION_ATTACHMENTS,
+        MAX_SESSION_INPUT_BYTES,
+    };
+    use maekon_core::models::ai_session::Attachment;
 
     #[test]
     fn accept_maps_true_decline_and_cancel_map_false() {
@@ -567,5 +603,31 @@ mod tests {
         assert!(!decision_to_bool("cancel"));
         assert!(!decision_to_bool("anything-else"));
         assert!(!decision_to_bool(""));
+    }
+
+    #[test]
+    fn session_input_size_counts_inline_attachment_data() {
+        let attachment = Attachment::File {
+            path: "huge.txt".to_string(),
+            mime: Some("text/plain".to_string()),
+            data: Some("a".repeat(MAX_SESSION_INPUT_BYTES)),
+        };
+
+        let err = validate_session_input_size("message", "hi", &[attachment])
+            .expect_err("oversized inline attachment data must be rejected");
+        assert_eq!(err.code, "input.too_large");
+    }
+
+    #[test]
+    fn session_input_size_limits_attachment_count() {
+        let attachments = (0..=MAX_SESSION_ATTACHMENTS)
+            .map(|idx| Attachment::Directory {
+                path: format!("dir-{idx}"),
+            })
+            .collect::<Vec<_>>();
+
+        let err = validate_session_input_size("message", "hi", &attachments)
+            .expect_err("too many attachments must be rejected");
+        assert_eq!(err.code, "input.too_large");
     }
 }

@@ -8,13 +8,31 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 describe('SyncTab', () => {
-  it('falls back to the disabled sync guide when Tauri sync status is unavailable', async () => {
+  it('falls back to the unavailable sync guide when Tauri sync status is unavailable', async () => {
     renderWithProviders(<SyncTab />)
 
     await waitFor(() => {
       expect(screen.getByRole('region', { name: 'Sync setup guide' })).toBeInTheDocument()
     })
-    expect(screen.getByText('Sync is not enabled. To activate cross-device sync:')).toBeInTheDocument()
+    expect(screen.getByText('Sync is enabled, but the local sync runtime is not available.')).toBeInTheDocument()
     expect(screen.queryByText('Loading sync status...')).not.toBeInTheDocument()
+  })
+
+  it('shows setup steps only when sync is explicitly disabled', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValueOnce({
+      enabled: false,
+      runtime_available: false,
+      runtime_state: 'disabled',
+      unavailable_reason: null,
+      device_id: '',
+      device_name: '',
+    })
+
+    renderWithProviders(<SyncTab />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Sync is not enabled. To activate cross-device sync:')).toBeInTheDocument()
+    })
   })
 })

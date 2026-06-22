@@ -927,6 +927,17 @@
           "dismiss": "关闭"
         }
       },
+      "unredactedExternalOcr": {
+        "label": "未脱敏外部 OCR",
+        "description": "敏感度最高，默认关闭。仅当您有意允许将原始截图发送给外部 OCR 提供商时才开启。",
+        "collectedTitle": "启用时可能发送：",
+        "collected": {
+          "rawScreenImage": "本地 PII 脱敏前的原始截图图像数据",
+          "windowContext": "安全的决策元数据，例如应用名称和标题长度",
+          "providerResult": "外部 OCR 提供商处理后的文本结果"
+        },
+        "disclosure": "除 OCR 处理同意以及允许未脱敏外部 OCR 的 AI 设置外，还需要此同意。没有此明确同意时，即使设置已开启，原始屏幕的离机 OCR 也会被阻止。"
+      },
       "withdraw": {
         "label": "撤回同意",
         "description": "撤回将停止所有收集，并请求清除已收集的数据。这比仅关闭监控更为彻底。",
@@ -2244,6 +2255,8 @@
     "loading": "正在加载同步状态...",
     "title": "跨设备同步",
     "notEnabled": "同步未启用。要启用跨设备同步：",
+    "unavailable": "同步已启用，但本地同步运行时不可用。",
+    "unavailableHint": "保存同步设置后重启应用。如果仍然出现，请检查同步传输方式和口令配置。",
     "step1": "在配置中设置",
     "step1Suffix": "",
     "step2": "设置环境变量",

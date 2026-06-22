@@ -212,6 +212,10 @@ impl AppConfig {
         // #6177: the analysis loop builds a tokio interval from analysis.interval_secs;
         // a zero period panics the loop, so the same interval floors must be validated.
         self.analysis.validate_bounds()?;
+        // #6617: the desktop WebView CSP only allows the local dashboard fallback
+        // range. Reject configured base ports outside that range at write/reload
+        // chokepoints so the UI never boots against a blocked loopback API origin.
+        self.web.validate_bounds()?;
         Ok(())
     }
 

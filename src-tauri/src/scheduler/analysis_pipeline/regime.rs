@@ -1,9 +1,12 @@
 //! Periodic regime detection and constrained re-clustering.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use maekon_core::error::CoreError;
+use maekon_core::error_codes::InternalCode;
 use maekon_core::models::work_session::AppCategory;
 use maekon_core::types::TimeWindow;
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use tracing::{debug, info, warn};
 
 use super::super::AdaptiveTriggerState;
@@ -20,23 +23,17 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
 ) {
     let on_demand = ts
         .recluster_requested
-        .swap(false, std::sync::atomic::Ordering::Relaxed);
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let interval = ts.regime_detection_interval_hours;
-    let should_detect = on_demand
-        || ts
-            .last_detection_time
-            .map(|last| (now - last).num_hours() >= interval)
-            .unwrap_or(true);
+    let periodic_due = ts
+        .last_detection_time
+        .map(|last| (now - last).num_hours() >= interval)
+        .unwrap_or(true);
+    let should_detect = on_demand || periodic_due;
 
     if !should_detect {
         return;
-    }
-
-    ts.last_detection_time = Some(now);
-
-    if on_demand {
-        info!("on-demand re-clustering triggered");
     }
 
     let reader = ts.calibration_reader.clone();
@@ -84,8 +81,18 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
                     count = features.len(),
                     "regime detection skipped — insufficient samples (need 50)"
                 );
+                if periodic_due && !on_demand {
+                    ts.last_detection_time = Some(now);
+                }
                 return;
             }
+
+            if on_demand {
+                ts.recluster_requested
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                info!("on-demand re-clustering triggered");
+            }
+            ts.last_detection_time = Some(now);
 
             // Try constrained re-clustering via RegimeAnalysisFacade if available
             let has_strategy = ts.regime_analysis.is_some();
@@ -129,9 +136,15 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
         }
         Ok(_) => {
             debug!("regime detection skipped: insufficient data");
+            if periodic_due && !on_demand {
+                ts.last_detection_time = Some(now);
+            }
         }
         Err(e) => {
             warn!("regime detection failure: {e}");
+            if periodic_due && !on_demand {
+                ts.last_detection_time = Some(now);
+            }
         }
     }
 }
@@ -225,9 +238,9 @@ async fn run_constrained_clustering(
     // Offload heavy clustering to blocking thread to avoid stalling monitor loop
     let features_owned = features.to_vec();
     let blocking_result = tokio::task::spawn_blocking(move || {
-        let r = facade.recluster_with_constraints(&features_owned, &constraints, now);
-        let algo = facade.algorithm_name().to_string();
-        (facade, r, algo)
+        recluster_with_panic_capture(facade, |facade| {
+            facade.recluster_with_constraints(&features_owned, &constraints, now)
+        })
     })
     .await;
 
@@ -281,4 +294,25 @@ async fn run_constrained_clustering(
             }
         }
     }
+}
+
+pub(super) fn recluster_with_panic_capture<T, F>(
+    facade: maekon_analysis::RegimeAnalysisFacade,
+    run: F,
+) -> (
+    maekon_analysis::RegimeAnalysisFacade,
+    Result<T, CoreError>,
+    String,
+)
+where
+    F: FnOnce(&maekon_analysis::RegimeAnalysisFacade) -> Result<T, CoreError>,
+{
+    let algo = facade.algorithm_name().to_string();
+    let result = catch_unwind(AssertUnwindSafe(|| run(&facade))).unwrap_or_else(|_| {
+        Err(CoreError::Internal {
+            code: InternalCode::Generic,
+            message: format!("constrained clustering task panicked for {algo}"),
+        })
+    });
+    (facade, result, algo)
 }

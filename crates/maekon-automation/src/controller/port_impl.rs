@@ -76,6 +76,43 @@ fn dto_to_policy(d: &ExecutionPolicyDto) -> ExecutionPolicy {
     }
 }
 
+fn audit_safe_policy_id(policy_id: &str) -> String {
+    const MAX_POLICY_ID_CHARS: usize = 128;
+    let is_safe = policy_id.chars().count() <= MAX_POLICY_ID_CHARS
+        && policy_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'));
+    if is_safe {
+        policy_id.to_string()
+    } else {
+        "[REDACTED_POLICY_ID]".to_string()
+    }
+}
+
+fn policy_change_audit_details(operation: &str, policy: &ExecutionPolicyDto) -> String {
+    format!(
+        "operation={operation} policy_id={} process_name_chars={} allowed_args_count={} allowed_paths_count={} requires_sudo={} max_execution_time_ms={} audit_level={} sandbox_profile={} allow_network={} require_signed_token={} confirmation={}",
+        audit_safe_policy_id(&policy.policy_id),
+        policy.process_name.chars().count(),
+        policy.allowed_args.len(),
+        policy.allowed_paths.len(),
+        policy.requires_sudo,
+        policy.max_execution_time_ms,
+        policy.audit_level,
+        policy.sandbox_profile.as_deref().unwrap_or("None"),
+        policy.allow_network.unwrap_or(false),
+        policy.require_signed_token,
+        policy.confirmation,
+    )
+}
+
+fn policy_delete_audit_details(policy_id: &str, removed: bool) -> String {
+    format!(
+        "operation=delete policy_id={} removed={removed}",
+        audit_safe_policy_id(policy_id)
+    )
+}
+
 #[async_trait]
 impl AutomationPort for AutomationController {
     async fn execute_command(&self, cmd: &AutomationCommand) -> Result<CommandResult, CoreError> {
@@ -240,22 +277,57 @@ impl AutomationPort for AutomationController {
         &self,
         policy: ExecutionPolicyDto,
     ) -> Result<ExecutionPolicyDto, CoreError> {
+        let existed = self
+            .policy_client
+            .list_policies()
+            .await
+            .iter()
+            .any(|existing| existing.policy_id == policy.policy_id);
+        let operation = if existed { "update" } else { "create" };
         let internal = dto_to_policy(&policy);
         self.policy_client.add_policy(internal).await;
+        {
+            let mut logger = self.audit_logger.write().await;
+            logger.log_event(
+                if existed {
+                    "automation.policy.update"
+                } else {
+                    "automation.policy.create"
+                },
+                "automation-policy",
+                &policy_change_audit_details(operation, &policy),
+            );
+        }
         Ok(policy)
     }
 
     async fn remove_execution_policy(&self, policy_id: &str) -> Result<bool, CoreError> {
-        Ok(self.policy_client.remove_policy(policy_id).await)
+        let removed = self.policy_client.remove_policy(policy_id).await;
+        {
+            let mut logger = self.audit_logger.write().await;
+            logger.log_event(
+                "automation.policy.delete",
+                "automation-policy",
+                &policy_delete_audit_details(policy_id, removed),
+            );
+        }
+        Ok(removed)
     }
 }
 
 #[cfg(test)]
 mod roundtrip_tests {
     use super::*;
+    use crate::audit::AuditLogger;
     use crate::policy::AuditLevel;
+    use crate::policy::PolicyClient;
+    use crate::sandbox::NoOpSandbox;
     use maekon_core::config::SandboxProfile;
     use maekon_core::models::automation::ExecutionPolicyDto;
+    use maekon_core::ports::automation::AutomationPort;
+    use maekon_core::ports::sandbox::Sandbox;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn make_dto(sandbox: &str, audit: &str) -> ExecutionPolicyDto {
         ExecutionPolicyDto {
@@ -272,6 +344,17 @@ mod roundtrip_tests {
             require_signed_token: false,
             confirmation: "CONFIRM".to_string(),
         }
+    }
+
+    fn make_controller_for_port_tests() -> (AutomationController, Arc<RwLock<AuditLogger>>) {
+        let policy_client = Arc::new(PolicyClient::new());
+        let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+        let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+        let sandbox_config = maekon_core::config::SandboxConfig::default();
+        (
+            AutomationController::new(policy_client, audit_logger.clone(), sandbox, sandbox_config),
+            audit_logger,
+        )
     }
 
     /// F-RC-C35-03: SandboxProfile Display and serde(rename_all = "PascalCase") roundtrip.
@@ -340,6 +423,51 @@ mod roundtrip_tests {
             let policy = dto_to_policy(&dto);
             assert_eq!(policy.audit_level, variant);
         }
+    }
+
+    #[tokio::test]
+    async fn policy_crud_emits_bounded_audit_events() {
+        let (controller, audit_logger) = make_controller_for_port_tests();
+        let mut policy = make_dto("Strict", "Detailed");
+        policy.policy_id = "policy-1".to_string();
+        policy.process_name = "secret-process-name".to_string();
+        policy.allowed_args = vec!["--token=sk-secret-value".to_string()];
+        policy.allowed_paths = vec!["/Users/alice/Secrets".to_string()];
+
+        controller
+            .add_execution_policy(policy.clone())
+            .await
+            .expect("create policy must succeed");
+        policy.max_execution_time_ms = 9000;
+        controller
+            .add_execution_policy(policy.clone())
+            .await
+            .expect("update policy must succeed");
+        assert!(controller
+            .remove_execution_policy("policy-1")
+            .await
+            .expect("delete policy must return"));
+
+        let logger = audit_logger.read().await;
+        let entries = logger.entries_by_action_prefix("automation.policy.", 10);
+        let action_types: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.action_type.as_str())
+            .collect();
+        assert!(action_types.contains(&"automation.policy.create"));
+        assert!(action_types.contains(&"automation.policy.update"));
+        assert!(action_types.contains(&"automation.policy.delete"));
+
+        let details = entries
+            .iter()
+            .filter_map(|entry| entry.details.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(details.contains("allowed_args_count=1"));
+        assert!(details.contains("allowed_paths_count=1"));
+        assert!(!details.contains("sk-secret-value"));
+        assert!(!details.contains("/Users/alice/Secrets"));
+        assert!(!details.contains("secret-process-name"));
     }
 }
 

@@ -9,6 +9,7 @@ use crate::privacy::{is_sensitive_app, sanitize_title_with_level, should_exclude
 #[derive(Debug, Clone)]
 pub enum PrivacyDenied {
     NoConsent,
+    UnredactedExternalOcrConsentRequired,
     SensitiveApp(String),
     ExcludedByPolicy,
     SanitizationFailed(String),
@@ -18,6 +19,9 @@ impl std::fmt::Display for PrivacyDenied {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoConsent => write!(f, "OCR consent is required"),
+            Self::UnredactedExternalOcrConsentRequired => {
+                write!(f, "Unredacted external OCR consent is required")
+            }
             Self::SensitiveApp(app) => write!(f, "Blocked sensitive app: {}", app),
             Self::ExcludedByPolicy => write!(f, "Excluded by policy"),
             Self::SanitizationFailed(reason) => write!(f, "Image sanitization failed: {reason}"),
@@ -108,6 +112,14 @@ impl PrivacyGateway {
     ) -> Result<SanitizedImage, PrivacyDenied> {
         if !self.consent_manager.effective_permissions().ocr_processing {
             return Err(PrivacyDenied::NoConsent);
+        }
+        if allow_unredacted_external_ocr
+            && !self
+                .consent_manager
+                .effective_permissions()
+                .unredacted_external_ocr
+        {
+            return Err(PrivacyDenied::UnredactedExternalOcrConsentRequired);
         }
 
         if is_sensitive_app(active_app) {
@@ -472,22 +484,42 @@ mod tests {
     use super::*;
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
 
-    fn make_consent_manager(ocr_permitted: bool) -> Arc<ConsentManager> {
+    fn make_consent_manager_with_permissions(
+        permissions: ConsentPermissions,
+    ) -> Arc<ConsentManager> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("consent.json");
         let manager = ConsentManager::new(path);
 
-        if ocr_permitted {
-            let perms = ConsentPermissions {
-                ocr_processing: true,
-                screen_capture: true,
-                ..Default::default()
-            };
-            manager.grant_consent(perms, 30).unwrap();
-        }
+        manager.grant_consent(permissions, 30).unwrap();
 
         std::mem::forget(dir);
         Arc::new(manager)
+    }
+
+    fn make_consent_manager(ocr_permitted: bool) -> Arc<ConsentManager> {
+        if !ocr_permitted {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("consent.json");
+            let manager = ConsentManager::new(path);
+            std::mem::forget(dir);
+            return Arc::new(manager);
+        }
+
+        make_consent_manager_with_permissions(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            ..Default::default()
+        })
+    }
+
+    fn make_unredacted_external_ocr_consent_manager() -> Arc<ConsentManager> {
+        make_consent_manager_with_permissions(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            unredacted_external_ocr: true,
+            ..Default::default()
+        })
     }
 
     fn make_gateway(ocr_permitted: bool, policy: ExternalDataPolicy) -> PrivacyGateway {
@@ -528,7 +560,7 @@ mod tests {
 
     #[tokio::test]
     async fn allow_normal_app_when_unredacted_override_is_explicit() {
-        let consent = make_consent_manager(true);
+        let consent = make_unredacted_external_ocr_consent_manager();
         let gw = PrivacyGateway::new(
             consent,
             PiiFilterLevel::Off,
@@ -541,6 +573,26 @@ mod tests {
         let sanitized = result.expect("explicit unredacted override must succeed with consent");
         assert!(sanitized.metadata_stripped);
         assert_eq!(sanitized.redacted_regions, 0);
+    }
+
+    #[tokio::test]
+    async fn deny_unredacted_override_with_generic_ocr_consent_only() {
+        let consent = make_consent_manager(true);
+        let gw = PrivacyGateway::new(
+            consent,
+            PiiFilterLevel::Off,
+            ExternalDataPolicy::AllowFiltered,
+            PrivacyConfig::default(),
+        );
+        let err = gw
+            .prepare_image_for_external_with_override(b"img", "VSCode", "main.rs", true)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, PrivacyDenied::UnredactedExternalOcrConsentRequired),
+            "raw off-device OCR must require a dedicated consent tier, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -641,7 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_image_unredacted_override_skips_blur() {
-        let consent = make_consent_manager(true);
+        let consent = make_unredacted_external_ocr_consent_manager();
         let gw = PrivacyGateway::new(
             consent,
             PiiFilterLevel::Off,
@@ -692,6 +744,8 @@ mod tests {
     fn privacy_denied_display() {
         let d1 = PrivacyDenied::NoConsent;
         assert!(d1.to_string().contains("consent"));
+        let d1b = PrivacyDenied::UnredactedExternalOcrConsentRequired;
+        assert!(d1b.to_string().contains("Unredacted external OCR consent"));
         let d2 = PrivacyDenied::SensitiveApp("Bank".to_string());
         assert!(d2.to_string().contains("Bank"));
         let d3 = PrivacyDenied::ExcludedByPolicy;

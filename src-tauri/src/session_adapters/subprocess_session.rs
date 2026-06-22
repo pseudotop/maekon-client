@@ -225,6 +225,174 @@ impl GenericSubprocessSession {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    async fn send_gemini_message_stream(
+        &self,
+        prompt: String,
+    ) -> Result<ResponseStream, CoreError> {
+        let temp_dir = tempdir().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to create Gemini session tempdir: {err}"),
+        })?;
+
+        let mut command = Command::new(&self.surface.executable_path);
+        command
+            .arg("-p")
+            .arg("-")
+            .current_dir(temp_dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        append_oneshot_flags(&mut command, &self.surface.surface_id);
+        append_model_flag(&mut command, &self.surface.surface_id, &self.model);
+
+        let mut child = command.spawn().map_err(|err| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("Failed to spawn Gemini session subprocess: {err}"),
+        })?;
+
+        let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: "Failed to open stdin for Gemini session subprocess".to_string(),
+        })?;
+        let prompt_bytes = prompt.as_bytes().to_vec();
+        let stdin_writer = AbortOnDropJoin::new(tokio::spawn(async move {
+            let _ = stdin.write_all(&prompt_bytes).await;
+        }));
+
+        let mut stdout = child.stdout.take().ok_or_else(|| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: "Failed to capture Gemini session stdout".to_string(),
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: "Failed to capture Gemini session stderr".to_string(),
+        })?;
+
+        let history = self.history.clone();
+        let max_history_turns = self.max_history_turns;
+        let timeout = self.timeout;
+        let provider_name = self.provider_name.clone();
+        let surface_id = self.surface.surface_id.clone();
+        let cancel_requested = self.cancel_requested.clone();
+        let cancel_notify = self.cancel_notify.clone();
+        let prompt_redaction = prompt.clone();
+
+        let stream: ResponseStream = Box::pin(try_stream! {
+            let _temp_dir = temp_dir;
+            let _stdin_writer = stdin_writer;
+            let stdout_task = AbortOnDropJoin::new(tokio::spawn(async move {
+                let mut stdout_buf = Vec::new();
+                if let Err(e) = stdout.read_to_end(&mut stdout_buf).await {
+                    debug!("read_to_end stdout failed: {e}");
+                }
+                stdout_buf
+            }));
+            let stderr_task = AbortOnDropJoin::new(tokio::spawn(async move {
+                let mut stderr_buf = String::new();
+                if let Err(e) = stderr.read_to_string(&mut stderr_buf).await {
+                    debug!("read_to_string stderr failed: {e}");
+                }
+                stderr_buf
+            }));
+
+            if cancel_requested.load(Ordering::Acquire) {
+                yield OutboundMessage::Control {
+                    action: ControlAction::Cancel,
+                };
+                if let Err(e) = child.kill().await {
+                    debug!("process kill failed: {e}");
+                }
+                let _ = child.wait().await;
+                return;
+            }
+
+            let status = tokio::select! {
+                status = child.wait() => match status {
+                    Ok(status) => status,
+                    Err(err) => {
+                        yield OutboundMessage::Error {
+                            code: "io_error".to_string(),
+                            message: err.to_string(),
+                            retryable: false,
+                        };
+                        return;
+                    }
+                },
+                _ = cancel_notify.notified() => {
+                    yield OutboundMessage::Control {
+                        action: ControlAction::Cancel,
+                    };
+                    if let Err(e) = child.kill().await {
+                        debug!("process kill failed: {e}");
+                    }
+                    let _ = child.wait().await;
+                    return;
+                }
+                _ = tokio::time::sleep(timeout) => {
+                    yield OutboundMessage::Error {
+                        code: "timeout".to_string(),
+                        message: format!("Session response timeout ({}s)", timeout.as_secs()),
+                        retryable: true,
+                    };
+                    if let Err(e) = child.kill().await {
+                        debug!("process kill failed: {e}");
+                    }
+                    let _ = child.wait().await;
+                    return;
+                }
+            };
+
+            let stdout_output = stdout_task.join().await.unwrap_or_default();
+            let stderr_output = stderr_task.join().await.unwrap_or_default();
+
+            if !status.success() {
+                let classified =
+                    classify_subprocess_error_with_redactions(
+                        SubprocessKind::Llm,
+                        &surface_id,
+                        &stderr_output,
+                        &[prompt_redaction.as_str()],
+                    );
+                yield OutboundMessage::Error {
+                    code: "subprocess_error".to_string(),
+                    message: classified.to_string(),
+                    retryable: false,
+                };
+                return;
+            }
+
+            let raw_output = String::from_utf8_lossy(&stdout_output).trim().to_string();
+            if raw_output.is_empty() {
+                yield OutboundMessage::Error {
+                    code: "empty_response".to_string(),
+                    message: format!("{provider_name} CLI returned an empty session response"),
+                    retryable: false,
+                };
+                return;
+            }
+
+            let parsed = parse_gemini_result_payload(&raw_output, &prompt_redaction);
+            {
+                let mut history = history.write().await;
+                history.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: parsed.content.clone(),
+                    content_blocks: None,
+                });
+                truncate_history(&mut history, max_history_turns);
+            }
+
+            yield OutboundMessage::Result {
+                content: parsed.content,
+                done: true,
+                usage: Some(parsed.usage),
+            };
+        });
+
+        Ok(stream)
+    }
+
     async fn send_codex_message(
         &self,
         message: &SessionMessage,
@@ -493,6 +661,12 @@ impl ConversationSession for GenericSubprocessSession {
         self.turn_count.fetch_add(1, Ordering::Relaxed);
         *self.last_active.lock() = Utc::now();
 
+        if self.invocation_mode
+            == maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt
+        {
+            return self.send_gemini_message_stream(prompt).await;
+        }
+
         let output = self.invoke_surface(&prompt).await.inspect_err(|_| {
             *self.state.lock() = SessionState::Failed;
         })?;
@@ -714,6 +888,57 @@ fn parse_codex_usage(value: Option<&serde_json::Value>) -> Option<TokenUsage> {
     })
 }
 
+struct GeminiResultPayload {
+    content: String,
+    usage: TokenUsage,
+}
+
+fn parse_gemini_result_payload(raw_output: &str, prompt: &str) -> GeminiResultPayload {
+    let trimmed = raw_output.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let content = extract_stringish(&value, &["text", "content", "response", "result"])
+            .unwrap_or_else(|| trimmed.to_string());
+        let usage = parse_gemini_usage(value.get("usage"))
+            .unwrap_or_else(|| estimate_gemini_usage(prompt, &content));
+        return GeminiResultPayload { content, usage };
+    }
+
+    GeminiResultPayload {
+        content: trimmed.to_string(),
+        usage: estimate_gemini_usage(prompt, trimmed),
+    }
+}
+
+fn parse_gemini_usage(value: Option<&serde_json::Value>) -> Option<TokenUsage> {
+    let usage = value?;
+    Some(TokenUsage {
+        input_tokens: usage
+            .get("input_tokens")
+            .or_else(|| usage.get("prompt_tokens"))?
+            .as_u64()?,
+        output_tokens: usage
+            .get("output_tokens")
+            .or_else(|| usage.get("completion_tokens"))?
+            .as_u64()?,
+    })
+}
+
+fn estimate_gemini_usage(prompt: &str, output: &str) -> TokenUsage {
+    TokenUsage {
+        input_tokens: estimate_token_count(prompt),
+        output_tokens: estimate_token_count(output),
+    }
+}
+
+fn estimate_token_count(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    if chars == 0 {
+        0
+    } else {
+        chars.div_ceil(4).max(1)
+    }
+}
+
 fn extract_stringish(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     match value {
         serde_json::Value::String(text) if !text.is_empty() => Some(text.clone()),
@@ -820,6 +1045,7 @@ fn truncate_history(history: &mut Vec<ChatMessage>, max_turns: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use maekon_core::models::ai_session::{MessageContext, MessageRole};
     use std::path::{Path, PathBuf};
 
@@ -1041,6 +1267,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gemini_send_message_returns_stream_before_process_exits() {
+        let temp_dir = tempdir().expect("tempdir");
+        let executable_path = write_fake_sleeping_gemini_cli(temp_dir.path());
+        let session = Arc::new(gemini_session_with_executable(executable_path));
+        let message = basic_session_message("hello");
+
+        let send = {
+            let session = session.clone();
+            tokio::spawn(async move { session.send_message(&message).await })
+        };
+
+        let mut stream = tokio::time::timeout(Duration::from_millis(500), send)
+            .await
+            .expect("send_message should return a stream before the child exits")
+            .expect("send task should not panic")
+            .expect("send_message should succeed");
+
+        session.terminate().await;
+        let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("terminated stream should emit promptly")
+            .expect("stream should yield a cancel message")
+            .expect("cancel message should not be an error");
+
+        assert!(matches!(
+            item,
+            OutboundMessage::Control {
+                action: ControlAction::Cancel
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn gemini_session_result_includes_usage_for_budget() {
+        let temp_dir = tempdir().expect("tempdir");
+        let executable_path = write_fake_gemini_session_cli(temp_dir.path());
+        let session = gemini_session_with_executable(executable_path);
+        let mut stream = session
+            .send_message(&basic_session_message("budget me"))
+            .await
+            .expect("fake Gemini session should start");
+
+        let item = stream
+            .next()
+            .await
+            .expect("stream should yield result")
+            .expect("result should not error");
+
+        match item {
+            OutboundMessage::Result { usage, .. } => {
+                let usage = usage.expect("Gemini session must not bypass token budget");
+                assert!(usage.input_tokens > 0);
+                assert!(usage.output_tokens > 0);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_gemini_json_usage_metadata() {
+        let parsed = parse_gemini_result_payload(
+            r#"{"text":"done","usage":{"input_tokens":11,"output_tokens":7}}"#,
+            "prompt",
+        );
+
+        assert_eq!(parsed.content, "done");
+        assert_eq!(parsed.usage.input_tokens, 11);
+        assert_eq!(parsed.usage.output_tokens, 7);
+    }
+
+    #[tokio::test]
     async fn session_prompt_includes_message_metadata() {
         let session = GenericSubprocessSession {
             session_id: "test".to_string(),
@@ -1175,7 +1472,29 @@ mod tests {
     async fn gemini_session_delivers_prompt_via_stdin_not_argv() {
         let temp_dir = tempdir().expect("tempdir");
         let executable_path = write_fake_gemini_session_cli(temp_dir.path());
-        let session = GenericSubprocessSession {
+        let session = gemini_session_with_executable(executable_path);
+
+        let prompt = "Gemini session prompt with spaces && | metacharacters via stdin";
+        let output = session
+            .run_gemini(prompt)
+            .await
+            .expect("fake Gemini CLI should receive prompt via stdin");
+        assert_eq!(output, format!("STDIN_OK:{prompt}"));
+    }
+
+    fn basic_session_message(content: &str) -> SessionMessage {
+        SessionMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        }
+    }
+
+    fn gemini_session_with_executable(executable_path: PathBuf) -> GenericSubprocessSession {
+        GenericSubprocessSession {
             session_id: "test".to_string(),
             surface: DetectedSubprocessCli {
                 surface_id: "provider_surface.google.subprocess_cli".to_string(),
@@ -1196,14 +1515,7 @@ mod tests {
             max_history_turns: 8,
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
-        };
-
-        let prompt = "Gemini session prompt with spaces && | metacharacters via stdin";
-        let output = session
-            .run_gemini(prompt)
-            .await
-            .expect("fake Gemini CLI should receive prompt via stdin");
-        assert_eq!(output, format!("STDIN_OK:{prompt}"));
+        }
     }
 
     fn write_fake_gemini_session_cli(base_dir: &Path) -> PathBuf {
@@ -1237,6 +1549,42 @@ fn main() {
     let mut prompt = String::new();
     std::io::stdin().read_to_string(&mut prompt).expect("stdin");
     print!("STDIN_OK:{prompt}");
+}
+"##,
+        )
+        .expect("fake cli source");
+
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let status = std::process::Command::new(rustc)
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&executable_path)
+            .status()
+            .expect("compile fake cli");
+        assert!(status.success(), "fake cli should compile");
+        executable_path
+    }
+
+    fn write_fake_sleeping_gemini_cli(base_dir: &Path) -> PathBuf {
+        let bin_dir = base_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("fake cli dir");
+        let source_path = bin_dir.join("fake_sleeping_gemini_session.rs");
+        let executable_path = bin_dir.join(if cfg!(windows) {
+            "sleeping-gemini.exe"
+        } else {
+            "sleeping-gemini"
+        });
+        std::fs::write(
+            &source_path,
+            r##"
+use std::io::Read;
+use std::time::Duration;
+
+fn main() {
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt).expect("stdin");
+    std::thread::sleep(Duration::from_secs(30));
+    println!("late: {prompt}");
 }
 "##,
         )
