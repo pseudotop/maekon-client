@@ -231,6 +231,7 @@ fn make_external_ocr_guard(
     let permissions = ocr_permitted.then_some(ConsentPermissions {
         ocr_processing: true,
         screen_capture: true,
+        unredacted_external_ocr: true,
         ..Default::default()
     });
 
