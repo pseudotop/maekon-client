@@ -13,6 +13,10 @@ const EDGE_SIGNAL_MIN_PIXELS: u64 = 64;
 const POINTER_SIGNAL_MIN_PIXELS: u64 = 8;
 const POINTER_SIGNAL_MIN_RADIUS_PX: i64 = 12;
 const POINTER_SIGNAL_MAX_RADIUS_PX: i64 = 38;
+const OVERLAY_PROBE_WEBVIEW_WARMUP_MS: u64 = 1_200;
+const OVERLAY_PROBE_POINTER_EMIT_ATTEMPTS: u32 = 5;
+const OVERLAY_PROBE_POINTER_EMIT_INTERVAL_MS: u64 = 120;
+const OVERLAY_PROBE_PRE_CAPTURE_SETTLE_MS: u64 = 300;
 
 #[derive(Default)]
 struct SignalStats {
@@ -33,6 +37,23 @@ struct PointerPositionSnapshot {
     global_x: i32,
     global_y: i32,
     local: Option<LocalPointerPosition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverlayProbeTimingContract {
+    warmup_before_first_emit: Duration,
+    emit_attempts: u32,
+    emit_interval: Duration,
+    settle_after_last_emit: Duration,
+}
+
+fn overlay_probe_timing_contract() -> OverlayProbeTimingContract {
+    OverlayProbeTimingContract {
+        warmup_before_first_emit: Duration::from_millis(OVERLAY_PROBE_WEBVIEW_WARMUP_MS),
+        emit_attempts: OVERLAY_PROBE_POINTER_EMIT_ATTEMPTS,
+        emit_interval: Duration::from_millis(OVERLAY_PROBE_POINTER_EMIT_INTERVAL_MS),
+        settle_after_last_emit: Duration::from_millis(OVERLAY_PROBE_PRE_CAPTURE_SETTLE_MS),
+    }
 }
 
 pub(crate) fn run_debug_pointer_capture_cli_command(command: DebugPointerCaptureCliCommand) -> i32 {
@@ -231,6 +252,14 @@ fn run_pointer_overlay_capture_probe(
     state.indicator_visible.store(true, Ordering::Relaxed);
     let capture_state = json!({ "paused": false, "indicator_visible": true });
     let _ = app_handle.emit("overlay:capture-state-changed", &capture_state);
+    if let Err(error) = overlay.ensure_window() {
+        return json!({
+            "ok": false,
+            "command": command_name,
+            "error": format!("MagicOverlay window unavailable for overlay probe: {error}"),
+            "output_dir": output_dir,
+        });
+    }
     overlay.show_passive_tracking_surface();
 
     let (pointer_x, pointer_y) = current_global_pointer_position().unwrap_or((960, 540));
@@ -245,11 +274,13 @@ fn run_pointer_overlay_capture_probe(
         sample_rate_hz: 30,
     };
 
-    std::thread::sleep(Duration::from_millis(800));
-    for click_count in 1..=3 {
+    let timing = overlay_probe_timing_contract();
+    std::thread::sleep(timing.warmup_before_first_emit);
+    for click_count in 1..=timing.emit_attempts {
         overlay.emit_pointer_context(pointer_payload(click_count));
-        std::thread::sleep(Duration::from_millis(180));
+        std::thread::sleep(timing.emit_interval);
     }
+    std::thread::sleep(timing.settle_after_last_emit);
 
     let mut payload = run_pointer_capture_probe(output_dir, frames, interval_ms);
     if let Some(object) = payload.as_object_mut() {
@@ -273,6 +304,15 @@ fn run_pointer_overlay_capture_probe(
                 "click_pulse": !reduced_motion,
                 "reduced_motion": reduced_motion,
                 "ttl_ms": 1_500,
+            }),
+        );
+        object.insert(
+            "overlay_probe_timing".to_string(),
+            json!({
+                "webview_warmup_ms": timing.warmup_before_first_emit.as_millis(),
+                "pointer_context_emit_attempts": timing.emit_attempts,
+                "pointer_context_emit_interval_ms": timing.emit_interval.as_millis(),
+                "pre_capture_settle_ms": timing.settle_after_last_emit.as_millis(),
             }),
         );
     }
@@ -477,5 +517,23 @@ mod tests {
 
         assert!(stats.interior > 0);
         assert_eq!(stats.pointer, 0);
+    }
+
+    #[test]
+    fn overlay_probe_timing_contract_allows_webview_listener_startup() {
+        let contract = overlay_probe_timing_contract();
+
+        assert!(
+            contract.warmup_before_first_emit >= Duration::from_millis(1_000),
+            "overlay probe should leave enough time for the hidden WebView to load listeners"
+        );
+        assert!(
+            contract.emit_attempts >= 5,
+            "overlay probe should re-emit pointer context because Tauri events are not buffered"
+        );
+        assert!(
+            contract.settle_after_last_emit >= Duration::from_millis(250),
+            "overlay probe should let React paint the pointer halo before capture starts"
+        );
     }
 }
