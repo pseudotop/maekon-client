@@ -119,18 +119,14 @@ impl AppRuntimeLaunchBuilder {
         let event_tx = core_resources.background_runtime.event_tx();
         let shutdown_tx = core_resources.background_runtime.shutdown_tx();
 
-        // Shared flag for on-demand re-clustering: scheduler, web server, and Tauri IPC
-        // all reference the same AtomicBool so any endpoint can trigger re-clustering.
+        // Shared re-clustering flag used by scheduler, web server, and IPC.
         let recluster_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // ADR-023 / #4478 G3: shared flag so the web "Delete all data" endpoint can ask
-        // the SyncEngine to propagate a device-wide DeletionEvent to LAN peers.
+        // Shared erasure flag lets local deletion fan out to LAN peers.
         let erasure_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let cua_safe_mode = cua_safe_mode_enabled();
         if cua_safe_mode {
-            tracing::info!(
-                "CUA safe mode enabled: automatic capture starts paused; manual capture remains available"
-            );
+            tracing::info!("CUA safe mode enabled: automatic capture starts paused; manual capture remains available");
         }
 
         let capture_wiring = build_capture_wiring(
@@ -169,11 +165,7 @@ impl AppRuntimeLaunchBuilder {
         // Focus mode state — transient, not persisted across restarts.
         let focus_mode = Arc::new(crate::focus_mode::FocusModeState::new());
 
-        // review4 F14: wire the boundary PII sanitizer onto the production coaching
-        // engine. Without it `pii_sanitizer` is None and the documented template_text
-        // sanitization is inert — raw {app_name}/{regime} interpolations reach the LLM
-        // personalization prompt, the persisted message_template, and the notification
-        // body. VisionPiiSanitizer + the configured level mirror the other surfaces.
+        // Keep coaching template interpolation behind the same PII sanitizer as other surfaces.
         let coaching_engine = Arc::new(
             maekon_analysis::CoachingEngine::new(config.coaching.clone()).with_pii_sanitizer(
                 Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
@@ -183,9 +175,7 @@ impl AppRuntimeLaunchBuilder {
         let (regime_manager_arc, regime_classifier_arc, regime_storage) =
             build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
-        // E20-24 (#4816): local learning sink + pipeline are gated on
-        // `local-suggestions` (default-on), not `server`, so OSS builds get the
-        // on-device suggestion pipeline. The server feature ADDS network transport.
+        // OSS builds keep on-device suggestions; `server` only adds network transport.
         #[cfg(feature = "local-suggestions")]
         let feedback_sink: Arc<
             dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink,
@@ -208,21 +198,14 @@ impl AppRuntimeLaunchBuilder {
         #[cfg(not(feature = "local-suggestions"))]
         let suggestion_manager: Option<Arc<crate::suggestion_manager::SuggestionManager>> = None;
 
-        // Adapter-side health flags — written by adapters on success/failure,
-        // read by the health check loop. The loop is the single source of truth
-        // for connection status.
+        // Adapter health flags feed the connection-status health loop.
         let server_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let llm_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cli_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        // Analysis provider health flag — shared between the FallbackAnalysisProvider
-        // (written on success/failure) and AppState (read by get_analysis_health IPC).
-        // Starts `true` (optimistic); flipped to `false` on first primary failure.
+        // Analysis health starts optimistic and flips on first primary failure.
         let analysis_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-        // CoachingEngine was already constructed above (Phase 3 composition
-        // root) so the FeedbackSender sink could be wired at the FeedbackSender
-        // construction site.
         let coaching_storage: Arc<dyn CoachingStoragePort> = sqlite_storage.clone();
 
         // Create MagicOverlay handle (window created at startup in setup.rs)

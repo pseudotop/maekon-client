@@ -348,6 +348,19 @@ mod tests {
     use maekon_core::models::ai_session::MessageRole;
     use std::path::PathBuf;
 
+    fn false_executable_path() -> PathBuf {
+        #[cfg(windows)]
+        {
+            std::env::var_os("COMSPEC")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("cmd.exe"))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/usr/bin/false")
+        }
+    }
+
     #[tokio::test]
     async fn claude_terminate_requests_stream_cancel() {
         let config = SessionConfig {
@@ -363,7 +376,7 @@ mod tests {
         let session = ClaudeSubprocessSession::new(
             DetectedSubprocessCli {
                 surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
-                executable_path: PathBuf::from("/usr/bin/false"),
+                executable_path: false_executable_path(),
             },
             &config,
             Arc::new(AiSessionConfig::default()),
@@ -392,7 +405,7 @@ mod tests {
         let session = ClaudeSubprocessSession::new(
             DetectedSubprocessCli {
                 surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
-                executable_path: PathBuf::from("/usr/bin/false"),
+                executable_path: false_executable_path(),
             },
             &config,
             Arc::new(AiSessionConfig::default()),
@@ -448,7 +461,7 @@ mod tests {
         ClaudeSubprocessSession::new(
             DetectedSubprocessCli {
                 surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
-                executable_path: PathBuf::from("/usr/bin/false"),
+                executable_path: false_executable_path(),
             },
             &config,
             Arc::new(AiSessionConfig::default()),
