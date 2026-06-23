@@ -3,7 +3,10 @@ use crate::error::ApiError;
 use maekon_api_contracts::settings::{
     AppSettings, ExternalApiSettings, SavedAiProviderProfile as ApiSavedAiProviderProfile,
 };
-use maekon_core::config::{CredentialAuthMode, CredentialBackendKind};
+use maekon_core::config::{
+    CredentialAuthMode, CredentialBackendKind, MicInputMode, SttLanguage, SttProviderKind, Weekday,
+    WhisperModelSize,
+};
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::secret_store::SecretStore;
 use std::sync::Arc;
@@ -191,6 +194,146 @@ async fn update_settings_persists_selected_saved_profile_under_profile_namespace
         "provider/anthropic/anthropic-prod"
     );
     assert_eq!(profile_secret_ref.key, "api_key");
+}
+
+#[tokio::test]
+async fn update_settings_persists_audio_and_focus_auto_sections() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let context = test_context_from_state(&state);
+
+    let mut settings = AppSettings::default();
+    settings.audio.enabled = true;
+    settings.audio.whisper_model_path = "/models/ggml-small.bin".to_string();
+    settings.audio.language = "ko".to_string();
+    settings.audio.max_recording_secs = 45;
+    settings.audio.model_size = "small".to_string();
+    settings.audio.stt_provider = "cloud".to_string();
+    settings.audio.cloud_api_key = "sk-audio-test".to_string();
+    settings.audio.cloud_stt_endpoint = "https://stt.example.com/v1/transcriptions".to_string();
+    settings.audio.cloud_timeout_secs = 22;
+    settings.audio.mic_input_mode = "voice_activity".to_string();
+    settings.audio.vad_threshold = 0.05;
+    settings.audio.vad_silence_ms = 1200;
+    settings.audio.vad_min_speech_ms = 450;
+    settings.focus_auto.enabled = true;
+    settings.focus_auto.duration_minutes = 50;
+    settings.focus_auto.trigger_apps = vec!["Code".to_string(), "Terminal".to_string()];
+    settings.focus_auto.trigger_schedules =
+        vec![maekon_api_contracts::settings::FocusScheduleSettings {
+            start: "09:00".to_string(),
+            end: "12:00".to_string(),
+            days: vec!["Mon".to_string(), "Wed".to_string()],
+        }];
+    settings.focus_auto.cooldown_secs = 900;
+
+    crate::services::settings_web_service::SettingsCommandService::new(context)
+        .update_settings(&settings)
+        .await
+        .expect("settings update should persist audio and focus_auto");
+
+    let saved = config_manager.get();
+    assert!(saved.audio.enabled);
+    assert_eq!(saved.audio.whisper_model_path, "/models/ggml-small.bin");
+    assert_eq!(saved.audio.language, SttLanguage::Ko);
+    assert_eq!(saved.audio.max_recording_secs, 45);
+    assert_eq!(saved.audio.model_size, WhisperModelSize::Small);
+    assert_eq!(saved.audio.stt_provider, SttProviderKind::Cloud);
+    assert_eq!(saved.audio.cloud_api_key, "sk-audio-test");
+    assert_eq!(
+        saved.audio.cloud_stt_endpoint,
+        "https://stt.example.com/v1/transcriptions"
+    );
+    assert_eq!(saved.audio.cloud_timeout_secs, 22);
+    assert_eq!(saved.audio.mic_input_mode, MicInputMode::VoiceActivity);
+    assert_eq!(saved.audio.vad_threshold, 0.05);
+    assert_eq!(saved.audio.vad_silence_ms, 1200);
+    assert_eq!(saved.audio.vad_min_speech_ms, 450);
+
+    assert!(saved.focus_auto.enabled);
+    assert_eq!(saved.focus_auto.duration_minutes, 50);
+    assert_eq!(
+        saved.focus_auto.trigger_apps,
+        vec!["Code".to_string(), "Terminal".to_string()]
+    );
+    assert_eq!(saved.focus_auto.trigger_schedules.len(), 1);
+    let schedule = &saved.focus_auto.trigger_schedules[0];
+    assert_eq!(schedule.time_range.start, "09:00");
+    assert_eq!(schedule.time_range.end, "12:00");
+    assert_eq!(schedule.days, vec![Weekday::Mon, Weekday::Wed]);
+    assert_eq!(saved.focus_auto.cooldown_secs, 900);
+}
+
+#[tokio::test]
+async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let context = test_context_from_state(&state);
+
+    let mut settings = AppSettings::default();
+    settings.coaching.enabled = true;
+    settings.coaching.locale = "ko".to_string();
+    settings.coaching.quiet_hours =
+        vec![maekon_api_contracts::settings::CoachingTimeRangeSettings {
+            start: "22:00".to_string(),
+            end: "07:30".to_string(),
+        }];
+    settings.coaching.profiles.clear();
+    settings.coaching.profiles.insert(
+        "FocusGuard".to_string(),
+        maekon_api_contracts::settings::CoachingProfileSettings {
+            enabled: true,
+            min_interval_secs: 120,
+        },
+    );
+    settings.coaching.profiles.insert(
+        "TimeAware".to_string(),
+        maekon_api_contracts::settings::CoachingProfileSettings {
+            enabled: false,
+            min_interval_secs: 900,
+        },
+    );
+    settings
+        .coaching
+        .regime_goals
+        .insert("deep_work".to_string(), 180);
+
+    crate::services::settings_web_service::SettingsCommandService::new(context)
+        .update_settings(&settings)
+        .await
+        .expect("settings update should persist coaching sections");
+
+    let saved = config_manager.get();
+    assert!(saved.coaching.enabled);
+    assert_eq!(saved.coaching.locale, "ko");
+    assert_eq!(saved.coaching.quiet_hours.len(), 1);
+    assert_eq!(saved.coaching.quiet_hours[0].start, "22:00");
+    assert_eq!(saved.coaching.quiet_hours[0].end, "07:30");
+    assert_eq!(
+        saved
+            .coaching
+            .profiles
+            .get("FocusGuard")
+            .expect("FocusGuard profile")
+            .min_interval_secs,
+        120
+    );
+    assert!(
+        !saved
+            .coaching
+            .profiles
+            .get("TimeAware")
+            .expect("TimeAware profile")
+            .enabled
+    );
+    assert_eq!(
+        saved.coaching.regime_goals.get("deep_work").copied(),
+        Some(180)
+    );
 }
 
 /// F-RR-C22-01: `SettingsCommandService` must create its `SettingsUpdateFlow`

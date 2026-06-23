@@ -182,6 +182,16 @@ impl From<maekon_core::error::CoreError> for ApiError {
     }
 }
 
+impl From<maekon_core::models::ai_session::SessionInputLimitError> for ApiError {
+    fn from(err: maekon_core::models::ai_session::SessionInputLimitError) -> Self {
+        ApiError::Coded {
+            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            code: err.code.to_string(),
+            message: err.message,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

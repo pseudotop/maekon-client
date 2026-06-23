@@ -3,15 +3,17 @@ use maekon_api_contracts::settings::{
     SavedAiProviderProfile as ApiSavedAiProviderProfile,
 };
 use maekon_core::config::{
-    AiProviderConfig, AiProviderProfileConfig, AppConfig, OcrValidationConfig,
-    SavedAiProviderProfile, SceneActionOverrideConfig, SceneIntelligenceConfig,
+    AiProviderConfig, AiProviderProfileConfig, AppConfig, FocusSchedule, OcrValidationConfig,
+    ProfileConfig, SavedAiProviderProfile, SceneActionOverrideConfig, SceneIntelligenceConfig,
+    TimeRange,
 };
 
 use crate::error::ApiError;
 use crate::services::settings_endpoint::{api_settings_to_endpoint, ApiEndpointKind};
 use crate::services::settings_validation::{
-    parse_ai_access_mode, parse_external_data_policy, parse_llm_provider, parse_ocr_provider,
-    parse_optional_rfc3339_utc, parse_pii_filter_level, parse_sandbox_profile, parse_weekday,
+    parse_ai_access_mode, parse_external_data_policy, parse_llm_provider, parse_mic_input_mode,
+    parse_ocr_provider, parse_optional_rfc3339_utc, parse_pii_filter_level, parse_sandbox_profile,
+    parse_stt_language, parse_stt_provider, parse_weekday, parse_whisper_model_size,
     trim_to_option,
 };
 
@@ -81,6 +83,54 @@ fn apply_general_settings(config: &mut AppConfig, settings: &AppSettings) -> Res
     config.automation.sandbox.allow_network = settings.sandbox.allow_network;
     config.automation.sandbox.max_memory_bytes = settings.sandbox.max_memory_bytes;
     config.automation.sandbox.max_cpu_time_ms = settings.sandbox.max_cpu_time_ms;
+    apply_audio_settings(config, settings)?;
+    apply_focus_auto_settings(config, settings)?;
+    Ok(())
+}
+
+fn apply_audio_settings(config: &mut AppConfig, settings: &AppSettings) -> Result<(), ApiError> {
+    config.audio.enabled = settings.audio.enabled;
+    config.audio.whisper_model_path = settings.audio.whisper_model_path.clone();
+    config.audio.language = parse_stt_language(&settings.audio.language)?;
+    config.audio.max_recording_secs = settings.audio.max_recording_secs;
+    config.audio.model_size = parse_whisper_model_size(&settings.audio.model_size)?;
+    config.audio.stt_provider = parse_stt_provider(&settings.audio.stt_provider)?;
+    config.audio.cloud_api_key = settings.audio.cloud_api_key.clone();
+    config.audio.cloud_stt_endpoint = settings.audio.cloud_stt_endpoint.clone();
+    config.audio.cloud_timeout_secs = settings.audio.cloud_timeout_secs;
+    config.audio.mic_input_mode = parse_mic_input_mode(&settings.audio.mic_input_mode)?;
+    config.audio.vad_threshold = settings.audio.vad_threshold;
+    config.audio.vad_silence_ms = settings.audio.vad_silence_ms;
+    config.audio.vad_min_speech_ms = settings.audio.vad_min_speech_ms;
+    Ok(())
+}
+
+fn apply_focus_auto_settings(
+    config: &mut AppConfig,
+    settings: &AppSettings,
+) -> Result<(), ApiError> {
+    config.focus_auto.enabled = settings.focus_auto.enabled;
+    config.focus_auto.duration_minutes = settings.focus_auto.duration_minutes;
+    config.focus_auto.trigger_apps = settings.focus_auto.trigger_apps.clone();
+    config.focus_auto.trigger_schedules = settings
+        .focus_auto
+        .trigger_schedules
+        .iter()
+        .map(|schedule| {
+            Ok(FocusSchedule {
+                time_range: TimeRange {
+                    start: schedule.start.clone(),
+                    end: schedule.end.clone(),
+                },
+                days: schedule
+                    .days
+                    .iter()
+                    .map(|day| parse_weekday(day))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    config.focus_auto.cooldown_secs = settings.focus_auto.cooldown_secs;
     Ok(())
 }
 
@@ -342,6 +392,30 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
     // via the dedicated CoachingGoalsTab, not the Advanced tab.
     config.coaching.enabled = settings.coaching.enabled;
     config.coaching.locale = settings.coaching.locale.clone();
+    config.coaching.quiet_hours = settings
+        .coaching
+        .quiet_hours
+        .iter()
+        .map(|range| TimeRange {
+            start: range.start.clone(),
+            end: range.end.clone(),
+        })
+        .collect();
+    config.coaching.profiles = settings
+        .coaching
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            (
+                name.clone(),
+                ProfileConfig {
+                    enabled: profile.enabled,
+                    min_interval_secs: profile.min_interval_secs,
+                },
+            )
+        })
+        .collect();
+    config.coaching.regime_goals = settings.coaching.regime_goals.clone();
 
     // Integration
     // Note: integration.auth_profile_kind is read-only — enum requires

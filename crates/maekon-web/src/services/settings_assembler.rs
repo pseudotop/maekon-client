@@ -1,8 +1,9 @@
 use maekon_api_contracts::settings::{
     AiProviderProfileConfig as ApiAiProviderProfileConfig, AiProviderSettings, AiSessionSettings,
-    AnalysisSettings, AppSettings, AutomationSettings, CoachingSettings, ExternalApiSettings,
-    IndicatorSettings, IntegrationSettings, MonitorControlSettings, NetworkSettings,
-    NotificationSettings, OcrValidationSettings, PrivacySettings, SandboxSettings,
+    AnalysisSettings, AppSettings, AudioSettings, AutomationSettings, CoachingProfileSettings,
+    CoachingSettings, CoachingTimeRangeSettings, ExternalApiSettings, FocusAutoSettings,
+    FocusScheduleSettings, IndicatorSettings, IntegrationSettings, MonitorControlSettings,
+    NetworkSettings, NotificationSettings, OcrValidationSettings, PrivacySettings, SandboxSettings,
     SavedAiProviderProfile as ApiSavedAiProviderProfile, SceneActionOverrideSettings,
     SceneIntelligenceSettings, ScheduleSettings, SuggestionSettings, SyncSettings,
     TelemetrySettings, UpdateSettings,
@@ -134,6 +135,30 @@ pub(crate) fn config_to_settings(
             tone: format!("{}", config.coaching.tone),
             locale: config.coaching.locale.clone(),
             overlay_mode: format!("{}", config.coaching.overlay_mode),
+            quiet_hours: config
+                .coaching
+                .quiet_hours
+                .iter()
+                .map(|range| CoachingTimeRangeSettings {
+                    start: range.start.clone(),
+                    end: range.end.clone(),
+                })
+                .collect(),
+            profiles: config
+                .coaching
+                .profiles
+                .iter()
+                .map(|(name, profile)| {
+                    (
+                        name.clone(),
+                        CoachingProfileSettings {
+                            enabled: profile.enabled,
+                            min_interval_secs: profile.min_interval_secs,
+                        },
+                    )
+                })
+                .collect(),
+            regime_goals: config.coaching.regime_goals.clone(),
         },
         integration: IntegrationSettings {
             enabled: config.integration.enabled,
@@ -148,6 +173,37 @@ pub(crate) fn config_to_settings(
             device_name: config.sync.device_name.clone(),
             lan_advertise: config.sync.lan_advertise,
             compression_enabled: config.sync.compression_enabled,
+        },
+        audio: AudioSettings {
+            enabled: config.audio.enabled,
+            whisper_model_path: config.audio.whisper_model_path.clone(),
+            language: config.audio.language.to_string(),
+            max_recording_secs: config.audio.max_recording_secs,
+            model_size: config.audio.model_size.to_string(),
+            stt_provider: config.audio.stt_provider.to_string(),
+            cloud_api_key: config.audio.cloud_api_key.clone(),
+            cloud_stt_endpoint: config.audio.cloud_stt_endpoint.clone(),
+            cloud_timeout_secs: config.audio.cloud_timeout_secs,
+            mic_input_mode: config.audio.mic_input_mode.to_string(),
+            vad_threshold: config.audio.vad_threshold,
+            vad_silence_ms: config.audio.vad_silence_ms,
+            vad_min_speech_ms: config.audio.vad_min_speech_ms,
+        },
+        focus_auto: FocusAutoSettings {
+            enabled: config.focus_auto.enabled,
+            duration_minutes: config.focus_auto.duration_minutes,
+            trigger_apps: config.focus_auto.trigger_apps.clone(),
+            trigger_schedules: config
+                .focus_auto
+                .trigger_schedules
+                .iter()
+                .map(|schedule| FocusScheduleSettings {
+                    start: schedule.time_range.start.clone(),
+                    end: schedule.time_range.end.clone(),
+                    days: schedule.days.iter().map(|day| day.to_string()).collect(),
+                })
+                .collect(),
+            cooldown_secs: config.focus_auto.cooldown_secs,
         },
     }
 }

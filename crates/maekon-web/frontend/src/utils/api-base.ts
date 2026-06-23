@@ -143,17 +143,29 @@ export async function withResolvedLocalAuthHeaders(
 }
 
 /**
- * Append the local-auth token as a `?local_auth=` query param — the ONLY channel
- * that works for EventSource/SSE in a Tauri WebView (cross-origin tauri://localhost
- * → 127.0.0.1, where a custom header is impossible and a tauri-document cookie is
- * never sent to the 127.0.0.1 origin). Safe because the server logs the request
- * path WITHOUT the query string. The token is hex, so no URL-encoding is needed
- * (and the server compares the raw value).
+ * Append the local-auth token as a `?local_auth=` query param only when the
+ * EventSource request cannot rely on the same-origin API cookie. Tauri WebView
+ * streams are cross-origin (tauri://localhost → 127.0.0.1), custom headers are
+ * impossible, and the tauri-document cookie is never sent to the 127.0.0.1
+ * origin. Same-origin browser streams use the `maekon_local_auth` cookie instead
+ * so the token does not travel in request URLs. The token is hex, so no
+ * URL-encoding is needed (and the server compares the raw value).
  */
 export function withLocalAuthQuery(url: string): string {
   const token = getLocalAuthToken()
   if (!token) return url
+  if (!shouldUseLocalAuthQuery(url)) return url
   return `${url}${url.includes('?') ? '&' : '?'}local_auth=${token}`
+}
+
+function shouldUseLocalAuthQuery(url: string): boolean {
+  if (IS_TAURI) return true
+  if (typeof location === 'undefined') return false
+  try {
+    return new URL(url, location.origin).origin !== location.origin
+  } catch {
+    return true
+  }
 }
 
 /** Race-safe token resolver: injected global first, then the get_local_auth_token IPC. */

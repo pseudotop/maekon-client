@@ -28,10 +28,10 @@ pub async fn update_settings(
     State(context): State<SettingsWebContext>,
     Json(settings): Json<AppSettings>,
 ) -> Result<Json<AppSettings>, ApiError> {
-    SettingsCommandService::new(context)
+    SettingsCommandService::new(context.clone())
         .update_settings(&settings)
         .await?;
-    Ok(Json(settings))
+    Ok(Json(SettingsQueryService::new(context).get_settings()))
 }
 
 #[cfg(test)]
@@ -40,6 +40,12 @@ mod tests {
     use crate::services::{settings_assembler, settings_service};
     use maekon_api_contracts::settings::ExternalApiSettings;
     use maekon_core::config::AppConfig;
+    use maekon_core::config::UpdateChannel;
+    use maekon_core::config_manager::ConfigManager;
+    use maekon_storage::sqlite::SqliteStorage;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::broadcast;
 
     #[test]
     fn default_settings_valid() {
@@ -163,5 +169,72 @@ mod tests {
 
         let result = settings_service::apply_settings_to_config(&mut app_config, &settings);
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn update_settings_returns_canonical_reloaded_settings() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_path = temp_dir.path().join("config.json");
+        let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
+        let (event_tx, _) = broadcast::channel(8);
+        let mut state = crate::AppState::with_core(storage, event_tx);
+        state.core.config_manager = Some(config_manager.clone());
+        let context = SettingsWebContext::from_state(&state);
+
+        let mut settings = AppSettings::default();
+        settings.update.channel = "prerelease".to_string();
+
+        let Json(response) = update_settings(State(context), Json(settings))
+            .await
+            .expect("settings update should succeed");
+
+        assert_eq!(
+            config_manager.get().update.channel,
+            UpdateChannel::PreRelease
+        );
+        assert_eq!(response.update.channel, "pre_release");
+    }
+
+    #[tokio::test]
+    async fn update_settings_returns_canonical_coaching_profiles_and_quiet_hours() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_path = temp_dir.path().join("config.json");
+        let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
+        let (event_tx, _) = broadcast::channel(8);
+        let mut state = crate::AppState::with_core(storage, event_tx);
+        state.core.config_manager = Some(config_manager);
+        let context = SettingsWebContext::from_state(&state);
+
+        let mut settings = AppSettings::default();
+        settings.coaching.quiet_hours =
+            vec![maekon_api_contracts::settings::CoachingTimeRangeSettings {
+                start: "22:00".to_string(),
+                end: "07:30".to_string(),
+            }];
+        settings
+            .coaching
+            .profiles
+            .get_mut("FocusGuard")
+            .expect("default FocusGuard profile")
+            .min_interval_secs = 120;
+
+        let Json(response) = update_settings(State(context), Json(settings))
+            .await
+            .expect("settings update should succeed");
+
+        assert_eq!(response.coaching.quiet_hours.len(), 1);
+        assert_eq!(response.coaching.quiet_hours[0].start, "22:00");
+        assert_eq!(response.coaching.quiet_hours[0].end, "07:30");
+        assert_eq!(
+            response
+                .coaching
+                .profiles
+                .get("FocusGuard")
+                .expect("FocusGuard profile")
+                .min_interval_secs,
+            120
+        );
     }
 }

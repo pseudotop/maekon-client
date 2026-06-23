@@ -1084,10 +1084,10 @@ follow-up: E31 post-migration supply-chain hand audit; local patched upstream cr
 """
 
 [[exemptions.quinn-proto]]
-version = "0.11.14"
+version = "0.11.15"
 criteria = "safe-to-deploy"
 notes = """
-reason: e31-upgrade-baseline (lockfile refresh dependency without manual audit)
+reason: RUSTSEC-2026-0185 remediation patch update from 0.11.14 (cargo-vet exemption carried forward for the reviewed dependency line)
 review-by: 2026-11-06
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
 """

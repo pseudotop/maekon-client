@@ -535,6 +535,9 @@ jobs:
   # `cargo test --workspace` — the heavy native-lib features (ocr/whisper/embedding/
   # ml-detect) are non-default and installed on no runner, and the Linux-only
   # features (linux-sandbox/systemd-notify/linux-atspi) don't apply off-Linux.
+  # maekon-embedding's default fastembed-local feature pulls ONNX Runtime; the
+  # comprehensive Linux leg still covers it, while the platform leg stays focused
+  # on OS-gated code instead of native ML linker availability.
   #
   # OS-dependency notes (researched for #4826):
   #   - macOS needs NO extra system packages (CoreAudio/CoreGraphics/WKWebView/
@@ -629,7 +632,7 @@ jobs:
         # gates (value-blind assertion hedges, i18n, language-check) we hold the
         # core team to but do not hard-block external contributors on (#6346).
         # House-style is surfaced by the separate advisory step below.
-        run: cargo test --locked --workspace --exclude maekon-lint
+        run: cargo test --locked --workspace --exclude maekon-lint --exclude maekon-embedding
 
       - name: House-style gates (advisory — does not block external PRs)
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -761,11 +764,17 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     needs: [changes, test, frontend]
+    # Keep the expensive cross-platform matrix out of ordinary PRs, but make
+    # public export PRs report these checks before merge. Export branches are
+    # the release-adjacent path where a skipped Build matrix is too weak.
     if: >
-      github.event_name != 'pull_request' &&
+      (github.event_name == 'pull_request' &&
+      (startsWith(github.head_ref, 'codex/public-export-') ||
+      startsWith(github.head_ref, 'release/public-export-'))) ||
+      (github.event_name != 'pull_request' &&
       (github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.rust == 'true' ||
-      needs.changes.outputs.ci == 'true')
+      needs.changes.outputs.ci == 'true'))
     strategy:
       fail-fast: false
       matrix:

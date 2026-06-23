@@ -104,6 +104,68 @@ pub enum Attachment {
     },
 }
 
+pub const MAX_SESSION_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
+pub const MAX_SESSION_ATTACHMENTS: usize = 16;
+pub const SESSION_INPUT_TOO_LARGE_CODE: &str = "input.too_large";
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct SessionInputLimitError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+fn attachment_wire_bytes(attachment: &Attachment) -> usize {
+    match attachment {
+        Attachment::Image { mime, path, data } => {
+            mime.len() + path.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
+        }
+        Attachment::File { path, mime, data } => {
+            path.len() + mime.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
+        }
+        Attachment::Directory { path } => path.len(),
+        Attachment::Skill {
+            skill_id,
+            display_name,
+        } => skill_id.len() + display_name.as_ref().map_or(0, String::len),
+        Attachment::AppReference {
+            app_name,
+            window_title,
+        } => app_name.len() + window_title.as_ref().map_or(0, String::len),
+    }
+}
+
+pub fn validate_session_input_size(
+    label: &str,
+    message: &str,
+    attachments: &[Attachment],
+) -> Result<(), SessionInputLimitError> {
+    if attachments.len() > MAX_SESSION_ATTACHMENTS {
+        return Err(SessionInputLimitError {
+            code: SESSION_INPUT_TOO_LARGE_CODE,
+            message: format!(
+                "{label} has too many attachments ({} > {})",
+                attachments.len(),
+                MAX_SESSION_ATTACHMENTS
+            ),
+        });
+    }
+
+    let attachment_bytes = attachments.iter().map(attachment_wire_bytes).sum::<usize>();
+    let total_bytes = message.len().saturating_add(attachment_bytes);
+    if total_bytes > MAX_SESSION_INPUT_BYTES {
+        return Err(SessionInputLimitError {
+            code: SESSION_INPUT_TOO_LARGE_CODE,
+            message: format!(
+                "{label} exceeds maximum allowed size ({} bytes > {} bytes)",
+                total_bytes, MAX_SESSION_INPUT_BYTES
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 // ── Content Blocks ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

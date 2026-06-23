@@ -11,8 +11,9 @@ use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter};
 
 use maekon_core::models::ai_session::{
-    Attachment, ConversationSessionInfo, MessageContext, MessageRecord, MessageRole,
-    OutboundMessage, SessionConfig, SessionMessage, SessionRecord, SessionState, ToolDefinition,
+    validate_session_input_size, Attachment, ConversationSessionInfo, MessageContext,
+    MessageRecord, MessageRole, OutboundMessage, SessionConfig, SessionMessage, SessionRecord,
+    SessionState, ToolDefinition,
 };
 use maekon_core::ports::conversation_session::SessionManager;
 
@@ -21,9 +22,6 @@ use crate::runtime_state::{
     AiSessionRuntimeState, CodexApprovalRuntimeState, SuggestionRuntimeState,
 };
 use tracing::debug;
-
-const MAX_SESSION_INPUT_BYTES: usize = 256 * 1024; // 256 KiB
-const MAX_SESSION_ATTACHMENTS: usize = 16;
 
 /// Require a live session manager; returns a service.unavailable IpcError
 /// when the manager is not wired (non-AI-enabled builds or early startup).
@@ -51,57 +49,6 @@ pub struct SendSessionMessageRequest {
     pub tools: Option<Vec<ToolDefinition>>,
     pub context: Option<MessageContext>,
     pub response_format: Option<serde_json::Value>,
-}
-
-fn attachment_wire_bytes(attachment: &Attachment) -> usize {
-    match attachment {
-        Attachment::Image { mime, path, data } => {
-            mime.len() + path.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
-        }
-        Attachment::File { path, mime, data } => {
-            path.len() + mime.as_ref().map_or(0, String::len) + data.as_ref().map_or(0, String::len)
-        }
-        Attachment::Directory { path } => path.len(),
-        Attachment::Skill {
-            skill_id,
-            display_name,
-        } => skill_id.len() + display_name.as_ref().map_or(0, String::len),
-        Attachment::AppReference {
-            app_name,
-            window_title,
-        } => app_name.len() + window_title.as_ref().map_or(0, String::len),
-    }
-}
-
-fn validate_session_input_size(
-    label: &str,
-    message: &str,
-    attachments: &[Attachment],
-) -> Result<(), IpcError> {
-    if attachments.len() > MAX_SESSION_ATTACHMENTS {
-        return Err(IpcError::new(
-            "input.too_large",
-            format!(
-                "{label} has too many attachments ({} > {})",
-                attachments.len(),
-                MAX_SESSION_ATTACHMENTS
-            ),
-        ));
-    }
-
-    let attachment_bytes = attachments.iter().map(attachment_wire_bytes).sum::<usize>();
-    let total_bytes = message.len().saturating_add(attachment_bytes);
-    if total_bytes > MAX_SESSION_INPUT_BYTES {
-        return Err(IpcError::new(
-            "input.too_large",
-            format!(
-                "{label} exceeds maximum allowed size ({} bytes > {} bytes)",
-                total_bytes, MAX_SESSION_INPUT_BYTES
-            ),
-        ));
-    }
-
-    Ok(())
 }
 
 /// Create a new AI conversation session.
@@ -164,7 +111,8 @@ pub async fn send_session_message(
     }
 
     let attachments = request.attachments.unwrap_or_default();
-    validate_session_input_size("message", &request.message, &attachments)?;
+    validate_session_input_size("message", &request.message, &attachments)
+        .map_err(IpcError::from)?;
 
     let session = mgr
         .get_session(&request.session_id)
@@ -588,11 +536,10 @@ pub struct TokenUsageResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        decision_to_bool, validate_session_input_size, MAX_SESSION_ATTACHMENTS,
-        MAX_SESSION_INPUT_BYTES,
+    use super::decision_to_bool;
+    use maekon_core::models::ai_session::{
+        validate_session_input_size, Attachment, MAX_SESSION_ATTACHMENTS, MAX_SESSION_INPUT_BYTES,
     };
-    use maekon_core::models::ai_session::Attachment;
 
     #[test]
     fn accept_maps_true_decline_and_cancel_map_false() {

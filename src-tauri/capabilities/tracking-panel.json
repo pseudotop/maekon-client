@@ -11,6 +11,19 @@
     "core:window:allow-set-size",
     "core:window:allow-start-dragging",
     "core:window:allow-set-position",
-    "notification:default"
+    "notification:default",
+    "allow-get-capture-status",
+    "allow-get-connection-status",
+    "allow-get-panel-position",
+    "allow-save-panel-position",
+    "allow-trigger-manual-capture",
+    "allow-analyze-current-scene",
+    "allow-get-focus-mode-status",
+    "allow-toggle-focus-mode",
+    "allow-toggle-suggestions-panel",
+    "allow-show-main-window",
+    "allow-simulate-tray-action",
+    "allow-toggle-capture-pause",
+    "allow-set-indicator-visible"
   ]
 }
