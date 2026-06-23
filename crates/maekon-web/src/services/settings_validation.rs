@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use maekon_api_contracts::settings::AppSettings;
 use maekon_core::config::{
     AiAccessMode, AiProviderType, CredentialAuthMode, CredentialBackendKind, ExternalDataPolicy,
-    LlmProviderType, OcrProviderType, PiiFilterLevel, SandboxProfile, Weekday,
+    LlmProviderType, MicInputMode, OcrProviderType, PiiFilterLevel, SandboxProfile, SttLanguage,
+    SttProviderKind, Weekday, WhisperModelSize,
 };
 use maekon_core::ports::secret_store::validate_secret_segment;
 use maekon_core::provider_surface::provider_type_from_vendor_id;
@@ -100,6 +101,97 @@ pub(crate) fn validate_settings_input(settings: &AppSettings) -> Result<(), ApiE
         ));
     }
     validate_ai_provider_profiles_input(settings)?;
+    validate_coaching_settings_input(settings)?;
+    validate_audio_settings_input(settings)?;
+    validate_focus_auto_settings_input(settings)?;
+    Ok(())
+}
+
+fn validate_coaching_settings_input(settings: &AppSettings) -> Result<(), ApiError> {
+    for range in settings.coaching.quiet_hours.iter() {
+        validate_hhmm(&range.start, "coaching.quiet_hours[].start")?;
+        validate_hhmm(&range.end, "coaching.quiet_hours[].end")?;
+    }
+
+    for (name, profile) in settings.coaching.profiles.iter() {
+        if name.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "coaching.profiles keys must not be empty.".to_string(),
+            ));
+        }
+        if profile.min_interval_secs == 0 || profile.min_interval_secs > 86_400 {
+            return Err(ApiError::BadRequest(format!(
+                "coaching.profiles.{name}.min_interval_secs must be within 1..=86400."
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_audio_settings_input(settings: &AppSettings) -> Result<(), ApiError> {
+    parse_stt_language(&settings.audio.language)?;
+    parse_whisper_model_size(&settings.audio.model_size)?;
+    parse_stt_provider(&settings.audio.stt_provider)?;
+    parse_mic_input_mode(&settings.audio.mic_input_mode)?;
+
+    if settings.audio.max_recording_secs == 0 || settings.audio.max_recording_secs > 3600 {
+        return Err(ApiError::BadRequest(
+            "audio.max_recording_secs must be within 1..=3600.".to_string(),
+        ));
+    }
+    if settings.audio.cloud_timeout_secs == 0 || settings.audio.cloud_timeout_secs > 300 {
+        return Err(ApiError::BadRequest(
+            "audio.cloud_timeout_secs must be within 1..=300.".to_string(),
+        ));
+    }
+    if !settings.audio.vad_threshold.is_finite()
+        || !(0.0..=1.0).contains(&settings.audio.vad_threshold)
+    {
+        return Err(ApiError::BadRequest(
+            "audio.vad_threshold must be within 0.0..=1.0.".to_string(),
+        ));
+    }
+    if settings.audio.vad_silence_ms == 0 {
+        return Err(ApiError::BadRequest(
+            "audio.vad_silence_ms must be greater than 0.".to_string(),
+        ));
+    }
+    if settings.audio.vad_min_speech_ms == 0 {
+        return Err(ApiError::BadRequest(
+            "audio.vad_min_speech_ms must be greater than 0.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_focus_auto_settings_input(settings: &AppSettings) -> Result<(), ApiError> {
+    for schedule in settings.focus_auto.trigger_schedules.iter() {
+        validate_hhmm(&schedule.start, "focus_auto.trigger_schedules[].start")?;
+        validate_hhmm(&schedule.end, "focus_auto.trigger_schedules[].end")?;
+        for day in schedule.days.iter() {
+            parse_weekday(day)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_hhmm(value: &str, field: &str) -> Result<(), ApiError> {
+    let Some((hour, minute)) = value
+        .split_once(':')
+        .and_then(|(hour, minute)| Some((hour.parse::<u32>().ok()?, minute.parse::<u32>().ok()?)))
+    else {
+        return Err(ApiError::BadRequest(format!(
+            "{field} must use HH:MM format."
+        )));
+    };
+
+    if hour >= 24 || minute >= 60 {
+        return Err(ApiError::BadRequest(format!(
+            "{field} must use HH:MM format."
+        )));
+    }
     Ok(())
 }
 
@@ -172,6 +264,49 @@ pub(crate) fn parse_weekday(value: &str) -> Result<Weekday, ApiError> {
         "sun" => Ok(Weekday::Sun),
         _ => Err(ApiError::BadRequest(format!(
             "Invalid schedule.active_days value: {value}"
+        ))),
+    }
+}
+
+pub(crate) fn parse_stt_language(value: &str) -> Result<SttLanguage, ApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(SttLanguage::Auto),
+        "en" => Ok(SttLanguage::En),
+        "ko" => Ok(SttLanguage::Ko),
+        _ => Err(ApiError::BadRequest(format!(
+            "Invalid audio.language value: {value}"
+        ))),
+    }
+}
+
+pub(crate) fn parse_whisper_model_size(value: &str) -> Result<WhisperModelSize, ApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "tiny" => Ok(WhisperModelSize::Tiny),
+        "base" => Ok(WhisperModelSize::Base),
+        "small" => Ok(WhisperModelSize::Small),
+        "medium" => Ok(WhisperModelSize::Medium),
+        _ => Err(ApiError::BadRequest(format!(
+            "Invalid audio.model_size value: {value}"
+        ))),
+    }
+}
+
+pub(crate) fn parse_stt_provider(value: &str) -> Result<SttProviderKind, ApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "local" => Ok(SttProviderKind::Local),
+        "cloud" => Ok(SttProviderKind::Cloud),
+        _ => Err(ApiError::BadRequest(format!(
+            "Invalid audio.stt_provider value: {value}"
+        ))),
+    }
+}
+
+pub(crate) fn parse_mic_input_mode(value: &str) -> Result<MicInputMode, ApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "push_to_talk" | "pushtotalk" => Ok(MicInputMode::PushToTalk),
+        "voice_activity" | "voiceactivity" => Ok(MicInputMode::VoiceActivity),
+        _ => Err(ApiError::BadRequest(format!(
+            "Invalid audio.mic_input_mode value: {value}"
         ))),
     }
 }
@@ -325,6 +460,37 @@ mod tests {
         // complete correct outcome for well-formed defaults.  The contract has no
         // payload beyond the Ok discriminant (#5594).
         validate_settings_input(&s).expect("AppSettings::default() must pass all validation rules");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_coaching_quiet_hours_time() {
+        let mut s = valid_settings();
+        s.coaching.quiet_hours = vec![maekon_api_contracts::settings::CoachingTimeRangeSettings {
+            start: "24:00".to_string(),
+            end: "07:30".to_string(),
+        }];
+
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_coaching_profile_interval() {
+        let mut s = valid_settings();
+        s.coaching
+            .profiles
+            .get_mut("FocusGuard")
+            .expect("default FocusGuard profile")
+            .min_interval_secs = 0;
+
+        let err = validate_settings_input(&s).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
     }
 
     #[test]
@@ -616,6 +782,40 @@ mod tests {
             matches!(err, ApiError::BadRequest(_)),
             "expected ApiError::BadRequest, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn validate_rejects_unknown_audio_tokens() {
+        let mut s = valid_settings();
+        s.audio.stt_provider = "satellite".to_string();
+        let err = validate_settings_input(&s).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("audio.stt_provider"), "message: {message}");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_invalid_focus_auto_schedule_time() {
+        let mut s = valid_settings();
+        s.focus_auto.trigger_schedules =
+            vec![maekon_api_contracts::settings::FocusScheduleSettings {
+                start: "25:00".to_string(),
+                end: "12:00".to_string(),
+                days: vec!["Mon".to_string()],
+            }];
+        let err = validate_settings_input(&s).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(
+                    message.contains("focus_auto.trigger_schedules[].start"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
     }
 
     // ── parse_pii_filter_level ──────────────────────────────────────

@@ -1,8 +1,9 @@
 use crate::services::settings_assembler::config_to_settings;
 use maekon_core::config::{
     AiAccessMode, AiProviderProfileConfig, AiProviderType, CredentialAuthMode,
-    CredentialBackendKind, CredentialBinding, ExternalApiEndpoint, LlmProviderType,
-    OcrProviderType, SavedAiProviderProfile, SecretRef,
+    CredentialBackendKind, CredentialBinding, ExternalApiEndpoint, FocusSchedule, LlmProviderType,
+    MicInputMode, OcrProviderType, SavedAiProviderProfile, SecretRef, SttLanguage, SttProviderKind,
+    TimeRange, Weekday, WhisperModelSize,
 };
 
 #[test]
@@ -235,4 +236,122 @@ fn config_to_settings_marks_env_bound_api_key_as_present_without_secret_ref() {
     assert!(!llm_api.can_edit_secret);
     assert_eq!(llm_api.api_key_masked, "");
     assert_eq!(llm_api.secret_display_hint, None);
+}
+
+#[test]
+fn config_to_settings_maps_coaching_profiles_and_quiet_hours() {
+    let mut config = maekon_core::config::AppConfig::default_config();
+    config.coaching.enabled = true;
+    config.coaching.quiet_hours = vec![TimeRange {
+        start: "22:00".to_string(),
+        end: "07:30".to_string(),
+    }];
+    config.coaching.profiles.clear();
+    config.coaching.profiles.insert(
+        "FocusGuard".to_string(),
+        maekon_core::config::ProfileConfig {
+            enabled: true,
+            min_interval_secs: 120,
+        },
+    );
+    config.coaching.profiles.insert(
+        "TimeAware".to_string(),
+        maekon_core::config::ProfileConfig {
+            enabled: false,
+            min_interval_secs: 900,
+        },
+    );
+    config
+        .coaching
+        .regime_goals
+        .insert("deep_work".to_string(), 180);
+
+    let settings = config_to_settings(&config, CredentialBackendKind::OsSecretStore);
+
+    assert!(settings.coaching.enabled);
+    assert_eq!(settings.coaching.quiet_hours.len(), 1);
+    assert_eq!(settings.coaching.quiet_hours[0].start, "22:00");
+    assert_eq!(settings.coaching.quiet_hours[0].end, "07:30");
+    assert_eq!(
+        settings
+            .coaching
+            .profiles
+            .get("FocusGuard")
+            .expect("FocusGuard profile")
+            .min_interval_secs,
+        120
+    );
+    assert!(
+        !settings
+            .coaching
+            .profiles
+            .get("TimeAware")
+            .expect("TimeAware profile")
+            .enabled
+    );
+    assert_eq!(
+        settings.coaching.regime_goals.get("deep_work").copied(),
+        Some(180)
+    );
+}
+
+#[test]
+fn config_to_settings_maps_audio_and_focus_auto_sections() {
+    let mut config = maekon_core::config::AppConfig::default_config();
+    config.audio.enabled = true;
+    config.audio.whisper_model_path = "/models/ggml-small.bin".to_string();
+    config.audio.language = SttLanguage::Ko;
+    config.audio.max_recording_secs = 45;
+    config.audio.model_size = WhisperModelSize::Small;
+    config.audio.stt_provider = SttProviderKind::Cloud;
+    config.audio.cloud_api_key = "sk-audio-test".to_string();
+    config.audio.cloud_stt_endpoint = "https://stt.example.com/v1/transcriptions".to_string();
+    config.audio.cloud_timeout_secs = 22;
+    config.audio.mic_input_mode = MicInputMode::VoiceActivity;
+    config.audio.vad_threshold = 0.05;
+    config.audio.vad_silence_ms = 1200;
+    config.audio.vad_min_speech_ms = 450;
+    config.focus_auto.enabled = true;
+    config.focus_auto.duration_minutes = 50;
+    config.focus_auto.trigger_apps = vec!["Code".to_string(), "Terminal".to_string()];
+    config.focus_auto.trigger_schedules = vec![FocusSchedule {
+        time_range: TimeRange {
+            start: "09:00".to_string(),
+            end: "12:00".to_string(),
+        },
+        days: vec![Weekday::Mon, Weekday::Wed],
+    }];
+    config.focus_auto.cooldown_secs = 900;
+
+    let settings = config_to_settings(&config, CredentialBackendKind::OsSecretStore);
+
+    assert!(settings.audio.enabled);
+    assert_eq!(settings.audio.whisper_model_path, "/models/ggml-small.bin");
+    assert_eq!(settings.audio.language, "ko");
+    assert_eq!(settings.audio.max_recording_secs, 45);
+    assert_eq!(settings.audio.model_size, "small");
+    assert_eq!(settings.audio.stt_provider, "cloud");
+    assert_eq!(settings.audio.cloud_api_key, "sk-audio-test");
+    assert_eq!(
+        settings.audio.cloud_stt_endpoint,
+        "https://stt.example.com/v1/transcriptions"
+    );
+    assert_eq!(settings.audio.cloud_timeout_secs, 22);
+    assert_eq!(settings.audio.mic_input_mode, "voice_activity");
+    assert_eq!(settings.audio.vad_threshold, 0.05);
+    assert_eq!(settings.audio.vad_silence_ms, 1200);
+    assert_eq!(settings.audio.vad_min_speech_ms, 450);
+
+    assert!(settings.focus_auto.enabled);
+    assert_eq!(settings.focus_auto.duration_minutes, 50);
+    assert_eq!(
+        settings.focus_auto.trigger_apps,
+        vec!["Code".to_string(), "Terminal".to_string()]
+    );
+    assert_eq!(settings.focus_auto.trigger_schedules.len(), 1);
+    let schedule = &settings.focus_auto.trigger_schedules[0];
+    assert_eq!(schedule.start, "09:00");
+    assert_eq!(schedule.end, "12:00");
+    assert_eq!(schedule.days, vec!["Mon".to_string(), "Wed".to_string()]);
+    assert_eq!(settings.focus_auto.cooldown_secs, 900);
 }

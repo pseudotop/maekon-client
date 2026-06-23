@@ -8,6 +8,22 @@
     "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-show",
     "core:window:allow-hide",
-    "notification:default"
+    "notification:default",
+    "allow-toggle-suggestions-panel",
+    "allow-toggle-automation-confirm",
+    "allow-get-pending-suggestions",
+    "allow-refresh-detection-overlay",
+    "allow-toggle-detection-overlay",
+    "allow-get-capture-status",
+    "allow-dismiss-coaching-message",
+    "allow-submit-coaching-feedback",
+    "allow-record-suggestion-replay-event",
+    "allow-explain-suggestion-in-chat",
+    "allow-submit-suggestion-feedback",
+    "allow-get-suggestion-history",
+    "allow-get-suggestion-stats",
+    "allow-get-suggestion-daily-stats",
+    "allow-confirm-automation-command",
+    "allow-respond-codex-approval"
   ]
 }

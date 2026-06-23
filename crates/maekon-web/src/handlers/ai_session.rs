@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use maekon_api_contracts::sessions::{AiSendMessageRequest, AiSessionPath};
 use maekon_core::models::ai_session::{
-    ConversationSessionInfo, MessageRole, OutboundMessage, SessionConfig, SessionMessage,
+    validate_session_input_size, ConversationSessionInfo, MessageRole, OutboundMessage,
+    SessionConfig, SessionMessage,
 };
 
 use crate::error::ApiError;
@@ -76,6 +77,8 @@ pub async fn send_message(
     let session_manager = context.session_manager.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("AI session manager is not configured".to_string())
     })?;
+
+    validate_session_input_size("message", &req.content, &req.attachments)?;
 
     let session = session_manager.get_session(&path.id).await?;
 
@@ -432,5 +435,68 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_oversized_inline_attachment_data() {
+        let app = loopback_app(test_app_state_with_session_manager());
+        let create_body = serde_json::json!({
+            "transport": "subprocess",
+            "tools_enabled": false
+        });
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&create_body).expect("serialize create body"),
+                    ))
+                    .expect("create request build"),
+            )
+            .await
+            .expect("create response");
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_body = axum::body::to_bytes(create_response.into_body(), usize::MAX)
+            .await
+            .expect("create body bytes");
+        let created: serde_json::Value =
+            serde_json::from_slice(&create_body).expect("create json parse");
+        let session_id = created["session_id"]
+            .as_str()
+            .expect("created session id")
+            .to_string();
+
+        let body = serde_json::json!({
+            "content": "hi",
+            "attachments": [{
+                "kind": "file",
+                "path": "huge.txt",
+                "mime": "text/plain",
+                "data": "a".repeat(300 * 1024)
+            }]
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/ai/sessions/{session_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&body).expect("serialize message body"),
+                    ))
+                    .expect("message request build"),
+            )
+            .await
+            .expect("message response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body bytes");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("error json parse");
+        assert_eq!(parsed["code"], "input.too_large");
     }
 }

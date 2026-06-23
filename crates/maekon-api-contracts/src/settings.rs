@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -60,6 +61,10 @@ pub struct AppSettings {
     pub integration: IntegrationSettings,
     #[serde(default)]
     pub sync: SyncSettings,
+    #[serde(default)]
+    pub audio: AudioSettings,
+    #[serde(default)]
+    pub focus_auto: FocusAutoSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -478,6 +483,8 @@ impl Default for AppSettings {
             coaching: CoachingSettings::default(),
             integration: IntegrationSettings::default(),
             sync: SyncSettings::default(),
+            audio: AudioSettings::default(),
+            focus_auto: FocusAutoSettings::default(),
         }
     }
 }
@@ -591,22 +598,65 @@ impl Default for NetworkSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CoachingSettings {
     pub enabled: bool,
     pub tone: String,
     pub locale: String,
     pub overlay_mode: String,
+    #[serde(default)]
+    pub quiet_hours: Vec<CoachingTimeRangeSettings>,
+    #[serde(default)]
+    pub profiles: HashMap<String, CoachingProfileSettings>,
+    #[serde(default)]
+    pub regime_goals: HashMap<String, u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CoachingTimeRangeSettings {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CoachingProfileSettings {
+    pub enabled: bool,
+    pub min_interval_secs: u64,
 }
 
 impl Default for CoachingSettings {
     fn default() -> Self {
+        let default = maekon_core::config::CoachingConfig::default();
         Self {
-            enabled: true,
-            tone: "balanced".to_string(),
-            locale: "en".to_string(),
-            overlay_mode: "minimal".to_string(),
+            enabled: default.enabled,
+            tone: format!("{}", default.tone),
+            locale: default.locale,
+            overlay_mode: format!("{}", default.overlay_mode),
+            quiet_hours: default
+                .quiet_hours
+                .into_iter()
+                .map(|range| CoachingTimeRangeSettings {
+                    start: range.start,
+                    end: range.end,
+                })
+                .collect(),
+            profiles: default
+                .profiles
+                .into_iter()
+                .map(|(name, profile)| {
+                    (
+                        name,
+                        CoachingProfileSettings {
+                            enabled: profile.enabled,
+                            min_interval_secs: profile.min_interval_secs,
+                        },
+                    )
+                })
+                .collect(),
+            regime_goals: default.regime_goals,
         }
     }
 }
@@ -652,6 +702,159 @@ impl Default for SyncSettings {
             device_name: String::new(),
             lan_advertise: false,
             compression_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AudioSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub whisper_model_path: String,
+    #[serde(default = "default_audio_language")]
+    pub language: String,
+    #[serde(default = "default_audio_max_recording_secs")]
+    pub max_recording_secs: u32,
+    #[serde(default = "default_audio_model_size")]
+    pub model_size: String,
+    #[serde(default = "default_audio_stt_provider")]
+    pub stt_provider: String,
+    #[serde(default)]
+    pub cloud_api_key: String,
+    #[serde(default = "default_audio_cloud_stt_endpoint")]
+    pub cloud_stt_endpoint: String,
+    #[serde(default = "default_audio_cloud_timeout_secs")]
+    pub cloud_timeout_secs: u32,
+    #[serde(default = "default_audio_mic_input_mode")]
+    pub mic_input_mode: String,
+    #[serde(default = "default_audio_vad_threshold")]
+    pub vad_threshold: f32,
+    #[serde(default = "default_audio_vad_silence_ms")]
+    pub vad_silence_ms: u32,
+    #[serde(default = "default_audio_vad_min_speech_ms")]
+    pub vad_min_speech_ms: u32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        let defaults = maekon_core::config::AudioConfig::default();
+        Self {
+            enabled: defaults.enabled,
+            whisper_model_path: defaults.whisper_model_path,
+            language: defaults.language.to_string(),
+            max_recording_secs: defaults.max_recording_secs,
+            model_size: defaults.model_size.to_string(),
+            stt_provider: defaults.stt_provider.to_string(),
+            cloud_api_key: defaults.cloud_api_key,
+            cloud_stt_endpoint: defaults.cloud_stt_endpoint,
+            cloud_timeout_secs: defaults.cloud_timeout_secs,
+            mic_input_mode: defaults.mic_input_mode.to_string(),
+            vad_threshold: defaults.vad_threshold,
+            vad_silence_ms: defaults.vad_silence_ms,
+            vad_min_speech_ms: defaults.vad_min_speech_ms,
+        }
+    }
+}
+
+fn default_audio_language() -> String {
+    maekon_core::config::SttLanguage::default().to_string()
+}
+
+fn default_audio_max_recording_secs() -> u32 {
+    maekon_core::config::AudioConfig::default().max_recording_secs
+}
+
+fn default_audio_model_size() -> String {
+    maekon_core::config::WhisperModelSize::default().to_string()
+}
+
+fn default_audio_stt_provider() -> String {
+    maekon_core::config::SttProviderKind::default().to_string()
+}
+
+fn default_audio_cloud_stt_endpoint() -> String {
+    maekon_core::config::AudioConfig::default().cloud_stt_endpoint
+}
+
+fn default_audio_cloud_timeout_secs() -> u32 {
+    maekon_core::config::AudioConfig::default().cloud_timeout_secs
+}
+
+fn default_audio_mic_input_mode() -> String {
+    maekon_core::config::MicInputMode::default().to_string()
+}
+
+fn default_audio_vad_threshold() -> f32 {
+    maekon_core::config::AudioConfig::default().vad_threshold
+}
+
+fn default_audio_vad_silence_ms() -> u32 {
+    maekon_core::config::AudioConfig::default().vad_silence_ms
+}
+
+fn default_audio_vad_min_speech_ms() -> u32 {
+    maekon_core::config::AudioConfig::default().vad_min_speech_ms
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FocusAutoSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_focus_auto_duration_minutes")]
+    pub duration_minutes: u32,
+    #[serde(default)]
+    pub trigger_apps: Vec<String>,
+    #[serde(default)]
+    pub trigger_schedules: Vec<FocusScheduleSettings>,
+    #[serde(default = "default_focus_auto_cooldown_secs")]
+    pub cooldown_secs: u64,
+}
+
+impl Default for FocusAutoSettings {
+    fn default() -> Self {
+        let defaults = maekon_core::config::FocusAutoConfig::default();
+        Self {
+            enabled: defaults.enabled,
+            duration_minutes: defaults.duration_minutes,
+            trigger_apps: defaults.trigger_apps,
+            trigger_schedules: defaults
+                .trigger_schedules
+                .into_iter()
+                .map(FocusScheduleSettings::from)
+                .collect(),
+            cooldown_secs: defaults.cooldown_secs,
+        }
+    }
+}
+
+fn default_focus_auto_duration_minutes() -> u32 {
+    maekon_core::config::FocusAutoConfig::default().duration_minutes
+}
+
+fn default_focus_auto_cooldown_secs() -> u64 {
+    maekon_core::config::FocusAutoConfig::default().cooldown_secs
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FocusScheduleSettings {
+    #[serde(default)]
+    pub start: String,
+    #[serde(default)]
+    pub end: String,
+    #[serde(default)]
+    pub days: Vec<String>,
+}
+
+impl From<maekon_core::config::FocusSchedule> for FocusScheduleSettings {
+    fn from(value: maekon_core::config::FocusSchedule) -> Self {
+        Self {
+            start: value.time_range.start,
+            end: value.time_range.end,
+            days: value.days.into_iter().map(|day| day.to_string()).collect(),
         }
     }
 }
@@ -1188,6 +1391,44 @@ mod tests {
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: TelemetrySettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn round_trip_coaching_settings_profiles_and_quiet_hours() {
+        let mut profiles = std::collections::HashMap::new();
+        profiles.insert(
+            "FocusGuard".to_string(),
+            CoachingProfileSettings {
+                enabled: true,
+                min_interval_secs: 120,
+            },
+        );
+        profiles.insert(
+            "TimeAware".to_string(),
+            CoachingProfileSettings {
+                enabled: false,
+                min_interval_secs: 900,
+            },
+        );
+
+        let mut regime_goals = std::collections::HashMap::new();
+        regime_goals.insert("deep_work".to_string(), 180);
+
+        let original = CoachingSettings {
+            enabled: true,
+            tone: "Gentle".to_string(),
+            locale: "ko".to_string(),
+            overlay_mode: "Minimal".to_string(),
+            quiet_hours: vec![CoachingTimeRangeSettings {
+                start: "22:00".to_string(),
+                end: "07:30".to_string(),
+            }],
+            profiles,
+            regime_goals,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: CoachingSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);
     }
 

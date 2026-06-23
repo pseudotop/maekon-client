@@ -64,15 +64,20 @@ export default function CoachingLayout() {
     }
   }, [queryClient, updateFreq])
 
-  const intervalSecs = Object.values(settings?.coaching?.profiles ?? {})[0]?.min_interval_secs ?? 300
+  const profiles = settings?.coaching?.profiles ?? {}
+  const intervalSecs = Object.values(profiles)[0]?.min_interval_secs ?? 300
   const isCustom = !INTERVAL_PRESETS.some((p) => p.value === intervalSecs)
 
   const handleIntervalChange = useCallback(
     async (e: React.ChangeEvent<HTMLSelectElement>) => {
       const newInterval = Number(e.target.value)
       const fresh = await queryClient.fetchQuery<AppSettings>({ queryKey: ['settings'], queryFn: fetchSettings })
+      const freshProfiles = fresh.coaching.profiles ?? {}
+      if (Object.keys(freshProfiles).length === 0) {
+        return
+      }
       const updatedProfiles = Object.fromEntries(
-        Object.entries(fresh.coaching.profiles).map(([k, v]) => [k, { ...v, min_interval_secs: newInterval }]),
+        Object.entries(freshProfiles).map(([k, v]) => [k, { ...v, min_interval_secs: newInterval }]),
       )
       updateFreq.mutate({ ...fresh, coaching: { ...fresh.coaching, profiles: updatedProfiles } })
     },

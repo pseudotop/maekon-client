@@ -2061,6 +2061,60 @@ async fn sanitize_outbound_masks_pii_in_attachments() {
     );
 }
 
+#[tokio::test]
+async fn sanitize_outbound_strips_inline_attachment_data() {
+    use super::guarded_conversation::ConversationContentGuard;
+    use maekon_core::models::ai_session::Attachment;
+
+    let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        Some(WindowInfo {
+            title: "Editor".to_string(),
+            app_name: "Code".to_string(),
+            app_bundle_id: None,
+            pid: 7,
+            bounds: None,
+        }),
+        None,
+    );
+
+    let mut message = chat_message("see attached");
+    message.attachments = vec![
+        Attachment::File {
+            path: "/Users/jane.doe/secret.txt".to_string(),
+            mime: Some("text/plain".to_string()),
+            data: Some("raw-secret-file-body".to_string()),
+        },
+        Attachment::Image {
+            mime: "image/png".to_string(),
+            path: Some("/Users/jane.doe/screen.png".to_string()),
+            data: Some("raw-secret-image-body".to_string()),
+        },
+    ];
+
+    let sanitized = guard
+        .sanitize_outbound(&message)
+        .await
+        .expect("benign window + consent should allow sanitized transmission");
+
+    for attachment in sanitized.attachments {
+        match attachment {
+            Attachment::File { data, .. } | Attachment::Image { data, .. } => {
+                assert!(
+                    data.is_none(),
+                    "external chat attachment bodies must not egress as raw inline data"
+                );
+            }
+            other => panic!("unexpected attachment variant: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn sanitize_attachment_respects_filter_level() {
     use super::types::sanitize_attachment;

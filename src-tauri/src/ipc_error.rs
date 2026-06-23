@@ -91,6 +91,15 @@ impl From<CoreError> for IpcError {
     }
 }
 
+impl From<maekon_core::models::ai_session::SessionInputLimitError> for IpcError {
+    fn from(err: maekon_core::models::ai_session::SessionInputLimitError) -> Self {
+        Self {
+            code: err.code.to_string(),
+            message: err.message,
+        }
+    }
+}
+
 impl From<GuiInteractionError> for IpcError {
     fn from(err: GuiInteractionError) -> Self {
         Self {

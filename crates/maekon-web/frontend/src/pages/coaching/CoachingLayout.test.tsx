@@ -6,7 +6,7 @@
  *   - Banner is NOT shown when settings.coaching.enabled === true.
  *   - Banner includes the "Enable coaching" action button.
  */
-import { screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
@@ -82,5 +82,54 @@ describe('CoachingLayout — disabled-state banner (#5707)', () => {
     await screen.findByText(/coaching history/i)
 
     expect(screen.queryByTestId('coaching-disabled-banner')).not.toBeInTheDocument()
+  })
+
+  it('does not crash or synthesize persistence when backend omits coaching.profiles', async () => {
+    const settingsWithoutProfiles = makeDefaultFormData()
+    settingsWithoutProfiles.coaching = {
+      enabled: true,
+      tone: 'Gentle',
+      locale: 'en',
+      overlay_mode: 'Minimal',
+    } as never
+    mockFetchSettings.mockResolvedValue(settingsWithoutProfiles)
+
+    const CoachingLayout = (await import('./CoachingLayout')).default
+    renderWithProviders(<CoachingLayout />, {
+      routerProps: { initialEntries: ['/coaching'] },
+    })
+
+    const frequencySelect = await screen.findByRole('combobox', { name: /frequency/i })
+    expect(frequencySelect).toHaveValue('300')
+
+    fireEvent.change(frequencySelect, { target: { value: '600' } })
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
+  it('persists interval changes across all returned coaching profiles', async () => {
+    mockFetchSettings.mockResolvedValue(makeDefaultFormData())
+
+    const CoachingLayout = (await import('./CoachingLayout')).default
+    renderWithProviders(<CoachingLayout />, {
+      routerProps: { initialEntries: ['/coaching'] },
+    })
+
+    const frequencySelect = await screen.findByRole('combobox', { name: /frequency/i })
+    fireEvent.change(frequencySelect, { target: { value: '600' } })
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled()
+    })
+    const payload = mockUpdateSettings.mock.calls[0][0]
+    expect(payload.coaching.profiles).toMatchObject({
+      FocusGuard: { min_interval_secs: 600 },
+      TimeAware: { min_interval_secs: 600 },
+      DeepWorkCoach: { min_interval_secs: 600 },
+      ContextRestore: { min_interval_secs: 600 },
+      GoalTracker: { min_interval_secs: 600 },
+    })
   })
 })

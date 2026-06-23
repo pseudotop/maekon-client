@@ -360,10 +360,9 @@ impl ExternalOcrPrivacyGuard {
 /// skill display names can all carry PII (usernames in paths, document names in
 /// titles), so they are run through the same level-aware filter as chat content.
 ///
-/// Binary `data` blobs (base64 image/file bytes) are left intact: the
-/// title-level masker is a text-pattern filter, not a content scrubber, and
-/// running it over base64 would corrupt the payload without removing PII. A
-/// content-level attachment-body scrubber is tracked separately as tech debt.
+/// Inline binary/text `data` blobs are stripped before external provider
+/// egress. The title-level masker is only safe for metadata; preserving raw
+/// attachment bodies would bypass the consented text/path sanitization surface.
 pub(super) fn sanitize_attachment(
     attachment: &maekon_core::models::ai_session::Attachment,
     level: PiiFilterLevel,
@@ -373,15 +372,23 @@ pub(super) fn sanitize_attachment(
         maekon_vision::privacy::sanitize_title_with_level(text, level)
     }
     match attachment {
-        Attachment::Image { mime, path, data } => Attachment::Image {
+        Attachment::Image {
+            mime,
+            path,
+            data: _,
+        } => Attachment::Image {
             mime: mime.clone(),
             path: path.as_ref().map(|p| mask(p, level)),
-            data: data.clone(),
+            data: None,
         },
-        Attachment::File { path, mime, data } => Attachment::File {
+        Attachment::File {
+            path,
+            mime,
+            data: _,
+        } => Attachment::File {
             path: mask(path, level),
             mime: mime.clone(),
-            data: data.clone(),
+            data: None,
         },
         Attachment::Directory { path } => Attachment::Directory {
             path: mask(path, level),

@@ -1,4 +1,4 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..028.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..031.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -7,6 +7,8 @@
 //! Run via:
 //!   cargo test -p maekon-app --test ipc_command_contract
 
+use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -19,6 +21,161 @@ fn src_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.join("src")
 }
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn repo_dir() -> PathBuf {
+    manifest_dir()
+        .parent()
+        .expect("src-tauri manifest must live under the repository root")
+        .to_path_buf()
+}
+
+fn extract_invoke_handler_commands(src: &str) -> BTreeSet<String> {
+    let command_block = src
+        .split(".invoke_handler(tauri::generate_handler![")
+        .nth(1)
+        .and_then(|tail| tail.split("])").next())
+        .expect("main.rs must register commands through tauri::generate_handler![...]");
+
+    command_block
+        .lines()
+        .filter_map(|line| {
+            let line = line.split("//").next().unwrap_or_default().trim();
+            if line.is_empty() {
+                return None;
+            }
+            let command_path = line.trim_end_matches(',');
+            command_path.rsplit("::").next().map(str::to_owned)
+        })
+        .collect()
+}
+
+fn extract_build_manifest_commands(src: &str) -> BTreeSet<String> {
+    let command_block = src
+        .split("const APP_COMMANDS: &[&str] = &[")
+        .nth(1)
+        .and_then(|tail| tail.split("];").next())
+        .expect("build.rs must declare APP_COMMANDS for Tauri capability generation");
+
+    command_block
+        .lines()
+        .filter_map(|line| {
+            let line = line.split("//").next().unwrap_or_default().trim();
+            if line.is_empty() {
+                return None;
+            }
+            Some(
+                line.trim_end_matches(',')
+                    .trim_matches('"')
+                    .trim()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn read_capability(name: &str) -> Value {
+    let path = manifest_dir().join("capabilities").join(name);
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    serde_json::from_str(&src)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e))
+}
+
+fn capability_permission_ids(capability: &Value) -> BTreeSet<String> {
+    capability
+        .get("permissions")
+        .and_then(Value::as_array)
+        .expect("capability must contain a permissions array")
+        .iter()
+        .map(|permission| {
+            permission
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| {
+                    permission
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .expect("permission entries must be strings or objects with identifier")
+        })
+        .collect()
+}
+
+fn capability_windows(capability: &Value) -> BTreeSet<String> {
+    capability
+        .get("windows")
+        .and_then(Value::as_array)
+        .expect("capability must contain a windows array")
+        .iter()
+        .map(|window| {
+            window
+                .as_str()
+                .expect("capability windows must be strings")
+                .to_owned()
+        })
+        .collect()
+}
+
+fn app_command_permission(action: &str, command: &str) -> String {
+    format!("{action}-{}", command.replace('_', "-"))
+}
+
+fn app_command_permission_set(commands: &[&str]) -> BTreeSet<String> {
+    commands
+        .iter()
+        .map(|command| app_command_permission("allow", command))
+        .collect()
+}
+
+fn declared_app_command_permissions(capability: &Value) -> BTreeSet<String> {
+    capability_permission_ids(capability)
+        .into_iter()
+        .filter(|permission| {
+            !permission.contains(':')
+                && (permission.starts_with("allow-") || permission.starts_with("deny-"))
+        })
+        .collect()
+}
+
+const OVERLAY_APP_COMMANDS: &[&str] = &[
+    "toggle_suggestions_panel",
+    "toggle_automation_confirm",
+    "get_pending_suggestions",
+    "refresh_detection_overlay",
+    "toggle_detection_overlay",
+    "get_capture_status",
+    "dismiss_coaching_message",
+    "submit_coaching_feedback",
+    "record_suggestion_replay_event",
+    "explain_suggestion_in_chat",
+    "submit_suggestion_feedback",
+    "get_suggestion_history",
+    "get_suggestion_stats",
+    "get_suggestion_daily_stats",
+    "confirm_automation_command",
+    "respond_codex_approval",
+];
+
+const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
+    "get_capture_status",
+    "get_connection_status",
+    "get_panel_position",
+    "save_panel_position",
+    "trigger_manual_capture",
+    "analyze_current_scene",
+    "get_focus_mode_status",
+    "toggle_focus_mode",
+    "toggle_suggestions_panel",
+    "show_main_window",
+    "simulate_tray_action",
+    "toggle_capture_pause",
+    "set_indicator_visible",
+];
 
 /// Some modules under commands/ are pure helpers (no #[tauri::command] —
 /// e.g., generate_external_cert.rs is a build-time helper, suggestion_parser.rs
@@ -244,5 +401,108 @@ fn crt_prv_ipc_027_detection_activation_waits_for_visible_scene() {
             && overlay_src.contains("state.detection_active = true;")
             && overlay_src.contains("self.apply_window_layout(&state);"),
         "magic overlay must activate the interactive layout only after building a visible detection payload"
+    );
+}
+
+#[test]
+fn crt_prv_ipc_029_build_manifest_matches_invoke_handler() {
+    let main_path = src_dir().join("main.rs");
+    let main_src = fs::read_to_string(&main_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", main_path.display(), e));
+    let build_path = manifest_dir().join("build.rs");
+    let build_src = fs::read_to_string(&build_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", build_path.display(), e));
+
+    let invoke_commands = extract_invoke_handler_commands(&main_src);
+    let manifest_commands = extract_build_manifest_commands(&build_src);
+
+    assert!(
+        !invoke_commands.is_empty(),
+        "invoke handler command inventory must not be empty"
+    );
+    assert_eq!(
+        invoke_commands, manifest_commands,
+        "Tauri build manifest commands must mirror invoke_handler so generated app-command ACLs stay complete"
+    );
+}
+
+#[test]
+fn crt_prv_ipc_030_main_capability_scopes_all_app_commands() {
+    let build_path = manifest_dir().join("build.rs");
+    let build_src = fs::read_to_string(&build_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", build_path.display(), e));
+    let commands = extract_build_manifest_commands(&build_src);
+    assert!(
+        !commands.is_empty(),
+        "build.rs APP_COMMANDS must list every app IPC command"
+    );
+
+    let default = read_capability("default.json");
+    assert_eq!(
+        capability_windows(&default),
+        BTreeSet::from(["main".to_owned()]),
+        "default capability must only target the main window"
+    );
+
+    let default_permissions = capability_permission_ids(&default);
+    for command in &commands {
+        let permission = app_command_permission("allow", command);
+        assert!(
+            default_permissions.contains(&permission),
+            "main window capability must explicitly allow app command {permission}"
+        );
+    }
+
+    for command in OVERLAY_APP_COMMANDS
+        .iter()
+        .chain(TRACKING_PANEL_APP_COMMANDS)
+    {
+        assert!(
+            commands.contains(*command),
+            "window-scoped command {command} must exist in build.rs APP_COMMANDS"
+        );
+    }
+
+    let overlay = read_capability("overlay.json");
+    assert_eq!(
+        declared_app_command_permissions(&overlay),
+        app_command_permission_set(OVERLAY_APP_COMMANDS),
+        "overlay capability must allow exactly the app commands used by overlay.html"
+    );
+
+    let tracking_panel = read_capability("tracking-panel.json");
+    assert_eq!(
+        declared_app_command_permissions(&tracking_panel),
+        app_command_permission_set(TRACKING_PANEL_APP_COMMANDS),
+        "tracking-panel capability must allow exactly the app commands used by tracking-panel.html"
+    );
+}
+
+#[test]
+fn crt_prv_ipc_031_tauri_origin_confusion_patch_guard() {
+    let patch_path = repo_dir()
+        .join("patches")
+        .join("tauri-2.11.2")
+        .join("src")
+        .join("webview")
+        .join("mod.rs");
+    let patch_src = fs::read_to_string(&patch_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", patch_path.display(), e));
+
+    assert!(
+        patch_src.contains("current_url.domain() == protocol_url.domain()"),
+        "patched Tauri is_local_url must compare full protocol domains"
+    );
+    assert!(
+        patch_src.contains("strip_suffix(\".localhost\")"),
+        "patched Tauri custom-protocol check must require a .localhost suffix"
+    );
+    assert!(
+        patch_src.contains("myproto.evil.com"),
+        "patched Tauri tests must reject spoofed custom protocol domains"
+    );
+    assert!(
+        patch_src.contains("notregistered.localhost"),
+        "patched Tauri tests must reject unregistered localhost protocol labels"
     );
 }

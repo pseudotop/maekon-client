@@ -14,9 +14,10 @@ pub use context::{
     UserProfileSummary,
 };
 pub use protocol::{
-    Attachment, ContentBlock, ControlAction, InboundMessage, MessageContext, MessageRole,
-    OutboundMessage, SessionMessage, SessionState, SessionTransport, TokenUsage, ToolDefinition,
-    ToolUseStatus,
+    validate_session_input_size, Attachment, ContentBlock, ControlAction, InboundMessage,
+    MessageContext, MessageRole, OutboundMessage, SessionInputLimitError, SessionMessage,
+    SessionState, SessionTransport, TokenUsage, ToolDefinition, ToolUseStatus,
+    MAX_SESSION_ATTACHMENTS, MAX_SESSION_INPUT_BYTES, SESSION_INPUT_TOO_LARGE_CODE,
 };
 pub use session::{
     truncate_chat_history, ChatMessage, ChatRole, ConversationSessionInfo, MessageRecord,
@@ -62,6 +63,32 @@ mod tests {
         };
         let json = serde_json::to_string(&att).unwrap();
         assert!(json.contains("\"kind\":\"image\""));
+    }
+
+    #[test]
+    fn session_input_size_counts_inline_attachment_data() {
+        let attachment = Attachment::File {
+            path: "huge.txt".to_string(),
+            mime: Some("text/plain".to_string()),
+            data: Some("a".repeat(MAX_SESSION_INPUT_BYTES)),
+        };
+
+        let err = validate_session_input_size("message", "hi", &[attachment])
+            .expect_err("oversized inline attachment data must be rejected");
+        assert_eq!(err.code, SESSION_INPUT_TOO_LARGE_CODE);
+    }
+
+    #[test]
+    fn session_input_size_limits_attachment_count() {
+        let attachments = (0..=MAX_SESSION_ATTACHMENTS)
+            .map(|idx| Attachment::Directory {
+                path: format!("dir-{idx}"),
+            })
+            .collect::<Vec<_>>();
+
+        let err = validate_session_input_size("message", "hi", &attachments)
+            .expect_err("too many attachments must be rejected");
+        assert_eq!(err.code, SESSION_INPUT_TOO_LARGE_CODE);
     }
 
     #[test]

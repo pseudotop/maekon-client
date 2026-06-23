@@ -61,6 +61,35 @@ describe('api-base', () => {
     await expect(resolveApiUrl('/api/metrics')).resolves.toBe('/api/metrics')
   })
 
+  it('keeps same-origin SSE URLs out of the local-auth query channel', async () => {
+    const testWindow = window as Window &
+      typeof globalThis & {
+        __MAEKON_LOCAL_AUTH__?: string
+      }
+    testWindow.__MAEKON_LOCAL_AUTH__ = 'same-origin-token'
+
+    const { withLocalAuthQuery } = await import('./api-base')
+    const sameOriginAbsoluteUrl = `${window.location.origin}/api/update/stream`
+
+    expect(withLocalAuthQuery('/api/stream')).toBe('/api/stream')
+    expect(withLocalAuthQuery(sameOriginAbsoluteUrl)).toBe(sameOriginAbsoluteUrl)
+  })
+
+  it('keeps query auth for Tauri cross-origin EventSource URLs', async () => {
+    const testWindow = window as Window &
+      typeof globalThis & {
+        __MAEKON_LOCAL_AUTH__?: string
+      }
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    testWindow.__MAEKON_LOCAL_AUTH__ = 'tauri-token'
+
+    const { withLocalAuthQuery } = await import('./api-base')
+
+    expect(withLocalAuthQuery('http://127.0.0.1:10091/api/update/stream')).toBe(
+      'http://127.0.0.1:10091/api/update/stream?local_auth=tauri-token',
+    )
+  })
+
   it('waits for delayed Tauri local-auth token before building fetch headers', async () => {
     const testWindow = window as Window &
       typeof globalThis & {
