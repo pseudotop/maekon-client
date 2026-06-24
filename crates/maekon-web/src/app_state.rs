@@ -3,8 +3,11 @@
 //! AppState fields are grouped by domain concern. Sub-structs with `Default`
 //! impls mean adding a new field never requires updating test construction sites.
 
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use maekon_api_contracts::bug_report::BugReportBundleDto;
 use maekon_api_contracts::integration::IntegrationOutboundRuntimeStatus;
@@ -30,7 +33,8 @@ use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
 use maekon_core::ports::text_search::TextSearchProvider;
 use maekon_core::ports::vector_store::VectorStore;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
+use tokio::time::Instant;
 
 use crate::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider;
 use crate::update_control::UpdateControl;
@@ -69,6 +73,86 @@ pub struct CoreState {
 #[derive(Clone, Default)]
 pub struct AuthState {
     pub local_auth_token: Option<Arc<str>>,
+    pub(crate) integration_auth_rate_limiter: IntegrationAuthRateLimiter,
+}
+
+pub(crate) const INTEGRATION_AUTH_FAILURE_LIMIT: u32 = 5;
+const INTEGRATION_AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const INTEGRATION_AUTH_LOCKOUT_DURATION: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Default)]
+pub(crate) struct IntegrationAuthRateLimiter {
+    attempts_by_ip: Arc<Mutex<HashMap<IpAddr, IntegrationAuthAttempt>>>,
+}
+
+#[derive(Debug, Clone)]
+struct IntegrationAuthAttempt {
+    failures: u32,
+    window_started_at: Instant,
+    locked_until: Option<Instant>,
+}
+
+impl IntegrationAuthRateLimiter {
+    pub(crate) async fn is_locked_out(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut attempts_by_ip = self.attempts_by_ip.lock().await;
+        let Some(attempt) = attempts_by_ip.get(&ip) else {
+            return false;
+        };
+        let Some(locked_until) = attempt.locked_until else {
+            return false;
+        };
+        if locked_until > now {
+            return true;
+        }
+        attempts_by_ip.remove(&ip);
+        false
+    }
+
+    pub(crate) async fn record_failure(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut attempts_by_ip = self.attempts_by_ip.lock().await;
+        let locked = {
+            let attempt = attempts_by_ip.entry(ip).or_insert(IntegrationAuthAttempt {
+                failures: 0,
+                window_started_at: now,
+                locked_until: None,
+            });
+
+            if attempt
+                .locked_until
+                .is_some_and(|locked_until| locked_until > now)
+            {
+                true
+            } else {
+                if attempt.locked_until.is_some() {
+                    attempt.failures = 0;
+                    attempt.window_started_at = now;
+                    attempt.locked_until = None;
+                }
+
+                if now.duration_since(attempt.window_started_at) > INTEGRATION_AUTH_FAILURE_WINDOW {
+                    attempt.failures = 0;
+                    attempt.window_started_at = now;
+                }
+
+                attempt.failures = attempt.failures.saturating_add(1);
+                if attempt.failures >= INTEGRATION_AUTH_FAILURE_LIMIT {
+                    attempt.locked_until = Some(now + INTEGRATION_AUTH_LOCKOUT_DURATION);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        drop(attempts_by_ip);
+
+        locked
+    }
+
+    pub(crate) async fn record_success(&self, ip: IpAddr) {
+        self.attempts_by_ip.lock().await.remove(&ip);
+    }
 }
 
 /// Secret management — credential backends and stores.

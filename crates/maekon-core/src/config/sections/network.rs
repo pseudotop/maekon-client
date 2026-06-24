@@ -143,8 +143,59 @@ impl WebConfig {
                 DEFAULT_WEB_PORT, DEFAULT_WEB_PORT_END
             ));
         }
+        if self.allow_external {
+            let token = self.integration_auth_token.as_deref().unwrap_or_default();
+            validate_integration_auth_token_strength(token)?;
+        }
         Ok(())
     }
+}
+
+pub const MIN_INTEGRATION_AUTH_TOKEN_LEN: usize = 32;
+pub const MIN_INTEGRATION_AUTH_TOKEN_CLASSES: usize = 2;
+
+pub fn validate_integration_auth_token_strength(token: &str) -> Result<(), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(
+            "web.integration_auth_token is required before enabling web.allow_external".to_string(),
+        );
+    }
+    if token.len() < MIN_INTEGRATION_AUTH_TOKEN_LEN {
+        return Err(format!(
+            "web.integration_auth_token must be at least {} characters before enabling web.allow_external",
+            MIN_INTEGRATION_AUTH_TOKEN_LEN
+        ));
+    }
+
+    let mut has_lower = false;
+    let mut has_upper = false;
+    let mut has_digit = false;
+    let mut has_symbol = false;
+    for ch in token.chars() {
+        if ch.is_ascii_lowercase() {
+            has_lower = true;
+        } else if ch.is_ascii_uppercase() {
+            has_upper = true;
+        } else if ch.is_ascii_digit() {
+            has_digit = true;
+        } else {
+            has_symbol = true;
+        }
+    }
+
+    let class_count = [has_lower, has_upper, has_digit, has_symbol]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if class_count < MIN_INTEGRATION_AUTH_TOKEN_CLASSES {
+        return Err(format!(
+            "web.integration_auth_token must contain at least {} character classes before enabling web.allow_external",
+            MIN_INTEGRATION_AUTH_TOKEN_CLASSES
+        ));
+    }
+
+    Ok(())
 }
 
 // ── LoadThresholds (D13-v2b) ───────────────────────────────────────
@@ -319,6 +370,43 @@ mod tests {
 
         assert!(low.validate_bounds().unwrap_err().contains("web.port"));
         assert!(high.validate_bounds().unwrap_err().contains("web.port"));
+    }
+
+    #[test]
+    fn web_config_rejects_weak_external_integration_token() {
+        let missing = WebConfig {
+            allow_external: true,
+            integration_auth_token: None,
+            ..WebConfig::default()
+        };
+        let short = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("short".to_string()),
+            ..WebConfig::default()
+        };
+        let single_class = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            ..WebConfig::default()
+        };
+        let strong = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("integration-secret-0123456789abcdef".to_string()),
+            ..WebConfig::default()
+        };
+
+        assert!(missing
+            .validate_bounds()
+            .unwrap_err()
+            .contains("integration_auth_token"));
+        assert!(short.validate_bounds().unwrap_err().contains("at least 32"));
+        assert!(single_class
+            .validate_bounds()
+            .unwrap_err()
+            .contains("character classes"));
+        strong
+            .validate_bounds()
+            .expect("strong token should allow external integration bind");
     }
 
     #[test]

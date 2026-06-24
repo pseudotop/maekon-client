@@ -13,6 +13,9 @@ pub struct SandboxCapabilities {
     pub network_isolation: bool,
     pub resource_limits: bool,
     pub process_isolation: bool,
+    /// True only when the child runs with an OS-enforced reduced privilege or
+    /// restricted-token context, not merely inside a resource-limited process.
+    pub privilege_restriction: bool,
 }
 
 /// # Errors

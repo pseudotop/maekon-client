@@ -494,7 +494,7 @@ impl WebServer {
                     tracing::info_span!(
                         "request",
                         method = %request.method(),
-                        path = %request.uri().path(),
+                        path = %trace_request_path_for_log(request),
                     )
                 }),
             )
@@ -515,12 +515,11 @@ impl WebServer {
             .map(str::trim)
             .is_some_and(|value| !value.is_empty());
         let host = if config.allow_external && integration_auth_configured {
+            warn!("External integration API enabled on 0.0.0.0; protect web.integration_auth_token as a high-entropy secret");
             "0.0.0.0"
         } else {
             if config.allow_external && !integration_auth_configured {
-                warn!(
-                    "External access requested but web.integration_auth_token is not configured; falling back to loopback-only binding"
-                );
+                warn!("External access requested but web.integration_auth_token is not configured; falling back to loopback-only binding");
             }
             "127.0.0.1"
         };
@@ -744,9 +743,23 @@ fn read_local_auth_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
 
 async fn require_integration_auth(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request,
     next: Next,
 ) -> Response {
+    let remote_ip = addr.ip();
+    if state
+        .auth
+        .integration_auth_rate_limiter
+        .is_locked_out(remote_ip)
+        .await
+    {
+        return crate::error::ApiError::TooManyRequests(
+            "Integration API authentication is temporarily locked for this client.".to_string(),
+        )
+        .into_response();
+    }
+
     let Some(config_manager) = state.core.config_manager.as_ref() else {
         return crate::error::ApiError::ServiceUnavailable(
             "Integration API is unavailable because config management is not initialized."
@@ -802,12 +815,28 @@ async fn require_integration_auth(
         .unwrap_or(false);
 
     if !authorized {
+        let locked = state
+            .auth
+            .integration_auth_rate_limiter
+            .record_failure(remote_ip)
+            .await;
+        if locked {
+            warn!(
+                remote_ip = %remote_ip,
+                "Integration API authentication failures reached temporary lockout"
+            );
+        }
         return crate::error::ApiError::Unauthorized(
             "Integration API requires a valid bearer token.".to_string(),
         )
         .into_response();
     }
 
+    state
+        .auth
+        .integration_auth_rate_limiter
+        .record_success(remote_ip)
+        .await;
     next.run(request).await
 }
 
@@ -823,6 +852,10 @@ async fn loopback_only_static(
         "The embedded dashboard is available only from loopback clients.".to_string(),
     )
     .into_response()
+}
+
+fn trace_request_path_for_log(request: &Request) -> &str {
+    request.uri().path()
 }
 
 /// E20-41 (#4833): shared test scaffolding so handler tests satisfy the new
@@ -861,7 +894,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header, Request, StatusCode};
+    use http_body_util::BodyExt;
     use maekon_core::config::AppConfig;
     use maekon_core::config_manager::ConfigManager;
     use maekon_storage::sqlite::SqliteStorage;
@@ -920,6 +954,100 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("http://tauri.localhost")
         );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_tauri_origin_without_local_auth_header() {
+        let app = WebServer::build_router(test_state_with_config_manager(None))
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/metrics")
+                    .header(header::ORIGIN, "http://tauri.localhost")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://tauri.localhost")
+        );
+    }
+
+    #[tokio::test]
+    async fn static_fallback_serves_loopback_dashboard_placeholder() {
+        let app = WebServer::build_router(test_state_with_config_manager(None))
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html")));
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains("Maekon"));
+    }
+
+    #[tokio::test]
+    async fn static_fallback_rejects_non_loopback_clients() {
+        let app = WebServer::build_router(test_state_with_config_manager(None)).layer(
+            MockConnectInfo(SocketAddr::from(([192, 168, 0, 10], 43000))),
+        );
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn eventsource_query_auth_returns_sse_without_header_or_cookie() {
+        let response = gated_app("secret")
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream?local_auth=secret")
+                    .header(header::ORIGIN, "http://tauri.localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream")));
+    }
+
+    #[test]
+    fn trace_request_path_for_log_omits_query_token() {
+        let request = Request::builder()
+            .uri("/api/stream?local_auth=secret&cursor=next")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(trace_request_path_for_log(&request), "/api/stream");
     }
 
     #[test]
@@ -1104,6 +1232,8 @@ mod tests {
         manager
     }
 
+    const STRONG_INTEGRATION_TOKEN: &str = "integration-secret-0123456789abcdef";
+
     #[tokio::test]
     async fn internal_api_rejects_non_loopback_clients() {
         let app = WebServer::build_router(test_state_with_config_manager(None)).layer(
@@ -1126,7 +1256,7 @@ mod tests {
     #[tokio::test]
     async fn integration_api_requires_matching_token() {
         let app = WebServer::build_router(test_state_with_config_manager(Some(
-            config_manager_with_integration_token("integration-secret"),
+            config_manager_with_integration_token(STRONG_INTEGRATION_TOKEN),
         )))
         .layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 24], 44000))));
 
@@ -1161,13 +1291,55 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/integration/v1/status")
-                    .header("authorization", "Bearer integration-secret")
+                    .header(
+                        "authorization",
+                        format!("Bearer {STRONG_INTEGRATION_TOKEN}"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(authorized.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn integration_api_temporarily_locks_out_repeated_failures_by_remote_ip() {
+        let app = WebServer::build_router(test_state_with_config_manager(Some(
+            config_manager_with_integration_token(STRONG_INTEGRATION_TOKEN),
+        )))
+        .layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 24], 44000))));
+
+        for _ in 0..5 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/integration/v1/status")
+                        .header("authorization", "Bearer wrong-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let locked = app
+            .oneshot(
+                Request::builder()
+                    .uri("/integration/v1/status")
+                    .header(
+                        "authorization",
+                        format!("Bearer {STRONG_INTEGRATION_TOKEN}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(locked.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

@@ -144,6 +144,10 @@ pub(crate) fn windows_sandbox_capability_report(
                 "provided": capabilities.network_isolation,
                 "scope": "not_provided_by_windows_job_objects",
             },
+            "privilege_restriction": {
+                "provided": capabilities.privilege_restriction,
+                "scope": "restricted_token_must_be_applied_to_worker_process",
+            },
             "restricted_token": {
                 "created": windows_sandbox_feature_enabled,
                 "applied_to_worker_process": false,
@@ -702,6 +706,7 @@ mod tests {
                 network_isolation: false,
                 resource_limits: true,
                 process_isolation: true,
+                privilege_restriction: false,
             },
             true,
             true,
@@ -730,6 +735,14 @@ mod tests {
             payload["capabilities"]["network_isolation"]["scope"],
             "not_provided_by_windows_job_objects"
         );
+        assert_eq!(
+            payload["capabilities"]["privilege_restriction"]["provided"],
+            false
+        );
+        assert_eq!(
+            payload["capabilities"]["privilege_restriction"]["scope"],
+            "restricted_token_must_be_applied_to_worker_process"
+        );
         assert_eq!(payload["contract_mismatch_follow_up_issue"], 4561);
 
         let modes = payload["semantic_execution_modes"].as_array().unwrap();
@@ -755,6 +768,7 @@ mod tests {
                     network_isolation: false,
                     resource_limits: false,
                     process_isolation: false,
+                    privilege_restriction: false,
                 },
                 false,
                 true,

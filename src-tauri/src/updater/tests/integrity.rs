@@ -80,6 +80,30 @@ fn validate_download_url_rejects_http_and_unknown_host() {
 }
 
 #[test]
+fn validate_metadata_base_url_rejects_non_https_and_unknown_host() {
+    let updater = Updater::new(test_config());
+    updater
+        .validate_metadata_base_url("https://api.github.com")
+        .expect("GitHub API HTTPS metadata base URL must be accepted");
+    updater
+        .validate_metadata_base_url("http://127.0.0.1:12345")
+        .expect("localhost HTTP metadata base URL must be accepted only in tests");
+
+    assert!(matches!(
+        updater
+            .validate_metadata_base_url("http://api.github.com")
+            .unwrap_err(),
+        UpdateError::Download(_)
+    ));
+    assert!(matches!(
+        updater
+            .validate_metadata_base_url("https://evil.example.com")
+            .unwrap_err(),
+        UpdateError::Download(_)
+    ));
+}
+
+#[test]
 fn extract_zip_rejects_path_traversal_entries() {
     use std::io::Write;
     let updater = Updater::new(test_config());
@@ -138,6 +162,15 @@ fn verify_signature_accepts_builtin_key() {
     let payload = b"builtin-release-artifact";
     let signature = signing_key.sign(payload);
     let trusted = [builtin_key.as_str()];
+    let source = Updater::verify_signature_source_with_keys(
+        &trusted,
+        None,
+        payload,
+        signature.to_bytes().as_slice(),
+    )
+    .expect("builtin key must report its key-source for audit");
+    assert_eq!(source, SignatureKeySource::BuiltInTrusted { index: 0 });
+
     let result = Updater::verify_signature_with_keys(
         &trusted,
         None,
@@ -182,6 +215,15 @@ fn verify_signature_fallback_to_configured_key_when_not_in_array() {
     let payload = b"user-override-artifact";
     let signature = configured.sign(payload);
     let trusted = [trusted_only.as_str()];
+    let source = Updater::verify_signature_source_with_keys(
+        &trusted,
+        Some(configured_b64.as_str()),
+        payload,
+        signature.to_bytes().as_slice(),
+    )
+    .expect("configured override must report its key-source for audit");
+    assert_eq!(source, SignatureKeySource::ConfiguredOverride);
+
     let result = Updater::verify_signature_with_keys(
         &trusted,
         Some(configured_b64.as_str()),
@@ -191,6 +233,26 @@ fn verify_signature_fallback_to_configured_key_when_not_in_array() {
     // The user-configured key must succeed via the D9 fallback path when not in the
     // builtin array. (#5594: ok-only justified — Result<()> unit return)
     result.expect("configured override key must validate payload via the D9 fallback path");
+}
+
+#[test]
+fn verify_signature_prefers_builtin_source_when_configured_key_duplicates() {
+    use ed25519_dalek::{Signer, SigningKey};
+    let signing_key = SigningKey::from_bytes(&[18u8; 32]);
+    let key_b64 = BASE64.encode(signing_key.verifying_key().as_bytes());
+    let trusted = [key_b64.as_str()];
+    let payload = b"duplicate-configured-key-artifact";
+    let signature = signing_key.sign(payload);
+
+    let source = Updater::verify_signature_source_with_keys(
+        &trusted,
+        Some(key_b64.as_str()),
+        payload,
+        signature.to_bytes().as_slice(),
+    )
+    .expect("duplicate configured key must still verify through the builtin path");
+
+    assert_eq!(source, SignatureKeySource::BuiltInTrusted { index: 0 });
 }
 
 #[test]

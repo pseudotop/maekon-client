@@ -15,6 +15,7 @@ mod tests;
 
 pub(crate) use codex_ui_approval_hook::{CodexApprovalRegistry, CodexUiApprovalHook};
 pub(crate) use guarded_conversation::{ConversationContentGuard, GuardedConversationSession};
+pub(crate) use types::ensure_non_external_endpoints_are_loopback;
 pub use types::{AiProviderAdapters, ExternalOcrPrivacyGuard, ProviderSource};
 
 use std::sync::Arc;

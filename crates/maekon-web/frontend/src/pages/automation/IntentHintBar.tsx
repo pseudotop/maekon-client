@@ -1,7 +1,7 @@
 // #5705: Natural-language automation entry point.
 // Renders a single-line input + Run button on the /automation page.
 // On submit, calls executeIntentHint via the dedicated fetch path (Amendment A).
-// No confirm modal — executes immediately under strict sandbox (Amendment C).
+// No confirm modal; caption reflects the runtime sandbox status.
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Clock, ExternalLink, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -16,6 +16,16 @@ import { cn } from '../../utils/cn'
 
 interface IntentHintBarProps {
   status: AutomationStatus | undefined
+}
+
+function autoCaptionKey(status: AutomationStatus | undefined): string {
+  if (!status?.sandbox_enabled) {
+    return 'automation.intentHintRunsImmediatelyWithoutSandbox'
+  }
+  if (status.sandbox_profile === 'Strict') {
+    return 'automation.intentHintRunsImmediately'
+  }
+  return 'automation.intentHintRunsImmediatelyWithSandbox'
 }
 
 // #5705: Classify 400 error messages into actionable guidance buckets.
@@ -219,15 +229,14 @@ export default function IntentHintBar({ status }: IntentHintBarProps) {
             </Button>
           </div>
 
-          {/* #5705 Amendment C / #5775 FLAG: caption is conditioned on confirmation_policy.
-              AUTO → existing key (immediate run); CONFIRM → requires confirmation;
-              BLOCK → execution disabled. Falls back to AUTO caption when policy absent. */}
+          {/* #5705 Amendment C / #5775 / #6751: branch by policy first, then by
+              actual sandbox status so AUTO copy does not overstate containment. */}
           {(status?.confirmation_policy ?? 'AUTO') === 'CONFIRM' ? (
             <p className="text-content-muted text-xs">{t('automation.intentHintRequiresConfirmation')}</p>
           ) : (status?.confirmation_policy ?? 'AUTO') === 'BLOCK' ? (
             <p className="text-content-muted text-xs">{t('automation.intentHintBlockedByPolicy')}</p>
           ) : (
-            <p className="text-content-muted text-xs">{t('automation.intentHintRunsImmediately')}</p>
+            <p className="text-content-muted text-xs">{t(autoCaptionKey(status))}</p>
           )}
 
           {/* Disabled explanation (CommandsSection.tsx:333 parity) */}

@@ -1201,6 +1201,8 @@
     "intentHintPlaceholder": "例如：点击保存按钮",
     "intentHintRun": "运行",
     "intentHintRunsImmediately": "在严格沙盒环境下立即执行。",
+    "intentHintRunsImmediatelyWithSandbox": "在启用沙盒强制的情况下立即执行。",
+    "intentHintRunsImmediatelyWithoutSandbox": "在未启用沙盒强制的情况下立即执行。",
     "intentHintRequiresConfirmation": "运行前需要您的确认。",
     "intentHintBlockedByPolicy": "策略禁止执行自动化操作。",
     "intentHintDisabledHint": "请在设置中启用自动化以使用此功能。",

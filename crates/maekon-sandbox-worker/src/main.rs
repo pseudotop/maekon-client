@@ -5,7 +5,7 @@
 //! SandboxResponse JSON to stdout.
 
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use maekon_core::models::automation::AutomationAction;
+use maekon_core::models::automation::{AutomationAction, MouseButton};
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 
@@ -199,14 +199,10 @@ fn run_hotkey(executor: &mut dyn InputExecutor, keys: &[String]) -> Result<(), S
 }
 
 fn parse_mouse_button(button: &str) -> Result<Button, String> {
-    Ok(match button.to_lowercase().as_str() {
-        "left" => Button::Left,
-        "right" => Button::Right,
-        "middle" => Button::Middle,
-        // Unknown button names are rejected as an error rather than silently synthesising
-        // Button::Left (same contract as key handling in oneshim#5981) — prevents
-        // unintended or malicious button injection.
-        _ => return Err(format!("unknown mouse button: {button}")),
+    Ok(match MouseButton::parse_wire(button)? {
+        MouseButton::Left => Button::Left,
+        MouseButton::Right => Button::Right,
+        MouseButton::Middle => Button::Middle,
     })
 }
 
@@ -419,8 +415,11 @@ mod tests {
     #[test]
     fn parse_mouse_button_supports_known_buttons() {
         assert!(matches!(parse_mouse_button("left"), Ok(Button::Left)));
+        assert!(matches!(parse_mouse_button("l"), Ok(Button::Left)));
         assert!(matches!(parse_mouse_button("right"), Ok(Button::Right)));
+        assert!(matches!(parse_mouse_button("R"), Ok(Button::Right)));
         assert!(matches!(parse_mouse_button("middle"), Ok(Button::Middle)));
+        assert!(matches!(parse_mouse_button("m"), Ok(Button::Middle)));
     }
 
     #[test]

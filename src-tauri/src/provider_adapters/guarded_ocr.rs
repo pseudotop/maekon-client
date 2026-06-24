@@ -7,7 +7,7 @@ use maekon_core::ports::ocr_provider::OcrProvider;
 use maekon_core::ports::ocr_provider::OcrResult;
 use tracing::debug;
 
-use super::types::ExternalOcrPrivacyGuard;
+use super::types::{ensure_non_external_endpoints_are_loopback, ExternalOcrPrivacyGuard};
 
 #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(super) struct GuardedOcrProvider {
@@ -85,6 +85,10 @@ impl OcrProvider for GuardedOcrProvider {
         image_format: &str,
     ) -> Result<Vec<OcrResult>, CoreError> {
         if !self.inner.is_external() {
+            ensure_non_external_endpoints_are_loopback(
+                self.inner.provider_name(),
+                self.inner.egress_endpoint_urls(),
+            )?;
             return self.inner.extract_elements(image, image_format).await;
         }
 
@@ -116,5 +120,9 @@ impl OcrProvider for GuardedOcrProvider {
 
     fn is_external(&self) -> bool {
         self.inner.is_external()
+    }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        self.inner.egress_endpoint_urls()
     }
 }

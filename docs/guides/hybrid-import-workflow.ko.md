@@ -46,6 +46,17 @@ comment가 안정적으로 확인되기 전까지 patch import를 자동화하�
 2. 공개 PR이 synthetic data를 사용하고 privacy-safe evidence를 포함하는지 확인한다.
 3. Maintainer review가 끝났고, DCO/legal posture가 명확하며, 미해결 public review
    thread가 없는지 확인한다.
+
+   DCO 또는 CLA required status check가 없다면 import 전에 public branch를
+   수동으로 확인한다.
+
+   ```bash
+   git log --format=%B <public-base>..<public-pr-head> | grep -Eq '^Signed-off-by: .+ <[^>]+>$'
+   ```
+
+   Signed-off-by가 없다면 maintainer-approved legal attestation link를 parent PR에
+   기록한다. 그 전에는 `do-not-merge/dco`를 해제하지 않는다.
+
 4. Import 전용 parent-source branch를 만든다.
 5. 공개 PR의 patch를 import한다. Commit이 깨끗하고 scope가 작으면 원본 commit을
    보존하고, 그렇지 않으면 수동 squash 후 parent commit body에 author attribution을

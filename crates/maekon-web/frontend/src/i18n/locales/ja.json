@@ -1201,6 +1201,8 @@
     "intentHintPlaceholder": "例: 保存ボタンをクリック",
     "intentHintRun": "実行",
     "intentHintRunsImmediately": "厳格なサンドボックス下で即座に実行されます。",
+    "intentHintRunsImmediatelyWithSandbox": "サンドボックス強制のもとで即座に実行されます。",
+    "intentHintRunsImmediatelyWithoutSandbox": "サンドボックス強制なしで即座に実行されます。",
     "intentHintRequiresConfirmation": "実行前に確認が必要です。",
     "intentHintBlockedByPolicy": "ポリシーによりオートメーションの実行が無効化されています。",
     "intentHintDisabledHint": "この機能を使用するには、設定でオートメーションを有効にしてください。",

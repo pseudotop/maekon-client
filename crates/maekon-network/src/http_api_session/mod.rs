@@ -719,4 +719,8 @@ impl ConversationSession for HttpApiSession {
         // `LocalLlmSession`'s default. See E21 review B1.
         !matches!(self.provider_type, AiProviderType::Ollama)
     }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        vec![&self.endpoint]
+    }
 }

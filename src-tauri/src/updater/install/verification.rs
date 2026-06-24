@@ -6,6 +6,12 @@ use sha2::{Digest, Sha256};
 
 use super::super::{UpdateError, Updater};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignatureKeySource {
+    BuiltInTrusted { index: usize },
+    ConfiguredOverride,
+}
+
 impl Updater {
     /// Verify the Ed25519 signature of `payload` against any trusted key.
     ///
@@ -43,6 +49,16 @@ impl Updater {
         payload: &[u8],
         signature_bytes: &[u8],
     ) -> Result<(), UpdateError> {
+        Self::verify_signature_source_with_keys(trusted, configured, payload, signature_bytes)
+            .map(|_| ())
+    }
+
+    pub(crate) fn verify_signature_source_with_keys(
+        trusted: &[&str],
+        configured: Option<&str>,
+        payload: &[u8],
+        signature_bytes: &[u8],
+    ) -> Result<SignatureKeySource, UpdateError> {
         let signature_array: [u8; 64] = signature_bytes.try_into().map_err(|_| {
             UpdateError::Integrity(format!(
                 "Invalid signature length: {} bytes (expected 64)",
@@ -59,7 +75,7 @@ impl Updater {
                         "signature validated by trusted key #{idx} (rotation in progress)"
                     );
                 }
-                return Ok(());
+                return Ok(SignatureKeySource::BuiltInTrusted { index: idx });
             }
         }
 
@@ -70,8 +86,11 @@ impl Updater {
             if !already_tried
                 && Self::try_verify_with_key_b64(configured_key, payload, &signature).is_ok()
             {
-                tracing::warn!("signature validated via user-configured key (override)");
-                return Ok(());
+                tracing::warn!(
+                    key_source = "configured_override",
+                    "update artifact signature validated via configured public key override"
+                );
+                return Ok(SignatureKeySource::ConfiguredOverride);
             }
         }
 

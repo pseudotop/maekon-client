@@ -45,10 +45,31 @@ impl ProviderSource {
 //
 // Reuses `maekon_network::http_client::host_is_loopback` which is already
 // fail-closed: unparseable / empty host → returns `false` (treated as external).
-// Only available when the `analysis` feature is on (dep:maekon-network).
 #[cfg(feature = "analysis")]
 pub(super) fn endpoint_is_loopback(url: &str) -> bool {
     maekon_network::http_client::host_is_loopback(url)
+}
+
+#[cfg(not(feature = "analysis"))]
+pub(super) fn endpoint_is_loopback(_url: &str) -> bool {
+    false
+}
+
+pub(crate) fn ensure_non_external_endpoints_are_loopback(
+    provider_name: &str,
+    endpoint_urls: Vec<&str>,
+) -> Result<(), CoreError> {
+    for endpoint in endpoint_urls {
+        if !endpoint_is_loopback(endpoint) {
+            return Err(CoreError::PolicyDenied {
+                code: maekon_core::error_codes::PolicyCode::Denied,
+                message: format!(
+                    "Provider '{provider_name}' reported non-external, but its endpoint is not loopback; refusing unguarded external egress"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub struct AiProviderAdapters {

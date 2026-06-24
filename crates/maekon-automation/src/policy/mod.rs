@@ -159,10 +159,13 @@ impl PolicyClient {
         // `issue_command_token_for_command` mints a command-BOUND token. External-origin
         // commands are already signed (A16), nonce-deduped, and TTL-bound, so a
         // policy-level token is a signed single-use grant for the policy's command
-        // class — not unbounded. External origin is currently a dormant path (production
-        // commands are Internal); when it is productionized, requiring command-binding
-        // for External here (reject `command_hash.is_none()`) is the natural hardening,
-        // deliberately deferred to that point rather than retrofitted onto a dead path.
+        // class — not unbounded.
+        //
+        // POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS: production web/tauri
+        // automation currently mints Internal sentinel commands and does not call the
+        // direct execute_command path. If a future external producer makes this path
+        // live, wire command-bound token issuance and add end-to-end coverage before
+        // treating policy-level tokens as sufficient for production actions.
         if let Some(token_command_hash) = parsed_token.command_hash {
             let expected_hash = compute_command_scope_hash(cmd)?;
             if !token_command_hash.eq_ignore_ascii_case(&expected_hash) {

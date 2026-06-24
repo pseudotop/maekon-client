@@ -34,6 +34,7 @@ impl Sandbox for NoOpSandbox {
             network_isolation: false,
             resource_limits: false,
             process_isolation: false,
+            privilege_restriction: false,
         }
     }
 }
@@ -84,6 +85,7 @@ impl Sandbox for FailClosedSandbox {
             network_isolation: false,
             resource_limits: false,
             process_isolation: false,
+            privilege_restriction: false,
         }
     }
 }
@@ -115,6 +117,7 @@ mod tests {
         assert!(!caps.network_isolation);
         assert!(!caps.resource_limits);
         assert!(!caps.process_isolation);
+        assert!(!caps.privilege_restriction);
     }
 
     #[test]
@@ -147,5 +150,6 @@ mod tests {
         assert!(!caps.network_isolation);
         assert!(!caps.resource_limits);
         assert!(!caps.process_isolation);
+        assert!(!caps.privilege_restriction);
     }
 }

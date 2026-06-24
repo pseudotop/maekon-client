@@ -376,7 +376,13 @@ impl SessionManagerImpl {
                     ),
                 });
             }
-            None => inner,
+            None => {
+                crate::provider_adapters::ensure_non_external_endpoints_are_loopback(
+                    inner.provider_name(),
+                    inner.egress_endpoint_urls(),
+                )?;
+                inner
+            }
         };
         Ok(Arc::new(AuditingSession::new(guarded, self.audit.clone())))
     }

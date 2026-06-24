@@ -4,8 +4,8 @@ use crate::policy::{AuditLevel, ExecutionPolicy};
 use crate::sandbox::NoOpSandbox;
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::{
-    AutomationIntent, FinderSource, IntentConfig, PresetCategory, UiElement, WorkflowPreset,
-    WorkflowStep,
+    AutomationIntent, FinderSource, IntentCommand, IntentConfig, PresetCategory, UiElement,
+    WorkflowPreset, WorkflowStep,
 };
 use maekon_core::models::ui_scene::{
     NormalizedBounds, UiScene, UiSceneElement, UI_SCENE_SCHEMA_VERSION,
@@ -48,6 +48,34 @@ fn wire_noop_inline_action_executor(controller: &mut AutomationController) {
     let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
         Arc::new(crate::input_driver::NoOpInputDriver);
     controller.set_inline_action_executor(input_driver);
+}
+
+fn wire_noop_intent_executor(controller: &mut AutomationController) {
+    let input_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(crate::input_driver::NoOpInputDriver);
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(crate::input_driver::NoOpElementFinder);
+    let resolver = crate::intent_resolver::IntentResolver::new(
+        element_finder,
+        input_driver,
+        IntentConfig::default(),
+    );
+    controller.set_intent_executor(Arc::new(crate::intent_resolver::IntentExecutor::new(
+        resolver,
+        IntentConfig::default(),
+    )));
+}
+
+fn scene_action_intent_command(command_id: &str, intent: AutomationIntent) -> IntentCommand {
+    IntentCommand {
+        command_id: command_id.to_string(),
+        session_id: "sess-1".to_string(),
+        intent,
+        config: None,
+        timeout_ms: None,
+        policy_token: super::gate::SCENE_ACTION_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    }
 }
 
 fn make_policy(audit: AuditLevel, timeout: u64) -> ExecutionPolicy {
@@ -185,6 +213,7 @@ impl Sandbox for HangingSandbox {
             network_isolation: false,
             resource_limits: true,
             process_isolation: false,
+            privilege_restriction: false,
         }
     }
 }
@@ -560,6 +589,66 @@ async fn execute_intent_success_with_audit_log() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 4);
+}
+
+#[tokio::test]
+async fn confirmation_policy_block_denies_direct_intent_before_executor() {
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Block);
+
+    let cmd = scene_action_intent_command(
+        "direct-policy-block",
+        AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    );
+
+    let err = controller
+        .execute_intent(&cmd)
+        .await
+        .expect_err("Block policy must deny direct intent before executor lookup");
+    assert!(
+        matches!(err, crate::error::AutomationError::PolicyBlocked),
+        "expected PolicyBlocked, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn confirmation_policy_confirm_denies_direct_intent_when_rejected() {
+    use maekon_core::config::ConfirmationRequirement;
+
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Confirm);
+    wire_noop_intent_executor(&mut controller);
+
+    let pending = controller.pending_confirmations.clone();
+    let cmd = scene_action_intent_command(
+        "direct-policy-confirm-deny",
+        AutomationIntent::ExecuteHotkey {
+            keys: vec!["Ctrl".to_string(), "S".to_string()],
+        },
+    );
+    let cmd_id = cmd.command_id.clone();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        let mut map = pending.lock().await;
+        if let Some((_, tx)) = map.remove(&cmd_id) {
+            let _ = tx.send(false);
+        }
+    });
+
+    let err = controller
+        .execute_intent(&cmd)
+        .await
+        .expect_err("Confirm policy with denial must return UserDenied for direct intent");
+    assert!(
+        matches!(err, crate::error::AutomationError::UserDenied),
+        "expected UserDenied after denial, got: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -1250,6 +1339,33 @@ fn hitl_intent_hint_does_not_widen_authority_vs_other_internal_tokens() {
         assert!(
             !gate::CommandExecutionGate::uses_internal_policy_token(external_token),
             "token {external_token:?} must NOT be classified as internal"
+        );
+    }
+}
+
+#[test]
+fn external_policy_token_validation_path_is_explicitly_reserved() {
+    let gate_source = include_str!("gate.rs");
+    assert!(
+        gate_source.contains("POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS"),
+        "gate.rs must document that signed policy-token validation is reserved for a future \
+         external producer while production sentinel-token paths use confirmation/privacy gates"
+    );
+
+    for (name, source) in [
+        (
+            "maekon-web automation commands",
+            include_str!("../../../maekon-web/src/services/automation_service/commands.rs"),
+        ),
+        (
+            "src-tauri automation commands",
+            include_str!("../../../../src-tauri/src/commands/automation.rs"),
+        ),
+    ] {
+        assert!(
+            !source.contains(".execute_command("),
+            "{name} must not silently productionize the dormant signed-token path; \
+             route new production command execution through an explicit policy-token plan first"
         );
     }
 }

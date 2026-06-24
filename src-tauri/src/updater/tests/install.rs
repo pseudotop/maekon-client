@@ -1,5 +1,7 @@
 //! Tests: download reliability, D11 install_pending, rollout bucketing, E2E platform.
 use crate::updater::*;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use ed25519_dalek::{Signer, SigningKey};
 use maekon_core::config::{UpdateChannel, UpdateConfig};
 use tempfile::tempdir;
 
@@ -82,6 +84,83 @@ async fn release_reliability_download_update_rejects_checksum_mismatch() {
     assert!(matches!(err, UpdateError::Integrity(msg) if msg.contains("Checksum mismatch")));
     artifact_mock.assert_async().await;
     checksum_mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn release_reliability_download_update_requires_signature_file_when_enabled() {
+    let mut server = mockito::Server::new_async().await;
+    let asset_name = "maekon-test-update.tar.gz";
+    let payload = b"signed-release-artifact-v1".to_vec();
+    let expected_hash = Updater::sha256_hex(&payload);
+    let artifact_mock = server
+        .mock("GET", format!("/{asset_name}").as_str())
+        .with_status(200)
+        .with_body(payload)
+        .create_async()
+        .await;
+    let checksum_mock = server
+        .mock("GET", format!("/{asset_name}.sha256").as_str())
+        .with_status(200)
+        .with_body(format!("{expected_hash}  {asset_name}\n"))
+        .create_async()
+        .await;
+    let mut config = test_config();
+    config.require_signature_verification = true;
+    let updater = Updater::with_client(config, reqwest::Client::builder().build().unwrap());
+    let download_url = format!("{}/{}", server.url(), asset_name);
+
+    let err = updater.download_update(&download_url).await.unwrap_err();
+
+    assert!(
+        matches!(&err, UpdateError::Integrity(msg) if msg.contains("signature file")),
+        "signature-required downloads must fail closed when .sig is missing; got: {err:?}"
+    );
+    artifact_mock.assert_async().await;
+    checksum_mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn release_reliability_download_update_rejects_mismatched_signature_key() {
+    let mut server = mockito::Server::new_async().await;
+    let asset_name = "maekon-test-update.tar.gz";
+    let payload = b"signed-release-artifact-v2".to_vec();
+    let expected_hash = Updater::sha256_hex(&payload);
+    let trusted_signing_key = SigningKey::from_bytes(&[31u8; 32]);
+    let untrusted_signing_key = SigningKey::from_bytes(&[32u8; 32]);
+    let signature = untrusted_signing_key.sign(&payload);
+    let artifact_mock = server
+        .mock("GET", format!("/{asset_name}").as_str())
+        .with_status(200)
+        .with_body(payload)
+        .create_async()
+        .await;
+    let checksum_mock = server
+        .mock("GET", format!("/{asset_name}.sha256").as_str())
+        .with_status(200)
+        .with_body(format!("{expected_hash}  {asset_name}\n"))
+        .create_async()
+        .await;
+    let signature_mock = server
+        .mock("GET", format!("/{asset_name}.sig").as_str())
+        .with_status(200)
+        .with_body(format!("{}\n", BASE64.encode(signature.to_bytes())))
+        .create_async()
+        .await;
+    let mut config = test_config();
+    config.require_signature_verification = true;
+    config.signature_public_key = BASE64.encode(trusted_signing_key.verifying_key().as_bytes());
+    let updater = Updater::with_client(config, reqwest::Client::builder().build().unwrap());
+    let download_url = format!("{}/{}", server.url(), asset_name);
+
+    let err = updater.download_update(&download_url).await.unwrap_err();
+
+    assert!(
+        matches!(&err, UpdateError::Integrity(msg) if msg.contains("no trusted key")),
+        "signature signed by an untrusted key must fail closed; got: {err:?}"
+    );
+    artifact_mock.assert_async().await;
+    checksum_mock.assert_async().await;
+    signature_mock.assert_async().await;
 }
 
 #[test]

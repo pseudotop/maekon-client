@@ -81,7 +81,7 @@ jobs:
           key: grpc-governance
 
       - name: Create frontend dist stub for Tauri generate_context!()
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         run: |

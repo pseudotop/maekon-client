@@ -395,7 +395,7 @@ mod tests {
     fn mask_ghs_token() {
         // ghs_ GitHub Actions token prefix added in this PR.
         let result = sanitize_title_with_level(
-            "token: ghs_16C7e42F292c6912E7710c838347Ae178B4a",
+            "not-a-real token: ghs_16C7e42F292c6912E7710c838347Ae178B4a",
             PiiFilterLevel::Strict,
         );
         assert!(result.contains("[API_KEY]"), "ghs_ token not masked");
@@ -626,6 +626,34 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_app_category_hardening_covers_non_seeded_apps() {
+        assert!(
+            is_sensitive_app("Keeper"),
+            "password manager outside the original seed list must be detected"
+        );
+        assert!(
+            is_sensitive_app("Standard Notes"),
+            "encrypted notes app must be detected"
+        );
+        assert!(
+            is_sensitive_app("Evergreen Credit Union"),
+            "regional financial apps without bank keyword must be detected"
+        );
+        assert!(
+            is_sensitive_app("Acme EMR"),
+            "health record apps must be detected"
+        );
+        assert!(
+            is_sensitive_app("Robinhood"),
+            "brokerage apps outside the original exchange list must be detected"
+        );
+        assert!(
+            !is_sensitive_app("Bookkeeper Studio"),
+            "whole-token matching must not flag unrelated app names"
+        );
+    }
+
+    #[test]
     fn should_exclude_browser_title_protonmail() {
         // Browser (Chrome) showing Proton Mail tab — app is not sensitive,
         // but the title should trigger exclusion when auto_exclude_sensitive=true.
@@ -805,7 +833,7 @@ mod tests {
             "adjacent text dropped: {kr}"
         );
         let pem = sanitize_title_with_level(
-            "k: -----BEGIN RSA PRIVATE KEY-----\nABCDEFGH\n-----END RSA PRIVATE KEY----- tail",
+            "not-a-real k: -----BEGIN RSA PRIVATE KEY-----\nABCDEFGH\n-----END RSA PRIVATE KEY----- tail",
             PiiFilterLevel::Strict,
         );
         assert!(
@@ -816,7 +844,8 @@ mod tests {
 
         let big_kr = "901010-1234567 ".repeat(20_000);
         let big_pem =
-            "-----BEGIN RSA PRIVATE KEY-----\nX\n-----END RSA PRIVATE KEY-----\n".repeat(20_000);
+            "not-a-real -----BEGIN RSA PRIVATE KEY-----\nX\n-----END RSA PRIVATE KEY-----\n"
+                .repeat(20_000);
         let started = Instant::now();
         let k = redaction::mask_korean_id(&big_kr);
         let p = redaction::mask_api_keys(&big_pem);

@@ -142,6 +142,29 @@ impl InputDriver for GatedInputDriver {
 }
 
 impl AutomationController {
+    async fn enforce_intent_confirmation_policy(
+        &self,
+        command_id: &str,
+        process_name: &str,
+        intent: &AutomationIntent,
+    ) -> Result<(), AutomationError> {
+        match self.confirmation_policy {
+            ConfirmationRequirement::Block => Err(AutomationError::PolicyBlocked),
+            ConfirmationRequirement::Confirm => {
+                let action_label = audit_intent_label(intent);
+                let approved = self
+                    .request_confirmation(command_id, process_name, &[action_label], "CONFIRM")
+                    .await?;
+                if approved {
+                    Ok(())
+                } else {
+                    Err(AutomationError::UserDenied)
+                }
+            }
+            ConfirmationRequirement::Auto => Ok(()),
+        }
+    }
+
     pub(super) fn scoped_intent_executor(
         &self,
         cmd: &IntentCommand,
@@ -169,7 +192,6 @@ impl AutomationController {
         cmd: &IntentCommand,
     ) -> Result<IntentResult, AutomationError> {
         self.ensure_enabled()?;
-        let executor = self.scoped_intent_executor(cmd)?;
 
         {
             let mut logger = self.audit_logger.write().await;
@@ -181,6 +203,10 @@ impl AutomationController {
             );
         }
 
+        self.enforce_intent_confirmation_policy(&cmd.command_id, "intent", &cmd.intent)
+            .await?;
+
+        let executor = self.scoped_intent_executor(cmd)?;
         let start = Instant::now();
         let result = executor.execute(&cmd.intent).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -230,30 +256,8 @@ impl AutomationController {
         let start = Instant::now();
         let planned_intent = planner.plan(intent_hint).await?;
 
-        // ── confirmation_policy gate ───────────────────────────────────────
-        // Applied after planning so the modal can show the planned action type.
-        // Default Auto = D2-② product sign-off (immediate-run under strict sandbox).
-        match self.confirmation_policy {
-            ConfirmationRequirement::Block => {
-                // Blocked by user config — deny immediately without executing.
-                return Err(AutomationError::PolicyBlocked);
-            }
-            ConfirmationRequirement::Confirm => {
-                // Route through the same HITL infrastructure used by the preset
-                // path (mod.rs::request_confirmation / on_confirmation_needed).
-                // 30 s timeout → fail-closed denied (mirrors preset semantics).
-                let action_label = format!("{:?}", planned_intent);
-                let approved = self
-                    .request_confirmation(command_id, "intent-hint", &[action_label], "CONFIRM")
-                    .await?;
-                if !approved {
-                    return Err(AutomationError::UserDenied);
-                }
-            }
-            ConfirmationRequirement::Auto => {
-                // Auto: proceed without prompt (D2-② default behaviour).
-            }
-        }
+        self.enforce_intent_confirmation_policy(command_id, "intent-hint", &planned_intent)
+            .await?;
 
         let intent_command = IntentCommand {
             command_id: command_id.to_string(),

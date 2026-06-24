@@ -45,6 +45,12 @@ Hold 라벨은 조건이 해소될 때까지 공개 merge 또는 parent import�
 | `do-not-merge/needs-owner` | 관련 CODEOWNER 또는 maintainer가 현재 patch를 승인 |
 | `do-not-merge/dco` | 필요한 `Signed-off-by` line 또는 legal attestation이 존재 |
 
+DCO 또는 CLA required status check가 아직 없다면 `do-not-merge/dco`가 public
+contribution provenance의 enforcement point다. DCO 또는 CLA required status
+check가 없다면 verification command output 또는 승인된 attestation link가 기록될
+때까지 `do-not-merge/dco`를 유지한다. 가능하면 public PR에 안전한 evidence를 남기고,
+그렇지 않으면 hold를 해제하기 전에 parent import PR에 기록한다.
+
 ## Flow Labels
 
 | Label | 의미 |
@@ -62,6 +68,11 @@ tree에 지정한다. 전용 maintainer team이 생기면 public contribution mo
 Trust-core 작업에 CODEOWNER review를 요구할 수 있도록 민감한 path를 명시한다.
 
 - `.github/**`, release workflow, release script, update code, supply-chain metadata
+- public export/import boundary 파일: `scripts/export-public-repo.sh`,
+  `scripts/update-public-repo-clone.sh`, `scripts/public-repo-include.txt`,
+  `scripts/public-repo-exclude.txt`, `scripts/public-export-provenance.py`,
+  `scripts/scan-public-export-secrets.py`,
+  `scripts/sync-public-contribution-labels.sh`
 - `crates/maekon-automation/**`, `crates/maekon-sandbox-worker/**`,
   `crates/maekon-vision/**`, `crates/maekon-audio/**`, `crates/maekon-network/**`,
   `crates/maekon-storage/**`

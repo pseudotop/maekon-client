@@ -2,34 +2,105 @@ name: Dependabot Auto-Merge
 
 on:
   # Temporarily manual-only while local Maekon TC work is in progress.
-  # Restore pull_request trigger before re-enabling CI.
+  # Restore pull_request trigger only after this CI-success gate remains green.
   workflow_dispatch:
+    inputs:
+      pr_url:
+        description: 'Dependabot PR URL to validate and enable auto-merge'
+        required: true
+        type: string
 
 permissions:
   contents: write
+  checks: read
   pull-requests: write
+  statuses: read
 
 jobs:
   auto-merge:
-    if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - name: Fetch Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto-approve minor and patch updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr review --approve "$PR_URL"
+      - name: Validate Dependabot PR
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_URL: ${{ inputs.pr_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          author="$(gh pr view "$PR_URL" --json author --jq '.author.login')"
+          if [ "$author" != "dependabot[bot]" ]; then
+            echo "::error::Manual Dependabot merge workflow only accepts dependabot[bot] PRs; got $author"
+            exit 1
+          fi
 
-      - name: Enable auto-merge for minor and patch updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+      - name: Require completed CI checks before auto-merge
+        env:
+          PR_URL: ${{ inputs.pr_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SELF_WORKFLOW: Dependabot Auto-Merge
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1800))
+
+          while true; do
+            checks_json="$(gh pr checks "$PR_URL" --json name,bucket,state,workflow)"
+            verdict="$(
+              CHECKS_JSON="$checks_json" SELF_WORKFLOW="$SELF_WORKFLOW" python3 - <<'PY'
+          import json
+          import os
+
+          checks = json.loads(os.environ["CHECKS_JSON"])
+          self_workflow = os.environ["SELF_WORKFLOW"]
+          relevant = [
+              check
+              for check in checks
+              if check.get("workflow") != self_workflow and check.get("bucket") != "skipping"
+          ]
+
+          if not relevant:
+              print("fail:no non-skipped CI checks found")
+          elif failed := [
+              check for check in relevant if check.get("bucket") in {"fail", "cancel"}
+          ]:
+              names = ", ".join(check.get("name", "<unnamed>") for check in failed)
+              print(f"fail:CI checks failed or were cancelled: {names}")
+          elif pending := [check for check in relevant if check.get("bucket") == "pending"]:
+              names = ", ".join(check.get("name", "<unnamed>") for check in pending)
+              print(f"pending:{names}")
+          elif all(check.get("bucket") == "pass" for check in relevant):
+              print("pass")
+          else:
+              names = ", ".join(
+                  f"{check.get('name', '<unnamed>')}={check.get('bucket', '<none>')}"
+                  for check in relevant
+              )
+              print(f"fail:unexpected CI check buckets: {names}")
+          PY
+            )"
+
+            case "$verdict" in
+              pass)
+                echo "Dependabot PR CI checks are complete and passing."
+                exit 0
+                ;;
+              pending:*)
+                if [ "$SECONDS" -ge "$deadline" ]; then
+                  echo "::error::Timed out waiting for Dependabot PR CI checks: ${verdict#pending:}"
+                  exit 1
+                fi
+                echo "Waiting for Dependabot PR CI checks: ${verdict#pending:}"
+                sleep 30
+                ;;
+              fail:*)
+                echo "::error::${verdict#fail:}"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Enable auto-merge for Dependabot PR
         run: gh pr merge --auto --squash "$PR_URL"
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_URL: ${{ inputs.pr_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

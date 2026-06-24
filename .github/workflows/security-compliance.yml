@@ -97,7 +97,7 @@ jobs:
       # F-SC-02: continue-on-error removed — cargo-vet failures now block merges.
       # Grace period (90-day expiry 2026-08-22) covers the 947 baseline entries;
       # any new un-annotated exemption will be caught by the gate above first.
-      - name: Supply-chain policy (cargo-vet, advisory)
+      - name: Supply-chain policy (cargo-vet)
         run: ./scripts/cargo-cache.sh vet check
 
       - name: Generate third-party notice

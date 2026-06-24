@@ -955,6 +955,14 @@ struct FakeExternalLlmProvider {
     seen_context: Arc<std::sync::Mutex<Option<ScreenContext>>>,
 }
 
+struct FakeLocalClaimedRemoteEndpointLlmProvider {
+    seen_context: Arc<std::sync::Mutex<Option<ScreenContext>>>,
+}
+
+struct FakeLocalClaimedRemoteEndpointOcrProvider {
+    seen_call: Arc<std::sync::Mutex<bool>>,
+}
+
 struct FakeExternalAnalysisProvider {
     seen_analyze: Arc<std::sync::Mutex<Option<(String, String)>>>,
     seen_summary: Arc<std::sync::Mutex<Option<(String, String)>>>,
@@ -1068,6 +1076,66 @@ impl LlmProvider for FakeExternalLlmProvider {
 
     fn is_external(&self) -> bool {
         true
+    }
+}
+
+#[async_trait]
+impl LlmProvider for FakeLocalClaimedRemoteEndpointLlmProvider {
+    async fn interpret_intent(
+        &self,
+        screen_context: &ScreenContext,
+        _intent_hint: &str,
+    ) -> Result<InterpretedAction, CoreError> {
+        *self.seen_context.lock().unwrap() = Some(screen_context.clone());
+        Ok(InterpretedAction {
+            target_text: Some("Save".to_string()),
+            target_role: Some("button".to_string()),
+            action_type: "click".to_string(),
+            confidence: 0.8,
+        })
+    }
+
+    fn provider_name(&self) -> &str {
+        "fake-local-claimed-remote-llm"
+    }
+
+    fn is_external(&self) -> bool {
+        false
+    }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        vec!["https://api.example.com/v1/responses"]
+    }
+}
+
+#[async_trait]
+impl OcrProvider for FakeLocalClaimedRemoteEndpointOcrProvider {
+    async fn extract_elements(
+        &self,
+        _image: &[u8],
+        _image_format: &str,
+    ) -> Result<Vec<OcrResult>, CoreError> {
+        *self.seen_call.lock().unwrap() = true;
+        Ok(vec![OcrResult {
+            text: "save".to_string(),
+            x: 1,
+            y: 1,
+            width: 10,
+            height: 10,
+            confidence: 0.9,
+        }])
+    }
+
+    fn provider_name(&self) -> &str {
+        "fake-local-claimed-remote-ocr"
+    }
+
+    fn is_external(&self) -> bool {
+        false
+    }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        vec!["https://vision.example.com/v1/images:annotate"]
     }
 }
 
@@ -1205,6 +1273,36 @@ async fn guarded_analysis_provider_sanitizes_context_and_prompt_before_external_
         .expect("inner summarize should receive sanitized input");
     assert!(!summary_context.contains("010-1234-5678"));
     assert!(!summary_prompt.contains("010-1234-5678"));
+}
+
+#[tokio::test]
+async fn guarded_llm_provider_rejects_non_loopback_endpoint_that_claims_local() {
+    let seen_context = Arc::new(std::sync::Mutex::new(None));
+    let inner = Arc::new(FakeLocalClaimedRemoteEndpointLlmProvider {
+        seen_context: seen_context.clone(),
+    }) as Arc<dyn LlmProvider>;
+    let (privacy_guard, _temp_dir) = make_external_llm_guard();
+    let guarded = super::guarded_llm::GuardedLlmProvider::new(inner, privacy_guard);
+
+    let err = guarded
+        .interpret_intent(
+            &ScreenContext {
+                visible_texts: vec!["email user@example.com".to_string()],
+                active_app: "Code".to_string(),
+                active_window_title: "Inbox user@example.com".to_string(),
+                layout_description: None,
+            },
+            "click save",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(&err, CoreError::PolicyDenied { .. }));
+    assert!(
+        err.to_string().contains("reported non-external"),
+        "unexpected error: {err}"
+    );
+    assert!(seen_context.lock().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -1744,6 +1842,40 @@ fn resolves_remote_providers_from_secret_binding_with_plaintext_empty() {
     assert!(adapters.llm_fallback_reason.is_none());
     assert!(adapters.ocr.is_external());
     assert!(adapters.llm.is_external());
+}
+
+#[tokio::test]
+async fn guarded_ocr_provider_rejects_non_loopback_endpoint_that_claims_local() {
+    let seen_call = Arc::new(std::sync::Mutex::new(false));
+    let inner = Arc::new(FakeLocalClaimedRemoteEndpointOcrProvider {
+        seen_call: seen_call.clone(),
+    }) as Arc<dyn OcrProvider>;
+    let (privacy_guard, _temp_dir) = make_external_ocr_guard(
+        true,
+        Some(WindowInfo {
+            title: "main.rs".to_string(),
+            app_name: "Code".to_string(),
+            app_bundle_id: None,
+            pid: 15,
+            bounds: None,
+        }),
+        None,
+    );
+    let guarded = guarded_ocr::GuardedOcrProvider::new(
+        inner,
+        privacy_guard,
+        false,
+        OcrValidationConfig::default(),
+    );
+
+    let err = guarded.extract_elements(b"dummy", "png").await.unwrap_err();
+
+    assert!(matches!(&err, CoreError::PolicyDenied { .. }));
+    assert!(
+        err.to_string().contains("reported non-external"),
+        "unexpected error: {err}"
+    );
+    assert!(!*seen_call.lock().unwrap());
 }
 
 #[tokio::test]

@@ -11,6 +11,25 @@ pub enum MouseButton {
     Middle,
 }
 
+impl MouseButton {
+    pub fn parse_wire(button: &str) -> Result<Self, String> {
+        Ok(match button.to_lowercase().as_str() {
+            "left" | "l" => Self::Left,
+            "right" | "r" => Self::Right,
+            "middle" | "m" => Self::Middle,
+            _ => return Err(format!("unknown mouse button: {button}")),
+        })
+    }
+
+    pub fn as_wire_name(&self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Middle => "middle",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutomationAction {
     MouseMove { x: i32, y: i32 },
@@ -216,6 +235,33 @@ mod tests {
         let json = serde_json::to_string(&btn).unwrap();
         let deser: MouseButton = serde_json::from_str(&json).unwrap();
         assert_eq!(deser, MouseButton::Left);
+    }
+
+    #[test]
+    fn mouse_button_wire_contract_accepts_canonical_names_and_aliases() {
+        assert_eq!(MouseButton::parse_wire("left"), Ok(MouseButton::Left));
+        assert_eq!(MouseButton::parse_wire("Left"), Ok(MouseButton::Left));
+        assert_eq!(MouseButton::parse_wire("l"), Ok(MouseButton::Left));
+        assert_eq!(MouseButton::parse_wire("right"), Ok(MouseButton::Right));
+        assert_eq!(MouseButton::parse_wire("R"), Ok(MouseButton::Right));
+        assert_eq!(MouseButton::parse_wire("middle"), Ok(MouseButton::Middle));
+        assert_eq!(MouseButton::parse_wire("m"), Ok(MouseButton::Middle));
+        assert_eq!(MouseButton::Right.as_wire_name(), "right");
+    }
+
+    #[test]
+    fn mouse_button_wire_contract_rejects_unknown_and_empty_names() {
+        let unknown = MouseButton::parse_wire("scrollwheel").unwrap_err();
+        assert!(
+            unknown.contains("unknown mouse button"),
+            "unexpected error: {unknown}"
+        );
+
+        let empty = MouseButton::parse_wire("").unwrap_err();
+        assert!(
+            empty.contains("unknown mouse button"),
+            "unexpected error: {empty}"
+        );
     }
 
     /// F-RC-C35-02: default_confirmation must produce the canonical SCREAMING_SNAKE_CASE

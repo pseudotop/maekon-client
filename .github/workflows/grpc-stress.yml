@@ -41,7 +41,7 @@ jobs:
       - name: Install frontend dist stub (rust-embed compile-time requirement)
         run: |
           mkdir -p crates/maekon-web/frontend/dist
-          echo '<!doctype html>' > crates/maekon-web/frontend/dist/index.html
+          echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
       # No sandbox-worker stub required: cargo test -p maekon-web does not
       # compile src-tauri (dep graph is src-tauri → maekon-web, not reverse).
       - name: Run stress tests

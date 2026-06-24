@@ -272,6 +272,7 @@ impl Sandbox for MacOsSandbox {
             // into the child, so apply_resource_limits() is a no-op log.
             resource_limits: false,
             process_isolation: self.is_available(),
+            privilege_restriction: false,
         }
     }
 }

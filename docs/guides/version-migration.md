@@ -129,9 +129,9 @@ This change is fully backward-compatible. Old consent files remain valid; new fi
 
 ## Minimum Allowed Version Floor
 
-The config field `update.min_allowed_version` (optional string, semver) sets a floor below which the auto-updater will not install. This is used to enforce that a security-critical version is not bypassed during rollback.
+The config field `update.min_allowed_version` (optional string, semver) sets a floor below which the auto-updater will not install. When omitted, it defaults to the current build version so fresh configs retain an anti-rollback floor even before fleet policy is applied. This is used to enforce that a security-critical version is not bypassed during rollback.
 
-In enterprise deployments, set this field in your managed `config.json` to the minimum version your security policy requires:
+In enterprise deployments, raise this field in your managed `config.json` to the minimum version your security policy requires:
 
 ```json
 {

@@ -26,7 +26,7 @@ jobs:
           python-version: '3.12'
 
       - name: Create frontend dist stub
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Run config sync check
         run: ./scripts/check-config-sync.sh --fix

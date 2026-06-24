@@ -26,7 +26,10 @@ use super::guarded_llm::GuardedLlmProvider;
 use super::helpers::{
     oauth_llm_endpoint, require_endpoint_config, resolve_remote_with_optional_fallback,
 };
-use super::types::{ExternalOcrPrivacyGuard, LlmProviderResolution, ProviderSource};
+use super::types::{
+    ensure_non_external_endpoints_are_loopback, ExternalOcrPrivacyGuard, LlmProviderResolution,
+    ProviderSource,
+};
 #[cfg(feature = "analysis")]
 use crate::oauth_provider_registry::{
     managed_oauth_provider_id_for_endpoint, managed_oauth_transport_url_for_endpoint,
@@ -42,6 +45,10 @@ fn guard_external_llm_provider(
     privacy_guard: Option<ExternalOcrPrivacyGuard>,
 ) -> Result<Arc<dyn LlmProvider>, CoreError> {
     if !provider.is_external() {
+        ensure_non_external_endpoints_are_loopback(
+            provider.provider_name(),
+            provider.egress_endpoint_urls(),
+        )?;
         return Ok(provider);
     }
 

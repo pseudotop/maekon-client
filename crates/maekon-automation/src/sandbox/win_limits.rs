@@ -80,6 +80,42 @@ pub(crate) fn build_token_restrictions(config: &SandboxConfig) -> TokenRestricti
     }
 }
 
+/// Return the missing containment capabilities required by a Windows sandbox
+/// profile. `Standard`/`Strict` must not silently degrade to Job Object resource
+/// limits because callers interpret those profile names as filesystem, syscall,
+/// and network containment.
+pub(crate) fn missing_required_containment_for_profile(
+    profile: SandboxProfile,
+    filesystem_isolation: bool,
+    syscall_filtering: bool,
+    network_isolation: bool,
+    privilege_restriction: bool,
+) -> Option<String> {
+    if matches!(profile, SandboxProfile::Permissive) {
+        return None;
+    }
+
+    let mut missing = Vec::new();
+    if !filesystem_isolation {
+        missing.push("filesystem_isolation");
+    }
+    if !syscall_filtering {
+        missing.push("syscall_filtering");
+    }
+    if !network_isolation {
+        missing.push("network_isolation");
+    }
+    if !privilege_restriction {
+        missing.push("privilege_restriction");
+    }
+
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing.join(", "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +188,44 @@ mod tests {
             assert!(r.disable_most_sids, "{profile:?} restricts most SIDs");
             assert!(r.remove_privileges, "{profile:?} strips privileges");
         }
+    }
+
+    #[test]
+    fn standard_and_strict_require_windows_containment_capabilities() {
+        for profile in [SandboxProfile::Standard, SandboxProfile::Strict] {
+            let missing =
+                missing_required_containment_for_profile(profile, false, false, false, false)
+                    .expect("Standard/Strict must require containment capabilities");
+            assert_eq!(
+                missing,
+                "filesystem_isolation, syscall_filtering, network_isolation, privilege_restriction"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_and_strict_accept_windows_when_all_required_capabilities_exist() {
+        for profile in [SandboxProfile::Standard, SandboxProfile::Strict] {
+            let missing = missing_required_containment_for_profile(profile, true, true, true, true);
+            assert!(
+                missing.is_none(),
+                "complete containment capability set must satisfy {profile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permissive_does_not_require_windows_containment_capabilities() {
+        let missing = missing_required_containment_for_profile(
+            SandboxProfile::Permissive,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(
+            missing.is_none(),
+            "Permissive may run resource-limited without containment"
+        );
     }
 }

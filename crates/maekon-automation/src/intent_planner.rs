@@ -1,5 +1,6 @@
 use crate::error::AutomationError;
 use async_trait::async_trait;
+use maekon_core::config::DEFAULT_MIN_LLM_CONFIDENCE;
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::AutomationIntent;
 use maekon_core::ports::element_finder::ElementFinder;
@@ -21,8 +22,8 @@ pub struct LlmIntentPlanner {
     /// intent (#6333 A10). The element-finder gate only covers OCR/AX certainty,
     /// not the LLM's interpretation confidence — so a hallucinated/prompt-injected
     /// interpretation with confidence ~0 would auto-execute if a matching on-screen
-    /// element happens to exist. Below this floor the plan is rejected. Default 0.0
-    /// = disabled (preserves prior behavior; admins opt in).
+    /// element happens to exist. Below this floor the plan is rejected. Set 0.0
+    /// explicitly to disable the gate.
     min_llm_confidence: f64,
 }
 
@@ -33,7 +34,7 @@ impl LlmIntentPlanner {
             element_finder,
             skill_loader: None,
             wait_timeout_ms: 5_000,
-            min_llm_confidence: 0.0,
+            min_llm_confidence: DEFAULT_MIN_LLM_CONFIDENCE,
         }
     }
 
@@ -44,7 +45,7 @@ impl LlmIntentPlanner {
     }
 
     /// Set the minimum LLM interpretation confidence to auto-execute (#6333 A10).
-    /// `0.0` (the default) disables the gate.
+    /// `0.0` disables the gate.
     pub fn with_min_llm_confidence(mut self, min: f64) -> Self {
         self.min_llm_confidence = min;
         self
@@ -145,8 +146,8 @@ impl IntentPlanner for LlmIntentPlanner {
 
         // #6333 A10: reject interpretations the LLM itself is not confident about,
         // so a hallucinated/prompt-injected low-confidence interpretation does not
-        // auto-execute just because a matching on-screen element exists. Default
-        // floor 0.0 keeps this disabled unless an admin sets `automation.min_llm_confidence`.
+        // auto-execute just because a matching on-screen element exists. A 0.0
+        // floor is still available as an explicit admin opt-out.
         if interpreted.confidence < self.min_llm_confidence {
             return Err(AutomationError::InvalidArguments(format!(
                 "LLM interpretation confidence {:.2} is below the configured minimum {:.2}; \
@@ -294,6 +295,27 @@ mod tests {
         assert!(
             err.to_string().contains("confidence"),
             "low-confidence plan must be rejected with a confidence error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_planner_rejects_zero_confidence_llm_interpretation() {
+        let planner = LlmIntentPlanner::new(
+            Arc::new(StubLlmProvider {
+                action: InterpretedAction {
+                    target_text: Some("save".to_string()),
+                    target_role: Some("button".to_string()),
+                    action_type: "click".to_string(),
+                    confidence: 0.0,
+                },
+            }),
+            Arc::new(StubElementFinder),
+        );
+
+        let err = planner.plan("click save").await.unwrap_err();
+        assert!(
+            err.to_string().contains("confidence"),
+            "default planner must reject zero-confidence plans, got: {err}"
         );
     }
 

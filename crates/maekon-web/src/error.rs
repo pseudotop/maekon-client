@@ -4,6 +4,10 @@ use axum::Json;
 use maekon_api_contracts::error::ErrorResponse;
 use thiserror::Error;
 
+const INTERNAL_ERROR_RESPONSE_MESSAGE: &str = "internal server error";
+const CONFIG_ERROR_RESPONSE_MESSAGE: &str = "configuration error";
+const SECRET_STORE_ERROR_RESPONSE_MESSAGE: &str = "secret store error";
+
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("Internal server error: {0}")]
@@ -27,6 +31,9 @@ pub enum ApiError {
     #[error("Unprocessable request: {0}")]
     Unprocessable(String),
 
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
+
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
@@ -41,11 +48,19 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            ApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal.generic".to_string(),
-                msg.clone(),
-            ),
+            ApiError::Internal(msg) => {
+                tracing::error!(
+                    status = StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    code = "internal.generic",
+                    error = %msg,
+                    "suppressed internal API error detail"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal.generic".to_string(),
+                    INTERNAL_ERROR_RESPONSE_MESSAGE.to_string(),
+                )
+            }
             ApiError::NotFound(msg) => (
                 StatusCode::NOT_FOUND,
                 "not_found.resource_missing".to_string(),
@@ -76,6 +91,11 @@ impl IntoResponse for ApiError {
                 "validation.invalid_arguments".to_string(),
                 msg.clone(),
             ),
+            ApiError::TooManyRequests(msg) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "auth.rate_limited".to_string(),
+                msg.clone(),
+            ),
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "service.unavailable".to_string(),
@@ -85,11 +105,24 @@ impl IntoResponse for ApiError {
                 status,
                 code,
                 message,
-            } => (
-                StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                code.clone(),
-                message.clone(),
-            ),
+            } => {
+                let status =
+                    StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let message = if status == StatusCode::INTERNAL_SERVER_ERROR
+                    && message != INTERNAL_ERROR_RESPONSE_MESSAGE
+                {
+                    tracing::error!(
+                        status = status.as_u16(),
+                        code = %code,
+                        error = %message,
+                        "suppressed internal API error detail"
+                    );
+                    INTERNAL_ERROR_RESPONSE_MESSAGE.to_string()
+                } else {
+                    message.clone()
+                };
+                (status, code.clone(), message)
+            }
         };
 
         let body = ErrorResponse {
@@ -99,6 +132,35 @@ impl IntoResponse for ApiError {
         };
 
         (status, Json(body)).into_response()
+    }
+}
+
+fn coded_with_private_detail(
+    status: StatusCode,
+    code: String,
+    client_message: &'static str,
+    detail: impl std::fmt::Display,
+) -> ApiError {
+    if status == StatusCode::INTERNAL_SERVER_ERROR {
+        tracing::error!(
+            status = status.as_u16(),
+            code = %code,
+            error = %detail,
+            "suppressed private CoreError detail from API response"
+        );
+    } else {
+        tracing::warn!(
+            status = status.as_u16(),
+            code = %code,
+            error = %detail,
+            "suppressed private CoreError detail from API response"
+        );
+    }
+
+    ApiError::Coded {
+        status: status.as_u16(),
+        code,
+        message: client_message.to_string(),
     }
 }
 
@@ -157,9 +219,7 @@ impl From<maekon_core::error::CoreError> for ApiError {
                 message,
             },
             CoreError::InvalidArguments { message, .. }
-            | CoreError::Config { message, .. }
             | CoreError::OcrError { message, .. }
-            | CoreError::SecretStoreError { message, .. }
             | CoreError::SandboxInit { message, .. }
             | CoreError::SandboxExecution { message, .. }
             | CoreError::TimeWindow { message, .. } => ApiError::Coded {
@@ -167,17 +227,30 @@ impl From<maekon_core::error::CoreError> for ApiError {
                 code,
                 message,
             },
+            CoreError::Config { message, .. } => coded_with_private_detail(
+                StatusCode::BAD_REQUEST,
+                code,
+                CONFIG_ERROR_RESPONSE_MESSAGE,
+                message,
+            ),
+            CoreError::SecretStoreError { message, .. } => coded_with_private_detail(
+                StatusCode::BAD_REQUEST,
+                code,
+                SECRET_STORE_ERROR_RESPONSE_MESSAGE,
+                message,
+            ),
             CoreError::ElementNotFound { name, .. } => ApiError::Coded {
                 status: StatusCode::BAD_REQUEST.as_u16(),
                 code,
                 message: name,
             },
 
-            other => ApiError::Coded {
-                status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            other => coded_with_private_detail(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 code,
-                message: other.to_string(),
-            },
+                INTERNAL_ERROR_RESPONSE_MESSAGE,
+                other,
+            ),
         }
     }
 }
@@ -195,6 +268,17 @@ impl From<maekon_core::models::ai_session::SessionInputLimitError> for ApiError 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn response_json(api: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = api.into_response();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error response body must be readable");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("error response body must be JSON");
+        (status, body)
+    }
 
     fn assert_coded(api: ApiError, expected_status: StatusCode, expected_code: &str) {
         match api {
@@ -214,18 +298,61 @@ mod tests {
 
     #[tokio::test]
     async fn conflict_response_uses_conflict_wire_code() {
-        let response = ApiError::Conflict("preset already exists".to_string()).into_response();
+        let (status, body) =
+            response_json(ApiError::Conflict("preset already exists".to_string())).await;
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("conflict response body must be readable");
-        let body: serde_json::Value =
-            serde_json::from_slice(&body).expect("conflict response body must be JSON");
-
+        assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["status"], StatusCode::CONFLICT.as_u16());
         assert_eq!(body["code"], "conflict.resource_state");
         assert_eq!(body["error"], "preset already exists");
+    }
+
+    #[tokio::test]
+    async fn internal_response_hides_private_detail() {
+        let (_, body) = response_json(ApiError::Internal(
+            "failed to read /private/tmp/secret".to_string(),
+        ))
+        .await;
+
+        assert_eq!(body["status"], StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        assert_eq!(body["code"], "internal.generic");
+        assert_eq!(body["error"], "internal server error");
+    }
+
+    #[tokio::test]
+    async fn core_error_internal_display_detail_is_not_serialized() {
+        let core = maekon_core::error::CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: "failed to open /Users/alice/.maekon/token.json".to_string(),
+        };
+        let (_, body) = response_json(core.into()).await;
+
+        assert_eq!(body["status"], StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        assert_eq!(body["code"], "internal.generic");
+        assert_eq!(body["error"], "internal server error");
+    }
+
+    #[tokio::test]
+    async fn path_bearing_core_errors_hide_private_detail() {
+        let config = maekon_core::error::CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: "failed to parse /Users/alice/.maekon/config.toml".to_string(),
+        };
+        let (_, body) = response_json(config.into()).await;
+
+        assert_eq!(body["status"], StatusCode::BAD_REQUEST.as_u16());
+        assert_eq!(body["code"], "config.invalid");
+        assert_eq!(body["error"], "configuration error");
+
+        let secret = maekon_core::error::CoreError::SecretStoreError {
+            code: maekon_core::error_codes::SecretCode::Failed,
+            message: "keychain lookup failed for /Users/alice/.maekon/token.json".to_string(),
+        };
+        let (_, body) = response_json(secret.into()).await;
+
+        assert_eq!(body["status"], StatusCode::BAD_REQUEST.as_u16());
+        assert_eq!(body["code"], "secret.failed");
+        assert_eq!(body["error"], "secret store error");
     }
 
     /// Regression guard: CoreError::PermissionDenied must map to HTTP 403

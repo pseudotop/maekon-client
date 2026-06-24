@@ -18,6 +18,9 @@ use maekon_core::config::{UpdateChannel, UpdateConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(test)]
+pub(crate) use install::SignatureKeySource;
+
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Whether the matched release asset is a full binary or a delta patch.
@@ -178,7 +181,9 @@ impl Updater {
         }
 
         let current = semver::Version::parse(CURRENT_VERSION)?;
-        let release = self.fetch_target_release(base_url).await?;
+        let metadata_base_url = self.validate_metadata_base_url(base_url)?;
+        let metadata_base_url = metadata_base_url.as_str().trim_end_matches('/').to_string();
+        let release = self.fetch_target_release(&metadata_base_url).await?;
 
         let latest_tag = release.tag_name.trim_start_matches('v');
         let latest = semver::Version::parse(latest_tag)?;

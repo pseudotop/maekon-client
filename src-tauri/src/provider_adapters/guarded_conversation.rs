@@ -14,6 +14,8 @@ use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{ConversationSessionInfo, SessionMessage};
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 
+use super::types::ensure_non_external_endpoints_are_loopback;
+
 /// Narrow, src-tauri-local guard port: sanitize a chat message before it is
 /// transmitted to an external provider. A single method (Interface Segregation)
 /// keeps the decorator decoupled from the broad OCR/LLM guard surface and makes
@@ -55,6 +57,10 @@ impl ConversationSession for GuardedConversationSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
         // Local/in-process sessions (e.g. Ollama) keep data on-device — no guard.
         if !self.inner.is_external() {
+            ensure_non_external_endpoints_are_loopback(
+                self.inner.provider_name(),
+                self.inner.egress_endpoint_urls(),
+            )?;
             return self.inner.send_message(message).await;
         }
         // Fail-closed: a guard error blocks transmission; `?` returns before
@@ -79,6 +85,10 @@ impl ConversationSession for GuardedConversationSession {
         self.inner.is_external()
     }
 
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        self.inner.egress_endpoint_urls()
+    }
+
     /// Forward interrupt to the inner session (E21 #5017). Interrupt carries NO
     /// user content (just a turn-cancel), so no privacy guard is required — but
     /// it MUST be forwarded, else the privacy decorator silently swallows it
@@ -95,6 +105,10 @@ impl ConversationSession for GuardedConversationSession {
     /// keep data on-device and pass through unguarded.
     async fn steer(&self, message: &SessionMessage) -> Result<(), CoreError> {
         if !self.inner.is_external() {
+            ensure_non_external_endpoints_are_loopback(
+                self.inner.provider_name(),
+                self.inner.egress_endpoint_urls(),
+            )?;
             return self.inner.steer(message).await;
         }
         let sanitized = self.guard.sanitize_outbound(message).await?;
@@ -125,6 +139,7 @@ mod tests {
     /// reports a configurable `is_external`.
     struct RecordingInner {
         external: bool,
+        endpoint_url: Option<String>,
         received: Mutex<Option<String>>,
         /// Content the inner session received via `steer` (E21 #5017), so a test
         /// can prove the guard sanitized BEFORE inner.steer (vs send_message).
@@ -133,8 +148,13 @@ mod tests {
 
     impl RecordingInner {
         fn new(external: bool) -> Self {
+            Self::new_with_endpoint(external, None)
+        }
+
+        fn new_with_endpoint(external: bool, endpoint_url: Option<&str>) -> Self {
             Self {
                 external,
+                endpoint_url: endpoint_url.map(str::to_string),
                 received: Mutex::new(None),
                 steered: Mutex::new(None),
             }
@@ -171,6 +191,9 @@ mod tests {
         }
         fn is_external(&self) -> bool {
             self.external
+        }
+        fn egress_endpoint_urls(&self) -> Vec<&str> {
+            self.endpoint_url.as_deref().into_iter().collect()
         }
         async fn steer(&self, message: &SessionMessage) -> Result<(), CoreError> {
             *self.steered.lock().unwrap() = Some(message.content.clone());
@@ -269,6 +292,35 @@ mod tests {
             inner.received.lock().unwrap().as_deref(),
             Some("local-data"),
             "local inner receives the original content untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_loopback_endpoint_claiming_local_is_rejected_without_guard_or_inner_call() {
+        let inner = Arc::new(RecordingInner::new_with_endpoint(
+            false,
+            Some("https://chat.example.com/v1/messages"),
+        ));
+        let guard = Arc::new(RecordingGuard::new(GuardMode::Sanitize));
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+
+        let err = match session.send_message(&msg("secret@example.com")).await {
+            Ok(_) => panic!("non-loopback endpoint claiming local must be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(&err, CoreError::PolicyDenied { .. }));
+        assert!(
+            err.to_string().contains("reported non-external"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !*guard.called.lock().unwrap(),
+            "trust-boundary rejection must happen before sanitization"
+        );
+        assert!(
+            inner.received.lock().unwrap().is_none(),
+            "fail-closed: inner must NOT receive raw content"
         );
     }
 
