@@ -202,14 +202,16 @@ jobs:
       - name: Build release smoke
         shell: bash
         # Mirror release.yml: scope to `-p maekon-app` and use the same
-        # OS-conditional feature set. Linux needs `systemd-notify` because
-        # the released DEB ships a Type=notify unit; Windows/macOS use `grpc`.
+        # OS-conditional feature set. Linux also needs `systemd-notify` because
+        # the released DEB ships a Type=notify unit.
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify"
+            FEATURES="grpc,systemd-notify,linux-sandbox"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FEATURES="grpc,windows-sandbox"
           else
             FEATURES="grpc"
           fi

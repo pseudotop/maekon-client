@@ -60,6 +60,16 @@ pub trait ConversationSession: Send + Sync {
         false
     }
 
+    /// Network endpoints that may carry chat messages, history, or attachments.
+    ///
+    /// In-process/local sessions return an empty list. Sessions that report
+    /// `is_external() == false` while still using an endpoint must expose that
+    /// URL so guard decorators can independently verify that every such
+    /// endpoint is loopback before allowing an unguarded local fast path.
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        Vec::new()
+    }
+
     /// Interrupt (stop) the session's in-flight turn (E21 #5017).
     ///
     /// Turn-lifecycle control for backends that expose a steerable/cancellable

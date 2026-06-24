@@ -19,7 +19,9 @@ The goal is to keep the standalone trust model strict today, while making future
 - `update.signature_public_key` MUST be a valid Ed25519 public key (32-byte decoded payload).
 - Update artifacts MUST pass both SHA-256 and Ed25519 verification before extraction/install.
 - Signature/checksum sidecars (`.sig`, `.sha256`) MUST be generated and published with every release artifact.
-- `update.min_allowed_version` SHOULD be set to enforce anti-rollback version floors.
+- `update.min_allowed_version` defaults to the current build version and MUST
+  remain a valid anti-rollback floor; managed deployments SHOULD raise it to the
+  current security baseline when a vulnerable release must never be reinstalled.
 
 ### 1.1) Signed Policy Bundle (Startup Gate)
 

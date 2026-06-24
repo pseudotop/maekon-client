@@ -6,7 +6,7 @@ use maekon_core::ports::llm_provider::{
     InterpretedAction, LlmProvider, ScreenContext, SkillContext,
 };
 
-use super::types::ExternalOcrPrivacyGuard;
+use super::types::{ensure_non_external_endpoints_are_loopback, ExternalOcrPrivacyGuard};
 
 pub(super) struct GuardedLlmProvider {
     inner: Arc<dyn LlmProvider>,
@@ -30,6 +30,10 @@ impl LlmProvider for GuardedLlmProvider {
         intent_hint: &str,
     ) -> Result<InterpretedAction, CoreError> {
         if !self.inner.is_external() {
+            ensure_non_external_endpoints_are_loopback(
+                self.inner.provider_name(),
+                self.inner.egress_endpoint_urls(),
+            )?;
             return self
                 .inner
                 .interpret_intent(screen_context, intent_hint)
@@ -50,6 +54,10 @@ impl LlmProvider for GuardedLlmProvider {
         skill_ctx: &SkillContext,
     ) -> Result<InterpretedAction, CoreError> {
         if !self.inner.is_external() {
+            ensure_non_external_endpoints_are_loopback(
+                self.inner.provider_name(),
+                self.inner.egress_endpoint_urls(),
+            )?;
             return self
                 .inner
                 .interpret_intent_with_skills(screen_context, intent_hint, skill_ctx)
@@ -71,5 +79,9 @@ impl LlmProvider for GuardedLlmProvider {
 
     fn is_external(&self) -> bool {
         self.inner.is_external()
+    }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        self.inner.egress_endpoint_urls()
     }
 }

@@ -31,8 +31,9 @@ pub struct AutomationStatusDto {
     /// Intent-hint confirmation policy (SCREAMING_SNAKE_CASE serde token).
     ///
     /// Mirrors `ConfirmationRequirement` variants: `"AUTO"` / `"CONFIRM"` / `"BLOCK"`.
-    /// Frontend uses this to conditionally branch the "Runs immediately…" caption:
-    /// - `"AUTO"`    → "Runs immediately under strict sandbox" (existing key)
+    /// Frontend uses this with `sandbox_enabled` / `sandbox_profile` to conditionally
+    /// branch the intent-hint caption:
+    /// - `"AUTO"`    → immediate-run copy that reflects actual sandbox status
     /// - `"CONFIRM"` → "Requires your confirmation before running"
     /// - `"BLOCK"`   → "Automation execution is disabled by policy"
     ///

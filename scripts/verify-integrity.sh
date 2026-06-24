@@ -50,7 +50,7 @@ if [[ "$VET_MODE" == "strict" ]]; then
   "$CARGO_CMD" vet "${VET_CHECK_ARGS[@]}"
 else
   if ! "$CARGO_CMD" vet "${VET_CHECK_ARGS[@]}"; then
-    printf "[integrity] cargo-vet advisory failed (strict mode remains enforced on push/schedule).\n" >&2
+    printf "[integrity] cargo-vet advisory failed (set INTEGRITY_VET_MODE=strict to fail closed).\n" >&2
   fi
 fi
 

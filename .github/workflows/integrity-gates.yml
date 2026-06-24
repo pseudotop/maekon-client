@@ -65,7 +65,7 @@ jobs:
           python3 -m pip install --upgrade pynacl
 
       - name: Create frontend dist stub for Tauri generate_context!()
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         # verify-integrity.sh invokes a workspace cargo build that walks
@@ -76,6 +76,8 @@ jobs:
         run: touch src-tauri/maekon-sandbox-worker-x86_64-unknown-linux-gnu
 
       - name: Run integrity verification script
+        env:
+          INTEGRITY_VET_MODE: strict
         run: ./scripts/verify-integrity.sh
 
       - name: Run key rotation rehearsal script

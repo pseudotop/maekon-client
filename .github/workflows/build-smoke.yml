@@ -123,16 +123,31 @@ jobs:
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
 
-      - name: Build release binary
+      - name: Build release binary (macOS release feature parity)
+        if: runner.os == 'macOS'
         run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
+
+      - name: Build release binary (Windows release feature parity)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,windows-sandbox
 
       - name: Build release binary (Linux release feature parity)
         if: runner.os == 'Linux'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify,linux-sandbox
 
       - name: Run clippy (warnings only, non-blocking)
         continue-on-error: true
-        run: cargo clippy --locked --target ${{ matrix.target }} -p maekon-app --features grpc -- -W warnings
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            FEATURES="grpc,systemd-notify,linux-sandbox"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FEATURES="grpc,windows-sandbox"
+          else
+            FEATURES="grpc"
+          fi
+          cargo clippy --locked --target ${{ matrix.target }} -p maekon-app --features "$FEATURES" -- -W warnings
 
       - name: Run tests
         run: cargo test --locked --target ${{ matrix.target }} -p maekon-app

@@ -667,6 +667,24 @@ mod tests {
     }
 
     #[test]
+    fn text_filter_denies_sensitive_apps_beyond_seed_keywords() {
+        let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStandard);
+
+        let err = gw
+            .prepare_text_for_external_with_surface(
+                &["recovery code: 123456".to_string()],
+                "Keeper",
+                "Vault",
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, PrivacyDenied::SensitiveApp(app) if app == "Keeper"),
+            "non-seeded sensitive app must fail closed before text leaves the device, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn effective_filter_level_strict() {
         let gw = make_gateway(true, ExternalDataPolicy::PiiFilterStrict);
         assert_eq!(gw.effective_filter_level(), PiiFilterLevel::Strict);

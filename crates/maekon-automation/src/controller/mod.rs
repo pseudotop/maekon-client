@@ -64,7 +64,7 @@ pub struct AutomationController {
     /// The frontend (e.g., Tauri overlay) registers this to display a modal.
     #[allow(clippy::type_complexity)]
     pub(super) on_confirmation_needed: Option<Arc<dyn Fn(PendingConfirmation) + Send + Sync>>,
-    /// Gate applied to `execute_intent_hint` before running the planned action.
+    /// Gate applied to direct and hint-planned intent execution before running actions.
     /// Sourced from `AutomationConfig.confirmation_policy` at build time.
     /// Default Auto = D2-② product sign-off (immediate-run); users opt into
     /// Confirm or Block via config.

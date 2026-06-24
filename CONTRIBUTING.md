@@ -75,11 +75,13 @@ By contributing, you agree that your contribution is licensed under the Apache
 License 2.0, matching this repository's license.
 
 For ordinary community contributions, Maekon uses an inbound-equals-outbound
-Apache-2.0 posture. A `Signed-off-by` line following the Developer Certificate
-of Origin is welcome and may become required once the public DCO check is wired.
-Large corporate, patent-sensitive, or ownership-sensitive contributions may be
-asked to use an additional CLA path before acceptance. We do not require both
-DCO and CLA by default.
+Apache-2.0 posture. Before a public contribution is imported into the parent
+source tree, maintainers require either a `Signed-off-by` line or a
+maintainer-approved legal attestation. Public PRs that do not yet have an
+automated DCO or CLA required check stay under the `do-not-merge/dco` hold until
+that manual verification is recorded. Large corporate, patent-sensitive, or
+ownership-sensitive contributions may be asked to use an additional CLA path
+before acceptance. We do not require both DCO and CLA by default.
 
 ## Development Environment Setup
 

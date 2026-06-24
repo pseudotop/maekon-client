@@ -1217,7 +1217,7 @@ export interface AutomationStatus {
   llm_fallback_reason: string | null
   external_data_policy: string
   pending_audit_entries: number
-  /** Intent-hint confirmation policy — "AUTO" | "CONFIRM" | "BLOCK". Defaults to "AUTO". */
+  /** Intent-hint confirmation policy; combine with sandbox fields for containment copy. */
   confirmation_policy?: string
 }
 

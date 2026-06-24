@@ -47,6 +47,18 @@ Manual import is the default because it lets maintainers verify:
 2. Confirm the public PR uses synthetic data and contains privacy-safe evidence.
 3. Confirm the public PR is ready to import: maintainer review complete, DCO or
    legal posture clear, and no unresolved public review threads.
+
+   When a required DCO or CLA status check is not configured, verify the
+   public branch manually before import:
+
+   ```bash
+   git log --format=%B <public-base>..<public-pr-head> | grep -Eq '^Signed-off-by: .+ <[^>]+>$'
+   ```
+
+   If the command does not find a sign-off, do not clear `do-not-merge/dco`
+   unless a maintainer-approved legal attestation link is recorded in the
+   public PR or the parent import PR.
+
 4. Create a parent-source branch dedicated to the import.
 5. Import the patch from the public PR. Preserve the original commits when they
    are clean and scoped; otherwise squash manually and keep author attribution in

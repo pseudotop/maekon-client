@@ -254,7 +254,7 @@ jobs:
         run: bash scripts/ci/grep-no-instrument-on-sensitive-fns.sh
 
       - name: Create frontend dist stub for Tauri generate_context!()
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         run: |
@@ -466,7 +466,7 @@ jobs:
 
       - name: Create frontend dist stub for Tauri generate_context!()
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -611,7 +611,7 @@ jobs:
       - name: Create frontend dist stub for Tauri generate_context!()
         if: env.RUN_HEAVY_TESTS == 'true'
         shell: bash
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -739,7 +739,7 @@ jobs:
           key: ci-linux-autostart-unit
 
       - name: Create frontend dist stub for Tauri generate_context!()
-        run: mkdir -p crates/maekon-web/frontend/dist && echo '<html></html>' > crates/maekon-web/frontend/dist/index.html
+        run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html
 
       - name: Create sandbox worker stub for Tauri externalBin
         run: |

@@ -524,4 +524,7 @@ impl OcrProvider for RemoteOcrProvider {
     fn is_external(&self) -> bool {
         true
     }
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        vec![&self.endpoint]
+    }
 }

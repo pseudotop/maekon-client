@@ -231,6 +231,12 @@ impl AutomationController {
     ) -> Result<CommandResult, AutomationError> {
         self.ensure_enabled()?;
 
+        // POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS:
+        // This low-level API is the signed policy-token validation entrypoint.
+        // Current web/tauri production flows use intents, workflow presets, or GUI
+        // tickets with in-process sentinel tokens; they must not silently route here
+        // until a signed-token issuer and signing-secret lifecycle are productionized.
+
         // Check confirmation requirement from the policy before execution.
         if let Some(policy) = self
             .policy_client

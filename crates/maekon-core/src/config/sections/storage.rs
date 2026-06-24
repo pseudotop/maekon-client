@@ -255,7 +255,12 @@ pub struct UpdateConfig {
     pub require_signature_verification: bool,
     #[serde(default = "default_update_signature_public_key")]
     pub signature_public_key: String,
-    #[serde(default)]
+    /// Minimum release version accepted by the updater.
+    ///
+    /// Defaults to the current build version so omitted configs keep a
+    /// defense-in-depth anti-rollback floor. Managed deployments may raise the
+    /// value to a newer security baseline.
+    #[serde(default = "default_update_min_allowed_version")]
     pub min_allowed_version: Option<String>,
     /// Update **ceiling** — managed-config / MDM update kill-switch (#4836).
     /// When set, the auto-updater will NOT offer or install any release **above**
@@ -282,7 +287,7 @@ impl Default for UpdateConfig {
             installation_id: None,
             require_signature_verification: default_update_require_signature(),
             signature_public_key: default_update_signature_public_key(),
-            min_allowed_version: None,
+            min_allowed_version: default_update_min_allowed_version(),
             max_allowed_version: None,
         }
     }
@@ -483,6 +488,10 @@ fn default_update_signature_public_key() -> String {
     String::new()
 }
 
+fn default_update_min_allowed_version() -> Option<String> {
+    Some(env!("CARGO_PKG_VERSION").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,9 +613,28 @@ mod tests {
     }
 
     #[test]
-    fn default_update_config_has_no_version_window() {
+    fn default_update_config_uses_current_version_floor_without_ceiling() {
         let config = UpdateConfig::default();
-        assert!(config.min_allowed_version.is_none());
+        assert_eq!(
+            config.min_allowed_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "default updater config must pin an anti-rollback floor to the current build version"
+        );
         assert!(config.max_allowed_version.is_none());
+    }
+
+    #[test]
+    fn serde_default_update_config_uses_current_version_floor() {
+        let config: UpdateConfig =
+            serde_json::from_str("{}").expect("empty UpdateConfig JSON must deserialize");
+
+        assert_eq!(
+            config.min_allowed_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "omitting update.min_allowed_version must preserve the default anti-rollback floor"
+        );
+        config
+            .validate_integrity_policy()
+            .expect("serde-defaulted UpdateConfig must validate");
     }
 }

@@ -58,7 +58,10 @@ impl SandboxActionDispatcher {
         match action {
             AutomationAction::MouseMove { x, y } => driver.mouse_move(*x, *y).await,
             AutomationAction::MouseClick { button, x, y } => {
-                driver.mouse_click(button, *x, *y).await
+                let parsed_button = crate::input_driver::parse_mouse_button(button)?;
+                driver
+                    .mouse_click(parsed_button.as_wire_name(), *x, *y)
+                    .await
             }
             AutomationAction::KeyType { text } => {
                 if text.chars().count() > MAX_KEY_TYPE_CHARS {
@@ -209,6 +212,7 @@ mod tests {
                 network_isolation: false,
                 resource_limits: false,
                 process_isolation: false,
+                privilege_restriction: false,
             }
         }
     }
@@ -441,6 +445,31 @@ mod tests {
                 "release:Enter".to_string(),
                 "hotkey:ctrl+c".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn permissive_noop_inline_rejects_unknown_mouse_button_before_driver() {
+        let sandbox = Arc::new(MockSandbox { should_fail: true });
+        let driver = Arc::new(RecordingInputDriver::default());
+        let dispatcher = SandboxActionDispatcher::with_inline_driver(sandbox, driver.clone());
+        let config = permissive_noop_config();
+
+        let action = AutomationAction::MouseClick {
+            button: "scrollwheel".to_string(),
+            x: 3,
+            y: 4,
+        };
+        let result = dispatcher.dispatch(&action, &config).await;
+
+        assert!(
+            matches!(result, CommandResult::Failed(ref message) if message.contains("unknown mouse button")),
+            "expected unknown mouse button to fail inline dispatch, got {result:?}"
+        );
+        let calls = driver.calls.lock().unwrap();
+        assert!(
+            calls.is_empty(),
+            "unknown mouse button must not reach the input driver, got {calls:?}"
         );
     }
 }

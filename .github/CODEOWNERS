@@ -30,6 +30,16 @@
 /scripts/release-reliability-smoke.sh @pseudotop
 /scripts/release.sh @pseudotop
 /scripts/verify-integrity.sh @pseudotop
+
+# Public export/import boundary surfaces.
+/scripts/export-public-repo.sh @pseudotop
+/scripts/update-public-repo-clone.sh @pseudotop
+/scripts/public-repo-include.txt @pseudotop
+/scripts/public-repo-exclude.txt @pseudotop
+/scripts/public-export-provenance.py @pseudotop
+/scripts/scan-public-export-secrets.py @pseudotop
+/scripts/sync-public-contribution-labels.sh @pseudotop
+
 /src-tauri/src/updater/** @pseudotop
 /src-tauri/tauri.conf.json @pseudotop
 

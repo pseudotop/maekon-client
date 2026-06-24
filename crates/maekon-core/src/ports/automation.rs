@@ -48,6 +48,12 @@ pub trait AutomationPort: Send + Sync {
     // ── Core automation ──
 
     /// Execute a low-level command (policy validation + sandbox).
+    ///
+    /// POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS: this is the
+    /// direct signed policy-token path. Current production callers should prefer
+    /// `execute_intent`, `execute_intent_hint`, `run_workflow`, or GUI ticket
+    /// execution unless they also provide an explicit signed-token issuance and
+    /// command-scope validation plan.
     async fn execute_command(&self, cmd: &AutomationCommand) -> Result<CommandResult, CoreError>;
 
     /// Execute an intent (intent specified directly).

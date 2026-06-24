@@ -11,6 +11,8 @@ mod verification;
 use std::path::{Path, PathBuf};
 
 use super::{UpdateError, Updater};
+#[cfg(test)]
+pub(crate) use verification::SignatureKeySource;
 
 /// Phase 4 D11: exit code used by `execute_rollback` when it must terminate
 /// the current process.

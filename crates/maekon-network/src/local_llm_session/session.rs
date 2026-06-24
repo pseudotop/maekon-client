@@ -345,4 +345,8 @@ impl ConversationSession for LocalLlmSession {
     fn is_external(&self) -> bool {
         !crate::http_client::host_is_loopback(&format!("{}/", self.base_url))
     }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        vec![&self.base_url]
+    }
 }

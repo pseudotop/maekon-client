@@ -155,8 +155,8 @@ pub fn build_automation_runtime(
     // provider instance via `resolve_local_model_llm_provider`.
     // `None` is safe: disables health tracking (same as today for all other arms).
     llm_call_health: Option<Arc<LlmCallHealth>>,
-    // #6333 A10: minimum LLM self-reported interpretation confidence to auto-execute
-    // an LLM-planned intent (0.0 = disabled; from config.automation.min_llm_confidence).
+    // #6333 A10 / E42.2: minimum LLM self-reported interpretation confidence to
+    // auto-execute an LLM-planned intent (0.0 is explicit opt-out).
     min_llm_confidence: f64,
 ) -> Result<AutomationRuntime, CoreError> {
     let adapters = resolve_ai_provider_adapters(

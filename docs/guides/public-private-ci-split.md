@@ -20,7 +20,8 @@ For the contributor-facing PR route around these checks, see
 ## Public Synthetic Matrix
 
 These checks are safe for ordinary public pull requests because they use source
-files, synthetic fixtures, generated stubs, or headless browsers only.
+files, synthetic fixtures, generated stubs, public dependency metadata, SBOMs,
+or headless browsers only.
 
 | Check | Workflow | Data allowed | Required during Phase 0/1 |
 | --- | --- | --- | --- |
@@ -28,8 +29,13 @@ files, synthetic fixtures, generated stubs, or headless browsers only.
 | Rust fmt/clippy/check/test | `.github/workflows/ci.yml` | Repository source and generated local stubs | Yes, when check names are stable |
 | Config sync | `.github/workflows/config-sync.yml` | Static config files and generated frontend stub | Yes |
 | gRPC governance | `.github/workflows/grpc-governance.yml` | Public proto files and generated code | Yes |
-| Public export guardrails | `.github/workflows/ci.yml` and parent validation | Exported source tree only | Yes for maintainer PRs, advisory for public forks until branch rules are final |
-| Supply-chain and integrity checks | Manual or maintainer-triggered workflows | Public dependency metadata and generated reports | Advisory until runtime cost is stable |
+| Public export guardrails | `.github/workflows/ci.yml` and parent validation | Exported source tree only | Blocking for public CI checks that run in `ci.yml`; parent validation remains maintainer-controlled evidence |
+| Supply-chain and integrity checks | `.github/workflows/security-compliance.yml` on PRs, pushes to `main`, and manual dispatch | Public dependency metadata, SBOM, and generated reports | Blocking for the exported public supply-chain gate |
+
+`security-compliance.yml` is the authoritative public supply-chain gate. It
+runs RustSec audit, cargo-deny licenses/advisories/sources/bans,
+exemption-expiry validation, cargo-vet, third-party notice generation, and SBOM
+generation. Do not treat a red security-compliance check as advisory.
 
 Public synthetic checks must not require real screen capture, microphone input,
 browser session state, OS permission dialogs, signing credentials, release
@@ -71,12 +77,13 @@ first four rules for exported public workflows.
 
 ## Branch Protection
 
-During Phase 0/1, required checks should be limited to stable public synthetic
-checks. Maintainer-only gates should be represented by labels and public review
-summaries, not by public required checks that expose sensitive names or evidence.
+During Phase 0/1, required checks should be limited to stable public checks in
+the table above. Maintainer-only gates should be represented by labels and
+public review summaries, not by public required checks that expose sensitive
+names or evidence.
 
 When the public repository starts receiving regular external PRs, maintainers
-can promote stable advisory checks to required checks one at a time.
+can promote additional stable public checks to required checks one at a time.
 
 For the maintainer handoff after a public patch is imported into the parent
 source tree, use [`hybrid-import-workflow.md`](./hybrid-import-workflow.md).

@@ -26,6 +26,26 @@ fn apply_settings_to_config_rejects_allow_external_without_integration_token() {
 }
 
 #[test]
+fn apply_settings_to_config_rejects_allow_external_with_weak_integration_token() {
+    let mut config = AppConfig::default_config();
+    config.web.integration_auth_token = Some("short".to_string());
+    let settings = AppSettings {
+        allow_external: true,
+        ..AppSettings::default()
+    };
+
+    let err = apply_settings_to_config(&mut config, &settings)
+        .expect_err("external access should require a strong integration token");
+    match err {
+        ApiError::BadRequest(message) => {
+            assert!(message.contains("integration_auth_token"));
+            assert!(message.contains("at least 32"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
 fn apply_settings_to_config_preserves_projection_enabled_on_existing_binding() {
     let mut config = AppConfig::default_config();
     config.ai_provider.llm_provider = LlmProviderType::Remote;

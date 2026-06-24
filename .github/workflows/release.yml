@@ -32,10 +32,8 @@ env:
   RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  security-events: read
+  contents: read
+  actions: read
 
 jobs:
   verify-version:
@@ -640,33 +638,34 @@ jobs:
           fi
           ls -la "src-tauri/maekon-sandbox-worker-$TARGET_TRIPLE"* || true
 
-      # Regression guard (#6118): the released Linux binary MUST be built with
-      # `systemd-notify` so it satisfies its own Type=notify autostart unit.
-      # Assert the token is present in the Linux feature path of this workflow
-      # before building, so a future edit that drops it fails CI loudly.
-      - name: Assert Linux release feature set includes systemd-notify
-        if: runner.os == 'Linux'
+      # Regression guards:
+      # - #6118: Linux releases need `systemd-notify` for Type=notify units.
+      # - #6752: shipped Linux/Windows releases must include the native sandbox
+      #   feature for their platform instead of presenting unenforced sandbox UI.
+      - name: Assert native release feature sets
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q 'FEATURES="grpc,systemd-notify"' .github/workflows/release.yml; then
-            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify (#6118). The DEB ships a Type=notify systemd unit and needs READY=1." >&2
+          if ! grep -q 'FEATURES="grpc,systemd-notify,linux-sandbox"' .github/workflows/release.yml; then
+            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify,linux-sandbox (#6118/#6752)." >&2
+            exit 1
+          fi
+          if ! grep -q 'FEATURES="grpc,windows-sandbox"' .github/workflows/release.yml; then
+            echo "::error::Windows release build must use FEATURES=grpc,windows-sandbox (#6752)." >&2
             exit 1
           fi
 
       - name: Build release
         shell: bash
-        # Feature set is OS-conditional. The Linux DEB ships a systemd
-        # Type=notify autostart unit (src-tauri/src/autostart/linux.rs), so the
-        # released Linux binary MUST include `systemd-notify` — otherwise it
-        # never sends READY=1 (src-tauri/src/lifecycle/sd_notify.rs) and systemd
-        # aborts the unit with a start-timeout + restart loop. Windows and macOS
-        # do not use systemd and stay on `grpc` only (#6118). The DEB packaging
-        # step below uses --no-build and reuses this correctly-featured binary.
+        # Feature set is OS-conditional. Linux keeps `systemd-notify` for its
+        # Type=notify unit and adds `linux-sandbox`; Windows adds
+        # `windows-sandbox`. macOS has no native sandbox Cargo feature here.
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify"
+            FEATURES="grpc,systemd-notify,linux-sandbox"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FEATURES="grpc,windows-sandbox"
           else
             FEATURES="grpc"
           fi
@@ -706,7 +705,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         working-directory: src-tauri
-        run: ../scripts/cargo-cache.sh wix -p maekon-app --nocapture --target ${{ matrix.target }}
+        run: ../scripts/cargo-cache.sh wix -p maekon-app --nocapture --target ${{ matrix.target }} --no-build --target-bin-dir ../target/${{ matrix.target }}/release
 
       - name: Build NSIS setup installer
         if: runner.os == 'Windows'
@@ -718,7 +717,7 @@ jobs:
           ./scripts/cargo-cache.sh tauri build \
             --bundles nsis \
             --target ${{ matrix.target }} \
-            --features grpc \
+            --features grpc,windows-sandbox \
             --ci \
             --config "$CONFIG_PATH"
 
@@ -1412,6 +1411,11 @@ jobs:
     if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success'
     runs-on: ubuntu-latest
     environment: release-signing
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -1492,6 +1496,14 @@ jobs:
 
       - name: Checksum SBOM (F-SC-09)
         run: shasum -a 256 dist/sbom.cdx.json > dist/sbom.cdx.json.sha256
+
+      - name: Verify release evidence bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/sbom.cdx.json
+          test -s dist/sbom.cdx.json.sha256
+          shasum -a 256 -c dist/sbom.cdx.json.sha256
 
       - name: Install signing dependencies
         run: python3 -m pip install --upgrade pynacl

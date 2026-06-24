@@ -24,6 +24,14 @@ if [ ! -f "$CI_WORKFLOW" ]; then
     die "missing CI workflow: $CI_WORKFLOW"
 fi
 
+if grep -R -q "echo '<html></html>' > crates/maekon-web/frontend/dist/index.html" "$CLIENT_ROOT/.github/workflows"; then
+    die "workflow frontend dist stubs must not use blank <html></html>"
+fi
+
+if grep -R -q "echo '<!doctype html>' > crates/maekon-web/frontend/dist/index.html" "$CLIENT_ROOT/.github/workflows"; then
+    die "workflow frontend dist stubs must include the Maekon dashboard shell text"
+fi
+
 frontend_section="$(job_section frontend)"
 check_section="$(job_section check)"
 build_section="$(job_section build)"

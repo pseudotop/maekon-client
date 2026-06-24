@@ -141,6 +141,94 @@ pub const SENSITIVE_APP_KEYWORDS: &[&str] = &[
     "tutanota",
 ];
 
+const SENSITIVE_APP_PRODUCT_NAMES: &[&str] = &[
+    // Password managers and encrypted notes outside the original seed list.
+    "keeper",
+    "keeper security",
+    "roboform",
+    "sticky password",
+    "password safe",
+    "strongbox",
+    "standard notes",
+    "standardnotes",
+    // Financial, brokerage, and payment apps that do not necessarily contain
+    // the generic bank/trading/crypto keywords.
+    "robinhood",
+    "fidelity",
+    "vanguard",
+    "charles schwab",
+    "schwab",
+    "etrade",
+    "e trade",
+    "interactive brokers",
+    "ibkr",
+    "webull",
+    "wealthfront",
+    "betterment",
+    "sofi",
+    "paypal",
+    "venmo",
+    "cash app",
+    // Health, legal, and document-signing tools commonly used for sensitive
+    // records.
+    "epic hyperspace",
+    "epic haiku",
+    "epic canto",
+    "cerner",
+    "oracle health",
+    "athenahealth",
+    "mychart",
+    "doxy me",
+    "doximity",
+    "simplepractice",
+    "clio",
+    "mycase",
+    "rocket matter",
+    "netdocuments",
+    "docusign",
+];
+
+const SENSITIVE_APP_CATEGORY_PHRASES: &[&str] = &[
+    "password manager",
+    "secure notes",
+    "credit union",
+    "investment account",
+    "brokerage account",
+    "wealth management",
+    "retirement account",
+    "medical record",
+    "health record",
+    "patient chart",
+    "electronic health record",
+    "medical chart",
+    "tax prep",
+    "tax filing",
+    "payroll portal",
+    "law practice",
+    "legal case",
+];
+
+const SENSITIVE_APP_CATEGORY_TOKENS: &[&str] = &[
+    "emr",
+    "ehr",
+    "hipaa",
+    "patient",
+    "clinic",
+    "hospital",
+    "medical",
+    "health",
+    "brokerage",
+    "broker",
+    "investment",
+    "wealth",
+    "retirement",
+    "payroll",
+    "tax",
+    "legal",
+    "attorney",
+    "notary",
+];
+
 /// Window-title substrings that indicate a browser tab is showing a sensitive
 /// webmail or security service.  Checked by [`should_exclude`] when
 /// `auto_exclude_sensitive` is `true` and the *app* itself is not already
@@ -164,7 +252,78 @@ pub const SENSITIVE_TITLE_SUBSTRINGS: &[&str] = &[
 
 pub fn is_sensitive_app(app_name: &str) -> bool {
     let lower = app_name.to_lowercase();
-    SENSITIVE_APP_KEYWORDS.iter().any(|kw| lower.contains(kw))
+    if SENSITIVE_APP_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        return true;
+    }
+
+    let normalized = normalize_app_name(app_name);
+    if normalized.is_empty() {
+        return false;
+    }
+    let compact = compact_app_name(&normalized);
+
+    if SENSITIVE_APP_PRODUCT_NAMES.iter().any(|name| {
+        normalized_phrase_matches(&normalized, name) || compact_product_matches(&compact, name)
+    }) {
+        return true;
+    }
+
+    if SENSITIVE_APP_CATEGORY_PHRASES
+        .iter()
+        .any(|phrase| normalized_phrase_matches(&normalized, phrase))
+    {
+        return true;
+    }
+
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    SENSITIVE_APP_CATEGORY_TOKENS
+        .iter()
+        .any(|category| tokens.contains(category))
+}
+
+fn normalize_app_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_app_name(value: &str) -> String {
+    normalize_app_name(value).replace(' ', "")
+}
+
+fn compact_product_matches(compact_name: &str, product_name: &str) -> bool {
+    let normalized_product = normalize_app_name(product_name);
+    if normalized_product.split_whitespace().count() < 2 {
+        return false;
+    }
+
+    compact_name.contains(&compact_app_name(&normalized_product))
+}
+
+fn normalized_phrase_matches(normalized_app_name: &str, phrase: &str) -> bool {
+    let normalized_phrase = normalize_app_name(phrase);
+    if normalized_phrase.is_empty() {
+        return false;
+    }
+    if normalized_app_name == normalized_phrase {
+        return true;
+    }
+
+    normalized_app_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(normalized_phrase.split_whitespace().count())
+        .any(|window| window.join(" ") == normalized_phrase)
 }
 
 pub fn matches_exclusion_pattern(app_name: &str, patterns: &[String]) -> bool {

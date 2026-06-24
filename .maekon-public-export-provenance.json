@@ -1,0 +1,62 @@
+{
+  "export": {
+    "git_commit_sha": null,
+    "manifest_path": ".maekon-public-export-provenance.json",
+    "snapshot_sha256": "66628085e17a4e49f61b3bbbc6dfda210e9660a9d91af2b818c5f7ef45b330d2"
+  },
+  "generated_at": "2026-06-24T03:11:45Z",
+  "public_target": {
+    "base_sha": "afc914c425d3fd04ef0364ea6dbb8a1bdd39c5a9",
+    "diff_result": "public_content_changed",
+    "repo": "pseudotop/maekon-client"
+  },
+  "release_evidence_requirements": {
+    "artifact_attestation": {
+      "enforced_by": [
+        ".github/workflows/release.yml",
+        "docs/release-checklist.md"
+      ],
+      "expected_evidence": [
+        "GitHub artifact attestation for dist/*",
+        "SLSA-style source-to-artifact provenance"
+      ],
+      "required": true
+    },
+    "release_notes_source_binary_boundary": {
+      "enforced_by": [
+        "docs/release-checklist.md"
+      ],
+      "expected_evidence": [
+        "exported parent SSOT source state",
+        "published binary release state"
+      ],
+      "required": true
+    },
+    "sbom": {
+      "enforced_by": [
+        ".github/workflows/release.yml",
+        "docs/release-checklist.md"
+      ],
+      "expected_paths": [
+        "dist/sbom.cdx.json",
+        "dist/sbom.cdx.json.sha256"
+      ],
+      "required": true
+    }
+  },
+  "schema_version": "maekon.public_export.provenance.v1",
+  "source_binding": {
+    "signature": null,
+    "trust_requirement": "Run verify --require-signature with MAEKON_UPDATE_PUBLIC_KEY before treating ssot.source_sha as trusted.",
+    "trusted_public_key_env": "MAEKON_UPDATE_PUBLIC_KEY",
+    "type": "unsigned_advisory"
+  },
+  "ssot": {
+    "source_dirty": false,
+    "source_mode": "committed_ref",
+    "source_path": "clients/maekon-client",
+    "source_ref": "2a143a3503e1f3479eae8583712b8d1604d3be67",
+    "source_sha": "2a143a3503e1f3479eae8583712b8d1604d3be67",
+    "source_tree_sha": "2f468d2ebdbd27474c761ca740a0c5de4ab6121b"
+  }
+}

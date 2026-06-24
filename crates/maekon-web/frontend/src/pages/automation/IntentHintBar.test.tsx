@@ -185,10 +185,40 @@ describe('IntentHintBar', () => {
     })
   })
 
-  // Amendment C: honest no-confirm caption always visible for AUTO policy
-  it('renders the runs-immediately caption when confirmation_policy is AUTO', () => {
-    renderWithProviders(<IntentHintBar status={enabledStatus} />)
+  // Amendment C: honest no-confirm caption only claims strict sandbox for strict mode.
+  it('renders the strict runs-immediately caption when AUTO policy has strict sandbox enforcement', () => {
+    const strictSandboxStatus = {
+      ...enabledStatus,
+      confirmation_policy: 'AUTO',
+      sandbox_enabled: true,
+      sandbox_profile: 'Strict',
+    } as never
+    renderWithProviders(<IntentHintBar status={strictSandboxStatus} />)
     expect(screen.getByText(/runs immediately under strict sandbox/i)).toBeInTheDocument()
+  })
+
+  it('does not claim strict sandbox when AUTO policy runs without sandbox enforcement', () => {
+    const noSandboxStatus = {
+      ...enabledStatus,
+      confirmation_policy: 'AUTO',
+      sandbox_enabled: false,
+      sandbox_profile: 'Standard',
+    } as never
+    renderWithProviders(<IntentHintBar status={noSandboxStatus} />)
+    expect(screen.getByText(/runs immediately without sandbox enforcement/i)).toBeInTheDocument()
+    expect(screen.queryByText(/runs immediately under strict sandbox/i)).not.toBeInTheDocument()
+  })
+
+  it('renders a non-strict sandbox caption when AUTO policy has standard sandbox enforcement', () => {
+    const standardSandboxStatus = {
+      ...enabledStatus,
+      confirmation_policy: 'AUTO',
+      sandbox_enabled: true,
+      sandbox_profile: 'Standard',
+    } as never
+    renderWithProviders(<IntentHintBar status={standardSandboxStatus} />)
+    expect(screen.getByText(/runs immediately with sandbox enforcement/i)).toBeInTheDocument()
+    expect(screen.queryByText(/runs immediately under strict sandbox/i)).not.toBeInTheDocument()
   })
 
   // #5775 FLAG: caption branches on confirmation_policy
@@ -207,8 +237,13 @@ describe('IntentHintBar', () => {
   })
 
   it('renders the runs-immediately caption when confirmation_policy is absent (undefined)', () => {
-    // Older server payloads without confirmation_policy — should fall back to AUTO caption.
-    const noPolicy = { ...enabledStatus } as never
+    // Older server payloads without confirmation_policy still fall back to AUTO,
+    // but containment copy follows the live sandbox status.
+    const noPolicy = {
+      ...enabledStatus,
+      sandbox_enabled: true,
+      sandbox_profile: 'Strict',
+    } as never
     renderWithProviders(<IntentHintBar status={noPolicy} />)
     expect(screen.getByText(/runs immediately under strict sandbox/i)).toBeInTheDocument()
   })

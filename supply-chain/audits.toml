@@ -4781,6 +4781,22 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.rstar]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.13.0"
+notes = """
+#6690 rstar 0.13.0 dependency refresh audit.
+Crate: rstar/0.13.0. License: MIT OR Apache-2.0.
+Verified against the crates.io registry source for this exact version:
+`src/lib.rs` forbids unsafe code, Cargo metadata has `build = false`,
+and static source search found no inline asm, process spawning, runtime
+network access, or build-time code execution surface. Upstream remains
+the GeoRust R*-tree spatial-index crate; 0.13.0 raises MSRV to 1.85, which
+is below this workspace baseline. Scope: capability + memory-safety audit
+for safe-to-deploy dependency certification, not a line-by-line logic review.
+"""
+
 [[audits.rusqlite]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -4895,6 +4911,21 @@ backward-compatible API. No new RustSec advisories introduced in this delta.
 `cargo vet diff rustls 0.23.36 0.23.40` confirms: changelog only, no crypto
 primitive changes, no unsafe block additions. License unchanged: MIT OR Apache-2.0 OR ISC.
 review-by: 2026-08-24
+"""
+
+[[audits.rustls]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.23.40 -> 0.23.41"
+notes = """
+E41 #6692 TLS dependency refresh review.
+`cargo vet diff rustls 0.23.40 0.23.41` shows a narrow patch release: crate
+version/checksum updates, Rust read_buf type annotation adjustments, clippy
+formatting/clear cleanups, and Debug formatting cleanup. No crypto primitive,
+certificate validation, root store, provider selection, filesystem/network, or
+unsafe-code surface change was introduced by this delta. License unchanged:
+MIT OR Apache-2.0 OR ISC.
+review-by: 2026-09-23
 """
 
 [[audits.rustls-native-certs]]
@@ -5953,6 +5984,39 @@ notes = """
 Phase 4B async/network audit re-apply (OOS #4191) — tower-http 0.6.10.
 HTTP-specific tower middleware (CORS, compression, auth, tracing, etc.).
 No unsafe code. MIT. No active RustSec advisories.
+"""
+
+[[audits.tower-http]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.11"
+notes = """
+E41 #6691 follow-up audit for the transitive reqwest/opentelemetry tower-http
+0.6 line. Reviewed cargo-vet diff 0.6.10..0.6.11: multi-header setters,
+GrpcCode conversions, grpc-web compression behavior, and ServeDir method fix.
+Crate metadata keeps build=false; production source has #![forbid(unsafe_code)]
+with only test-only unsafe in Windows fs tests. No native/proc-macro surface.
+MIT. No active RustSec advisories in cargo deny.
+"""
+
+[[audits.tower-http]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.7.0"
+notes = """
+E41 #6691 direct maekon-web audit for features trace, cors, fs, and
+compression-gzip. Reviewed cargo-vet diff 0.6.11..0.7.0 and crate source:
+build=false, no build script/native/proc-macro surface, and production source
+uses #![deny(unsafe_code)] (unsafe appears only in tests). Behavior-relevant
+0.7 changes reviewed: CORS Vary defaults, Accept-Encoding/identity handling,
+compression threshold widening, trace parenting/classification, fs ETag/backend
+updates, and new csrf/body-deadline modules. maekon-web smoke covers CORS
+preflight, gzip Accept-Encoding, loopback static fallback, query-redacted trace
+path, and EventSource query auth. CSRF and body deadline layers are explicitly
+deferred: the local API already combines loopback + per-session local auth, and
+request-body deadline policy should be designed as a separate web hardening
+change rather than hidden in this dependency refresh. MIT. No active RustSec
+advisories in cargo deny.
 """
 
 [[audits.tower-layer]]

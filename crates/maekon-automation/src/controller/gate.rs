@@ -19,6 +19,14 @@ pub(super) const INTENT_HINT_POLICY_TOKEN: &str = "intent-hint";
 pub(super) const SCENE_ACTION_POLICY_TOKEN: &str = "scene-action";
 pub(super) const WORKFLOW_STEP_POLICY_TOKEN: &str = "workflow-step";
 
+// POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS:
+// The signed `PolicyClient::validate_command` path is intentionally reserved for
+// a future external AutomationCommand producer. Current production flows mint
+// only in-process sentinel tokens and are gated by AutomationConfig confirmation,
+// scene-action privacy policy, GUI execution tickets, and sandbox enforcement.
+// Any new production caller that wants direct `execute_command` must first wire
+// a signed-token issuance plan, signing-secret lifecycle, and command-scope tests.
+
 #[derive(Clone)]
 pub(super) struct CommandExecutionGate {
     policy_client: Arc<PolicyClient>,
@@ -52,10 +60,13 @@ impl CommandExecutionGate {
         )
     }
 
-    /// #6333 A20: a command may use the internal-token bypass ONLY when it was
-    /// minted in-process (`Internal`) AND carries one of the four sentinel tokens.
-    /// A deserialized/external command carrying a sentinel string is rejected here,
-    /// because deserialization always yields `CommandOrigin::External`.
+    /// #6333 A20 / E42.14: a command may use the internal-token path ONLY when
+    /// it was minted in-process (`Internal`) AND carries one of the four sentinel
+    /// tokens. A deserialized/external command carrying a sentinel string is
+    /// rejected here because deserialization always yields `CommandOrigin::External`.
+    ///
+    /// See `POLICY_TOKEN_VALIDATION_RESERVED_FOR_EXTERNAL_PRODUCERS` above: this
+    /// split is deliberate until a production external policy-token issuer exists.
     pub(super) fn is_trusted_internal(origin: CommandOrigin, policy_token: &str) -> bool {
         origin == CommandOrigin::Internal && Self::uses_internal_policy_token(policy_token)
     }

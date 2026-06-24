@@ -2,6 +2,12 @@
 use super::super::enums::{ConfirmationRequirement, PiiFilterLevel, SandboxProfile};
 use serde::{Deserialize, Serialize};
 
+/// Safe-by-default confidence floor for LLM-planned automation intents.
+///
+/// `0.0` remains a supported explicit opt-out value, but fresh installs and missing
+/// config fields should reject low-confidence interpretations before auto-execution.
+pub const DEFAULT_MIN_LLM_CONFIDENCE: f64 = 0.65;
+
 // ── PrivacyConfig ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +104,7 @@ pub struct AutomationConfig {
     /// #6333 A10: minimum LLM self-reported interpretation confidence (0.0-1.0)
     /// required to auto-execute an LLM-planned intent. Below this floor the plan is
     /// rejected rather than executed, so a hallucinated/prompt-injected low-confidence
-    /// interpretation cannot auto-run. Default 0.0 disables the gate (prior behavior).
+    /// interpretation cannot auto-run. Set 0.0 explicitly to disable this gate.
     #[serde(default = "default_min_llm_confidence")]
     pub min_llm_confidence: f64,
 }
@@ -120,9 +126,9 @@ fn default_confirmation_policy() -> ConfirmationRequirement {
     ConfirmationRequirement::Auto
 }
 
-/// #6333 A10: the LLM-confidence gate is opt-in — 0.0 disables it (prior behavior).
+/// #6333 A10 / E42.2: safe default for LLM-planned automation intents.
 fn default_min_llm_confidence() -> f64 {
-    0.0
+    DEFAULT_MIN_LLM_CONFIDENCE
 }
 
 // ── Private default helpers ─────────────────────────────────────────
@@ -163,6 +169,23 @@ mod tests {
         assert_eq!(
             AutomationConfig::default().confirmation_policy,
             ConfirmationRequirement::Auto
+        );
+    }
+
+    #[test]
+    fn automation_config_default_min_llm_confidence_is_safe_floor() {
+        assert!(
+            AutomationConfig::default().min_llm_confidence >= 0.6,
+            "fresh installs must reject low-confidence LLM-planned intents by default"
+        );
+    }
+
+    #[test]
+    fn automation_config_serde_default_min_llm_confidence_is_safe_floor() {
+        let restored: AutomationConfig = serde_json::from_str("{}").expect("must deserialise");
+        assert!(
+            restored.min_llm_confidence >= 0.6,
+            "missing config field must deserialize to the safe LLM confidence floor"
         );
     }
 }

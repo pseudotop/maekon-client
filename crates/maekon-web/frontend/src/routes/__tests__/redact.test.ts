@@ -73,7 +73,8 @@ describe('redact', () => {
   })
 
   it('masks JWT shape tokens standalone', () => {
-    const input = 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    const input =
+      'not-a-real token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
     const output = redact(input)
     expect(output).toContain('[REDACTED]')
   })

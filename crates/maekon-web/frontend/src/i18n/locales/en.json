@@ -1201,6 +1201,8 @@
     "intentHintPlaceholder": "e.g. Click the save button",
     "intentHintRun": "Run",
     "intentHintRunsImmediately": "Runs immediately under strict sandbox.",
+    "intentHintRunsImmediatelyWithSandbox": "Runs immediately with sandbox enforcement.",
+    "intentHintRunsImmediatelyWithoutSandbox": "Runs immediately without sandbox enforcement.",
     "intentHintRequiresConfirmation": "Requires your confirmation before running.",
     "intentHintBlockedByPolicy": "Automation execution is disabled by policy.",
     "intentHintDisabledHint": "Enable automation in Settings to use this feature.",

@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use crate::error::AutomationError;
 use crate::sandbox::ipc;
 use crate::sandbox::win_limits::{
-    build_job_limits, build_token_restrictions, JobObjectLimits, TokenRestrictions,
+    build_job_limits, build_token_restrictions, missing_required_containment_for_profile,
+    JobObjectLimits, TokenRestrictions,
 };
 use maekon_core::config::SandboxConfig;
 use maekon_core::error::CoreError;
@@ -111,24 +112,31 @@ impl Sandbox for WindowsSandbox {
             });
         }
 
-        // #6422: Windows enforces ONLY Job Object resource limits — it has no
-        // filesystem/network/syscall containment (no Landlock/seccomp equivalent; the
-        // restricted token is built but not yet applied — see module docs). A
-        // Standard/Strict profile advertises that containment. The Linux sibling fails
-        // CLOSED here, but doing so literally on Windows would refuse the DEFAULT profile
-        // (Standard) and disable Windows automation wholesale. Instead, make the gap LOUD
-        // and observable rather than silent: the action runs resource-limited but its
-        // requested isolation is NOT enforced. (Full Windows containment is a tracked TODO.)
-        if matches!(
+        // #6422: Windows currently enforces Job Object resource limits only. A
+        // Standard/Strict profile advertises filesystem/syscall/network containment, so
+        // fail CLOSED instead of auditing a resource-limited child as sandbox-contained.
+        let capabilities = self.capabilities();
+        if let Some(missing) = missing_required_containment_for_profile(
             config.profile,
-            maekon_core::config::SandboxProfile::Standard
-                | maekon_core::config::SandboxProfile::Strict
+            capabilities.filesystem_isolation,
+            capabilities.syscall_filtering,
+            capabilities.network_isolation,
+            capabilities.privilege_restriction,
         ) {
-            tracing::warn!(
+            tracing::error!(
                 profile = ?config.profile,
-                "Windows sandbox does NOT enforce filesystem/network/syscall isolation for this \
-                 profile — running with Job Object resource limits only (containment unenforced)"
+                missing_capabilities = %missing,
+                "Windows sandbox refusing profile because requested containment is unavailable"
             );
+            return Err(CoreError::SandboxUnsupported {
+                code: maekon_core::error_codes::SandboxCode::UnsupportedPlatform,
+                message: format!(
+                    "Windows sandbox profile {:?} requires containment capabilities that are not \
+                     enforced on this platform: {missing}. Refusing to run with Job Object \
+                     resource limits only.",
+                    config.profile
+                ),
+            });
         }
 
         let worker_path = ipc::resolve_worker_path()?;
@@ -307,6 +315,7 @@ impl Sandbox for WindowsSandbox {
             process_isolation: true, // ENFORCED via subprocess + Job Object
             #[cfg(not(feature = "windows-sandbox"))]
             process_isolation: false,
+            privilege_restriction: false, // Restricted token is created but not applied to worker.
         }
     }
 }
@@ -648,10 +657,55 @@ mod tests {
         assert!(!caps.filesystem_isolation);
         assert!(!caps.syscall_filtering);
         assert!(!caps.network_isolation);
-        // Token restriction is intentionally absent from SandboxCapabilities:
-        // the restricted token is created but never applied to spawned processes
-        // (see #5986). SandboxCapabilities has no `token_restriction` field, so
-        // callers cannot observe a false "enforced" claim.
+        assert!(
+            !caps.privilege_restriction,
+            "restricted token is created but not applied to spawned processes"
+        );
+    }
+
+    #[tokio::test]
+    async fn standard_and_strict_fail_closed_when_containment_is_unavailable() {
+        let sandbox = WindowsSandbox { is_available: true };
+        let action = AutomationAction::MouseMove { x: 0, y: 0 };
+
+        for profile in [SandboxProfile::Standard, SandboxProfile::Strict] {
+            let err = sandbox
+                .execute_sandboxed(
+                    &action,
+                    &SandboxConfig {
+                        profile,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            match err {
+                CoreError::SandboxUnsupported { code, message } => {
+                    assert_eq!(
+                        code,
+                        maekon_core::error_codes::SandboxCode::UnsupportedPlatform
+                    );
+                    assert!(
+                        message.contains("filesystem_isolation"),
+                        "error must name missing filesystem containment: {message}"
+                    );
+                    assert!(
+                        message.contains("network_isolation"),
+                        "error must name missing network containment: {message}"
+                    );
+                    assert!(
+                        message.contains("privilege_restriction"),
+                        "error must name the unenforced restricted-token gap: {message}"
+                    );
+                    assert!(
+                        message.contains("Job Object resource limits only"),
+                        "error must make the non-containment mode explicit: {message}"
+                    );
+                }
+                other => panic!("expected SandboxUnsupported for {profile:?}, got {other:?}"),
+            }
+        }
     }
 
     /// Verify that the non-`windows-sandbox` stub for `create_restricted_token`

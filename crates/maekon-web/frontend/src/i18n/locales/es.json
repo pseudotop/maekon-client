@@ -1201,6 +1201,8 @@
     "intentHintPlaceholder": "p. ej. Haz clic en el botón guardar",
     "intentHintRun": "Ejecutar",
     "intentHintRunsImmediately": "Se ejecuta inmediatamente en un sandbox estricto.",
+    "intentHintRunsImmediatelyWithSandbox": "Se ejecuta inmediatamente con aplicación de sandbox.",
+    "intentHintRunsImmediatelyWithoutSandbox": "Se ejecuta inmediatamente sin aplicación de sandbox.",
     "intentHintRequiresConfirmation": "Requiere tu confirmación antes de ejecutar.",
     "intentHintBlockedByPolicy": "La ejecución de la automatización está deshabilitada por política.",
     "intentHintDisabledHint": "Habilita la automatización en Configuración para usar esta función.",

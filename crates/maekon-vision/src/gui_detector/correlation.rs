@@ -177,14 +177,14 @@ impl GuiElementDetector {
         let point = [click_x as f64, click_y as f64];
 
         // 1. Direct hit — containing regions, pick smallest
-        let containing: Vec<_> = tree.locate_all_at_point(&point).collect();
+        let containing: Vec<_> = tree.locate_all_at_point(point).collect();
         if let Some(hit) = containing.iter().min_by_key(|ir| ir.region.bbox.area()) {
             return Some(self.build_gui_element(hit.region));
         }
 
         // 2. Proximity fallback — nearest within threshold
         let threshold = self.proximity_threshold_px as f64;
-        if let Some(nearest) = tree.nearest_neighbor(&point) {
+        if let Some(nearest) = tree.nearest_neighbor(point) {
             let dist = nearest.distance_2(&point).sqrt();
             if dist <= threshold {
                 return Some(self.build_gui_element(nearest.region));

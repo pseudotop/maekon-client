@@ -4,6 +4,7 @@ use tracing::debug;
 use tracing::warn;
 
 use maekon_core::error::CoreError;
+use maekon_core::models::automation::MouseButton;
 use maekon_core::models::intent::{ElementBounds, UiElement};
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::input_driver::InputDriver;
@@ -173,10 +174,10 @@ impl InputDriver for EnigoInputDriver {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Mouse move failed: {e}"),
             })?;
-        let btn = match parse_mouse_button(button) {
-            "right" => enigo::Button::Right,
-            "middle" => enigo::Button::Middle,
-            _ => enigo::Button::Left,
+        let btn = match parse_mouse_button(button)? {
+            MouseButton::Right => enigo::Button::Right,
+            MouseButton::Middle => enigo::Button::Middle,
+            MouseButton::Left => enigo::Button::Left,
         };
         enigo
             .button(btn, enigo::Direction::Click)
@@ -267,13 +268,11 @@ impl InputDriver for EnigoInputDriver {
     }
 }
 
-pub fn parse_mouse_button(button: &str) -> &str {
-    match button.to_lowercase().as_str() {
-        "left" | "l" => "left",
-        "right" | "r" => "right",
-        "middle" | "m" => "middle",
-        _ => "left", // default value
-    }
+pub fn parse_mouse_button(button: &str) -> Result<MouseButton, CoreError> {
+    MouseButton::parse_wire(button).map_err(|message| CoreError::InvalidArguments {
+        code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+        message,
+    })
 }
 
 pub fn create_platform_input_driver() -> Box<dyn InputDriver> {
@@ -337,20 +336,40 @@ mod tests {
 
     #[test]
     fn parse_mouse_button_variants() {
-        assert_eq!(parse_mouse_button("left"), "left");
-        assert_eq!(parse_mouse_button("Left"), "left");
-        assert_eq!(parse_mouse_button("l"), "left");
-        assert_eq!(parse_mouse_button("right"), "right");
-        assert_eq!(parse_mouse_button("Right"), "right");
-        assert_eq!(parse_mouse_button("r"), "right");
-        assert_eq!(parse_mouse_button("middle"), "middle");
-        assert_eq!(parse_mouse_button("m"), "middle");
+        assert_eq!(parse_mouse_button("left").expect("left"), MouseButton::Left);
+        assert_eq!(parse_mouse_button("Left").expect("Left"), MouseButton::Left);
+        assert_eq!(parse_mouse_button("l").expect("l"), MouseButton::Left);
+        assert_eq!(
+            parse_mouse_button("right").expect("right"),
+            MouseButton::Right
+        );
+        assert_eq!(
+            parse_mouse_button("Right").expect("Right"),
+            MouseButton::Right
+        );
+        assert_eq!(parse_mouse_button("r").expect("r"), MouseButton::Right);
+        assert_eq!(
+            parse_mouse_button("middle").expect("middle"),
+            MouseButton::Middle
+        );
+        assert_eq!(parse_mouse_button("m").expect("m"), MouseButton::Middle);
     }
 
     #[test]
-    fn parse_mouse_button_default() {
-        assert_eq!(parse_mouse_button("unknown"), "left");
-        assert_eq!(parse_mouse_button(""), "left");
+    fn parse_mouse_button_rejects_unknown_and_empty_instead_of_left_click() {
+        let unknown = parse_mouse_button("scrollwheel")
+            .expect_err("unknown buttons must fail instead of becoming left clicks");
+        assert!(
+            matches!(unknown, CoreError::InvalidArguments { .. }),
+            "unknown buttons must be rejected instead of becoming left clicks, got {unknown}"
+        );
+
+        let empty = parse_mouse_button("")
+            .expect_err("empty button names must fail instead of left clicks");
+        assert!(
+            matches!(empty, CoreError::InvalidArguments { .. }),
+            "empty button names must be rejected instead of becoming left clicks, got {empty}"
+        );
     }
 
     #[test]

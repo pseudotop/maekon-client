@@ -46,6 +46,13 @@ Hold labels block public merge or parent import until the condition is resolved.
 | `do-not-merge/needs-owner` | The relevant CODEOWNER or maintainer approves the current patch |
 | `do-not-merge/dco` | The required `Signed-off-by` line or legal attestation is present |
 
+Until a required DCO or CLA status check is configured, `do-not-merge/dco` is
+the enforcement point for public contribution provenance. If no required DCO or
+CLA status check is configured, keep `do-not-merge/dco` in place until the
+verification command output or approved attestation link is recorded. Record the
+safe evidence in the public PR when possible; otherwise record it in the parent
+import PR before clearing the hold.
+
 ## Flow Labels
 
 | Label | Meaning |
@@ -65,6 +72,11 @@ CODEOWNER review for trust-core work:
 
 - `.github/**`, release workflows, release scripts, update code, and
   supply-chain metadata;
+- public export/import boundary files: `scripts/export-public-repo.sh`,
+  `scripts/update-public-repo-clone.sh`, `scripts/public-repo-include.txt`,
+  `scripts/public-repo-exclude.txt`, `scripts/public-export-provenance.py`,
+  `scripts/scan-public-export-secrets.py`, and
+  `scripts/sync-public-contribution-labels.sh`;
 - `crates/maekon-automation/**`, `crates/maekon-sandbox-worker/**`,
   `crates/maekon-vision/**`, `crates/maekon-audio/**`, `crates/maekon-network/**`,
   and `crates/maekon-storage/**`;

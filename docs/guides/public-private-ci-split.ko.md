@@ -18,8 +18,9 @@ contributor PR 규모가 강한 자동화를 정당화하기 전까지는 의도
 
 ## Public Synthetic Matrix
 
-다음 check는 source file, synthetic fixture, generated stub, headless browser만
-사용하므로 일반 공개 pull request에서 안전하게 실행할 수 있다.
+다음 check는 source file, synthetic fixture, generated stub, public dependency
+metadata, SBOM, headless browser만 사용하므로 일반 공개 pull request에서 안전하게
+실행할 수 있다.
 
 | Check | Workflow | 허용 데이터 | Phase 0/1 Required 여부 |
 | --- | --- | --- | --- |
@@ -27,8 +28,13 @@ contributor PR 규모가 강한 자동화를 정당화하기 전까지는 의도
 | Rust fmt/clippy/check/test | `.github/workflows/ci.yml` | Repository source and generated local stubs | check 이름이 안정되면 Yes |
 | Config sync | `.github/workflows/config-sync.yml` | Static config files and generated frontend stub | Yes |
 | gRPC governance | `.github/workflows/grpc-governance.yml` | Public proto files and generated code | Yes |
-| Public export guardrails | `.github/workflows/ci.yml` and parent validation | Exported source tree only | maintainer PR은 Yes, public fork는 branch rule 확정 전 advisory |
-| Supply-chain and integrity checks | Manual or maintainer-triggered workflows | Public dependency metadata and generated reports | runtime cost가 안정될 때까지 advisory |
+| Public export guardrails | `.github/workflows/ci.yml` and parent validation | Exported source tree only | `ci.yml`에서 실행되는 public CI check는 blocking; parent validation은 maintainer-controlled evidence로 유지 |
+| Supply-chain and integrity checks | PR, `main` push, manual dispatch에서 `.github/workflows/security-compliance.yml` 실행 | Public dependency metadata, SBOM, generated reports | exported public supply-chain gate는 blocking |
+
+`security-compliance.yml`은 authoritative public supply-chain gate다. 이 workflow는
+RustSec audit, cargo-deny licenses/advisories/sources/bans, exemption-expiry
+validation, cargo-vet, third-party notice generation, SBOM generation을 실행한다.
+security-compliance check가 red이면 advisory로 취급하지 않는다.
 
 Public synthetic check는 real screen capture, microphone input, browser session
 state, OS permission dialog, signing credential, release token, external provider
@@ -70,12 +76,12 @@ Public workflow는 다음 규칙을 따라야 한다.
 
 ## Branch Protection
 
-Phase 0/1에서 required check는 안정적인 public synthetic check로 제한한다.
+Phase 0/1에서 required check는 위 표의 안정적인 public check로 제한한다.
 Maintainer-only gate는 민감한 이름이나 evidence를 노출하는 public required check가
 아니라 label과 공개 review summary로 표현한다.
 
-공개 저장소가 정기적으로 외부 PR을 받기 시작하면 maintainer는 안정된 advisory
-check를 하나씩 required check로 승격할 수 있다.
+공개 저장소가 정기적으로 외부 PR을 받기 시작하면 maintainer는 안정적인 public
+check를 하나씩 required check로 추가 승격할 수 있다.
 
 공개 patch가 parent source tree로 import된 뒤 maintainer handoff를 남길 때는
 [`hybrid-import-workflow.ko.md`](./hybrid-import-workflow.ko.md)를 사용한다.

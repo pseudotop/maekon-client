@@ -520,22 +520,43 @@ fn spatial_index_matches_linear_scan_for_large_regions() {
     // This should use the spatial path (500 >= 400)
     let result = d.correlate_click(click_x, click_y, &regions);
     assert!(result.is_some(), "spatial index should find a match");
-    assert!(result.unwrap().text.starts_with("item_"));
+    assert_eq!(result.unwrap().text, "item_312");
 }
 
 #[test]
-fn spatial_index_proximity_fallback() {
+fn spatial_index_direct_hit_selects_smallest_region() {
+    let d = GuiElementDetector::new((1920, 1080), PiiFilterLevel::Off);
+    let mut regions: Vec<OcrRegion> = (0..400)
+        .map(|i| {
+            let row = i / 20;
+            let col = i % 20;
+            make_region(&format!("filler_{i}"), col * 96, row * 54, 90, 50, 0.9)
+        })
+        .collect();
+    regions.push(make_region("Dialog", 700, 420, 300, 160, 0.8));
+    regions.push(make_region("OK", 820, 500, 40, 20, 0.95));
+
+    let result = d.correlate_click(830, 510, &regions);
+
+    assert!(result.is_some(), "spatial direct hit should find a match");
+    assert_eq!(result.unwrap().text, "OK");
+}
+
+#[test]
+fn spatial_index_nearest_neighbor_fallback() {
     let d = GuiElementDetector::new((1920, 1080), PiiFilterLevel::Off);
     let mut regions: Vec<OcrRegion> = (0..400)
         .map(|i| make_region(&format!("r{i}"), (i % 20) * 96, (i / 20) * 54, 90, 50, 0.9))
         .collect();
-    // Add one region far from click point
-    regions.push(make_region("target", 960, 540, 50, 20, 0.9));
+    // Add one region outside the filler grid to avoid a direct hit on filler data.
+    regions.push(make_region("target", 2500, 1500, 50, 20, 0.9));
 
-    // Click near but not inside "target"
-    let result = d.correlate_click(1000, 545, &regions);
+    // Click near but outside "target" so only the nearest-neighbor fallback can match.
+    let result = d.correlate_click(2555, 1510, &regions);
+
     // Should find "target" via proximity (within 40px)
     assert!(result.is_some());
+    assert_eq!(result.unwrap().text, "target");
 }
 
 // --- Scored inference tests ---

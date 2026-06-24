@@ -164,7 +164,7 @@ MAEKON checks GitHub Releases for updates using the updater module in `src-tauri
 
 1. On a configurable interval, the updater fetches the GitHub Releases API.
 2. The latest release version is compared against the running version using semver.
-3. A minimum allowed version floor (`update.min_allowed_version`) prevents downgrades below a security baseline.
+3. A minimum allowed version floor (`update.min_allowed_version`) defaults to the current build version and can be raised by managed policy to prevent downgrades below a security baseline.
 4. If a newer version is found, the user is prompted via a desktop notification.
 5. On approval, the installer is downloaded, its signature verified, and the update applied.
 

@@ -123,6 +123,16 @@ pub trait LlmProvider: Send + Sync {
     fn provider_name(&self) -> &str;
 
     fn is_external(&self) -> bool;
+
+    /// Network endpoints that may carry screen context or intent prompts.
+    ///
+    /// In-process/local providers return an empty list. Providers that report
+    /// `is_external() == false` while still using an endpoint must expose that
+    /// URL so guard decorators can independently verify that every such
+    /// endpoint is loopback before allowing an unguarded local fast path.
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

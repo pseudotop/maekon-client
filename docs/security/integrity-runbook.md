@@ -98,6 +98,10 @@ When using signed runtime policy bundles, set in config:
 }
 ```
 
+`update.min_allowed_version` defaults to the current build version when omitted;
+keep it explicit in managed bundles when the fleet baseline must be raised above
+the shipped default.
+
 Startup will fail closed if bundle verification fails.
 
 ## 5. Incident Handling

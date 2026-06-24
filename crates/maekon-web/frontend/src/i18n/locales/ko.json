@@ -1201,6 +1201,8 @@
     "intentHintPlaceholder": "예: 저장 버튼을 클릭하세요",
     "intentHintRun": "실행",
     "intentHintRunsImmediately": "엄격한 샌드박스 하에서 즉시 실행됩니다.",
+    "intentHintRunsImmediatelyWithSandbox": "샌드박스 강제 적용 상태에서 즉시 실행됩니다.",
+    "intentHintRunsImmediatelyWithoutSandbox": "샌드박스 강제 적용 없이 즉시 실행됩니다.",
     "intentHintRequiresConfirmation": "실행 전 확인이 필요합니다.",
     "intentHintBlockedByPolicy": "정책에 의해 자동화 실행이 비활성화되어 있습니다.",
     "intentHintDisabledHint": "이 기능을 사용하려면 설정에서 자동화를 활성화하세요.",

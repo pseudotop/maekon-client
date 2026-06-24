@@ -340,8 +340,9 @@ impl Sandbox for LinuxSandbox {
             network_isolation: true, // via seccomp socket deny
             #[cfg(not(feature = "linux-sandbox"))]
             network_isolation: false,
-            resource_limits: true,   // setrlimit always available
-            process_isolation: true, // subprocess model: constraints in child pre_exec
+            resource_limits: true,        // setrlimit always available
+            process_isolation: true,      // subprocess model: constraints in child pre_exec
+            privilege_restriction: false, // No UID/capability drop or no_new_privs contract yet.
         }
     }
 }

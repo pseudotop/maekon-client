@@ -11,6 +11,12 @@
 - [ ] cargo-mutants score ≥ 70% on maekon-core
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
+- [ ] Public export provenance manifest was generated and verified from the
+  exact merged parent source SHA: `.maekon-public-export-provenance.json`
+- [ ] Trusted public export verification used a signed source binding
+  (`MAEKON_REQUIRE_PUBLIC_EXPORT_PROVENANCE_SIGNATURE=1` with
+  `MAEKON_UPDATE_PUBLIC_KEY`) or an equivalent GitHub artifact attestation
+  before treating the manifest `ssot.source_sha` as authoritative
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
 - [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
@@ -52,6 +58,12 @@
 - [ ] Parent repository PR for the release/export change is merged before the public export PR is marked ready or merged
 - [ ] Internal export dry-run passed from the parent source tree: `clients/maekon-client/scripts/export-public-repo.sh --dry-run --worktree`
 - [ ] Public export was generated from the merged parent source SHA, not from an unmerged local-only branch
+- [ ] Public export provenance records the parent SSOT source SHA, client
+  subtree SHA, generated export snapshot SHA-256, public repository target SHA,
+  public content diff result, and `source_binding` status
+- [ ] Unsigned public export provenance was treated as advisory only; source
+  SHA trust came from a verified Ed25519 `source_binding.signature` or GitHub
+  artifact attestation
 - [ ] Public export PR was opened by the Maekon GitHub App/bot via `public-export-pr.yml` or `update-public-repo-clone.sh --open-pr`, not by the maintainer user who must approve it
 - [ ] Any early public PR used for CI preview stayed draft until the merged parent source SHA was re-exported or confirmed to produce no public diff
 - [ ] Public export PR merged into `pseudotop/maekon-client`
@@ -64,6 +76,8 @@
 ## Artifact Integrity
 - [ ] GitHub Release exists under `pseudotop/maekon-client`
 - [ ] Every downloadable artifact has a matching `.sha256` sidecar
+- [ ] Release bundle contains `sbom.cdx.json` and `sbom.cdx.json.sha256`; the
+  checksum verifies against the generated SBOM
 - [ ] Signature sidecars are present when signature verification is advertised
 - [ ] macOS artifacts are signed, notarized, and stapled when applicable
 - [ ] The final notarized bytes for `maekon-macos-universal.dmg` and
@@ -73,6 +87,9 @@
   SHA-256 digests as the final downloadable macOS installers
 - [ ] Release Guard accepted the current macOS release assets and would reject a
   stale checksum or stale signature sidecar
+- [ ] GitHub artifact attestations/provenance exist for the final `dist/*`
+  release subjects, and the release workflow evidence points to the current tag
+  commit rather than an older export or build rerun
 - [ ] Installer smoke uses `pseudotop/maekon-client` release URLs
 - [ ] Updater smoke uses the public repository/channel, not legacy `maekon-client`
 
@@ -128,6 +145,10 @@ Required before AI live smoke dispatch:
 - [ ] CHANGELOG.md contains a curated `## [<version>] - YYYY-MM-DD` section that passes `scripts/verify-release-notes-policy.sh --public --version <version>`
 - [ ] Breaking changes documented (if any)
 - [ ] Release notes and install docs explain that Maekon is the app display name while `maekon-*` artifacts and the `maekon` CLI command remain compatibility identifiers
+- [ ] Final release notes distinguish the exported source state from the
+  published binary release state: parent SSOT SHA, public export snapshot SHA,
+  public repository commit/tag, SBOM checksum, and artifact attestation evidence
+  are listed separately
 - [ ] Release notes mention provider-owned CLI drift diagnostics: update the
   provider CLI, restart Maekon when Settings reports a stale process
   environment, refresh Support Diagnostics, and include only sanitized provider

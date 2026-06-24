@@ -120,6 +120,12 @@ impl LlmProvider for FallbackLlmProvider {
     fn is_external(&self) -> bool {
         self.primary.is_external() || self.fallback.is_external()
     }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        let mut endpoints = self.primary.egress_endpoint_urls();
+        endpoints.extend(self.fallback.egress_endpoint_urls());
+        endpoints
+    }
 }
 
 // ── LoopbackLlmProvider ────────────────────────────────────────────────────────
@@ -174,6 +180,10 @@ impl LlmProvider for LoopbackLlmProvider {
     /// Loopback override: proven loopback — not external egress.
     fn is_external(&self) -> bool {
         false
+    }
+
+    fn egress_endpoint_urls(&self) -> Vec<&str> {
+        self.inner.egress_endpoint_urls()
     }
 }
 
