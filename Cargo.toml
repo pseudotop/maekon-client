@@ -89,7 +89,7 @@ thiserror = "2"
 anyhow = "1"
 
 # 오디오 캡처 + STT
-cpal = "0.17"
+cpal = "0.18"
 rubato = "0.15"
 whisper-rs = "0.16"
 
