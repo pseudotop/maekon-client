@@ -264,4 +264,46 @@ mod tests {
         assert_eq!(restored.window_title.as_deref(), Some("Calculator"));
         assert_eq!(restored.target_id.as_deref(), Some("display-result"));
     }
+
+    /// #6938: under the LIMIT, deferred restore must keep the SOONEST-resurfacing
+    /// snooze, not the newest-created. created_at and resurface_at are decoupled:
+    /// here the OLDER-created suggestion resurfaces sooner, so with LIMIT 1 it must
+    /// win. The old `created_at DESC` ordering would wrongly keep the newer-created
+    /// one (whose resurface is far off) and drop the imminent snooze.
+    #[test]
+    fn list_deferred_by_resurface_keeps_soonest_not_newest_created() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let now = Utc::now();
+
+        // OLD created (-3600s) but resurfaces SOON (+60s).
+        let soon = suggestion("deferred-soon", "resurfaces soon", -3600);
+        storage
+            .save_suggestion_with_state(
+                &soon,
+                "deferred",
+                Some(&(now + Duration::seconds(60)).to_rfc3339()),
+            )
+            .unwrap();
+        // NEW created (0s) but resurfaces LATER (+3600s).
+        let later = suggestion("deferred-later", "resurfaces later", 0);
+        storage
+            .save_suggestion_with_state(
+                &later,
+                "deferred",
+                Some(&(now + Duration::seconds(3600)).to_rfc3339()),
+            )
+            .unwrap();
+
+        // LIMIT 1 must keep the soonest-resurfacing (old-created) one.
+        let restored = storage.list_deferred_suggestions_by_resurface(1).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            restored[0].suggestion_id, "deferred-soon",
+            "resurface-order must keep the soonest-resurfacing snooze under the limit"
+        );
+
+        // Sanity: the pre-fix created_at DESC ordering would have kept 'deferred-later'.
+        let by_created = storage.list_suggestions_by_state("deferred", 1).unwrap();
+        assert_eq!(by_created[0].suggestion_id, "deferred-later");
+    }
 }

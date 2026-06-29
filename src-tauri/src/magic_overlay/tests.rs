@@ -176,3 +176,46 @@ fn pointer_context_hidden_payload_carries_no_coordinates() {
     assert_eq!(payload.click_count, 7);
     assert!(!payload.click_pulse);
 }
+
+// ── #7076 least-privilege event-scoping policy ───────────────────────────
+//
+// These cover the window-label selection logic that `emit_overlay_event` uses to
+// decide between `emit_to(overlay)` (screen-content) and the app-wide `emit`
+// (control events). The actual cross-webview delivery boundary is exercised by
+// the Tauri-backed private/integration TCs in CI; here we lock the policy that
+// drives the emit choice so a regression to a global emit fails fast.
+
+#[test]
+fn screen_content_events_are_scoped_to_the_overlay_window() {
+    // Every screen-content event (focus/detection/heatmap) resolves to the
+    // transparent overlay webview label, never an app-wide broadcast.
+    for event in OVERLAY_SCREEN_CONTENT_EVENTS {
+        assert_eq!(
+            screen_content_event_target(event),
+            Some("magic-overlay"),
+            "{event} must be scoped to the overlay webview, not broadcast app-wide",
+        );
+    }
+}
+
+#[test]
+fn screen_content_target_excludes_lower_privilege_windows() {
+    // The overlay label must differ from the `main` / `tracking-panel` webviews,
+    // which also hold core:event:allow-listen but must not receive screen content.
+    let target = screen_content_event_target("overlay:update-focus")
+        .expect("update-focus is a screen-content event");
+    assert_ne!(target, "main");
+    assert_ne!(target, "tracking-panel");
+}
+
+#[test]
+fn control_events_keep_app_wide_broadcast() {
+    // Non-screen-content control events stay un-scoped (None → app-wide emit), so
+    // existing main / tracking-panel listeners keep working.
+    assert_eq!(screen_content_event_target("overlay:show-coaching"), None);
+    assert_eq!(screen_content_event_target("overlay:set-mode"), None);
+    assert_eq!(
+        screen_content_event_target("overlay:suggestions-changed"),
+        None
+    );
+}

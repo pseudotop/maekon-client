@@ -87,6 +87,42 @@ mod tests {
     }
 
     #[test]
+    fn level_standard_masks_api_keys() {
+        // #7100: API tokens must be masked at the shipped-default Standard level,
+        // not only at Strict. (Before the fix this leaked the raw token.)
+        let result =
+            sanitize_title_with_level("key: sk-abc123def456ghi789jkl0", PiiFilterLevel::Standard);
+        assert!(result.contains("[API_KEY]"), "got: {result}");
+        assert!(
+            !result.contains("sk-abc123"),
+            "raw API token leaked: {result}"
+        );
+    }
+
+    #[test]
+    fn level_basic_does_not_mask_api_keys() {
+        // #7100 guard: the API-key mask is scoped to Standard and stricter. Basic
+        // (email + phone only) must not start masking tokens.
+        let result =
+            sanitize_title_with_level("key: sk-abc123def456ghi789jkl0", PiiFilterLevel::Basic);
+        assert!(!result.contains("[API_KEY]"), "got: {result}");
+        assert!(result.contains("sk-abc123def456ghi789jkl0"));
+    }
+
+    #[test]
+    fn level_standard_does_not_mask_ip_or_passport() {
+        // #7100 guard: only mask_api_keys moves to Standard. IP and passport
+        // remain Strict-only.
+        let result =
+            sanitize_title_with_level("server at 192.168.1.100:8080", PiiFilterLevel::Standard);
+        assert!(
+            !result.contains("[IP]"),
+            "IP wrongly masked at Standard: {result}"
+        );
+        assert!(result.contains("192.168.1.100"));
+    }
+
+    #[test]
     fn level_strict_masks_ip() {
         let result =
             sanitize_title_with_level("server at 192.168.1.100:8080", PiiFilterLevel::Strict);
@@ -717,6 +753,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn should_exclude_browser_title_finance_health_legal() {
+        // #6826: finance / health / brokerage / payment web tabs must be
+        // suppressed via title even though the host app ("Chrome") is generic.
+        for title in [
+            "Coinbase – Buy & Sell Crypto — Google Chrome",
+            "Robinhood - Portfolio — Google Chrome",
+            "MyChart - Test Results — Google Chrome",
+            "Fidelity - Account Summary — Google Chrome",
+            "Open a brokerage account — Google Chrome",
+            "DocuSign - Sign Document — Google Chrome",
+        ] {
+            assert!(
+                should_exclude("Google Chrome", title, &[], &[], &[], true),
+                "sensitive finance/health browser title should be excluded: {title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_exclude_browser_title_precision_no_token_false_positives() {
+        // #6826: the title path uses high-precision product names + category
+        // phrases ONLY — bare category tokens (tax/legal/health) and generic
+        // finance keywords (bank/session) must NOT over-exclude ordinary tabs.
+        for title in [
+            "Quarterly tax notes - Google Docs",
+            "Legal Studies 101 Syllabus — Google Chrome",
+            "Health and fitness blog — Google Chrome",
+            "Online banking textbook.pdf — Google Chrome",
+            "Work session recap — Notion",
+            // Compact-substring artifacts that must NOT match (product "e trade"
+            // compacts to "etrade"; whole-word matching avoids these).
+            "live trade room — Google Chrome",
+            "The Trade Desk - Campaign Dashboard — Google Chrome",
+        ] {
+            assert!(
+                !should_exclude("Google Chrome", title, &[], &[], &[], true),
+                "ordinary title must not be excluded by a bare token: {title:?}"
+            );
+        }
+    }
+
     // ── review4 privacy masker regression tests ─────────────────────────
 
     #[test]
@@ -859,5 +937,25 @@ mod tests {
                 "korean-id/private-key sanitize O(N^2) regression: {elapsed_ms}ms > {budget}ms"
             );
         }
+    }
+
+    #[test]
+    fn korean_id_masks_entire_digit_run_not_fixed_window() {
+        // #6830: the ENTIRE contiguous digit run around the '-' must be masked,
+        // not a fixed last-6 / first-7 window — otherwise a longer leading run
+        // leaks the RRN's first digit(s) and a longer trailing run leaks the tail.
+        assert_eq!(redaction::mask_korean_id("1901010-1234567"), "[KR_ID]");
+        assert_eq!(redaction::mask_korean_id("901010-1234567890123"), "[KR_ID]");
+        assert_eq!(
+            redaction::mask_korean_id("acct 1901010-1234567 end"),
+            "acct [KR_ID] end"
+        );
+        // Standard 6-7 form: unchanged behavior, surrounding text preserved.
+        assert_eq!(
+            redaction::mask_korean_id("id 901010-1234567 ok"),
+            "id [KR_ID] ok"
+        );
+        // Below threshold (5 digits before the '-') must NOT be masked.
+        assert_eq!(redaction::mask_korean_id("12345-1234567"), "12345-1234567");
     }
 }

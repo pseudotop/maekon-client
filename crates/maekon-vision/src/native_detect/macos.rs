@@ -69,6 +69,10 @@ fn detect_rectangles_blocking(
 
     let empty_dict: Retained<NSDictionary<AnyObject, AnyObject>> = NSDictionary::new();
 
+    // SAFETY: handler_cls is the VNImageRequestHandler class (checked non-null above); `alloc`
+    // returns a fresh Allocated instance and initWithData:options: consumes that allocation,
+    // taking &*ns_data (the live NSData built above) and &*empty_dict (the live empty
+    // NSDictionary), returning a retained VNImageRequestHandler.
     let handler: Retained<AnyObject> = unsafe {
         let alloc: Allocated<AnyObject> = msg_send![handler_cls, alloc];
         msg_send![alloc, initWithData: &*ns_data, options: &*empty_dict]
@@ -81,24 +85,35 @@ fn detect_rectangles_blocking(
             message: "VNDetectRectanglesRequest class not found".into(),
         })?;
 
+    // SAFETY: request_cls is the VNDetectRectanglesRequest class (checked non-null above);
+    // `alloc` returns a fresh Allocated instance and `init` consumes that allocation,
+    // returning a retained VNDetectRectanglesRequest.
     let request: Retained<AnyObject> = unsafe {
         let alloc: Allocated<AnyObject> = msg_send![request_cls, alloc];
         msg_send![alloc, init]
     };
 
     // setMinimumSize: (f32, relative to image width/height, 0..1)
+    // SAFETY: `request` is the live VNDetectRectanglesRequest created above and retained for
+    // this scope; setMinimumSize: is a valid selector taking a scalar f32 and returning void.
     let _: () = unsafe { msg_send![&request, setMinimumSize: min_size] };
 
     // setMaximumObservations: (usize, 0 = unlimited up to system max)
     let max_obs: usize = if max_results == 0 { 0 } else { max_results };
+    // SAFETY: `request` is the same live VNDetectRectanglesRequest; setMaximumObservations:
+    // is a valid selector taking a scalar NSUInteger (usize) and returning void.
     let _: () = unsafe { msg_send![&request, setMaximumObservations: max_obs] };
 
     // setMinimumAspectRatio: 0.1 (wide range to capture both landscape + portrait)
     let min_aspect: f32 = 0.1;
+    // SAFETY: `request` is the same live VNDetectRectanglesRequest; setMinimumAspectRatio:
+    // is a valid selector taking a scalar f32 and returning void.
     let _: () = unsafe { msg_send![&request, setMinimumAspectRatio: min_aspect] };
 
     // setMaximumAspectRatio: 10.0
     let max_aspect: f32 = 10.0;
+    // SAFETY: `request` is the same live VNDetectRectanglesRequest; setMaximumAspectRatio:
+    // is a valid selector taking a scalar f32 and returning void.
     let _: () = unsafe { msg_send![&request, setMaximumAspectRatio: max_aspect] };
 
     // --- Create NSArray with single request ---
@@ -107,16 +122,25 @@ fn detect_rectangles_blocking(
         message: "NSArray class not found".into(),
     })?;
 
+    // SAFETY: nsarray_cls is the NSArray class (checked non-null above); arrayWithObject: takes
+    // one live object ref — &*request, the retained VNDetectRectanglesRequest still in scope —
+    // and returns a retained NSArray containing it.
     let request_array: Retained<AnyObject> =
         unsafe { msg_send![nsarray_cls, arrayWithObject: &*request] };
 
     // --- Perform requests ---
     let mut error_ptr: *mut AnyObject = ptr::null_mut();
+    // SAFETY: `handler` is the live VNImageRequestHandler; performRequests: takes a live NSArray
+    // of requests (&*request_array) and error: takes an `NSError **` out-pointer (&mut error_ptr,
+    // which points at the null-initialized object pointer above); the call returns a BOOL.
     let success: bool =
         unsafe { msg_send![&handler, performRequests: &*request_array, error: &mut error_ptr] };
 
     if !success {
         let err_msg = if !error_ptr.is_null() {
+            // SAFETY: guarded by the `!error_ptr.is_null()` branch above, so error_ptr points to
+            // a live NSError populated by performRequests:error:; localizedDescription is a valid
+            // selector returning a retained NSString.
             let desc: Retained<NSString> = unsafe { msg_send![&*error_ptr, localizedDescription] };
             desc.to_string()
         } else {
@@ -129,7 +153,12 @@ fn detect_rectangles_blocking(
     }
 
     // --- Extract results ---
+    // SAFETY: `request` is the live VNDetectRectanglesRequest whose performRequests:error:
+    // succeeded above; results is a valid selector returning a retained NSArray of
+    // VNRectangleObservation.
     let observations: Retained<AnyObject> = unsafe { msg_send![&request, results] };
+    // SAFETY: `observations` is the live NSArray returned by results above; count is a valid
+    // selector returning an NSUInteger (usize).
     let obs_count: usize = unsafe { msg_send![&observations, count] };
 
     debug!(obs_count, "Vision rect: observations received");
@@ -137,13 +166,20 @@ fn detect_rectangles_blocking(
     let mut results = Vec::with_capacity(obs_count);
 
     for i in 0..obs_count {
+        // SAFETY: `observations` is the live NSArray; the loop bound `for i in 0..obs_count`
+        // guarantees i < obs_count == [observations count], so the index is in bounds;
+        // objectAtIndex: returns a retained element (a VNRectangleObservation).
         let observation: Retained<AnyObject> =
             unsafe { msg_send![&observations, objectAtIndex: i] };
 
         // Extract confidence (f32 from VNRectangleObservation)
+        // SAFETY: `observation` is a live VNRectangleObservation obtained from results above;
+        // confidence is a valid selector returning a scalar f32.
         let confidence: f32 = unsafe { msg_send![&observation, confidence] };
 
         // Extract bounding box (CGRect, normalized 0..1, bottom-left origin)
+        // SAFETY: `observation` is the same live VNRectangleObservation; boundingBox is a valid
+        // selector returning a CGRect by value (normalized 0..1, bottom-left origin).
         let bbox: CGRect = unsafe { msg_send![&observation, boundingBox] };
 
         // Convert normalized bottom-left coords → top-left pixel coords

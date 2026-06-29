@@ -5,7 +5,6 @@ use crate::error::StorageError;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
-use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -76,9 +75,9 @@ impl FrameFileStorage {
         encryption_key: Option<Arc<EncryptionKey>>,
     ) -> Result<Self, StorageError> {
         let frames_dir = base_dir.join("frames");
-        fs::create_dir_all(&frames_dir).await.map_err(|e| {
-            StorageError::Internal(format!("Failed to create frame directory: {e}"))
-        })?;
+        // #7074 (MS-001): create the frames root owner-only (Unix 0o700 / Windows
+        // owner-only DACL) so the screen-capture tree is not world-traversable.
+        super::io::create_dir_owner_only(&frames_dir).await?;
 
         let encrypted_label = if encryption_key.is_some() {
             "encrypted"

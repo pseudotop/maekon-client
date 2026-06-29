@@ -236,6 +236,10 @@ impl AppConfig {
         clamped.extend(self.vision.clamp_bounds());
         clamped.extend(self.monitor.clamp_bounds());
         clamped.extend(self.analysis.clamp_bounds());
+        // #6883: fail-close web.allow_external + clamp web.port on load. validate_bounds
+        // (write chokepoints) already covers web; the load path must too, or a weak-token
+        // config binds the integration API to 0.0.0.0 unvalidated.
+        clamped.extend(self.web.clamp_bounds());
         clamped
     }
 

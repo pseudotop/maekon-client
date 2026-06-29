@@ -1342,9 +1342,14 @@ fn virtual_screen_geometry() -> Value {
             GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
             SM_YVIRTUALSCREEN,
         };
+        // SAFETY: GetSystemMetrics takes a scalar SM_* index and returns an i32;
+        // no pointers, allocation, or shared state are involved.
         let x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        // SAFETY: GetSystemMetrics takes a scalar SM_* index and returns an i32.
         let y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        // SAFETY: GetSystemMetrics takes a scalar SM_* index and returns an i32.
         let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        // SAFETY: GetSystemMetrics takes a scalar SM_* index and returns an i32.
         let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
         json!({
             "x": x,

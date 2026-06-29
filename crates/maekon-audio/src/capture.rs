@@ -10,6 +10,7 @@ use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use tracing::{debug, warn};
+use zeroize::Zeroize;
 
 use maekon_core::error::CoreError;
 use maekon_core::models::audio::{AudioBuffer, VadConfig};
@@ -81,6 +82,21 @@ pub struct AudioCapture {
     /// limit was ignored and only the hardcoded `MAX_BUFFER_SAMPLES` ceiling
     /// (120s @ 48kHz) applied.
     max_recording_secs: u32,
+    /// Serializes start/stop lifecycle transitions (#7078). The shared `mode`
+    /// atomic closes start-vs-start and PTT-vs-VAD races, but NOT start-vs-stop:
+    /// `start`/`start_vad` write the built stream into `self.stream` only AFTER
+    /// the device is playing, while `stop`/`stop_vad` unconditionally set
+    /// `MODE_IDLE` and `take()` the stream slot with no mode check. Interleaved,
+    /// a `stop()` could null a still-empty slot while a concurrent `start()` is
+    /// mid-build, after which `start()` stores its now-playing stream — leaving
+    /// the microphone physically open (OS recording indicator lit) while
+    /// `mode == MODE_IDLE`, until the next lifecycle call. Holding this mutex
+    /// across the entire start/stop critical section makes the transitions
+    /// mutually exclusive so that interleave can never happen. The realtime audio
+    /// callback never touches this mutex, so it cannot stall the audio thread or
+    /// deadlock it; the methods never re-enter each other, so the non-reentrant
+    /// lock is safe.
+    lifecycle: Mutex<()>,
 }
 
 impl Default for AudioCapture {
@@ -97,6 +113,58 @@ fn max_buffer_samples(max_recording_secs: u32, native_rate: u32) -> usize {
     (max_recording_secs as usize)
         .saturating_mul(native_rate as usize)
         .clamp(native_rate as usize, MAX_BUFFER_SAMPLES)
+}
+
+/// Securely wipe a captured-PCM buffer before its contents become unreachable
+/// (#7077).
+///
+/// `Vec::clear()` only sets the length to 0, and `std::mem::take` moves the Vec
+/// out to be freed — neither overwrites the backing allocation, so raw microphone
+/// PCM (recorded human speech) lingers in freed/spare heap until something else
+/// happens to reuse it (recoverable via a core dump, swap/hibernation file, or a
+/// privileged memory scraper). `Vec::zeroize` overwrites every initialized sample
+/// AND the spare capacity with zeros (best effort) and then truncates the length,
+/// matching the `Zeroizing` treatment the (less sensitive) cloud STT API key
+/// already receives (`cloud_stt.rs`). Call this on every stop/drain/Drop path
+/// that retires raw audio.
+fn wipe_samples(buf: &mut Vec<f32>) {
+    buf.zeroize();
+}
+
+/// Lend a raw-PCM buffer to `consume`, then zeroize it before it drops, returning
+/// whatever `consume` produced.
+///
+/// Several short-lived `Vec<f32>` buffers in this crate hold raw microphone PCM
+/// that a consumer only borrows: the per-callback `mono` mixdown buffer in the
+/// realtime audio callback (#7098), and the owned source samples the local
+/// Whisper provider lends to inference (#7115, `whisper.rs`). Once the consumer
+/// (PTT/VAD accumulation, or Whisper inference) has read what it needs, the local
+/// buffer would otherwise be freed by `Vec::drop` WITHOUT overwriting its backing
+/// allocation, leaving recorded speech recoverable in spare heap until reuse.
+/// Wiping it here extends the #7077 stop/drain/Drop capture-buffer treatment to
+/// every borrow-then-drop PCM consumer. The buffers are at most one utterance of
+/// audio, so the extra zeroize is negligible. The consumer's return value is
+/// forwarded so an inference call's `Result` can be `?`-propagated by the caller
+/// after the wipe has already run.
+pub(crate) fn consume_then_wipe<T>(buf: &mut Vec<f32>, consume: impl FnOnce(&[f32]) -> T) -> T {
+    let out = consume(buf.as_slice());
+    wipe_samples(buf);
+    out
+}
+
+/// Copy up to `take` samples from a freshly-resampled chunk into `output`, then
+/// zeroize the whole chunk.
+///
+/// rubato's `process` allocates a NEW output `Vec` per call, so `chunk` is a
+/// resampled-PCM copy this crate owns. After the needed samples are appended to
+/// `output`, the per-chunk copy would drop un-overwritten; wiping it keeps the
+/// resampled speech from lingering in the freed intermediate allocation (#7098).
+/// (The final `output` buffer is moved out to the caller as an `AudioBuffer`, so
+/// it cannot be wiped here — see `resample`.)
+fn drain_resampled_chunk(output: &mut Vec<f32>, chunk: &mut Vec<f32>, take: usize) {
+    let take = take.min(chunk.len());
+    output.extend_from_slice(&chunk[..take]);
+    wipe_samples(chunk);
 }
 
 /// Validate the device-reported input channel count before building a stream.
@@ -150,11 +218,17 @@ impl AudioCapture {
             native_rate: Mutex::new(None),
             speech_buffer: Arc::new(Mutex::new(Vec::new())),
             max_recording_secs,
+            lifecycle: Mutex::new(()),
         }
     }
 
     /// Start capturing audio from the default input device (PTT mode).
     pub fn start(&self) -> Result<(), CoreError> {
+        // #7078: serialize against any concurrent stop()/stop_vad()/start_vad()
+        // for the whole critical section. Held until this method returns so a
+        // stop() cannot null the stream slot while this start() is mid-build.
+        let _lifecycle = self.lifecycle.lock();
+
         // #6102-24/#6102-25: claim the device ATOMICALLY for PTT mode with a
         // single compare_exchange (MODE_IDLE -> MODE_PTT). Because PTT and VAD
         // share this one atomic, a concurrent start()/start_vad() pair can never
@@ -217,8 +291,10 @@ impl AudioCapture {
         // the hardcoded MAX_BUFFER_SAMPLES ceiling applied).
         let max_samples = max_buffer_samples(self.max_recording_secs, native_rate);
 
-        // Clear buffer for new recording
-        self.buffer.lock().clear();
+        // Wipe (not just clear) the buffer for the new recording so any residual
+        // PCM from a prior session is overwritten rather than left in the reused
+        // backing allocation (#7077).
+        wipe_samples(&mut self.buffer.lock());
 
         let buffer = self.buffer.clone();
         let mode = self.mode.clone();
@@ -238,14 +314,17 @@ impl AudioCapture {
                     if mode.load(Ordering::SeqCst) != MODE_PTT {
                         return;
                     }
-                    let mono: Vec<f32> = data
+                    let mut mono: Vec<f32> = data
                         .chunks(channels)
                         .map(|frame| frame.iter().sum::<f32>() / channels as f32)
                         .collect();
-                    let mut buf = buffer.lock();
-                    if buf.len() < max_samples {
-                        buf.extend_from_slice(&mono);
-                    }
+                    // #7098: wipe the transient mono PCM once it has been accumulated.
+                    consume_then_wipe(&mut mono, |m| {
+                        let mut buf = buffer.lock();
+                        if buf.len() < max_samples {
+                            buf.extend_from_slice(m);
+                        }
+                    });
                 },
                 err_fn,
                 None,
@@ -259,7 +338,7 @@ impl AudioCapture {
                         if mode.load(Ordering::SeqCst) != MODE_PTT {
                             return;
                         }
-                        let mono: Vec<f32> = data
+                        let mut mono: Vec<f32> = data
                             .chunks(channels)
                             .map(|frame| {
                                 frame
@@ -269,10 +348,13 @@ impl AudioCapture {
                                     / channels as f32
                             })
                             .collect();
-                        let mut buf = buffer.lock();
-                        if buf.len() < max_samples {
-                            buf.extend_from_slice(&mono);
-                        }
+                        // #7098: wipe the transient mono PCM once it has been accumulated.
+                        consume_then_wipe(&mut mono, |m| {
+                            let mut buf = buffer.lock();
+                            if buf.len() < max_samples {
+                                buf.extend_from_slice(m);
+                            }
+                        });
                     },
                     err_fn,
                     None,
@@ -305,6 +387,10 @@ impl AudioCapture {
 
     /// Stop capturing and return the accumulated audio buffer resampled to 16kHz.
     pub fn stop(&self) -> Result<AudioBuffer, CoreError> {
+        // #7078: serialize against any concurrent start()/start_vad() so this
+        // stop() cannot null the stream slot a start() is about to populate.
+        let _lifecycle = self.lifecycle.lock();
+
         // Release the device claim back to Idle so a subsequent PTT/VAD start can
         // re-acquire it. The callback's `mode != MODE_PTT` check also short-circuits.
         self.mode.store(MODE_IDLE, Ordering::SeqCst);
@@ -314,7 +400,7 @@ impl AudioCapture {
             drop(stream);
         }
 
-        let raw_samples: Vec<f32> = std::mem::take(&mut *self.buffer.lock());
+        let mut raw_samples: Vec<f32> = std::mem::take(&mut *self.buffer.lock());
         let native_rate = (*self.native_rate.lock()).unwrap_or(TARGET_SAMPLE_RATE);
 
         debug!(
@@ -328,8 +414,16 @@ impl AudioCapture {
 
         // Resample to 16kHz if needed
         let samples_16k = if native_rate != TARGET_SAMPLE_RATE {
-            resample(&raw_samples, native_rate, TARGET_SAMPLE_RATE)?
+            // `mem::take` moved the raw native-rate PCM out of the shared buffer
+            // into `raw_samples`; wipe it once it has been resampled so the
+            // recorded speech is not left recoverable in freed heap when
+            // `raw_samples` drops (#7077). Wipe on both success and error.
+            let resampled = resample(&raw_samples, native_rate, TARGET_SAMPLE_RATE);
+            wipe_samples(&mut raw_samples);
+            resampled?
         } else {
+            // Identity rate: `raw_samples` IS the returned payload, so it is moved
+            // into the result rather than wiped here.
             raw_samples
         };
 
@@ -354,6 +448,11 @@ impl AudioCapture {
         config: VadConfig,
         on_speech_signal: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(), CoreError> {
+        // #7078: serialize against any concurrent stop()/stop_vad()/start() for
+        // the whole critical section so a stop cannot null the stream slot while
+        // this start_vad() is mid-build.
+        let _lifecycle = self.lifecycle.lock();
+
         // #6102-24/#6102-25: claim the device ATOMICALLY for VAD mode with a
         // single compare_exchange (MODE_IDLE -> MODE_VAD). Sharing this one atomic
         // with start() means a concurrent PTT start can never co-own the device:
@@ -401,7 +500,9 @@ impl AudioCapture {
         );
 
         *self.native_rate.lock() = Some(native_rate);
-        self.speech_buffer.lock().clear();
+        // Wipe (not just clear) residual speech PCM from a prior session before
+        // reusing the backing allocation (#7077).
+        wipe_samples(&mut self.speech_buffer.lock());
 
         // #6342: honor the configured max recording duration for the VAD buffer.
         let max_samples = max_buffer_samples(self.max_recording_secs, native_rate);
@@ -482,11 +583,12 @@ impl AudioCapture {
                 device.build_input_stream(
                     &stream_config.into(),
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mono: Vec<f32> = data
+                        let mut mono: Vec<f32> = data
                             .chunks(channels)
                             .map(|frame| frame.iter().sum::<f32>() / channels as f32)
                             .collect();
-                        cb(&mono);
+                        // #7098: wipe the transient mono PCM after the VAD consumes it.
+                        consume_then_wipe(&mut mono, |m| cb(m));
                     },
                     err_fn,
                     None,
@@ -501,7 +603,7 @@ impl AudioCapture {
                 device.build_input_stream(
                     &stream_config.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let mono: Vec<f32> = data
+                        let mut mono: Vec<f32> = data
                             .chunks(channels)
                             .map(|frame| {
                                 frame
@@ -511,7 +613,8 @@ impl AudioCapture {
                                     / channels as f32
                             })
                             .collect();
-                        cb(&mono);
+                        // #7098: wipe the transient mono PCM after the VAD consumes it.
+                        consume_then_wipe(&mut mono, |m| cb(m));
                     },
                     err_fn,
                     None,
@@ -542,13 +645,19 @@ impl AudioCapture {
 
     /// Stop VAD listening mode.
     pub fn stop_vad(&self) -> Result<(), CoreError> {
+        // #7078: serialize against any concurrent start()/start_vad() so this
+        // stop cannot null the stream slot a start is about to populate.
+        let _lifecycle = self.lifecycle.lock();
+
         // Release the device claim back to Idle so a subsequent PTT/VAD start can
         // re-acquire it. The VAD callback's `mode != MODE_VAD` check also short-circuits.
         self.mode.store(MODE_IDLE, Ordering::SeqCst);
         if let Some(stream) = self.stream.lock().take() {
             drop(stream);
         }
-        self.speech_buffer.lock().clear();
+        // Wipe (not just clear) the accumulated speech PCM so it is not left
+        // recoverable in the retained backing allocation (#7077).
+        wipe_samples(&mut self.speech_buffer.lock());
         debug!("VAD listening stopped");
         Ok(())
     }
@@ -561,7 +670,7 @@ impl AudioCapture {
     /// Drain the speech buffer and return resampled 16kHz audio.
     /// Called by the receiver task after on_speech_signal fires.
     pub fn drain_speech_buffer(&self) -> Result<AudioBuffer, CoreError> {
-        let raw_samples: Vec<f32> = std::mem::take(&mut *self.speech_buffer.lock());
+        let mut raw_samples: Vec<f32> = std::mem::take(&mut *self.speech_buffer.lock());
         let native_rate = (*self.native_rate.lock()).unwrap_or(TARGET_SAMPLE_RATE);
 
         debug!(
@@ -574,8 +683,14 @@ impl AudioCapture {
         }
 
         let samples_16k = if native_rate != TARGET_SAMPLE_RATE {
-            resample(&raw_samples, native_rate, TARGET_SAMPLE_RATE)?
+            // `mem::take` moved the raw native-rate speech PCM out of the shared
+            // buffer; wipe it once resampled so it is not left recoverable in
+            // freed heap when `raw_samples` drops (#7077). Wipe on success/error.
+            let resampled = resample(&raw_samples, native_rate, TARGET_SAMPLE_RATE);
+            wipe_samples(&mut raw_samples);
+            resampled?
         } else {
+            // Identity rate: `raw_samples` IS the returned payload.
             raw_samples
         };
 
@@ -587,7 +702,16 @@ impl Drop for AudioCapture {
     fn drop(&mut self) {
         // Reset the shared mode atomic so any in-flight callback short-circuits.
         self.mode.store(MODE_IDLE, Ordering::SeqCst);
-        // Stream is dropped automatically by Mutex<Option<Stream>>
+        // Stop the device FIRST so no audio callback can append samples after the
+        // wipe below (otherwise it could re-fill the buffer we just zeroized).
+        if let Some(stream) = self.stream.lock().take() {
+            drop(stream);
+        }
+        // Wipe any residual raw PCM so recorded speech is not left recoverable in
+        // freed heap after this capture is dropped (#7077). `&mut self` guarantees
+        // exclusive access, so these locks are uncontended.
+        wipe_samples(&mut self.buffer.lock());
+        wipe_samples(&mut self.speech_buffer.lock());
     }
 }
 
@@ -666,13 +790,16 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
     let mut pos = 0;
     while pos + chunk_size <= input.len() {
         let chunk = &input[pos..pos + chunk_size];
-        let resampled = resampler
-            .process(&[chunk], None)
-            .map_err(|e| CoreError::AudioCapture {
-                code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                message: format!("resample: {e}"),
-            })?;
-        output.extend_from_slice(&resampled[0]);
+        let mut resampled =
+            resampler
+                .process(&[chunk], None)
+                .map_err(|e| CoreError::AudioCapture {
+                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                    message: format!("resample: {e}"),
+                })?;
+        // #7098: copy the full resampled chunk out, then wipe the per-chunk copy.
+        let produced = resampled[0].len();
+        drain_resampled_chunk(&mut output, &mut resampled[0], produced);
         pos += chunk_size;
     }
 
@@ -681,18 +808,26 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
         let mut last_chunk = vec![0.0f32; chunk_size];
         let remaining = input.len() - pos;
         last_chunk[..remaining].copy_from_slice(&input[pos..]);
-        let resampled =
-            resampler
-                .process(&[last_chunk], None)
-                .map_err(|e| CoreError::AudioCapture {
-                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                    message: format!("resample tail: {e}"),
-                })?;
+        // Borrow (not move) `last_chunk` into `process` so this function keeps
+        // ownership and can wipe the zero-padded input-tail copy afterwards (#7098).
+        let mut resampled = resampler
+            .process(&[last_chunk.as_slice()], None)
+            .map_err(|e| CoreError::AudioCapture {
+                code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                message: format!("resample tail: {e}"),
+            })?;
         let expected = (remaining as f64 * to_rate as f64 / from_rate as f64).ceil() as usize;
-        let take = expected.min(resampled[0].len());
-        output.extend_from_slice(&resampled[0][..take]);
+        // #7098: append only the expected tail samples, then wipe the per-chunk
+        // resampled copy and the zero-padded input-tail copy this function owns.
+        drain_resampled_chunk(&mut output, &mut resampled[0], expected);
+        wipe_samples(&mut last_chunk);
     }
 
+    // `output` holds the resampled PCM and is moved out to the caller as an
+    // `AudioBuffer` (a `maekon-core` type); its final owner lives outside this crate,
+    // so it cannot be wiped here. The intermediate per-chunk copies this function
+    // owns are wiped above (#7098); the native-rate source is wiped by the
+    // `stop`/`drain` caller (#7077).
     Ok(output)
 }
 
@@ -922,5 +1057,175 @@ mod tests {
         let output = resample(&input, 48000, 16000).unwrap();
         // Expected ~1600 samples (4800 * 16000/48000)
         assert!((output.len() as i32 - 1600).unsigned_abs() < 50);
+    }
+
+    // ── #7077: raw-audio buffers are wiped, not merely cleared/taken ──
+
+    #[test]
+    fn wipe_samples_zeroizes_backing_allocation() {
+        // `wipe_samples` is the shared primitive every stop/drain/Drop path uses
+        // to retire raw PCM. It must overwrite the backing allocation, not just
+        // set the length to 0 (which `Vec::clear()` does, leaving voice residue).
+        const N: usize = 256;
+        let mut buf: Vec<f32> = Vec::with_capacity(N);
+        for i in 0..N {
+            buf.push(i as f32 + 1.0); // all strictly non-zero
+        }
+        let ptr = buf.as_ptr();
+
+        wipe_samples(&mut buf);
+
+        assert!(buf.is_empty(), "wipe must truncate the length to 0");
+        assert_eq!(
+            buf.as_ptr(),
+            ptr,
+            "wipe must reuse the same allocation (no realloc), so the assertion below inspects the wiped heap"
+        );
+        // SAFETY: same still-allocated buffer; the first N f32 slots were written
+        // (1.0..=N) and then overwritten with 0.0 by `zeroize`, so reading exactly
+        // N initialized elements is sound. A `clear()`-only body would leave the
+        // original non-zero PCM here, failing the assertion.
+        let backing = unsafe { std::slice::from_raw_parts(ptr, N) };
+        assert!(
+            backing.iter().all(|&s| s == 0.0),
+            "wipe_samples must zero the backing allocation, not just the length (#7077)"
+        );
+    }
+
+    #[test]
+    fn stop_vad_wipes_speech_buffer_backing_allocation() {
+        // Public-path proof for the in-place clear path: stop_vad() must zeroize
+        // the speech buffer's retained backing allocation, not just clear() it.
+        const N: usize = 512;
+        let capture = AudioCapture::new(60);
+        {
+            let mut buf = capture.speech_buffer.lock();
+            buf.reserve_exact(N);
+            for i in 0..N {
+                buf.push(i as f32 + 1.0); // all strictly non-zero
+            }
+        }
+        let ptr = capture.speech_buffer.lock().as_ptr();
+
+        capture.stop_vad().unwrap();
+
+        let buf = capture.speech_buffer.lock();
+        assert!(buf.is_empty(), "stop_vad must clear the speech buffer");
+        assert_eq!(
+            buf.as_ptr(),
+            ptr,
+            "wipe must reuse the same allocation (no realloc)"
+        );
+        // SAFETY: same still-allocated buffer; the first N slots were written then
+        // overwritten with 0.0 by the wipe, so reading N initialized elements is
+        // sound. A clear()-only stop_vad() would leave the recorded PCM here.
+        let backing = unsafe { std::slice::from_raw_parts(ptr, N) };
+        assert!(
+            backing.iter().all(|&s| s == 0.0),
+            "stop_vad must zeroize the speech-buffer backing allocation (#7077)"
+        );
+    }
+
+    // ── #7078: start/stop lifecycle transitions are serialized ──
+
+    #[test]
+    fn lifecycle_serializes_stop_against_in_progress_start() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let capture = Arc::new(AudioCapture::new(60));
+
+        // Simulate a start()/start_vad() that has entered its critical section and
+        // is mid-build by holding the same lifecycle lock those methods hold.
+        let held = capture.lifecycle.lock();
+
+        let c2 = Arc::clone(&capture);
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            // stop() must acquire the lifecycle lock first; it blocks until the
+            // simulated in-progress start() releases it.
+            let _ = c2.stop();
+            let _ = tx.send(());
+        });
+
+        // While the simulated start() owns the lock, stop() cannot make progress —
+        // without serialization (the pre-fix code) it would complete immediately.
+        // A Timeout (not Disconnected) confirms the stop() thread is still alive and
+        // blocked on the lifecycle lock rather than having returned early.
+        let blocked = rx.recv_timeout(Duration::from_millis(300)).unwrap_err();
+        assert_eq!(
+            blocked,
+            mpsc::RecvTimeoutError::Timeout,
+            "stop() must block while a start() holds the lifecycle lock (#7078)"
+        );
+
+        // Releasing the lock lets the serialized stop() run to completion.
+        drop(held);
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("stop() must complete once the lifecycle lock is released (#7078)");
+        handle.join().unwrap();
+    }
+
+    // ── #7098: remaining raw-PCM allocations are wiped on their retire paths ──
+
+    #[test]
+    fn consume_then_wipe_passes_pcm_then_zeroizes() {
+        // sub-part 1: the per-callback `mono` mixdown buffer must reach the consumer
+        // intact and then be zeroized before it drops. Inspect both halves on a
+        // buffer the test owns (the real callback's `mono` is a closure local).
+        let mut mono = vec![0.5f32; 8];
+        let mut seen: Vec<f32> = Vec::new();
+        consume_then_wipe(&mut mono, |m| seen.extend_from_slice(m));
+        assert_eq!(
+            seen,
+            vec![0.5f32; 8],
+            "consumer must observe the mono PCM before it is wiped"
+        );
+        // `Vec::zeroize` overwrites the samples and truncates the length to 0.
+        assert!(
+            mono.is_empty(),
+            "callback mono buffer must be zeroized after the consumer copies it (#7098)"
+        );
+    }
+
+    #[test]
+    fn consume_then_wipe_forwards_consumer_value_then_zeroizes() {
+        // #7115: the helper must forward the consumer's return value (so a Whisper
+        // inference `Result` can be `?`-propagated AFTER the wipe), while still
+        // zeroizing the borrowed PCM. Use a `Result`-returning consumer that reads
+        // the samples, mirroring `whisper.rs::transcribe`'s borrow-then-wipe.
+        let mut pcm = vec![0.5f32, -0.25, 0.75, -1.0];
+        let observed: Result<usize, ()> = consume_then_wipe(&mut pcm, |s| {
+            assert_eq!(s, [0.5f32, -0.25, 0.75, -1.0], "consumer must see real PCM");
+            Ok(s.len())
+        });
+        assert_eq!(
+            observed.expect("consumer value must be forwarded"),
+            4,
+            "consume_then_wipe must return what the consumer produced"
+        );
+        assert!(
+            pcm.is_empty(),
+            "borrowed PCM must be zeroized after the consumer reads it (#7115)"
+        );
+    }
+
+    #[test]
+    fn drain_resampled_chunk_copies_take_then_zeroizes() {
+        // sub-part 2: the per-chunk resampler output (a copy this crate owns) must
+        // have its needed samples copied into `output` and then be zeroized so the
+        // resampled PCM is not left in the freed intermediate allocation.
+        let mut output = vec![1.0f32, 2.0];
+        let mut chunk = vec![0.3f32, 0.4, 0.5, 0.6];
+        drain_resampled_chunk(&mut output, &mut chunk, 3);
+        assert_eq!(
+            output,
+            vec![1.0, 2.0, 0.3, 0.4, 0.5],
+            "only the first `take` samples must be appended to output"
+        );
+        assert!(
+            chunk.is_empty(),
+            "the per-chunk resampled copy must be zeroized after draining (#7098)"
+        );
     }
 }

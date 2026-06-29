@@ -15,7 +15,17 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
+# #7082 MEMB-3: SHA-256 allowlist verification of downloaded ONNX weights.
+# Always compiled (not gated on `fastembed-local`) so the integrity machinery
+# and its tests build and run in every profile, including --no-default-features.
+sha2 = { workspace = true }
 
+# #7082 MEMB-3 / ort 2.0 tracking: `fastembed` transitively pulls
+# `ort`/`ort-sys` 2.0.0-rc.12 — a PRE-RELEASE that downloads the ONNX Runtime
+# native binary at build time (`ort-download-binaries-native-tls`). Move to a
+# stable `ort` 2.0 release once published and prefer a pinned / reproducible
+# native-binary acquisition. The downloaded model weights are integrity-checked
+# against a SHA-256 allowlist (see src/model_integrity.rs).
 [dependencies.fastembed]
 version = "5"
 optional = true
@@ -29,6 +39,8 @@ fastembed-local = ["dep:fastembed"]
 [dev-dependencies]
 tokio-test = { workspace = true }
 criterion = { workspace = true }
+# #7082 MEMB-3: integrity tests build a fake hf-hub cache layout on disk.
+tempfile = { workspace = true }
 
 [[bench]]
 name = "embedding_bench"

@@ -13,6 +13,9 @@ use std::process::Command;
 
 const APP_LABEL: &str = "com.maekon.app";
 
+// SAFETY: empty extern block declares no callable items; it exists only to link
+// the ServiceManagement framework so the SMAppService Objective-C class resolves
+// at load time for the msg_send! calls below.
 #[link(name = "ServiceManagement", kind = "framework")]
 unsafe extern "C" {}
 
@@ -181,6 +184,10 @@ fn smappservice_class() -> Result<&'static AnyClass, String> {
 
 fn smappservice_main_app() -> Result<*mut AnyObject, String> {
     let service_class = smappservice_class()?;
+    // SAFETY: `service_class` is the valid SMAppService class object returned by
+    // AnyClass::get (else we already returned an error). `mainAppService` is a
+    // real SMAppService class method that returns an `SMAppService *`; the
+    // result is null-checked immediately below before any use.
     let service: *mut AnyObject = unsafe { msg_send![service_class, mainAppService] };
     if service.is_null() {
         return Err("SMAppService.mainAppService returned null".to_string());
@@ -193,6 +200,11 @@ fn smappservice_error_message(error: *mut AnyObject) -> Option<String> {
         return None;
     }
 
+    // SAFETY: `error` was confirmed non-null above and is the `NSError *` written
+    // by an SMAppService …AndReturnError: out-parameter, so it points to a live
+    // NSError. `&*error` reborrows that checked pointer only for these message
+    // sends; localizedDescription/domain (-> NSString) and code (-> isize) are
+    // valid NSError selectors whose return types match the bindings.
     unsafe {
         let desc: Retained<NSString> = msg_send![&*error, localizedDescription];
         let domain: Retained<NSString> = msg_send![&*error, domain];
@@ -203,6 +215,9 @@ fn smappservice_error_message(error: *mut AnyObject) -> Option<String> {
 
 pub fn smappservice_main_app_status() -> Result<SmAppServiceStatus, String> {
     let service = smappservice_main_app()?;
+    // SAFETY: `service` is a non-null `SMAppService *` (smappservice_main_app
+    // null-checks it). `status` is a real SMAppService instance property whose
+    // SMAppServiceStatus enum value is returned as an `isize`.
     let raw_status: isize = unsafe { msg_send![service, status] };
     Ok(SmAppServiceStatus::from_raw(raw_status))
 }
@@ -210,6 +225,10 @@ pub fn smappservice_main_app_status() -> Result<SmAppServiceStatus, String> {
 fn register_main_app_service() -> Result<(), String> {
     let service = smappservice_main_app()?;
     let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
+    // SAFETY: `service` is a non-null `SMAppService *`. `registerAndReturnError:`
+    // takes an `NSError **` out-parameter; `&mut error_ptr` is a valid pointer to
+    // a null-initialized `*mut AnyObject` the method may overwrite, and it
+    // returns a BOOL captured as `objc2::runtime::Bool`.
     let registered: Bool = unsafe { msg_send![service, registerAndReturnError: &mut error_ptr] };
     if registered.as_bool() {
         return Ok(());
@@ -228,6 +247,10 @@ fn register_main_app_service() -> Result<(), String> {
 fn unregister_main_app_service() -> Result<(), String> {
     let service = smappservice_main_app()?;
     let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
+    // SAFETY: `service` is a non-null `SMAppService *`. `unregisterAndReturnError:`
+    // takes an `NSError **` out-parameter; `&mut error_ptr` is a valid pointer to
+    // a null-initialized `*mut AnyObject` the method may overwrite, and it
+    // returns a BOOL captured as `objc2::runtime::Bool`.
     let unregistered: Bool =
         unsafe { msg_send![service, unregisterAndReturnError: &mut error_ptr] };
     if unregistered.as_bool() {

@@ -32,7 +32,7 @@ pub(crate) async fn persist_api_key_bindings(
         ocr_api: config.ai_provider.ocr_api.clone(),
         llm_api: config.ai_provider.llm_api.clone(),
         external_data_policy: config.ai_provider.external_data_policy,
-        allow_unredacted_external_ocr: config.ai_provider.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: config.ai_provider.bypass_pii_filter_for_external_ocr,
         ocr_validation: config.ai_provider.ocr_validation.clone(),
         scene_action_override: config.ai_provider.scene_action_override.clone(),
         scene_intelligence: config.ai_provider.scene_intelligence.clone(),

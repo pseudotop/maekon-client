@@ -220,8 +220,10 @@ pub struct AiProviderSettings {
     pub ocr_provider: String,
     pub llm_provider: String,
     pub external_data_policy: String,
-    #[serde(default)]
-    pub allow_unredacted_external_ocr: bool,
+    // #5966: renamed from `allow_unredacted_external_ocr`. The serde alias keeps
+    // existing settings payloads (and older frontend builds) deserializing.
+    #[serde(default, alias = "allow_unredacted_external_ocr")]
+    pub bypass_pii_filter_for_external_ocr: bool,
     #[serde(default)]
     pub ocr_validation: OcrValidationSettings,
     #[serde(default)]
@@ -246,8 +248,9 @@ pub struct AiProviderProfileConfig {
     pub ocr_provider: String,
     pub llm_provider: String,
     pub external_data_policy: String,
-    #[serde(default)]
-    pub allow_unredacted_external_ocr: bool,
+    // #5966: renamed from `allow_unredacted_external_ocr` (see `AiProviderSettings`).
+    #[serde(default, alias = "allow_unredacted_external_ocr")]
+    pub bypass_pii_filter_for_external_ocr: bool,
     #[serde(default)]
     pub ocr_validation: OcrValidationSettings,
     #[serde(default)]
@@ -335,7 +338,7 @@ impl Default for AiProviderSettings {
             ocr_provider: "Local".to_string(),
             llm_provider: "Local".to_string(),
             external_data_policy: "PiiFilterStrict".to_string(),
-            allow_unredacted_external_ocr: false,
+            bypass_pii_filter_for_external_ocr: false,
             ocr_validation: OcrValidationSettings::default(),
             scene_action_override: SceneActionOverrideSettings::default(),
             scene_intelligence: SceneIntelligenceSettings::default(),
@@ -355,7 +358,7 @@ impl Default for AiProviderProfileConfig {
             ocr_provider: "Local".to_string(),
             llm_provider: "Local".to_string(),
             external_data_policy: "PiiFilterStrict".to_string(),
-            allow_unredacted_external_ocr: false,
+            bypass_pii_filter_for_external_ocr: false,
             ocr_validation: OcrValidationSettings::default(),
             scene_action_override: SceneActionOverrideSettings::default(),
             scene_intelligence: SceneIntelligenceSettings::default(),
@@ -706,7 +709,12 @@ impl Default for SyncSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// NOTE: Debug is hand-written (not derived) to mask `cloud_api_key` (#7066,
+// mirroring the `ProviderModelsRequest` #5639 mitigation). `cloud_api_key` is a
+// cloud STT BYOK secret; a derived Debug would emit it verbatim under any
+// `{:?}`, so a single error-path `?settings` (including `{:?}` of the enclosing
+// `AppSettings`) would leak the key to the file/OTel log sink.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioSettings {
     #[serde(default)]
@@ -721,6 +729,12 @@ pub struct AudioSettings {
     pub model_size: String,
     #[serde(default = "default_audio_stt_provider")]
     pub stt_provider: String,
+    // SECURITY (#7066): cloud STT BYOK secret. On the read/GET path the
+    // assembler returns a MASKED sentinel here (never the raw key), mirroring the
+    // AI-provider `api_key_masked` convention. On the write/update path the
+    // masked sentinel is treated as 'unchanged' so an unmodified resubmit does
+    // not clobber the stored secret. See `maekon-web` settings_assembler /
+    // settings_config_mutation.
     #[serde(default)]
     pub cloud_api_key: String,
     #[serde(default = "default_audio_cloud_stt_endpoint")]
@@ -735,6 +749,26 @@ pub struct AudioSettings {
     pub vad_silence_ms: u32,
     #[serde(default = "default_audio_vad_min_speech_ms")]
     pub vad_min_speech_ms: u32,
+}
+
+impl std::fmt::Debug for AudioSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioSettings")
+            .field("enabled", &self.enabled)
+            .field("whisper_model_path", &self.whisper_model_path)
+            .field("language", &self.language)
+            .field("max_recording_secs", &self.max_recording_secs)
+            .field("model_size", &self.model_size)
+            .field("stt_provider", &self.stt_provider)
+            .field("cloud_api_key", &"[REDACTED]")
+            .field("cloud_stt_endpoint", &self.cloud_stt_endpoint)
+            .field("cloud_timeout_secs", &self.cloud_timeout_secs)
+            .field("mic_input_mode", &self.mic_input_mode)
+            .field("vad_threshold", &self.vad_threshold)
+            .field("vad_silence_ms", &self.vad_silence_ms)
+            .field("vad_min_speech_ms", &self.vad_min_speech_ms)
+            .finish()
+    }
 }
 
 impl Default for AudioSettings {
@@ -1334,6 +1368,40 @@ mod enum_drift_guard {
 mod tests {
     use super::*;
 
+    /// #5966: legacy IPC/settings payloads use the old
+    /// `allow_unredacted_external_ocr` key; the serde alias must keep them
+    /// deserializing so an older frontend build never silently loses the setting.
+    #[test]
+    fn ai_provider_settings_deserializes_legacy_allow_unredacted_external_ocr_alias() {
+        let legacy_json = r#"{
+            "access_mode": "provider_api_key",
+            "ocr_provider": "Local",
+            "llm_provider": "Local",
+            "external_data_policy": "PiiFilterStrict",
+            "allow_unredacted_external_ocr": true,
+            "fallback_to_local": true
+        }"#;
+        let settings: AiProviderSettings = serde_json::from_str(legacy_json).unwrap();
+        assert!(
+            settings.bypass_pii_filter_for_external_ocr,
+            "legacy `allow_unredacted_external_ocr` must map onto the renamed field"
+        );
+    }
+
+    /// Serialization emits the renamed (canonical) key.
+    #[test]
+    fn ai_provider_settings_serializes_with_renamed_key() {
+        let settings = AiProviderSettings {
+            bypass_pii_filter_for_external_ocr: true,
+            ..AiProviderSettings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(
+            json.contains("bypass_pii_filter_for_external_ocr"),
+            "serialized settings must use the renamed key, got: {json}"
+        );
+    }
+
     #[test]
     fn round_trip_storage_stats() {
         let original = StorageStats {
@@ -1450,5 +1518,43 @@ mod tests {
         // skip_serializing_if means optional None fields should not appear
         assert!(!json.contains("oldest_data_date"));
         assert!(!json.contains("newest_data_date"));
+    }
+
+    /// #7066: the hand-written `Debug` for `AudioSettings` must redact the cloud
+    /// STT BYOK secret so a `{:?}` cannot leak it to a log/OTel sink (same threat
+    /// class #5639 closed for `ProviderModelsRequest`).
+    #[test]
+    fn audio_settings_debug_redacts_cloud_api_key() {
+        let audio = AudioSettings {
+            cloud_api_key: "sk-super-secret-cloud-stt-key".to_string(),
+            ..AudioSettings::default()
+        };
+        let rendered = format!("{audio:?}");
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug must mark cloud_api_key as redacted, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("sk-super-secret-cloud-stt-key"),
+            "Debug must NOT leak the raw cloud_api_key, got: {rendered}"
+        );
+    }
+
+    /// #7066: the enclosing `AppSettings` derives `Debug`, which delegates to the
+    /// hand-written `AudioSettings::fmt`, so `{:?}` of the whole settings tree
+    /// also redacts the cloud STT secret.
+    #[test]
+    fn app_settings_debug_redacts_audio_cloud_api_key() {
+        let mut settings = AppSettings::default();
+        settings.audio.cloud_api_key = "sk-super-secret-cloud-stt-key".to_string();
+        let rendered = format!("{settings:?}");
+        assert!(
+            !rendered.contains("sk-super-secret-cloud-stt-key"),
+            "AppSettings Debug must NOT leak the raw audio cloud_api_key"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "AppSettings Debug must mark the audio cloud_api_key as redacted"
+        );
     }
 }

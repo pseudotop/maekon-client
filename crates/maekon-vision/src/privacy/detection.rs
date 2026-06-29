@@ -41,11 +41,19 @@ pub fn sanitize_title_with_level(title: &str, level: PiiFilterLevel) -> String {
             result = mask_credit_cards(&result);
             result = mask_phone_numbers(&result);
             result = mask_user_paths(&result);
+            // API tokens (sk-/ghp_/AKIA/Bearer/PEM blocks, …) are a high-risk
+            // credential class that commonly leaks through window titles and OCR
+            // text. They are masked at Standard — the shipped default level — and
+            // not only at Strict, because `mask_api_keys` is prefix-anchored and
+            // gated on an >=8-char token, so it does not over-mask ordinary prose.
+            // IP addresses and passport numbers stay Strict-only (higher
+            // false-positive risk, lower secrecy stakes).
+            result = mask_api_keys(&result);
             result
         }
         PiiFilterLevel::Strict => {
+            // Standard already masks API keys; Strict adds IP + passport on top.
             let mut result = sanitize_title_with_level(title, PiiFilterLevel::Standard);
-            result = mask_api_keys(&result);
             result = mask_ip_addresses(&result);
             result = mask_passport(&result);
             result
@@ -344,6 +352,62 @@ pub fn matches_exclusion_pattern(app_name: &str, patterns: &[String]) -> bool {
     })
 }
 
+/// Returns `true` when a browser/window *title* reveals a sensitive service
+/// even though the host *app* (e.g. "Google Chrome") is not itself flagged.
+///
+/// Uses high-precision detection only, because titles are free-form prose:
+/// - distinctive coined service names (`SENSITIVE_TITLE_SUBSTRINGS`,
+///   `coinbase`/`binance`) matched as substrings;
+/// - product names ([`SENSITIVE_APP_PRODUCT_NAMES`]) and category *phrases*
+///   ([`SENSITIVE_APP_CATEGORY_PHRASES`]) matched **whole-word** only.
+///
+/// It deliberately omits, versus [`is_sensitive_app`]:
+/// - [`SENSITIVE_APP_CATEGORY_TOKENS`] and generic [`SENSITIVE_APP_KEYWORDS`]
+///   (bare "tax"/"legal"/"bank"/"session" collide with ordinary titles), and
+/// - `compact_product_matches` (its space-removed substring match collides with
+///   ordinary titles, e.g. "e trade" → "etrade" would hit "live trade room").
+///
+/// Common-word product names (e.g. "fidelity") still match whole-word and may
+/// over-exclude a title that merely uses the word — acceptable for a privacy
+/// feature where over-exclusion never leaks (#6826).
+pub fn title_reveals_sensitive_service(window_title: &str) -> bool {
+    let title_lower = window_title.to_lowercase();
+
+    // Webmail / security / messaging services (original set).
+    if SENSITIVE_TITLE_SUBSTRINGS
+        .iter()
+        .any(|kw| title_lower.contains(kw))
+    {
+        return true;
+    }
+
+    // Distinctive finance service names that are safe as raw substrings.
+    if ["coinbase", "binance"]
+        .iter()
+        .any(|kw| title_lower.contains(kw))
+    {
+        return true;
+    }
+
+    // Brokerage / health / legal / payment product names and category phrases,
+    // matched WHOLE-WORD (no compact-substring path) to keep titles precise.
+    let normalized = normalize_app_name(window_title);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if SENSITIVE_APP_PRODUCT_NAMES
+        .iter()
+        .any(|name| normalized_phrase_matches(&normalized, name))
+    {
+        return true;
+    }
+
+    SENSITIVE_APP_CATEGORY_PHRASES
+        .iter()
+        .any(|phrase| normalized_phrase_matches(&normalized, phrase))
+}
+
 pub fn should_exclude(
     app_name: &str,
     window_title: &str,
@@ -369,16 +433,11 @@ pub fn should_exclude(
         return true;
     }
 
-    // Also exclude when a browser title reveals a sensitive webmail or
-    // security service (e.g. "Proton Mail - Inbox — Mozilla Firefox").
-    if auto_exclude_sensitive {
-        let title_lower = window_title.to_lowercase();
-        if SENSITIVE_TITLE_SUBSTRINGS
-            .iter()
-            .any(|kw| title_lower.contains(kw))
-        {
-            return true;
-        }
+    // Also exclude when a browser title reveals a sensitive webmail, security,
+    // finance, health, or legal service even though the host app (e.g. Chrome)
+    // is not itself flagged (#6826).
+    if auto_exclude_sensitive && title_reveals_sensitive_service(window_title) {
+        return true;
     }
 
     false

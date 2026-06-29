@@ -13,6 +13,8 @@ use maekon_core::ports::integration::{
 };
 
 use super::*;
+use crate::encryption::EncryptionKey;
+use std::sync::Arc;
 
 fn sample_envelope() -> IntegrationEnvelope {
     IntegrationEnvelope {
@@ -72,7 +74,8 @@ fn sample_prompt(prompt_id: &str, body: &str) -> StoredProactivePrompt {
 #[tokio::test]
 async fn integration_session_store_persists_and_clears_state() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let session_store = store.session_store();
 
     session_store
@@ -92,7 +95,7 @@ async fn integration_session_store_persists_and_clears_state() {
         .unwrap();
 
     let reloaded =
-        FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let session = reloaded.session_store().load().await.unwrap().unwrap();
     assert_eq!(session.session_id, "session-1");
 
@@ -103,7 +106,8 @@ async fn integration_session_store_persists_and_clears_state() {
 #[tokio::test]
 async fn integration_outbox_store_roundtrips_queue_and_ack_cursor() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let outbox = store.outbox_store();
 
     let queue_id = outbox
@@ -127,7 +131,7 @@ async fn integration_outbox_store_roundtrips_queue_and_ack_cursor() {
         .unwrap();
 
     let reloaded =
-        FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let outbox = reloaded.outbox_store();
     assert_eq!(outbox.list_pending(10).await.unwrap().len(), 1);
     assert_eq!(
@@ -142,7 +146,8 @@ async fn integration_outbox_store_roundtrips_queue_and_ack_cursor() {
 #[tokio::test]
 async fn prompt_receipt_store_updates_inbox_and_outbox_atomically() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let inbox = store.inbox_store();
 
     inbox
@@ -198,7 +203,8 @@ async fn prompt_receipt_store_updates_inbox_and_outbox_atomically() {
 #[tokio::test]
 async fn prompt_receipt_store_rejects_duplicate_lifecycle_recording() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let inbox = store.inbox_store();
 
     inbox
@@ -257,7 +263,8 @@ async fn prompt_receipt_store_rejects_duplicate_lifecycle_recording() {
 #[tokio::test]
 async fn integration_inbox_store_preserves_lifecycle_and_expires_stale_prompts() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let inbox = store.inbox_store();
 
     let original = sample_prompt("prompt-1", "body-1");
@@ -287,7 +294,7 @@ async fn integration_inbox_store_preserves_lifecycle_and_expires_stale_prompts()
     assert!(inbox.list_pending().await.unwrap().is_empty());
 
     let reloaded =
-        FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let prompt = reloaded
         .inbox_store()
         .list_pending()
@@ -301,7 +308,8 @@ async fn integration_inbox_store_preserves_lifecycle_and_expires_stale_prompts()
 #[tokio::test]
 async fn integration_inbox_store_redacts_completed_prompt_bodies_by_default() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let inbox = store.inbox_store();
 
     inbox
@@ -313,9 +321,11 @@ async fn integration_inbox_store_redacts_completed_prompt_bodies_by_default() {
         .await
         .unwrap();
 
-    let registry =
-        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
-            .unwrap();
+    let registry = FileIntegrationStateRegistry::load_or_default(
+        &temp_dir.path().join("integration.json"),
+        None,
+    )
+    .unwrap();
     assert_eq!(
         registry
             .inbox
@@ -332,7 +342,8 @@ async fn integration_inbox_store_redacts_completed_prompt_bodies_by_default() {
 #[tokio::test]
 async fn integration_inbox_store_upsert_does_not_resurrect_redacted_completed_body() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let inbox = store.inbox_store();
 
     // Store a prompt, then complete it so its body is redacted at rest.
@@ -357,9 +368,11 @@ async fn integration_inbox_store_upsert_does_not_resurrect_redacted_completed_bo
         .await
         .unwrap();
 
-    let registry =
-        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
-            .unwrap();
+    let registry = FileIntegrationStateRegistry::load_or_default(
+        &temp_dir.path().join("integration.json"),
+        None,
+    )
+    .unwrap();
     let stored = registry
         .inbox
         .get("prompt-resurrect")
@@ -386,6 +399,7 @@ async fn integration_inbox_store_prunes_oldest_completed_prompts_when_retention_
             redact_completed_prompt_bodies: true,
             ..Default::default()
         },
+        None,
     )
     .unwrap();
     let inbox = store.inbox_store();
@@ -406,9 +420,11 @@ async fn integration_inbox_store_prunes_oldest_completed_prompts_when_retention_
         .await
         .unwrap();
 
-    let registry =
-        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
-            .unwrap();
+    let registry = FileIntegrationStateRegistry::load_or_default(
+        &temp_dir.path().join("integration.json"),
+        None,
+    )
+    .unwrap();
     assert_eq!(registry.inbox.len(), 2);
     assert!(!registry.inbox.contains_key("prompt-1"));
     assert!(registry.inbox.contains_key("prompt-2"));
@@ -424,6 +440,7 @@ async fn integration_outbox_store_prunes_oldest_messages_at_the_cap() {
             max_outbox_messages: 3,
             ..Default::default()
         },
+        None,
     )
     .unwrap();
     let outbox = store.outbox_store();
@@ -454,16 +471,19 @@ async fn integration_outbox_store_prunes_oldest_messages_at_the_cap() {
     assert!(surviving_ids.contains(&queue_ids[4]));
 
     // The cap is enforced at rest as well (after reload from disk).
-    let registry =
-        FileIntegrationStateRegistry::load_or_default(&temp_dir.path().join("integration.json"))
-            .unwrap();
+    let registry = FileIntegrationStateRegistry::load_or_default(
+        &temp_dir.path().join("integration.json"),
+        None,
+    )
+    .unwrap();
     assert_eq!(registry.outbox.len(), 3);
 }
 
 #[tokio::test]
 async fn integration_audit_store_roundtrips_recent_records() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let audit = store.audit_store();
 
     audit
@@ -494,7 +514,7 @@ async fn integration_audit_store_roundtrips_recent_records() {
         .unwrap();
 
     let reloaded =
-        FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let recent = reloaded
         .audit_store()
         .recent_insight_decisions(10)
@@ -508,7 +528,8 @@ async fn integration_audit_store_roundtrips_recent_records() {
 #[tokio::test]
 async fn integration_checkpoint_store_roundtrips_namespaced_cursors() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json")).unwrap();
+    let store =
+        FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None).unwrap();
     let checkpoints = store.checkpoint_store();
 
     assert_eq!(
@@ -556,7 +577,7 @@ async fn integration_registry_file_is_owner_only_0o600() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let path = temp_dir.path().join("integration.json");
-    let store = FileIntegrationStateStore::new(path.clone()).unwrap();
+    let store = FileIntegrationStateStore::new(path.clone(), None).unwrap();
     // Trigger a persist.
     store
         .session_store()
@@ -579,5 +600,176 @@ async fn integration_registry_file_is_owner_only_0o600() {
     assert_eq!(
         mode, 0o600,
         "integration registry must be persisted owner-only (0o600), got {mode:o}"
+    );
+}
+
+// ── #7073: at-rest AES-256-GCM encryption (mirrors FileSecretRegistry) ────────
+
+fn enc_key(fill: u8) -> Arc<EncryptionKey> {
+    Arc::new(EncryptionKey::from_bytes([fill; 32]))
+}
+
+/// #7073 (MS-002): with an encryption key the persisted registry must be an
+/// AES-256-GCM blob (MKINT1 header) — the privacy-relevant pending proactive-
+/// prompt body must NOT appear in cleartext on disk. Regression: before the fix
+/// the registry was persisted as plaintext JSON (protected only by 0o600/DACL).
+#[tokio::test]
+async fn integration_registry_is_encrypted_at_rest_not_plaintext() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("integration.json");
+    let store = FileIntegrationStateStore::new(path.clone(), Some(enc_key(0x42))).unwrap();
+
+    // A Pending prompt retains its body at rest (redaction only fires once the
+    // prompt leaves Pending), so this body is exactly what would otherwise leak.
+    store
+        .inbox_store()
+        .upsert_prompts(vec![sample_prompt(
+            "prompt-1",
+            "SUPER_SECRET_PROMPT_BODY_XYZ",
+        )])
+        .await
+        .unwrap();
+
+    let raw = std::fs::read(&path).expect("registry file must exist after a write");
+    assert!(
+        raw.starts_with(INTEGRATION_STATE_MAGIC),
+        "on-disk registry must start with INTEGRATION_STATE_MAGIC (MKINT1\\n), got first 16 bytes: {:?}",
+        &raw[..raw.len().min(16)]
+    );
+    assert!(
+        !raw.windows(b"SUPER_SECRET_PROMPT_BODY_XYZ".len())
+            .any(|w| w == b"SUPER_SECRET_PROMPT_BODY_XYZ"),
+        "cleartext prompt body must not appear in the encrypted registry file"
+    );
+}
+
+/// #7073: opening an encrypted registry (MKINT1 header) without a key must fail
+/// closed (Err naming the header), not silently return an empty registry.
+#[tokio::test]
+async fn integration_encrypted_file_without_key_fails_closed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("integration.json");
+    {
+        let store = FileIntegrationStateStore::new(path.clone(), Some(enc_key(0x42))).unwrap();
+        store
+            .checkpoint_store()
+            .store_checkpoint("ns", "cursor-1".to_string())
+            .await
+            .unwrap();
+    }
+    assert!(
+        std::fs::read(&path)
+            .unwrap()
+            .starts_with(INTEGRATION_STATE_MAGIC),
+        "pre-condition: file must be encrypted"
+    );
+
+    // `let-else` (not `expect_err`) because the Ok type FileIntegrationStateStore
+    // is intentionally not `Debug` (it must never format its at-rest contents).
+    let Err(err) = FileIntegrationStateStore::new(path.clone(), None) else {
+        panic!("opening an encrypted registry without a key must fail closed, not return Ok");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("MKINT1"),
+        "error must mention the MKINT1 header; got: {msg}"
+    );
+}
+
+/// #7073: opening an encrypted registry with the WRONG key must fail (AES-GCM
+/// auth-tag mismatch), confirming wrong-key access is rejected.
+#[tokio::test]
+async fn integration_wrong_key_fails_closed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("integration.json");
+    {
+        let store = FileIntegrationStateStore::new(path.clone(), Some(enc_key(0xAA))).unwrap();
+        store
+            .checkpoint_store()
+            .store_checkpoint("ns", "cursor-1".to_string())
+            .await
+            .unwrap();
+    }
+
+    // `let-else` (not `expect_err`) because FileIntegrationStateStore is intentionally not `Debug`.
+    let Err(err) = FileIntegrationStateStore::new(path.clone(), Some(enc_key(0xBB))) else {
+        panic!("opening an encrypted registry with the wrong key must fail closed, not return Ok");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("decrypt"),
+        "error must mention decryption failure; got: {msg}"
+    );
+}
+
+/// #7073: a legacy plaintext registry (no MKINT1 header) must load transparently,
+/// and the next save with a key present must upgrade it to the encrypted format
+/// while preserving the legacy data.
+#[tokio::test]
+async fn integration_legacy_plaintext_is_migrated_to_encrypted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("integration.json");
+
+    // Write a legacy plaintext registry directly (bypassing the store).
+    let mut legacy = FileIntegrationStateRegistry::new();
+    legacy
+        .producer_checkpoints
+        .insert("ns".to_string(), "cursor-legacy".to_string());
+    std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap())
+        .expect("write legacy plaintext registry");
+    assert!(
+        !std::fs::read(&path)
+            .unwrap()
+            .starts_with(INTEGRATION_STATE_MAGIC),
+        "pre-condition: legacy file must not have the magic header"
+    );
+
+    // Open with a key — the legacy plaintext file must load, exposing its data.
+    let store = FileIntegrationStateStore::new(path.clone(), Some(enc_key(0x42))).unwrap();
+    assert_eq!(
+        store
+            .checkpoint_store()
+            .load_checkpoint("ns")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("cursor-legacy"),
+        "legacy value must be retrievable after transparent plaintext load"
+    );
+
+    // A new write triggers the encrypted save (auto-upgrade).
+    store
+        .checkpoint_store()
+        .store_checkpoint("ns2", "cursor-new".to_string())
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read(&path)
+            .unwrap()
+            .starts_with(INTEGRATION_STATE_MAGIC),
+        "file must be upgraded to the encrypted format after the first keyed write"
+    );
+
+    // A fresh instance (same key) must surface both the legacy and new values.
+    let reopened = FileIntegrationStateStore::new(path, Some(enc_key(0x42))).unwrap();
+    assert_eq!(
+        reopened
+            .checkpoint_store()
+            .load_checkpoint("ns")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("cursor-legacy"),
+        "legacy value must survive the encrypted upgrade"
+    );
+    assert_eq!(
+        reopened
+            .checkpoint_store()
+            .load_checkpoint("ns2")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("cursor-new"),
+        "value stored after upgrade must be retrievable"
     );
 }

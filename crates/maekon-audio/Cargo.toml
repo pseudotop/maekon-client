@@ -13,7 +13,7 @@ authors.workspace = true
 default = []
 whisper = ["dep:whisper-rs"]
 download = ["dep:reqwest", "dep:sha2", "dep:futures-util"]
-cloud-stt = ["dep:reqwest"]
+cloud-stt = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 maekon-core = { workspace = true }
@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 zeroize = { workspace = true }
 reqwest = { workspace = true, features = ["stream"], optional = true }
+serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 

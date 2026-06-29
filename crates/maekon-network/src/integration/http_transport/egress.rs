@@ -84,11 +84,20 @@ impl IntegrationEgressTransportClient for HttpsIntegrationEgressTransportClient 
             ack_cursor: Option<IntegrationAckCursor>,
         }
 
-        let payload: OutboundEventResponseBody = response.json().await.map_err(|error| {
-            CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
-                "failed to parse integration outbound event response: {error}"
-            ))))
-        })?;
+        // #6940: cap the response body before parse — a compromised/misbehaving
+        // integration SaaS endpoint could otherwise stream multi-GB and OOM the agent.
+        let body = crate::outbound::read_body_capped(
+            response,
+            crate::outbound::MAX_INTEGRATION_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(super::map_integration_body_error)?;
+        let payload: OutboundEventResponseBody =
+            serde_json::from_slice(&body).map_err(|error| {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration outbound event response: {error}"
+                ))))
+            })?;
 
         Ok(IntegrationEgressTransportResponse {
             acknowledged_queue_ids: payload.accepted_ids,

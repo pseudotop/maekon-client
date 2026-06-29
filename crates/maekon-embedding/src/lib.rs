@@ -23,6 +23,7 @@
 pub mod embedder;
 pub mod error;
 pub mod fallback;
+pub mod model_integrity;
 pub mod stub;
 
 pub use error::EmbeddingError;

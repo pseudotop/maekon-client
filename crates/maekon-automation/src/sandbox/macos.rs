@@ -169,6 +169,11 @@ impl Sandbox for MacOsSandbox {
 
         let mut child = tokio::process::Command::new(&exec_path)
             .args(&args)
+            // Strip the parent environment so authorization secrets
+            // (MAEKON_*_SECRET, …) never cross the sandbox boundary. The worker
+            // reads no environment and both sandbox-exec and the worker are
+            // invoked by absolute path, so an empty env is safe (#6827).
+            .env_clear()
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

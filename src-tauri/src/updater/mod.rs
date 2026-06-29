@@ -305,14 +305,20 @@ impl Updater {
             )));
         }
 
+        // #6941: cap the releases JSON body before parse — a forged multi-GB body
+        // from a MITM'd GitHub-allowlisted host would otherwise OOM the agent.
+        let body =
+            install::read_body_capped_update(response, install::MAX_AUX_UPDATE_BYTES).await?;
         if wants_prerelease {
-            let releases: Vec<ReleaseInfo> = response.json().await?;
+            let releases: Vec<ReleaseInfo> = serde_json::from_slice(&body)
+                .map_err(|e| UpdateError::ParseResponse(format!("parse releases: {e}")))?;
             releases
                 .into_iter()
                 .next()
                 .ok_or_else(|| UpdateError::ParseResponse("No releases found".to_string()))
         } else {
-            Ok(response.json().await?)
+            serde_json::from_slice(&body)
+                .map_err(|e| UpdateError::ParseResponse(format!("parse release: {e}")))
         }
     }
 }

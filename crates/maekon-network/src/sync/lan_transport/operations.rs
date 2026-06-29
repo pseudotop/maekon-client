@@ -102,7 +102,13 @@ impl LanSyncTransport {
             }
             Ok(r) => {
                 let status = r.status();
-                let body = r.text().await.unwrap_or_default();
+                // #6923: cap the peer error body (same OOM class as the pull path).
+                let body = crate::sync::http_body::read_text_capped(
+                    r,
+                    crate::sync::http_body::MAX_CONTROL_RESPONSE_BYTES,
+                )
+                .await
+                .unwrap_or_default();
                 // Log response length only — peer error bodies may contain
                 // echoed request fragments or internal server details (#6006).
                 warn!(peer_id, %status, response_len = body.len(), "push to LAN peer rejected");
@@ -223,10 +229,15 @@ impl LanSyncTransport {
         peer_id: &str,
         resp: reqwest::Response,
     ) -> Result<Option<ChangeSet>, CoreError> {
-        let bytes = resp.bytes().await.map_err(|e| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: format!("read pull body: {e}"),
-        })?;
+        // #6923: cap the peer pull body before buffering. #6917 hardened the
+        // remote_transport sibling but left this LAN path uncapped — a compromised/
+        // misbehaving paired peer could stream an unbounded body and OOM the agent
+        // (the buffer happens BEFORE the decrypt/auth gate). Shared helper, 64 MiB.
+        let bytes = crate::sync::http_body::read_body_capped(
+            resp,
+            crate::sync::http_body::MAX_PULL_RESPONSE_BYTES,
+        )
+        .await?;
 
         if bytes.is_empty() {
             return Ok(None);

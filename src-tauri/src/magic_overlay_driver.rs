@@ -6,8 +6,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use uuid::Uuid;
+
+use crate::magic_overlay::emit_overlay_event;
 
 use maekon_core::error::CoreError;
 use maekon_core::models::gui::{HighlightHandle, HighlightRequest};
@@ -69,12 +71,15 @@ impl OverlayDriver for MagicOverlayDriver {
                 .collect(),
         };
 
-        self.app_handle
-            .emit("overlay:update-focus", &payload)
-            .map_err(|e| CoreError::Internal {
+        // #7076: focus highlights carry accessibility text / element labels, so
+        // scope them to the overlay webview only (single-source policy in
+        // crate::magic_overlay::emit_overlay_event).
+        emit_overlay_event(&self.app_handle, "overlay:update-focus", &payload).map_err(|e| {
+            CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Failed to emit overlay:update-focus: {e}"),
-            })?;
+            }
+        })?;
 
         tracing::debug!(
             handle_id = %handle_id,
@@ -90,12 +95,13 @@ impl OverlayDriver for MagicOverlayDriver {
     }
 
     async fn clear_highlights(&self, handle_id: &str) -> Result<(), CoreError> {
-        self.app_handle
-            .emit("overlay:clear-focus", handle_id)
-            .map_err(|e| CoreError::Internal {
+        // #7076: scoped to the overlay webview only (paired with update-focus).
+        emit_overlay_event(&self.app_handle, "overlay:clear-focus", handle_id).map_err(|e| {
+            CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
                 message: format!("Failed to emit overlay:clear-focus: {e}"),
-            })?;
+            }
+        })?;
 
         tracing::debug!(handle_id, "MagicOverlayDriver: cleared highlights");
         Ok(())

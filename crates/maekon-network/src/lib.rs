@@ -87,6 +87,7 @@ pub mod local_llm_session;
 pub(crate) mod mutex_ext;
 pub mod oauth;
 pub mod ollama_discovery;
+pub(crate) mod outbound;
 mod provider_error_body;
 pub mod provider_model_catalog_client;
 pub mod remote_embedding_client;

@@ -55,11 +55,19 @@ impl IntegrationTransportClient for HttpsIntegrationTransportClient {
             .shared
             .check_response(response, "integration bootstrap request failed")
             .await?;
-        let payload: IntegrationBootstrapResponse = response.json().await.map_err(|error| {
-            CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
-                "failed to parse integration bootstrap response: {error}"
-            ))))
-        })?;
+        // #6940: cap the response body before parse (OOM guard, see egress.rs).
+        let body = crate::outbound::read_body_capped(
+            response,
+            crate::outbound::MAX_INTEGRATION_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(super::map_integration_body_error)?;
+        let payload: IntegrationBootstrapResponse =
+            serde_json::from_slice(&body).map_err(|error| {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration bootstrap response: {error}"
+                ))))
+            })?;
 
         let session = payload
             .session
@@ -102,6 +110,13 @@ impl IntegrationTransportClient for HttpsIntegrationTransportClient {
                     field: "integration.bootstrap.session.channel_url".to_string(),
                     message: "websocket session transport requires a channel URL.".to_string(),
                 })?;
+            // Refuse a transport-downgraded control channel before sending the
+            // Bearer/DPoP-authenticated upgrade: cleartext `ws://` to a remote
+            // host would egress credentials unencrypted (#6824).
+            super::reject_cleartext_remote_url(
+                &channel_url,
+                "integration.bootstrap.session.channel_url",
+            )?;
             let headers = self
                 .shared
                 .build_headers(&auth, reqwest::Method::GET.as_str(), &channel_url)

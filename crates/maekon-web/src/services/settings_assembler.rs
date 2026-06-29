@@ -181,7 +181,12 @@ pub(crate) fn config_to_settings(
             max_recording_secs: config.audio.max_recording_secs,
             model_size: config.audio.model_size.to_string(),
             stt_provider: config.audio.stt_provider.to_string(),
-            cloud_api_key: config.audio.cloud_api_key.clone(),
+            // SECURITY (#7066): cloud STT BYOK secret. Never serialize the raw
+            // key onto the GET /settings response (it would reach the browser
+            // DOM/devtools and the shareable bug-report bundle). Return a MASKED
+            // sentinel instead, exactly like the AI-provider `api_key_masked`
+            // keys. An empty key stays empty (no secret configured).
+            cloud_api_key: mask_audio_cloud_api_key(&config.audio.cloud_api_key),
             cloud_stt_endpoint: config.audio.cloud_stt_endpoint.clone(),
             cloud_timeout_secs: config.audio.cloud_timeout_secs,
             mic_input_mode: config.audio.mic_input_mode.to_string(),
@@ -216,6 +221,19 @@ pub(crate) fn mask_api_key(key: &str) -> String {
     let prefix: String = chars[..2].iter().collect();
     let suffix: String = chars[chars.len() - 4..].iter().collect();
     format!("{prefix}...{suffix}")
+}
+
+/// #7066: mask the audio cloud STT BYOK secret for the GET /settings response.
+/// Mirrors the AI-provider `api_key_masked` convention: an empty key (no secret
+/// configured) stays empty so the UI can distinguish "no key" from "key set",
+/// and a configured key is rendered as a masked sentinel that
+/// [`is_masked_key`] recognizes on the write path.
+pub(crate) fn mask_audio_cloud_api_key(key: &str) -> String {
+    if key.is_empty() {
+        String::new()
+    } else {
+        mask_api_key(key)
+    }
 }
 
 pub(crate) fn is_masked_key(value: &str) -> bool {
@@ -301,7 +319,7 @@ fn ai_provider_settings_from_config(
             ocr_api: config.ocr_api.clone(),
             llm_api: config.llm_api.clone(),
             external_data_policy: config.external_data_policy,
-            allow_unredacted_external_ocr: config.allow_unredacted_external_ocr,
+            bypass_pii_filter_for_external_ocr: config.bypass_pii_filter_for_external_ocr,
             ocr_validation: config.ocr_validation.clone(),
             scene_action_override: config.scene_action_override.clone(),
             scene_intelligence: config.scene_intelligence.clone(),
@@ -315,7 +333,7 @@ fn ai_provider_settings_from_config(
         ocr_provider: active.ocr_provider,
         llm_provider: active.llm_provider,
         external_data_policy: active.external_data_policy,
-        allow_unredacted_external_ocr: active.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: active.bypass_pii_filter_for_external_ocr,
         ocr_validation: active.ocr_validation,
         scene_action_override: active.scene_action_override,
         scene_intelligence: active.scene_intelligence,
@@ -358,7 +376,7 @@ fn ai_provider_profile_settings_from_config(
         ocr_provider: format!("{}", config.ocr_provider),
         llm_provider: format!("{}", config.llm_provider),
         external_data_policy: format!("{}", config.external_data_policy),
-        allow_unredacted_external_ocr: config.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: config.bypass_pii_filter_for_external_ocr,
         ocr_validation: OcrValidationSettings {
             enabled: config.ocr_validation.enabled,
             min_confidence: config.ocr_validation.min_confidence,

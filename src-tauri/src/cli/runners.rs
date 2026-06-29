@@ -271,6 +271,10 @@ pub(crate) fn run_debug_permissions_cli_command(command: DebugPermissionsCliComm
             DebugPermissionsCliCommand::Status => {
                 let accessibility =
                     maekon_vision::accessibility::MacOsNativeAccessibility::new().has_permission();
+                // SAFETY: FFI call into CoreGraphics (declared in the extern
+                // block below). It takes no arguments and returns a `bool` by
+                // value — a read-only preflight with no pointer/lifetime
+                // obligations.
                 let screen_capture = unsafe { CGPreflightScreenCaptureAccess() };
                 let payload = format!(
                     "{{\"debug_permissions\":true,\"command\":\"status\",\"accessibility_granted\":{},\"screen_capture_granted\":{}}}",
@@ -279,6 +283,9 @@ pub(crate) fn run_debug_permissions_cli_command(command: DebugPermissionsCliComm
                 emit_debug_permissions_cli_json(&payload)
             }
             DebugPermissionsCliCommand::ScreenCaptureRequest => {
+                // SAFETY: FFI call into CoreGraphics (declared in the extern
+                // block below). It takes no arguments and returns a `bool` by
+                // value, so there are no pointer/lifetime obligations.
                 let granted = unsafe { CGRequestScreenCaptureAccess() };
                 let payload = format!(
                     "{{\"debug_permissions\":true,\"command\":\"screen-capture-request\",\"granted\":{}}}",
@@ -1076,6 +1083,9 @@ pub(crate) fn emit_debug_permissions_open_settings_json(permission_kind: &str) -
     emit_debug_permissions_cli_json(&payload)
 }
 
+// SAFETY: these declarations match the CoreGraphics C ABI — both
+// CGPreflight/CGRequestScreenCaptureAccess take no arguments and return a C
+// `bool` — so calls through them are sound.
 #[cfg(all(debug_assertions, target_os = "macos"))]
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {

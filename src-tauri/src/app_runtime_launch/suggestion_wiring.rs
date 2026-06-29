@@ -263,7 +263,10 @@ fn restore_deferred_suggestions_and_feedbacks(
         return;
     };
 
-    let deferred_records = match sqlite_storage.list_suggestions_by_state("deferred", 50) {
+    // #6938: order by SOONEST resurface_at (not created_at DESC) so a deferred
+    // backlog over the 50-row limit keeps the snoozes about to resurface, not the
+    // newest-created ones (created_at and resurface_at are decoupled).
+    let deferred_records = match sqlite_storage.list_deferred_suggestions_by_resurface(50) {
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(state = "deferred", "failed to restore suggestions: {e}");

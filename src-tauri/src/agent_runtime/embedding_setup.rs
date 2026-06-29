@@ -3,6 +3,7 @@ use tracing::{info, warn};
 
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use maekon_core::config::AppConfig;
+use maekon_core::config::PiiFilterLevel;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 
@@ -129,6 +130,21 @@ pub(super) fn resolve_remote_embedding_target(
     }
 }
 
+/// #6914: PII level applied to off-device (remote) embedding uploads, after passing the egress PII floor.
+///
+/// Remote embedding sends OCR-derived content labels / segment summaries to a third-party API, so —
+/// just like external LLM / OCR / window-title egress — it must pass through the
+/// `ExternalDataPolicy::effective_egress_pii_level` SSOT (AllowFiltered floors to at least Basic).
+/// Using the raw `privacy.pii_filter_level` directly would leak verbatim under the `AllowFiltered + Off`
+/// combination. Local on-device embedding masking is not egress, so this floor is not applied there
+/// (avoiding over-masking).
+fn embedding_egress_pii_level(config: &AppConfig) -> PiiFilterLevel {
+    config
+        .ai_provider
+        .external_data_policy
+        .effective_egress_pii_level(config.privacy.pii_filter_level)
+}
+
 /// Attempt to construct a `Stored` credential from a `CredentialBinding` + `SecretStoreSet`.
 ///
 /// Returns `None` when:
@@ -236,6 +252,11 @@ pub(super) fn build_embedding_components(
     vector_store_opt: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
     external_llm_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     #[cfg(feature = "analysis")] secret_stores: Option<&SecretStoreSet>,
+    // #6830: egress-audit sink threaded to the remote embedding provider so each
+    // external upload records a ledger row (analysis-only, like `secret_stores`).
+    #[cfg(feature = "analysis")] egress_ledger: Option<
+        Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>,
+    >,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     // registry threaded from the composition root. Both the remote embedding
     // adapter and the LLM-summary analysis provider built below converge on this
@@ -258,6 +279,10 @@ pub(super) fn build_embedding_components(
     if config.analysis.embedding.enabled {
         let embedding_config = &config.analysis.embedding;
         let pii_level = config.privacy.pii_filter_level;
+        // #6914: off-device (remote) embedding egress passes through the egress PII floor SSOT
+        // (RemoteEmbeddingProvider sanitizer = final gate just before POST). Local pipeline masking
+        // is not egress, so it keeps the raw pii_level. See embedding_egress_pii_level for details.
+        let egress_pii_level = embedding_egress_pii_level(config);
 
         // Create EmbeddingProvider based on config
         let embedding_provider: Option<
@@ -320,7 +345,7 @@ pub(super) fn build_embedding_components(
                     // is unreachable at runtime but required for exhaustiveness.
                     RemoteCredentialKind::Stored(cs) => cs,
                 };
-                let provider =
+                let mut provider =
                     maekon_network::remote_embedding_client::RemoteEmbeddingProvider::new_with_credential(
                         target.endpoint,
                         credential,
@@ -331,8 +356,14 @@ pub(super) fn build_embedding_components(
                     )
                     .with_pii_sanitizer(
                         Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
-                        pii_level,
+                        // #6914: egress gate — apply the egress floor, not the raw pii_level.
+                        egress_pii_level,
                     );
+                // #6830: audit external embedding egress (loopback is gated out inside
+                // the provider). Harmless on this demoted arm — a loopback target never records.
+                if let Some(ledger) = egress_ledger.clone() {
+                    provider = provider.with_egress_ledger(ledger);
+                }
                 Some(Arc::new(provider))
             }
             #[cfg(all(not(feature = "embedding"), not(feature = "analysis")))]
@@ -373,7 +404,7 @@ pub(super) fn build_embedding_components(
                     // fully built — pass it through unchanged.
                     RemoteCredentialKind::Stored(cs) => cs,
                 };
-                let provider =
+                let mut provider =
                     maekon_network::remote_embedding_client::RemoteEmbeddingProvider::new_with_credential(
                         target.endpoint,
                         credential,
@@ -384,8 +415,14 @@ pub(super) fn build_embedding_components(
                     )
                     .with_pii_sanitizer(
                         Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
-                        pii_level,
+                        // #6914: egress gate — apply the egress floor, not the raw pii_level.
+                        egress_pii_level,
                     );
+                // #6830: record one egress-ledger row per successful external embedding
+                // upload (loopback endpoints are gated out inside the provider).
+                if let Some(ledger) = egress_ledger.clone() {
+                    provider = provider.with_egress_ledger(ledger);
+                }
                 Some(Arc::new(provider))
             }
             #[cfg(not(feature = "analysis"))]
@@ -923,5 +960,43 @@ mod tests {
         assert_eq!(target.endpoint, super::OLLAMA_LOOPBACK_ENDPOINT);
         assert_eq!(target.model, "qwen3-embedding:0.6b");
         assert_eq!(target.dims, 256);
+    }
+
+    /// #6914 regression guard: the PII level for remote embedding egress must pass through the
+    /// egress floor SSOT. Under the `AllowFiltered + Off` combination it was raw `Off` (verbatim
+    /// leak) before the fix, but it must now floor up to `Basic` via `effective_egress_pii_level`
+    /// — and must **differ** from the raw pii_filter_level(Off) (if unchanged, the floor was not
+    /// applied = bug regressed).
+    #[test]
+    fn embedding_egress_pii_level_floors_allow_filtered_off_to_basic() {
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.ai_provider.external_data_policy =
+            maekon_core::config::ExternalDataPolicy::AllowFiltered;
+        config.privacy.pii_filter_level = PiiFilterLevel::Off;
+
+        let egress = super::embedding_egress_pii_level(&config);
+        assert_eq!(
+            egress,
+            PiiFilterLevel::Basic,
+            "AllowFiltered + Off 는 egress 에서 Basic 으로 floor 되어야 한다"
+        );
+        assert_ne!(
+            egress, config.privacy.pii_filter_level,
+            "egress 레벨이 raw pii_filter_level(Off)과 같으면 floor 미적용 — 버그 재발"
+        );
+    }
+
+    /// The PiiFilterStrict policy pins to Strict regardless of the configured level (strongest egress masking).
+    #[test]
+    fn embedding_egress_pii_level_strict_policy_pins_strict() {
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.ai_provider.external_data_policy =
+            maekon_core::config::ExternalDataPolicy::PiiFilterStrict;
+        config.privacy.pii_filter_level = PiiFilterLevel::Off;
+
+        assert_eq!(
+            super::embedding_egress_pii_level(&config),
+            PiiFilterLevel::Strict
+        );
     }
 }

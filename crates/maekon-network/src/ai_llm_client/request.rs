@@ -232,21 +232,28 @@ impl RemoteLlmProvider {
             }
         })?;
         let status = response.status();
-        let body = response.text().await.map_err(|e| {
-            // Iter-90: body-read timeout is also a timeout; keep the split
-            // consistent with send()-time timeout handling above.
-            if e.is_timeout() {
-                CoreError::RequestTimeout {
-                    code: maekon_core::error_codes::NetworkCode::Timeout,
-                    timeout_ms: 0,
-                }
-            } else {
-                CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: format!("LLM API response read failure: {}", e),
-                }
-            }
-        })?;
+        // #6939: cap the response body — a compromised/MITM LLM provider could
+        // otherwise stream multi-GB and OOM the agent. Preserve the timeout split
+        // (Iter-90: body-read timeout maps to RequestTimeout).
+        let body =
+            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                .await
+                .map_err(|e| match e {
+                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                        CoreError::RequestTimeout {
+                            code: maekon_core::error_codes::NetworkCode::Timeout,
+                            timeout_ms: 0,
+                        }
+                    }
+                    crate::outbound::BodyReadError::Transport(err) => CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("LLM API response read failure: {}", err),
+                    },
+                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("LLM API response exceeded cap {cap} bytes (len {len})"),
+                    },
+                })?;
         if !status.is_success() {
             if let Some(ref handle) = self.call_health {
                 handle.record_failed();

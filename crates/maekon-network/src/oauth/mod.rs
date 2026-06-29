@@ -95,7 +95,23 @@ impl OAuthClient {
             .collect();
 
         Self {
-            http: reqwest::Client::new(),
+            // #7068/#6892: build the OAuth HTTP client with redirect following
+            // disabled by construction. This `http` client POSTs credential
+            // bodies — the authorization code + PKCE verifier (exchange_code) and
+            // the long-lived refresh_token (refresh_token) — to operator-
+            // configurable token endpoints (OAuthProviderConfig.token_endpoint).
+            // reqwest's default policy follows 30x and re-sends the request body
+            // verbatim on a 307/308 (it strips only standard auth headers on a
+            // cross-host hop, not the form body), so a malicious/MITM/open-
+            // redirecting token endpoint could exfiltrate those credentials to
+            // the redirect target. `hardened_client_builder()` (= redirect
+            // Policy::none) closes that hole. The redirect-only build cannot fail
+            // (see outbound::hardened_client_builder), so a build error is a
+            // fail-loud invariant violation rather than a silent fall back to a
+            // redirect-following client.
+            http: crate::outbound::hardened_client_builder()
+                .build()
+                .expect("OAuth HTTP client must build with redirects disabled (#7068/#6892)"),
             secret_store,
             providers: provider_map,
             active_flows: Arc::new(Mutex::new(HashMap::new())),
@@ -1135,5 +1151,58 @@ mod tests {
             }
             other => panic!("expected ReauthRequired, got {other:?}"),
         }
+    }
+
+    /// #7068/#6892 regression: the OAuth HTTP client must NOT follow 30x
+    /// redirects. The credential-bearing token-exchange/refresh POSTs reuse
+    /// `self.http` (token_exchange::exchange_code/refresh_token), and reqwest's
+    /// default policy re-sends the request body verbatim on a 307/308, so a
+    /// malicious/MITM/open-redirecting token endpoint could exfiltrate the
+    /// authorization code + PKCE verifier and the long-lived refresh_token. The
+    /// client is built via `hardened_client_builder()` (redirect=none), so a 30x
+    /// must be returned as-is and the redirect target must never be contacted.
+    /// This test fails before the fix (bare `reqwest::Client::new()` follows the
+    /// 307 and re-POSTs the credential body to `/leaked`).
+    #[tokio::test]
+    async fn oauth_http_client_does_not_follow_redirects() {
+        let mut server = mockito::Server::new_async().await;
+        let start = server
+            .mock("POST", "/token")
+            .with_status(307)
+            .with_header("location", "/leaked")
+            .create_async()
+            .await;
+        // Would be reached only if the redirect were followed (and the credential
+        // body re-sent) — must be called 0 times.
+        let leaked = server
+            .mock("POST", "/leaked")
+            .with_status(200)
+            .with_body("LEAKED")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let store = Arc::new(TestSecretStore::new());
+        let client = make_client(store);
+
+        // Same-module test: access the private `http` field directly and POST a
+        // credential-shaped form body to the redirecting endpoint, mirroring
+        // token_exchange's `refresh_token` request.
+        let resp = client
+            .http
+            .post(format!("{}/token", server.url()))
+            .form(&[("refresh_token", "secret-rt"), ("client_id", "cid")])
+            .send()
+            .await
+            .expect("request must be sent");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            307,
+            "OAuth client must return the 307 as-is, not follow it"
+        );
+        start.assert_async().await;
+        // expect(0): confirms the credential body was never re-sent to /leaked.
+        leaked.assert_async().await;
     }
 }

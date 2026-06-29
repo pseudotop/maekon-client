@@ -1,50 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::CoreError;
-
-/// Write `bytes` to `tmp_path` so the file is owner-only the instant any bytes
-/// exist on disk, then leave it ready for an atomic rename into place.
-///
-/// `tmp_path` is removed first so a stale tmp from a previously aborted write is
-/// not re-opened with inherited/too-open permissions.
-///
-/// #6175: consent.json records user identity / consent metadata (privacy
-/// sensitive) and was written via the default umask (typically 0o644 →
-/// world/group-readable). On Unix this creates the tmp with `O_CREAT | O_EXCL` +
-/// mode `0o600` in a single `open(2)`, so the published file is never
-/// world/group-readable. On Windows the owner-only DACL helper lives in
-/// `maekon-storage` and is not reachable from `maekon-core` without inverting the
-/// hexagonal dependency direction; the bytes are written plainly there and the
-/// DACL tightening is tracked as a follow-up. Mirrors
-/// `config_manager::persistence::write_tmp_owner_only`.
-fn write_tmp_owner_only(tmp_path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
-    let _ = std::fs::remove_file(tmp_path);
-
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(tmp_path)?;
-        file.write_all(bytes).inspect_err(|_| {
-            let _ = std::fs::remove_file(tmp_path);
-        })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::write(tmp_path, bytes)?;
-    }
-
-    Ok(())
-}
 
 pub const CURRENT_POLICY_VERSION: &str = "1.0.0";
 
@@ -115,9 +75,9 @@ pub struct ConsentPermissions {
 
     // --- Tier 9: Raw Off-Device OCR ---
     /// Permits sending unredacted screenshots to an external OCR provider when
-    /// `allow_unredacted_external_ocr` is explicitly enabled. This is separate
-    /// from generic OCR processing consent because it bypasses local PII
-    /// filtering before off-device transfer.
+    /// the `bypass_pii_filter_for_external_ocr` config flag is explicitly enabled.
+    /// This is separate from generic OCR processing consent because it bypasses
+    /// local PII filtering before off-device transfer.
     #[serde(default)]
     pub unredacted_external_ocr: bool,
 }
@@ -459,7 +419,7 @@ impl ConsentManager {
             let json = serde_json::to_string_pretty(&revoked)?;
             // #6175: owner-only tmp before the rename so the published consent.json
             // is never world/group-readable.
-            write_tmp_owner_only(&tmp_path, json.as_bytes())?;
+            crate::secure_file::write_owner_only(&tmp_path, json.as_bytes())?;
             std::fs::rename(&tmp_path, self.consent_file_path())?;
         }
         // The write (if any) succeeded — commit the in-memory transition.
@@ -608,7 +568,7 @@ impl ConsentManager {
         let json = serde_json::to_string_pretty(record)?;
         // #6175: owner-only tmp before the rename so the published consent.json is
         // never world/group-readable (it carries user consent metadata).
-        write_tmp_owner_only(&tmp_path, json.as_bytes())?;
+        crate::secure_file::write_owner_only(&tmp_path, json.as_bytes())?;
         std::fs::rename(&tmp_path, &self.storage_path)?;
         Ok(())
     }

@@ -29,8 +29,12 @@ pub struct AiProviderConfig {
     pub llm_api_fallback: Option<ExternalApiEndpoint>,
     #[serde(default)]
     pub external_data_policy: ExternalDataPolicy,
-    #[serde(default)]
-    pub allow_unredacted_external_ocr: bool,
+    // #5966: renamed from `allow_unredacted_external_ocr` for clarity. The serde
+    // alias keeps existing on-disk config.json files deserializing. Activation of
+    // the bypass additionally requires the explicit `unredacted_external_ocr`
+    // consent tier (enforced in `PrivacyGateway::prepare_image_for_external_with_override`).
+    #[serde(default, alias = "allow_unredacted_external_ocr")]
+    pub bypass_pii_filter_for_external_ocr: bool,
     #[serde(default)]
     pub ocr_validation: OcrValidationConfig,
     #[serde(default)]
@@ -64,8 +68,9 @@ pub struct AiProviderProfileConfig {
     pub llm_api: Option<ExternalApiEndpoint>,
     #[serde(default)]
     pub external_data_policy: ExternalDataPolicy,
-    #[serde(default)]
-    pub allow_unredacted_external_ocr: bool,
+    // #5966: renamed from `allow_unredacted_external_ocr` (see `AiProviderConfig`).
+    #[serde(default, alias = "allow_unredacted_external_ocr")]
+    pub bypass_pii_filter_for_external_ocr: bool,
     #[serde(default)]
     pub ocr_validation: OcrValidationConfig,
     #[serde(default)]
@@ -96,7 +101,7 @@ impl Default for AiProviderConfig {
             llm_api: None,
             llm_api_fallback: None,
             external_data_policy: ExternalDataPolicy::default(),
-            allow_unredacted_external_ocr: false,
+            bypass_pii_filter_for_external_ocr: false,
             ocr_validation: OcrValidationConfig::default(),
             scene_action_override: SceneActionOverrideConfig::default(),
             scene_intelligence: SceneIntelligenceConfig::default(),
@@ -117,7 +122,7 @@ impl Default for AiProviderProfileConfig {
             ocr_api: None,
             llm_api: None,
             external_data_policy: ExternalDataPolicy::default(),
-            allow_unredacted_external_ocr: false,
+            bypass_pii_filter_for_external_ocr: false,
             ocr_validation: OcrValidationConfig::default(),
             scene_action_override: SceneActionOverrideConfig::default(),
             scene_intelligence: SceneIntelligenceConfig::default(),
@@ -566,5 +571,72 @@ mod cleartext_gate_tests {
     fn validate_remote_endpoint_allows_remote_https() {
         let ep = remote_endpoint("https://api.openai.com/v1");
         validate_remote_endpoint(Some(&ep), "llm_api").expect("remote https:// must be allowed");
+    }
+}
+
+#[cfg(test)]
+mod bypass_pii_filter_alias_tests {
+    use super::*;
+
+    /// #5966: existing on-disk config.json files use the legacy
+    /// `allow_unredacted_external_ocr` key. The serde alias must keep those
+    /// deserializing (true must survive) so a rename never silently drops a
+    /// user's previously-saved bypass setting.
+    #[test]
+    fn ai_provider_config_deserializes_legacy_allow_unredacted_external_ocr_alias() {
+        let legacy_json = r#"{
+            "allow_unredacted_external_ocr": true
+        }"#;
+        let config: AiProviderConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(
+            config.bypass_pii_filter_for_external_ocr,
+            "legacy `allow_unredacted_external_ocr` must deserialize into the renamed field"
+        );
+    }
+
+    /// The renamed (canonical) key must also deserialize.
+    #[test]
+    fn ai_provider_config_deserializes_renamed_key() {
+        let new_json = r#"{
+            "bypass_pii_filter_for_external_ocr": true
+        }"#;
+        let config: AiProviderConfig = serde_json::from_str(new_json).unwrap();
+        assert!(config.bypass_pii_filter_for_external_ocr);
+    }
+
+    /// A missing key must default to false (fail-closed) — the bypass is never
+    /// silently enabled.
+    #[test]
+    fn ai_provider_config_missing_key_defaults_to_false() {
+        let config: AiProviderConfig = serde_json::from_str("{}").unwrap();
+        assert!(
+            !config.bypass_pii_filter_for_external_ocr,
+            "missing key must default to false (fail-closed)"
+        );
+    }
+
+    /// Serialization uses the canonical (renamed) key so newly-written config
+    /// files carry the clearer name.
+    #[test]
+    fn ai_provider_config_serializes_with_renamed_key() {
+        let config = AiProviderConfig {
+            bypass_pii_filter_for_external_ocr: true,
+            ..AiProviderConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            json.contains("bypass_pii_filter_for_external_ocr"),
+            "serialized config must use the renamed key, got: {json}"
+        );
+    }
+
+    /// The profile config mirror carries the same alias contract.
+    #[test]
+    fn ai_provider_profile_config_deserializes_legacy_alias() {
+        let legacy_json = r#"{
+            "allow_unredacted_external_ocr": true
+        }"#;
+        let profile: AiProviderProfileConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(profile.bypass_pii_filter_for_external_ocr);
     }
 }

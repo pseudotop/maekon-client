@@ -68,8 +68,28 @@ impl TokenManager {
                     let status = resp.status();
 
                     if status.is_success() {
+                        // #6949: cap the token-refresh success response body (OOM guard)
+                        let token_bytes = crate::outbound::read_body_capped(
+                            resp,
+                            crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                        )
+                        .await
+                        .map_err(|e| match e {
+                            crate::outbound::BodyReadError::Transport(te) => CoreError::Auth {
+                                code: maekon_core::error_codes::AuthCode::Failed,
+                                message: format!("refresh Token parsing failed: {te}"),
+                            },
+                            crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                                CoreError::Auth {
+                                    code: maekon_core::error_codes::AuthCode::Failed,
+                                    message: format!(
+                                        "refresh Token parsing failed: response too large ({len} > {cap})"
+                                    ),
+                                }
+                            }
+                        })?;
                         let token_resp: super::tokens::TokenResponse =
-                            resp.json().await.map_err(|e| CoreError::Auth {
+                            serde_json::from_slice(&token_bytes).map_err(|e| CoreError::Auth {
                                 code: maekon_core::error_codes::AuthCode::Failed,
                                 message: format!("refresh Token parsing failed: {e}"),
                             })?;
@@ -112,7 +132,13 @@ impl TokenManager {
                     // 4xx errors (except 429) are not retryable
                     let is_retryable = status.is_server_error() || status.as_u16() == 429;
 
-                    let text = resp.text().await.unwrap_or_default();
+                    // #6949: cap the token-refresh error response body (OOM guard)
+                    let text = crate::outbound::read_text_capped(
+                        resp,
+                        crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                    )
+                    .await
+                    .unwrap_or_default();
                     let message = format!("token refresh failure ({status}): {text}");
                     // Iter-98: apply canonical HTTP status mapping consistent
                     // with login() — lets telemetry distinguish "auth provider

@@ -69,7 +69,7 @@ export function makeDefaultFormData(overrides?: Partial<AppSettings>): AppSettin
       ocr_provider: 'tesseract',
       llm_provider: 'none',
       external_data_policy: 'redacted_only',
-      allow_unredacted_external_ocr: false,
+      bypass_pii_filter_for_external_ocr: false,
       ocr_validation: { enabled: false, min_confidence: 0.7, max_invalid_ratio: 0.3 },
       scene_action_override: { enabled: false, reason: '', approved_by: '', expires_at: null },
       scene_intelligence: {

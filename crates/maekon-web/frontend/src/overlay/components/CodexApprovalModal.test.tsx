@@ -125,4 +125,16 @@ describe('CodexApprovalModal (E21 #5044)', () => {
     renderModal(vi.fn(), approvalFixture({ kind: 'file_change', processName: null, args: [], diffLineCount: 7 }))
     expect(screen.getByText(/7 diff lines/)).toBeInTheDocument()
   })
+
+  it('strips bidi/zero-width characters from displayed summary & processName (#6829)', () => {
+    const rlo = String.fromCharCode(0x202e) // right-to-left override
+    const zwsp = String.fromCharCode(0x200b) // zero-width space
+    renderModal(vi.fn(), approvalFixture({ summary: `safe${rlo}cmd`, processName: `git${zwsp}hub` }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('safecmd')
+    expect(dialog).toHaveTextContent('github')
+    const text = dialog.textContent ?? ''
+    expect(text.includes(rlo)).toBe(false)
+    expect(text.includes(zwsp)).toBe(false)
+  })
 })

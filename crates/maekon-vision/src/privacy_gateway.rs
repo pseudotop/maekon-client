@@ -45,6 +45,43 @@ struct SensitiveRegion {
     h: i32,
 }
 
+/// Destructively redacts a rectangular region of an RGBA image by overwriting
+/// every pixel inside it with a solid, fully-opaque black fill.
+///
+/// This replaces an earlier Gaussian-blur treatment (#7069). The redacted image
+/// egresses to a third-party / external OCR endpoint, so the recipient is
+/// exactly the adversary the redaction defends against. A Gaussian blur is a
+/// recoverable transform — blurred SSNs / card numbers / emails / API keys can
+/// be reconstructed via deconvolution or CNN deblurring — whereas a constant
+/// opaque fill discards the underlying pixels entirely. The resulting region is
+/// constant-valued (zero variance), so nothing recoverable leaves the device.
+///
+/// `x`/`y`/`w`/`h` are clamped to the image bounds. Returns the number of pixels
+/// overwritten.
+#[cfg_attr(not(feature = "ocr"), allow(dead_code))]
+fn redact_region_opaque(img: &mut image::RgbaImage, x: u32, y: u32, w: u32, h: u32) -> u32 {
+    // Solid, fully-opaque black. Every redacted pixel becomes this exact value.
+    const FILL: image::Rgba<u8> = image::Rgba([0, 0, 0, 255]);
+
+    let (img_w, img_h) = img.dimensions();
+    let mut filled = 0u32;
+    for dy in 0..h {
+        let py = y + dy;
+        if py >= img_h {
+            break;
+        }
+        for dx in 0..w {
+            let px = x + dx;
+            if px >= img_w {
+                break;
+            }
+            img.put_pixel(px, py, FILL);
+            filled += 1;
+        }
+    }
+    filled
+}
+
 // PrivacyGateway
 
 pub struct PrivacyGateway {
@@ -73,12 +110,12 @@ impl PrivacyGateway {
         image_data: &[u8],
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
-        allow_unredacted_external_ocr: bool,
+        bypass_pii_filter_for_external_ocr: bool,
     ) -> Result<SanitizedImage, PrivacyDenied> {
         let filter_level = Self::resolve_filter_level(
             pii_filter_level,
             external_data_policy,
-            allow_unredacted_external_ocr,
+            bypass_pii_filter_for_external_ocr,
         );
         let (sanitized_data, redacted_regions) = if filter_level == PiiFilterLevel::Off {
             (image_data.to_vec(), 0)
@@ -108,12 +145,12 @@ impl PrivacyGateway {
         image_data: &[u8],
         active_app: &str,
         window_title: &str,
-        allow_unredacted_external_ocr: bool,
+        bypass_pii_filter_for_external_ocr: bool,
     ) -> Result<SanitizedImage, PrivacyDenied> {
         if !self.consent_manager.effective_permissions().ocr_processing {
             return Err(PrivacyDenied::NoConsent);
         }
-        if allow_unredacted_external_ocr
+        if bypass_pii_filter_for_external_ocr
             && !self
                 .consent_manager
                 .effective_permissions()
@@ -140,14 +177,14 @@ impl PrivacyGateway {
         let filter_level = Self::resolve_filter_level(
             self.pii_filter_level,
             self.external_data_policy,
-            allow_unredacted_external_ocr,
+            bypass_pii_filter_for_external_ocr,
         );
         // When the override forced PiiFilterLevel::Off, emit an additional audit
         // event with the app/window context that resolve_filter_level cannot see.
         // The window title is PII (document names, mail subjects, URLs), so it is
         // never interpolated raw — it is sanitized at Strict before logging so the
         // file log layer cannot persist raw content (#5591/#6006).
-        if allow_unredacted_external_ocr {
+        if bypass_pii_filter_for_external_ocr {
             warn!(
                 privacy.bypass = true,
                 app = %active_app,
@@ -272,18 +309,13 @@ impl PrivacyGateway {
                     continue;
                 }
 
-                let roi = image::DynamicImage::ImageRgba8(result_img.clone()).crop_imm(x, y, w, h);
-                let blurred = roi.blur(8.0);
-                let blurred_rgba = blurred.to_rgba8();
-
-                for dy in 0..h.min(blurred_rgba.height()) {
-                    for dx in 0..w.min(blurred_rgba.width()) {
-                        let pixel = blurred_rgba.get_pixel(dx, dy);
-                        if x + dx < img_w && y + dy < img_h {
-                            result_img.put_pixel(x + dx, y + dy, *pixel);
-                        }
-                    }
-                }
+                // #7069: redact destructively with a solid opaque fill instead of a
+                // Gaussian blur. The image is sent to a third-party OCR endpoint, so
+                // the recipient is exactly the threat actor this control defends
+                // against. Blur/pixelation is recoverable (deconvolution / CNN
+                // deblurring of structured text); overwriting the pixels with a
+                // constant opaque value discards the PII irreversibly.
+                redact_region_opaque(&mut result_img, x, y, w, h);
             }
 
             let mut output = std::io::Cursor::new(Vec::new());
@@ -438,7 +470,7 @@ impl PrivacyGateway {
 
     /// Resolve the effective [`PiiFilterLevel`] for an off-device OCR call.
     ///
-    /// # WARNING — `allow_unredacted_external_ocr`
+    /// # WARNING — `bypass_pii_filter_for_external_ocr`
     ///
     /// When this flag is `true` **all PII filtering is bypassed** and raw,
     /// unredacted screen content is transmitted off-device to the external OCR
@@ -446,21 +478,25 @@ impl PrivacyGateway {
     /// audit event so that operators can detect unexpected or mis-configured
     /// use (see the `warn!` call below).
     ///
-    /// // TODO(#5966): rename flag to `bypass_pii_filter_for_external_ocr` for
-    /// //   clarity, and gate activation on an explicit user consent tier rather
-    /// //   than a bare boolean config flag.
+    /// #5966: this parameter only carries the config bypass flag. It is never the
+    /// sole authority for the bypass: callers must first clear the explicit
+    /// `unredacted_external_ocr` consent tier in
+    /// [`Self::prepare_image_for_external_with_override`] (dual consent — generic
+    /// `ocr_processing` plus the dedicated raw-off-device-OCR tier) before the flag
+    /// is allowed to reach this function. The consent tier is the gating
+    /// authority; this flag is the operator opt-in.
     fn resolve_filter_level(
         pii_filter_level: PiiFilterLevel,
         external_data_policy: ExternalDataPolicy,
-        allow_unredacted_external_ocr: bool,
+        bypass_pii_filter_for_external_ocr: bool,
     ) -> PiiFilterLevel {
-        if allow_unredacted_external_ocr {
+        if bypass_pii_filter_for_external_ocr {
             // AUDIT: raw, unredacted screen content is about to leave the device.
             // This warn fires on EVERY invocation of the override path so that
             // log aggregators (Loki/OTel) can alert on unexpected activations.
             warn!(
                 privacy.bypass = true,
-                privacy.pii_filter_override = "allow_unredacted_external_ocr",
+                privacy.pii_filter_override = "bypass_pii_filter_for_external_ocr",
                 config.external_data_policy = ?external_data_policy,
                 config.pii_filter_level = ?pii_filter_level,
                 "PII filtering DISABLED for external OCR: raw unredacted screen \
@@ -772,10 +808,10 @@ mod tests {
         assert!(d4.to_string().contains("decode"));
     }
 
-    // --- #5966: allow_unredacted_external_ocr audit tests ---
+    // --- #5966: bypass_pii_filter_for_external_ocr audit tests ---
 
     /// Verifies that `resolve_filter_level` returns `PiiFilterLevel::Off` when
-    /// `allow_unredacted_external_ocr` is `true`, regardless of the configured
+    /// `bypass_pii_filter_for_external_ocr` is `true`, regardless of the configured
     /// policy and filter level. The audit `warn!` is emitted on this path; this
     /// test exercises the branch so that coverage tooling and reviewers can
     /// confirm the warn macro expands without panic.
@@ -803,7 +839,7 @@ mod tests {
     }
 
     /// Verifies that `resolve_filter_level` respects the normal policy path
-    /// when `allow_unredacted_external_ocr` is `false` — guard against the
+    /// when `bypass_pii_filter_for_external_ocr` is `false` — guard against the
     /// override branch accidentally short-circuiting normal operation.
     #[test]
     fn resolve_filter_level_no_override_respects_policy() {
@@ -867,5 +903,108 @@ mod tests {
             "override path must return bytes unchanged"
         );
         assert_eq!(result.redacted_regions, 0);
+    }
+
+    // --- #7069: destructive (opaque-fill) PII redaction for off-device OCR ---
+
+    /// Per-channel population variance summed across RGBA, over a rectangular
+    /// region. Equals exactly `0.0` iff every pixel in the region is
+    /// byte-identical (constant-valued); any smoothing/structure is > 0.
+    fn region_variance(img: &image::RgbaImage, x: u32, y: u32, w: u32, h: u32) -> f64 {
+        let mut sums = [0f64; 4];
+        let mut sq_sums = [0f64; 4];
+        let n = f64::from(w * h);
+        for py in y..y + h {
+            for px in x..x + w {
+                let p = img.get_pixel(px, py).0;
+                for c in 0..4 {
+                    let v = f64::from(p[c]);
+                    sums[c] += v;
+                    sq_sums[c] += v * v;
+                }
+            }
+        }
+        let mut total = 0f64;
+        for c in 0..4 {
+            let mean = sums[c] / n;
+            total += sq_sums[c] / n - mean * mean;
+        }
+        total
+    }
+
+    /// #7069 regression guard: PII regions destined for an external (off-device)
+    /// OCR endpoint must be redacted with a *destructive* opaque fill, not a
+    /// recoverable Gaussian blur.
+    ///
+    /// Asserts that after [`redact_region_opaque`] the region is constant-valued
+    /// (variance == 0, and `min == max` per channel), and documents that a
+    /// Gaussian blur of the same content is NOT constant-valued. This guard fails
+    /// against blur (the previous behaviour) and passes against the opaque fill.
+    #[test]
+    fn redact_region_opaque_is_destructive_unlike_blur() {
+        use image::{DynamicImage, Rgba, RgbaImage};
+
+        // High-contrast gradient so any non-destructive transform leaves
+        // recoverable (non-constant) structure.
+        let (w, h) = (32u32, 32u32);
+        let mut img = RgbaImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = ((x * 8 + y * 5) % 256) as u8;
+                img.put_pixel(x, y, Rgba([v, 255 - v, v / 2, 255]));
+            }
+        }
+
+        let (rx, ry, rw, rh) = (4u32, 4u32, 20u32, 20u32);
+
+        // Sanity: the region starts non-constant.
+        assert!(
+            region_variance(&img, rx, ry, rw, rh) > 0.0,
+            "fixture region must start with recoverable (non-zero variance) content"
+        );
+
+        // The old #7069 treatment (Gaussian blur) must NOT make the region
+        // constant — this is exactly why blur is insufficient redaction.
+        let blurred = DynamicImage::ImageRgba8(img.clone()).blur(8.0).to_rgba8();
+        assert!(
+            region_variance(&blurred, rx, ry, rw, rh) > 0.0,
+            "Gaussian blur must leave recoverable (non-constant) structure — \
+             the anti-pattern #7069 replaces; a blur-based redaction would fail here"
+        );
+
+        // The destructive opaque fill must overwrite every region pixel and yield
+        // a constant-valued (zero-variance) region.
+        let filled = redact_region_opaque(&mut img, rx, ry, rw, rh);
+        assert_eq!(
+            filled,
+            rw * rh,
+            "every pixel inside the region must be overwritten"
+        );
+        assert_eq!(
+            region_variance(&img, rx, ry, rw, rh),
+            0.0,
+            "opaque fill must yield a constant-valued (zero-variance) region, not a smoothed one"
+        );
+
+        // min == max per channel (integer-exact constancy) and the fill is opaque
+        // black — nothing recoverable, full alpha (no transparency leak).
+        let first = *img.get_pixel(rx, ry);
+        for y in ry..ry + rh {
+            for x in rx..rx + rw {
+                assert_eq!(
+                    *img.get_pixel(x, y),
+                    Rgba([0, 0, 0, 255]),
+                    "redacted pixels must all be opaque black (min == max)"
+                );
+                assert_eq!(*img.get_pixel(x, y), first);
+            }
+        }
+
+        // Pixels just outside the region are untouched (redaction is bounded).
+        assert_ne!(
+            *img.get_pixel(rx + rw, ry),
+            Rgba([0, 0, 0, 255]),
+            "redaction must not bleed past the region boundary"
+        );
     }
 }

@@ -255,6 +255,13 @@ impl AgentRuntimeBundle {
             Some(external_llm_privacy_guard.clone()),
             #[cfg(feature = "analysis")]
             self.provider_secret_stores.as_ref(),
+            // #6830: the local SQLite store is the egress ledger sink — audits each
+            // external embedding upload (loopback uploads are gated out downstream).
+            #[cfg(feature = "analysis")]
+            Some(Arc::clone(&self.sqlite_storage_concrete)
+                as Arc<
+                    dyn maekon_core::ports::egress_ledger::EgressLedgerSink,
+                >),
             self.breaker_registry.clone(),
         );
 

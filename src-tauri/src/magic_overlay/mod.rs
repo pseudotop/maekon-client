@@ -75,6 +75,50 @@ pub(crate) fn sync_passive_tracking_surface<R: Runtime>(
     }
 }
 
+// ── #7076: least-privilege event scoping ────────────────────────────────
+//
+// Overlay "screen-content" events carry on-screen accessibility text and
+// detected GUI element labels derived from the user's screen. They are rendered
+// ONLY by the transparent overlay webview, so they must be delivered to that
+// window alone via `emit_to(OVERLAY_LABEL, ...)`. A global `emit` would also
+// reach the `main` and `tracking-panel` webviews — both hold the
+// `core:event:allow-listen` capability but have no functional need for this
+// content — contradicting the per-window capability separation the app enforces.
+const OVERLAY_SCREEN_CONTENT_EVENTS: &[&str] = &[
+    "overlay:update-focus",
+    "overlay:clear-focus",
+    "overlay:detection-update",
+    "overlay:detection-clear",
+    "overlay:heatmap-update",
+];
+
+/// Returns the single webview label a screen-content event must be scoped to, or
+/// `None` for control events that may broadcast app-wide.
+fn screen_content_event_target(event: &str) -> Option<&'static str> {
+    if OVERLAY_SCREEN_CONTENT_EVENTS.contains(&event) {
+        Some(OVERLAY_LABEL)
+    } else {
+        None
+    }
+}
+
+/// Emit an overlay event with least-privilege scoping (#7076).
+///
+/// Screen-content events are delivered only to the transparent overlay webview
+/// via [`Emitter::emit_to`]; all other (control) events keep the app-wide
+/// [`Emitter::emit`] broadcast. Shared by [`MagicOverlayHandle`] and the
+/// `MagicOverlayDriver` so the scoping policy has a single source of truth.
+pub(crate) fn emit_overlay_event<S: serde::Serialize + Clone>(
+    app_handle: &AppHandle,
+    event: &str,
+    payload: S,
+) -> tauri::Result<()> {
+    match screen_content_event_target(event) {
+        Some(label) => app_handle.emit_to(label, event, payload),
+        None => app_handle.emit(event, payload),
+    }
+}
+
 /// Handle for managing the MagicOverlay Tauri WebView window.
 ///
 /// Created during app setup. The overlay window is created and shown at
@@ -238,14 +282,16 @@ impl MagicOverlayHandle {
 
     #[allow(dead_code)]
     pub fn update_focus_highlight(&self, highlight: OverlayFocusPayload) {
-        if let Err(e) = self.app_handle.emit("overlay:update-focus", &highlight) {
+        // #7076: screen-content event — scoped to the overlay webview only.
+        if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:update-focus", &highlight) {
             warn!("failed to emit overlay:update-focus: {e}");
         }
     }
 
     #[allow(dead_code)]
     pub fn clear_focus_highlight(&self) {
-        if let Err(e) = self.app_handle.emit("overlay:clear-focus", ()) {
+        // #7076: paired with the scoped focus update — scoped to the overlay webview.
+        if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:clear-focus", ()) {
             debug!("emit overlay:clear-focus failed: {e}");
         }
     }
@@ -268,7 +314,9 @@ impl MagicOverlayHandle {
         if let Err(e) = self.ensure_window() {
             debug!("ensure_window failed: {e}");
         }
-        if let Err(e) = self.app_handle.emit("overlay:detection-update", &payload) {
+        // #7076: screen-content event (detected GUI element labels) — scoped to
+        // the overlay webview only.
+        if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:detection-update", &payload) {
             warn!("failed to emit overlay:detection-update: {e}");
             self.clear_detection_scene().await;
             return;
@@ -286,7 +334,8 @@ impl MagicOverlayHandle {
 
     #[allow(dead_code)]
     pub async fn clear_detection_scene(&self) {
-        if let Err(e) = self.app_handle.emit("overlay:detection-clear", ()) {
+        // #7076: paired with the scoped detection update — scoped to the overlay webview.
+        if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:detection-clear", ()) {
             debug!("emit overlay:detection-clear failed: {e}");
         }
         let window_exists = self.app_handle.get_webview_window(OVERLAY_LABEL).is_some();
@@ -479,22 +528,26 @@ impl MagicOverlayHandle {
         debug!("Overlay set_interactive={interactive}");
     }
 
-    pub fn set_panel_mode(&self, open: bool) {
-        if let Ok(mut state) = self.state.try_write() {
-            state.suggestions_panel_open = open;
-            self.apply_window_layout(&state);
-        } else {
-            debug!("set_panel_mode: lock contention, skipping");
-        }
+    pub async fn set_panel_mode(&self, open: bool) {
+        // #6830: awaited write lock instead of try_write() + silent skip — on
+        // lock contention the old path dropped the update while the command still
+        // returned Ok, so the panel layout silently did not change. Holding the
+        // write guard across the sync `apply_window_layout` matches the existing
+        // emit_detection_scene/clear_detection_scene pattern. Callers are async
+        // Tauri commands.
+        let mut state = self.state.write().await;
+        state.suggestions_panel_open = open;
+        self.apply_window_layout(&state);
     }
 
-    pub fn set_automation_confirm_mode(&self, active: bool) {
-        if let Ok(mut state) = self.state.try_write() {
-            state.automation_confirm_active = active;
-            self.apply_window_layout(&state);
-        } else {
-            debug!("set_automation_confirm_mode: lock contention, skipping");
-        }
+    pub async fn set_automation_confirm_mode(&self, active: bool) {
+        // #6830: awaited write lock (deterministic). A dropped update here is the
+        // worst case of all overlay modes — a skipped *deactivation* would leave
+        // the full-screen automation-confirm modal capturing all desktop input
+        // while the toggle reports success.
+        let mut state = self.state.write().await;
+        state.automation_confirm_active = active;
+        self.apply_window_layout(&state);
     }
 
     pub fn emit_focus_mode(&self, active: bool, auto: bool) {
@@ -558,7 +611,8 @@ impl MagicOverlayHandle {
             rows: 50,
         };
 
-        if let Err(e) = self.app_handle.emit("overlay:heatmap-update", &payload) {
+        // #7076: screen-content-derived event — scoped to the overlay webview only.
+        if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:heatmap-update", &payload) {
             debug!("failed to emit overlay:heatmap-update: {e}");
         }
     }

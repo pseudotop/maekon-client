@@ -83,6 +83,11 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
 
     let empty_dict: Retained<NSDictionary<AnyObject, AnyObject>> = NSDictionary::new();
 
+    // SAFETY: `handler_cls` is the VNImageRequestHandler class resolved via
+    // AnyClass::get and checked non-null above. `alloc` yields a fresh
+    // allocation; `initWithData:options:` is its designated initializer, which
+    // consumes that allocation and borrows `ns_data` (live NSData) and
+    // `empty_dict` (live NSDictionary). objc2 init semantics yield Retained.
     let handler: Retained<AnyObject> = unsafe {
         let alloc: Allocated<AnyObject> = msg_send![handler_cls, alloc];
         msg_send![alloc, initWithData: &*ns_data, options: &*empty_dict]
@@ -95,6 +100,10 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
             message: "VNRecognizeTextRequest class not found".into(),
         })?;
 
+    // SAFETY: `request_cls` is the VNRecognizeTextRequest class resolved via
+    // AnyClass::get and checked non-null above. `alloc` yields a fresh
+    // allocation and `init` is its designated initializer, consuming that
+    // allocation and returning a Retained VNRecognizeTextRequest.
     let request: Retained<AnyObject> = unsafe {
         let alloc: Allocated<AnyObject> = msg_send![request_cls, alloc];
         msg_send![alloc, init]
@@ -102,10 +111,16 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
 
     // setRecognitionLevel: 1 = accurate (VNRequestTextRecognitionLevelAccurate)
     let level: i64 = 1;
+    // SAFETY: `request` is the live VNRecognizeTextRequest created above and
+    // retained for this scope; `setRecognitionLevel:` is a valid setter taking
+    // a single NSInteger (`level`) and returning void.
     let _: () = unsafe { msg_send![&request, setRecognitionLevel: level] };
 
     // setUsesLanguageCorrection: YES
     let yes: bool = true;
+    // SAFETY: `request` is the live VNRecognizeTextRequest from above;
+    // `setUsesLanguageCorrection:` is a valid setter taking a single BOOL
+    // (`yes`) and returning void.
     let _: () = unsafe { msg_send![&request, setUsesLanguageCorrection: yes] };
 
     // --- Create NSArray with single request ---
@@ -114,16 +129,26 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
         message: "NSArray class not found".into(),
     })?;
 
+    // SAFETY: `nsarray_cls` is the NSArray class resolved via AnyClass::get and
+    // checked non-null above; `arrayWithObject:` takes one object reference and
+    // `request` is alive, producing a Retained NSArray that holds it.
     let request_array: Retained<AnyObject> =
         unsafe { msg_send![nsarray_cls, arrayWithObject: &*request] };
 
     // --- Perform requests ---
     let mut error_ptr: *mut AnyObject = ptr::null_mut();
+    // SAFETY: `handler` is the live VNImageRequestHandler; `performRequests:error:`
+    // takes an NSArray of requests (`request_array`, alive) and an `NSError **`
+    // out-pointer — `&mut error_ptr` is a valid pointer to the null-initialized
+    // object pointer declared above. The selector returns a BOOL.
     let success: bool =
         unsafe { msg_send![&handler, performRequests: &*request_array, error: &mut error_ptr] };
 
     if !success {
         let err_msg = if !error_ptr.is_null() {
+            // SAFETY: this branch runs only when `!error_ptr.is_null()` (the
+            // enclosing `if`), so `&*error_ptr` dereferences a valid NSError
+            // object; `localizedDescription` returns a Retained NSString.
             let desc: Retained<NSString> = unsafe { msg_send![&*error_ptr, localizedDescription] };
             desc.to_string()
         } else {
@@ -136,7 +161,12 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
     }
 
     // --- Extract results ---
+    // SAFETY: `request` is the live VNRecognizeTextRequest that was just run;
+    // `performRequests` above returned success, so `results` is a non-nil
+    // NSArray of observations (possibly empty), returned here as Retained.
     let observations: Retained<AnyObject> = unsafe { msg_send![&request, results] };
+    // SAFETY: `observations` is the live NSArray returned above; `count` is a
+    // valid accessor returning its element count as an NSUInteger.
     let obs_count: usize = unsafe { msg_send![&observations, count] };
 
     debug!(obs_count, "Vision OCR: observations received");
@@ -144,28 +174,49 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
     let mut results = Vec::with_capacity(obs_count);
 
     for i in 0..obs_count {
+        // SAFETY: `observations` is the live NSArray; `i` is bounded by the
+        // `0..obs_count` loop range, so it is a valid in-range index for
+        // `objectAtIndex:`, which returns a Retained VNRecognizedTextObservation.
         let observation: Retained<AnyObject> =
             unsafe { msg_send![&observations, objectAtIndex: i] };
 
         // topCandidates:1 returns NSArray of VNRecognizedText
         let max_candidates: usize = 1;
+        // SAFETY: `observation` is the live VNRecognizedTextObservation from this
+        // iteration; `topCandidates:` takes an NSUInteger maximum
+        // (`max_candidates`) and returns a Retained NSArray of VNRecognizedText.
         let candidates: Retained<AnyObject> =
             unsafe { msg_send![&observation, topCandidates: max_candidates] };
 
+        // SAFETY: `candidates` is the live NSArray returned above; `count` is a
+        // valid accessor returning its element count as an NSUInteger.
         let cand_count: usize = unsafe { msg_send![&candidates, count] };
         if cand_count == 0 {
             continue;
         }
 
+        // SAFETY: `cand_count == 0` was just rejected by the early `continue`,
+        // so index 0 is in bounds for `objectAtIndex:` on the live `candidates`
+        // array, returning a Retained VNRecognizedText.
         let candidate: Retained<AnyObject> =
             unsafe { msg_send![&candidates, objectAtIndex: 0usize] };
 
         // Extract text string
+        // SAFETY: `candidate` is the live VNRecognizedText from above; `string`
+        // is a valid accessor returning its recognized text as a Retained NSString.
         let ns_string: Retained<NSString> = unsafe { msg_send![&candidate, string] };
+        // SAFETY: `ns_string` is the live NSString from above; `UTF8String`
+        // returns a pointer to its NUL-terminated UTF-8 backing buffer, which is
+        // owned by and valid for the lifetime of `ns_string`.
         let text_ptr: *const std::ffi::c_char = unsafe { msg_send![&ns_string, UTF8String] };
         let text = if text_ptr.is_null() {
             continue;
         } else {
+            // SAFETY: this branch runs only when `!text_ptr.is_null()` (the
+            // enclosing `if`), and `text_ptr` is the NUL-terminated C string from
+            // `UTF8String`; `ns_string` is still alive in this iteration, so the
+            // buffer stays valid for this read (the owned String is built before
+            // `ns_string` is dropped at end of iteration).
             unsafe { CStr::from_ptr(text_ptr) }
                 .to_string_lossy()
                 .into_owned()
@@ -176,10 +227,15 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
         }
 
         // Extract confidence
+        // SAFETY: `candidate` is the live VNRecognizedText; `confidence` is a
+        // valid accessor returning a VNConfidence (float) by value.
         let confidence: f32 = unsafe { msg_send![&candidate, confidence] };
 
         // Extract bounding box (CGRect, normalized 0..1, bottom-left origin)
         // Uses objc2_core_foundation::CGRect which implements Encode.
+        // SAFETY: `observation` is the live observation; `boundingBox` returns a
+        // CGRect by value, and objc2_core_foundation::CGRect implements Encode so
+        // msg_send! decodes the struct return correctly.
         let bbox: CGRect = unsafe { msg_send![&observation, boundingBox] };
 
         // Convert from bottom-left normalized coords to top-left pixel coords

@@ -11,6 +11,9 @@ mod verification;
 use std::path::{Path, PathBuf};
 
 use super::{UpdateError, Updater};
+// #6941: re-export the capped aux-body reader + cap so the releases-JSON fetch in
+// updater/mod.rs shares the same OOM guard as the .sig/.sha256 reads here.
+pub(crate) use download::{read_body_capped_update, MAX_AUX_UPDATE_BYTES};
 #[cfg(test)]
 pub(crate) use verification::SignatureKeySource;
 
@@ -449,5 +452,81 @@ mod rollback_tests {
         );
         let post = std::fs::read(&current_exe).unwrap();
         assert_eq!(post, b"current");
+    }
+}
+
+#[cfg(test)]
+mod body_cap_tests {
+    //! #7000: regression for `read_body_capped_update` — the body-cap helper that
+    //! `download_update` (main artifact) plus the `.sig`/`.sha256` aux reads rely on.
+    //! Confirms it reads within-cap bodies fully, rejects an oversized *declared*
+    //! Content-Length early, and — the critical case — aborts mid-stream when a
+    //! chunked body with NO Content-Length exceeds the cap (the forged/absent-CL
+    //! OOM vector a declared-length pre-check cannot catch).
+    use super::read_body_capped_update;
+    use crate::updater::UpdateError;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn read_body_capped_update_reads_within_cap() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_body("0123456789") // 10 bytes
+            .create_async()
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.url())
+            .send()
+            .await
+            .expect("mock request must succeed");
+        let body = read_body_capped_update(resp, 1024)
+            .await
+            .expect("body within cap must read");
+        assert_eq!(body, b"0123456789", "capped read must return the full body");
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_update_rejects_oversized_declared_length() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_body("x".repeat(100)) // Content-Length: 100
+            .create_async()
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.url())
+            .send()
+            .await
+            .expect("mock request must succeed");
+        // Declared length 100 > cap 10 → early-reject before buffering.
+        let err = read_body_capped_update(resp, 10)
+            .await
+            .expect_err("oversized declared length must be rejected");
+        assert!(matches!(err, UpdateError::Download(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_update_aborts_chunked_body_over_cap_midstream() {
+        // Chunked body with NO Content-Length — the forged/absent-CL vector that a
+        // declared-length pre-check cannot catch. Must abort mid-stream, not OOM.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_chunked_body(|w| w.write_all(&vec![b'x'; 100]))
+            .create_async()
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.url())
+            .send()
+            .await
+            .expect("mock request must succeed");
+        let err = read_body_capped_update(resp, 10)
+            .await
+            .expect_err("chunked body over cap must abort mid-stream");
+        assert!(matches!(err, UpdateError::Download(_)), "got {err:?}");
     }
 }

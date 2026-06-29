@@ -66,8 +66,11 @@ impl KeychainRegistry {
     /// the OS keychain (e.g. OAuth provider names). The values themselves live
     /// in the OS keychain, but the namespace/key inventory is still privacy-
     /// sensitive, so the persisted file is created owner-only: mode 0o600 on
-    /// Unix (atomic `create_new` + `mode`, no world-readable window) and an
-    /// owner-only DACL on Windows before the rename.
+    /// Unix (atomic `create_new` + `mode`, no world-readable window) and, on
+    /// Windows, an owner-only DACL applied to the EMPTY tmp before the inventory
+    /// bytes are written (closing the creation-time read window, #6942). The
+    /// Windows DACL step stays NON-FATAL (this is an enumeration cache, not the
+    /// secret values): on failure it warns and falls back to the inherited ACL.
     pub fn save(&self, path: &std::path::Path) -> Result<(), StorageError> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| StorageError::SecretStore(format!("registry serialization: {e}")))?;
@@ -101,19 +104,46 @@ impl KeychainRegistry {
             })?;
         }
 
-        // Windows: write the payload, then apply an owner-only DACL so the file
-        // is not readable via inherited parent-directory ACLs (reuses the shared
-        // helper in `encryption.rs`). DACL failure is non-fatal (warn and continue).
+        // Windows: create the tmp EMPTY, apply an owner-only DACL while it holds
+        // no inventory bytes, then write the payload — so on the success path the
+        // registry is never readable via the inherited parent-directory ACL once
+        // it contains the namespace/key inventory (#6942 closes the creation-time
+        // window the previous "write then tighten" order left open; reuses the
+        // shared helper in `encryption.rs`). DACL failure stays NON-FATAL: this is
+        // an enumeration cache (the secret values live in the OS keychain), so on
+        // failure we warn and fall back to writing under the inherited ACL,
+        // preserving the pre-existing best-effort contract.
         #[cfg(windows)]
         {
-            if let Err(e) = std::fs::write(&tmp, json.as_bytes()) {
+            use std::io::Write as _;
+            // Empty tmp first — no inventory bytes exist during the brief
+            // inherited-ACL window.
+            if let Err(e) = std::fs::File::create(&tmp) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(StorageError::SecretStore(format!(
-                    "keychain registry tmp write: {e}"
+                    "keychain registry tmp create: {e}"
                 )));
             }
+            // Tighten to owner-only BEFORE writing the inventory (non-fatal).
             if let Err(e) = crate::encryption::set_owner_only_dacl(&tmp) {
                 warn!("keychain registry: failed to set owner-only DACL: {e}");
+            }
+            // Write the inventory into the (owner-only on the success path) tmp.
+            match std::fs::OpenOptions::new().write(true).open(&tmp) {
+                Ok(mut f) => {
+                    if let Err(e) = f.write_all(json.as_bytes()) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(StorageError::SecretStore(format!(
+                            "keychain registry tmp write: {e}"
+                        )));
+                    }
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(StorageError::SecretStore(format!(
+                        "keychain registry tmp open for write: {e}"
+                    )));
+                }
             }
         }
 

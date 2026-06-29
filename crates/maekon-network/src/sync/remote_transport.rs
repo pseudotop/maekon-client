@@ -13,6 +13,9 @@ use maekon_core::models::sync::{ChangeSet, PeerInfo};
 use maekon_core::ports::sync_transport::SyncTransport;
 use maekon_core::sync::Hlc;
 
+use super::http_body::{
+    read_body_capped, read_text_capped, MAX_CONTROL_RESPONSE_BYTES, MAX_PULL_RESPONSE_BYTES,
+};
 use super::sync_crypto;
 use crate::resilience::{extract_retry_after, jittered_backoff_delay};
 
@@ -56,7 +59,10 @@ impl RemoteSyncTransport {
         auth_credential: String,
     ) -> Result<Self, CoreError> {
         let timeout = Duration::from_secs(REQUEST_TIMEOUT_SECS);
-        let client = reqwest::Client::builder()
+        // #6892: redirect=none — the remote sync transport sends the keychain Bearer/X-Api-Key
+        // credential to a user-configured endpoint, so disable redirect following to prevent a
+        // compromised/misconfigured relay's 30x from re-sending the credential to an attacker host.
+        let client = crate::outbound::hardened_client_builder()
             .timeout(timeout)
             .build()
             .map_err(|e| CoreError::Network {
@@ -203,7 +209,11 @@ impl SyncTransport for RemoteSyncTransport {
                 Ok(resp) => {
                     let status = resp.status();
                     let retry_after = extract_retry_after(&resp);
-                    let body = resp.text().await.unwrap_or_default();
+                    // #6925: cap the push-ack/error body — a compromised relay could
+                    // stream an unbounded body and OOM the agent on every sync cycle.
+                    let body = read_text_capped(resp, MAX_CONTROL_RESPONSE_BYTES)
+                        .await
+                        .unwrap_or_default();
                     match status.as_u16() {
                         200 | 204 => {
                             debug!(bytes = encrypted.len(), "remote push succeeded");
@@ -283,10 +293,9 @@ impl SyncTransport for RemoteSyncTransport {
                     match status.as_u16() {
                         204 => return Ok(None),
                         200 => {
-                            let bytes = resp.bytes().await.map_err(|e| CoreError::Network {
-                                code: maekon_core::error_codes::NetworkCode::Generic,
-                                message: format!("read pull response: {e}"),
-                            })?;
+                            // #6917: read the body with a hard size cap so a
+                            // compromised/oversized paired peer cannot OOM the agent.
+                            let bytes = read_body_capped(resp, MAX_PULL_RESPONSE_BYTES).await?;
                             if bytes.is_empty() {
                                 return Ok(None);
                             }
@@ -307,7 +316,10 @@ impl SyncTransport for RemoteSyncTransport {
                         }
                         _ => {
                             let retry_after = extract_retry_after(&resp);
-                            let body = resp.text().await.unwrap_or_default();
+                            // #6925: cap the error body (same OOM class as the ack path).
+                            let body = read_text_capped(resp, MAX_CONTROL_RESPONSE_BYTES)
+                                .await
+                                .unwrap_or_default();
                             last_error = match status.as_u16() {
                                 429 => CoreError::RateLimit {
                                     code: maekon_core::error_codes::NetworkCode::RateLimit,
@@ -352,7 +364,10 @@ impl SyncTransport for RemoteSyncTransport {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            // #6925: cap the error body (same OOM class as the ack path).
+            let body = read_text_capped(resp, MAX_CONTROL_RESPONSE_BYTES)
+                .await
+                .unwrap_or_default();
             return Err(Self::check_response_status(status, &body)
                 .err()
                 .unwrap_or_else(|| CoreError::Internal {
@@ -361,7 +376,10 @@ impl SyncTransport for RemoteSyncTransport {
                 }));
         }
 
-        let peers: Vec<PeerInfo> = resp.json().await.map_err(|e| {
+        // #6925: cap the peer-list body before deserialize (resp.json() would buffer
+        // unbounded — a compromised relay could OOM the agent).
+        let peers_bytes = read_body_capped(resp, MAX_CONTROL_RESPONSE_BYTES).await?;
+        let peers: Vec<PeerInfo> = serde_json::from_slice(&peers_bytes).map_err(|e| {
             // Match sister module integration/http_transport/connect.rs pattern:
             // wrap as CoreError::Serialization so wire code is `internal.serialization`
             // (indicating parse failure) rather than generic `internal.generic`.
@@ -388,7 +406,10 @@ impl SyncTransport for RemoteSyncTransport {
             debug!(device_id, "remote peer forgotten");
             Ok(())
         } else {
-            let body = resp.text().await.unwrap_or_default();
+            // #6925: cap the error body (same OOM class as the ack path).
+            let body = read_text_capped(resp, MAX_CONTROL_RESPONSE_BYTES)
+                .await
+                .unwrap_or_default();
             Self::check_response_status(status, &body)
         }
     }

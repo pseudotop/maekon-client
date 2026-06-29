@@ -331,7 +331,14 @@ fn config_to_settings_maps_audio_and_focus_auto_sections() {
     assert_eq!(settings.audio.max_recording_secs, 45);
     assert_eq!(settings.audio.model_size, "small");
     assert_eq!(settings.audio.stt_provider, "cloud");
-    assert_eq!(settings.audio.cloud_api_key, "sk-audio-test");
+    // #7066: the cloud STT BYOK secret must be MASKED on the read/GET path
+    // (mirroring the AI-provider `api_key_masked` keys), NEVER returned in
+    // cleartext. "sk-audio-test" (13 chars) masks to "sk...test".
+    assert_ne!(
+        settings.audio.cloud_api_key, "sk-audio-test",
+        "raw cloud_api_key must not be returned by config_to_settings"
+    );
+    assert_eq!(settings.audio.cloud_api_key, "sk...test");
     assert_eq!(
         settings.audio.cloud_stt_endpoint,
         "https://stt.example.com/v1/transcriptions"
@@ -354,4 +361,25 @@ fn config_to_settings_maps_audio_and_focus_auto_sections() {
     assert_eq!(schedule.end, "12:00");
     assert_eq!(schedule.days, vec!["Mon".to_string(), "Wed".to_string()]);
     assert_eq!(settings.focus_auto.cooldown_secs, 900);
+}
+
+/// #7066: a configured cloud STT secret is masked on the GET path, and an empty
+/// (unconfigured) key stays empty so the UI can distinguish "no key" from "set".
+#[test]
+fn config_to_settings_masks_audio_cloud_api_key() {
+    let mut config = maekon_core::config::AppConfig::default_config();
+
+    // Configured key -> masked sentinel, never the raw secret.
+    config.audio.cloud_api_key = "sk-1234567890abcdef".to_string();
+    let settings = config_to_settings(&config, CredentialBackendKind::OsSecretStore);
+    assert_ne!(
+        settings.audio.cloud_api_key, "sk-1234567890abcdef",
+        "raw cloud_api_key must never be returned on the read path"
+    );
+    assert_eq!(settings.audio.cloud_api_key, "sk...cdef");
+
+    // No key configured -> empty (no spurious "***" sentinel).
+    config.audio.cloud_api_key = String::new();
+    let settings = config_to_settings(&config, CredentialBackendKind::OsSecretStore);
+    assert_eq!(settings.audio.cloud_api_key, "");
 }

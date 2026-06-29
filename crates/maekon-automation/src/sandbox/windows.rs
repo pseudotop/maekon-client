@@ -3,24 +3,40 @@
 //! **Enforcement model (subprocess):**
 //! The sandbox spawns the `maekon-sandbox-worker` binary as a child process
 //! inside a Win32 Job Object with configured resource limits. A restricted
-//! token is created via `CreateRestrictedToken`; the current worker launch
-//! path still uses `tokio::process::Command`, so the token is **not applied**
-//! to the child process yet (see TODO in `create_restricted_token`).
+//! token is created via `CreateRestrictedToken` and **applied** to the worker
+//! by launching it with `CreateProcessAsUserW` (the `windows-sandbox` feature
+//! path no longer uses `tokio::process::Command`), so the child runs under the
+//! restricted token instead of inheriting the parent's unrestricted token.
 //!
 //! **Dual code paths (`windows-sandbox` feature):**
 //! - **Enabled**: Real Win32 API calls — `CreateJobObjectW`, `SetInformationJobObject`,
-//!   `CreateRestrictedToken`, `AssignProcessToJobObject`.
+//!   `CreateRestrictedToken`, `CreateProcessAsUserW` (restricted-token launch),
+//!   `AssignProcessToJobObject`.
 //! - **Disabled**: Log-only stubs that describe what *would* be enforced.
 //!
 //! **Enforcement status:**
 //! - **Resource limits**: Enforced via Job Object (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`).
 //! - **Process isolation**: Enforced via subprocess model (child inherits Job Object).
-//! - **Token restriction**: NOT enforced — token is created but never applied to spawned
-//!   processes. Full enforcement requires `CreateProcessAsUserW` / `CreateProcessWithTokenW`
-//!   (tracked as TODO in `create_restricted_token`).
+//! - **Token restriction**: Enforced (feature on) — the restricted token demotes
+//!   the `BUILTIN\Administrators` group to DENY-ONLY via `SidsToDisable` (#7071)
+//!   whenever the policy sets `disable_admin_sid` (every profile), and adds
+//!   `DISABLE_MAX_PRIVILEGE` for privilege-stripping profiles; the worker is then
+//!   spawned under that token via `CreateProcessAsUserW` (raw spawn wrapped in
+//!   `spawn_blocking`, with manual Job Object assignment + pipe wiring). Integrity
+//!   is deliberately NOT lowered: the worker's sole purpose is to synthesize input
+//!   (mouse/keyboard via `enigo`), and a Low-integrity process is blocked by UIPI
+//!   from sending input to normal medium-integrity windows — lowering integrity
+//!   would break the only reachable (`Permissive`) automation path. The deny-only
+//!   admin SID delivers the privilege containment without that functional
+//!   regression, so `privilege_restriction` is now backed by a real control.
 //! - **Filesystem isolation**: Not enforced (Job Objects do not isolate FS).
 //! - **Syscall filtering**: Not available on Windows.
 //! - **Network isolation**: Not enforced (would require Windows Firewall rules).
+//!
+//! Because Windows cannot enforce filesystem/syscall/network isolation, the
+//! `Standard`/`Strict` profiles still fail CLOSED here (see
+//! `missing_required_containment_for_profile`); only `Permissive` reaches the
+//! spawn path, and it now runs under the restricted token.
 
 use async_trait::async_trait;
 
@@ -56,6 +72,15 @@ impl OwnedHandle {
     /// Returns `true` when the handle is neither null nor INVALID_HANDLE_VALUE.
     fn is_valid(&self) -> bool {
         !self.0.is_null() && self.0 != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+    }
+
+    /// Transfer the raw handle out of this wrapper WITHOUT closing it; the caller
+    /// takes over ownership (and the obligation to close it exactly once). Used to
+    /// hand a pipe end to `std::fs::File`, which then owns and closes it on drop.
+    fn into_raw(self) -> Win32Handle {
+        let raw = self.0;
+        std::mem::forget(self);
+        raw
     }
 }
 
@@ -168,137 +193,167 @@ impl Sandbox for WindowsSandbox {
             "Windows sandbox spawning worker subprocess"
         );
 
-        // Win32 API calls are synchronous -- run in spawn_blocking
-        #[cfg(feature = "windows-sandbox")]
-        let (job, _token) = tokio::task::spawn_blocking(move || {
-            let job = create_job_object(&job_limits)?;
-            // `_token` is held alive until this function returns so the handle
-            // is not prematurely closed, but the token is NOT passed to the
-            // child process (tokio::process::Command has no token-injection API).
-            // The warn! inside create_restricted_token documents this gap.
-            let token = create_restricted_token(&token_restrictions)?;
-            Ok::<_, AutomationError>((job, token))
-        })
-        .await
-        .map_err(|e| CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("thread join failed: {e}"),
-        })?
-        .map_err(CoreError::from)?;
-
-        #[cfg(not(feature = "windows-sandbox"))]
-        {
-            create_job_object(&job_limits)?;
-            create_restricted_token(&token_restrictions)?;
-        }
-
-        // Spawn the worker subprocess via tokio::process::Command.
-        // On Windows without `windows-sandbox`, this spawns a plain child
-        // without Job Object or restricted token enforcement.
+        // ── Feature path: spawn the worker UNDER the restricted token ──────
         //
-        // `kill_on_drop(true)` ensures that if this `Child` value is dropped
-        // (e.g. scope exit after a timeout) tokio sends SIGKILL / TerminateProcess
-        // automatically, preventing orphan worker processes.
-        let mut cmd = tokio::process::Command::new(worker_path);
-        cmd.kill_on_drop(true);
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        let mut child = cmd.spawn().map_err(|e| CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("spawn failed: {e}"),
-        })?;
-
-        // Assign child to Job Object for resource limit enforcement.
-        // The Job Object outlives the child because `job` is held until the
-        // end of this function.
-        //
-        // `Child::raw_handle()` returns `Option<RawHandle>`, which matches
-        // the `windows-sys` HANDLE representation for the current crate lock.
+        // All Win32 work (Job Object creation, restricted token creation, the
+        // CreateProcessAsUserW launch, Job Object assignment, pipe I/O and the
+        // bounded wait) is synchronous, so it runs in a single `spawn_blocking`
+        // task. `tokio::process::Command` is intentionally NOT used here: it has
+        // no token-injection API, which is exactly why the token was previously
+        // created but never applied. `run_worker_under_restricted_token` launches
+        // the worker with `CreateProcessAsUserW(restricted_token, …)` so the child
+        // runs under the restricted token instead of the parent's full token.
         #[cfg(feature = "windows-sandbox")]
         {
-            let raw_child_handle =
-                child
-                    .raw_handle()
-                    .ok_or_else(|| CoreError::SandboxExecution {
-                        code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                        message: "child process handle unavailable".into(),
-                    })?;
-            assign_process_to_job(&job, raw_child_handle)?;
-        }
+            let outcome = tokio::task::spawn_blocking(move || {
+                run_worker_under_restricted_token(
+                    &worker_path,
+                    request_json.as_bytes(),
+                    &job_limits,
+                    &token_restrictions,
+                    timeout_ms,
+                )
+            })
+            .await
+            .map_err(|e| CoreError::SandboxExecution {
+                code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                message: format!("thread join failed: {e}"),
+            })?
+            .map_err(CoreError::from)?;
 
-        // Write serialized request to child stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            stdin
-                .write_all(request_json.as_bytes())
-                .await
-                .map_err(|e| CoreError::SandboxExecution {
-                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                    message: format!("stdin write: {e}"),
-                })?;
-            stdin
-                .write_all(b"\n")
-                .await
-                .map_err(|e| CoreError::SandboxExecution {
-                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                    message: format!("stdin newline: {e}"),
-                })?;
-            drop(stdin);
-        }
-
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
-        .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => {
-                return Err(CoreError::SandboxExecution {
-                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                    message: format!("wait failed: {e}"),
-                })
-            }
-            Err(_elapsed) => {
-                // Timeout fired. `child` was moved into the timeout future and
-                // is no longer addressable here. `kill_on_drop(true)` set above
-                // ensures tokio calls `TerminateProcess` when that future is
-                // dropped at the end of this match arm, so the worker tree is
-                // reaped promptly rather than running until natural exit.
+            if outcome.timed_out {
                 return Err(CoreError::ExecutionTimeout {
                     code: maekon_core::error_codes::SandboxCode::Timeout,
                     timeout_ms,
                 });
             }
-        };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CoreError::SandboxExecution {
-                code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                message: format!(
-                    "child exited {} -- stderr: {}",
-                    output.status,
-                    stderr.trim()
-                ),
-            });
+            if outcome.exit_code != 0 {
+                let stderr = String::from_utf8_lossy(&outcome.stderr);
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!(
+                        "child exited code {} -- stderr: {}",
+                        outcome.exit_code,
+                        stderr.trim()
+                    ),
+                });
+            }
+
+            let response = ipc::parse_worker_response(&outcome.stdout)?;
+            if !response.success {
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!(
+                        "worker reported failure: {}",
+                        response.error.unwrap_or_default()
+                    ),
+                });
+            }
+
+            tracing::info!(
+                action = %super::redact_action(action),
+                "Windows sandbox execution completed via worker (restricted token applied)"
+            );
+            return Ok(());
         }
 
-        let response = ipc::parse_worker_response(&output.stdout)?;
-        if !response.success {
-            return Err(CoreError::SandboxExecution {
-                code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-                message: format!(
-                    "worker reported failure: {}",
-                    response.error.unwrap_or_default()
-                ),
-            });
-        }
+        // ── Stub path: `windows-sandbox` feature disabled ─────────────────
+        //
+        // Unreachable in practice — `check_windows_sandbox_support()` is false
+        // without the feature, so `is_available()` is false and the early return
+        // at the top of this method fires first (and the factory hands back a
+        // `FailClosedSandbox`). It is kept only so the crate compiles without the
+        // feature; it provides NO Job Object or restricted-token enforcement.
+        #[cfg(not(feature = "windows-sandbox"))]
+        {
+            create_job_object(&job_limits)?;
+            create_restricted_token(&token_restrictions)?;
 
-        tracing::info!(action = %super::redact_action(action), "Windows sandbox execution completed via worker");
-        Ok(())
+            // `kill_on_drop(true)` reaps the child if this `Child` is dropped
+            // (e.g. on timeout). `env_clear()` keeps parent secrets out of the
+            // worker environment (#6827).
+            let mut cmd = tokio::process::Command::new(worker_path);
+            cmd.kill_on_drop(true);
+            cmd.env_clear();
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+
+            let mut child = cmd.spawn().map_err(|e| CoreError::SandboxExecution {
+                code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                message: format!("spawn failed: {e}"),
+            })?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                stdin
+                    .write_all(request_json.as_bytes())
+                    .await
+                    .map_err(|e| CoreError::SandboxExecution {
+                        code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                        message: format!("stdin write: {e}"),
+                    })?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| CoreError::SandboxExecution {
+                        code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                        message: format!("stdin newline: {e}"),
+                    })?;
+                drop(stdin);
+            }
+
+            let output = match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                child.wait_with_output(),
+            )
+            .await
+            {
+                Ok(Ok(out)) => out,
+                Ok(Err(e)) => {
+                    return Err(CoreError::SandboxExecution {
+                        code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                        message: format!("wait failed: {e}"),
+                    })
+                }
+                Err(_elapsed) => {
+                    return Err(CoreError::ExecutionTimeout {
+                        code: maekon_core::error_codes::SandboxCode::Timeout,
+                        timeout_ms,
+                    });
+                }
+            };
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!(
+                        "child exited {} -- stderr: {}",
+                        output.status,
+                        stderr.trim()
+                    ),
+                });
+            }
+
+            let response = ipc::parse_worker_response(&output.stdout)?;
+            if !response.success {
+                return Err(CoreError::SandboxExecution {
+                    code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
+                    message: format!(
+                        "worker reported failure: {}",
+                        response.error.unwrap_or_default()
+                    ),
+                });
+            }
+
+            tracing::info!(
+                action = %super::redact_action(action),
+                "Windows sandbox execution completed via worker"
+            );
+            return Ok(());
+        }
     }
 
     /// Report capabilities based on actual enforcement availability.
@@ -315,7 +370,16 @@ impl Sandbox for WindowsSandbox {
             process_isolation: true, // ENFORCED via subprocess + Job Object
             #[cfg(not(feature = "windows-sandbox"))]
             process_isolation: false,
-            privilege_restriction: false, // Restricted token is created but not applied to worker.
+            // ENFORCED (feature on): the worker is spawned under the restricted
+            // token via CreateProcessAsUserW, which demotes the Administrators
+            // group to deny-only (SidsToDisable, #7071) and strips privileges for
+            // privilege-stripping profiles, so the worker no longer inherits the
+            // parent's full token. (Integrity is intentionally not lowered — see
+            // the module-level "Token restriction" note: it would break UIPI input.)
+            #[cfg(feature = "windows-sandbox")]
+            privilege_restriction: true,
+            #[cfg(not(feature = "windows-sandbox"))]
+            privilege_restriction: false,
         }
     }
 }
@@ -418,9 +482,16 @@ fn create_job_object(limits: &JobObjectLimits) -> Result<(), AutomationError> {
 
 /// Create a restricted token from the current process token.
 ///
-/// Uses `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` to strip
-/// dangerous privileges (SeDebugPrivilege, SeTcbPrivilege, etc.) from the
-/// child process token.
+/// Demotes the `BUILTIN\Administrators` group to DENY-ONLY via `SidsToDisable`
+/// whenever the policy sets `disable_admin_sid` (every profile), and adds
+/// `DISABLE_MAX_PRIVILEGE` when the profile strips privileges (removing dangerous
+/// privileges such as SeDebugPrivilege/SeTcbPrivilege). Before #7071 the
+/// `disable_admin_sid` policy was only logged — `SidsToDisable` was always null,
+/// so `CreateRestrictedToken` returned a token with the parent's full group set
+/// and the advertised admin-SID drop was a no-op. The resulting token is a PRIMARY
+/// token (the source is opened with `TOKEN_ASSIGN_PRIMARY`), so it can be handed to
+/// `CreateProcessAsUserW` to actually launch the worker under it (see
+/// `spawn_process_with_token`).
 #[cfg(feature = "windows-sandbox")]
 fn create_restricted_token(
     restrictions: &TokenRestrictions,
@@ -450,13 +521,39 @@ fn create_restricted_token(
         flags |= DISABLE_MAX_PRIVILEGE;
     }
 
+    // Build the deny-only SID list. When `disable_admin_sid` is set we list the
+    // BUILTIN\Administrators SID in `SidsToDisable`, which marks it
+    // SE_GROUP_USE_FOR_DENY_ONLY in the new token: it can no longer GRANT access
+    // (only contribute to deny ACEs), so a compromised worker cannot use the
+    // parent's Administrators membership. The SID buffer and the
+    // `SID_AND_ATTRIBUTES` array must both outlive the `CreateRestrictedToken`
+    // call below, so they are bound here in the function scope.
+    let admin_sid_buffer = if restrictions.disable_admin_sid {
+        Some(build_administrators_sid()?)
+    } else {
+        None
+    };
+    let mut sids_to_disable: Vec<SID_AND_ATTRIBUTES> = Vec::new();
+    if let Some(buffer) = admin_sid_buffer.as_ref() {
+        sids_to_disable.push(SID_AND_ATTRIBUTES {
+            // `SidsToDisable` reads only the SID pointer; `Attributes` is ignored.
+            Sid: buffer.as_ptr() as *mut core::ffi::c_void,
+            Attributes: 0,
+        });
+    }
+    let (disable_sid_count, disable_sid_ptr) = if sids_to_disable.is_empty() {
+        (0u32, std::ptr::null())
+    } else {
+        (sids_to_disable.len() as u32, sids_to_disable.as_ptr())
+    };
+
     let mut restricted_token: Win32Handle = std::ptr::null_mut();
     let ret = unsafe {
         CreateRestrictedToken(
             process_token,
             flags,
-            0,
-            std::ptr::null(), // disable SIDs
+            disable_sid_count,
+            disable_sid_ptr,
             0,
             std::ptr::null(), // delete privileges
             0,
@@ -474,34 +571,58 @@ fn create_restricted_token(
     tracing::debug!(
         disable_admin = restrictions.disable_admin_sid,
         remove_privs = restrictions.remove_privileges,
-        "Restricted token created (NOT applied to child process — see TODO below)"
+        deny_only_sids = disable_sid_count,
+        "Restricted token created (admin SID demoted to deny-only; applied to the worker via CreateProcessAsUserW)"
     );
 
-    // SAFETY-WARNING: the restricted token is created successfully but is
-    // never applied to the spawned subprocess. `tokio::process::Command`
-    // does not expose a token-injection API, so the child inherits the
-    // parent's unrestricted token.
-    //
-    // TODO: Replace `tokio::process::Command` with a raw `CreateProcessAsUserW`
-    // or `CreateProcessWithTokenW` call (wrapped in `spawn_blocking`) to launch
-    // the worker under the restricted token. Until that is done, token
-    // restriction enforcement is UNENFORCED at the process level.
-    tracing::warn!(
-        "Windows restricted token created but NOT applied to spawned subprocess; \
-         token restriction is unenforced. \
-         Full enforcement requires CreateProcessAsUserW / CreateProcessWithTokenW."
-    );
-
-    // The caller binds this to `_token`; it is retained only to keep the
-    // handle alive until scope exit, not to enforce anything.
+    // The caller passes this PRIMARY restricted token to `CreateProcessAsUserW`
+    // (see `spawn_process_with_token`) so the spawned worker actually runs under
+    // it. The `OwnedHandle` keeps the token alive until the launch completes and
+    // closes it on drop.
     Ok(OwnedHandle(restricted_token))
+}
+
+/// Build the `BUILTIN\Administrators` group SID (S-1-5-32-544) into a caller-owned
+/// buffer.
+///
+/// `CreateWellKnownSid` writes the SID into the fixed-size array; keeping it in a
+/// caller-owned buffer (rather than `AllocateAndInitializeSid` + `FreeSid`) means
+/// there is no heap SID to free and the buffer's pointer stays valid for the whole
+/// `CreateRestrictedToken` call that consumes it. The 68-byte size is
+/// `SECURITY_MAX_SID_SIZE`, the documented upper bound for any SID.
+#[cfg(feature = "windows-sandbox")]
+fn build_administrators_sid() -> Result<[u8; 68], AutomationError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Security::{CreateWellKnownSid, WinBuiltinAdministratorsSid};
+
+    let mut buffer = [0u8; 68];
+    let mut size = buffer.len() as u32;
+    // SAFETY: `buffer`/`size` are valid out-pointers; `buffer` is sized at
+    // SECURITY_MAX_SID_SIZE so CreateWellKnownSid (which writes at most `size`
+    // bytes and updates `size`) cannot overflow it. The domain SID is null, which
+    // is required for a built-in well-known SID.
+    let ret = unsafe {
+        CreateWellKnownSid(
+            WinBuiltinAdministratorsSid,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut size,
+        )
+    };
+    if ret == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "CreateWellKnownSid(BUILTIN\\Administrators) failed: error {err}"
+        )));
+    }
+    Ok(buffer)
 }
 
 /// Log-only stub when `windows-sandbox` feature is disabled.
 ///
-/// Token restriction is unenforced in this path regardless: even when the
-/// feature is enabled, the restricted token is not applied to spawned processes
-/// (see the full Win32 implementation above for the TODO).
+/// Token restriction is unenforced in this path: without the feature the worker
+/// is launched via `tokio::process::Command`, which cannot apply a token. (The
+/// full Win32 implementation above DOES apply the token via `CreateProcessAsUserW`.)
 #[cfg(not(feature = "windows-sandbox"))]
 fn create_restricted_token(restrictions: &TokenRestrictions) -> Result<(), AutomationError> {
     tracing::debug!(
@@ -515,22 +636,355 @@ fn create_restricted_token(restrictions: &TokenRestrictions) -> Result<(), Autom
 /// Assign a child process to a Job Object for resource limit enforcement.
 ///
 /// Must be called after spawning the child but before it exits, so the Job
-/// Object limits apply for the lifetime of the child.
+/// Object limits apply for the lifetime of the child. The worker is created
+/// SUSPENDED and assigned here before being resumed, so it cannot run (and thus
+/// cannot escape the job) before the limits bind.
 #[cfg(feature = "windows-sandbox")]
-fn assign_process_to_job(job: &OwnedHandle, child_handle: Win32Handle) -> Result<(), CoreError> {
+fn assign_process_to_job(
+    job: &OwnedHandle,
+    child_handle: Win32Handle,
+) -> Result<(), AutomationError> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
+    // SAFETY: `job.0` is a valid Job Object handle and `child_handle` is a valid
+    // process handle (just returned by CreateProcessAsUserW). Neither is consumed.
     let ret = unsafe { AssignProcessToJobObject(job.0, child_handle) };
     if ret == 0 {
         let err = unsafe { GetLastError() };
-        return Err(CoreError::SandboxExecution {
-            code: maekon_core::error_codes::SandboxCode::ExecutionFailed,
-            message: format!("AssignProcessToJobObject failed: error {err}"),
-        });
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "AssignProcessToJobObject failed: error {err}"
+        )));
     }
     tracing::debug!("Child process assigned to Job Object");
     Ok(())
+}
+
+// ── Restricted-token worker launch (feature = "windows-sandbox") ─────
+//
+// The restricted token created above is APPLIED to the worker here, closing the
+// gap where the token was built but the worker still inherited the parent's full
+// token. The launch path is raw Win32 (`CreateProcessAsUserW`) because
+// `tokio::process::Command` exposes no token-injection API. The whole launch is
+// synchronous and is driven from a `spawn_blocking` task by `execute_sandboxed`.
+
+/// Result of running the worker under the restricted token.
+#[cfg(feature = "windows-sandbox")]
+struct WorkerOutcome {
+    /// `true` when the worker exceeded its timeout and was terminated.
+    timed_out: bool,
+    /// The worker process exit code (`1` is synthesized on timeout).
+    exit_code: u32,
+    /// Captured stdout bytes (the worker writes its SandboxResponse JSON here).
+    stdout: Vec<u8>,
+    /// Captured stderr bytes (surfaced in error messages).
+    stderr: Vec<u8>,
+}
+
+/// Create an anonymous pipe whose two ends are inheritable by a child process.
+///
+/// Returns `(read_end, write_end)`. The caller marks the parent-retained end
+/// non-inheritable via [`set_handle_non_inheritable`] so only the intended end
+/// crosses into the child.
+#[cfg(feature = "windows-sandbox")]
+fn create_inheritable_pipe() -> Result<(OwnedHandle, OwnedHandle), AutomationError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    let mut read: Win32Handle = std::ptr::null_mut();
+    let mut write: Win32Handle = std::ptr::null_mut();
+    let security = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1, // TRUE: the child must be able to inherit the pipe ends
+    };
+
+    // SAFETY: `read`/`write` are valid out-pointers; `security` lives for the
+    // call. CreatePipe writes two fresh, owned handles on success.
+    let ret = unsafe { CreatePipe(&mut read, &mut write, &security, 0) };
+    if ret == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "CreatePipe failed: error {err}"
+        )));
+    }
+    Ok((OwnedHandle(read), OwnedHandle(write)))
+}
+
+/// Clear `HANDLE_FLAG_INHERIT` on a handle so it is NOT inherited by the child.
+///
+/// Applied to the parent-retained pipe ends: if the child inherited the parent's
+/// write end of the stdin pipe (or read ends of stdout/stderr) it would never see
+/// EOF, deadlocking the I/O.
+#[cfg(feature = "windows-sandbox")]
+fn set_handle_non_inheritable(handle: &OwnedHandle) -> Result<(), AutomationError> {
+    use windows_sys::Win32::Foundation::{GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT};
+
+    // SAFETY: `handle.0` is a valid owned Win32 handle for the duration of the call.
+    let ret = unsafe { SetHandleInformation(handle.0, HANDLE_FLAG_INHERIT, 0) };
+    if ret == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "SetHandleInformation failed: error {err}"
+        )));
+    }
+    Ok(())
+}
+
+/// Build the Job Object + restricted token and launch the worker under the token.
+///
+/// Creates the resource-limited Job Object and the PRIMARY restricted token, then
+/// hands them to [`spawn_process_with_token`] which performs the actual
+/// `CreateProcessAsUserW` launch, Job Object assignment, pipe I/O and bounded
+/// wait. The worker environment is cleared (`clear_env = true`) so parent secrets
+/// never cross the sandbox boundary (#6827). The job/token are held alive for the
+/// whole call so the limits/token bind for the worker's entire lifetime.
+#[cfg(feature = "windows-sandbox")]
+fn run_worker_under_restricted_token(
+    worker_path: &std::path::Path,
+    request_bytes: &[u8],
+    job_limits: &JobObjectLimits,
+    token_restrictions: &TokenRestrictions,
+    timeout_ms: u64,
+) -> Result<WorkerOutcome, AutomationError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let job = create_job_object(job_limits)?;
+    let token = create_restricted_token(token_restrictions)?;
+
+    // Launch by absolute application name with a null command line (the worker
+    // takes no arguments). The name is a NUL-terminated wide string.
+    let application_name: Vec<u16> = worker_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    spawn_process_with_token(
+        &application_name,
+        None,
+        &job,
+        &token,
+        request_bytes,
+        timeout_ms,
+        true, // clear_env: keep parent secrets out of the worker (#6827)
+    )
+}
+
+/// Launch a process under `token`, wired to anonymous pipes, assigned to `job`,
+/// and wait for it (bounded by `timeout_ms`). Returns the captured stdout/stderr
+/// and exit status. Factored out so the FFI launch path can be exercised by a
+/// Windows CI runtime test against a known system binary (`windows.rs` is only
+/// compiled on Windows, so this is the only place the launch path can be tested).
+///
+/// `application_name` is a NUL-terminated wide string. `command_line`, when
+/// `Some`, is a NUL-terminated mutable wide buffer (CreateProcess may modify it).
+/// When `clear_env` is true the child is launched with an empty environment.
+#[cfg(feature = "windows-sandbox")]
+fn spawn_process_with_token(
+    application_name: &[u16],
+    command_line: Option<&mut [u16]>,
+    job: &OwnedHandle,
+    token: &OwnedHandle,
+    stdin_bytes: &[u8],
+    timeout_ms: u64,
+    clear_env: bool,
+) -> Result<WorkerOutcome, AutomationError> {
+    use std::io::{Read, Write};
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GetLastError, WAIT_FAILED, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessAsUserW, GetExitCodeProcess, ResumeThread, TerminateProcess,
+        WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+    };
+
+    // Anonymous pipes. The child end of each pipe is inheritable; the
+    // parent-retained end is marked non-inheritable so EOF propagates correctly.
+    let (stdin_read, stdin_write) = create_inheritable_pipe()?;
+    let (stdout_read, stdout_write) = create_inheritable_pipe()?;
+    let (stderr_read, stderr_write) = create_inheritable_pipe()?;
+    set_handle_non_inheritable(&stdin_write)?;
+    set_handle_non_inheritable(&stdout_read)?;
+    set_handle_non_inheritable(&stderr_read)?;
+
+    // Redirect the child's std handles to the child-side pipe ends.
+    // SAFETY: STARTUPINFOW is plain-old-data; zeroing then filling fields is valid.
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = stdin_read.0;
+    startup.hStdOutput = stdout_write.0;
+    startup.hStdError = stderr_write.0;
+
+    // CREATE_SUSPENDED: assign to the Job Object before the child runs.
+    // CREATE_NO_WINDOW: the worker is a background console process; no window.
+    let mut creation_flags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
+
+    // Empty Unicode environment block (two NUL WCHARs) when clearing the env.
+    let empty_env: [u16; 2] = [0, 0];
+    let environment: *const core::ffi::c_void = if clear_env {
+        creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+        empty_env.as_ptr() as *const core::ffi::c_void
+    } else {
+        std::ptr::null()
+    };
+
+    let command_line_ptr: *mut u16 = match command_line {
+        Some(buffer) => buffer.as_mut_ptr(),
+        None => std::ptr::null_mut(),
+    };
+
+    // SAFETY: PROCESS_INFORMATION is plain-old-data; zeroing is a valid init.
+    let mut process_info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+    // SAFETY: `token.0` is a valid PRIMARY restricted token (opened with
+    // TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY). `application_name` is
+    // NUL-terminated wide; `command_line_ptr` is null or a NUL-terminated mutable
+    // wide buffer. `startup`/`process_info` are valid in/out pointers and the std
+    // handles in `startup` are live for the call. `environment` is null or points
+    // to a valid double-NUL-terminated block. CreateProcessAsUserW does not take
+    // ownership of any handle passed to it.
+    let created = unsafe {
+        CreateProcessAsUserW(
+            token.0,
+            application_name.as_ptr(),
+            command_line_ptr,
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // bInheritHandles = TRUE: child inherits the std* pipe ends
+            creation_flags,
+            environment,
+            std::ptr::null(),
+            &startup,
+            &mut process_info,
+        )
+    };
+    if created == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "CreateProcessAsUserW failed: error {err} (restricted-token launch)"
+        )));
+    }
+    // RAII for the process + primary-thread handles returned by CreateProcess.
+    let process = OwnedHandle(process_info.hProcess);
+    let thread = OwnedHandle(process_info.hThread);
+
+    // The child holds its own inherited copies of the child-side pipe ends; close
+    // the parent's copies so the parent's read ends see EOF when the child exits
+    // and the child's stdin sees EOF when we close our write end.
+    drop(stdin_read);
+    drop(stdout_write);
+    drop(stderr_write);
+
+    // Constrain the still-suspended child to the Job Object BEFORE it runs, then
+    // resume it. Terminate on any failure so a suspended child never leaks.
+    if let Err(e) = assign_process_to_job(job, process.0) {
+        // SAFETY: `process.0` is a valid, still-suspended process handle.
+        unsafe { TerminateProcess(process.0, 1) };
+        return Err(e);
+    }
+    // SAFETY: `thread.0` is the valid primary-thread handle from CreateProcess.
+    let resume = unsafe { ResumeThread(thread.0) };
+    if resume == u32::MAX {
+        let err = unsafe { GetLastError() };
+        // SAFETY: `process.0` is valid; terminate the child that never resumed.
+        unsafe { TerminateProcess(process.0, 1) };
+        return Err(AutomationError::SandboxEnforcement(format!(
+            "ResumeThread failed: error {err}"
+        )));
+    }
+    drop(thread); // primary-thread handle no longer needed
+
+    // Wrap the parent-side pipe ends in std::fs::File so safe std I/O closes them
+    // on drop. Each raw handle is transferred out of its OwnedHandle exactly once
+    // (`into_raw` forgets the wrapper), so File owns and closes it exactly once.
+    // SAFETY: each handle is a unique, owned, open pipe end produced above.
+    let mut stdin_file = unsafe { std::fs::File::from_raw_handle(stdin_write.into_raw() as _) };
+    let stdout_file = unsafe { std::fs::File::from_raw_handle(stdout_read.into_raw() as _) };
+    let stderr_file = unsafe { std::fs::File::from_raw_handle(stderr_read.into_raw() as _) };
+
+    // Drain stdout/stderr on dedicated threads so a full pipe buffer cannot
+    // deadlock against our stdin write / wait. (`File` is `Send`.)
+    let stdout_reader = std::thread::spawn(move || {
+        let mut file = stdout_file;
+        let mut buffer = Vec::new();
+        let _ = file.read_to_end(&mut buffer);
+        buffer
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut file = stderr_file;
+        let mut buffer = Vec::new();
+        let _ = file.read_to_end(&mut buffer);
+        buffer
+    });
+
+    // Send the request, then close stdin so the worker observes EOF on its one
+    // line of input.
+    let write_result = stdin_file
+        .write_all(stdin_bytes)
+        .and_then(|()| stdin_file.write_all(b"\n"));
+    drop(stdin_file);
+    if let Err(e) = write_result {
+        // SAFETY: `process.0` is valid; reap the child we can no longer feed.
+        unsafe { TerminateProcess(process.0, 1) };
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
+        return Err(AutomationError::SandboxExecution(format!(
+            "stdin write: {e}"
+        )));
+    }
+
+    // Wait for the child, bounded by the timeout (clamped to the u32 API range).
+    let wait_ms = timeout_ms.min(u32::MAX as u64) as u32;
+    // SAFETY: `process.0` is a valid process handle.
+    let wait = unsafe { WaitForSingleObject(process.0, wait_ms) };
+    if wait == WAIT_FAILED {
+        let err = unsafe { GetLastError() };
+        // SAFETY: `process.0` is valid; reap before returning.
+        unsafe { TerminateProcess(process.0, 1) };
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
+        return Err(AutomationError::SandboxExecution(format!(
+            "WaitForSingleObject failed: error {err}"
+        )));
+    }
+    let timed_out = wait == WAIT_TIMEOUT;
+    if timed_out {
+        // SAFETY: `process.0` is valid. Terminate the timed-out worker; the Job
+        // Object's KILL_ON_JOB_CLOSE (on `job` drop) also reaps any descendants.
+        unsafe { TerminateProcess(process.0, 1) };
+    }
+
+    // The reader threads finish once the child's pipe ends hit EOF (on exit or
+    // termination). Joining here guarantees full capture before we return.
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+
+    let exit_code = if timed_out {
+        1
+    } else {
+        let mut code: u32 = 0;
+        // SAFETY: `process.0` is valid; `code` is a valid out-pointer.
+        let ok = unsafe { GetExitCodeProcess(process.0, &mut code) };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            return Err(AutomationError::SandboxExecution(format!(
+                "GetExitCodeProcess failed: error {err}"
+            )));
+        }
+        code
+    };
+
+    // `process`/`token`/`job` (held by the caller) drop here → handles closed;
+    // closing the job reaps any stragglers via KILL_ON_JOB_CLOSE.
+    Ok(WorkerOutcome {
+        timed_out,
+        exit_code,
+        stdout,
+        stderr,
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -641,26 +1095,194 @@ mod tests {
         // `job` (OwnedHandle) drops here → CloseHandle, terminating the empty job.
     }
 
+    /// End-to-end runtime proof of the restricted-token LAUNCH path: token apply
+    /// (`CreateProcessAsUserW`) + Job Object assignment + pipe wiring + bounded
+    /// wait + exit-code/stdout capture. `windows.rs` only compiles on Windows, so
+    /// this is the sole place the FFI launch can be exercised at runtime; it runs
+    /// on the `windows-latest` `--features windows-sandbox` CI leg.
+    ///
+    /// Uses `cmd.exe` (a guaranteed system binary) as a stand-in for the worker.
+    /// `clear_env = false` here so cmd can resolve its dependencies from the
+    /// inherited environment; the production worker path uses `clear_env = true`.
+    #[cfg(feature = "windows-sandbox")]
+    #[test]
+    fn restricted_token_launch_runs_child_and_captures_stdout() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let cmd_path = format!("{system_root}\\System32\\cmd.exe");
+
+        // Permissive token (no privilege stripping) maximizes the chance that
+        // CreateProcessAsUserW accepts the restricted-token-from-own-token, which
+        // is the contract this test pins.
+        let config = SandboxConfig {
+            profile: SandboxProfile::Permissive,
+            ..Default::default()
+        };
+        let job = create_job_object(&build_job_limits(&config)).expect("create_job_object");
+        let token =
+            create_restricted_token(&build_token_restrictions(&config)).expect("restricted token");
+
+        let application_name: Vec<u16> = std::ffi::OsStr::new(&cmd_path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let probe = "maekon_sandbox_token_probe_4242";
+        let mut command_line: Vec<u16> =
+            std::ffi::OsStr::new(&format!("\"{cmd_path}\" /c echo {probe}"))
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+        let outcome = spawn_process_with_token(
+            &application_name,
+            // `as_mut_slice()` yields `&mut [u16]` directly (no Vec→slice coercion
+            // through `Option`, which would not type-check).
+            Some(command_line.as_mut_slice()),
+            &job,
+            &token,
+            b"",
+            30_000,
+            false,
+        )
+        .expect("CreateProcessAsUserW restricted-token launch must succeed");
+
+        assert!(!outcome.timed_out, "child must not time out");
+        assert_eq!(
+            outcome.exit_code,
+            0,
+            "cmd /c echo must exit 0; stderr: {}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains(probe),
+            "captured stdout must contain the probe, got: {stdout:?}"
+        );
+    }
+
+    /// #7071 regression — prove the restricted token actually demotes the
+    /// Administrators group to DENY-ONLY, rather than merely being created and
+    /// logged. Before the fix `SidsToDisable` was null, so the Administrators
+    /// group (when present) kept its normal "enabled" attributes; this assertion
+    /// would fail. After the fix the group carries `SE_GROUP_USE_FOR_DENY_ONLY`.
+    /// Runs on the `windows-latest` `--features windows-sandbox` CI leg
+    /// (`windows.rs` is `#[cfg(target_os = "windows")]`). When the test account is
+    /// not a member of Administrators the group is absent from the token and the
+    /// check is vacuously satisfied — the deny-only demotion only matters when the
+    /// SID is present.
+    #[cfg(feature = "windows-sandbox")]
+    #[test]
+    fn restricted_token_demotes_administrators_to_deny_only() {
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::Security::{
+            CreateWellKnownSid, EqualSid, GetTokenInformation, TokenGroups,
+            WinBuiltinAdministratorsSid, SE_GROUP_USE_FOR_DENY_ONLY, SID_AND_ATTRIBUTES,
+            TOKEN_GROUPS,
+        };
+
+        // Permissive is the only profile that reaches the worker spawn path, and it
+        // sets disable_admin_sid = true (pinned by the win_limits policy tests).
+        let config = SandboxConfig {
+            profile: SandboxProfile::Permissive,
+            ..Default::default()
+        };
+        let restrictions = build_token_restrictions(&config);
+        assert!(
+            restrictions.disable_admin_sid,
+            "fixture: Permissive must request admin-SID deny-only"
+        );
+
+        let token = create_restricted_token(&restrictions).expect("restricted token");
+
+        // Reference Administrators SID to match against the token's groups.
+        let mut admin = [0u8; 68];
+        let mut admin_size = admin.len() as u32;
+        let ok = unsafe {
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null_mut(),
+                admin.as_mut_ptr() as *mut core::ffi::c_void,
+                &mut admin_size,
+            )
+        };
+        assert_ne!(ok, 0, "CreateWellKnownSid failed: {}", unsafe {
+            GetLastError()
+        });
+
+        // First GetTokenInformation call sizes the buffer (it fails with
+        // ERROR_INSUFFICIENT_BUFFER and writes the required byte count).
+        let mut needed: u32 = 0;
+        unsafe {
+            GetTokenInformation(token.0, TokenGroups, std::ptr::null_mut(), 0, &mut needed);
+        }
+        // Allocate an 8-byte-aligned buffer (TOKEN_GROUPS contains a pointer) sized
+        // to at least the required length, then read the groups back. Allocating in
+        // u64 words guarantees the 8-byte alignment a TOKEN_GROUPS read requires;
+        // `/ 8 + 1` rounds up (over-allocating at most one word, which is harmless).
+        let words = (needed as usize) / 8 + 1;
+        let mut buffer = vec![0u64; words];
+        let capacity = (buffer.len() * 8) as u32;
+        let ok = unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenGroups,
+                buffer.as_mut_ptr() as *mut core::ffi::c_void,
+                capacity,
+                &mut needed,
+            )
+        };
+        assert_ne!(
+            ok,
+            0,
+            "GetTokenInformation(TokenGroups) failed: {}",
+            unsafe { GetLastError() }
+        );
+
+        // SAFETY: `buffer` is 8-byte aligned and holds a valid TOKEN_GROUPS that
+        // GetTokenInformation just wrote; `GroupCount` bounds the trailing array.
+        let groups = unsafe { &*(buffer.as_ptr() as *const TOKEN_GROUPS) };
+        let count = groups.GroupCount as usize;
+        let entries: &[SID_AND_ATTRIBUTES] =
+            unsafe { std::slice::from_raw_parts(groups.Groups.as_ptr(), count) };
+
+        for entry in entries {
+            let is_admin =
+                unsafe { EqualSid(entry.Sid, admin.as_mut_ptr() as *mut core::ffi::c_void) };
+            if is_admin != 0 {
+                assert_ne!(
+                    entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY,
+                    0,
+                    "Administrators group must be SE_GROUP_USE_FOR_DENY_ONLY in the restricted token"
+                );
+            }
+        }
+    }
+
     #[test]
     fn windows_sandbox_capabilities() {
         let sandbox = WindowsSandbox::new();
         let caps = sandbox.capabilities();
-        // Feature-dependent: resource_limits and process_isolation are only
-        // true when `windows-sandbox` feature is enabled.
+        // Feature-dependent: resource_limits, process_isolation and
+        // privilege_restriction are only true when `windows-sandbox` is enabled.
+        // privilege_restriction reflects the CreateProcessAsUserW restricted-token
+        // launch, which only exists in the feature path.
         if cfg!(feature = "windows-sandbox") {
             assert!(caps.resource_limits);
             assert!(caps.process_isolation);
+            assert!(
+                caps.privilege_restriction,
+                "worker is spawned under the restricted token via CreateProcessAsUserW"
+            );
         } else {
             assert!(!caps.resource_limits);
             assert!(!caps.process_isolation);
+            assert!(!caps.privilege_restriction);
         }
         assert!(!caps.filesystem_isolation);
         assert!(!caps.syscall_filtering);
         assert!(!caps.network_isolation);
-        assert!(
-            !caps.privilege_restriction,
-            "restricted token is created but not applied to spawned processes"
-        );
     }
 
     #[tokio::test]
@@ -694,10 +1316,20 @@ mod tests {
                         message.contains("network_isolation"),
                         "error must name missing network containment: {message}"
                     );
-                    assert!(
-                        message.contains("privilege_restriction"),
-                        "error must name the unenforced restricted-token gap: {message}"
-                    );
+                    // privilege_restriction is now ENFORCED (feature on) via the
+                    // CreateProcessAsUserW restricted-token launch, so it must NOT
+                    // be in the missing set; without the feature it remains missing.
+                    if cfg!(feature = "windows-sandbox") {
+                        assert!(
+                            !message.contains("privilege_restriction"),
+                            "restricted token is applied; privilege_restriction must NOT be missing: {message}"
+                        );
+                    } else {
+                        assert!(
+                            message.contains("privilege_restriction"),
+                            "error must name the unenforced restricted-token gap: {message}"
+                        );
+                    }
                     assert!(
                         message.contains("Job Object resource limits only"),
                         "error must make the non-containment mode explicit: {message}"

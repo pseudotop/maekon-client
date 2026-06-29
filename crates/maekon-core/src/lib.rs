@@ -38,6 +38,7 @@ pub mod ports;
 pub mod provider_surface;
 pub mod quantization;
 pub mod sanitized_display;
+pub mod secure_file;
 pub mod sync;
 pub mod types;
 

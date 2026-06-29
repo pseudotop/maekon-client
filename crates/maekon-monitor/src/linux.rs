@@ -1,3 +1,4 @@
+use crate::circuit_breaker::CircuitBreaker;
 use crate::error::MonitorError;
 use crate::log_privacy::title_digest;
 use maekon_core::models::context::{MousePosition, WindowInfo};
@@ -12,6 +13,24 @@ const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
 /// Guards the one-time `Shell.Eval`-disabled diagnostic so the 1s scheduler loop
 /// does not spam the log every tick on a modern GNOME Wayland session.
 static GNOME_EVAL_DISABLED_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Shared circuit breaker for ALL `xdotool` spawns (#6828): the active-window
+/// path (`get_active_window_x11`, getactivewindow + 3 follow-ups per 1s tick)
+/// and the mouse-position path (`get_mouse_position_x11`, getmouselocation per
+/// activity tick). On a host without `xdotool` (or where it hangs) the breaker
+/// opens after 3 consecutive absent/timeout results and then retries only every
+/// 60th tick, instead of forking `xdotool` on every tick. A single shared gate
+/// is correct because both paths invoke the same binary — one availability
+/// signal governs them all. Mirrors the macOS osascript breaker (threshold 3 /
+/// retry interval 60).
+static XDOTOOL_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
+
+/// #6830: independent breakers for the two idle-time forks. `xprintidle` and
+/// `dbus-send` are different binaries with different availability than `xdotool`,
+/// so they need their own breakers (a missing `xprintidle` must not be masked by
+/// a working `xdotool`, and vice-versa).
+static XPRINTIDLE_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
+static DBUS_SEND_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayServer {
@@ -373,143 +392,45 @@ fn extract_json_string_field(block: &str, field: &str) -> Option<String> {
 }
 
 async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
-    let window_id = match timeout(
-        Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool")
-            .arg("getactivewindow")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    {
-        Ok(Ok(output)) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            debug!("xdotool failure: {}", stderr);
-            return Ok(None);
-        }
-        Ok(Err(e)) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                debug!("xdotool - 'sudo apt install xdotool' execution required");
-            } else {
-                debug!("xdotool execution failure: {}", e);
-            }
-            return Ok(None);
-        }
-        Err(_) => {
-            debug!("xdotool getactivewindow timed out");
-            return Ok(None);
-        }
-    };
-
-    if window_id.is_empty() {
+    // #6828: native EWMH query via pure-Rust x11rb — a single X11 connection reading
+    // _NET_ACTIVE_WINDOW → _NET_WM_NAME/WM_NAME + _NET_WM_PID + geometry, replacing
+    // the four-fork-per-tick xdotool path (getactivewindow/getwindowname/
+    // getwindowpid/getwindowgeometry) entirely. The X11 round-trips are blocking, so
+    // they run on a blocking thread to honor the monitor tick's async contract.
+    // Returns None when no X server is reachable / no active window / any X error —
+    // the same degradation as the old xdotool path. (XDOTOOL_BREAKER now guards only
+    // the still-CLI mouse-position path.)
+    //
+    // #6882: the native query is timeout + circuit-breaker bounded inside
+    // `query_active_window_bounded` so a wedged/remote-forwarded X server cannot block
+    // this awaited blocking thread — and therefore the whole monitor tick — indefinitely
+    // (the #6828 rewrite had dropped the bound the xdotool path used to have).
+    let Some(native) = crate::x11_active_window::query_active_window_bounded().await else {
         return Ok(None);
-    }
-
-    let title = timeout(
-        Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool")
-            .args(["getwindowname", &window_id])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .filter(|o| o.status.success())
-    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-    .unwrap_or_default();
-
-    let pid = timeout(
-        Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool")
-            .args(["getwindowpid", &window_id])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .filter(|o| o.status.success())
-    .and_then(|o| {
-        String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .parse::<u32>()
-            .ok()
-    })
-    .unwrap_or(0);
-
-    let app_name = if pid > 0 {
-        get_process_name(pid)
-            .await
-            .unwrap_or_else(|| "Unknown".to_string())
-    } else {
-        "Unknown".to_string()
     };
 
-    let bounds = get_window_geometry_x11(&window_id).await;
+    let app_name = match native.pid {
+        Some(pid) => get_process_name(pid)
+            .await
+            .unwrap_or_else(|| "Unknown".to_string()),
+        None => "Unknown".to_string(),
+    };
 
     // Title is PII — log a content-free digest only (#5591).
     debug!(
-        "active window: {} ({}) (PID: {})",
+        "active window (native x11): {} ({}) (PID: {})",
         app_name,
-        title_digest(&title),
-        pid
+        title_digest(&native.title),
+        native.pid.unwrap_or(0)
     );
 
     Ok(Some(WindowInfo {
-        title,
+        title: native.title,
         app_name,
         app_bundle_id: None,
-        pid,
-        bounds,
+        pid: native.pid.unwrap_or(0),
+        bounds: native.bounds,
     }))
-}
-
-async fn get_window_geometry_x11(
-    window_id: &str,
-) -> Option<maekon_core::models::context::WindowBounds> {
-    let output = timeout(
-        Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool")
-            .args(["getwindowgeometry", "--shell", window_id])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut x = 0i32;
-    let mut y = 0i32;
-    let mut width = 0u32;
-    let mut height = 0u32;
-
-    for line in stdout.lines() {
-        if let Some(val) = line.strip_prefix("X=") {
-            x = val.parse().unwrap_or(0);
-        } else if let Some(val) = line.strip_prefix("Y=") {
-            y = val.parse().unwrap_or(0);
-        } else if let Some(val) = line.strip_prefix("WIDTH=") {
-            width = val.parse().unwrap_or(0);
-        } else if let Some(val) = line.strip_prefix("HEIGHT=") {
-            height = val.parse().unwrap_or(0);
-        }
-    }
-
-    Some(maekon_core::models::context::WindowBounds {
-        x,
-        y,
-        width,
-        height,
-    })
 }
 
 /// Reads the process name from `/proc/<pid>/comm`.
@@ -552,7 +473,11 @@ pub async fn get_idle_time_linux() -> Option<u64> {
 /// Get idle time via GNOME Mutter IdleMonitor D-Bus interface.
 /// Returns idle time in seconds, or None if not available.
 async fn get_idle_time_gnome_mutter() -> Option<u64> {
-    let output = timeout(
+    // #6830: short-circuit when the dbus-send breaker is open (binary missing / hanging).
+    if !DBUS_SEND_BREAKER.should_proceed() {
+        return None;
+    }
+    let result = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("dbus-send")
             .args([
@@ -565,9 +490,20 @@ async fn get_idle_time_gnome_mutter() -> Option<u64> {
             .kill_on_drop(true)
             .output(),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await;
+    // A non-GNOME session still RUNS dbus-send (it just returns status-failure),
+    // so a completed process is a breaker success — only spawn/timeout failures
+    // advance it. Mirrors the xprintidle path.
+    let output = match result {
+        Ok(Ok(output)) => {
+            DBUS_SEND_BREAKER.record_success();
+            output
+        }
+        Ok(Err(_)) | Err(_) => {
+            DBUS_SEND_BREAKER.record_failure();
+            return None;
+        }
+    };
 
     if !output.status.success() {
         debug!("GNOME Mutter IdleMonitor not available — not a GNOME session");
@@ -590,23 +526,35 @@ async fn get_idle_time_gnome_mutter() -> Option<u64> {
 }
 
 async fn get_idle_time_x11() -> Option<u64> {
+    // #6830: short-circuit when the xprintidle breaker is open (binary missing / hanging).
+    if !XPRINTIDLE_BREAKER.should_proceed() {
+        return None;
+    }
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("xprintidle").kill_on_drop(true).output(),
     )
     .await
     {
-        Ok(Ok(output)) if output.status.success() => output,
+        // Both Ok(Ok) arms mean xprintidle EXECUTED → breaker success (a non-success
+        // exit is "executed but no result", same reset semantics as the active-window path).
+        Ok(Ok(output)) if output.status.success() => {
+            XPRINTIDLE_BREAKER.record_success();
+            output
+        }
         Ok(Ok(_)) => {
+            XPRINTIDLE_BREAKER.record_success();
             return None;
         }
         Ok(Err(e)) => {
+            XPRINTIDLE_BREAKER.record_failure();
             if e.kind() == std::io::ErrorKind::NotFound {
                 debug!("xprintidle - 'sudo apt install xprintidle' execution required");
             }
             return None;
         }
         Err(_) => {
+            XPRINTIDLE_BREAKER.record_failure();
             debug!("xprintidle timed out");
             return None;
         }
@@ -644,6 +592,12 @@ pub async fn get_mouse_position_linux() -> Option<MousePosition> {
 }
 
 async fn get_mouse_position_x11() -> Option<MousePosition> {
+    // #6828: share the active-window breaker so an absent/hung xdotool stops
+    // forking this per-activity-tick path too (sibling fork-storm).
+    if !XDOTOOL_BREAKER.should_proceed() {
+        return None;
+    }
+
     // x:1234 y:567 screen:0 window:12345678
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
@@ -654,17 +608,24 @@ async fn get_mouse_position_x11() -> Option<MousePosition> {
     )
     .await
     {
-        Ok(Ok(output)) if output.status.success() => output,
+        Ok(Ok(output)) if output.status.success() => {
+            XDOTOOL_BREAKER.record_success();
+            output
+        }
         Ok(Ok(_)) => {
+            // xdotool ran (present) — reset rather than open the breaker.
+            XDOTOOL_BREAKER.record_success();
             return None;
         }
         Ok(Err(e)) => {
+            XDOTOOL_BREAKER.record_failure();
             if e.kind() == std::io::ErrorKind::NotFound {
                 debug!("xdotool - mouse detection not-available");
             }
             return None;
         }
         Err(_) => {
+            XDOTOOL_BREAKER.record_failure();
             debug!("xdotool getmouselocation timed out");
             return None;
         }

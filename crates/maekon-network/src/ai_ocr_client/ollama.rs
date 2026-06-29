@@ -108,10 +108,23 @@ pub(super) async fn probe_ollama_model_supports_ocr(
             }
         })?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| CoreError::Network {
-        code: maekon_core::error_codes::NetworkCode::Generic,
-        message: format!("Failed to read Ollama model capability probe response: {error}"),
-    })?;
+    // #6939: cap the probe response body — the Ollama endpoint may be remote/
+    // user-configured, so a hostile/MITM host could stream multi-GB and OOM the
+    // agent on this capability-probe path too (sibling of the main OCR read).
+    let body = crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+        .await
+        .map_err(|e| match e {
+            crate::outbound::BodyReadError::Transport(error) => CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("Failed to read Ollama model capability probe response: {error}"),
+            },
+            crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!(
+                    "Ollama model capability probe response exceeded cap {cap} bytes (len {len})"
+                ),
+            },
+        })?;
     if !status.is_success() {
         return Err(CoreError::Network {
             code: maekon_core::error_codes::NetworkCode::Generic,

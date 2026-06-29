@@ -216,3 +216,209 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
             .is_some_and(|(l, r)| l.eq_ignore_ascii_case(r))
         && left.port_or_known_default() == right.port_or_known_default()
 }
+
+/// #6894: SSRF guard for the integration (external-bind) model discovery path.
+///
+/// Rejects fail-closed when the resolved endpoint's scheme is not http/https, or when the host
+/// resolves to an internal address (loopback / private RFC1918 / link-local 169.254 / CGNAT
+/// 100.64 / ULA fc00::/7, etc.). The caller (request JSON) can freely specify `endpoint`, and
+/// this path is exposed remotely via a `0.0.0.0` bind under `web.allow_external` + integration
+/// auth, so without the guard a remote bearer-token holder could probe the host's internal
+/// network / metadata service.
+///
+/// The loopback-bind local path (`discover_provider_models`) runs on the user's own machine and
+/// uses legitimate internal endpoints like a localhost Ollama, so this guard is not applied
+/// there — the guard is exclusively for the external integration path.
+///
+/// Returns: the resolved `SocketAddr`s of the validated endpoint host. The caller passes these to
+/// the transport as `ProviderModelCatalogRequest.resolved_addrs` to pin the host and prevent the
+/// transport from re-resolving — closing the TOCTOU DNS-rebinding window between the guard's
+/// resolution and the transport's re-resolution (#6902). For an IP-literal host the result is the
+/// same whether pinned or not.
+pub(crate) async fn reject_internal_discovery_endpoint(
+    endpoint: &str,
+) -> Result<Vec<std::net::SocketAddr>, ApiError> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid model discovery endpoint URL: {e}")))?;
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "Model discovery endpoint scheme '{other}' is not allowed (http/https only)."
+            )));
+        }
+    }
+    // socket_addrs may perform DNS resolution and is therefore blocking, so we offload it onto
+    // spawn_blocking to avoid stalling the runtime. An IP-literal host resolves immediately without
+    // DNS. We additionally wrap it in a 5-second timeout so a hung DNS server cannot occupy a
+    // blocking thread for a long time (mitigating thread-pool exhaustion by an authenticated
+    // attacker); the timeout is a fail-closed rejection.
+    let url_for_resolve = url.clone();
+    let resolve_fut = tokio::task::spawn_blocking(move || url_for_resolve.socket_addrs(|| None));
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::time::timeout(std::time::Duration::from_secs(5), resolve_fut)
+            .await
+            .map_err(|_| {
+                ApiError::ServiceUnavailable(
+                    "Model discovery endpoint DNS resolution timed out.".to_string(),
+                )
+            })?
+            .map_err(|e| ApiError::Internal(format!("endpoint 해소 작업 실패: {e}")))?
+            .map_err(|e| {
+                ApiError::BadRequest(format!(
+                    "Model discovery endpoint host did not resolve: {e}"
+                ))
+            })?;
+    if addrs.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Model discovery endpoint host did not resolve to any address.".to_string(),
+        ));
+    }
+    // fail-closed: reject if any of the resolved addresses is internal.
+    if let Some(internal) = addrs.iter().find(|a| is_internal_ip(a.ip())) {
+        return Err(ApiError::Forbidden(format!(
+            "Model discovery endpoint resolves to an internal address ({}); refusing to fetch.",
+            internal.ip()
+        )));
+    }
+    // Return the validated external addresses so the transport pins to them (#6902 rebinding block).
+    Ok(addrs)
+}
+
+/// Whether the address is an internal one that must not be exposed externally — loopback /
+/// private / link-local / CGNAT / ULA / unspecified / multicast, etc. IPv4-mapped IPv6 is reduced
+/// to its inner v4 and checked.
+fn is_internal_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // 100.64.0.0/10 CGNAT (RFC 6598)
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 0x40)
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_internal_ip(std::net::IpAddr::V4(mapped));
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // fc00::/7 unique local
+                || (v6.octets()[0] & 0xFE) == 0xFC
+                // fe80::/10 link-local
+                || (v6.octets()[0] == 0xFE && (v6.octets()[1] & 0xC0) == 0x80)
+                // 0064:ff9b::/96 IANA NAT64 well-known prefix (RFC 6146) — reaches
+                // internal IPv4 addresses through a NAT64 network. to_ipv4_mapped() has a
+                // different prefix (::ffff:0:0/96) and does not catch this, so block explicitly.
+                || v6.octets()[..4] == [0x00, 0x64, 0xFF, 0x9B]
+        }
+    }
+}
+
+#[cfg(test)]
+mod ssrf_guard_tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn classifies_internal_ipv4() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",
+            "100.64.0.1", // CGNAT
+        ] {
+            assert!(
+                is_internal_ip(ip.parse::<IpAddr>().unwrap()),
+                "{ip} 은 내부로 분류되어야 한다"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_internal_ipv6() {
+        for ip in [
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",    // IPv4-mapped private
+            "64:ff9b::a00:1",     // NAT64 well-known prefix → 10.0.0.1 (RFC 6146)
+            "64:ff9b::a9fe:a9fe", // NAT64 → 169.254.169.254 (cloud metadata)
+        ] {
+            assert!(
+                is_internal_ip(ip.parse::<IpAddr>().unwrap()),
+                "{ip} 은 내부로 분류되어야 한다"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_public_ip() {
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(
+                !is_internal_ip(ip.parse::<IpAddr>().unwrap()),
+                "{ip} 은 외부(허용)로 분류되어야 한다"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_internal_literal_endpoints() {
+        // IP literals resolve without DNS, so this is testable without a network.
+        for url in [
+            "http://127.0.0.1:8080/v1/models",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/v1/models",
+            "https://192.168.1.10/v1/models",
+        ] {
+            let r = reject_internal_discovery_endpoint(url).await;
+            assert!(
+                matches!(r, Err(ApiError::Forbidden(_))),
+                "{url} 은 Forbidden 으로 거부되어야 한다: {r:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_scheme() {
+        let r = reject_internal_discovery_endpoint("ftp://example.com/x").await;
+        assert!(
+            matches!(r, Err(ApiError::BadRequest(_))),
+            "비-http(s) scheme 은 BadRequest 로 거부되어야 한다: {r:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn allows_public_literal_endpoint() {
+        // A public IP literal must pass the guard (no network required).
+        reject_internal_discovery_endpoint("https://8.8.8.8/v1/models")
+            .await
+            .unwrap_or_else(|e| panic!("공인 IP endpoint 는 허용되어야 한다: {e:?}"));
+    }
+
+    /// #6902: the guard must return the resolved addresses of the validated endpoint host
+    /// (for transport pinning). A public IP-literal carries that IP as-is.
+    #[tokio::test]
+    async fn returns_resolved_addrs_for_pinning() {
+        let addrs = reject_internal_discovery_endpoint("https://8.8.8.8:443/v1/models")
+            .await
+            .expect("공인 endpoint 허용");
+        assert!(!addrs.is_empty(), "검증된 주소를 반환해야 한다");
+        assert!(
+            addrs
+                .iter()
+                .all(|a| a.ip() == "8.8.8.8".parse::<std::net::IpAddr>().unwrap()),
+            "반환 주소는 endpoint IP(8.8.8.8)여야 한다: {addrs:?}"
+        );
+    }
+}

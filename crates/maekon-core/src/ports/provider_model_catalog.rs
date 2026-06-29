@@ -1,5 +1,6 @@
 //! Provider model catalog discovery transport port.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -25,6 +26,12 @@ pub struct ProviderModelCatalogRequest {
     pub endpoint: String,
     pub headers: Vec<ProviderModelCatalogHeader>,
     pub timeout: Duration,
+    /// #6902: `SocketAddr`s of the endpoint host the caller already resolved and verified, for
+    /// DNS-rebinding hardening. When non-empty, the transport does not re-resolve the host and
+    /// pins to these addresses (`resolve_to_addrs`) — closing the TOCTOU rebinding window between
+    /// the SSRF guard's (maekon-web) host resolution and the transport's re-resolution. An empty
+    /// vector means no pin (preserves existing behavior).
+    pub resolved_addrs: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

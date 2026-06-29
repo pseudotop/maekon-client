@@ -1011,7 +1011,7 @@ async fn build_connected_runtime_with_scopes(
     requested_scopes: Vec<IntegrationCapabilityScope>,
 ) -> ConnectedIntegrationRuntimeHarness {
     let temp_dir = tempfile::tempdir().expect("integration runtime tempdir");
-    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json"))
+    let store = FileIntegrationStateStore::new(temp_dir.path().join("integration.json"), None)
         .expect("integration state store");
     let transport = Arc::new(build_client(server));
     let session: Arc<dyn IntegrationSessionPort> =

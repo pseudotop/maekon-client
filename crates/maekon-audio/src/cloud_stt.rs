@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use reqwest::multipart;
 use tracing::{debug, warn};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use maekon_core::config::{PiiFilterLevel, SttLanguage};
 use maekon_core::error::CoreError;
@@ -140,9 +140,67 @@ fn truncate_provider_body(body: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Maximum cloud-STT response body this provider will buffer (#6989).
+///
+/// Whisper transcript JSON is kilobytes even for long audio, so a 16 MiB ceiling is
+/// generous while bounding memory against a malicious / compromised / MITM endpoint
+/// that streams an unbounded body. Same OOM threat model as the #6949 maekon-network
+/// response-body caps — which live behind `pub(crate)` in `maekon-network` and so
+/// cannot reach this crate (maekon-audio does not depend on maekon-network).
+const MAX_STT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read the cloud-STT response body incrementally, never buffering more than
+/// [`MAX_STT_RESPONSE_BYTES`] (#6989).
+///
+/// Pulls the body chunk-by-chunk and aborts as soon as the accumulated size would
+/// exceed the cap, so a forged/absent `Content-Length` with an unbounded (e.g.
+/// chunked) body can never be fully buffered. Returns `Err` on cap-exceed: the
+/// endpoint carries a Bearer key + raw audio and is user-configured, so an oversized
+/// response is treated as hostile rather than truncated-and-parsed.
+///
+/// `max_bytes` is a parameter (not a hardcoded read of the const) so unit tests can
+/// exercise the cap with a small ceiling instead of allocating a multi-MiB body.
+async fn read_stt_body_capped(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, CoreError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| CoreError::Network {
+        code: maekon_core::error_codes::NetworkCode::Generic,
+        message: format!("cloud STT body read: {e}"),
+    })? {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(CoreError::SpeechToText {
+                code: maekon_core::error_codes::AudioCode::SttFailed,
+                message: format!("cloud STT response body exceeds {max_bytes} byte cap"),
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Encode `audio` to WAV bytes for upload, then zeroize the source PCM samples (#7098).
+///
+/// The returned WAV bytes are moved into the multipart request body and handed to
+/// `reqwest`, which owns and drops them internally after transmission with no
+/// zeroize hook exposed to this crate — so the actually-transmitted copy cannot be
+/// overwritten in place here (the same "ownership leaves our control" boundary as
+/// the resampled `AudioBuffer` returned by `maekon-audio::capture`). What we CAN
+/// and DO wipe is the source f32 PCM we own: `audio.samples` holds the raw recorded
+/// speech and would otherwise drop un-overwritten at the end of `transcribe`,
+/// leaving it recoverable in freed heap. Overwriting it here extends the #7077
+/// stop/drain/Drop capture-buffer treatment to the STT upload path. Encoding
+/// happens BEFORE the wipe so the WAV body carries the real audio, not zeros.
+fn encode_wav_and_wipe_source(audio: &mut AudioBuffer) -> Vec<u8> {
+    let wav_bytes = audio.to_wav_bytes();
+    audio.samples.zeroize();
+    wav_bytes
+}
+
 #[async_trait]
 impl SttProvider for CloudSttProvider {
-    async fn transcribe(&self, audio: AudioBuffer) -> Result<TranscriptionResult, CoreError> {
+    async fn transcribe(&self, mut audio: AudioBuffer) -> Result<TranscriptionResult, CoreError> {
         if audio.is_empty() {
             return Ok(TranscriptionResult {
                 text: String::new(),
@@ -155,8 +213,10 @@ impl SttProvider for CloudSttProvider {
         let duration_secs = audio.duration_secs;
         let start = Instant::now();
 
-        // Convert to WAV for upload
-        let wav_bytes = audio.to_wav_bytes();
+        // Convert to WAV for upload, then zeroize the source PCM we own (#7098).
+        // The WAV bytes are moved into the multipart body below; reqwest owns and
+        // drops that transmitted copy with no wipe hook, so we wipe what we can.
+        let wav_bytes = encode_wav_and_wipe_source(&mut audio);
 
         let file_part = multipart::Part::bytes(wav_bytes)
             .file_name("audio.wav")
@@ -206,7 +266,15 @@ impl SttProvider for CloudSttProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            // #6989: read the error body under a hard size cap so a hostile endpoint
+            // cannot OOM us via an unbounded error body. On cap-exceed / read error,
+            // fall back to a short placeholder — this path is best-effort logging.
+            let body_bytes = read_stt_body_capped(response, MAX_STT_RESPONSE_BYTES)
+                .await
+                .unwrap_or_else(|_| {
+                    b"<oversized or unreadable provider error body omitted>".to_vec()
+                });
+            let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
             // Log the full provider body at warn level for server-side/debug inspection.
             // The body is NOT embedded verbatim in the error surfaced to the frontend to
@@ -256,8 +324,10 @@ impl SttProvider for CloudSttProvider {
             text: String,
         }
 
+        // #6989: parse from a size-capped body, never the unbounded reqwest `.json()`.
+        let body_bytes = read_stt_body_capped(response, MAX_STT_RESPONSE_BYTES).await?;
         let result: OpenAiResponse =
-            response.json().await.map_err(|e| CoreError::SpeechToText {
+            serde_json::from_slice(&body_bytes).map_err(|e| CoreError::SpeechToText {
                 code: maekon_core::error_codes::AudioCode::SttFailed,
                 message: format!("parse cloud response: {e}"),
             })?;
@@ -529,6 +599,85 @@ mod tests {
         assert!(
             matches!(err, CoreError::SpeechToText { .. }),
             "500 → SpeechToText (domain fallback), got: {err:?}"
+        );
+    }
+
+    // --- #6989: response-body size cap (OOM guard) ---
+
+    #[tokio::test]
+    async fn read_stt_body_capped_accepts_body_within_cap() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_body("0123456789") // 10 bytes
+            .create_async()
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.url())
+            .send()
+            .await
+            .expect("mock request must succeed");
+
+        let bytes = read_stt_body_capped(resp, 1024)
+            .await
+            .expect("body within cap must read");
+        assert_eq!(
+            bytes, b"0123456789",
+            "capped read must return the full body"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_stt_body_capped_rejects_oversized_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_body("x".repeat(100)) // 100 bytes, well over the 10-byte test cap
+            .create_async()
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.url())
+            .send()
+            .await
+            .expect("mock request must succeed");
+
+        // A hostile endpoint streaming more than the cap must be rejected, not buffered.
+        let err = read_stt_body_capped(resp, 10)
+            .await
+            .expect_err("body over cap must error rather than OOM-buffer");
+        assert!(
+            matches!(err, CoreError::SpeechToText { .. }),
+            "over-cap body → SpeechToText/SttFailed, got: {err:?}"
+        );
+    }
+
+    // --- #7098: source PCM is wiped after encoding the multipart upload body ---
+
+    #[test]
+    fn encode_wav_and_wipe_source_encodes_then_zeroizes_pcm() {
+        // Distinctive non-zero PCM so we can prove the WAV was encoded from the real
+        // samples BEFORE the source was wiped (encode-then-wipe ordering).
+        let mut audio = AudioBuffer::new(vec![0.5f32; 64]);
+        let wav = encode_wav_and_wipe_source(&mut audio);
+        // 44-byte WAV header + 64 samples * 2 bytes (PCM16) = 172 bytes.
+        assert_eq!(
+            wav.len(),
+            44 + 64 * 2,
+            "WAV body must contain the full encoded PCM"
+        );
+        assert_eq!(&wav[..4], b"RIFF", "body must be a real WAV container");
+        // The data sub-chunk must be non-zero — proves the body was encoded from the
+        // original 0.5 samples (≈16383 PCM16), not from post-wipe zeros.
+        assert!(
+            wav[44..].iter().any(|&b| b != 0),
+            "WAV PCM data must come from the original samples, not post-wipe zeros"
+        );
+        // The source PCM we own must be overwritten (zeroize truncates to len 0).
+        assert!(
+            audio.samples.is_empty(),
+            "source PCM samples must be zeroized after WAV encoding (#7098)"
         );
     }
 }

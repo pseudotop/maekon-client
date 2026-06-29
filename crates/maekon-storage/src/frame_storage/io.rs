@@ -44,6 +44,44 @@ pub(super) async fn write_all_or_cleanup(
     Ok(())
 }
 
+/// Create `dir` (and any missing parents) restricted to the owner.
+///
+/// #7074 (MS-001): frame directories hold screen captures (the most sensitive
+/// data in the product), so they are created owner-only rather than inheriting
+/// the umask (typically 0o755 = world-traversable):
+/// - **Unix**: every created component gets mode `0o700` via `DirBuilder`, so
+///   there is no world-traversable window.
+/// - **Windows**: the tree is created, then an owner-only DACL is applied to the
+///   leaf directory (best-effort defense-in-depth; a failure is logged and
+///   directory creation still succeeds).
+pub(super) async fn create_dir_owner_only(dir: &Path) -> Result<(), StorageError> {
+    #[cfg(unix)]
+    {
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o700);
+        builder.create(dir).await.map_err(|e| {
+            StorageError::Internal(format!("Failed to create frame directory: {e}"))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir).await.map_err(|e| {
+            StorageError::Internal(format!("Failed to create frame directory: {e}"))
+        })?;
+    }
+    #[cfg(windows)]
+    {
+        if let Err(e) = crate::encryption::set_owner_only_dacl(dir) {
+            warn!(
+                dir = %dir.display(),
+                "frame directory: failed to set owner-only DACL: {e}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Atomically write `data` to a uniquely-named frame file in `day_dir`.
 ///
 /// The filename is `<time_str>-<counter:010>.webp`, where `counter` is drawn
@@ -67,13 +105,32 @@ async fn write_frame_atomic(
         let filename = format!("{time_str}-{counter:010}.webp");
         let file_path = day_dir.join(&filename);
 
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file_path)
-            .await
-        {
+        // #7074 (MS-001): create frame files owner-only, mirroring the secret
+        // stores — screen captures are the most sensitive data in the product, so
+        // they must not inherit the umask default (typically 0o644 = world-
+        // readable). On Unix mode 0o600 is applied atomically in the create_new
+        // open; on Windows the owner-only DACL is applied below while the file is
+        // still empty.
+        let mut open_opts = fs::OpenOptions::new();
+        open_opts.write(true).create_new(true);
+        #[cfg(unix)]
+        open_opts.mode(0o600);
+
+        match open_opts.open(&file_path).await {
             Ok(file) => {
+                // #7074 (MS-001): apply the owner-only DACL while the just-created
+                // frame file is still empty (before any bytes are written). Frame
+                // content is AES-256-GCM ciphertext in the production capture path,
+                // so a DACL failure is logged and the write proceeds — the
+                // permission is defense-in-depth on already-encrypted data, matching
+                // the warn-and-continue treatment in file_secret_store.
+                #[cfg(windows)]
+                if let Err(e) = crate::encryption::set_owner_only_dacl(&file_path) {
+                    warn!(
+                        file = %file_path.display(),
+                        "frame file: failed to set owner-only DACL: {e}"
+                    );
+                }
                 // Torn-file cleanup on write/flush failure lives in the helper
                 // (#6244) so the same guarantee is unit-testable in isolation.
                 write_all_or_cleanup(file, &file_path, data).await?;
@@ -131,9 +188,9 @@ impl FrameFileStorage {
 
         let date_str = timestamp.format("%Y-%m-%d").to_string();
         let day_dir = self.base_dir.join("frames").join(&date_str);
-        fs::create_dir_all(&day_dir)
-            .await
-            .map_err(|e| StorageError::Internal(format!("Failed to create dated folder: {e}")))?;
+        // #7074 (MS-001): create the day directory owner-only (Unix 0o700 / Windows
+        // owner-only DACL) so the screen-capture tree is not world-traversable.
+        create_dir_owner_only(&day_dir).await?;
 
         let time_str = timestamp.format("%H-%M-%S").to_string();
 
@@ -209,9 +266,8 @@ impl FrameFileStorage {
                 let date_str = timestamp.format("%Y-%m-%d").to_string();
                 let day_dir = base_dir.join("frames").join(&date_str);
 
-                fs::create_dir_all(&day_dir).await.map_err(|e| {
-                    StorageError::Internal(format!("Failed to create dated folder: {e}"))
-                })?;
+                // #7074 (MS-001): owner-only day directory (see save_frame).
+                create_dir_owner_only(&day_dir).await?;
 
                 let time_str = timestamp.format("%H-%M-%S").to_string();
 

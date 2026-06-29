@@ -206,6 +206,16 @@ impl Sandbox for LinuxSandbox {
         // Ensure the OS child is reaped when the Child handle drops, even if
         // the caller cancels the future before timeout handling runs.
         cmd.kill_on_drop(true);
+        // Strip the parent environment so authorization secrets
+        // (MAEKON_*_SECRET, …) never cross the sandbox boundary, then re-add only
+        // the display vars enigo's X11/Wayland backend needs (#6827). The worker
+        // is invoked by absolute path, so clearing PATH is safe.
+        cmd.env_clear();
+        for (key, value) in
+            super::worker_env_from(std::env::vars(), super::LINUX_WORKER_ENV_ALLOWLIST)
+        {
+            cmd.env(key, value);
+        }
 
         // SAFETY: pre_exec runs after fork, before exec. The child gets its own
         // address space so constraints apply only to the child. BPF program is
@@ -658,6 +668,10 @@ fn apply_resource_limits_sync(limits: &ResourceLimits) -> std::io::Result<()> {
             rlim_cur: limits.max_memory_bytes,
             rlim_max: limits.max_memory_bytes,
         };
+        // SAFETY: setrlimit reads the rlimit struct through `&rlim` for the
+        // duration of the call only; `rlim` is fully initialized on the stack
+        // and outlives the call, and RLIMIT_AS is a valid libc resource id. No
+        // pointer is retained after the call returns.
         let ret = unsafe { libc::setrlimit(libc::RLIMIT_AS, &rlim) };
         if ret != 0 {
             let errno = std::io::Error::last_os_error();
@@ -673,6 +687,10 @@ fn apply_resource_limits_sync(limits: &ResourceLimits) -> std::io::Result<()> {
                 rlim_cur: cpu_secs,
                 rlim_max: cpu_secs,
             };
+            // SAFETY: setrlimit reads the rlimit struct through `&rlim` for the
+            // duration of the call only; `rlim` is fully initialized on the
+            // stack and outlives the call, and RLIMIT_CPU is a valid libc
+            // resource id. No pointer is retained after the call returns.
             let ret = unsafe { libc::setrlimit(libc::RLIMIT_CPU, &rlim) };
             if ret != 0 {
                 let errno = std::io::Error::last_os_error();
@@ -788,6 +806,10 @@ fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), AutomationError>
             rlim_cur: limits.max_memory_bytes,
             rlim_max: limits.max_memory_bytes,
         };
+        // SAFETY: setrlimit reads the rlimit struct through `&rlim` for the
+        // duration of the call only; `rlim` is fully initialized on the stack
+        // and outlives the call, and RLIMIT_AS is a valid libc resource id. No
+        // pointer is retained after the call returns.
         let ret = unsafe { libc::setrlimit(libc::RLIMIT_AS, &rlim) };
         if ret != 0 {
             let errno = std::io::Error::last_os_error();
@@ -803,6 +825,10 @@ fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), AutomationError>
                 rlim_cur: cpu_secs,
                 rlim_max: cpu_secs,
             };
+            // SAFETY: setrlimit reads the rlimit struct through `&rlim` for the
+            // duration of the call only; `rlim` is fully initialized on the
+            // stack and outlives the call, and RLIMIT_CPU is a valid libc
+            // resource id. No pointer is retained after the call returns.
             let ret = unsafe { libc::setrlimit(libc::RLIMIT_CPU, &rlim) };
             if ret != 0 {
                 let errno = std::io::Error::last_os_error();
@@ -924,11 +950,18 @@ mod tests {
         if pid == 0 {
             // ── CHILD ──
             if apply_seccomp_bpf_sync(&bpf).is_err() {
+                // SAFETY: runs in the forked child; libc::_exit is
+                // async-signal-safe and terminates the child immediately
+                // without unwinding or running parent atexit/Drop handlers.
                 unsafe { libc::_exit(40) };
             }
 
             // memfd_create (F4 sibling) — denied under Strict (allow_process=false).
             let name = b"sbx\0";
+            // SAFETY: runs in the forked child (async-signal-safe context). The
+            // raw SYS_memfd_create syscall reads the name through the pointer
+            // for the call only; `name` is a NUL-terminated byte literal that
+            // outlives the call, and the flags argument is a plain scalar.
             let memfd = unsafe {
                 libc::syscall(
                     libc::SYS_memfd_create,
@@ -939,10 +972,14 @@ mod tests {
             let memfd_errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
 
             // socket (network family) — denied under Strict (allow_network=false).
+            // SAFETY: runs in the forked child; libc::socket takes only scalar
+            // arguments (no pointers) and is a single async-signal-safe syscall.
             let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
             let sock_errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
 
             // getpid — NOT in any deny set; the default-allow filter must let it run.
+            // SAFETY: runs in the forked child; libc::getpid is a pure
+            // argument-less scalar syscall and is async-signal-safe.
             let pid_ok = unsafe { libc::getpid() } > 0;
 
             let code = if memfd != -1 {
@@ -958,11 +995,17 @@ mod tests {
             } else {
                 0 // correct: denied → EPERM, allowed → ok
             };
+            // SAFETY: runs in the forked child; libc::_exit is
+            // async-signal-safe and terminates the child without unwinding or
+            // running parent atexit/Drop handlers.
             unsafe { libc::_exit(code) };
         }
 
         // ── PARENT ──
         let mut status: libc::c_int = 0;
+        // SAFETY: runs in the parent. libc::waitpid writes the exit status
+        // through `&mut status`, a valid initialized stack variable that
+        // outlives the call; `pid` is the real child pid returned by fork().
         let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
         assert_eq!(
             waited,

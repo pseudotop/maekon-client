@@ -1,4 +1,5 @@
 use crate::active_window_parse::parse_osascript_active_window;
+use crate::circuit_breaker::CircuitBreaker;
 use crate::error::MonitorError;
 use crate::log_privacy::title_digest;
 use core_foundation::array::CFArray;
@@ -27,6 +28,11 @@ const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
 /// Consecutive timeout counter — circuit breaker to avoid spawning osascript
 /// every cycle when Accessibility permission is missing.
 static CONSECUTIVE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+
+/// #6830: independent breaker for the `ioreg` idle-time fork (a different binary
+/// than osascript — distinct availability), so a host where `ioreg` is missing or
+/// hangs cannot make the monitor fork it on every tick. Mirrors the linux idle breakers.
+static IOREG_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
 
 /// After this many consecutive timeouts, skip osascript entirely and return
 /// `Ok(None)` until the counter is reset (e.g. after a successful call).
@@ -507,16 +513,32 @@ pub async fn current_power_status_macos() -> Result<PowerStatus, MonitorError> {
 // so the battery/AC detection + low-battery threshold are verified on every OS.
 
 pub async fn get_idle_time_macos() -> Option<u64> {
-    let output = timeout(
+    // #6830: short-circuit when the ioreg breaker is open (binary missing / hanging).
+    if !IOREG_BREAKER.should_proceed() {
+        return None;
+    }
+    let result = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
         Command::new("ioreg")
             .kill_on_drop(true)
             .args(["-c", "IOHIDSystem", "-d", "4"])
             .output(),
     )
-    .await
-    .ok()?
-    .ok()?;
+    .await;
+    // Success = the process completed (regardless of exit status); a spawn error or
+    // timeout advances the breaker. This follows the shared CircuitBreaker/xdotool
+    // semantics (any completed run resets, absent/hung advances) — deliberately NOT
+    // the legacy osascript breaker, which resets on spawn-error and advances only on timeout.
+    let output = match result {
+        Ok(Ok(output)) => {
+            IOREG_BREAKER.record_success();
+            output
+        }
+        Ok(Err(_)) | Err(_) => {
+            IOREG_BREAKER.record_failure();
+            return None;
+        }
+    };
 
     if !output.status.success() {
         return None;

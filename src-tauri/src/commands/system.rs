@@ -251,19 +251,24 @@ pub async fn record_frontend_log(
     } else {
         surface
     };
-    // #6266: sanitize frontend-supplied strings for PII before they reach the
-    // log, matching report_frontend_error (error_report.rs). The frontend log
-    // bridge forwards raw console.error/onerror/unhandledrejection payloads,
-    // which can carry emails / tokens / file paths. Run the same Standard-level
-    // masking, after trim+truncate, on each non-empty field.
+    // #7067: sanitize frontend-supplied strings for PII before they reach the
+    // durable on-disk log, matching report_frontend_error (error_report.rs). The
+    // frontend log bridge forwards raw console.error/onerror/unhandledrejection
+    // payloads, which can carry emails / tokens / file paths / IPs. Sanitize at
+    // Strict (not Standard) — matching the sibling get_runtime_log_snapshot — so
+    // mask_api_keys (sk-/pk-/ghp_/AKIA/xoxb-/"Bearer <token>"/PEM PRIVATE KEY),
+    // mask_ip_addresses, and mask_passport run before any secret that lands in a
+    // frontend log line is persisted (and later re-emitted via the diagnostics
+    // bundle). Standard masks only IBAN/email/phone/card/KR-ID/SSN/user-path,
+    // leaving API keys / Bearer tokens / IPs intact. Runs after trim+truncate.
     let message = truncate_log_field(message.trim().to_string(), MAX_FRONTEND_LOG_MESSAGE_LEN);
     let message =
-        maekon_vision::privacy::sanitize_title_with_level(&message, PiiFilterLevel::Standard);
+        maekon_vision::privacy::sanitize_title_with_level(&message, PiiFilterLevel::Strict);
     let context = context
         .map(|value| truncate_log_field(value.trim().to_string(), MAX_FRONTEND_LOG_CONTEXT_LEN))
         .filter(|value| !value.is_empty())
         .map(|value| {
-            maekon_vision::privacy::sanitize_title_with_level(&value, PiiFilterLevel::Standard)
+            maekon_vision::privacy::sanitize_title_with_level(&value, PiiFilterLevel::Strict)
         });
 
     let level = match level.trim().to_ascii_lowercase().as_str() {
@@ -391,6 +396,98 @@ mod tests {
         assert!(snapshot.recent_text.contains("[PROVIDER_SECRET]"));
         assert!(!snapshot.recent_text.contains("alice@example.com"));
         assert!(!snapshot.recent_text.contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn record_frontend_log_masks_api_keys_and_ips_at_strict() {
+        // #7067 regression: the frontend log bridge must sanitize at Strict so
+        // API keys / Bearer tokens / IPs are masked before they reach the durable
+        // on-disk runtime log. Before the fix (Standard level), mask_api_keys /
+        // mask_ip_addresses did not run and these secrets were persisted verbatim.
+        // We capture the tracing output the command emits and assert the secrets
+        // are masked — this fails at Standard and passes at Strict.
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone)]
+        struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for CapturingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("buffer lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for CapturingWriter {
+            type Writer = CapturingWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(CapturingWriter(buffer.clone()))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+
+        // `with_default` binds the subscriber to this thread; the current-thread
+        // runtime polls the (fully synchronous) command body on the same thread,
+        // so the emitted event is captured into `buffer`.
+        tracing::subscriber::with_default(subscriber, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("current-thread runtime");
+            runtime.block_on(async {
+                record_frontend_log(
+                    "diagnostics".to_string(),
+                    "error".to_string(),
+                    "fetch failed with key sk-livesecretABCDEFGH at 203.0.113.7".to_string(),
+                    Some(
+                        "Authorization Bearer abcdefghijklmnop rejected from 198.51.100.23"
+                            .to_string(),
+                    ),
+                )
+                .await
+                .expect("record_frontend_log should succeed");
+            });
+        });
+
+        let output = String::from_utf8(buffer.lock().expect("buffer lock").clone())
+            .expect("captured tracing output is valid UTF-8");
+
+        // Strict-only masks must have run.
+        assert!(
+            output.contains("[API_KEY]"),
+            "expected API key / Bearer token to be masked, got: {output}"
+        );
+        assert!(
+            output.contains("[IP]"),
+            "expected IP addresses to be masked, got: {output}"
+        );
+        // Raw secrets must NOT survive into the durable log.
+        assert!(
+            !output.contains("sk-livesecretABCDEFGH"),
+            "raw API key leaked into log: {output}"
+        );
+        assert!(
+            !output.contains("abcdefghijklmnop"),
+            "raw Bearer token leaked into log: {output}"
+        );
+        assert!(
+            !output.contains("203.0.113.7"),
+            "raw IP leaked into log: {output}"
+        );
+        assert!(
+            !output.contains("198.51.100.23"),
+            "raw IP leaked into log: {output}"
+        );
     }
 
     #[test]

@@ -17,6 +17,11 @@ pub(crate) fn debug_macos_notification_error_message(
         return None;
     }
 
+    // SAFETY: `error` was confirmed non-null above and is the `NSError *` handed
+    // back by a UserNotifications completion handler, so it points to a live
+    // NSError. `&*error` reborrows that checked pointer only for these message
+    // sends; localizedDescription/domain (-> NSString) and code (-> isize) are
+    // valid NSError selectors whose return types match the bindings.
     unsafe {
         use objc2::msg_send;
         use objc2::rc::Retained;
@@ -96,8 +101,14 @@ pub(crate) mod debug_macos_notification_delegate {
         #[thread_kind = MainThreadOnly]
         struct MaekonDebugNotificationDelegate;
 
+        // SAFETY: MaekonDebugNotificationDelegate is an NSObject subclass, so it
+        // soundly conforms to NSObjectProtocol (no extra methods required).
         unsafe impl NSObjectProtocol for MaekonDebugNotificationDelegate {}
 
+        // SAFETY: this type implements every required UNUserNotificationCenter
+        // Delegate selector below with the exact Objective-C signature declared
+        // by the `#[unsafe(method(...))]` attributes, so the runtime can
+        // dispatch the protocol's callbacks to it correctly.
         unsafe impl UNUserNotificationCenterDelegate for MaekonDebugNotificationDelegate {
             #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
             fn will_present_notification(
@@ -319,6 +330,11 @@ pub(crate) fn show_debug_macos_unuser_notification<R: tauri::Runtime>(
     let add_sender = Arc::clone(&tx);
 
     app_handle
+        // SAFETY: this closure runs on the main thread (guaranteed by
+        // run_on_main_thread). It looks up the UNMutableNotificationContent /
+        // UNNotificationRequest classes via AnyClass::get and bails out through
+        // the `else` arms if either is unavailable, so every msg_send! below
+        // targets a valid class/instance with a matching selector signature.
         .run_on_main_thread(move || unsafe {
             let Some(content_class) = AnyClass::get(c"UNMutableNotificationContent") else {
                 debug_notification_send_once(

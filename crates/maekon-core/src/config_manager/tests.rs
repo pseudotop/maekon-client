@@ -392,6 +392,63 @@ fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
     );
 }
 
+// ── #6883 initial-load web fail-close ──────────────────────────────
+
+#[test]
+fn load_well_formed_weak_external_config_fail_closes_allow_external() {
+    // #6883: a well-formed config that enabled web.allow_external with a sub-strength
+    // integration token WITHOUT passing the #6772 write-path gate (a downgrade, a hand
+    // edit, or a restored pre-#6772 backup). The INITIAL-LOAD path runs only clamp_bounds
+    // (not validate_bounds), so it must fail-close allow_external — otherwise the
+    // integration API binds 0.0.0.0 with a guessable bearer.
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    let mut seed = crate::config::AppConfig::default_config();
+    seed.web.allow_external = true;
+    seed.web.integration_auth_token = Some("weak".to_string());
+    persistence::save_to_file(&config_path, &seed).unwrap();
+
+    let manager = ConfigManager::with_paths(config_path.clone(), None).unwrap();
+    assert!(
+        !manager.get().web.allow_external,
+        "a sub-strength external token must fail-close allow_external at load (loopback-only)"
+    );
+
+    // The correction must be persisted so a relaunch stays fail-closed even though the
+    // load path never runs the write-chokepoint validator.
+    let on_disk = persistence::load_from_file(&config_path).unwrap();
+    assert!(
+        !on_disk.web.allow_external,
+        "the load-time fail-close must be persisted to disk"
+    );
+    let relaunched = ConfigManager::with_paths(config_path, None).unwrap();
+    assert!(
+        !relaunched.get().web.allow_external,
+        "relaunch from the rewritten file must remain loopback-only"
+    );
+}
+
+#[test]
+fn load_well_formed_strong_external_config_preserves_allow_external() {
+    // The clamp is fail-closed only for sub-strength tokens — a STRONG token must keep
+    // external access across the load path (no blanket over-clamping at the integration
+    // level, where other section clamps also run).
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    let mut seed = crate::config::AppConfig::default_config();
+    seed.web.allow_external = true;
+    seed.web.integration_auth_token = Some("integration-secret-0123456789abcdef".to_string());
+    persistence::save_to_file(&config_path, &seed).unwrap();
+
+    let manager = ConfigManager::with_paths(config_path, None).unwrap();
+    assert!(
+        manager.get().web.allow_external,
+        "a strong external token must be preserved across load (no over-clamping)"
+    );
+}
+
 // ── X1 ConfigChangeBus tests ───────────────────────────────────────
 // Public decision record: docs/architecture/ADR-016-config-change-bus.md.
 

@@ -2,17 +2,10 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { sanitizeControlChars } from '../sanitize'
 import type { PendingConfirmationDto } from '../types'
 
 const AUTO_DENY_SECS = 30
-
-/** Strip Unicode control characters that could disguise the actual command. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping C0/C1 control chars, DEL, zero-width chars, bidi overrides, line/paragraph separators, BOM
-const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g
-
-function sanitizeArg(arg: string): string {
-  return arg.replace(CONTROL_CHAR_RE, '')
-}
 
 const auditBadgeColors: Record<string, string> = {
   Critical: 'bg-semantic-error/20 text-semantic-error',
@@ -126,7 +119,7 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
             {t('automation.confirmTitle', 'Automation Confirmation')}
           </h3>
           <span className={cn('rounded-full px-2 py-0.5 text-[10px]', typography.weight.semibold, badgeColor)}>
-            {confirmation.audit_level}
+            {sanitizeControlChars(confirmation.audit_level)}
           </span>
         </div>
 
@@ -136,7 +129,9 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
             <span className={cn(typography.caption, 'text-content-tertiary')}>
               {t('automation.confirmProcess', 'Process')}
             </span>
-            <span className={cn(typography.label, 'text-content')}>{confirmation.process_name}</span>
+            <span className={cn(typography.label, 'text-content')}>
+              {sanitizeControlChars(confirmation.process_name)}
+            </span>
           </div>
           {confirmation.args.length > 0 && (
             <div className="flex items-start gap-2">
@@ -144,7 +139,7 @@ export function AutomationConfirmModal({ confirmation, onDismiss }: AutomationCo
                 {t('automation.confirmArgs', 'Args')}
               </span>
               <code className={cn('break-all text-[11px] text-content-secondary', typography.family.mono)}>
-                {confirmation.args.map(sanitizeArg).join(' ')}
+                {confirmation.args.map(sanitizeControlChars).join(' ')}
               </code>
             </div>
           )}

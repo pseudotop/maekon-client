@@ -188,11 +188,18 @@ pub fn mask_korean_id(text: &str) -> String {
                 .take_while(|c| c.is_ascii_digit())
                 .count();
             if digits_before >= 6 && digits_after >= 7 {
-                // The 6 ASCII digits before the '-' are already in `result`; drop
-                // them (1 byte each) and emit the marker, then skip '-' + 7 digits.
-                result.truncate(result.len() - 6);
+                // Mask the ENTIRE contiguous digit run around the '-', not a fixed
+                // 6/7 window: a longer leading run (e.g. "1901010-1234567") would
+                // otherwise leave the RRN's first digit, and a longer trailing run
+                // (e.g. "901010-1234567890123") would leave the tail digits — and
+                // that short residue is below the mask_phone / mask_credit_cards
+                // thresholds, so it is never re-masked downstream (#6830). The
+                // leading-run digits are already in `result` (ASCII, 1 byte each);
+                // drop all of them, emit the marker, then skip '-' + the full
+                // trailing run.
+                result.truncate(result.len() - digits_before);
                 result.push_str("[KR_ID]");
-                i += 1 + 7;
+                i += 1 + digits_after;
                 continue;
             }
         }

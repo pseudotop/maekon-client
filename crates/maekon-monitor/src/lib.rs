@@ -41,6 +41,13 @@ pub mod window_layout;
 mod active_window_parse;
 // Cfg-free macOS `pmset -g batt` → PowerStatus parser (#5138), same rationale.
 mod power_parse;
+// Cfg-free subprocess-spawn circuit breaker (#6828); state machine kept un-gated
+// so it is unit-testable on any OS (only `linux` wires it into the xdotool path).
+mod circuit_breaker;
+// Native EWMH active-window via pure-Rust x11rb (#6828). Un-gated so it compiles +
+// the title-decode helper is unit-tested on every host; only `linux` CALLS the
+// connection path (it returns None without a reachable X server elsewhere).
+mod x11_active_window;
 // Content-free log digest for window titles + suggestion content (#5591, #6006)
 // + workspace-wide textual guard against raw-title/content tracing.
 // Un-gated so the guard runs on every host OS.

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 
 use crate::mutex_ext::lock_or_recover;
@@ -198,6 +198,71 @@ pub struct JsonRpcClient {
 /// Default per-request timeout when none is configured.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Max bytes for a single newline-terminated JSON-RPC line from the codex
+/// app-server. A larger line is dropped (drained to the next newline) rather
+/// than buffered unbounded, so a runaway or compromised app-server cannot OOM
+/// the client. Mirrors the SSE event cap (`MAX_SSE_EVENT_BYTES`) (#6830).
+const MAX_JSONRPC_LINE_BYTES: usize = 1024 * 1024;
+
+/// Outcome of a size-capped line read.
+enum CappedLine {
+    /// A complete line within the byte budget (trailing `\n`/`\r` stripped is
+    /// left to the caller's `trim`).
+    Line(String),
+    /// The line exceeded [`MAX_JSONRPC_LINE_BYTES`]; it was drained to the next
+    /// newline and must be dropped.
+    Oversized,
+    /// End of stream.
+    Eof,
+}
+
+/// Read one `\n`-terminated line from `reader`, capping the buffered size at
+/// [`MAX_JSONRPC_LINE_BYTES`]. On overflow the bytes are drained (not retained)
+/// up to the next newline so a single unbounded line cannot exhaust memory.
+async fn read_capped_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<CappedLine> {
+    let mut line: Vec<u8> = Vec::new();
+    let mut oversized = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF.
+            if oversized {
+                return Ok(CappedLine::Oversized);
+            }
+            return if line.is_empty() {
+                Ok(CappedLine::Eof)
+            } else {
+                Ok(CappedLine::Line(
+                    String::from_utf8_lossy(&line).into_owned(),
+                ))
+            };
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            if !oversized && line.len() + pos <= MAX_JSONRPC_LINE_BYTES {
+                line.extend_from_slice(&available[..pos]);
+            } else {
+                oversized = true;
+            }
+            reader.consume(pos + 1);
+            return if oversized {
+                Ok(CappedLine::Oversized)
+            } else {
+                Ok(CappedLine::Line(
+                    String::from_utf8_lossy(&line).into_owned(),
+                ))
+            };
+        }
+        // No newline in this chunk yet.
+        if !oversized && line.len() + available.len() <= MAX_JSONRPC_LINE_BYTES {
+            line.extend_from_slice(available);
+        } else {
+            oversized = true; // stop retaining; keep draining to the next newline
+        }
+        let consumed = available.len();
+        reader.consume(consumed);
+    }
+}
+
 impl JsonRpcClient {
     /// Wrap an app-server's `reader` (its stdout) and `writer` (its stdin),
     /// spawning the read loop. Returns the client, a receiver of inbound
@@ -228,32 +293,43 @@ impl JsonRpcClient {
         let read_pending = pending.clone();
         let read_closed = closed.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(reader).lines();
+            let mut reader = BufReader::new(reader);
             loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) if line.trim().is_empty() => continue,
-                    Ok(Some(line)) => match parse_incoming(&line) {
-                        Ok(IncomingMessage::Response { id, outcome }) => {
-                            if let Some(tx) =
-                                lock_or_recover(&read_pending, "codex_app_server.pending")
-                                    .remove(&id)
-                            {
-                                let _ = tx.send(outcome);
-                            }
-                        }
-                        Ok(IncomingMessage::Request { id, method, params }) => {
-                            // Non-blocking demux onto the reverse-request channel
-                            // (mirrors notif_tx): the approval layer answers it on
-                            // a separate task so the turn keeps streaming (#4870).
-                            let _ = request_tx.send(InboundRequest { id, method, params });
-                        }
-                        Ok(IncomingMessage::Notification { method, params }) => {
-                            let _ = notif_tx.send(Notification { method, params });
-                        }
-                        Err(err) => tracing::warn!("app-server parse error: {err}"),
-                    },
+                let line = match read_capped_line(&mut reader).await {
+                    Ok(CappedLine::Line(line)) => line,
+                    Ok(CappedLine::Oversized) => {
+                        // Drop the oversized line and keep reading the stream
+                        // (#6830); a runaway app-server line can't OOM us.
+                        tracing::warn!(
+                            cap_bytes = MAX_JSONRPC_LINE_BYTES,
+                            "codex app-server JSON-RPC line exceeds size limit, dropping"
+                        );
+                        continue;
+                    }
                     // EOF or read error → transport is gone.
-                    Ok(None) | Err(_) => break,
+                    Ok(CappedLine::Eof) | Err(_) => break,
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match parse_incoming(&line) {
+                    Ok(IncomingMessage::Response { id, outcome }) => {
+                        if let Some(tx) =
+                            lock_or_recover(&read_pending, "codex_app_server.pending").remove(&id)
+                        {
+                            let _ = tx.send(outcome);
+                        }
+                    }
+                    Ok(IncomingMessage::Request { id, method, params }) => {
+                        // Non-blocking demux onto the reverse-request channel
+                        // (mirrors notif_tx): the approval layer answers it on
+                        // a separate task so the turn keeps streaming (#4870).
+                        let _ = request_tx.send(InboundRequest { id, method, params });
+                    }
+                    Ok(IncomingMessage::Notification { method, params }) => {
+                        let _ = notif_tx.send(Notification { method, params });
+                    }
+                    Err(err) => tracing::warn!("app-server parse error: {err}"),
                 }
             }
             // Mark closed first so any request that registers after this point
@@ -715,11 +791,42 @@ impl Drop for AppServerProcess {
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_request, encode_response, parse_incoming, parse_user_agent_version, IncomingMessage,
-        RpcError,
+        encode_request, encode_response, parse_incoming, parse_user_agent_version,
+        read_capped_line, CappedLine, IncomingMessage, RpcError, MAX_JSONRPC_LINE_BYTES,
     };
     use crate::mutex_ext::lock_or_recover;
     use std::sync::Mutex as StdMutex;
+    use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn read_capped_line_drops_oversized_and_resyncs() {
+        // #6830: an oversized line is dropped (not buffered unbounded) and the
+        // reader resyncs to the following line — a runaway app-server can't OOM us.
+        let oversized = format!("{}\n", "x".repeat(MAX_JSONRPC_LINE_BYTES + 16));
+        let input = format!("{{\"a\":1}}\n{oversized}{{\"b\":2}}\n");
+        let bytes = input.into_bytes();
+        let mut reader = BufReader::new(bytes.as_slice());
+
+        match read_capped_line(&mut reader).await.unwrap() {
+            CappedLine::Line(l) => assert_eq!(l.trim(), "{\"a\":1}"),
+            _ => panic!("expected the first in-budget line"),
+        }
+        assert!(
+            matches!(
+                read_capped_line(&mut reader).await.unwrap(),
+                CappedLine::Oversized
+            ),
+            "the oversized line must be reported as Oversized"
+        );
+        match read_capped_line(&mut reader).await.unwrap() {
+            CappedLine::Line(l) => assert_eq!(l.trim(), "{\"b\":2}"),
+            _ => panic!("must resync to the line after the oversized one"),
+        }
+        assert!(matches!(
+            read_capped_line(&mut reader).await.unwrap(),
+            CappedLine::Eof
+        ));
+    }
 
     #[test]
     fn parse_user_agent_version_extracts_three_part_token() {
