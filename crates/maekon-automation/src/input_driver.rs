@@ -248,6 +248,19 @@ impl InputDriver for EnigoInputDriver {
         Ok(())
     }
 
+    async fn activate_app(&self, app_name: &str) -> Result<bool, CoreError> {
+        // enigo synthesizes input only; window activation is a separate OS concern,
+        // so this shells out to the platform's window manager (consistent with the
+        // existing osascript/xdotool shell-outs in maekon-monitor). `app_name` is an
+        // argv element (macOS/Linux) or read from an env var (Windows PowerShell) —
+        // never interpolated into a shell/AppleScript string, so there is no
+        // injection surface from untrusted preset/LLM/template-driven names. The
+        // helper binaries are resolved to trusted absolute paths (not the inherited
+        // PATH) so a planted binary cannot be executed (#7075).
+        debug!(app_name, "[Enigo] activate app");
+        activate_app_platform(app_name).await
+    }
+
     fn platform(&self) -> &str {
         #[cfg(target_os = "macos")]
         {
@@ -266,6 +279,185 @@ impl InputDriver for EnigoInputDriver {
             "unknown"
         }
     }
+}
+
+/// Platform window activation for `EnigoInputDriver::activate_app`.
+///
+/// Returns `Ok(true)` when the activation command reported success, `Ok(false)`
+/// when activation is unsupported (no tool available in a trusted location /
+/// unknown platform) or the target window was not found. `app_name` is validated
+/// then passed without shell interpolation (argv on macOS/Linux; env var on
+/// Windows) → no injection surface. Each helper binary is resolved to a trusted
+/// absolute path (never the inherited `PATH`) so a shadowing `PATH` entry cannot
+/// run a planted binary with the agent's privileges (CWE-426/427, #7075) —
+/// mirroring the `/usr/bin/sandbox-exec` and worker-resolution discipline in the
+/// `sandbox` module.
+#[cfg(feature = "enigo")]
+async fn activate_app_platform(app_name: &str) -> Result<bool, CoreError> {
+    // Bound + sanitize untrusted name (preset/LLM/template-driven).
+    let name = app_name.trim();
+    if name.is_empty() || name.len() > 256 || name.contains(['\n', '\r', '\0']) {
+        return Err(CoreError::InvalidArguments {
+            code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+            message: "invalid app_name for activation (empty / too long / control chars)"
+                .to_string(),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // `open -a <name>` activates a running app or launches it; name is an argv
+        // element (no shell), so there is no AppleScript/shell injection surface.
+        // Resolve `open` to its trusted absolute path (/usr/bin/open) instead of a
+        // bare-name PATH lookup so a shadowing PATH entry cannot run a planted
+        // binary (#7075).
+        use tokio::process::Command;
+        let open_path = std::path::Path::new(TRUSTED_OPEN_PATH);
+        if !is_trusted_program(open_path) {
+            warn!("activate_app: trusted /usr/bin/open unavailable — unsupported");
+            return Ok(false);
+        }
+        let status = Command::new(open_path)
+            .arg("-a")
+            .arg(name)
+            .status()
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("open -a failed to spawn: {e}"),
+            })?;
+        Ok(status.success())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // wmctrl -a matches a window by name and activates it; fall back to xdotool.
+        // Both receive `name` as argv (no shell). These are OPTIONAL tools resolved
+        // to a trusted absolute path under a fixed system directory — never the
+        // inherited PATH — so a planted ~/.local/bin binary shadowing wmctrl/xdotool
+        // cannot be executed (#7075). If neither tool is installed in a trusted
+        // location, report unsupported (false) rather than erroring.
+        use tokio::process::Command;
+        if let Some(wmctrl) = resolve_trusted_helper("wmctrl") {
+            if let Ok(status) = Command::new(&wmctrl).arg("-a").arg(name).status().await {
+                return Ok(status.success());
+            }
+        }
+        if let Some(xdotool) = resolve_trusted_helper("xdotool") {
+            if let Ok(status) = Command::new(&xdotool)
+                .args(["search", "--name"])
+                .arg(name)
+                .arg("windowactivate")
+                .status()
+                .await
+            {
+                return Ok(status.success());
+            }
+        }
+        warn!(
+            app_name = name,
+            "activate_app: neither wmctrl nor xdotool available in a trusted path — unsupported"
+        );
+        Ok(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // WScript.Shell.AppActivate brings a matching window to the foreground.
+        // The name is passed via env var and read as `$env:...` so it is never
+        // interpolated into the script string → no PowerShell injection. Resolve
+        // powershell.exe to its absolute System32 location (ACL-protected: only
+        // admins/TrustedInstaller can write there) instead of a bare-name PATH
+        // lookup so a shadowing PATH entry cannot run a planted powershell.exe
+        // (#7075). %SystemRoot% is an OS-managed variable; if it were tampered with
+        // the attacker would already have the agent's privileges.
+        use tokio::process::Command;
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let powershell = std::path::PathBuf::from(format!(
+            "{system_root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        ));
+        if !powershell.is_file() {
+            warn!(
+                powershell = %powershell.display(),
+                "activate_app: trusted powershell.exe not found — unsupported"
+            );
+            return Ok(false);
+        }
+        let script = "$ErrorActionPreference='Stop'; \
+            $n = $env:MAEKON_ACTIVATE_APP_NAME; \
+            $w = New-Object -ComObject WScript.Shell; \
+            if ($w.AppActivate($n)) { exit 0 } else { exit 1 }";
+        let status = Command::new(&powershell)
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("MAEKON_ACTIVATE_APP_NAME", name)
+            .status()
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("powershell AppActivate failed to spawn: {e}"),
+            })?;
+        Ok(status.success())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = name;
+        Ok(false)
+    }
+}
+
+/// Trusted absolute path for the macOS `open` helper. A SIP-protected system
+/// binary; resolving it directly avoids a bare-name `PATH` lookup (#7075).
+#[cfg(target_os = "macos")]
+#[cfg_attr(not(feature = "enigo"), allow(dead_code))]
+const TRUSTED_OPEN_PATH: &str = "/usr/bin/open";
+
+/// Trusted absolute directories searched for the optional Linux window-manager
+/// helpers (`wmctrl`/`xdotool`). The inherited `PATH` is deliberately NOT
+/// consulted: a user-writable `PATH` entry (e.g. `~/.local/bin`) shadowing these
+/// tools would let a planted binary run with the agent's privileges
+/// (CWE-426/427, #7075). User-writable locations are intentionally excluded.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "enigo"), allow(dead_code))]
+const TRUSTED_HELPER_DIRS: &[&str] = &["/usr/bin", "/usr/local/bin", "/bin"];
+
+/// Returns `true` when `path` is safe to spawn without a `PATH` lookup: an
+/// absolute, regular file that on unix is owned by root and is not group- or
+/// world-writable. Mirrors the ownership/mode discipline of
+/// `sandbox::macos::trusted_sandbox_exec_path`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg_attr(not(feature = "enigo"), allow(dead_code))]
+fn is_trusted_program(path: &std::path::Path) -> bool {
+    if !path.is_absolute() || !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        // Reject files that are not root-owned or are group/world-writable: those
+        // can be replaced by a non-privileged attacker (the PATH-hijack vector).
+        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Resolve a Linux window-manager helper to a trusted absolute path under a fixed
+/// system directory, never consulting the inherited `PATH`. Returns `None` when
+/// the helper is not installed in a trusted location, so the caller reports
+/// activation as unsupported instead of running a PATH-resolved (possibly planted)
+/// binary (#7075).
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "enigo"), allow(dead_code))]
+fn resolve_trusted_helper(program: &str) -> Option<std::path::PathBuf> {
+    TRUSTED_HELPER_DIRS.iter().find_map(|dir| {
+        let candidate = std::path::Path::new(dir).join(program);
+        is_trusted_program(&candidate).then_some(candidate)
+    })
 }
 
 pub fn parse_mouse_button(button: &str) -> Result<MouseButton, CoreError> {
@@ -431,6 +623,58 @@ mod tests {
             EnigoInputDriver::parse_key("x"),
             Ok(enigo::Key::Unicode('x'))
         ));
+    }
+
+    #[test]
+    fn window_activation_does_not_use_bare_name_path_lookup() {
+        // #7075 regression: window-activation helpers must be spawned by a trusted
+        // absolute path, never resolved through the inherited PATH (CWE-426/427).
+        // Each forbidden pattern is built with format! so it does not appear
+        // verbatim in this test source (which is part of the scanned file).
+        // Mirrors sandbox::ipc::worker_path_resolution_does_not_use_path_lookup.
+        let source = include_str!("input_driver.rs");
+        for program in ["open", "wmctrl", "xdotool", "powershell"] {
+            let bare = format!("Command::new({program:?})");
+            assert!(
+                !source.contains(&bare),
+                "{program} must be spawned by trusted absolute path, not bare name ({bare})"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn is_trusted_program_rejects_untrusted_paths() {
+        use std::io::Write;
+        // Relative paths are never trusted (must be absolute).
+        assert!(
+            !is_trusted_program(std::path::Path::new("open")),
+            "relative paths must be rejected"
+        );
+        // A missing absolute path is rejected.
+        assert!(
+            !is_trusted_program(std::path::Path::new("/nonexistent/maekon/wmctrl")),
+            "missing files must be rejected"
+        );
+        // A user-created, world-writable file is not trusted: it fails the
+        // not-group/world-writable check (and the root-owned check when tests run
+        // as non-root), so a planted binary in a writable dir is rejected.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("wmctrl");
+        {
+            let mut f = std::fs::File::create(&file).expect("create temp helper");
+            f.write_all(b"#!/bin/sh\n").expect("write");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o777))
+                .expect("chmod 0777");
+        }
+        assert!(
+            !is_trusted_program(&file),
+            "world-writable / non-root-owned file must be rejected"
+        );
     }
 
     #[tokio::test]

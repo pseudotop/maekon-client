@@ -222,6 +222,15 @@ fn sanitize_bundle(
     s.ai_provider.scene_action_override.approved_by =
         sanitizer.sanitize_text(&s.ai_provider.scene_action_override.approved_by, effective);
 
+    // SECURITY (#7066): defense-in-depth — hard-clear the cloud STT BYOK secret
+    // so it can NEVER egress in the shareable bug-report bundle. The assembler
+    // already masks it on the GET path, but this structured secret is never
+    // routed through `sanitize_text` (free-text PII regexes cannot catch a key),
+    // so we drop it entirely here rather than relying solely on the read-path
+    // mask. Matches the no-secret-in-diagnostics standard the other ~10 scrubbed
+    // fields follow.
+    s.audio.cloud_api_key = String::new();
+
     // External API endpoints
     if let Some(ref mut api) = s.ai_provider.ocr_api {
         api.endpoint = sanitizer.sanitize_text(&api.endpoint, effective);
@@ -373,6 +382,74 @@ mod tests {
         let path = bundle.diagnostics.health.frames_dir_path.as_ref().unwrap();
         assert!(path.contains("[USER]"));
         assert!(!path.contains("/Users/alice"));
+    }
+
+    /// #7066: the cloud STT BYOK secret must never egress in the shareable
+    /// bug-report bundle. `sanitize_bundle` hard-clears it (defense-in-depth on
+    /// top of the read-path mask) — a structured secret that free-text PII
+    /// regexes cannot catch.
+    #[test]
+    fn sanitize_bundle_scrubs_audio_cloud_api_key() {
+        use maekon_api_contracts::support::{DiagnosticsBundleDto, DiagnosticsHealthDto};
+
+        let mut settings_snapshot = maekon_api_contracts::settings::AppSettings::default();
+        settings_snapshot.audio.cloud_api_key = "sk-super-secret-cloud-stt-key".to_string();
+
+        let mut bundle = BugReportBundleDto {
+            bug_id: "BUG-000000000000".to_string(),
+            diagnostics: DiagnosticsBundleDto {
+                schema_version: "test".to_string(),
+                generated_at: "now".to_string(),
+                health: DiagnosticsHealthDto {
+                    storage_ok: true,
+                    storage_error: None,
+                    frames_dir_configured: false,
+                    frames_dir_path: None,
+                    frames_dir_exists: None,
+                    config_manager_configured: false,
+                    automation_controller_configured: false,
+                    update_control_configured: false,
+                },
+                settings_snapshot,
+                storage_stats: None,
+                provider_cli: vec![],
+                recent_audit_entries: vec![],
+                recent_policy_events: vec![],
+            },
+            system: SystemInfoDto {
+                app_version: "0.4.16".to_string(),
+                os_name: "macos".to_string(),
+                os_version: "15.4".to_string(),
+                arch: "aarch64".to_string(),
+                runtime: "tauri-desktop".to_string(),
+                cpu_count: 10,
+                memory_total_mb: 16384,
+                memory_available_mb: 8192,
+                uptime_seconds: 3600,
+            },
+            connection: ConnectionStatusDto {
+                server_reachable: false,
+                last_sync_at: None,
+                grpc_enabled: false,
+                websocket_connected: false,
+            },
+            runtime_logs: None,
+            pii_filter_level: PiiFilterLevel::Standard,
+        };
+
+        sanitize_bundle(&MockSanitizer, &mut bundle, PiiFilterLevel::Standard);
+
+        assert_eq!(
+            bundle.diagnostics.settings_snapshot.audio.cloud_api_key, "",
+            "bug-report bundle must NOT carry the cloud STT secret"
+        );
+        // Belt-and-braces: the secret must not survive anywhere in the serialized
+        // bundle either.
+        let serialized = serde_json::to_string(&bundle).expect("bundle serializes");
+        assert!(
+            !serialized.contains("sk-super-secret-cloud-stt-key"),
+            "serialized bug-report bundle must not contain the raw cloud STT key"
+        );
     }
 
     #[test]

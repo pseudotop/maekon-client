@@ -13,7 +13,7 @@ use super::types::{ensure_non_external_endpoints_are_loopback, ExternalOcrPrivac
 pub(super) struct GuardedOcrProvider {
     inner: Arc<dyn OcrProvider>,
     privacy_guard: ExternalOcrPrivacyGuard,
-    allow_unredacted_external_ocr: bool,
+    bypass_pii_filter_for_external_ocr: bool,
     ocr_validation: OcrValidationConfig,
 }
 
@@ -22,13 +22,13 @@ impl GuardedOcrProvider {
     pub(super) fn new(
         inner: Arc<dyn OcrProvider>,
         privacy_guard: ExternalOcrPrivacyGuard,
-        allow_unredacted_external_ocr: bool,
+        bypass_pii_filter_for_external_ocr: bool,
         ocr_validation: OcrValidationConfig,
     ) -> Self {
         Self {
             inner,
             privacy_guard,
-            allow_unredacted_external_ocr,
+            bypass_pii_filter_for_external_ocr,
             ocr_validation,
         }
     }
@@ -97,13 +97,13 @@ impl OcrProvider for GuardedOcrProvider {
             .prepare_image_for_external(
                 image,
                 self.inner.provider_name(),
-                self.allow_unredacted_external_ocr,
+                self.bypass_pii_filter_for_external_ocr,
             )
             .await?;
 
         debug!(
             redacted_regions = sanitized.redacted_regions,
-            allow_unredacted_external_ocr = self.allow_unredacted_external_ocr,
+            bypass_pii_filter_for_external_ocr = self.bypass_pii_filter_for_external_ocr,
             "External OCR image sanitization completed"
         );
 

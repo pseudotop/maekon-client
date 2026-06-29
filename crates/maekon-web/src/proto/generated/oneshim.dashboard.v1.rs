@@ -276,6 +276,10 @@ pub struct AiRuntimeStatusEvent {
     pub ocr_fallback_reason: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub llm_fallback_reason: ::prost::alloc::string::String,
+    /// Per-call LLM health snapshot — REST/SSE parity with AiRuntimeStatus.llm_healthy
+    /// (#5734). Optional: absent when the build-time snapshot has no value (#6830).
+    #[prost(bool, optional, tag = "5")]
+    pub llm_healthy: ::core::option::Option<bool>,
 }
 /// ── V2b: shared hint/signal ────────────────────────────────────────
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -502,6 +502,10 @@ async fn measure_worker_roundtrip(action: &AutomationAction) -> WorkerRoundtripP
 
     let started = Instant::now();
     let mut child = match tokio::process::Command::new(worker_path)
+        // Strip the parent env so authorization secrets never reach the worker
+        // (#6827); this debug/benchmark path spawns the same worker binary as the
+        // sandbox adapters and must apply the same containment.
+        .env_clear()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -600,6 +604,10 @@ async fn run_malformed_worker_input_probe() -> SandboxFailureProbe {
     };
 
     let mut child = match tokio::process::Command::new(worker_path)
+        // Strip the parent env so authorization secrets never reach the worker
+        // (#6827); this debug/benchmark path spawns the same worker binary as the
+        // sandbox adapters and must apply the same containment.
+        .env_clear()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -168,7 +168,14 @@ impl HttpApiSession {
     /// Create a new HTTP API session.
     pub fn new(init: HttpApiSessionInit) -> Self {
         let session_id = maekon_core::generate_id("ses");
-        let http_client = reqwest::Client::new();
+        // #6892: redirect=none — the session client also takes provider paths that carry api-key
+        // headers (x-api-key/x-goog-api-key), so 30x redirect following is disabled. build() only
+        // fails on TLS backend initialization failure (the original reqwest::Client::new() also
+        // panics under the same condition); we panic explicitly so we never fall back to a
+        // redirect-following client.
+        let http_client = crate::outbound::hardened_client_builder()
+            .build()
+            .expect("하드닝 세션 HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
         let mut initial_history = Vec::new();
 
         if let Some(ref prompt) = init.system_prompt {
@@ -488,7 +495,13 @@ impl ConversationSession for HttpApiSession {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.ok();
+            // #6949: cap the HTTP API session error response body (OOM guard)
+            let body = crate::outbound::read_text_capped(
+                response,
+                crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+            )
+            .await
+            .ok();
             *self.state.lock() = SessionState::Failed;
             let message = provider_error_message("HTTP API", status, body.as_deref());
             // Semantic HTTP status mapping per iter-54..59 pattern.

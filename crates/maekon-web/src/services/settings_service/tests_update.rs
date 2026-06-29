@@ -266,6 +266,71 @@ async fn update_settings_persists_audio_and_focus_auto_sections() {
     assert_eq!(saved.focus_auto.cooldown_secs, 900);
 }
 
+/// #7066: the GET path returns a MASKED cloud STT secret, so an unchanged
+/// resubmit carries the mask. The write path must treat the masked sentinel as
+/// 'unchanged' and preserve the stored raw key — never overwrite it with the
+/// mask (which would corrupt the credential). Mirrors the AI-provider key path.
+#[tokio::test]
+async fn update_settings_masked_audio_cloud_api_key_preserves_stored_secret() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let context = test_context_from_state(&state);
+
+    let mut settings = AppSettings::default();
+    settings.audio.enabled = true;
+    settings.audio.stt_provider = "cloud".to_string();
+
+    // 1) Persist a genuine plaintext key (first-time configuration).
+    settings.audio.cloud_api_key = "sk-1234567890abcdef".to_string();
+    crate::services::settings_web_service::SettingsCommandService::new(context.clone())
+        .update_settings(&settings)
+        .await
+        .expect("initial cloud_api_key must persist");
+    assert_eq!(
+        config_manager.get().audio.cloud_api_key,
+        "sk-1234567890abcdef"
+    );
+
+    // 2) Resubmit with the MASKED sentinel (as the GET path would have returned)
+    //    -> the stored secret must be preserved, not clobbered by the mask.
+    settings.audio.cloud_api_key = "sk...cdef".to_string();
+    crate::services::settings_web_service::SettingsCommandService::new(context.clone())
+        .update_settings(&settings)
+        .await
+        .expect("masked-sentinel resubmit must succeed");
+    assert_eq!(
+        config_manager.get().audio.cloud_api_key,
+        "sk-1234567890abcdef",
+        "masked-sentinel resubmit must NOT clobber the stored cloud STT secret"
+    );
+
+    // 3) An empty value also leaves the stored secret untouched (mirrors the
+    //    AI-provider key path where empty == unchanged).
+    settings.audio.cloud_api_key = String::new();
+    crate::services::settings_web_service::SettingsCommandService::new(context.clone())
+        .update_settings(&settings)
+        .await
+        .expect("empty resubmit must succeed");
+    assert_eq!(
+        config_manager.get().audio.cloud_api_key,
+        "sk-1234567890abcdef",
+        "empty resubmit must NOT clobber the stored cloud STT secret"
+    );
+
+    // 4) A genuinely new plaintext key still overwrites.
+    settings.audio.cloud_api_key = "sk-rotated-9876543210".to_string();
+    crate::services::settings_web_service::SettingsCommandService::new(context)
+        .update_settings(&settings)
+        .await
+        .expect("new key must persist");
+    assert_eq!(
+        config_manager.get().audio.cloud_api_key,
+        "sk-rotated-9876543210"
+    );
+}
+
 #[tokio::test]
 async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
     let temp_dir = TempDir::new().expect("temp dir");

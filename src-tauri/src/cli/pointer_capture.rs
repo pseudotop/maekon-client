@@ -413,8 +413,10 @@ fn current_global_pointer_position() -> Option<(i32, i32)> {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     let mut point = POINT { x: 0, y: 0 };
-    // Safety: GetCursorPos writes to the provided POINT and has no ownership
-    // transfer. A zero return simply means no pointer position is available.
+    // SAFETY: GetCursorPos writes the cursor coordinates through the `&mut point`
+    // out-pointer, which references an initialized stack `POINT` that outlives
+    // the call; there is no ownership transfer. A zero return simply means no
+    // pointer position is available.
     let ok = unsafe { GetCursorPos(&mut point) };
     (ok != 0).then_some((point.x, point.y))
 }

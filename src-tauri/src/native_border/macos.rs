@@ -82,6 +82,11 @@ fn create_border_window(mtm: MainThreadMarker, frame: CGRect) -> Option<BorderIn
     );
 
     let style = NSWindowStyleMask::Borderless;
+    // SAFETY: this is the designated NSWindow initializer invoked on a freshly
+    // `alloc`-ated, uninitialized instance (`NSWindow::alloc(mtm)`), exactly
+    // once. The `MainThreadMarker` parameter proves we are on the main thread,
+    // which AppKit window creation requires, and every other argument is a
+    // plain by-value type (CGRect / style mask / backing-store enum / bool).
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -118,6 +123,9 @@ fn create_border_window(mtm: MainThreadMarker, frame: CGRect) -> Option<BorderIn
                 frame.size.height - inset * 2.0,
             ),
         );
+        // SAFETY: CGPath::with_rect takes the rect by value and an optional
+        // CGAffineTransform pointer; a null pointer is the documented "identity
+        // transform" sentinel, so nothing is dereferenced.
         let glow_path = unsafe { CGPath::with_rect(glow_rect, std::ptr::null()) };
         glow.setPath(Some(&glow_path));
         glow.setFillColor(None);
@@ -141,6 +149,9 @@ fn create_border_window(mtm: MainThreadMarker, frame: CGRect) -> Option<BorderIn
         CGPoint::new(1.5, 1.5),
         CGSize::new(frame.size.width - 3.0, frame.size.height - 3.0),
     );
+    // SAFETY: CGPath::with_rect takes the rect by value and an optional
+    // CGAffineTransform pointer; a null pointer is the documented "identity
+    // transform" sentinel, so nothing is dereferenced.
     let path = unsafe { CGPath::with_rect(inset_rect, std::ptr::null()) };
     border_layer.setPath(Some(&path));
     border_layer.setFillColor(None);
@@ -167,6 +178,10 @@ pub(super) fn create_opacity_pulse(from: f32, to: f32) -> Retained<CABasicAnimat
     let anim = CABasicAnimation::animationWithKeyPath(Some(ns_string!("opacity")));
     let from_val = NSNumber::new_f32(from);
     let to_val = NSNumber::new_f32(to);
+    // SAFETY: `from_val`/`to_val` are live NSNumber instances retained for this
+    // scope. setFromValue:/setToValue: take an optional object reference and the
+    // CABasicAnimation retains the value it stores, so the borrows only need to
+    // be valid for the duration of these calls, which they are.
     unsafe {
         anim.setFromValue(Some(&*from_val));
         anim.setToValue(Some(&*to_val));
@@ -183,6 +198,11 @@ pub(super) fn create_stroke_pulse_animation() -> Retained<CABasicAnimation> {
 
     let from_color = teal_cgcolor_full();
     let to_color = teal_cgcolor_dim();
+    // SAFETY: `from_color`/`to_color` are live CFRetained<CGColor> kept alive for
+    // this scope. A `CGColorRef` is a toll-free-bridged CoreFoundation object,
+    // so reinterpreting `&CGColor` as `&AnyObject` (`id`) is valid; the
+    // reborrowed pointers stay valid for the setFromValue:/setToValue: calls,
+    // and CABasicAnimation retains the values it stores.
     unsafe {
         let from_ptr = (&*from_color as *const objc2_core_graphics::CGColor).cast::<AnyObject>();
         let to_ptr = (&*to_color as *const objc2_core_graphics::CGColor).cast::<AnyObject>();

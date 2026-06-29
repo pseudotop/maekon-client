@@ -9,7 +9,8 @@ use crate::error::ApiError;
 use crate::services::ai_model_catalog_assembler::{build_model_details, parse_models};
 use crate::services::ai_model_catalog_auth::resolve_model_discovery_api_key;
 use crate::services::ai_model_catalog_endpoint::{
-    normalize_optional_surface_id, resolve_models_endpoint, resolve_requested_provider_type,
+    normalize_optional_surface_id, reject_internal_discovery_endpoint, resolve_models_endpoint,
+    resolve_requested_provider_type,
 };
 use crate::services::ai_model_catalog_service::truncate_error;
 use crate::services::ai_provider_spec_service::{self, ProviderAuthScheme};
@@ -31,6 +32,20 @@ impl AiModelCatalogQueryService {
     pub async fn discover_provider_models(
         &self,
         request: &ProviderModelsRequest,
+    ) -> Result<ProviderModelsResponse, ApiError> {
+        // The local (loopback) path proceeds without a host pin (empty vector) — it must allow
+        // legitimate internal endpoints such as localhost Ollama, so it is not subject to the
+        // SSRF guard/pinning (#6894/#6902).
+        self.discover_with_pinned_addrs(request, Vec::new()).await
+    }
+
+    /// Shared discovery implementation. When `pinned_addrs` is non-empty, the transport pins the
+    /// endpoint host to those addresses to prevent re-resolution (#6902 — addresses validated by
+    /// the integration SSRF guard).
+    async fn discover_with_pinned_addrs(
+        &self,
+        request: &ProviderModelsRequest,
+        pinned_addrs: Vec<std::net::SocketAddr>,
     ) -> Result<ProviderModelsResponse, ApiError> {
         let requested_surface_id = normalize_optional_surface_id(request.surface_id.as_deref());
         let provider_type = resolve_requested_provider_type(
@@ -81,6 +96,10 @@ impl AiModelCatalogQueryService {
                 endpoint: endpoint.clone(),
                 headers: model_catalog_headers(auth_scheme, api_key.as_deref()),
                 timeout: Duration::from_secs(MODEL_DISCOVERY_TIMEOUT_SECS),
+                // #6902: on the integration path, pass the addresses resolved and validated by
+                // the SSRF guard as pins (empty means no pin — preserves the local path's
+                // existing behavior).
+                resolved_addrs: pinned_addrs,
             })
             .await
             .map_err(model_catalog_error_to_api)?;
@@ -149,7 +168,29 @@ impl AiModelCatalogQueryService {
             ));
         }
 
-        self.discover_provider_models(request).await
+        // #6894: SSRF guard — when `web.allow_external` is set this path is exposed via an
+        // external (`0.0.0.0`) bind and the endpoint is caller-controlled, so outbound traffic
+        // toward internal hosts is blocked. The local (loopback) `discover_provider_models` path
+        // targets the user's own machine, so it is not applied. The endpoint is resolved and
+        // checked the same way the delegate re-resolves it (idempotent).
+        let requested_surface_id = normalize_optional_surface_id(request.surface_id.as_deref());
+        let provider_type = resolve_requested_provider_type(
+            request.provider_type.as_str(),
+            requested_surface_id.as_deref(),
+        )?;
+        let endpoint = resolve_models_endpoint(
+            provider_type,
+            requested_surface_id.as_deref(),
+            request.endpoint.as_deref(),
+        )?;
+        // #6902: take the addresses the guard resolved and validated and forward them as pins all
+        // the way to the transport. This stops the transport from re-resolving the host, closing
+        // the DNS rebinding (TOCTOU) window where the host could flip to an internal IP after
+        // passing the guard. (The guard only returns validated external addresses; internal ones
+        // are already rejected.)
+        let pinned_addrs = reject_internal_discovery_endpoint(&endpoint).await?;
+
+        self.discover_with_pinned_addrs(request, pinned_addrs).await
     }
 }
 

@@ -216,6 +216,24 @@ fn should_log(route: &str) -> bool {
     check_and_update_cooldown(&LOG_COOLDOWN, route, cooldown)
 }
 
+/// Sanitize a frontend-supplied error field before it reaches the durable
+/// on-disk log.
+///
+/// #7067: masks at `PiiFilterLevel::Strict` (not Standard) — matching the
+/// sibling `get_runtime_log_snapshot` (system.rs) — so `mask_api_keys`
+/// (sk-/pk-/ghp_/AKIA/xoxb-/"Bearer <token>"/PEM PRIVATE KEY), `mask_ip_addresses`,
+/// and `mask_passport` run before any secret echoed into a frontend error payload
+/// (a failed-fetch URL with an embedded key, a 401 body, a network error carrying
+/// an IP) is persisted (and later re-emitted via the diagnostics bundle). Standard
+/// masks only IBAN/email/phone/card/KR-ID/SSN/user-path, leaving keys/tokens/IPs
+/// intact. The src-tauri binary crate can use maekon-vision directly.
+fn sanitize_error_field(value: &str) -> String {
+    maekon_vision::privacy::sanitize_title_with_level(
+        value,
+        maekon_core::config::PiiFilterLevel::Strict,
+    )
+}
+
 // ── Main command ──
 
 /// Receive a frontend route error, log it, optionally notify, and signal recovery.
@@ -269,26 +287,14 @@ pub async fn report_frontend_error(
     let component_stack =
         component_stack.map(|s| truncate_log_field(s.trim().to_string(), MAX_STACK_LEN));
 
-    // D5 iter-13: sanitize frontend-provided strings before logging. The
-    // frontend may pass user input verbatim in error_message (e.g., a JS
-    // error from a form validator that echoes the user's email). src-tauri
-    // binary crate can use maekon-vision directly.
-    let error_message = maekon_vision::privacy::sanitize_title_with_level(
-        &error_message,
-        maekon_core::config::PiiFilterLevel::Standard,
-    );
-    let stack = stack.map(|s| {
-        maekon_vision::privacy::sanitize_title_with_level(
-            &s,
-            maekon_core::config::PiiFilterLevel::Standard,
-        )
-    });
-    let component_stack = component_stack.map(|s| {
-        maekon_vision::privacy::sanitize_title_with_level(
-            &s,
-            maekon_core::config::PiiFilterLevel::Standard,
-        )
-    });
+    // #7067: sanitize frontend-provided strings before logging. The frontend
+    // may pass user input verbatim in error_message / stack (e.g., a JS error
+    // echoing a failed fetch URL with an embedded API key, an AI-provider 401
+    // body, or a network error carrying an IP). sanitize_error_field masks at
+    // Strict — matching the sibling get_runtime_log_snapshot (system.rs).
+    let error_message = sanitize_error_field(&error_message);
+    let stack = stack.map(|s| sanitize_error_field(&s));
+    let component_stack = component_stack.map(|s| sanitize_error_field(&s));
 
     // Apply per-route logging cooldown only for non-critical severities.
     // Critical bypasses the cooldown AND should not reset the bucket so a
@@ -514,6 +520,40 @@ mod tests {
         let truncated_emoji = truncate_log_field(emoji, 4000);
         assert!(truncated_emoji.len() <= 4050);
         assert!(truncated_emoji.ends_with("(truncated)"));
+    }
+
+    #[test]
+    fn frontend_error_field_masks_api_keys_and_ips_at_strict() {
+        // #7067 regression: the frontend error bridge must sanitize at Strict so
+        // API keys / Bearer tokens / IPs that the frontend echoes into an error
+        // payload are masked before they reach the durable on-disk log. Before the
+        // fix (Standard level), mask_api_keys / mask_ip_addresses did not run and
+        // these secrets were persisted verbatim — this test fails at Standard and
+        // passes at Strict. sanitize_error_field is the exact code report_frontend_error
+        // applies to error_message / stack / component_stack.
+        let masked = sanitize_error_field(
+            "fetch failed: Bearer abcdefghijklmnop from 203.0.113.7 key sk-livesecretABCDEFGH",
+        );
+
+        // Strict-only masks must have run.
+        assert!(
+            masked.contains("[API_KEY]"),
+            "expected API key / Bearer token to be masked, got: {masked}"
+        );
+        assert!(
+            masked.contains("[IP]"),
+            "expected IP address to be masked, got: {masked}"
+        );
+        // Raw secrets must NOT survive into the durable log.
+        assert!(
+            !masked.contains("abcdefghijklmnop"),
+            "raw Bearer token leaked: {masked}"
+        );
+        assert!(
+            !masked.contains("sk-livesecretABCDEFGH"),
+            "raw API key leaked: {masked}"
+        );
+        assert!(!masked.contains("203.0.113.7"), "raw IP leaked: {masked}");
     }
 
     #[test]

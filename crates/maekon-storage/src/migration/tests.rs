@@ -557,6 +557,58 @@ fn backup_created_when_migration_needed() {
 }
 
 #[test]
+fn backup_includes_uncheckpointed_wal_commits() {
+    // Regression (#6823): in WAL mode the pre-migration backup must include
+    // commits still resident in the `-wal` file (not yet checkpointed into the
+    // main `.db`). Without a WAL checkpoint before the file copy, the backup is
+    // a valid but STALE database missing the most recent commits.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("wal.db");
+
+    let conn = Connection::open(&db_path).unwrap();
+    // Enable WAL and confirm it is active (file-backed DBs only).
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        mode.to_lowercase(),
+        "wal",
+        "WAL mode must be active for this regression test"
+    );
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE canary (id INTEGER PRIMARY KEY, marker TEXT NOT NULL);",
+    )
+    .unwrap();
+    // Commit a row that lives in the WAL and is NOT yet checkpointed into `.db`.
+    conn.execute(
+        "INSERT INTO canary (id, marker) VALUES (1, 'wal-resident')",
+        [],
+    )
+    .unwrap();
+
+    // Pre-migration backup (version 0 < CURRENT_VERSION).
+    let backup_path = backup_if_needed(&conn, 0).expect("backup should be created");
+
+    // Open the backup file independently and verify the WAL-resident row is
+    // present (i.e. the WAL was checkpointed into the `.db` before the copy).
+    let backup_conn = Connection::open(&backup_path).unwrap();
+    let marker: Result<String, _> =
+        backup_conn.query_row("SELECT marker FROM canary WHERE id = 1", [], |row| {
+            row.get(0)
+        });
+    assert_eq!(
+        marker.ok().as_deref(),
+        Some("wal-resident"),
+        "backup must include committed rows still resident in the WAL (checkpoint before copy)"
+    );
+}
+
+#[test]
 fn backup_skipped_for_in_memory_db() {
     let conn = Connection::open_in_memory().unwrap();
     let result = backup_if_needed(&conn, 0);
@@ -608,4 +660,74 @@ fn migration_rejects_future_schema_version() {
         message.contains("newer than this client supports"),
         "error should explain the version mismatch, got: {message}"
     );
+}
+
+#[test]
+fn prune_old_backups_keeps_only_the_most_recent() {
+    // #6830: with more than MAX_RETAINED_BACKUPS backups present, prune keeps the
+    // newest MAX_RETAINED_BACKUPS (by mtime) and removes the rest, leaving the
+    // live db and unrelated files untouched.
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("app.db");
+    std::fs::write(&db_path, b"live-db").unwrap();
+    // The live WAL/SHM sidecars — deleting these would CORRUPT the database, so
+    // they must never match the backup prefix (safety-critical).
+    std::fs::write(dir.path().join("app.db-wal"), b"wal").unwrap();
+    std::fs::write(dir.path().join("app.db-shm"), b"shm").unwrap();
+    // An unrelated file + a sibling-db backup that must NOT be matched.
+    std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
+    std::fs::write(dir.path().join("app2.backup.v1.100"), b"sibling").unwrap();
+
+    // Create MAX_RETAINED_BACKUPS + 2 backups with strictly increasing mtimes so
+    // ordering is deterministic regardless of filename-vs-mtime.
+    let total = MAX_RETAINED_BACKUPS + 2;
+    let mut paths = Vec::new();
+    for i in 0..total {
+        let p = db_path.with_extension(format!("backup.v{i}.{}", 1000 + i));
+        std::fs::write(&p, format!("backup-{i}")).unwrap();
+        // Stagger mtimes: later i = newer.
+        let mtime = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(2000 + i as u64);
+        filetime_set(&p, mtime);
+        paths.push(p);
+    }
+
+    prune_old_backups(&db_path);
+
+    let surviving: Vec<_> = paths.iter().filter(|p| p.exists()).collect();
+    assert_eq!(
+        surviving.len(),
+        MAX_RETAINED_BACKUPS,
+        "exactly MAX_RETAINED_BACKUPS backups must survive"
+    );
+    // The newest MAX_RETAINED_BACKUPS (highest i) are the survivors.
+    for (i, p) in paths.iter().enumerate() {
+        let expected = i >= total - MAX_RETAINED_BACKUPS;
+        assert_eq!(p.exists(), expected, "backup {i} retention mismatch");
+    }
+    // Untouched: live db + its WAL/SHM sidecars + unrelated + sibling-db backup.
+    assert!(db_path.exists(), "live db must not be pruned");
+    assert!(
+        dir.path().join("app.db-wal").exists(),
+        "live -wal sidecar must not be pruned (deleting it corrupts the db)"
+    );
+    assert!(
+        dir.path().join("app.db-shm").exists(),
+        "live -shm sidecar must not be pruned"
+    );
+    assert!(dir.path().join("notes.txt").exists());
+    assert!(
+        dir.path().join("app2.backup.v1.100").exists(),
+        "a sibling db's backups must not be matched by the `app.` prefix"
+    );
+}
+
+/// Set a file's mtime via a second write + an explicit timestamp. `filetime` is
+/// not a dependency, so emulate ordering by writing files in sequence with a
+/// real sleep-free monotonic guarantee: we instead set times through the std
+/// API available on the platform.
+fn filetime_set(path: &std::path::Path, mtime: std::time::SystemTime) {
+    // `std::fs` has no portable set-mtime; use a File + set_modified (Rust 1.75+).
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(mtime).unwrap();
 }

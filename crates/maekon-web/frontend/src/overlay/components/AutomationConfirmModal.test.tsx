@@ -76,4 +76,22 @@ describe('AutomationConfirmModal a11y', () => {
       expect(onDismiss).toHaveBeenCalled()
     })
   })
+
+  it('strips bidi/zero-width characters from the displayed process name (#6829)', () => {
+    const rlo = String.fromCharCode(0x202e) // right-to-left override
+    const zwsp = String.fromCharCode(0x200b) // zero-width space
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AutomationConfirmModal
+          confirmation={{ ...confirmationFixture(), process_name: `evil${rlo}${zwsp}name` }}
+          onDismiss={vi.fn()}
+        />
+      </I18nextProvider>,
+    )
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('evilname')
+    const text = dialog.textContent ?? ''
+    expect(text.includes(rlo)).toBe(false)
+    expect(text.includes(zwsp)).toBe(false)
+  })
 })

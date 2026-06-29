@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # sysinfo 0.39+ raises its required rustc to 1.95, violating the workspace
+    # `rust-version = "1.88.0"` MSRV. Hold at 0.38 until the MSRV is intentionally
+    # raised, so a routine Dependabot sweep cannot silently re-break it (#6848).
+    ignore:
+      - dependency-name: "sysinfo"
+        versions: [">=0.39"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]

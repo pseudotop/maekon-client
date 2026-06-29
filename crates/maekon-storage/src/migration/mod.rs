@@ -68,6 +68,54 @@ use tracing::{error, info, warn};
 
 pub(crate) const CURRENT_VERSION: u32 = 41;
 
+/// Keep at most this many pre-migration backups for a given DB; older ones are
+/// pruned after each new backup so they cannot accumulate unbounded across the
+/// lifetime of the install (#6830). 3 covers rollback across the most recent
+/// migrations while bounding disk use.
+const MAX_RETAINED_BACKUPS: usize = 3;
+
+/// Prune pre-migration backups for `db_path`, keeping the `MAX_RETAINED_BACKUPS`
+/// most recent (by mtime). Matches only THIS db's backups via the
+/// `{stem}.backup.v` prefix (so it never touches the live `.db`/`-wal`/`-shm` or
+/// a sibling db's backups). Best-effort: failures are logged, never fatal.
+fn prune_old_backups(db_path: &std::path::Path) {
+    let (Some(dir), Some(stem)) = (
+        db_path.parent(),
+        db_path.file_stem().and_then(|s| s.to_str()),
+    ) else {
+        return;
+    };
+    let prefix = format!("{stem}.backup.v");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut backups: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            // The char after `{stem}` must be `.` so "maekon" does not match a
+            // sibling "maekon2.backup.v…".
+            if !path.file_name()?.to_str()?.starts_with(&prefix) {
+                return None;
+            }
+            let mtime = entry.metadata().ok()?.modified().ok()?;
+            Some((mtime, path))
+        })
+        .collect();
+    if backups.len() <= MAX_RETAINED_BACKUPS {
+        return;
+    }
+    // Newest first; tie-break on path (the filename embeds version+timestamp) so
+    // ordering is fully deterministic even when two backups share an mtime.
+    backups.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, path) in backups.into_iter().skip(MAX_RETAINED_BACKUPS) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!("pruned old DB backup: {}", path.display()),
+            Err(e) => warn!("failed to prune old DB backup {}: {e}", path.display()),
+        }
+    }
+}
+
 /// Back up the database file before running schema migrations.
 fn backup_if_needed(conn: &Connection, current_version: u32) -> Option<std::path::PathBuf> {
     if current_version >= CURRENT_VERSION {
@@ -84,12 +132,26 @@ fn backup_if_needed(conn: &Connection, current_version: u32) -> Option<std::path
         .unwrap_or(0);
     let backup_path = db_path.with_extension(format!("backup.v{current_version}.{timestamp}"));
 
+    // Merge any WAL-resident committed transactions into the main `.db` before
+    // the file copy. In WAL mode a plain `fs::copy` of only the `.db` (without
+    // the `-wal`/`-shm` sidecars) yields a VALID but STALE backup that silently
+    // omits commits still held in the WAL — defeating the pre-migration safety
+    // net if a restore is later attempted. Best-effort: on failure we still
+    // attempt the copy but warn loudly (#6823).
+    if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        warn!(
+            "WAL checkpoint before migration backup failed (backup may omit recent commits): {e}"
+        );
+    }
+
     match std::fs::copy(&db_path, &backup_path) {
         Ok(bytes) => {
             info!(
                 "DB backup created before migration v{current_version}→v{CURRENT_VERSION}: {} ({bytes} bytes)",
                 backup_path.display()
             );
+            // #6830: bound accumulated backups (the just-created one is newest → retained).
+            prune_old_backups(&db_path);
             Some(backup_path)
         }
         Err(e) => {

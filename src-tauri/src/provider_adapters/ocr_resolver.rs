@@ -80,7 +80,7 @@ pub(super) fn resolve_cli_subscription_ocr_provider(
                     Arc::new(GuardedOcrProvider::new(
                         provider,
                         privacy_guard,
-                        config.allow_unredacted_external_ocr,
+                        config.bypass_pii_filter_for_external_ocr,
                         config.ocr_validation.clone(),
                     )) as Arc<dyn OcrProvider>,
                     ProviderSource::CliSubscription,
@@ -195,7 +195,7 @@ pub(super) fn resolve_ocr_provider(
                         Ok(Arc::new(GuardedOcrProvider::new(
                             remote,
                             privacy_guard,
-                            config.allow_unredacted_external_ocr,
+                            config.bypass_pii_filter_for_external_ocr,
                             config.ocr_validation.clone(),
                         )) as Arc<dyn OcrProvider>)
                     },
@@ -251,7 +251,7 @@ pub(super) fn resolve_ocr_provider_oauth(
         Arc::new(GuardedOcrProvider::new(
             remote,
             privacy_guard,
-            config.allow_unredacted_external_ocr,
+            config.bypass_pii_filter_for_external_ocr,
             config.ocr_validation.clone(),
         )) as Arc<dyn OcrProvider>,
         ProviderSource::OAuth,

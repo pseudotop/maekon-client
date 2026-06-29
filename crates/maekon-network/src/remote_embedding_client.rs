@@ -1,7 +1,10 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
+use maekon_core::models::storage_records::EgressLedgerRecord;
 use maekon_core::ports::credential_source::CredentialSource;
+use maekon_core::ports::egress_ledger::EgressLedgerSink;
 use maekon_core::ports::embedding_provider::EmbeddingProvider;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use serde::Deserialize;
@@ -9,8 +12,14 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use crate::http_client::host_is_loopback;
 use crate::provider_error_body::provider_error_message;
 use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
+
+/// Egress-ledger destination for remote embedding uploads (mirrors the
+/// `EGRESS_DESTINATION_FEATURE_PERF` const pattern). Distinct `external.*`
+/// namespace marks it as a third-party recipient, not the ONESHIM server (#6830).
+pub const EGRESS_DESTINATION_EMBEDDING: &str = "external.embedding";
 
 /// Remote embedding adapter using OpenAI-compatible embedding API.
 ///
@@ -36,6 +45,9 @@ pub struct RemoteEmbeddingProvider {
     breaker: Arc<CircuitBreaker>,
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     pii_level: PiiFilterLevel,
+    /// Optional egress audit sink. When set (and the endpoint is non-loopback),
+    /// one ledger row is recorded per successful external embedding upload (#6830).
+    egress_ledger: Option<Arc<dyn EgressLedgerSink>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,10 +111,14 @@ impl RemoteEmbeddingProvider {
         timeout_secs: u64,
         breaker_registry: Arc<CircuitBreakerRegistry>,
     ) -> Self {
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — stops an embedding-provider 30x from leaking the api-key header +
+        // embedding text body. build() only fails on TLS backend initialization failure
+        // (process-fatal); we panic explicitly there rather than falling back to a redirect-following
+        // reqwest::Client::default().
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
-            .unwrap_or_default();
+            .expect("하드닝 embedding HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
 
         // D7: resolve per-endpoint breaker; malformed endpoint falls back to
         // a "none" key so at least the construction succeeds and runtime
@@ -120,6 +136,7 @@ impl RemoteEmbeddingProvider {
             breaker,
             pii_sanitizer: None,
             pii_level: PiiFilterLevel::Standard,
+            egress_ledger: None,
         }
     }
 
@@ -132,6 +149,53 @@ impl RemoteEmbeddingProvider {
         self.pii_sanitizer = Some(sanitizer);
         self.pii_level = level;
         self
+    }
+
+    /// Attach the egress-audit sink (chainable, mirrors `FeedbackSender::with_egress_ledger`).
+    /// When set, each successful upload to a non-loopback endpoint records one
+    /// ledger row, aligning embedding egress with the LLM/OCR/feedback siblings (#6830).
+    pub fn with_egress_ledger(mut self, ledger: Arc<dyn EgressLedgerSink>) -> Self {
+        self.egress_ledger = Some(ledger);
+        self
+    }
+
+    /// Record one egress-ledger row per successful external embedding HTTP POST.
+    ///
+    /// Fires for BOTH the batched content-activity embed (`embed_batch`) AND each
+    /// llm-summary single embed (`embed`) — both route through `request_embeddings`.
+    /// Loopback endpoints never record (loopback is not egress). Best-effort: a
+    /// ledger failure must never fail the embed it audits. The SQLite write is
+    /// offloaded via `spawn_blocking` so it never blocks the embedding path (#6830/#6134).
+    /// `body` is the SAME serialized payload that egressed, so `byte_count` matches
+    /// what left the machine.
+    async fn record_embedding_egress(&self, body: &serde_json::Value) {
+        let Some(ledger) = self.egress_ledger.clone() else {
+            return;
+        };
+        if host_is_loopback(&self.endpoint) {
+            return;
+        }
+        let byte_count = serde_json::to_vec(body)
+            .map(|v| v.len() as i64)
+            .unwrap_or(0);
+        let record = EgressLedgerRecord {
+            record_id: uuid::Uuid::new_v4().to_string(),
+            event_type: "EmbeddingEgress".to_string(),
+            event_id: None,
+            byte_count,
+            recipient_count: 1,
+            destination: EGRESS_DESTINATION_EMBEDDING.to_string(),
+            disposition: "uploaded".to_string(),
+            consent_state: "lawful_basis:embedding_remote_opt_in".to_string(),
+            occurred_at: Utc::now().to_rfc3339(),
+        };
+        match tokio::task::spawn_blocking(move || ledger.record_egress(&record)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(err.code = %e.code(), "embedding egress ledger write failure (non-fatal): {e}")
+            }
+            Err(e) => warn!("embedding egress ledger task panicked: {e}"),
+        }
     }
 
     fn sanitize_remote_embedding_input(&self, text: &str) -> String {
@@ -223,7 +287,14 @@ impl RemoteEmbeddingProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_body = response.text().await.ok();
+            // #6939: cap the ERROR body too — a compromised/MITM provider can return
+            // a non-2xx with a multi-GB body to OOM the agent on the error path. The
+            // body is only used to classify the failure, so a cap breach/read error
+            // degrades to None (no body marker), never an unbounded buffer.
+            let error_body =
+                crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                    .await
+                    .ok();
             let message = provider_error_message("Embedding API", status, error_body.as_deref());
             // Semantic HTTP status mapping per iter-54/55 pattern.
             return Err(match status.as_u16() {
@@ -250,8 +321,29 @@ impl RemoteEmbeddingProvider {
             });
         }
 
+        // #6830: 2xx confirmed — the sanitized body has egressed to the external
+        // endpoint. Record the egress audit row now, independent of response
+        // parsing (the data left the machine regardless of parse outcome).
+        self.record_embedding_egress(&body).await;
+
+        // #6939: cap the provider response body before buffering/parse — a
+        // compromised/MITM provider could otherwise stream multi-GB and OOM the agent.
+        let body_bytes =
+            crate::outbound::read_body_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                .await
+                .map_err(|e| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: match e {
+                        crate::outbound::BodyReadError::Transport(err) => {
+                            format!("Failed to read embedding response: {err}")
+                        }
+                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                            format!("embedding response exceeded cap {cap} bytes (len {len})")
+                        }
+                    },
+                })?;
         let mut parsed: EmbeddingResponse =
-            response.json().await.map_err(|e| CoreError::Network {
+            serde_json::from_slice(&body_bytes).map_err(|e| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
                 message: format!("Failed to parse embedding response: {e}"),
             })?;
@@ -1074,5 +1166,148 @@ mod tests {
         let result = provider.embed("test").await;
         result.expect("Inline ApiKey must reach the server successfully");
         _mock.assert_async().await;
+    }
+
+    // ── #6830 egress-ledger audit ───────────────────────────────────────────
+    //
+    // NOTE: mockito binds to 127.0.0.1 (loopback), so a mockito-backed request
+    // never records (loopback is not egress). The recording logic is therefore
+    // exercised by calling `record_embedding_egress` directly with a non-loopback
+    // endpoint; the loopback gate is covered both directly AND via the real
+    // request path (mockito → 200 → reaches the recorder → gated out).
+
+    struct MockEgressLedger {
+        records: std::sync::Mutex<Vec<EgressLedgerRecord>>,
+    }
+    impl EgressLedgerSink for MockEgressLedger {
+        fn record_egress(&self, record: &EgressLedgerRecord) -> Result<(), CoreError> {
+            self.records.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+    struct FailingEgressLedger;
+    impl EgressLedgerSink for FailingEgressLedger {
+        fn record_egress(&self, _record: &EgressLedgerRecord) -> Result<(), CoreError> {
+            Err(CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: "simulated ledger failure".to_string(),
+            })
+        }
+    }
+
+    fn external_provider_with_ledger(ledger: Arc<dyn EgressLedgerSink>) -> RemoteEmbeddingProvider {
+        // Non-loopback endpoint — never actually contacted (we call the recorder directly).
+        RemoteEmbeddingProvider::new(
+            "https://api.example.com/v1/embeddings".to_string(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        )
+        .with_egress_ledger(ledger)
+    }
+
+    #[tokio::test]
+    async fn external_endpoint_records_one_egress_row() {
+        let ledger = Arc::new(MockEgressLedger {
+            records: std::sync::Mutex::new(Vec::new()),
+        });
+        let provider = external_provider_with_ledger(ledger.clone());
+        let body = serde_json::json!({"model": "m", "input": ["[REDACTED]"]});
+        provider.record_embedding_egress(&body).await;
+
+        let rows = ledger.records.lock().unwrap();
+        assert_eq!(rows.len(), 1, "external upload must record exactly one row");
+        let r = &rows[0];
+        assert_eq!(r.destination, EGRESS_DESTINATION_EMBEDDING);
+        assert_eq!(r.event_type, "EmbeddingEgress");
+        assert_eq!(r.disposition, "uploaded");
+        assert_eq!(r.recipient_count, 1);
+        assert!(r.byte_count > 0, "byte_count from the serialized body");
+        assert!(
+            r.consent_state.contains("lawful_basis"),
+            "consent_state records the lawful basis, not user_initiated"
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_endpoint_does_not_record() {
+        let ledger = Arc::new(MockEgressLedger {
+            records: std::sync::Mutex::new(Vec::new()),
+        });
+        // Loopback Ollama-style endpoint: must NOT record (loopback != egress).
+        let provider = RemoteEmbeddingProvider::new(
+            "http://127.0.0.1:11434/v1/embeddings".to_string(),
+            String::new(),
+            "nomic".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        )
+        .with_egress_ledger(ledger.clone());
+        provider
+            .record_embedding_egress(&serde_json::json!({"input": ["x"]}))
+            .await;
+        assert_eq!(ledger.records.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn ledger_failure_is_non_fatal() {
+        // A failing sink must not panic or propagate — best-effort audit.
+        let provider = external_provider_with_ledger(Arc::new(FailingEgressLedger));
+        provider
+            .record_embedding_egress(&serde_json::json!({"input": ["x"]}))
+            .await; // returns normally despite the sink erroring
+    }
+
+    #[tokio::test]
+    async fn no_ledger_wired_is_noop() {
+        // No sink attached — record_embedding_egress is a no-op (no panic).
+        let provider = RemoteEmbeddingProvider::new(
+            "https://api.example.com/v1/embeddings".to_string(),
+            "k".to_string(),
+            "m".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+        provider
+            .record_embedding_egress(&serde_json::json!({"input": ["x"]}))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn loopback_request_path_succeeds_without_recording() {
+        // Full request path against a (loopback) mockito server: the embed succeeds
+        // and the recorder is reached but gated out by the loopback check → 0 rows.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({"data": [{"embedding": [0.1, 0.2, 0.3]}]}).to_string())
+            .create_async()
+            .await;
+        let ledger = Arc::new(MockEgressLedger {
+            records: std::sync::Mutex::new(Vec::new()),
+        });
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(), // 127.0.0.1 → loopback
+            "k".to_string(),
+            "m".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        )
+        .with_egress_ledger(ledger.clone());
+        let out = provider.embed_batch(&["hello".to_string()]).await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            ledger.records.lock().unwrap().len(),
+            0,
+            "loopback request must not record egress"
+        );
+        mock.assert_async().await;
     }
 }

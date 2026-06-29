@@ -671,6 +671,77 @@ async fn oversized_newline_free_body_is_rejected_not_oomed() {
     }
 }
 
+/// #6916 regression guard: many small, individually-valid NDJSON content lines
+/// whose AGGREGATE exceeds `MAX_ACCUMULATED_RESPONSE_BYTES` (8 MiB) must terminate
+/// the stream with `CoreError::Network` rather than growing `accumulated` without
+/// bound. The per-line cap (`MAX_NDJSON_LINE_BYTES`, 1 MiB) does not bound this —
+/// each line here is well under 1 MiB and newline-terminated, so only the new
+/// cross-line aggregate cap catches it. (A trickle of in-cap lines also never trips
+/// the per-read timeout, which resets after every successful read.)
+#[tokio::test]
+async fn aggregate_accumulated_response_is_capped() {
+    // 9 MiB of content split into 9 valid NDJSON lines of ~1 MiB each (each under
+    // the 1 MiB per-line cap, all newline-terminated → only the aggregate cap fires).
+    let chunk = "y".repeat(900 * 1024); // ~0.9 MiB per line, well under MAX_NDJSON_LINE_BYTES
+    let mut body = String::new();
+    for _ in 0..10 {
+        body.push_str(&format!(
+            "{{\"message\":{{\"role\":\"assistant\",\"content\":\"{chunk}\"}},\"done\":false}}\n"
+        ));
+    }
+
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/chat")
+        .with_status(200)
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let session = LocalLlmSession::new(
+        "aggregate-cap-session".to_string(),
+        "llama3".to_string(),
+        server.url(),
+        None,
+        Arc::new(AiSessionConfig::default()),
+    );
+    let message = SessionMessage {
+        role: MessageRole::User,
+        content: "hello".to_string(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+
+    let mut stream = session
+        .send_message(&message)
+        .await
+        .expect("200 response should open a stream");
+
+    // Drain: valid lines yield Ok(Text) until the aggregate cap is exceeded, then
+    // the stream must yield the cap-termination error. We must observe that error.
+    let mut saw_cap_error = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => continue,
+            Err(CoreError::Network { message, .. }) => {
+                assert!(
+                    message.contains("accumulated response exceeded"),
+                    "error must explain the aggregate cap, got: {message}"
+                );
+                saw_cap_error = true;
+                break;
+            }
+            Err(other) => panic!("expected aggregate-cap CoreError::Network, got: {other:?}"),
+        }
+    }
+    assert!(
+        saw_cap_error,
+        "stream must terminate with the aggregate-cap error once accumulated > 8 MiB"
+    );
+}
+
 /// #6205: the session HTTP client is built with connect + per-read timeouts via
 /// `build_ollama_http_client`. A true stall test (a connected endpoint that
 /// accepts the request but then sends no bytes) requires a live/controllable

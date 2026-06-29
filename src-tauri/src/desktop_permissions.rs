@@ -288,6 +288,10 @@ fn request_macos_screen_capture_permission<R: Runtime>(
 
     app_handle
         .run_on_main_thread(move || {
+            // SAFETY: FFI call into CoreGraphics (declared in the extern block
+            // below). It takes no arguments and returns a `bool` by value, so
+            // there are no pointer/lifetime obligations; macOS only requires it
+            // on the main thread, which `run_on_main_thread` guarantees.
             let granted = unsafe { CGRequestScreenCaptureAccess() };
             send_once(&request_sender, granted);
         })
@@ -343,6 +347,14 @@ fn request_macos_notification_permission<R: Runtime>(
     let request_sender = Arc::clone(&tx);
 
     app_handle
+        // SAFETY: this closure sends Objective-C messages (msg_send!) to
+        // UNUserNotificationCenter on the main thread (guaranteed by
+        // run_on_main_thread). The class is looked up via AnyClass::get and the
+        // returned receiver pointer is null-checked before any selector is sent;
+        // each selector (currentNotificationCenter / requestAuthorization…)
+        // matches the receiver's real signature. The RcBlock completion handler
+        // is leaked via mem::forget because the framework invokes it
+        // asynchronously after this closure returns.
         .run_on_main_thread(move || unsafe {
             let Some(notification_center_class) = AnyClass::get(c"UNUserNotificationCenter") else {
                 send_once(
@@ -436,6 +448,11 @@ fn macos_notification_error_message(error: *mut AnyObject) -> Option<String> {
         return None;
     }
 
+    // SAFETY: `error` was confirmed non-null above and points to a live NSError
+    // (an `NSError *` handed in by the framework). `&*error` reborrows that
+    // checked pointer only for the message sends; localizedDescription/domain
+    // (-> NSString) and code (-> isize) are valid NSError selectors whose return
+    // types match the bindings.
     unsafe {
         let desc: Retained<NSString> = msg_send![&*error, localizedDescription];
         let domain: Retained<NSString> = msg_send![&*error, domain];
@@ -457,6 +474,15 @@ fn macos_notification_authorization_status<R: Runtime>(
     let probe_sender = Arc::clone(&tx);
 
     app_handle
+        // SAFETY: this closure sends Objective-C messages (msg_send!) to
+        // UNUserNotificationCenter on the main thread (guaranteed by
+        // run_on_main_thread). The class is looked up via AnyClass::get and the
+        // returned receiver pointer is null-checked before any selector is sent;
+        // each selector (currentNotificationCenter /
+        // getNotificationSettingsWithCompletionHandler:) matches the receiver's
+        // real signature. The RcBlock settings handler is leaked via mem::forget
+        // because the framework invokes it asynchronously after this closure
+        // returns.
         .run_on_main_thread(move || unsafe {
             let Some(notification_center_class) = AnyClass::get(c"UNUserNotificationCenter") else {
                 send_once(
@@ -532,6 +558,10 @@ fn macos_path_has_app_bundle(path: &std::path::Path) -> bool {
 
 #[cfg(target_os = "macos")]
 fn macos_microphone_authorization_status() -> Result<isize, String> {
+    // SAFETY: AnyClass::get returns a valid +0 class pointer (else we early
+    // return), and `authorizationStatusForMediaType:` is a real AVCaptureDevice
+    // class method taking an NSString (the static `ns_string!` lives for the
+    // program) and returning the `AVAuthorizationStatus` raw value as isize.
     unsafe {
         let Some(capture_device_class) = AnyClass::get(c"AVCaptureDevice") else {
             return Err("macos microphone authorization class unavailable".to_string());
@@ -548,6 +578,10 @@ fn macos_microphone_authorization_status() -> Result<isize, String> {
 #[cfg(target_os = "macos")]
 fn macos_input_monitoring_access_status() -> Result<u32, String> {
     const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+    // SAFETY: FFI call into IOKit (declared in the extern block below). It takes
+    // a single `u32` request-type by value and returns a `u32` status; the
+    // constant is the documented kIOHIDRequestTypeListenEvent value, so there
+    // are no pointer or lifetime obligations.
     Ok(unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) })
 }
 
@@ -562,6 +596,9 @@ fn send_once<T>(sender: &Arc<Mutex<Option<std::sync::mpsc::SyncSender<T>>>>, val
     }
 }
 
+// SAFETY: these declarations match the CoreGraphics C ABI — both
+// CGPreflight/CGRequestScreenCaptureAccess take no arguments and return a C
+// `bool` — so calls through them are sound.
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -569,10 +606,14 @@ unsafe extern "C" {
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
+// SAFETY: empty extern block declares no callable items; it exists only to link
+// the AVFoundation framework so msg_send! to AVCaptureDevice resolves at load.
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {}
 
+// SAFETY: the declaration matches IOKit's C ABI — IOHIDCheckAccess takes a
+// single `u32` request type and returns a `u32` status — so calls are sound.
 #[cfg(target_os = "macos")]
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
@@ -581,6 +622,9 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 fn macos_screen_capture_access_granted() -> bool {
+    // SAFETY: FFI call into CoreGraphics; takes no arguments and returns a bool
+    // by value. This is a read-only preflight with no pointer/lifetime or
+    // thread-affinity obligations.
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 

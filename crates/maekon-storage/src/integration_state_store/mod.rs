@@ -6,6 +6,7 @@ mod tests;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::encryption::EncryptionKey;
 use crate::error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -23,6 +24,13 @@ pub use port_impls::{
 use inner::FileIntegrationStateInner;
 
 const MAX_AUDIT_RECORDS: usize = 512;
+
+// #7073: magic header that marks an AES-256-GCM-encrypted integration state
+// registry file (version 1). Mirrors `FileSecretRegistry`'s `MKSEC1\n` header:
+// 7 bytes, human-visible in a hex dump, and never the first bytes of valid JSON
+// (which begins with '{'). Files without this header are treated as legacy
+// plaintext JSON and upgraded to the encrypted format on the next save.
+const INTEGRATION_STATE_MAGIC: &[u8] = b"MKINT1\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FileIntegrationStateRegistry {
@@ -50,28 +58,99 @@ impl FileIntegrationStateRegistry {
         }
     }
 
-    fn load_or_default(path: &Path) -> Result<Self, StorageError> {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents).map_err(|err| {
-                StorageError::Internal(format!("integration state registry parse: {err}"))
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
-            Err(err) => Err(err.into()),
+    /// Load the registry from `path`, transparently handling both the encrypted
+    /// binary format (magic header present) and the legacy plaintext JSON format
+    /// (no magic header — migration path, upgraded on the next save).
+    ///
+    /// Returns a default empty registry when the file does not exist.
+    /// Returns `Err` when:
+    /// - the file starts with the magic header but no key is supplied (fail-closed)
+    /// - decryption fails (wrong key or corrupt data)
+    /// - JSON parsing fails
+    fn load_or_default(path: &Path, key: Option<&EncryptionKey>) -> Result<Self, StorageError> {
+        let raw = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),
+            Err(err) => return Err(err.into()),
+        };
+
+        if raw.starts_with(INTEGRATION_STATE_MAGIC) {
+            // Encrypted format: a key is required to proceed (fail-closed).
+            let key = key.ok_or_else(|| {
+                StorageError::Internal(
+                    "integration state registry is encrypted (MKINT1 header present) but no \
+                     encryption key was supplied — refusing to open without key"
+                        .to_string(),
+                )
+            })?;
+            let ciphertext = &raw[INTEGRATION_STATE_MAGIC.len()..];
+            let plaintext = key.decrypt(ciphertext).map_err(|e| {
+                StorageError::Internal(format!(
+                    "failed to decrypt integration state registry: {e} — the encryption key \
+                     (.db_key) may have changed or been replaced"
+                ))
+            })?;
+            let json = std::str::from_utf8(&plaintext).map_err(|e| {
+                StorageError::Internal(format!(
+                    "decrypted integration state registry is not valid UTF-8: {e}"
+                ))
+            })?;
+            serde_json::from_str(json).map_err(|e| {
+                StorageError::Internal(format!("integration state registry parse: {e}"))
+            })
+        } else {
+            // Legacy plaintext JSON — migration path. No key required to read; the
+            // next save() with a key present upgrades the file to the encrypted
+            // format automatically.
+            let json = std::str::from_utf8(&raw).map_err(|e| {
+                StorageError::Internal(format!(
+                    "legacy integration state registry is not valid UTF-8: {e}"
+                ))
+            })?;
+            serde_json::from_str(json).map_err(|e| {
+                StorageError::Internal(format!("integration state registry parse: {e}"))
+            })
         }
     }
 
     /// Persist the registry to `path` using the tmp-file + 0o600/DACL + atomic-rename
     /// hardening pattern (mirrors `FileSecretRegistry::save`).
     ///
-    /// The registry holds PII/insight state at rest, so the persisted file is
-    /// created owner-only: mode 0o600 on Unix (atomic `create_new` + `mode`, no
-    /// world-readable window) and an owner-only DACL on Windows before the
-    /// rename. Contents are still plaintext JSON; at-rest encryption is future
-    /// work (would mirror `FileSecretRegistry`'s AES-256-GCM path).
-    fn save(&self, path: &Path) -> Result<(), StorageError> {
-        let serialized = serde_json::to_string_pretty(self).map_err(|err| {
+    /// The registry holds PII/insight state at rest (pending proactive-prompt
+    /// bodies derived from the monitored user context, plus insight/audit
+    /// records), so it is encrypted at rest:
+    /// - When `key` is `Some`, the JSON is AES-256-GCM encrypted and the file is
+    ///   prefixed with `INTEGRATION_STATE_MAGIC` (#7073 — this is no longer the
+    ///   lone unencrypted-at-rest store in the crate).
+    /// - When `key` is `None`, the JSON is written in plaintext and a warning is
+    ///   emitted — a degraded / no-key path that should not be reached in
+    ///   production (the composition root always supplies the shared key).
+    ///
+    /// The persisted file is additionally created owner-only: mode 0o600 on Unix
+    /// (atomic `create_new` + `mode`, no world-readable window) and an owner-only
+    /// DACL on Windows before the rename.
+    fn save(&self, path: &Path, key: Option<&EncryptionKey>) -> Result<(), StorageError> {
+        let json = serde_json::to_string_pretty(self).map_err(|err| {
             StorageError::Internal(format!("integration state registry serialization: {err}"))
         })?;
+
+        // Produce the bytes to write: either encrypted (magic + ciphertext) or
+        // plaintext with a degradation warning (mirrors FileSecretRegistry::save).
+        let payload: Vec<u8> = if let Some(key) = key {
+            let ciphertext = key.encrypt(json.as_bytes())?;
+            let mut out = Vec::with_capacity(INTEGRATION_STATE_MAGIC.len() + ciphertext.len());
+            out.extend_from_slice(INTEGRATION_STATE_MAGIC);
+            out.extend(ciphertext);
+            out
+        } else {
+            tracing::warn!(
+                "integration state store: writing registry as PLAINTEXT (no encryption \
+                 key supplied) — this is a degraded/fallback mode; supply an EncryptionKey \
+                 to enable at-rest encryption"
+            );
+            json.into_bytes()
+        };
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -96,7 +175,7 @@ impl FileIntegrationStateRegistry {
                 .map_err(|e| {
                     StorageError::Internal(format!("integration state store tmp create: {e}"))
                 })?;
-            f.write_all(serialized.as_bytes()).map_err(|e| {
+            f.write_all(&payload).map_err(|e| {
                 let _ = std::fs::remove_file(&temp_path);
                 StorageError::Internal(format!("integration state store tmp write: {e}"))
             })?;
@@ -104,10 +183,11 @@ impl FileIntegrationStateRegistry {
 
         // Windows: write the payload, then apply an owner-only DACL so the file
         // is not readable via inherited parent-directory ACLs (reuses the shared
-        // helper in `encryption.rs`). DACL failure is non-fatal (warn and continue).
+        // helper in `encryption.rs`). The payload is ciphertext when a key is
+        // present. DACL failure is non-fatal (warn and continue).
         #[cfg(windows)]
         {
-            if let Err(e) = std::fs::write(&temp_path, serialized.as_bytes()) {
+            if let Err(e) = std::fs::write(&temp_path, &payload) {
                 let _ = std::fs::remove_file(&temp_path);
                 return Err(StorageError::Internal(format!(
                     "integration state store tmp write: {e}"
@@ -121,7 +201,7 @@ impl FileIntegrationStateRegistry {
         // Exotic targets without unix/windows permission models: plain write.
         #[cfg(not(any(unix, windows)))]
         {
-            std::fs::write(&temp_path, serialized.as_bytes()).map_err(|e| {
+            std::fs::write(&temp_path, &payload).map_err(|e| {
                 let _ = std::fs::remove_file(&temp_path);
                 StorageError::Internal(format!("integration state store tmp write: {e}"))
             })?;
@@ -160,16 +240,35 @@ pub struct FileIntegrationStateStore {
 }
 
 impl FileIntegrationStateStore {
-    pub fn new(registry_path: PathBuf) -> Result<Self, StorageError> {
-        Self::with_policy(registry_path, IntegrationStateStorePolicy::default())
+    /// Create (or open) a file-backed integration state store at `registry_path`.
+    ///
+    /// `encryption_key` controls at-rest encryption (#7073):
+    /// - `Some(key)` — the registry is AES-256-GCM encrypted on every save, and a
+    ///   legacy plaintext file is transparently upgraded on the first write.
+    /// - `None` — the registry is written as plaintext JSON (degraded mode). The
+    ///   production composition root always supplies the shared key.
+    pub fn new(
+        registry_path: PathBuf,
+        encryption_key: Option<Arc<EncryptionKey>>,
+    ) -> Result<Self, StorageError> {
+        Self::with_policy(
+            registry_path,
+            IntegrationStateStorePolicy::default(),
+            encryption_key,
+        )
     }
 
     pub fn with_policy(
         registry_path: PathBuf,
         policy: IntegrationStateStorePolicy,
+        encryption_key: Option<Arc<EncryptionKey>>,
     ) -> Result<Self, StorageError> {
         Ok(Self {
-            inner: Arc::new(FileIntegrationStateInner::new(registry_path, policy)?),
+            inner: Arc::new(FileIntegrationStateInner::new(
+                registry_path,
+                policy,
+                encryption_key,
+            )?),
         })
     }
 

@@ -216,12 +216,17 @@ impl ConfigManager {
         // the correction (mirrors the managed-clamp rewrite above) so the fix
         // survives a relaunch. Applied after the managed overlay so a managed
         // value is clamped to policy first, then to its floor.
+        //
+        // #6883: the same clamp also fail-closes `web.allow_external` when the persisted
+        // `integration_auth_token` is sub-strength and snaps an out-of-range `web.port`,
+        // so a downgrade / hand-edited config that never passed the #6772 write-path
+        // strength gate cannot bind the integration API to 0.0.0.0 with a weak bearer.
         let bounds_clamped = initial.clamp_bounds();
         if !bounds_clamped.is_empty() {
             warn!(
                 target: "config_bounds",
                 fields = ?bounds_clamped,
-                "config bounds clamped sub-floor interval(s) at startup (fail-open)"
+                "config bounds clamped at startup (interval floors: fail-open; web.allow_external/port: fail-closed) — see `fields`"
             );
             if let Err(e) = persistence::save_to_file(&config_path, &initial) {
                 debug!("save_to_file (bounds clamp) failed: {e}");

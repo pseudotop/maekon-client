@@ -110,6 +110,19 @@ yanked = "deny"
 #     tokenizers 0.23.1 exists, but fastembed 5.16.0 requires ^0.22.2, so forcing
 #     it would be a semver override rather than a normal lockfile update.
 #
+# (C) unsound (NOT unmaintained) — surfaced by cargo-audit on the 2nd-pass
+#     maekon-client audit (2026-06-25), governed by `unsound = "warn"` above; no
+#     first-party code change is reachable (we never call memmap2 directly):
+#   RUSTSEC-2026-0186  memmap2 0.9.10    xcap 0.9.6 (libwayshot-xcap, Linux screen
+#                                        capture) + xkbcommon -> enigo 0.6 (input).
+#     The mmap views back framebuffer/shm + xkb keymap fds owned by the same
+#     process/compositor session, so the unsound aliasing window (a concurrently
+#     truncated/mutated mapping) is narrow and not directly attacker-controlled.
+#     No fixed memmap2 release exists yet (informational/unsound, not a patched
+#     CVE); track xcap/libwayshot-xcap + xkbcommon for a memmap2 >= 0.9.11 bump.
+#     (rand 0.7.3 / RUSTSEC-2026-0097 is the build-time-only path already listed
+#     under (A) above.)
+#
 # RETIRED by E31: gtk-rs GTK3 binding advisories (RUSTSEC-2024-0411..0420) and
 # RUSTSEC-2024-0429 glib are no longer in the active lockfile after the
 # GTK4/WebKitGTK 6 migration. macOS/Windows builds never carried the old GTK3

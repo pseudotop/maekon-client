@@ -119,7 +119,8 @@ impl RemoteLlmProvider {
         } else {
             CredentialSource::ApiKey(config.api_key.clone())
         };
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
@@ -240,7 +241,8 @@ impl RemoteLlmProvider {
         breaker_registry: Arc<CircuitBreakerRegistry>,
     ) -> Result<Self, crate::error::NetworkError> {
         use crate::error::NetworkError;
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;

@@ -75,6 +75,9 @@ impl MacOsNativeAccessibility {
 
     /// Check if accessibility permission is granted.
     fn check_permission() -> bool {
+        // SAFETY: AXIsProcessTrustedWithOptions accepts a null options dictionary
+        // as the documented way to query accessibility trust without prompting;
+        // with a null argument it reads no caller-provided memory.
         unsafe { AXIsProcessTrustedWithOptions(ptr::null()) }
     }
 
@@ -300,6 +303,14 @@ impl MacOsNativeAccessibility {
     }
 
     /// Helper: get a string attribute from an AXUIElement.
+    ///
+    /// # Safety
+    /// `element` must be a valid, live `AXUIElementRef` (obtained from an AX
+    /// `Create`/`Copy` call) that outlives this call, and `attr` must be a valid
+    /// `CFStringRef` naming an attribute. The value returned by
+    /// `AXUIElementCopyAttributeValue` is owned under the Create Rule and is
+    /// `CFRelease`d here on the type-mismatch early return (and wrapped under the
+    /// create rule otherwise), so no Core Foundation ownership crosses the boundary.
     unsafe fn get_string_attr(element: AXUIElementRef, attr: CFStringRef) -> Option<String> {
         let mut value: CFTypeRef = ptr::null();
         let err = AXUIElementCopyAttributeValue(element, attr, &mut value);
@@ -326,6 +337,14 @@ impl MacOsNativeAccessibility {
     }
 
     /// Helper: extract position (CGPoint) and size (CGSize) from element.
+    ///
+    /// # Safety
+    /// `element` must be a valid, live `AXUIElementRef` that outlives this call.
+    /// The position/size values copied by `AXUIElementCopyAttributeValue` are
+    /// owned under the Create Rule and `CFRelease`d on every return path; the
+    /// `AXValue` payloads are decoded into stack `CGPoint`/`CGSize` whose
+    /// addresses are valid for the `AXValueGetValue` out-writes, so no Core
+    /// Foundation reference escapes this function.
     unsafe fn get_position_and_size(element: AXUIElementRef) -> Option<ElementRect> {
         let pos_key = ax_attr(AX_POSITION_ATTR);
         let size_key = ax_attr(AX_SIZE_ATTR);
@@ -685,6 +704,12 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
             pii_level
         };
 
+        // SAFETY: every AX reference in this closure is created here under the
+        // Create Rule (AXUIElementCreateSystemWide / AXUIElementCopyAttributeValue),
+        // null-checked before use, and released exactly once with CFRelease before
+        // the closure returns — `traverse_root` aliases whichever of `focused` /
+        // `window_ref` survives and is the only one released at the end. No CF
+        // reference escapes the closure; only owned Rust data is returned.
         let result = tokio::task::spawn_blocking(move || unsafe {
             let system_wide = AXUIElementCreateSystemWide();
             if system_wide.is_null() {
@@ -776,6 +801,12 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
 
         let result =
             tokio::task::spawn_blocking(move || -> Result<Vec<AccessibilityElement>, CoreError> {
+                // SAFETY: `app_ref` and `system_wide` are both created here under the
+                // Create Rule (AXUIElementCreateApplication / ...CreateSystemWide),
+                // null-checked before use, and each released exactly once with
+                // CFRelease before the closure returns; `pid` comes from
+                // find_application_pid. No CF reference escapes — only owned Rust
+                // data is returned.
                 unsafe {
                     let pid = Self::find_application_pid(&app_name)?;
                     let app_ref = AXUIElementCreateApplication(pid);
@@ -828,6 +859,10 @@ impl AccessibilityExtractor for MacOsNativeAccessibility {
     }
 
     fn request_permission(&self) -> bool {
+        // SAFETY: `options` is a live CFDictionary owned by the local binding for
+        // the duration of the call; its raw CFTypeRef is only borrowed by
+        // AXIsProcessTrustedWithOptions to read the AXTrustedCheckOptionPrompt
+        // flag (which prompts for accessibility access). No ownership is transferred.
         unsafe {
             use core_foundation::boolean::CFBoolean;
             use core_foundation::dictionary::CFDictionary;

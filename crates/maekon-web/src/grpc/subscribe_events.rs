@@ -315,6 +315,8 @@ fn build_ai_runtime_status_event(
             llm_source: "unknown".to_string(),
             ocr_fallback_reason: String::new(),
             llm_fallback_reason: String::new(),
+            // No status snapshot → no health signal (absent on the wire).
+            llm_healthy: None,
         },
         Some(s) => {
             // #6440 (F1): route through the fail-closed helper (redacts when no sanitizer
@@ -337,6 +339,9 @@ fn build_ai_runtime_status_event(
                     .as_deref()
                     .map(sanitize)
                     .unwrap_or_default(),
+                // #6830: REST/SSE parity — forward the per-call LLM health snapshot
+                // (a plain bool flag, not PII; absent when the snapshot has no value).
+                llm_healthy: s.llm_healthy,
             }
         }
     }
@@ -401,5 +406,36 @@ mod tests {
         // Non-PII source identifiers pass through unchanged.
         assert_eq!(event.ocr_source, "ocr");
         assert_eq!(event.llm_source, "llm");
+    }
+
+    #[test]
+    fn ai_runtime_status_forwards_llm_healthy_for_rest_sse_parity() {
+        use maekon_api_contracts::stream::AiRuntimeStatus;
+        let make = |llm_healthy| AiRuntimeStatus {
+            ocr_source: "ocr".to_string(),
+            llm_source: "llm".to_string(),
+            ocr_fallback_reason: None,
+            llm_fallback_reason: None,
+            llm_healthy,
+        };
+        // #6830: the per-call llm_healthy snapshot must reach the gRPC event
+        // (REST/SSE parity), not be silently dropped.
+        assert_eq!(
+            build_ai_runtime_status_event(Some(&make(Some(true))), None).llm_healthy,
+            Some(true)
+        );
+        // Some(false) is presence-tracked (proto3 optional) — transmitted, distinct
+        // from absent None — so an unhealthy snapshot is not lost either.
+        assert_eq!(
+            build_ai_runtime_status_event(Some(&make(Some(false))), None).llm_healthy,
+            Some(false)
+        );
+        // A None snapshot is absent on the wire — both the Some-with-None and the
+        // no-status sentinel paths.
+        assert_eq!(
+            build_ai_runtime_status_event(Some(&make(None)), None).llm_healthy,
+            None
+        );
+        assert_eq!(build_ai_runtime_status_event(None, None).llm_healthy, None);
     }
 }

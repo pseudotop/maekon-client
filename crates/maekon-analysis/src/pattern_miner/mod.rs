@@ -33,13 +33,22 @@ impl PatternMiner {
     }
 
     fn extract_app_sequence(&self, events: &[Event]) -> Vec<(DateTime<Utc>, String)> {
-        events
+        // #6893: detectors (deep-work block, communication burst) assume the sequence is in
+        // ASCENDING time order — they treat adjacent deltas like
+        // `app_switches[i].0 - app_switches[i-1].0` as positive (a positive gap/duration).
+        // However, get_events returns DESC (newest-first), so every delta becomes negative and
+        // the `> 120`/`>= 1800`/burst-gap thresholds never fire, leaving patterns silently
+        // un-emitted on real data. To keep detection correct regardless of the caller's row
+        // order, sort by timestamp ASCENDING here (a no-op for already-ascending input).
+        let mut seq: Vec<(DateTime<Utc>, String)> = events
             .iter()
             .filter_map(|e| match e {
                 Event::Context(ctx) => Some((ctx.timestamp, ctx.app_name.clone())),
                 _ => None,
             })
-            .collect()
+            .collect();
+        seq.sort_by_key(|(ts, _)| *ts);
+        seq
     }
 }
 
@@ -108,6 +117,38 @@ mod tests {
 
         assert!(!modes.is_empty());
         assert!(modes[0].description.contains("coding"));
+    }
+
+    /// #6893 regression guard: a deep-work block must be detected even when the sequence
+    /// arrives in get_events' actual DESC (newest-first) order. Before extract_app_sequence
+    /// sorts ascending, adjacent timestamp deltas were negative, so the `>= 1800s` threshold
+    /// never fired and DeepWorkBlock was never emitted.
+    #[test]
+    fn detect_deep_work_block_on_desc_ordered_events() {
+        let base = Utc::now();
+        // Pure newest-first (DESC) per the get_events contract: [Slack@base, VSCode@base-1,
+        // … VSCode@base-32]. After sorting, the VSCode block span = 31 min (>= 30 min
+        // threshold) and adjacent gap = 60s (<= 120s), so it stays one block and the trailing
+        // Slack (newest in time) closes the block.
+        let mut events: Vec<Event> = vec![make_ctx_event_at("Slack", base)];
+        for mins_ago in 1..=32 {
+            events.push(make_ctx_event_at(
+                "VSCode",
+                base - Duration::minutes(mins_ago),
+            ));
+        }
+
+        let miner = PatternMiner::new();
+        let patterns = miner.detect(&events);
+
+        let deep_blocks = patterns
+            .iter()
+            .filter(|p| p.pattern_type == PatternType::DeepWorkBlock)
+            .count();
+        assert!(
+            deep_blocks >= 1,
+            "DESC 입력에서도 deep-work block 이 탐지되어야 한다(정렬 전에는 0건)"
+        );
     }
 
     #[test]

@@ -820,4 +820,60 @@ mod tests {
             "remaining {remaining_bytes} bytes must be within the 5 MB limit (#6245)"
         );
     }
+
+    /// #7074 (MS-001): a written frame file must be owner-only (mode 0o600), not
+    /// the world-readable umask default (0o644). Regression — before the fix the
+    /// `create_new` open carried no `.mode(0o600)`, so screen captures inherited
+    /// world-readable permissions. (The Windows owner-only DACL is exercised on CI
+    /// via the `#[cfg(windows)]` path in `write_frame_atomic`.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn frame_file_is_owner_only_0o600() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (storage, temp) = create_test_storage().await;
+        let rel = storage
+            .save_frame(Utc::now(), b"RIFF\x00\x00\x00\x00WEBPVP8 frame")
+            .await
+            .unwrap();
+        let full = temp.path().join(&rel);
+        let mode = std::fs::metadata(&full).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "frame file must be created owner-only (0o600), got 0o{mode:o}"
+        );
+    }
+
+    /// #7074 (MS-001): the frames root and each day directory must be owner-only
+    /// (mode 0o700), not the world-traversable umask default (0o755). Regression —
+    /// before the fix the directories were created via `create_dir_all` and
+    /// inherited the umask.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn frame_directories_are_owner_only_0o700() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (storage, temp) = create_test_storage().await;
+        let rel = storage
+            .save_frame(Utc::now(), b"RIFF\x00\x00\x00\x00WEBPVP8 frame")
+            .await
+            .unwrap();
+
+        // frames/ root (created by FrameFileStorage::new).
+        let frames_dir = temp.path().join("frames");
+        let frames_mode = std::fs::metadata(&frames_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            frames_mode, 0o700,
+            "frames root must be owner-only (0o700), got 0o{frames_mode:o}"
+        );
+
+        // The day directory (created on the save path) — derive it from the
+        // returned relative path: frames/<YYYY-MM-DD>/<file>.
+        let day_dir = temp.path().join(rel.parent().unwrap());
+        let day_mode = std::fs::metadata(&day_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            day_mode, 0o700,
+            "frame day directory must be owner-only (0o700), got 0o{day_mode:o}"
+        );
+    }
 }

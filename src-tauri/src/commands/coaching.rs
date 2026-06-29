@@ -214,7 +214,7 @@ pub async fn toggle_suggestions_panel(
     open: bool,
 ) -> Result<(), IpcError> {
     if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_panel_mode(open);
+        overlay.set_panel_mode(open).await;
     }
     Ok(())
 }
@@ -230,7 +230,7 @@ pub async fn toggle_automation_confirm(
     active: bool,
 ) -> Result<(), IpcError> {
     if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_automation_confirm_mode(active);
+        overlay.set_automation_confirm_mode(active).await;
     }
     Ok(())
 }

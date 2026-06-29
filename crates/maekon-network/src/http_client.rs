@@ -110,7 +110,17 @@ pub fn build_reqwest_client_for_url(
     timeout: Option<Duration>,
     base_url: Option<&str>,
 ) -> Result<reqwest::Client, NetworkError> {
-    let mut builder = reqwest::Client::builder().use_native_tls();
+    // #7068/#6892: disable redirect following by construction. This builder backs
+    // HttpApiClient and the production TokenManager (new_with_tls), which POST the
+    // login password and the server refresh_token in the request body (see
+    // auth/refresh.rs). reqwest's default policy follows 30x and re-sends the body
+    // verbatim on a 307/308, so a hostile/MITM/open-redirecting server endpoint
+    // could exfiltrate first-party credentials to the redirect target. Refusing
+    // redirects is safe: auth/token endpoints are direct API endpoints that must
+    // never legitimately 30x to another origin.
+    let mut builder = reqwest::Client::builder()
+        .use_native_tls()
+        .redirect(reqwest::redirect::Policy::none());
     if let Some(t) = timeout {
         builder = builder.timeout(t);
     }
@@ -163,8 +173,14 @@ impl HttpApiClient {
         token_manager: Arc<TokenManager>,
         timeout: Duration,
     ) -> Result<Self, NetworkError> {
+        // #7068/#6892: even this deprecated/test-only constructor builds a
+        // credential-bearing client (HttpApiClient bearer-auths every request and
+        // is backed by TokenManager), so disable redirect following by
+        // construction to keep the hardened-client invariant total across all
+        // constructors of this client.
         let client = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| NetworkError::Http(format!("Failed to build HTTP client: {}", e)))?;
 
@@ -227,10 +243,21 @@ impl HttpApiClient {
 
         let status_code = status.as_u16();
         let retry_after = extract_retry_after(&resp);
-        let text = resp.text().await.unwrap_or_else(|e| {
-            tracing::warn!("response read failure: {e}");
-            String::new()
-        });
+        // #6949: cap the error body read (OOM guard)
+        let text =
+            crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
+                .await
+                .unwrap_or_else(|e| {
+                    match e {
+                        crate::outbound::BodyReadError::Transport(te) => {
+                            tracing::warn!("response read failure: {te}");
+                        }
+                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                            tracing::warn!("response too large: {len} > {cap}");
+                        }
+                    }
+                    String::new()
+                });
 
         match status_code {
             401 | 403 => Err(NetworkError::Auth(format!("Authentication failed: {text}"))),
@@ -330,9 +357,24 @@ impl ApiClient for HttpApiClient {
             })?;
 
             let resp = self.check_response(resp).await?;
-            let session: SessionCreateResponse = resp.json().await.map_err(|e| {
-                NetworkError::Internal(format!("Failed to parse session response: {e}"))
-            })?;
+            // #6949: cap the session-create response body read (OOM guard)
+            let bytes =
+                crate::outbound::read_body_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
+                    .await
+                    .map_err(|e| match e {
+                        crate::outbound::BodyReadError::Transport(te) => {
+                            NetworkError::Internal(format!("Failed to read session response: {te}"))
+                        }
+                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                            NetworkError::Internal(format!(
+                            "Failed to parse session response: response too large ({len} > {cap})"
+                        ))
+                        }
+                    })?;
+            let session: SessionCreateResponse =
+                serde_json::from_slice::<SessionCreateResponse>(&bytes).map_err(|e| {
+                    NetworkError::Internal(format!("Failed to parse session response: {e}"))
+                })?;
 
             debug!("session create success: session_id={}", session.session_id);
             Ok(session)
@@ -641,6 +683,59 @@ mod tests {
         let no_base = build_reqwest_client_for_url(&tls, Some(Duration::from_secs(5)), None);
         let _no_base_client =
             no_base.expect("base_url=None must not be rejected (TokenManager-compatible path)");
+    }
+
+    /// #7068/#6892 regression: `build_reqwest_client_for_url` must produce a
+    /// client that does NOT follow 30x redirects. This builder backs both
+    /// HttpApiClient and the production TokenManager (new_with_tls), which POST
+    /// the login password and the server refresh_token in the request body
+    /// (auth/refresh.rs). reqwest re-sends that body verbatim on a 307/308, so a
+    /// hostile/MITM/open-redirecting server endpoint could exfiltrate first-party
+    /// credentials. With redirect=none the 30x is returned as-is and the redirect
+    /// target is never contacted. This test fails before the fix (the builder
+    /// omitted `.redirect(...)`, so the default policy followed the 308 and
+    /// re-POSTed the credential body to `/leaked`).
+    #[tokio::test]
+    async fn build_reqwest_client_for_url_disables_redirects() {
+        let mut server = mockito::Server::new_async().await;
+        let start = server
+            .mock("POST", "/auth")
+            .with_status(308)
+            .with_header("location", "/leaked")
+            .create_async()
+            .await;
+        let leaked = server
+            .mock("POST", "/leaked")
+            .with_status(200)
+            .with_body("LEAKED")
+            .expect(0)
+            .create_async()
+            .await;
+
+        // TLS disabled + base_url=None mirrors the TokenManager-compatible path;
+        // the cleartext-loopback guard is not exercised here (None base_url).
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        let client = build_reqwest_client_for_url(&tls, Some(Duration::from_secs(5)), None)
+            .expect("client must build");
+
+        let resp = client
+            .post(format!("{}/auth", server.url()))
+            .form(&[("password", "hunter2"), ("refresh_token", "secret-rt")])
+            .send()
+            .await
+            .expect("request must be sent");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            308,
+            "client must return the 308 as-is, not follow it"
+        );
+        start.assert_async().await;
+        // expect(0): confirms the credential body was never re-sent to /leaked.
+        leaked.assert_async().await;
     }
 
     #[test]

@@ -58,8 +58,9 @@ pub(crate) fn build_job_limits(config: &SandboxConfig) -> JobObjectLimits {
 }
 
 /// Resolve the restricted-token policy for `config`'s profile. `disable_admin_sid`
-/// is always set (admin SID dropped on every tier); Standard and Strict
-/// additionally restrict most SIDs and strip privileges.
+/// is always set (admin SID dropped on every tier — enforced as a deny-only SID
+/// via `SidsToDisable` in `super::windows::create_restricted_token`, #7071);
+/// Standard and Strict additionally restrict most SIDs and strip privileges.
 pub(crate) fn build_token_restrictions(config: &SandboxConfig) -> TokenRestrictions {
     match config.profile {
         SandboxProfile::Permissive => TokenRestrictions {

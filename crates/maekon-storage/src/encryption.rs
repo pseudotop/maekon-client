@@ -257,117 +257,20 @@ impl EncryptionKey {
     }
 }
 
-/// Set an owner-only DACL on a file (Windows equivalent of Unix chmod 0o600).
+/// Set an owner-only DACL on a file or directory (Windows equivalent of Unix
+/// `chmod 0o600`).
 ///
-/// Creates an ACL with a single ACE granting the current user GENERIC_ALL,
-/// and applies it as a protected DACL (no inheritance from parent).
+/// Thin delegation to the single canonical primitive in
+/// `maekon_core::secure_file::set_owner_only_dacl` (#7101). The owner-only DACL
+/// logic used to be duplicated here as a `pub(crate)` copy; it now lives once in
+/// `maekon-core` so the two implementations cannot diverge. The `CoreError`
+/// returned by the primitive is mapped into `StorageError::Core` so every
+/// in-crate caller (`save_to_file`, `keychain`, `file_secret_store`,
+/// `temp_file_projection`, `integration_state_store`, `frame_storage::io`) keeps
+/// its existing `StorageError` contract unchanged.
 #[cfg(windows)]
 pub(crate) fn set_owner_only_dacl(path: &std::path::Path) -> Result<(), StorageError> {
-    // windows-sys 0.61: `OpenProcessToken` moved from `Win32::Security` to
-    // `Win32::System::Threading`, `GENERIC_ALL` moved to `Win32::Foundation`,
-    // and `HANDLE` is now `*mut c_void` instead of `isize` — token_handle
-    // must be initialised with `std::ptr::null_mut()`.
-    use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, HANDLE};
-    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{
-        AddAccessAllowedAce, GetTokenInformation, InitializeAcl, TokenUser, ACL as WIN_ACL,
-        ACL_REVISION, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY,
-        TOKEN_USER,
-    };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let wide_path: Vec<u16> = path
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    unsafe {
-        // 1. Get the current user's SID
-        let mut token_handle: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) == 0 {
-            return Err(StorageError::Internal("OpenProcessToken failed".into()));
-        }
-
-        // Query token user size
-        let mut needed: u32 = 0;
-        GetTokenInformation(
-            token_handle,
-            TokenUser,
-            std::ptr::null_mut(),
-            0,
-            &mut needed,
-        );
-        if needed == 0 || needed > 4096 {
-            windows_sys::Win32::Foundation::CloseHandle(token_handle);
-            return Err(StorageError::Internal(format!(
-                "unexpected token info size: {needed} bytes"
-            )));
-        }
-        let mut user_buf = vec![0u8; needed as usize];
-        if GetTokenInformation(
-            token_handle,
-            TokenUser,
-            user_buf.as_mut_ptr().cast(),
-            needed,
-            &mut needed,
-        ) == 0
-        {
-            windows_sys::Win32::Foundation::CloseHandle(token_handle);
-            return Err(StorageError::Internal("GetTokenInformation failed".into()));
-        }
-        windows_sys::Win32::Foundation::CloseHandle(token_handle);
-
-        let token_user = &*(user_buf.as_ptr() as *const TOKEN_USER);
-        let user_sid = token_user.User.Sid;
-
-        // 2. Build an ACL with a single owner-only ACE
-        let sid_len = windows_sys::Win32::Security::GetLengthSid(user_sid);
-        // SidStart field in ACCESS_ALLOWED_ACE is already counted once in the
-        // struct size, so subtract sizeof(u32) to avoid double-counting.
-        if (sid_len as usize) < std::mem::size_of::<u32>() {
-            return Err(StorageError::Internal(format!(
-                "SID length too small: {sid_len} bytes"
-            )));
-        }
-        let acl_size = std::mem::size_of::<WIN_ACL>() as u32
-            + std::mem::size_of::<windows_sys::Win32::Security::ACCESS_ALLOWED_ACE>() as u32
-            + sid_len
-            - std::mem::size_of::<u32>() as u32;
-        let mut acl_buf = vec![0u8; acl_size as usize];
-        let acl_ptr = acl_buf.as_mut_ptr() as *mut WIN_ACL;
-
-        if InitializeAcl(acl_ptr, acl_size, ACL_REVISION) == 0 {
-            return Err(StorageError::Internal("InitializeAcl failed".into()));
-        }
-
-        if AddAccessAllowedAce(acl_ptr, ACL_REVISION, GENERIC_ALL, user_sid) == 0 {
-            return Err(StorageError::Internal("AddAccessAllowedAce failed".into()));
-        }
-
-        // 3. Apply as protected DACL (blocks inheritance from parent)
-        let result = SetNamedSecurityInfoW(
-            wide_path.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            acl_ptr,
-            std::ptr::null_mut(),
-        );
-
-        // acl_buf is stack-allocated, no LocalFree needed
-        let _ = LocalFree; // suppress unused import warning
-
-        if result != 0 {
-            return Err(StorageError::Internal(format!(
-                "SetNamedSecurityInfoW failed with error {result}"
-            )));
-        }
-
-        tracing::debug!("Key file DACL set to owner-only: {:?}", path);
-        Ok(())
-    }
+    maekon_core::secure_file::set_owner_only_dacl(path).map_err(StorageError::Core)
 }
 
 // Safe Debug implementation so the key is never printed to logs.
@@ -597,5 +500,18 @@ mod tests {
             mode, 0o600,
             "key file must keep mode 0o600 after the AlreadyExists recreate branch, got 0o{mode:o}"
         );
+    }
+
+    /// #7101: the storage `set_owner_only_dacl` shim must succeed by delegating to
+    /// the single canonical primitive in `maekon-core` (no duplicate copy here).
+    /// CI-verified on the Windows runner; it does not compile on Unix.
+    #[cfg(windows)]
+    #[test]
+    fn set_owner_only_dacl_delegates_to_core() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("dacl_target.tmp");
+        std::fs::File::create(&path).unwrap();
+        set_owner_only_dacl(&path)
+            .expect("storage shim must delegate to core and apply the owner-only DACL");
     }
 }

@@ -30,6 +30,13 @@ use super::{AutomationController, GUI_ACTION_TIMEOUT_SECS, GUI_EXECUTE_TIMEOUT_S
 
 struct GatedInputDriver {
     gate: super::gate::CommandExecutionGate,
+    /// Underlying real input driver the scoped executor was built from.
+    ///
+    /// Synthetic-input actions (mouse/keyboard/hotkey) are routed through the gate
+    /// and sandbox action dispatcher, but window activation is not a sandboxed
+    /// synthetic-input action — it shells out to the platform window manager — so it
+    /// is forwarded straight to this driver (see `activate_app`).
+    inner: Arc<dyn InputDriver>,
     command_id_prefix: String,
     session_id: String,
     policy_token: String,
@@ -41,6 +48,7 @@ struct GatedInputDriver {
 impl GatedInputDriver {
     fn new(
         gate: super::gate::CommandExecutionGate,
+        inner: Arc<dyn InputDriver>,
         command_id_prefix: String,
         session_id: String,
         policy_token: String,
@@ -49,6 +57,7 @@ impl GatedInputDriver {
     ) -> Self {
         Self {
             gate,
+            inner,
             command_id_prefix,
             session_id,
             policy_token,
@@ -136,6 +145,25 @@ impl InputDriver for GatedInputDriver {
         .map_err(Into::into)
     }
 
+    async fn activate_app(&self, app_name: &str) -> Result<bool, CoreError> {
+        // Window activation is NOT a sandboxed synthetic-input action (it shells out
+        // to the platform window manager via the real driver), so — unlike the
+        // mouse/keyboard/hotkey methods above — it is forwarded directly to the
+        // underlying real driver instead of through the gate's action dispatcher.
+        //
+        // Without this override, GatedInputDriver would inherit the InputDriver port
+        // default `Ok(false)`, silently dropping window activation on every
+        // trusted-internal path (run_workflow / execute_intent_hint / gui_execute /
+        // sentinel-token execute_intent). That made the activation a no-op AND let
+        // subsequent `stop_on_failure` steps synthesize input against the wrong,
+        // un-switched window (MAEKON-AUTO-1 / #7070). The trusted-internal
+        // confirmation/consent check already ran at the intent layer
+        // (enforce_intent_confirmation_policy) before this executor was built, and
+        // the intent outcome is audited there, so no additional gating is required
+        // here.
+        self.inner.activate_app(app_name).await
+    }
+
     fn platform(&self) -> &str {
         "gated"
     }
@@ -178,6 +206,10 @@ impl AutomationController {
 
         let input_driver: Arc<dyn InputDriver> = Arc::new(GatedInputDriver::new(
             self.command_execution_gate(),
+            // Forward non-sandboxed window activation to the template's real driver
+            // (see GatedInputDriver::activate_app); synthetic input still routes
+            // through the gate.
+            template.input_driver(),
             cmd.command_id.clone(),
             cmd.session_id.clone(),
             cmd.policy_token.clone(),

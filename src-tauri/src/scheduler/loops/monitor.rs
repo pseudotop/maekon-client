@@ -141,7 +141,21 @@ impl Scheduler {
                         ).await;
 
                         // A.18: TS window enter/exit → desktop notify (60s debounce)
-                        super::tracking_schedule_helper::tick_ts_notifications(&config_manager1, notif1.as_deref(), &mut ts_notify_state.0, &mut ts_notify_state.1).await;
+                        super::tracking_schedule_helper::tick_ts_notifications(config_snapshot.as_deref(), notif1.as_deref(), &mut ts_notify_state.0, &mut ts_notify_state.1).await;
+
+                        // #6830: release the carried full-res RGBA frame (~33MB at 4K) + its
+                        // paired OCR regions once idle backoff engages. MUST run BEFORE the
+                        // consent gate and the power-backoff gate — during idle backoff most
+                        // ticks `continue` at the power-backoff gate, so a drop placed after
+                        // either gate would never fire in the idle window this targets. Frame
+                        // and regions are dropped together to preserve the frame<->regions
+                        // lockstep invariant (mirrors the empty-region reset below).
+                        if super::tracking_schedule_helper::should_release_idle_frame(new_idle_secs)
+                            && (last_frame_rgba.is_some() || !last_ocr_regions.is_empty())
+                        {
+                            last_frame_rgba = None;
+                            last_ocr_regions.clear();
+                        }
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
                         focus_block.tick(&mut prev_idle_secs, new_idle_secs, idle_threshold, app_handle.as_ref(), config_manager1.as_ref());
@@ -750,7 +764,7 @@ impl Scheduler {
                                         drift_detected,
                                         poll_secs: poll.as_secs(),
                                         pii_sanitizer: &coaching_pii_sanitizer,
-                                        pii_level: super::coaching_helper::resolve_pii_level(&config_manager1),
+                                        pii_level: super::coaching_helper::resolve_pii_level(config_snapshot.as_deref()),
                                     };
                                     super::coaching_helper::evaluate_and_deliver(&ctx, &mut coaching_tick_state).await;
                                 }

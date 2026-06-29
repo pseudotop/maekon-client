@@ -329,15 +329,6 @@ follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pa
 """
 
 [[exemptions.fastembed]]
-version = "5.16.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: #5431 audit-triage-grace (5.16.0 removes number_prefix via indicatif/unit-prefix; image-models disabled; no full manual audit in this pass)
-review-by: 2026-11-01
-follow-up: Re-review text-embedding runtime path and upstream tokenizers/paste status before production embedding release. category:maekon-audit-triage
-"""
-
-[[exemptions.fastembed]]
 version = "5.17.2"
 criteria = "safe-to-deploy"
 notes = """
@@ -957,15 +948,6 @@ review-by: 2026-10-31
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
-[[exemptions.objc2-open-directory]]
-version = "0.3.2"
-criteria = "safe-to-deploy"
-notes = """
-reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
-review-by: 2026-12-31
-follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
-"""
-
 [[exemptions.onig]]
 version = "6.5.1"
 criteria = "safe-to-deploy"
@@ -1422,15 +1404,6 @@ review-by: 2026-11-23
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
-[[exemptions.sysinfo]]
-version = "0.39.3"
-criteria = "safe-to-deploy"
-notes = """
-reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
-review-by: 2026-12-31
-follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
-"""
-
 [[exemptions.system-configuration]]
 version = "0.7.0"
 criteria = "safe-to-deploy"
@@ -1600,15 +1573,6 @@ notes = """
 reason: e31-upgrade-baseline (lockfile refresh dependency without manual audit)
 review-by: 2026-11-20
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
-"""
-
-[[exemptions.usearch]]
-version = "2.25.2"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
-review-by: 2026-12-01
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
 [[exemptions.usearch]]

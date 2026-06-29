@@ -3,7 +3,17 @@ use crate::fs_scan::{collect_files, is_ignored};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_CODE_ROOT: &str = "crates";
+/// Code roots scanned when the caller passes no explicit `--path`.
+///
+/// Mirrors the `["crates", "src-tauri"]` set the workspace hedge gates walk
+/// (see `is_ok_hedge_gate.rs`). `src-tauri` is the active Tauri main binary and
+/// holds the largest body of first-party app logic (DI wiring, the loop
+/// scheduler, Tauri IPC commands), so the documented local helper
+/// (`scripts/check-language.sh`, which forwards no `--path`) and the tool's
+/// intrinsic default must both cover it — not `crates/` only. Defaulting to
+/// `crates/` alone silently returned a misleading "clean" for any non-English
+/// comment anywhere under `src-tauri/src/**` (#7081 MLINT-3).
+const DEFAULT_CODE_ROOTS: &[&str] = &["crates", "src-tauri"];
 
 /// True for letters that are acceptable in an English-first comment.
 ///
@@ -130,7 +140,10 @@ pub(crate) fn scan_non_english_text(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     let roots: Vec<PathBuf> = if scan_paths.is_empty() {
-        vec![repo_root.join(DEFAULT_CODE_ROOT)]
+        DEFAULT_CODE_ROOTS
+            .iter()
+            .map(|root| repo_root.join(root))
+            .collect()
     } else {
         scan_paths.iter().map(|p| repo_root.join(p)).collect()
     };
@@ -238,6 +251,45 @@ mod tests {
         assert!(first_non_english_in_comment("let u = \"a//\u{D55C}b\";").is_none());
         // Test-data repeat literal — allowed (it is a string).
         assert!(first_non_english_in_comment("let b = \"\u{AC00}\".repeat(100);").is_none());
+    }
+
+    #[test]
+    fn default_roots_scan_both_crates_and_src_tauri() {
+        // #7081 MLINT-3: with no `--path`, the scanner must walk BOTH `crates/`
+        // and `src-tauri/` (the active Tauri main binary), matching the hedge
+        // gates — not `crates/` only. A non-English comment planted under each
+        // root must be reported.
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for sub in ["crates/pkg/src", "src-tauri/src"] {
+            fs::create_dir_all(root.join(sub)).expect("mkdir");
+        }
+        // Hangul (\u{D55C}) inside a line comment under each root.
+        fs::write(
+            root.join("crates/pkg/src/a.rs"),
+            "// \u{D55C} comment\nfn a() {}\n",
+        )
+        .expect("write crates file");
+        fs::write(
+            root.join("src-tauri/src/b.rs"),
+            "// \u{D55C} comment\nfn b() {}\n",
+        )
+        .expect("write src-tauri file");
+
+        let findings = super::scan_non_english_text(root, &[], &[]);
+        let paths: Vec<String> = findings
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.ends_with("crates/pkg/src/a.rs")),
+            "crates/ must be scanned by default: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with("src-tauri/src/b.rs")),
+            "src-tauri/ must be scanned by default (#7081 MLINT-3): {paths:?}"
+        );
     }
 
     #[test]

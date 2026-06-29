@@ -50,6 +50,25 @@ impl<'a> StorageRuntimeBuilder<'a> {
             self.data_dir.join(".db_key").display()
         );
 
+        // #6864: acquire an advisory cross-process lock on the data dir BEFORE
+        // opening the DB. The DBUS-based single-instance plugin degrades in
+        // headless/DBUS-absent Linux sessions; this lock ensures a second instance
+        // that bypassed single-instance aborts here rather than opening the same
+        // SQLite file concurrently — the WAL-reset data-race precondition (#6830).
+        // No-op on Windows (robust OS single-instance). `hold_for_process_lifetime`
+        // keeps the lock held until the process exits (NOT stored in this bundle,
+        // which is consumed during startup wiring and never reaches long-lived
+        // AppState — a dropped guard would release the lock at end of startup,
+        // defeating the guarantee; #6864 review).
+        maekon_storage::process_lock::ProcessLock::try_acquire(&self.data_dir.join("maekon.lock"))
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "data-directory lock acquisition failed; another maekon instance may be \
+                 running (refusing to open the database concurrently): {error}"
+                )
+            })?
+            .hold_for_process_lifetime();
+
         let sqlite_storage = Arc::new(SqliteStorage::open(
             self.db_path,
             self.retention_days,

@@ -205,6 +205,9 @@ message AiRuntimeStatusEvent {
   string llm_source = 2;
   string ocr_fallback_reason = 3;  // empty when no fallback
   string llm_fallback_reason = 4;
+  // Per-call LLM health snapshot — REST/SSE parity with AiRuntimeStatus.llm_healthy
+  // (#5734). Optional: absent when the build-time snapshot has no value (#6830).
+  optional bool llm_healthy = 5;
 }
 
 // ── V2b: shared hint/signal ────────────────────────────────────────

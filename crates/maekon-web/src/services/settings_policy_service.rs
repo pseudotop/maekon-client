@@ -124,16 +124,16 @@ pub(crate) async fn emit_policy_change_events(
         return;
     };
 
-    if previous.ai_provider.allow_unredacted_external_ocr
-        != next.ai_provider.allow_unredacted_external_ocr
+    if previous.ai_provider.bypass_pii_filter_for_external_ocr
+        != next.ai_provider.bypass_pii_filter_for_external_ocr
     {
         writer
             .send(
-                "policy.settings.allow_unredacted_external_ocr.changed".to_string(),
+                "policy.settings.bypass_pii_filter_for_external_ocr.changed".to_string(),
                 format!(
                     "from={} to={}",
-                    previous.ai_provider.allow_unredacted_external_ocr,
-                    next.ai_provider.allow_unredacted_external_ocr
+                    previous.ai_provider.bypass_pii_filter_for_external_ocr,
+                    next.ai_provider.bypass_pii_filter_for_external_ocr
                 ),
             )
             .await;
@@ -335,8 +335,8 @@ mod tests {
         let previous = AppConfig::default_config();
         let mut next = previous.clone();
         // Flip a policy-relevant field so exactly one audit event is emitted.
-        next.ai_provider.allow_unredacted_external_ocr =
-            !previous.ai_provider.allow_unredacted_external_ocr;
+        next.ai_provider.bypass_pii_filter_for_external_ocr =
+            !previous.ai_provider.bypass_pii_filter_for_external_ocr;
 
         {
             // Per-request borrow of the shared writer (what SettingsUpdateFlow does).

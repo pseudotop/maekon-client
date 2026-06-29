@@ -18,6 +18,10 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
+# #6828: native EWMH active-window on Linux (pure-Rust x11rb, no libxcb). Declared
+# all-target so the parsing logic + module compile and unit-test on every host; the
+# X-server connection is only reached on Linux (returns None elsewhere at runtime).
+x11rb = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = { workspace = true }

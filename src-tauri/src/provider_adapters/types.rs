@@ -126,7 +126,7 @@ impl ExternalOcrPrivacyGuard {
         &self,
         image_data: &[u8],
         provider_name: &str,
-        allow_unredacted_external_ocr: bool,
+        bypass_pii_filter_for_external_ocr: bool,
     ) -> Result<SanitizedImage, CoreError> {
         let active_window = match self.process_monitor.get_active_window().await? {
             Some(window) => window,
@@ -156,7 +156,7 @@ impl ExternalOcrPrivacyGuard {
                 image_data,
                 &active_window.app_name,
                 &active_window.title,
-                allow_unredacted_external_ocr,
+                bypass_pii_filter_for_external_ocr,
             )
             .await
         {

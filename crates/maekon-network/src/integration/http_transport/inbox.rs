@@ -74,7 +74,14 @@ impl IntegrationInboxTransportClient for HttpsIntegrationInboxTransportClient {
             .shared
             .check_response(response, "integration prompt pull request failed")
             .await?;
-        let payload: PromptPullResponse = response.json().await.map_err(|error| {
+        // #6940: cap the response body before parse (OOM guard, see egress.rs).
+        let body = crate::outbound::read_body_capped(
+            response,
+            crate::outbound::MAX_INTEGRATION_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(super::map_integration_body_error)?;
+        let payload: PromptPullResponse = serde_json::from_slice(&body).map_err(|error| {
             CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
                 "failed to parse integration prompt pull response: {error}"
             ))))

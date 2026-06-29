@@ -9,31 +9,22 @@
 //! until a public PR runs them (ADR-075 P-4 CI-gate dead spot; first fired on
 //! public PR #83). This gate runs as a normal test of the `maekon-lint`
 //! package, so `cargo test --workspace` catches the pattern before export.
+//!
+//! #7081 MLINT-1: the scan covers BOTH the flat top-level workflows AND the
+//! composite actions under `.github/actions/**` (a composite action that adds a
+//! SHA-pinned `dtolnay/rust-toolchain` step without a `toolchain:` input would
+//! fail on the public runner exactly like a workflow). See
+//! `tests/common::collect_ci_yaml_files`.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("maekon-lint sits two levels under the workspace root")
-        .to_path_buf()
-}
+use common::{collect_ci_yaml_files, workspace_root};
 
 #[test]
 fn sha_pinned_rust_toolchain_steps_declare_toolchain_input() {
-    let workflows = workspace_root().join(".github").join("workflows");
     let mut violations = Vec::new();
-    let entries = std::fs::read_dir(&workflows).expect("read .github/workflows");
-    for entry in entries {
-        let path = entry.expect("dir entry").path();
-        let is_yaml = path
-            .extension()
-            .is_some_and(|ext| ext == "yml" || ext == "yaml");
-        if !is_yaml {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).expect("read workflow file");
+    for path in collect_ci_yaml_files(&workspace_root()) {
+        let source = std::fs::read_to_string(&path).expect("read workflow/action file");
         for line_no in find_unpinned_toolchain_inputs(&source) {
             violations.push(format!("{}:{line_no}", path.display()));
         }
@@ -42,7 +33,8 @@ fn sha_pinned_rust_toolchain_steps_declare_toolchain_input() {
         violations.is_empty(),
         "SHA-pinned dtolnay/rust-toolchain step(s) without an explicit `toolchain:` input — \
          the action cannot infer the toolchain from a commit SHA and fails at runtime in the \
-         public repository (the parent monorepo never executes these workflows): {violations:#?}"
+         public repository (the parent monorepo never executes these workflows / composite \
+         actions): {violations:#?}"
     );
 }
 
@@ -151,4 +143,38 @@ fn scanner_does_not_credit_toolchain_from_a_following_step() {
         "      - uses: dtolnay/rust-toolchain@{SHA}\n      - uses: ./.github/actions/rust-cache\n        with:\n          toolchain: stable\n"
     );
     assert_eq!(find_unpinned_toolchain_inputs(&src), vec![1]);
+}
+
+// ── #7081 MLINT-1: composite-action recursion regression ───────────────────
+
+#[test]
+fn collector_recurses_into_composite_actions_and_scanner_flags_them() {
+    // A SHA-pinned `dtolnay/rust-toolchain` step inside a NESTED composite
+    // action (`.github/actions/<name>/action.yml`) must be both collected and
+    // flagged. The pre-#7081 flat `read_dir(.github/workflows)` never saw this
+    // path, so the latent break shipped to the public runner undetected.
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    fs::create_dir_all(root.join(".github/workflows")).expect("mkdir workflows");
+    fs::write(root.join(".github/workflows/ci.yml"), "name: ci\n").expect("write workflow");
+
+    fs::create_dir_all(root.join(".github/actions/evil")).expect("mkdir composite action");
+    let action = root.join(".github/actions/evil/action.yml");
+    fs::write(
+        &action,
+        format!("runs:\n  using: composite\n  steps:\n    - uses: dtolnay/rust-toolchain@{SHA}\n"),
+    )
+    .expect("write action");
+
+    let collected = collect_ci_yaml_files(root);
+    assert!(
+        collected.contains(&action),
+        "nested composite action must be collected (it was invisible to the flat read): {collected:#?}"
+    );
+
+    // The planted unpinned step (line 4 of the action.yml) must be flagged.
+    let src = fs::read_to_string(&action).expect("read planted action");
+    assert_eq!(find_unpinned_toolchain_inputs(&src), vec![4]);
 }
