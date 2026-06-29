@@ -132,7 +132,7 @@ zeroize = { version = "1", features = ["derive"] }
 gethostname = "1.1"
 
 # Sync encryption (Phase 3b — shared by maekon-storage + maekon-network)
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 hex = "0.4"
 
