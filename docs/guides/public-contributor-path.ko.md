@@ -29,6 +29,12 @@ product work가 될 수 있다. Maintainer는 민감한 validation evidence를 �
 넓은 외부 PR intake가 공지되기 전까지는 maintainer가 public-safe로 표시한 starter
 issue와 companion documentation만 게시한다.
 
+Phase 0/1 동안 parent source tree가 source of truth로 유지된다. 첫 Phase 2
+public-canonical candidate는 public docs, public guide i18n companion, synthetic
+example, public QA template이다. Trust-core, release, updater, sandbox,
+automation-policy, provider-egress, supply-chain enforcement path는 maintainer가
+별도 owner decision을 공지하지 않는 한 parent-gated 상태를 유지한다.
+
 ## 작업하기 좋은 영역
 
 가장 안전한 첫 기여는 작고 review하기 쉬우며 privacy-sensitive behavior를 바꾸지
@@ -72,9 +78,12 @@ Security vulnerability 또는 sensitive data exposure 의심은 public issue나 
 4. **Public check를 실행한다.** Issue 또는 관련 public guide에 적힌 check를 사용한다.
 5. **Evidence를 설명한다.** Public thread에 남겨도 안전한 command output,
    redacted screenshot, behavior note를 포함한다.
-6. **Public review에 응답한다.** Maintainer가 label을 조정하거나 scope 축소,
+6. **Authorship을 인증한다.** 일반 public PR은 DCO `Signed-off-by`를 사용한다.
+   CLA는 maintainer가 corporate-sponsored, patent-sensitive, 비표준 IP/licensing
+   contribution route를 식별했을 때만 요청된다.
+7. **Public review에 응답한다.** Maintainer가 label을 조정하거나 scope 축소,
    owner review routing을 요청할 수 있다.
-7. **Import와 export를 기다린다.** 승인되면 maintainer가 patch를 parent validation
+8. **Import와 export를 기다린다.** 승인되면 maintainer가 patch를 parent validation
    대상으로 import하고 안전한 handoff summary를 게시한다.
 
 Import handoff는 [`hybrid-import-workflow.ko.md`](./hybrid-import-workflow.ko.md)에
@@ -123,5 +132,7 @@ maintainer-only test detail은 남기지 않는다.
 - [ ] Example과 test는 synthetic data만 사용한다.
 - [ ] Evidence는 public thread에 안전하다.
 - [ ] Sensitive runtime, release, security 작업은 maintainer guidance를 받았다.
+- [ ] Commit에 DCO `Signed-off-by`가 있거나, maintainer가 import 전 다른 legal
+      attestation route를 확인했다.
 - [ ] PR description에 validation command와 필요한 경우 AI-assisted contribution
       disclosure를 포함했다.

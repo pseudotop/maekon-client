@@ -5,8 +5,8 @@
 //! Identical logic to `FileSyncTransport::encrypt/decrypt` in maekon-storage.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, Nonce},
+    Aes256Gcm,
 };
 use argon2::Argon2;
 use maekon_core::error::CoreError;
@@ -42,10 +42,10 @@ pub fn encrypt(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>, CoreError>
     })?;
 
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce: Nonce<Aes256Gcm> = nonce_bytes.into();
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|e| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("AES encrypt: {e}"),
@@ -75,7 +75,10 @@ pub fn decrypt(passphrase: &str, data: &[u8]) -> Result<Vec<u8>, CoreError> {
         code: maekon_core::error_codes::InternalCode::Generic,
         message: format!("AES init: {e}"),
     })?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce_bytes).map_err(|e| CoreError::Internal {
+        code: maekon_core::error_codes::InternalCode::Generic,
+        message: format!("nonce parse: {e}"),
+    })?;
 
     cipher
         .decrypt(nonce, ciphertext)

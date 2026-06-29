@@ -40,6 +40,29 @@ Public synthetic check는 real screen capture, microphone input, browser session
 state, OS permission dialog, signing credential, release token, external provider
 credential을 요구하면 안 된다.
 
+## Required vs Advisory Checks
+
+Phase 0/1 안정화 이후 public branch protection은 fork-safe이고 check name이
+안정적이며 contributor에게 실제로 유용한 check만 required로 지정해야 한다.
+
+| Check class | Phase 0/1 posture | Phase 2 posture |
+| --- | --- | --- |
+| Config Sync / Port & Version Sync | Required | Required |
+| gRPC Governance / Contract and Readiness Gate | Required | Required |
+| Security & Compliance / Supply Chain Controls | Required | Required |
+| CI / Rust fmt, clippy, check, test, build target | Check name이 안정되면 Required | Required |
+| CI / Frontend build and E2E | Check name이 안정되면 Required | Frontend asset을 검증하는 public UI/docs surface에는 Required |
+| CodeQL | 안정적인 check name으로 활성화되어 있으면 Required, 아니면 안정화 전까지 Advisory | 활성화되어 있으면 Required |
+| Public CI에서 실행되는 public export guardrail | Required | Required |
+| Performance gate와 budget check | Published budget과 낮은 flake rate가 없으면 Advisory | Budget, owner, failure handling이 문서화된 뒤에만 Required |
+| Parent validation과 maintainer-only trust-core gate | Public required check가 아니라 label/review gate | 계속 public required check가 아님 |
+| Release signing, notarization, installer provenance | Fork PR이 아니라 tag/release environment에서 Required | 동일 |
+
+Check name이 계속 바뀌거나, 실패 메시지를 이해하려면 maintainer-only context가
+필요하거나, 진단에 private data가 필요하다면 required로 승격하지 않는다. Maintainer가
+private evidence 없이 public PR에서 failure와 remediation path를 설명할 수 있을 때
+check를 하나씩 승격한다.
+
 ## Private Gate Triggers
 
 Maintainer가 maintainer-controlled gate 실행 시점을 결정한다. 공개 route 설명은
@@ -59,6 +82,18 @@ installer/update flow, release signing, adversarial privacy check를 다룬다. 
 
 > Maintainer-only privacy validation passed for the relevant risk class. No
 > sensitive evidence is included in this public thread.
+
+Public-safe trust-core report의 최소 형식은 다음이다.
+
+- lane과 risk class
+- maintainer-only validation 필요 여부
+- pass/fail/blocked outcome
+- 존재하는 경우 public parent PR, public export, release reference
+- blocked 상태라면 짧은 remediation 또는 follow-up pointer
+
+Private test name, private log, raw capture, screenshot, local absolute path,
+maintainer-only infrastructure name, secret identifier, unpublished roadmap detail은
+해당 report에 포함하지 않는다.
 
 ## Fork PR Secret Policy
 

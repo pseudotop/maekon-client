@@ -608,7 +608,7 @@ jobs:
         run: ./scripts/verify-deb-metadata.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -1301,7 +1301,7 @@ jobs:
             libxcb-xfixes0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
 
@@ -1557,7 +1557,7 @@ jobs:
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature
 
       - name: Attest release artifacts provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: dist/*
 

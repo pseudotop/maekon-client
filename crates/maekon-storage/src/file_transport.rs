@@ -4,8 +4,8 @@
 //! No file locking needed because each device owns its namespace via device_id prefix.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, Nonce},
+    Aes256Gcm,
 };
 use argon2::Argon2;
 use async_trait::async_trait;
@@ -98,10 +98,10 @@ impl FileSyncTransport {
             .map_err(|e| StorageError::Internal(format!("AES init: {e}")))?;
 
         let nonce_bytes = random_bytes::<NONCE_SIZE>()?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce: Nonce<Aes256Gcm> = nonce_bytes.into();
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|e| StorageError::Internal(format!("AES encrypt: {e}")))?;
 
         let mut output = Vec::with_capacity(SALT_SIZE + NONCE_SIZE + ciphertext.len());
@@ -125,7 +125,8 @@ impl FileSyncTransport {
         let key = Self::derive_key(passphrase, salt)?;
         let cipher = Aes256Gcm::new_from_slice(key.as_ref())
             .map_err(|e| StorageError::Internal(format!("AES init: {e}")))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce_bytes)
+            .map_err(|e| StorageError::Internal(format!("nonce parse: {e}")))?;
 
         cipher.decrypt(nonce, ciphertext).map_err(|e| {
             StorageError::Internal(format!("AES decrypt failed (wrong passphrase?): {e}"))
