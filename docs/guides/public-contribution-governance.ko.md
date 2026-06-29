@@ -51,6 +51,27 @@ check가 없다면 verification command output 또는 승인된 attestation link
 때까지 `do-not-merge/dco`를 유지한다. 가능하면 public PR에 안전한 evidence를 남기고,
 그렇지 않으면 hold를 해제하기 전에 parent import PR에 기록한다.
 
+## DCO와 CLA 결정
+
+일반 공개 기여의 기본 legal attestation은 DCO `Signed-off-by`다. 기본 docs, DX,
+i18n, synthetic example, public QA, 낮은 위험의 local-feature 경로에는 DCO와 CLA를
+동시에 요구하지 않는다.
+
+공개 commit에 유효한 sign-off가 있거나 maintainer가 승인한 attestation link가
+기록될 때까지 `do-not-merge/dco`를 provenance hold로 사용한다. Contribution이
+corporate-sponsored, patent-sensitive, 또는 비표준 IP/licensing assertion을 포함하면
+`do-not-merge/needs-owner`도 붙이고 import 전에 maintainer legal review로 routing한다.
+CLA는 이 elevated route에서만 요청할 수 있으며 기본 진입 요건이 아니다.
+
+다음은 CLA/legal-review trigger로 본다.
+
+- Contributor가 작업이 employer, sponsor, client 소유라고 밝히고 ordinary DCO
+  certification만으로는 충분하지 않다고 판단되는 경우
+- Patch가 patented, patent-pending, proprietary algorithm, protocol, provider
+  integration, license grant를 도입하거나 실질적으로 변경하는 경우
+- 변경이 trust-core 또는 enterprise-contract behavior를 건드리고 public
+  documentation이나 synthetic fixture가 아닌 상당한 신규 구현을 포함하는 경우
+
 ## Flow Labels
 
 | Label | 의미 |
@@ -58,6 +79,33 @@ check가 없다면 verification command output 또는 승인된 attestation link
 | `ok-to-test` | maintainer가 maintainer-controlled test를 실행할 만큼 PR을 확인함 |
 | `security-reviewed` | security/privacy review가 public handling path를 승인함 |
 | `imported-to-parent` | 공개 변경이 release validation을 위해 parent source tree에 import됨 |
+
+## Phase 2 Public-Canonical 준비 기준
+
+Phase 0/1은 계속 hybrid다. 공개 PR은 공개적으로 review하지만, 승인된 patch는
+release/export 전에 parent source of truth로 import한다. Phase 2는 repository 전체
+전환이 아니라 partial public-canonical surface로 시작해야 한다.
+
+첫 candidate surface는 다음 순서다.
+
+1. `README*`, `CONTRIBUTING.md`, `docs/README*`, 공개 `docs/guides/*` 파일을
+   포함한 public docs와 contributor guide
+2. 해당 guide의 public i18n companion documentation
+3. fake data만 사용하는 synthetic example과 public QA template
+
+별도 owner decision 없이 trust-core code, release/signing automation, updater
+behavior, provider egress code, sandbox/automation policy, `src-tauri/**`,
+`policy/**`, supply-chain enforcement file을 public-canonical로 승격하지 않는다. 이
+surface들은 공개 PR을 받을 수 있더라도 parent-gated 상태를 유지한다.
+
+Surface를 승격하기 전 maintainer는 다음을 모두 확인해야 한다.
+
+- 낮은 위험의 공개 PR 최소 5건이 attribution, parent import, parent validation,
+  public handoff comment까지 end-to-end로 처리됨
+- `public-private-ci-split.ko.md`의 required public check set이 안정됨
+- public export guardrail이 private plan, private test, local path,
+  maintainer-only evidence leak 없이 통과함
+- 해당 surface를 parent-only import로 되돌릴 수 있는 rollback path가 문서화됨
 
 ## CODEOWNERS
 

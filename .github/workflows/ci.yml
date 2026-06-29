@@ -195,7 +195,7 @@ jobs:
             cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -389,7 +389,7 @@ jobs:
             libxcb-xfixes0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
 
@@ -454,7 +454,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: env.RUN_HEAVY_TESTS == 'true'
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
 
@@ -597,7 +597,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: env.RUN_HEAVY_TESTS == 'true'
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -729,7 +729,7 @@ jobs:
             libsystemd-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
 
@@ -859,7 +859,7 @@ jobs:
         run: ./scripts/verify-deb-metadata.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}

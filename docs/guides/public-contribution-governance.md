@@ -53,6 +53,29 @@ verification command output or approved attestation link is recorded. Record the
 safe evidence in the public PR when possible; otherwise record it in the parent
 import PR before clearing the hold.
 
+## DCO and CLA Decision
+
+DCO `Signed-off-by` is the default legal attestation for ordinary public
+contributions. Do not require both DCO and a CLA for the default docs, DX, i18n,
+synthetic-example, public-QA, or low-risk local-feature path.
+
+Use `do-not-merge/dco` as the provenance hold until either the public commits
+contain a valid sign-off or a maintainer-approved attestation link is recorded.
+If the contribution is corporate-sponsored, patent-sensitive, or carries a
+non-standard IP/licensing assertion, add `do-not-merge/needs-owner` and route it
+to maintainer legal review before import. A CLA may be requested only for that
+elevated route; it is not the default entry requirement.
+
+Treat these as CLA/legal-review triggers:
+
+- a contributor states the work is owned by an employer, sponsor, or client and
+  cannot rely on the ordinary DCO certification alone;
+- the patch introduces or materially changes patented, patent-pending, or
+  proprietary algorithms, protocols, provider integrations, or license grants;
+- the change touches trust-core or enterprise-contract behavior and includes a
+  substantial new implementation rather than public documentation or synthetic
+  fixtures.
+
 ## Flow Labels
 
 | Label | Meaning |
@@ -60,6 +83,34 @@ import PR before clearing the hold.
 | `ok-to-test` | A maintainer has reviewed the PR enough to run maintainer-controlled tests |
 | `security-reviewed` | Security/privacy review has cleared the public handling path |
 | `imported-to-parent` | The public change has been imported into the parent source tree for release validation |
+
+## Phase 2 Public-Canonical Readiness
+
+Phase 0/1 remain hybrid: public PRs are reviewed publicly, then accepted patches
+are imported into the parent source of truth before release/export. Phase 2 must
+start with a partial public-canonical surface, not a repository-wide switch.
+
+The first candidate surfaces are:
+
+1. public docs and contributor guides, including `README*`, `CONTRIBUTING.md`,
+   `docs/README*`, and public `docs/guides/*` files;
+2. public i18n companion documentation for those guides;
+3. synthetic examples and public QA templates that use fake data only.
+
+Do not promote trust-core code, release/signing automation, updater behavior,
+provider egress code, sandbox/automation policy, `src-tauri/**`, `policy/**`,
+or supply-chain enforcement files to public-canonical status without a separate
+owner decision. Those surfaces remain parent-gated even if public PRs are
+accepted for them.
+
+Before promoting any surface, maintainers need all of the following:
+
+- at least five low-risk public PRs processed end-to-end with attribution,
+  parent import, parent validation, and public handoff comments;
+- the required public check set in `public-private-ci-split.md` is stable;
+- public export guardrails pass without private-plan, private-test, local-path,
+  or maintainer-only evidence leaks;
+- a documented rollback path back to parent-only import for that surface.
 
 ## CODEOWNERS
 

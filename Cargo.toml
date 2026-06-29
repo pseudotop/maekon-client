@@ -93,8 +93,8 @@ thiserror = "2"
 anyhow = "1"
 
 # 오디오 캡처 + STT
-cpal = "0.17"
-rubato = "0.15"
+cpal = "0.18"
+rubato = "3.0"
 whisper-rs = "0.16"
 
 # 비동기 trait (dyn Trait + async fn 지원)
@@ -132,7 +132,7 @@ zeroize = { version = "1", features = ["derive"] }
 gethostname = "1.1"
 
 # Sync encryption (Phase 3b — shared by maekon-storage + maekon-network)
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 hex = "0.4"
 

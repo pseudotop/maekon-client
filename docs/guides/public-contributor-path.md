@@ -31,6 +31,13 @@ Until broad external PR intake is announced, maintainers publish only the
 starter issues and companion documentation that have already been marked
 public-safe.
 
+During Phase 0/1, the parent source tree remains the source of truth. The first
+Phase 2 public-canonical candidates are public docs, public guide i18n
+companions, synthetic examples, and public QA templates. Trust-core, release,
+updater, sandbox, automation-policy, provider-egress, and supply-chain
+enforcement paths stay parent-gated unless maintainers announce a separate
+owner decision.
+
 ## What To Work On
 
 The safest first contributions are small, reviewable, and useful without
@@ -76,9 +83,12 @@ private reporting path in `SECURITY.md`, not a public issue or PR.
    public guide.
 5. **Describe the evidence.** Include command output, sanitized screenshots, or
    behavior notes that are safe to keep in a public thread.
-6. **Respond to public review.** Maintainers may adjust labels, request smaller
+6. **Certify authorship.** Ordinary public PRs use DCO `Signed-off-by`. A CLA is
+   only requested when maintainers identify a corporate-sponsored,
+   patent-sensitive, or non-standard IP/licensing contribution route.
+7. **Respond to public review.** Maintainers may adjust labels, request smaller
    scope, or route sensitive parts to owner review.
-7. **Wait for import and export.** When accepted, maintainers import the patch
+8. **Wait for import and export.** When accepted, maintainers import the patch
    for parent validation and publish a safe handoff summary.
 
 The import handoff is documented in
@@ -130,5 +140,7 @@ details.
 - [ ] Examples and tests use synthetic data only.
 - [ ] Evidence is safe for a public thread.
 - [ ] Sensitive runtime, release, or security work has maintainer guidance.
+- [ ] Commits include DCO `Signed-off-by`, or a maintainer has confirmed a
+      different legal attestation route before import.
 - [ ] The PR description includes validation commands and AI-assisted
       contribution disclosure when applicable.

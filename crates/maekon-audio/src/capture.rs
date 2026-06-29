@@ -7,7 +7,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use parking_lot::Mutex;
 use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    audioadapter_buffers::direct::SequentialSlice, Async, FixedAsync, Resampler,
+    SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use tracing::{debug, warn};
 use zeroize::Zeroize;
@@ -299,17 +300,17 @@ impl AudioCapture {
         let buffer = self.buffer.clone();
         let mode = self.mode.clone();
 
-        let err_fn = |err: cpal::StreamError| {
+        let err_fn = |err: cpal::Error| {
             warn!("audio stream error: {err}");
         };
 
         // Callback: downmix to mono and accumulate raw samples (no resampling).
         // Resampling is done in stop() over the full buffer — avoids
-        // SincFixedIn chunk-size constraint in variable-size callbacks.
+        // fixed-input chunk-size constraints in variable-size callbacks.
         // Buffer is capped at MAX_BUFFER_SAMPLES to prevent unbounded growth.
         let stream = match config.sample_format() {
             SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
+                config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if mode.load(Ordering::SeqCst) != MODE_PTT {
                         return;
@@ -333,7 +334,7 @@ impl AudioCapture {
                 let buffer = self.buffer.clone();
                 let mode = self.mode.clone();
                 device.build_input_stream(
-                    &config.into(),
+                    config.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         if mode.load(Ordering::SeqCst) != MODE_PTT {
                             return;
@@ -515,7 +516,7 @@ impl AudioCapture {
         // min_speech_ms confirmation. Uses VecDeque as a ring buffer.
         let pre_buffer_samples = (native_rate as usize) * 400 / 1000; // 400ms at native rate
 
-        let err_fn = |err: cpal::StreamError| {
+        let err_fn = |err: cpal::Error| {
             warn!("audio stream error: {err}");
         };
 
@@ -581,7 +582,7 @@ impl AudioCapture {
                     on_speech_signal.clone(),
                 );
                 device.build_input_stream(
-                    &stream_config.into(),
+                    stream_config.into(),
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         let mut mono: Vec<f32> = data
                             .chunks(channels)
@@ -601,7 +602,7 @@ impl AudioCapture {
                     on_speech_signal.clone(),
                 );
                 device.build_input_stream(
-                    &stream_config.into(),
+                    stream_config.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let mut mono: Vec<f32> = data
                             .chunks(channels)
@@ -749,7 +750,7 @@ impl maekon_core::ports::audio_capture::AudioCapturePort for AudioCapture {
     }
 }
 
-/// Resample mono f32 audio from `from_rate` to `to_rate` using rubato SincFixedIn.
+/// Resample mono f32 audio from `from_rate` to `to_rate` using rubato sinc interpolation.
 fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, CoreError> {
     // Defense-in-depth (review4): a 0 Hz rate yields an infinite/zero ratio that
     // rubato does not reject and that overflows the output-capacity calc below to
@@ -770,12 +771,13 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
     };
 
     let chunk_size = 1024;
-    let mut resampler = SincFixedIn::<f32>::new(
+    let mut resampler = Async::<f32>::new_sinc(
         to_rate as f64 / from_rate as f64,
         1.0,
-        params,
+        &params,
         chunk_size,
         1, // mono
+        FixedAsync::Input,
     )
     .map_err(|e| CoreError::AudioCapture {
         code: maekon_core::error_codes::AudioCode::CaptureFailed,
@@ -790,16 +792,21 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
     let mut pos = 0;
     while pos + chunk_size <= input.len() {
         let chunk = &input[pos..pos + chunk_size];
-        let mut resampled =
-            resampler
-                .process(&[chunk], None)
-                .map_err(|e| CoreError::AudioCapture {
-                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
-                    message: format!("resample: {e}"),
-                })?;
+        let input_adapter =
+            SequentialSlice::new(chunk, 1, chunk_size).map_err(|e| CoreError::AudioCapture {
+                code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                message: format!("resample input adapter: {e}"),
+            })?;
+        let mut resampled = resampler
+            .process(&input_adapter, 0, None)
+            .map_err(|e| CoreError::AudioCapture {
+                code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                message: format!("resample: {e}"),
+            })?
+            .take_data();
         // #7098: copy the full resampled chunk out, then wipe the per-chunk copy.
-        let produced = resampled[0].len();
-        drain_resampled_chunk(&mut output, &mut resampled[0], produced);
+        let produced = resampled.len();
+        drain_resampled_chunk(&mut output, &mut resampled, produced);
         pos += chunk_size;
     }
 
@@ -810,16 +817,24 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
         last_chunk[..remaining].copy_from_slice(&input[pos..]);
         // Borrow (not move) `last_chunk` into `process` so this function keeps
         // ownership and can wipe the zero-padded input-tail copy afterwards (#7098).
+        let input_adapter =
+            SequentialSlice::new(last_chunk.as_slice(), 1, chunk_size).map_err(|e| {
+                CoreError::AudioCapture {
+                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                    message: format!("resample tail input adapter: {e}"),
+                }
+            })?;
         let mut resampled = resampler
-            .process(&[last_chunk.as_slice()], None)
+            .process(&input_adapter, 0, None)
             .map_err(|e| CoreError::AudioCapture {
                 code: maekon_core::error_codes::AudioCode::CaptureFailed,
                 message: format!("resample tail: {e}"),
-            })?;
+            })?
+            .take_data();
         let expected = (remaining as f64 * to_rate as f64 / from_rate as f64).ceil() as usize;
         // #7098: append only the expected tail samples, then wipe the per-chunk
         // resampled copy and the zero-padded input-tail copy this function owns.
-        drain_resampled_chunk(&mut output, &mut resampled[0], expected);
+        drain_resampled_chunk(&mut output, &mut resampled, expected);
         wipe_samples(&mut last_chunk);
     }
 

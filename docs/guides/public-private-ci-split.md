@@ -41,6 +41,29 @@ Public synthetic checks must not require real screen capture, microphone input,
 browser session state, OS permission dialogs, signing credentials, release
 tokens, or external provider credentials.
 
+## Required vs Advisory Checks
+
+After Phase 0/1 stabilization, public branch protection should require only
+checks that are fork-safe, stable by name, and useful to contributors.
+
+| Check class | Phase 0/1 posture | Phase 2 posture |
+| --- | --- | --- |
+| Config Sync / Port & Version Sync | Required | Required |
+| gRPC Governance / Contract and Readiness Gate | Required | Required |
+| Security & Compliance / Supply Chain Controls | Required | Required |
+| CI / Rust fmt, clippy, check, tests, and build targets | Required once check names are stable | Required |
+| CI / Frontend build and E2E | Required once check names are stable | Required for public UI/docs surfaces that exercise frontend assets |
+| CodeQL | Required when enabled with stable check names; otherwise advisory until stable | Required when enabled |
+| Public export guardrails that run in public CI | Required | Required |
+| Performance gates and budget checks | Advisory unless published budgets and low flake rate exist | Required only after budgets, owners, and failure handling are documented |
+| Parent validation and maintainer-only trust-core gates | Label/review gated, not public required checks | Still not public required checks |
+| Release signing, notarization, and installer provenance | Required for tag/release environments, not fork PRs | Same |
+
+Do not promote a check to required while its name is still drifting, its failure
+message requires maintainer-only context, or it needs private data to diagnose.
+Promote checks one at a time after maintainers can explain the failure and
+remediation path in a public PR without private evidence.
+
 ## Private Gate Triggers
 
 Maintainers decide when to run maintainer-controlled gates. Use the public labels
@@ -60,6 +83,18 @@ comments should summarize only the safe outcome, such as:
 
 > Maintainer-only privacy validation passed for the relevant risk class. No
 > sensitive evidence is included in this public thread.
+
+The minimum public-safe trust-core report is:
+
+- the lane and risk class;
+- whether maintainer-only validation was required;
+- a pass/fail/blocked outcome;
+- a public parent PR, public export, or release reference when one exists;
+- a short remediation or follow-up pointer if blocked.
+
+Do not include private test names, private logs, raw captures, screenshots,
+local absolute paths, maintainer-only infrastructure names, secret identifiers,
+or unpublished roadmap details in that report.
 
 ## Fork PR Secret Policy
 

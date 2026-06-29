@@ -29,6 +29,12 @@ Phase 0/1의 patch import는 수동으로 유지한다. Hybrid lane에서 낮은
 PR을 최소 5건 이상 처리하고 attribution, parent validation, public handoff
 comment가 안정적으로 확인되기 전까지 patch import를 자동화하지 않는다.
 
+Import의 기본 legal posture는 DCO다. 일반적인 낮은 위험의 public PR에는 CLA를
+요구하지 않는다. Corporate-sponsored, patent-sensitive, 또는 비표준 IP/licensing
+contribution은
+[`public-contribution-governance.ko.md`](./public-contribution-governance.ko.md)에
+정의된 대로 import 전에 maintainer legal review로 routing한다.
+
 수동 import를 기본으로 두는 이유는 maintainer가 다음을 직접 확인할 수 있기
 때문이다.
 
@@ -111,3 +117,14 @@ scripted import helper를 검토한다. Helper는 안전한 기계적 작업으�
 
 Helper는 private validation 실행, CODEOWNER review 우회, public comment 자동 게시,
 fork-controlled code에 maintainer credential 노출을 해서는 안 된다.
+
+다음 조건을 모두 만족하기 전에는 manual import에서 scripted import로 이동하지 않는다.
+
+- 낮은 위험의 public PR 최소 5건이 attribution correction 없이 import, parent
+  validation, export, public handoff를 완료함
+- [`public-private-ci-split.ko.md`](./public-private-ci-split.ko.md)에 따라 required
+  public check set이 안정됨
+- Maintainer dry-run 2회에서 helper가 manual attribution field를 재현하고 conflict
+  발생 시 조용히 진행하지 않고 중단함
+- Precondition 실패 시 parent source tree와 public PR을 변경하지 않는 rollback path가
+  helper 문서에 있음

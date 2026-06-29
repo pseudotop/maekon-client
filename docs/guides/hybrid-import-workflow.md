@@ -30,6 +30,12 @@ Patch import remains manual for Phase 0/1. Maintainers should not automate patch
 import until the hybrid lane has processed at least five low-risk public PRs with
 clean attribution, parent validation, and public handoff comments.
 
+The default legal posture for import is DCO. A CLA is not required for ordinary
+low-risk public PRs. Route corporate-sponsored, patent-sensitive, or
+non-standard IP/licensing contributions through maintainer legal review before
+import, as defined in
+[`public-contribution-governance.md`](./public-contribution-governance.md).
+
 Manual import is the default because it lets maintainers verify:
 
 - the public patch does not include secrets, private screenshots, raw capture
@@ -116,3 +122,14 @@ mechanics:
 The helper must not run private validation, bypass CODEOWNER review, post public
 comments automatically, or expose maintainer credentials to fork-controlled
 code.
+
+Do not move from manual import to scripted import until all of these are true:
+
+- at least five low-risk public PRs have completed import, parent validation,
+  export, and public handoff without attribution corrections;
+- the required public check set is stable according to
+  [`public-private-ci-split.md`](./public-private-ci-split.md);
+- two maintainer dry-runs of the helper reproduce the manual attribution fields
+  and stop cleanly on conflicts;
+- the helper has a documented rollback path that leaves the parent source tree
+  and public PR untouched when a precondition fails.

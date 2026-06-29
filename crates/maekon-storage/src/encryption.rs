@@ -66,8 +66,8 @@ impl EncryptionKey {
     /// Encrypt data with AES-256-GCM.
     /// Output format: nonce(12 bytes) || ciphertext(+16 bytes auth tag)
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, StorageError> {
-        use aes_gcm::aead::Aead;
-        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use aes_gcm::aead::{Aead, Nonce};
+        use aes_gcm::{Aes256Gcm, KeyInit};
 
         let cipher = Aes256Gcm::new_from_slice(&self.0)
             .map_err(|e| StorageError::Encryption(format!("cipher init: {e}")))?;
@@ -75,10 +75,10 @@ impl EncryptionKey {
         let mut nonce_bytes = [0u8; 12];
         getrandom::fill(&mut nonce_bytes)
             .map_err(|e| StorageError::Encryption(format!("nonce generation: {e}")))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce: Nonce<Aes256Gcm> = nonce_bytes.into();
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|e| StorageError::Encryption(format!("encrypt: {e}")))?;
 
         let mut result = Vec::with_capacity(12 + ciphertext.len());
@@ -101,13 +101,14 @@ impl EncryptionKey {
             ));
         }
 
-        use aes_gcm::aead::Aead;
-        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use aes_gcm::aead::{Aead, Nonce};
+        use aes_gcm::{Aes256Gcm, KeyInit};
 
         let (nonce_bytes, ciphertext) = data.split_at(12);
         let cipher = Aes256Gcm::new_from_slice(&self.0)
             .map_err(|e| StorageError::Encryption(format!("cipher init: {e}")))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce_bytes)
+            .map_err(|e| StorageError::Encryption(format!("nonce parse: {e}")))?;
 
         cipher
             .decrypt(nonce, ciphertext)
