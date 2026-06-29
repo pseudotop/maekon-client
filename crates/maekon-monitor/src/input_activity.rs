@@ -106,10 +106,15 @@ impl InputActivityCollector {
     }
 
     pub fn record_mouse_move(&self, distance: f64) {
-        let bits = self.move_distance.load(Ordering::Relaxed);
-        let current = f64::from_bits(bits);
-        let new_bits = (current + distance).to_bits();
-        self.move_distance.store(new_bits, Ordering::Relaxed);
+        // Atomic read-modify-write (CAS loop): the previous load → compute → store
+        // was non-atomic, so two concurrent callers (or a concurrent
+        // `take_snapshot` swap) could lose an update. The closure never returns
+        // `None`, so `fetch_update` always succeeds (#6830).
+        let _ = self
+            .move_distance
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                Some((f64::from_bits(bits) + distance).to_bits())
+            });
     }
 
     pub fn record_keystroke(&self, is_shortcut: bool, is_correction: bool) {
@@ -378,6 +383,37 @@ mod tests {
 
         assert_eq!(second.mouse.click_count, 0);
         assert_eq!(second.keyboard.total_keystrokes, 0);
+    }
+
+    #[test]
+    fn concurrent_mouse_moves_do_not_lose_updates() {
+        // #6830: record_mouse_move is an atomic RMW — two threads each adding `d`
+        // N times must accumulate exactly 2*N*d. The previous non-atomic
+        // load/compute/store could lose updates under contention.
+        use std::sync::Arc;
+        let collector = Arc::new(InputActivityCollector::new());
+        let n = 50_000u32;
+        let d = 1.5_f64;
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let c = Arc::clone(&collector);
+                std::thread::spawn(move || {
+                    for _ in 0..n {
+                        c.record_mouse_move(d);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let snapshot = collector.take_snapshot();
+        let expected = 2.0 * f64::from(n) * d;
+        assert!(
+            (snapshot.mouse.move_distance - expected).abs() < 1e-6,
+            "lost mouse-move updates: got {}, expected {expected}",
+            snapshot.mouse.move_distance
+        );
     }
 
     #[test]

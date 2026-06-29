@@ -87,12 +87,23 @@ impl SuggestionReceiver {
 
     /// Drive the SSE/gRPC suggestion stream until it closes or errors.
     ///
-    /// Returns `Ok(true)` when the stream delivered at least one suggestion
-    /// before terminating, and `Ok(false)` when it ended without producing any
-    /// suggestion (e.g. an immediate transport failure). The caller's reconnect
-    /// loop uses this signal to reset its backoff only after the stream made
-    /// meaningful progress — a stream that fails before delivering anything must
-    /// escalate the retry delay so a down server is not hammered (#6130).
+    /// Returns `Ok(true)` when the stream made *meaningful progress* before
+    /// terminating, and `Ok(false)` when it ended without any progress (e.g. an
+    /// immediate transport failure that never even establishes the stream). The
+    /// caller's reconnect loop resets its backoff only on progress; a stream
+    /// that fails before making progress must escalate the retry delay so a down
+    /// server is not hammered (#6130).
+    ///
+    /// #7080: progress is NOT limited to delivered suggestions. A successful
+    /// connection establishment (`Connected`) or a liveness `Heartbeat` also
+    /// counts as progress, because a healthy-but-quiet server (idle user,
+    /// nothing to suggest) that connects, heartbeats, then closes the idle
+    /// stream is NOT a failure. Counting only suggestions let such a stream
+    /// return `Ok(false)` repeatedly until the loop hit its give-up bound and
+    /// permanently stopped suggestions for the session. Connection establishment
+    /// distinguishes a healthy transport from a genuine outage (where
+    /// `connect`/`subscribe` fails before any event is emitted), so the give-up
+    /// budget now escalates only on real outages.
     pub async fn run(&self, session_id: &str) -> Result<bool, SuggestionError> {
         let (event_tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(64);
         let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
@@ -123,21 +134,28 @@ impl SuggestionReceiver {
 
         info!("suggestion received waiting started");
 
-        // Tracks whether the stream produced at least one suggestion. Reported
-        // back to the reconnect loop so it can reset its backoff (#6130).
-        let mut delivered_suggestion = false;
+        // Tracks whether the stream made meaningful progress. Reported back to
+        // the reconnect loop so it can reset its backoff (#6130). #7080: a
+        // successful connect or a heartbeat counts as progress too, not just a
+        // delivered suggestion — otherwise a healthy idle stream escalates the
+        // give-up budget until suggestions stop permanently for the session.
+        let mut made_progress = false;
 
         while let Some(event) = rx.recv().await {
             match event {
                 SseEvent::Connected { session_id } => {
                     info!("SSE connection success: {session_id}");
+                    // Establishing the stream proves the transport/server is
+                    // healthy — count it as progress so an idle, suggestion-less
+                    // stream does not look like a transport failure (#7080).
+                    made_progress = true;
                 }
                 SseEvent::Suggestion(suggestion) => {
                     debug!(
                         "suggestion received: {} ({:?})",
                         suggestion.suggestion_id, suggestion.priority
                     );
-                    delivered_suggestion = true;
+                    made_progress = true;
                     self.handle_suggestion(suggestion).await;
                 }
                 SseEvent::Update(data) => {
@@ -145,6 +163,10 @@ impl SuggestionReceiver {
                 }
                 SseEvent::Heartbeat { timestamp } => {
                     debug!("heartbeat: {timestamp}");
+                    // A heartbeat means the stream is alive — also progress
+                    // (#7080), covering transports that heartbeat without a
+                    // preceding Connected event.
+                    made_progress = true;
                 }
                 SseEvent::Error(msg) => {
                     warn!("SSE error: {msg}");
@@ -156,7 +178,7 @@ impl SuggestionReceiver {
             }
         }
 
-        Ok(delivered_suggestion)
+        Ok(made_progress)
     }
 
     // P2 PR-A: the queue lock is held across an intentional "expiry + dedup
@@ -447,6 +469,91 @@ mod tests {
         join_result
             .expect("run() task must not panic after shutdown()")
             .expect("run() must return Ok after shutdown()");
+    }
+
+    /// Mock SSE client that replays a fixed script of events onto the channel
+    /// and then returns (closing the stream). Used to exercise `run()`'s
+    /// progress-reporting contract deterministically (#7080).
+    struct ScriptedSseClient {
+        events: Vec<SseEvent>,
+    }
+    #[async_trait::async_trait]
+    impl SseClient for ScriptedSseClient {
+        async fn connect(
+            &self,
+            _session_id: &str,
+            tx: tokio::sync::mpsc::Sender<SseEvent>,
+        ) -> Result<(), CoreError> {
+            for ev in &self.events {
+                if tx.send(ev.clone()).await.is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn make_receiver_with_script(events: Vec<SseEvent>) -> SuggestionReceiver {
+        let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+        let scorer = Arc::new(Mutex::new(FeedbackScorer::new()));
+        SuggestionReceiver::new(
+            Arc::new(ScriptedSseClient { events }) as Arc<dyn SseClient>,
+            None,
+            queue,
+            scorer,
+        )
+    }
+
+    /// #7080 (revert-provable): a stream that establishes (`Connected`) and
+    /// stays alive on a heartbeat but never delivers a suggestion before a
+    /// graceful close must report progress (`Ok(true)`). Pre-fix this returned
+    /// `Ok(false)`, which the reconnect loop treats as a failure — eventually
+    /// hitting the give-up bound and permanently stopping suggestions for a
+    /// healthy-but-quiet server.
+    #[tokio::test]
+    async fn run_reports_progress_on_connect_and_heartbeat_without_suggestion() {
+        let receiver = make_receiver_with_script(vec![
+            SseEvent::Connected {
+                session_id: "sess-quiet".to_string(),
+            },
+            SseEvent::Heartbeat {
+                timestamp: chrono::Utc::now(),
+            },
+            SseEvent::Close,
+        ]);
+
+        let made_progress = receiver
+            .run("sess-quiet")
+            .await
+            .expect("run() must not error on a clean connect+heartbeat+close");
+
+        assert!(
+            made_progress,
+            "a connected + heartbeat stream must report progress even without a suggestion (#7080)"
+        );
+    }
+
+    /// #7080: a genuine outage — a stream that only errors before establishing
+    /// (no `Connected`/`Heartbeat`/`Suggestion`) — must still report NO progress
+    /// (`Ok(false)`) so the reconnect loop keeps backing off and can eventually
+    /// give up on a permanently unreachable server. Guards against the fix
+    /// over-counting and defeating the give-up bound.
+    #[tokio::test]
+    async fn run_reports_no_progress_when_stream_only_errors() {
+        let receiver = make_receiver_with_script(vec![
+            SseEvent::Error("connect failed".to_string()),
+            SseEvent::Close,
+        ]);
+
+        let made_progress = receiver
+            .run("sess-down")
+            .await
+            .expect("run() must not error when the stream only emits an error");
+
+        assert!(
+            !made_progress,
+            "a failed-before-connect stream must report no progress so backoff escalates (#7080)"
+        );
     }
 
     #[tokio::test]

@@ -182,6 +182,15 @@ pub(super) fn extract_tree_via_uia(
     max_depth: u32,
     max_elements: usize,
 ) -> Vec<(String, Option<String>, Option<ElementRect>)> {
+    // SAFETY: This runs on a dedicated `spawn_blocking` thread (see the caller in
+    // `mod.rs`) on which COM is initialized first by `CoInitializeEx`; its reserved
+    // first argument is null and the second is the documented COINIT flag, and the
+    // returned HRESULT is checked (`hr < 0` returns) before any interface is used.
+    // `ComGuard` balances that init with `CoUninitialize` on drop. Every COM method
+    // below is invoked on a type-safe `windows`-crate interface (`IUIAutomation`,
+    // `IUIAutomationElement`, `IUIAutomationTreeWalker`, `IUIAutomationCacheRequest`)
+    // obtained from a checked `CoCreateInstance`/accessor `Result`, so each pointer
+    // is valid and lives for this scope; the wrappers `Release` automatically on Drop.
     unsafe {
         let hr = windows_sys::Win32::System::Com::CoInitializeEx(
             ptr::null(),
@@ -401,6 +410,17 @@ unsafe fn extract_current_properties(
 ///
 /// When `use_cache` is false, falls back to the original per-property
 /// `Current*` calls (3 cross-process calls per element).
+///
+/// # Safety
+///
+/// The caller must ensure COM is initialized on the current thread, because this
+/// invokes `IUIAutomationTreeWalker` and `IUIAutomationElement` COM methods both
+/// directly and via `extract_cached_properties`/`extract_current_properties`.
+/// `walker` and `element` must be valid, live COM interface pointers for the whole
+/// call. When `use_cache` is true, `cache_request` must be `Some` and reference a
+/// valid configured `IUIAutomationCacheRequest`, and any child/sibling read at
+/// `depth > 0` assumes the element's cache was populated by a `*BuildCache` walker
+/// method; otherwise pass `use_cache = false` so the `Current*` path is used.
 #[allow(clippy::too_many_arguments)]
 unsafe fn collect_subtree(
     walker: &IUIAutomationTreeWalker,
@@ -493,6 +513,10 @@ pub(super) struct ComGuard;
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
+        // SAFETY: `CoUninitialize` takes no arguments and only decrements the COM
+        // initialization reference count for the current thread. A `ComGuard` is
+        // constructed only immediately after a successful `CoInitializeEx` on this
+        // same thread, so this drop balances exactly one prior successful init.
         unsafe {
             windows_sys::Win32::System::Com::CoUninitialize();
         }

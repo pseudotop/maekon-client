@@ -156,20 +156,22 @@ impl IntentResolver {
             }
 
             AutomationIntent::ActivateApp { app_name } => {
-                // review4 A9: app activation is NOT implemented — there is no
-                // platform call here (the InputDriver port has no activate_app), so
-                // returning Ok((true,..)) fabricated success and (with
-                // verify_after_action) a phantom screen-change. Report success=false
-                // so the executor does not claim a focus switch that never happened
-                // and stop_on_failure presets halt before synthesizing input against
-                // the wrong (un-switched) focused window.
-                // TODO: implement real activation (macOS osascript / Windows
-                // SetForegroundWindow / Linux wmctrl) behind the InputDriver port.
-                warn!(
-                    app_name,
-                    "ActivateApp is not implemented (no-op) — reporting failure"
-                );
-                Ok((false, None))
+                // Real activation via the InputDriver port (macOS `open -a` /
+                // Windows WScript.Shell.AppActivate / Linux wmctrl/xdotool). The
+                // returned bool reflects whether the platform actually switched
+                // focus — `false` (app not found / unsupported driver) is reported
+                // honestly so stop_on_failure presets halt instead of synthesizing
+                // input against the wrong (un-switched) window. A genuine success
+                // produces a real screen change that verify_after_action can confirm.
+                debug!(app_name, "activating app");
+                let activated = self.input_driver.activate_app(app_name).await?;
+                if !activated {
+                    warn!(
+                        app_name,
+                        "ActivateApp reported failure (app not found or unsupported driver)"
+                    );
+                }
+                Ok((activated, None))
             }
 
             AutomationIntent::Raw(action) => {
@@ -215,6 +217,15 @@ pub struct IntentExecutor {
 impl IntentExecutor {
     pub fn new(resolver: IntentResolver, config: IntentConfig) -> Self {
         Self { resolver, config }
+    }
+
+    /// The underlying real input driver this executor's resolver was built with.
+    ///
+    /// Exposed so a wrapper (the controller's `GatedInputDriver`) can forward
+    /// non-sandboxed operations such as window activation to the real driver instead
+    /// of dropping them to the `InputDriver` port default (MAEKON-AUTO-1 / #7070).
+    pub(crate) fn input_driver(&self) -> Arc<dyn InputDriver> {
+        self.resolver.input_driver.clone()
     }
 
     pub fn with_overrides(
@@ -340,8 +351,20 @@ mod tests {
         }
     }
 
-    // Mock InputDriver
-    struct MockInputDriver;
+    // Mock InputDriver — records activate_app calls + returns a configurable result.
+    struct MockInputDriver {
+        activate_result: bool,
+        activate_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Default for MockInputDriver {
+        fn default() -> Self {
+            Self {
+                activate_result: true,
+                activate_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
 
     #[async_trait::async_trait]
     impl InputDriver for MockInputDriver {
@@ -363,6 +386,11 @@ mod tests {
         async fn hotkey(&self, _keys: &[String]) -> Result<(), CoreError> {
             Ok(())
         }
+        async fn activate_app(&self, _app_name: &str) -> Result<bool, CoreError> {
+            self.activate_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.activate_result)
+        }
         fn platform(&self) -> &str {
             "mock"
         }
@@ -371,9 +399,30 @@ mod tests {
     fn make_resolver_with_elements(elements: Vec<UiElement>) -> IntentResolver {
         IntentResolver::new(
             Arc::new(MockElementFinder { results: elements }),
-            Arc::new(MockInputDriver),
+            Arc::new(MockInputDriver::default()),
             IntentConfig::default(),
         )
+    }
+
+    /// Resolver whose mock driver returns `result` from `activate_app`, plus a
+    /// shared counter so tests can assert the port was actually invoked.
+    fn make_resolver_with_activate(
+        result: bool,
+    ) -> (
+        IntentResolver,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let driver = MockInputDriver {
+            activate_result: result,
+            activate_calls: calls.clone(),
+        };
+        let resolver = IntentResolver::new(
+            Arc::new(EmptyElementFinder),
+            Arc::new(driver),
+            IntentConfig::default(),
+        );
+        (resolver, calls)
     }
 
     fn make_element(text: &str, confidence: f64) -> UiElement {
@@ -422,6 +471,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_activate_app_success_calls_driver() {
+        let (resolver, calls) = make_resolver_with_activate(true);
+        let intent = AutomationIntent::ActivateApp {
+            app_name: "Safari".to_string(),
+        };
+        let (success, element) = resolver.resolve_and_execute(&intent).await.unwrap();
+        assert!(success, "successful activation must report success=true");
+        assert!(element.is_none(), "ActivateApp returns no element");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "must invoke the InputDriver activate_app port exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_activate_app_failure_is_reported_not_fabricated() {
+        // Regression for review4 A9: an un-switched app must report success=false
+        // (the old no-op fabricated success → phantom focus switch).
+        let (resolver, calls) = make_resolver_with_activate(false);
+        let intent = AutomationIntent::ActivateApp {
+            app_name: "NoSuchApp".to_string(),
+        };
+        let (success, _element) = resolver.resolve_and_execute(&intent).await.unwrap();
+        assert!(
+            !success,
+            "app not found / unsupported must report success=false (no phantom focus switch)"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn resolve_type_into_element() {
         // Element/search text is incidental test data ("search"), ASCII-escaped to
         // keep the source ASCII while preserving the exact bytes under test.
@@ -462,7 +543,7 @@ mod tests {
     async fn executor_retries_on_failure() {
         let resolver = IntentResolver::new(
             Arc::new(EmptyElementFinder),
-            Arc::new(MockInputDriver),
+            Arc::new(MockInputDriver::default()),
             IntentConfig {
                 max_retries: 1,
                 retry_interval_ms: 10,
@@ -522,7 +603,9 @@ mod tests {
 
     #[tokio::test]
     async fn executor_activate_app() {
-        let resolver = make_resolver_with_elements(vec![]);
+        // Real activation: when the InputDriver reports a successful focus switch,
+        // the executor reports success=true (the old no-op always returned false).
+        let (resolver, calls) = make_resolver_with_activate(true);
         let executor = IntentExecutor::new(
             resolver,
             IntentConfig {
@@ -534,24 +617,24 @@ mod tests {
         let intent = AutomationIntent::ActivateApp {
             app_name: "Visual Studio Code".to_string(),
         };
-
-        // review4 A9: ActivateApp is not implemented (no platform call exists), so
-        // it must report success=false rather than fabricate success. Previously it
-        // returned Ok((true, ..)), which (with verification) also fabricated a
-        // phantom screen-change and let presets continue feeding input to the wrong
-        // window.
         let result = executor.execute(&intent).await.unwrap();
         assert!(
-            !result.success,
-            "unimplemented ActivateApp must report failure"
+            result.success,
+            "successful activation must report success=true"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "executor must invoke the activate_app port"
         );
     }
 
     #[tokio::test]
     async fn executor_activate_app_does_not_fabricate_screen_change() {
-        // Even when verification runs, an unimplemented ActivateApp must not claim a
-        // screen change happened (review4 A9 regression guard).
-        let resolver = make_resolver_with_elements(vec![]);
+        // When activation FAILS (app not found / unsupported driver), the executor
+        // must report success=false and must not claim a screen change happened
+        // (review4 A9 regression guard — the old no-op fabricated success).
+        let (resolver, _calls) = make_resolver_with_activate(false);
         let executor = IntentExecutor::new(
             resolver,
             IntentConfig {
@@ -561,14 +644,17 @@ mod tests {
             },
         );
         let intent = AutomationIntent::ActivateApp {
-            app_name: "Visual Studio Code".to_string(),
+            app_name: "NoSuchApp".to_string(),
         };
         let result = executor.execute(&intent).await.unwrap();
-        assert!(!result.success);
+        assert!(
+            !result.success,
+            "failed activation must report success=false"
+        );
         let verification = result.verification.expect("verification runs when enabled");
         assert!(
             !verification.screen_changed,
-            "must not fabricate a screen change for an unimplemented action"
+            "must not fabricate a screen change for a failed activation"
         );
         assert_eq!(verification.changed_regions, 0);
     }
@@ -610,7 +696,7 @@ mod tests {
     async fn wait_for_text_timeout_returns_error() {
         let resolver = IntentResolver::new(
             Arc::new(EmptyElementFinder),
-            Arc::new(MockInputDriver),
+            Arc::new(MockInputDriver::default()),
             IntentConfig {
                 retry_interval_ms: 10,
                 ..IntentConfig::default()
@@ -646,7 +732,7 @@ mod tests {
     async fn click_element_not_found_returns_error() {
         let resolver = IntentResolver::new(
             Arc::new(EmptyElementFinder),
-            Arc::new(MockInputDriver),
+            Arc::new(MockInputDriver::default()),
             IntentConfig::default(),
         );
         // Target text is incidental test data ("without button"), ASCII-escaped to

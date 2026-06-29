@@ -26,11 +26,27 @@ const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// Give-up bound: after this many consecutive failures without the stream ever
-/// delivering a suggestion, stop retrying and let the loop exit. The next
-/// scheduler restart (re-login / session refresh) will respawn the loop. This
-/// prevents an unbounded retry storm against a permanently unreachable server.
+/// delivering a suggestion, stop retrying and let the loop exit. The
+/// supervisor (`spawn_suggestion_sse_supervisor`, #7099) then respawns a fresh
+/// consumer after a bounded cooldown — or sooner, the moment the server
+/// connection is re-established — so the session recovers without a full
+/// scheduler restart. This bound prevents an unbounded retry storm against a
+/// permanently unreachable server within a single consumer instance.
 #[cfg(feature = "server")]
 const RECONNECT_MAX_ATTEMPTS: u32 = 12;
+
+/// Bounded cooldown the supervisor waits after a consumer gives up (permanent
+/// outage) before respawning a fresh one (#7099). Long enough that a
+/// permanently-down server is not hammered with back-to-back full retry cycles,
+/// short enough that recovery is automatic once the server returns.
+#[cfg(feature = "server")]
+const RESPAWN_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Polling granularity inside the respawn cooldown (#7099). Short enough that a
+/// recovered server connection (`server_connected` false -> true) cuts the
+/// cooldown short promptly, long enough that the idle wait stays cheap.
+#[cfg(feature = "server")]
+const RESPAWN_COOLDOWN_POLL: Duration = Duration::from_secs(2);
 
 /// Pure helper: compute the reconnect delay for the Nth consecutive failure.
 ///
@@ -80,7 +96,8 @@ fn next_reconnect_delay(
 /// reset to 0 only when the stream actually delivered a suggestion, so a healthy
 /// server that briefly closes the stream still reconnects quickly while a down
 /// server is backed off. After `RECONNECT_MAX_ATTEMPTS` consecutive failures the
-/// loop gives up; a later session refresh respawns it.
+/// loop gives up and returns; the supervisor
+/// ([`spawn_suggestion_sse_supervisor`], #7099) then respawns a fresh consumer.
 #[cfg(feature = "server")]
 pub(crate) fn spawn_suggestion_sse_loop(
     receiver: Arc<SuggestionReceiver>,
@@ -141,7 +158,7 @@ pub(crate) fn spawn_suggestion_sse_loop(
                     consecutive_failures,
                     max_attempts = RECONNECT_MAX_ATTEMPTS,
                     "suggestion SSE loop giving up after repeated failures; \
-                     will respawn on next session refresh"
+                     supervisor will respawn after cooldown or on server reconnect"
                 );
                 break;
             }
@@ -179,6 +196,141 @@ pub(crate) fn spawn_suggestion_sse_loop(
         // settles the receiver's abort machinery deterministically rather than
         // leaving teardown to background-runtime drop (sse-shutdown-deterministic).
         receiver.shutdown().await;
+    })
+}
+
+/// Supervise the suggestion SSE consumer and **respawn** it after a permanent
+/// outage instead of leaving the session without suggestions until the next
+/// full scheduler restart (#7099).
+///
+/// `spawn_suggestion_sse_loop` already owns an internal reconnect backoff and
+/// only returns when it hits the give-up bound (`RECONNECT_MAX_ATTEMPTS`
+/// consecutive real outages) or on shutdown. Before #7099 the generic scheduler
+/// supervisor merely logged that exit ("scheduler loop exited unexpectedly
+/// during runtime") and the session then received no further suggestions until
+/// the user re-logged in. This supervisor instead:
+///
+///   • spawns the consumer on a per-instance shutdown channel so it can be
+///     stopped CLEANLY (its own loop runs `receiver.shutdown()`), rather than
+///     hard-aborting it and detaching the inner SSE stream task;
+///   • when the consumer gives up (permanent outage), waits a BOUNDED cooldown
+///     (`respawn_cooldown`) — so a permanently-down server is not hammered with
+///     back-to-back full retry cycles — then respawns a fresh consumer, which
+///     resets the consecutive-failure counter and re-establishes the session
+///     (refreshing the auth token inside `connect`);
+///   • cuts the cooldown short the moment the server connection is
+///     re-established (`server_connected` transitions false -> true) — the
+///     "session refresh" the old give-up log alluded to. The transition (not
+///     the level) is used so an SSE-specific failure while the server is
+///     otherwise reachable waits the full cooldown instead of hot-looping;
+///   • on global shutdown, stops the current consumer cleanly and returns.
+///
+/// Generic over the consumer-spawn closure so the respawn / cancel logic is
+/// unit-testable with a fake consumer (no live server or SSE transport).
+#[cfg(feature = "server")]
+async fn run_suggestion_sse_supervisor<F>(
+    mut spawn_consumer: F,
+    server_connected: Option<Arc<std::sync::atomic::AtomicBool>>,
+    respawn_cooldown: Duration,
+    cooldown_poll: Duration,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) where
+    F: FnMut(tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> + Send,
+{
+    use std::sync::atomic::Ordering;
+
+    loop {
+        // Per-instance shutdown channel: lets the supervisor stop exactly ONE
+        // consumer cleanly (its loop observes the change and runs
+        // `receiver.shutdown()`), rather than aborting it and detaching the
+        // inner SSE stream task.
+        let (inst_shutdown_tx, inst_shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut consumer = spawn_consumer(inst_shutdown_rx);
+
+        // Phase 1: run until the consumer exits on its own or shutdown fires.
+        tokio::select! {
+            biased; // honour a global shutdown over a simultaneous give-up
+            _ = shutdown_rx.changed() => {
+                // Global shutdown: stop the consumer cleanly, then exit.
+                let _ = inst_shutdown_tx.send(true);
+                let _ = consumer.await;
+                return;
+            }
+            joined = &mut consumer => {
+                match joined {
+                    Ok(()) => warn!(
+                        "suggestion SSE consumer gave up after a permanent outage; \
+                         supervisor will respawn after cooldown or on server reconnect"
+                    ),
+                    Err(e) if e.is_cancelled() => warn!(
+                        "suggestion SSE consumer was cancelled unexpectedly; \
+                         supervisor will respawn after cooldown or on server reconnect"
+                    ),
+                    Err(e) => warn!(
+                        "suggestion SSE consumer panicked: {e}; \
+                         supervisor will respawn after cooldown or on server reconnect"
+                    ),
+                }
+            }
+        }
+
+        // Phase 2: bounded respawn cooldown. Snapshot the connection state at
+        // give-up so we respawn PROMPTLY only on a genuine reconnect transition
+        // (false -> true). A connection that was already up at give-up means the
+        // failure was SSE-specific, so we wait the full cooldown rather than
+        // hot-looping on the unchanged "connected" level.
+        let connected_at_giveup = server_connected
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed));
+
+        let mut waited = Duration::ZERO;
+        loop {
+            if !connected_at_giveup
+                && server_connected
+                    .as_ref()
+                    .is_some_and(|f| f.load(Ordering::Relaxed))
+            {
+                info!("server connection restored — respawning suggestion SSE consumer");
+                break;
+            }
+            if waited >= respawn_cooldown {
+                info!("respawn cooldown elapsed — respawning suggestion SSE consumer");
+                break;
+            }
+            let step = cooldown_poll
+                .min(respawn_cooldown - waited)
+                .max(Duration::from_millis(1));
+            tokio::select! {
+                _ = tokio::time::sleep(step) => waited += step,
+                _ = shutdown_rx.changed() => return,
+            }
+        }
+    }
+}
+
+/// Spawn the suggestion SSE supervisor (#7099): owns the SSE consumer task and
+/// respawns it on permanent outage / server reconnect. Production wrapper around
+/// [`run_suggestion_sse_supervisor`] that builds the consumer-spawn closure from
+/// the real `SuggestionReceiver` and uses the default cooldown constants.
+#[cfg(feature = "server")]
+pub(crate) fn spawn_suggestion_sse_supervisor(
+    receiver: Arc<SuggestionReceiver>,
+    session_id: String,
+    server_connected: Option<Arc<std::sync::atomic::AtomicBool>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let spawn_consumer = move |inst_shutdown_rx: tokio::sync::watch::Receiver<bool>| {
+            spawn_suggestion_sse_loop(receiver.clone(), session_id.clone(), inst_shutdown_rx)
+        };
+        run_suggestion_sse_supervisor(
+            spawn_consumer,
+            server_connected,
+            RESPAWN_COOLDOWN,
+            RESPAWN_COOLDOWN_POLL,
+            shutdown_rx,
+        )
+        .await;
     })
 }
 
@@ -522,5 +674,178 @@ mod tests {
             .await
             .expect("SSE loop did not return within 500 ms after shutdown signal")
             .expect("SSE loop task must not panic on shutdown");
+    }
+
+    /// #7099: when the suggestion SSE consumer gives up (permanent outage), the
+    /// supervisor must RESPAWN a fresh consumer after the bounded cooldown —
+    /// not merely log and leave the session suggestion-less. A fake consumer
+    /// that exits immediately on its first spawn and then blocks proves exactly
+    /// one respawn occurs and that the live consumer is not re-spawned again.
+    #[tokio::test]
+    async fn supervisor_respawns_consumer_after_giveup() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtOrdering};
+        use tokio::sync::watch;
+        use tokio::time::{timeout, Duration as TDuration};
+
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let sc = spawn_count.clone();
+        // 1st consumer "gives up" immediately; the 2nd blocks until cleanly
+        // cancelled — bounding the total spawn count to 2.
+        let spawn_consumer = move |mut inst_rx: watch::Receiver<bool>| {
+            let n = sc.fetch_add(1, AtOrdering::SeqCst);
+            tokio::spawn(async move {
+                if n == 0 {
+                    // Give up: return immediately (simulates the give-up bound).
+                } else {
+                    let _ = inst_rx.changed().await;
+                }
+            })
+        };
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let sup = tokio::spawn(run_suggestion_sse_supervisor(
+            spawn_consumer,
+            None,
+            TDuration::from_millis(30),
+            TDuration::from_millis(5),
+            shutdown_rx,
+        ));
+
+        // Give-up + cooldown (30 ms) + respawn should have happened well within
+        // this window; the respawned consumer then blocks, so the count stays 2.
+        tokio::time::sleep(TDuration::from_millis(200)).await;
+        assert_eq!(
+            spawn_count.load(AtOrdering::SeqCst),
+            2,
+            "supervisor must respawn the consumer exactly once after a give-up"
+        );
+
+        // The respawned consumer is alive; shutdown must stop it cleanly.
+        shutdown_tx.send(true).expect("shutdown send must succeed");
+        timeout(TDuration::from_millis(500), sup)
+            .await
+            .expect("supervisor must return promptly after shutdown")
+            .expect("supervisor task must not panic");
+        assert_eq!(
+            spawn_count.load(AtOrdering::SeqCst),
+            2,
+            "no further respawn after a clean shutdown"
+        );
+    }
+
+    /// #7099: a server-connection recovery (the "session refresh") must cut the
+    /// respawn cooldown short and respawn the consumer PROMPTLY, rather than
+    /// waiting out the full (here: 30 s) cooldown.
+    #[tokio::test]
+    async fn supervisor_respawns_promptly_on_server_reconnect() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtOrdering};
+        use tokio::sync::watch;
+        use tokio::time::{timeout, Duration as TDuration};
+
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let sc = spawn_count.clone();
+        let spawn_consumer = move |mut inst_rx: watch::Receiver<bool>| {
+            let n = sc.fetch_add(1, AtOrdering::SeqCst);
+            tokio::spawn(async move {
+                if n == 0 {
+                    // Give up immediately while the server is "down".
+                } else {
+                    let _ = inst_rx.changed().await;
+                }
+            })
+        };
+
+        // Server starts disconnected, so the give-up snapshot is false and a
+        // later false -> true transition is treated as the reconnect signal.
+        let server_connected = Arc::new(AtomicBool::new(false));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let sup = tokio::spawn(run_suggestion_sse_supervisor(
+            spawn_consumer,
+            Some(server_connected.clone()),
+            TDuration::from_secs(30), // long cooldown — only a reconnect cuts it short
+            TDuration::from_millis(5),
+            shutdown_rx,
+        ));
+
+        // Let the 1st consumer give up and enter the long cooldown.
+        tokio::time::sleep(TDuration::from_millis(60)).await;
+        assert_eq!(
+            spawn_count.load(AtOrdering::SeqCst),
+            1,
+            "consumer must still be in cooldown (no respawn before reconnect)"
+        );
+
+        // Server connection restored — respawn must happen well under 30 s.
+        server_connected.store(true, AtOrdering::SeqCst);
+        let respawned = async {
+            while spawn_count.load(AtOrdering::SeqCst) < 2 {
+                tokio::time::sleep(TDuration::from_millis(5)).await;
+            }
+        };
+        timeout(TDuration::from_millis(500), respawned)
+            .await
+            .expect("server reconnect must trigger a prompt respawn, not wait the full cooldown");
+
+        shutdown_tx.send(true).expect("shutdown send must succeed");
+        timeout(TDuration::from_millis(500), sup)
+            .await
+            .expect("supervisor must return promptly after shutdown")
+            .expect("supervisor task must not panic");
+    }
+
+    /// #7099: a clean shutdown must stop the live consumer via its per-instance
+    /// shutdown channel (clean cancel, not a hard abort) and must NOT respawn.
+    #[tokio::test]
+    async fn supervisor_clean_shutdown_cancels_consumer_without_respawn() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtOrdering};
+        use tokio::sync::watch;
+        use tokio::time::{timeout, Duration as TDuration};
+
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let cancelled_cleanly = Arc::new(AtomicBool::new(false));
+        let sc = spawn_count.clone();
+        let cc = cancelled_cleanly.clone();
+        let spawn_consumer = move |mut inst_rx: watch::Receiver<bool>| {
+            sc.fetch_add(1, AtOrdering::SeqCst);
+            let cc = cc.clone();
+            tokio::spawn(async move {
+                // Live consumer: stop only on a clean per-instance cancel signal,
+                // then record that the cancel was observed (not aborted).
+                let _ = inst_rx.changed().await;
+                cc.store(true, AtOrdering::SeqCst);
+            })
+        };
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let sup = tokio::spawn(run_suggestion_sse_supervisor(
+            spawn_consumer,
+            None,
+            TDuration::from_millis(30),
+            TDuration::from_millis(5),
+            shutdown_rx,
+        ));
+
+        tokio::time::sleep(TDuration::from_millis(40)).await;
+        assert_eq!(
+            spawn_count.load(AtOrdering::SeqCst),
+            1,
+            "a live consumer must not be respawned"
+        );
+
+        shutdown_tx.send(true).expect("shutdown send must succeed");
+        timeout(TDuration::from_millis(500), sup)
+            .await
+            .expect("supervisor must return promptly after shutdown")
+            .expect("supervisor task must not panic");
+
+        assert!(
+            cancelled_cleanly.load(AtOrdering::SeqCst),
+            "supervisor must stop the consumer via its clean per-instance shutdown"
+        );
+        assert_eq!(
+            spawn_count.load(AtOrdering::SeqCst),
+            1,
+            "no respawn on a clean shutdown"
+        );
     }
 }

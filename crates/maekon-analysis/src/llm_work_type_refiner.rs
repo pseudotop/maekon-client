@@ -241,6 +241,15 @@ fn parse_response(response: &str) -> Option<ClassificationResponse> {
     }
     let start = response.find('{')?;
     let end = response.rfind('}')? + 1;
+    // #6926: guard start <= end before slicing. A model-controlled response with a
+    // closing brace BEFORE an opening one (e.g. "} ... {", reachable when the LLM
+    // echoes screen-captured window_title/ocr_sample embedded in the prompt) gives
+    // start > end and `&response[start..end]` PANICS. The three sibling JSON
+    // extractors all guard this (daily_insight_generator / ai_llm_client::parsers /
+    // ai_ocr_client::parsers — the #6194 reversed-range panic class).
+    if start >= end {
+        return None;
+    }
     serde_json::from_str(&response[start..end]).ok()
 }
 
@@ -267,6 +276,20 @@ mod tests {
     #[test]
     fn parse_invalid_returns_none() {
         assert!(parse_response("not json at all").is_none());
+    }
+
+    /// #6926 regression guard: a model-controlled response with a closing brace
+    /// BEFORE an opening one yields start > end. Pre-fix `&response[start..end]`
+    /// PANICKED; the guard must return None instead (no panic). brace-free input
+    /// hits the earlier `?` and never reaches the slice, so these inputs MUST
+    /// contain `}` before `{` to exercise the reversed-range path.
+    #[test]
+    fn parse_reversed_braces_returns_none_not_panic() {
+        // start=index_of('{'), end=rindex_of('}')+1; here '}' precedes '{'.
+        assert!(parse_response("} {").is_none());
+        assert!(parse_response("Sorry I can't } classify this {").is_none());
+        // A closing brace with a later opening brace and trailing text.
+        assert!(parse_response("garbage } more { junk").is_none());
     }
 
     #[test]

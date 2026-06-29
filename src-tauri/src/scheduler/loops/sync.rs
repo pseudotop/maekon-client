@@ -627,13 +627,19 @@ impl Scheduler {
 
         // 15. Suggestion SSE + maintenance loops (server feature only). #38: both
         //     are now supervised so an unexpected exit no longer dies silently.
+        //     #7099: the SSE stream runs under a dedicated supervisor that
+        //     respawns the consumer after a permanent outage (or on server
+        //     reconnect) instead of leaving the session suggestion-less until a
+        //     full scheduler restart. The supervisor itself only returns on
+        //     shutdown, so the generic JoinSet wrapper still catches any panic.
         #[cfg(feature = "server")]
         {
             let suggestion_sse_task = if self.suggestions_enabled {
                 self.suggestion_receiver.as_ref().map(|receiver| {
-                    super::suggestions::spawn_suggestion_sse_loop(
+                    super::suggestions::spawn_suggestion_sse_supervisor(
                         receiver.clone(),
                         session_id.clone(),
+                        self.server_connected.clone(),
                         shutdown_rx.clone(),
                     )
                 })

@@ -27,6 +27,17 @@ parking_lot = { workspace = true }
 sha2 = { workspace = true }
 futures-core = "0.3"
 
+# #6942: Windows owner-only DACL primitive (secure_file::set_owner_only_dacl) —
+# the Unix 0o600 equivalent for config.json/consent.json plaintext-secret files.
+# cfg(windows)-gated so the contract crate gains no dependency on any other target.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 criterion = { workspace = true }

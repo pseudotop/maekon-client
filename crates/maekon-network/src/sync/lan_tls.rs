@@ -135,19 +135,55 @@ pub fn load_or_generate_cert(
         code: maekon_core::error_codes::InternalCode::Generic,
         message: format!("write cert: {e}"),
     })?;
-    std::fs::write(&key_path, &key_pem).map_err(|e| CoreError::Internal {
-        code: maekon_core::error_codes::InternalCode::Generic,
-        message: format!("write key: {e}"),
-    })?;
-
-    // Restrict private key file permissions to owner-only on Unix
+    // #6937: self-heal a partial-state key. The load guard above is
+    // `cert.exists() && key.exists()` (AND), so this generate branch runs whenever
+    // EITHER file is absent — including key-present/cert-absent (e.g. an operator
+    // deleting only sync_cert.pem to force TOFU rotation, or a partial backup
+    // restore). We are regenerating BOTH cert and key here, so any surviving key is
+    // stale and inconsistent with the freshly-written cert; remove it before the
+    // atomic create_new write. Without this, #6927's create_new(true) returned
+    // AlreadyExists and permanently disabled LAN sync (the pre-#6927 fs::write
+    // overwrite self-healed this; create_new lost that property).
+    if key_path.exists() {
+        std::fs::remove_file(&key_path).map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("remove stale key before regenerate: {e}"),
+        })?;
+    }
+    // #6927: write the private key ATOMICALLY owner-only. The previous
+    // `fs::write` then post-write `chmod 0o600` left a window where the key was
+    // world-readable under the default umask (typically 0o644 on Linux). The
+    // sibling secret stores (storage encryption.rs / file_secret_store.rs /
+    // keychain.rs) all use O_CREAT|O_EXCL|mode(0o600) in one syscall — mirror it.
+    // The stale key (if any) was removed just above, so create_new(true) creates a
+    // fresh 0o600 key; a remaining AlreadyExists now genuinely means a concurrent
+    // writer raced us, which is fail-closed (do not overwrite a concurrent key).
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&key_path, perms).map_err(|e| CoreError::Internal {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&key_path)
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("create key (atomic 0o600): {e}"),
+            })?;
+        file.write_all(&key_pem).map_err(|e| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
-            message: format!("set key permissions: {e}"),
+            message: format!("write key: {e}"),
+        })?;
+    }
+    // On non-Unix (Windows) there is no umask/mode; the key lives under the
+    // per-user config dir. Preserve the prior plain write (no behavior change /
+    // no regression — the old code's chmod was already #[cfg(unix)]-only).
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&key_path, &key_pem).map_err(|e| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: format!("write key: {e}"),
         })?;
     }
 
@@ -186,5 +222,62 @@ mod tests {
         assert_eq!(cert1, cert2);
         assert_eq!(key1, key2);
         assert_eq!(fp1, fp2);
+    }
+
+    /// #6927: the generated private key must be owner-only (0o600) on Unix — the
+    /// atomic create_new+mode write leaves no world-readable window. Pre-fix the
+    /// key was written under the default umask (often 0o644) before a post-write
+    /// chmod, exposing a race window.
+    #[test]
+    #[cfg(unix)]
+    fn generated_key_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        load_or_generate_cert(dir.path(), "dev-perm").unwrap();
+        let key_path = dir.path().join("sync_key.pem");
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "private key must be 0o600 owner-only, got {:o}",
+            mode & 0o777
+        );
+    }
+
+    /// #6937 regression guard: with a key-present/cert-absent partial state (e.g.
+    /// operator deleted only the cert to force TOFU rotation), load_or_generate_cert
+    /// must self-heal — regenerate the pair successfully, NOT return Err. Pre-fix the
+    /// #6927 create_new(true) returned AlreadyExists on the surviving key and
+    /// permanently disabled LAN sync.
+    #[test]
+    fn load_or_generate_self_heals_key_present_cert_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        // First generate a full pair.
+        let (_c1, key1, _fp1) = load_or_generate_cert(dir.path(), "dev-heal").unwrap();
+        // Simulate partial state: delete the cert, leave the key.
+        std::fs::remove_file(dir.path().join("sync_cert.pem")).unwrap();
+        assert!(
+            dir.path().join("sync_key.pem").exists(),
+            "precondition: key survives"
+        );
+
+        // Must NOT Err — regenerate a fresh, consistent pair.
+        let (_c2, key2, _fp2) = load_or_generate_cert(dir.path(), "dev-heal")
+            .expect("partial-state (key-present/cert-absent) must self-heal, not deadlock");
+        assert!(dir.path().join("sync_cert.pem").exists());
+        assert!(dir.path().join("sync_key.pem").exists());
+        // The stale key was replaced (new keypair), so the new key differs.
+        assert_ne!(key1, key2, "regenerated key must replace the stale one");
+
+        // And the regenerated key still has owner-only perms on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("sync_key.pem"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "regenerated key must stay 0o600");
+        }
     }
 }

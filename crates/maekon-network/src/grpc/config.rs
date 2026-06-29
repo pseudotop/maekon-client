@@ -144,8 +144,23 @@ impl GrpcConfig {
             ));
         }
 
+        // #6924: cleartext h2c (use_tls=false) is only safe to a LOOPBACK endpoint.
+        // A non-loopback grpc_endpoint with use_tls=false sends the session Bearer
+        // JWT + uploaded event/frame context + suggestion feedback in PLAINTEXT on
+        // the wire (on-path credential theft / session hijack). Fail-closed, mirroring
+        // the AI-provider cleartext config guard (#6259). all_endpoints() keeps the
+        // grpc_endpoint host and only varies the fallback port, so validating the
+        // primary host covers the fallbacks too.
         if !self.use_tls {
-            return Ok(());
+            if endpoint_is_loopback(&self.grpc_endpoint) {
+                return Ok(());
+            }
+            return Err(NetworkError::Config(format!(
+                "grpc.use_tls=false is only permitted for a loopback grpc_endpoint; \
+                 '{}' is remote — cleartext h2c would leak the session token and uploaded \
+                 context. Set grpc.use_tls=true (with grpc.tls_domain_name) for remote endpoints.",
+                self.grpc_endpoint
+            )));
         }
 
         let domain = self
@@ -468,6 +483,21 @@ fn endpoint_host_prefix(endpoint: &str) -> Option<&str> {
     Some(&endpoint[..scheme.len() + colon_in_authority])
 }
 
+/// #6924: true if the gRPC endpoint's host is a loopback address (localhost / 127/8
+/// / ::1). Reuses `http_client::host_is_loopback` (handles bracketed IPv6 + IP
+/// literals), normalizing a scheme-less endpoint by prepending `http://` first so a
+/// genuinely-loopback `host:port` (no scheme) is not falsely rejected by the
+/// cleartext guard. A malformed/unparseable endpoint is treated as non-loopback
+/// (fail-closed — the cleartext guard then rejects it).
+fn endpoint_is_loopback(endpoint: &str) -> bool {
+    let normalized = if endpoint.contains("://") {
+        endpoint.to_string()
+    } else {
+        format!("http://{endpoint}")
+    };
+    crate::http_client::host_is_loopback(&normalized)
+}
+
 fn default_grpc_endpoint() -> String {
     "http://localhost:50051".to_string()
 }
@@ -731,6 +761,72 @@ mod tests {
         config
             .validate_transport_security()
             .expect("TLS-only (no mTLS) with a domain name must pass validate_transport_security");
+    }
+
+    /// #6924: cleartext h2c (use_tls=false) to a LOOPBACK endpoint is allowed —
+    /// this is the legitimate dev/default path (server-side h2c per ADR-074 is
+    /// loopback-only). Covers localhost, 127.0.0.1, [::1], and scheme-less host:port.
+    #[test]
+    fn test_cleartext_allowed_for_loopback() {
+        for ep in [
+            "http://localhost:50051",
+            "http://127.0.0.1:50051",
+            "http://[::1]:50051",
+            "localhost:50051", // scheme-less must still be recognized as loopback
+        ] {
+            let config = GrpcConfig {
+                use_tls: false,
+                grpc_endpoint: ep.to_string(),
+                ..Default::default()
+            };
+            config.validate_transport_security().unwrap_or_else(|e| {
+                panic!("cleartext to loopback {ep} must be allowed, got: {e:?}")
+            });
+        }
+    }
+
+    /// #6924: cleartext h2c (use_tls=false) to a NON-loopback endpoint must
+    /// fail-closed — otherwise the session JWT + uploaded context egress in
+    /// plaintext. Pre-fix this returned Ok(()).
+    #[test]
+    fn test_cleartext_rejected_for_remote() {
+        for ep in [
+            "http://example.com:9000",
+            "http://10.0.0.5:50051",
+            // RFC 2606 reserved documentation host — a remote (non-loopback) gRPC
+            // endpoint on the TLS port. Must not name a real/operator domain so the
+            // public OSS export carries no internal references (the release/export
+            // guardrail rejects operator-domain leaks). The assertion is
+            // host-agnostic — any non-loopback host over cleartext must fail-closed.
+            "http://grpc.example.org:443",
+        ] {
+            let config = GrpcConfig {
+                use_tls: false,
+                grpc_endpoint: ep.to_string(),
+                ..Default::default()
+            };
+            let err = config
+                .validate_transport_security()
+                .expect_err(&format!("cleartext to remote {ep} must be rejected"));
+            assert!(
+                matches!(err, NetworkError::Config(_)),
+                "remote cleartext must return NetworkError::Config, got: {err:?}"
+            );
+        }
+    }
+
+    /// #6924: a remote endpoint with use_tls=true is fine (TLS protects the wire).
+    #[test]
+    fn test_remote_endpoint_allowed_with_tls() {
+        let config = GrpcConfig {
+            use_tls: true,
+            grpc_endpoint: "https://grpc.example.com:443".to_string(),
+            tls_domain_name: Some("grpc.example.com".to_string()),
+            ..Default::default()
+        };
+        config
+            .validate_transport_security()
+            .expect("remote endpoint with TLS + domain must pass");
     }
 
     #[test]

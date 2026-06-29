@@ -70,10 +70,42 @@ pub mod fastembed_impl {
         /// and loads the ONNX weights). Called lazily under the model lock on the
         /// first embed and after a reload/eviction. #6441 F18.
         fn init_model(raw_name: Option<&str>) -> Result<fastembed::TextEmbedding, EmbeddingError> {
-            let (model_enum, _id, _dims) = resolve_model(raw_name);
-            let options = fastembed::InitOptions::new(model_enum).with_show_download_progress(true);
-            fastembed::TextEmbedding::try_new(options)
-                .map_err(|e| EmbeddingError::Internal(format!("fastembed init failed: {e}")))
+            let (model_enum, id, _dims) = resolve_model(raw_name);
+
+            // #7082 MEMB-3: pin the weights cache to an app-controlled directory
+            // so the downloaded ONNX graph can be located and integrity-checked
+            // deterministically (and reused across runs).
+            let cache_dir = crate::model_integrity::cache_dir();
+
+            // Capture the upstream repo + weights filename from fastembed's own
+            // model table, so the integrity module need not duplicate it.
+            let (hf_repo, weight_file) = fastembed::TextEmbedding::get_model_info(&model_enum)
+                .map(|info| (info.model_code.clone(), info.model_file.clone()))
+                .map_err(|e| {
+                    EmbeddingError::Internal(format!("fastembed model info lookup failed: {e}"))
+                })?;
+
+            let options = fastembed::InitOptions::new(model_enum)
+                .with_cache_dir(cache_dir.clone())
+                .with_show_download_progress(true);
+            let model = fastembed::TextEmbedding::try_new(options)
+                .map_err(|e| EmbeddingError::Internal(format!("fastembed init failed: {e}")))?;
+
+            // #7082 MEMB-3: verify the downloaded weights against the SHA-256
+            // allowlist before the provider is returned for use. fastembed pulls
+            // from a branch-tracking HF revision with no integrity check; the
+            // allowlist rejects any ONNX graph whose bytes differ from the pinned
+            // commit. Fail-closed for a model with a registered digest; a model
+            // whose digest is not yet captured is allowed through with a warning.
+            //
+            // Residual: `try_new` above already parsed the graph into ONNX
+            // Runtime, so this verifies before INFERENCE (use), not before the
+            // parse. A strict before-parse check needs a pre-fetch via hf-hub at
+            // the pinned revision (tracked by #7082); the content allowlist still
+            // prevents a tampered graph from ever being embedded with.
+            crate::model_integrity::verify_cached_weights(&id, &cache_dir, &hf_repo, &weight_file)?;
+
+            Ok(model)
         }
 
         /// Re-initialise the ONNX model without restarting the app.

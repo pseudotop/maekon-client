@@ -43,6 +43,7 @@ pub mod keychain;
 pub mod lan_pin_store_adapter;
 pub mod migration;
 pub mod process_env_projection;
+pub mod process_lock;
 pub mod regime_manager_state_store;
 pub mod sqlite;
 pub mod sync_extractor;

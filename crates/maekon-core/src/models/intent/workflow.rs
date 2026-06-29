@@ -238,6 +238,10 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
         });
     }
 
+    // MAEKON-AUTO-1 (#7070) interim safety: every builtin ActivateApp step below uses
+    // `stop_on_failure: true`. A failed/un-switched activation must HALT the workflow
+    // rather than let a subsequent step synthesize input (e.g. Cmd+W / Alt+Tab) against
+    // whatever window currently has focus.
     presets.push(WorkflowPreset {
         id: "morning-routine".to_string(),
         name: "Start of Day".to_string(),
@@ -250,7 +254,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Mail".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Calendar".to_string(),
@@ -258,7 +262,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Calendar".to_string(),
                 },
                 delay_ms: 2000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open VS Code".to_string(),
@@ -266,7 +270,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Visual Studio Code".to_string(),
                 },
                 delay_ms: 2000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -286,7 +290,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Zoom".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Notes".to_string(),
@@ -294,7 +298,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Notes".to_string(),
                 },
                 delay_ms: 1000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -343,7 +347,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Calendar".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Jira".to_string(),
@@ -351,7 +355,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Jira".to_string(),
                 },
                 delay_ms: 1200,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Slack".to_string(),
@@ -359,7 +363,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Slack".to_string(),
                 },
                 delay_ms: 1200,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -380,7 +384,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Issue Tracker".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Monitoring".to_string(),
@@ -388,7 +392,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Monitoring".to_string(),
                 },
                 delay_ms: 1200,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open VS Code".to_string(),
@@ -396,7 +400,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Visual Studio Code".to_string(),
                 },
                 delay_ms: 1200,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -418,7 +422,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "CRM".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Notion".to_string(),
@@ -426,7 +430,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Notion".to_string(),
                 },
                 delay_ms: 1000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Mail".to_string(),
@@ -434,7 +438,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Mail".to_string(),
                 },
                 delay_ms: 1000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -463,7 +467,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Terminal".to_string(),
                 },
                 delay_ms: 500,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Open Browser".to_string(),
@@ -471,7 +475,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Google Chrome".to_string(),
                 },
                 delay_ms: 1000,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
         ],
         builtin: true,
@@ -492,7 +496,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                     app_name: "Visual Studio Code".to_string(),
                 },
                 delay_ms: 0,
-                stop_on_failure: false,
+                stop_on_failure: true,
             },
             WorkflowStep {
                 name: "Switch to next app".to_string(),

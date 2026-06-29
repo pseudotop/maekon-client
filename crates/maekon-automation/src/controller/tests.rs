@@ -186,6 +186,50 @@ impl ElementFinder for MatchingElementFinder {
     }
 }
 
+// ── MAEKON-AUTO-1 (#7070): GatedInputDriver must forward activate_app ──────────
+//
+// Records the underlying real driver's `activate_app` invocations (app names) so a
+// test can prove the production `GatedInputDriver` wrapper forwards window activation
+// to the real driver instead of inheriting the `InputDriver` port default `Ok(false)`
+// (a silent no-op). All other methods are inert: synthetic input on the
+// trusted-internal path routes through the gate + action dispatcher, not this driver.
+struct RecordingInputDriver {
+    activate_calls: Arc<std::sync::Mutex<Vec<String>>>,
+    activate_result: bool,
+}
+
+#[async_trait::async_trait]
+impl maekon_core::ports::input_driver::InputDriver for RecordingInputDriver {
+    async fn mouse_move(&self, _x: i32, _y: i32) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn mouse_click(&self, _button: &str, _x: i32, _y: i32) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn type_text(&self, _text: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn key_press(&self, _key: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn key_release(&self, _key: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn hotkey(&self, _keys: &[String]) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn activate_app(&self, app_name: &str) -> Result<bool, CoreError> {
+        self.activate_calls
+            .lock()
+            .expect("activate_calls mutex poisoned")
+            .push(app_name.to_string());
+        Ok(self.activate_result)
+    }
+    fn platform(&self) -> &str {
+        "recording"
+    }
+}
+
 struct HangingSandbox;
 
 #[async_trait::async_trait]
@@ -498,6 +542,161 @@ async fn run_workflow_with_executor_success() {
     assert_eq!(result.total_steps, 1);
     assert_eq!(result.step_results.len(), 1);
     assert!(result.step_results[0].success);
+}
+
+#[tokio::test]
+async fn run_workflow_activate_app_forwards_through_gated_input_driver() {
+    use crate::input_driver::NoOpElementFinder;
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+
+    // Regression for MAEKON-AUTO-1 (#7070). run_workflow runs each step through the
+    // REAL GatedInputDriver wrapper (WORKFLOW_STEP_POLICY_TOKEN + Internal origin =>
+    // is_trusted_internal => scoped_intent_executor swaps in GatedInputDriver). This
+    // exercises the production wrapping, NOT a direct mock resolver: the recording
+    // driver is the UNDERLYING driver that GatedInputDriver must forward to. Before
+    // the fix, GatedInputDriver did not override activate_app, so it inherited the
+    // port default Ok(false) — the underlying driver was never called and the step
+    // silently no-op'd. The test fails before the fix (0 calls) and passes after.
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+
+    let activate_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recording_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(RecordingInputDriver {
+            activate_calls: activate_calls.clone(),
+            activate_result: true,
+        });
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    // verify_after_action disabled: ActivateApp returns no element, so verification
+    // would only add nondeterministic timing without strengthening the assertion.
+    let config = IntentConfig {
+        verify_after_action: false,
+        ..IntentConfig::default()
+    };
+    let resolver = IntentResolver::new(element_finder, recording_driver, config.clone());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(resolver, config)));
+
+    let preset = WorkflowPreset {
+        id: "activate-app-preset".to_string(),
+        name: "Activate App".to_string(),
+        description: "test".to_string(),
+        category: PresetCategory::Workflow,
+        steps: vec![WorkflowStep {
+            name: "Open VS Code".to_string(),
+            intent: AutomationIntent::ActivateApp {
+                app_name: "Visual Studio Code".to_string(),
+            },
+            delay_ms: 0,
+            stop_on_failure: true,
+        }],
+        builtin: true,
+        platform: None,
+        ai_profile_id: None,
+    };
+
+    let result = controller.run_workflow(&preset).await.unwrap();
+
+    {
+        let calls = activate_calls
+            .lock()
+            .expect("activate_calls mutex poisoned");
+        assert_eq!(
+            calls.as_slice(),
+            ["Visual Studio Code"],
+            "GatedInputDriver must forward activate_app to the underlying real driver \
+             exactly once with the requested app name, not drop it to the port default"
+        );
+    }
+
+    assert!(
+        result.success,
+        "a successful activation must mark the workflow step successful"
+    );
+    assert_eq!(result.steps_executed, 1);
+    assert!(result.step_results[0].success);
+}
+
+#[tokio::test]
+async fn run_workflow_failed_activate_app_halts_before_subsequent_input() {
+    use crate::input_driver::NoOpElementFinder;
+    use crate::intent_resolver::{IntentExecutor, IntentResolver};
+
+    // Interim-safety regression for MAEKON-AUTO-1 (#7070): with stop_on_failure=true
+    // on the ActivateApp step, a failed/un-switched activation (activate_result=false)
+    // must HALT the workflow before the following ExecuteHotkey step synthesizes input
+    // against the wrong, un-switched window.
+    let mut controller = make_controller();
+    controller.set_enabled(true);
+
+    let activate_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recording_driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> =
+        Arc::new(RecordingInputDriver {
+            activate_calls: activate_calls.clone(),
+            activate_result: false,
+        });
+    let element_finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder> =
+        Arc::new(NoOpElementFinder);
+    let config = IntentConfig {
+        verify_after_action: false,
+        ..IntentConfig::default()
+    };
+    let resolver = IntentResolver::new(element_finder, recording_driver, config.clone());
+    controller.set_intent_executor(Arc::new(IntentExecutor::new(resolver, config)));
+
+    let preset = WorkflowPreset {
+        id: "activate-then-hotkey".to_string(),
+        name: "Activate then hotkey".to_string(),
+        description: "test".to_string(),
+        category: PresetCategory::Workflow,
+        steps: vec![
+            WorkflowStep {
+                name: "Open NoSuchApp".to_string(),
+                intent: AutomationIntent::ActivateApp {
+                    app_name: "NoSuchApp".to_string(),
+                },
+                delay_ms: 0,
+                stop_on_failure: true,
+            },
+            WorkflowStep {
+                name: "Close window".to_string(),
+                intent: AutomationIntent::ExecuteHotkey {
+                    keys: vec!["Cmd".to_string(), "W".to_string()],
+                },
+                delay_ms: 0,
+                stop_on_failure: false,
+            },
+        ],
+        builtin: true,
+        platform: None,
+        ai_profile_id: None,
+    };
+
+    let result = controller.run_workflow(&preset).await.unwrap();
+
+    {
+        let calls = activate_calls
+            .lock()
+            .expect("activate_calls mutex poisoned");
+        assert_eq!(
+            calls.as_slice(),
+            ["NoSuchApp"],
+            "the failed activation must have been forwarded once to the real driver"
+        );
+    }
+
+    assert!(
+        !result.success,
+        "a failed activation must mark the workflow unsuccessful"
+    );
+    assert_eq!(
+        result.steps_executed, 1,
+        "stop_on_failure must halt the workflow after the failed ActivateApp step, \
+         before the subsequent ExecuteHotkey step runs"
+    );
+    assert_eq!(result.total_steps, 2);
+    assert_eq!(result.step_results.len(), 1);
+    assert!(!result.step_results[0].success);
 }
 
 #[tokio::test]

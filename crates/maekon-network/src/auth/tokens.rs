@@ -71,7 +71,17 @@ impl TokenManager {
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            // #7068/#6892: even this deprecated/test-only constructor builds a
+            // credential-bearing client — TokenManager POSTs the login password
+            // and the server refresh_token in the request body (auth/refresh.rs).
+            // Build it via the hardened builder (redirect Policy::none) so the
+            // by-construction invariant holds across every TokenManager
+            // constructor. The redirect-only build cannot fail, so a build error
+            // is a fail-loud invariant violation rather than a silent fall back
+            // to a redirect-following client.
+            client: crate::outbound::hardened_client_builder().build().expect(
+                "TokenManager HTTP client must build with redirects disabled (#7068/#6892)",
+            ),
             state: Arc::new(RwLock::new(None)),
             refresh_lock: Arc::new(Mutex::new(())),
         }

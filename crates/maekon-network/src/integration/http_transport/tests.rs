@@ -1336,3 +1336,40 @@ async fn check_response_never_leaks_remote_body_in_error_messages() {
         );
     }
 }
+
+#[test]
+fn reject_cleartext_remote_url_enforces_tls() {
+    // #6824: TLS (https/wss) always allowed; cleartext (http/ws) allowed only to
+    // loopback; cleartext to a remote host is refused (transport downgrade).
+    for ok in [
+        "https://api.example.com/integration/bootstrap",
+        "wss://api.example.com/session/channel",
+        "http://127.0.0.1:8080/integration/bootstrap",
+        "ws://127.0.0.1:9000/session/channel",
+        "http://localhost:8080/bootstrap",
+        "ws://localhost/ch",
+        "ws://[::1]/ch", // bracketed IPv6 loopback
+    ] {
+        reject_cleartext_remote_url(ok, "test.url")
+            .unwrap_or_else(|e| panic!("should allow TLS or loopback URL {ok:?}: {e:?}"));
+    }
+    for bad in [
+        "http://api.example.com/integration/bootstrap",
+        "ws://api.example.com/session/channel",
+        "http://10.0.0.5/bootstrap",
+        "ws://evil.example.net/ch",
+        "ws://[2001:db8::1]/ch",               // non-loopback IPv6
+        "HTTP://evil.example.com/x",           // scheme case must not evade
+        "http://user:pass@evil.example.com/x", // userinfo must not mask host
+        "\u{0000}http://evil.example.com/x",   // C0-control prefix (parse-vs-prefix bypass)
+        "\u{0009}http://evil.example.com/x",   // leading tab
+    ] {
+        assert!(
+            matches!(
+                reject_cleartext_remote_url(bad, "test.url"),
+                Err(CoreError::Validation { .. })
+            ),
+            "should reject remote cleartext URL: {bad:?}"
+        );
+    }
+}

@@ -141,7 +141,8 @@ impl RemoteOcrProvider {
         } else {
             CredentialSource::ApiKey(config.api_key.clone())
         };
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
@@ -263,7 +264,8 @@ impl RemoteOcrProvider {
         breaker_registry: Arc<CircuitBreakerRegistry>,
     ) -> Result<Self, crate::error::NetworkError> {
         use crate::error::NetworkError;
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
@@ -472,19 +474,28 @@ impl OcrProvider for RemoteOcrProvider {
             }
         })?;
         let status = response.status();
-        let body = response.text().await.map_err(|e| {
-            if e.is_timeout() {
-                CoreError::RequestTimeout {
-                    code: maekon_core::error_codes::NetworkCode::Timeout,
-                    timeout_ms: self.timeout_secs * 1000,
-                }
-            } else {
-                CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: format!("OCR API response read failure: {}", e),
-                }
-            }
-        })?;
+        // #6939: cap the response body before buffering — a compromised/MITM OCR
+        // provider could otherwise stream multi-GB and OOM the agent. Preserve the
+        // timeout split on the transport read error.
+        let body =
+            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                .await
+                .map_err(|e| match e {
+                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                        CoreError::RequestTimeout {
+                            code: maekon_core::error_codes::NetworkCode::Timeout,
+                            timeout_ms: self.timeout_secs * 1000,
+                        }
+                    }
+                    crate::outbound::BodyReadError::Transport(err) => CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("OCR API response read failure: {}", err),
+                    },
+                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("OCR API response exceeded cap {cap} bytes (len {len})"),
+                    },
+                })?;
         if !status.is_success() {
             warn!(status = %status, "OCR API error response");
             let message = provider_error_message("OCR API", status, Some(&body));

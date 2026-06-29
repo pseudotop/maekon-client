@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use crate::encryption::EncryptionKey;
 use crate::error::StorageError;
 use chrono::Utc;
 use maekon_core::models::integration::{
@@ -14,6 +16,10 @@ use super::{FileIntegrationStateRegistry, IntegrationStateStorePolicy, MAX_AUDIT
 pub(super) struct FileIntegrationStateInner {
     registry_path: PathBuf,
     policy: IntegrationStateStorePolicy,
+    /// Optional AES-256-GCM key (#7073). When `Some`, every `save_registry` writes
+    /// the encrypted binary format (`MKINT1` magic + ciphertext); when `None`, the
+    /// registry is written as plaintext (degraded mode, warns).
+    encryption_key: Option<Arc<EncryptionKey>>,
     registry: parking_lot::Mutex<FileIntegrationStateRegistry>,
 }
 
@@ -29,14 +35,19 @@ impl FileIntegrationStateInner {
     pub(super) fn new(
         registry_path: PathBuf,
         policy: IntegrationStateStorePolicy,
+        encryption_key: Option<Arc<EncryptionKey>>,
     ) -> Result<Self, StorageError> {
         if let Some(parent) = registry_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let registry = FileIntegrationStateRegistry::load_or_default(&registry_path)?;
+        let registry = FileIntegrationStateRegistry::load_or_default(
+            &registry_path,
+            encryption_key.as_deref(),
+        )?;
         Ok(Self {
             registry_path,
             policy,
+            encryption_key,
             registry: parking_lot::Mutex::new(registry),
         })
     }
@@ -96,7 +107,7 @@ impl FileIntegrationStateInner {
     }
 
     fn save_registry(&self, registry: &FileIntegrationStateRegistry) -> Result<(), StorageError> {
-        registry.save(&self.registry_path)
+        registry.save(&self.registry_path, self.encryption_key.as_deref())
     }
 
     pub(super) fn load_session_sync(&self) -> Option<IntegrationSessionState> {

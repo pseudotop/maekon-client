@@ -606,6 +606,9 @@ mod tests_feature_on {
         );
 
         // Env with a trailing slash normalises cleanly.
+        // SAFETY: same single-threaded per-test assumption as the set_var above;
+        // this test does not depend on concurrent env access and restores state
+        // at the end.
         unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://from-env:4318/") };
         assert_eq!(
             otlp::resolve_endpoint(&TelemetryConfig::default()),
@@ -613,6 +616,8 @@ mod tests_feature_on {
         );
 
         // Default (no env, no cfg) is the full URL.
+        // SAFETY: same single-threaded per-test assumption as the set_var above;
+        // no other thread is reading the environment during this test.
         unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT") };
         assert_eq!(
             otlp::resolve_endpoint(&TelemetryConfig::default()),
@@ -621,6 +626,9 @@ mod tests_feature_on {
 
         // Restore pre-existing env so other tests are unaffected.
         if let Some(value) = prev {
+            // SAFETY: same single-threaded per-test assumption as the set_var
+            // above; this restores the captured pre-existing value with no
+            // concurrent env access.
             unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value) };
         }
     }

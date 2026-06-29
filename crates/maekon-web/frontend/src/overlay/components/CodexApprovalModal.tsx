@@ -2,17 +2,10 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { sanitizeControlChars } from '../sanitize'
 import type { CodexApprovalDto } from '../types'
 
 const AUTO_DECLINE_SECS = 30
-
-/** Strip Unicode control characters that could disguise the actual command. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping C0/C1 control chars, DEL, zero-width chars, bidi overrides, line/paragraph separators, BOM
-const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g
-
-function sanitizeArg(arg: string): string {
-  return arg.replace(CONTROL_CHAR_RE, '')
-}
 
 /** The user's verdict — mirrors the `respond_codex_approval` decision strings. */
 type CodexDecision = 'accept' | 'decline' | 'cancel'
@@ -133,18 +126,18 @@ export function CodexApprovalModal({ approval, onDismiss }: CodexApprovalModalPr
               'bg-semantic-info/20 text-semantic-info',
             )}
           >
-            {approval.kind}
+            {sanitizeControlChars(approval.kind)}
           </span>
         </div>
 
         {/* Context */}
         <div id={descId} className="mb-3 rounded-lg bg-content-inverse/5 p-3">
-          <p className={cn(typography.label, 'mb-1.5 text-content')}>{approval.summary}</p>
+          <p className={cn(typography.label, 'mb-1.5 text-content')}>{sanitizeControlChars(approval.summary)}</p>
 
           {!isFileChange && approval.processName && (
             <div className="mb-1.5 flex items-center gap-2">
               <span className={cn(typography.caption, 'text-content-tertiary')}>{t('codex.process', 'Process')}</span>
-              <span className={cn(typography.label, 'text-content')}>{approval.processName}</span>
+              <span className={cn(typography.label, 'text-content')}>{sanitizeControlChars(approval.processName)}</span>
             </div>
           )}
           {!isFileChange && approval.args.length > 0 && (
@@ -153,7 +146,7 @@ export function CodexApprovalModal({ approval, onDismiss }: CodexApprovalModalPr
                 {t('codex.args', 'Args')}
               </span>
               <code className={cn('break-all text-[11px] text-content-secondary', typography.family.mono)}>
-                {approval.args.map(sanitizeArg).join(' ')}
+                {approval.args.map(sanitizeControlChars).join(' ')}
               </code>
             </div>
           )}
@@ -164,7 +157,7 @@ export function CodexApprovalModal({ approval, onDismiss }: CodexApprovalModalPr
           )}
           {approval.networkHost && (
             <p className={cn(typography.caption, 'mt-1.5 text-semantic-warning')}>
-              {t('codex.networkHost', 'Network: {{host}}', { host: approval.networkHost })}
+              {t('codex.networkHost', 'Network: {{host}}', { host: sanitizeControlChars(approval.networkHost) })}
             </p>
           )}
         </div>

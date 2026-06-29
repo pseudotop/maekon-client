@@ -554,25 +554,57 @@ impl SqliteStorage {
         Ok(records)
     }
 
-    /// List suggestions by state for queue restoration.
+    /// List suggestions by state for queue restoration (newest-created first).
     pub fn list_suggestions_by_state(
         &self,
         state: &str,
         limit: usize,
     ) -> Result<Vec<SuggestionRecord>, StorageError> {
+        self.list_suggestions_by_state_ordered(state, limit, "ORDER BY created_at DESC")
+    }
+
+    /// #6938: List `deferred` suggestions ordered by SOONEST `resurface_at` first.
+    ///
+    /// The generic `list_suggestions_by_state` orders by `created_at DESC`, but for
+    /// restoring snoozed (deferred) suggestions at launch the correct ranking key is
+    /// `resurface_at` (when the snooze expires), NOT the suggestion's origin time —
+    /// they are decoupled (an old-created suggestion snoozed for 30min has an old
+    /// `created_at` but an imminent `resurface_at`). With `created_at DESC + LIMIT`,
+    /// a deferred backlog over the limit dropped the suggestions about to resurface.
+    /// Order by `resurface_at ASC` (NULLs last) so the soonest-resurfacing are kept.
+    pub fn list_deferred_suggestions_by_resurface(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SuggestionRecord>, StorageError> {
+        self.list_suggestions_by_state_ordered(
+            "deferred",
+            limit,
+            "ORDER BY resurface_at IS NULL, resurface_at ASC",
+        )
+    }
+
+    /// Shared query for state-filtered suggestion reads. `order_clause` is a fixed,
+    /// caller-supplied SQL fragment (never user input) appended before `LIMIT ?2`.
+    fn list_suggestions_by_state_ordered(
+        &self,
+        state: &str,
+        limit: usize,
+        order_clause: &str,
+    ) -> Result<Vec<SuggestionRecord>, StorageError> {
         // Read — read_lock (deletion_flag irrelevant).
         let read = self.conn.read_lock();
         let conn = read.conn();
 
+        let query = format!(
+            "SELECT id, suggestion_id, suggestion_type, source, content, priority, \
+             confidence_score, relevance_score, is_actionable, reasoning, \
+             shown_at, dismissed_at, acted_at, created_at, expires_at, resurface_at, \
+             context_app, context_window, context_target_id \
+             FROM suggestions WHERE state = ?1 \
+             {order_clause} LIMIT ?2"
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT id, suggestion_id, suggestion_type, source, content, priority, \
-                 confidence_score, relevance_score, is_actionable, reasoning, \
-                 shown_at, dismissed_at, acted_at, created_at, expires_at, resurface_at, \
-                 context_app, context_window, context_target_id \
-                 FROM suggestions WHERE state = ?1 \
-                 ORDER BY created_at DESC LIMIT ?2",
-            )
+            .prepare(&query)
             .map_err(|e| StorageError::Internal(format!("prepare failure: {e}")))?;
 
         let rows = stmt

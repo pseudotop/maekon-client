@@ -146,14 +146,19 @@ impl LanSyncTransport {
             ));
         }
 
+        // #6923: cap the challenge body before deserialize (same OOM class as the
+        // verify/pull paths — a misbehaving peer on the challenge endpoint could
+        // otherwise stream an unbounded body).
+        let challenge_bytes = crate::sync::http_body::read_body_capped(
+            challenge_resp,
+            crate::sync::http_body::MAX_CONTROL_RESPONSE_BYTES,
+        )
+        .await?;
         let challenge: ChallengeResponse =
-            challenge_resp
-                .json()
-                .await
-                .map_err(|e| CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: format!("parse challenge from {peer_id}: {e}"),
-                })?;
+            serde_json::from_slice(&challenge_bytes).map_err(|e| CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("parse challenge from {peer_id}: {e}"),
+            })?;
 
         // Step 2: Compute HMAC response
         let nonce_bytes = hex::decode(&challenge.nonce).map_err(|e| CoreError::Internal {
@@ -203,10 +208,17 @@ impl LanSyncTransport {
             ));
         }
 
-        let verify: VerifyResponse = verify_resp.json().await.map_err(|e| CoreError::Network {
-            code: maekon_core::error_codes::NetworkCode::Generic,
-            message: format!("parse verify from {peer_id}: {e}"),
-        })?;
+        // #6923: cap the verify body before deserialize (same OOM class as pull).
+        let verify_bytes = crate::sync::http_body::read_body_capped(
+            verify_resp,
+            crate::sync::http_body::MAX_CONTROL_RESPONSE_BYTES,
+        )
+        .await?;
+        let verify: VerifyResponse =
+            serde_json::from_slice(&verify_bytes).map_err(|e| CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("parse verify from {peer_id}: {e}"),
+            })?;
 
         // TOFU: on first contact, persist the fingerprint captured during the
         // (now successful) handshake so subsequent contacts pin against it.

@@ -34,6 +34,18 @@ const MAX_INBOUND_PROMPTS: usize = 1000;
 /// capping per-message allocations under the agent's <100 MB RSS budget.
 const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
 
+/// Protocol-layer WebSocket config that caps both frame and message size at
+/// [`MAX_WS_MESSAGE_BYTES`]. tungstenite's defaults are 16 MiB/frame and
+/// 64 MiB/message, so without this an oversized frame would be fully buffered
+/// (blowing the agent's <100 MB RSS budget) before the app-level length gate in
+/// `read_loop` ever runs. With this cap tungstenite rejects the frame during
+/// the read itself; the app-level check remains as defense-in-depth (#6825).
+fn capped_ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_WS_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_WS_MESSAGE_BYTES))
+}
+
 #[derive(Default)]
 struct WebSocketIntegrationInboundState {
     outbound_acks: VecDeque<IntegrationAckPayload>,
@@ -64,12 +76,13 @@ impl WebSocketIntegrationSessionChannel {
             request.headers_mut().insert(name, value.clone());
         }
 
-        let (stream, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|err| CoreError::Network {
-                code: maekon_core::error_codes::NetworkCode::Generic,
-                message: format!("integration websocket connect failed: {err}"),
-            })?;
+        let (stream, _) =
+            tokio_tungstenite::connect_async_with_config(request, Some(capped_ws_config()), false)
+                .await
+                .map_err(|err| CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: format!("integration websocket connect failed: {err}"),
+                })?;
         let (writer, reader) = stream.split();
         let inbound = Arc::new(Mutex::new(WebSocketIntegrationInboundState::default()));
         let ack_notify = Arc::new(Notify::new());
@@ -120,9 +133,14 @@ impl WebSocketIntegrationSessionChannel {
             };
             match raw {
                 Ok(Message::Text(text)) => {
-                    // Guard against oversized frames before any allocation-heavy
-                    // deserialization.  An untrusted server can send arbitrarily
-                    // large JSON; reject early to stay within the <100 MB RSS budget.
+                    // Redundant backstop to the protocol-layer cap in
+                    // `capped_ws_config` (#6825): tungstenite already rejects a
+                    // frame/message larger than MAX_WS_MESSAGE_BYTES during the
+                    // read (yielding Error::Capacity → this loop breaks), so an
+                    // oversized payload is never buffered. This app-level check
+                    // therefore only fires if that cap is ever loosened, and —
+                    // unlike the protocol cap which tears the connection down —
+                    // it skips the single frame and keeps the connection alive.
                     if text.len() > MAX_WS_MESSAGE_BYTES {
                         warn!(
                             bytes = text.len(),
@@ -512,6 +530,24 @@ mod tests {
         assert!(
             over_limit.len() > MAX_WS_MESSAGE_BYTES,
             "a frame over the limit must be rejected"
+        );
+    }
+
+    /// #6825: the protocol-layer config must cap both frame and message size at
+    /// MAX_WS_MESSAGE_BYTES (overriding tungstenite's 16/64 MiB defaults), so an
+    /// oversized frame is rejected during read instead of being fully buffered.
+    #[test]
+    fn ws_config_caps_frame_and_message_size() {
+        let cfg = capped_ws_config();
+        assert_eq!(
+            cfg.max_message_size,
+            Some(MAX_WS_MESSAGE_BYTES),
+            "max_message_size must be capped at the app limit, not the 64 MiB default"
+        );
+        assert_eq!(
+            cfg.max_frame_size,
+            Some(MAX_WS_MESSAGE_BYTES),
+            "max_frame_size must be capped at the app limit, not the 16 MiB default"
         );
     }
 }

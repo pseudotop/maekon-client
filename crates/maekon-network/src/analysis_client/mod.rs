@@ -47,7 +47,8 @@ fn build_loopback_pinned_client(config: &ExternalApiEndpoint) -> Option<reqwest:
         .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
-    reqwest::Client::builder()
+    // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
+    crate::outbound::hardened_client_builder()
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .resolve_to_addrs(host_key, &addrs)
         .build()
@@ -179,10 +180,13 @@ impl AnalysisClient {
             config.endpoint.clone()
         };
 
-        let http_client = reqwest::Client::builder()
+        // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
+        // build() only fails on TLS backend initialization failure (process-fatal); in that case we
+        // explicitly panic rather than fall back to a redirect-following reqwest::Client::default().
+        let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
-            .unwrap_or_default();
+            .expect("하드닝 analysis HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
 
         // D7: resolve per-endpoint breaker.
         let breaker_key = endpoint_authority(&resolved_endpoint)
@@ -382,15 +386,26 @@ impl AnalysisClient {
         })?;
 
         let status = response.status();
-        let response_text = response.text().await.map_err(|e| {
-            if e.is_timeout() {
-                NetworkError::Timeout {
-                    timeout_ms: self.timeout_secs * 1000,
-                }
-            } else {
-                NetworkError::Analysis(format!("Failed to read {label} response: {e}"))
-            }
-        })?;
+        // #6939: cap the response body — a compromised/MITM analysis provider could
+        // otherwise stream multi-GB and OOM the agent. Preserve the timeout split.
+        let response_text =
+            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                .await
+                .map_err(|e| match e {
+                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                        NetworkError::Timeout {
+                            timeout_ms: self.timeout_secs * 1000,
+                        }
+                    }
+                    crate::outbound::BodyReadError::Transport(err) => {
+                        NetworkError::Analysis(format!("Failed to read {label} response: {err}"))
+                    }
+                    crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                        NetworkError::Analysis(format!(
+                            "{label} response exceeded cap {cap} bytes (len {len})"
+                        ))
+                    }
+                })?;
 
         if !status.is_success() {
             warn!(status = %status, "{label} error response");

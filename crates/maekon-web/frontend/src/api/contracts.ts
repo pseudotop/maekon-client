@@ -1042,7 +1042,7 @@ export interface AiProviderProfileConfig {
   ocr_provider: string
   llm_provider: string
   external_data_policy: string
-  allow_unredacted_external_ocr: boolean
+  bypass_pii_filter_for_external_ocr: boolean
   ocr_validation: OcrValidationSettings
   scene_action_override: SceneActionOverrideSettings
   scene_intelligence: SceneIntelligenceSettings

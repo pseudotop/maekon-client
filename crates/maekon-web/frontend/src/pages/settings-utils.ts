@@ -39,7 +39,7 @@ export function cloneAiProviderProfileConfig(
     ocr_provider: aiProvider.ocr_provider,
     llm_provider: aiProvider.llm_provider,
     external_data_policy: aiProvider.external_data_policy,
-    allow_unredacted_external_ocr: aiProvider.allow_unredacted_external_ocr,
+    bypass_pii_filter_for_external_ocr: aiProvider.bypass_pii_filter_for_external_ocr,
     ocr_validation: { ...aiProvider.ocr_validation },
     scene_action_override: { ...aiProvider.scene_action_override },
     scene_intelligence: { ...aiProvider.scene_intelligence },

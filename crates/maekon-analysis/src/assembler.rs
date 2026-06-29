@@ -398,13 +398,21 @@ impl ContextAssembler {
     }
 
     fn extract_recent_events(&self, events: &[Event]) -> Vec<RecentEvent> {
-        let ctx_events: Vec<_> = events
+        // #6915: get_events returns timestamps in DESC order (newest-first), but the
+        // windows(2)/last() logic below assumes ASCENDING (oldest→newest, chronological) —
+        // without sorting, the adjacent duration goes negative (hidden by .abs()), causing
+        // gaps to be mis-paired, and last()=oldest is labeled "still active" while the LLM
+        // prompt recent_activity array ends up reversed (an unfixed consumer of the same
+        // root cause as #6893). Sort by timestamp ASCENDING so the result is independent of
+        // caller row ordering (no-op for already-ascending input).
+        let mut ctx_events: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
                 Event::Context(ctx) => Some(ctx),
                 _ => None,
             })
             .collect();
+        ctx_events.sort_by_key(|ctx| ctx.timestamp);
 
         let mut result = Vec::new();
         for pair in ctx_events.windows(2) {
@@ -412,10 +420,13 @@ impl ContextAssembler {
             result.push(RecentEvent {
                 time: pair[0].timestamp.format("%H:%M").to_string(),
                 app: self.filter_pii(&pair[0].app_name),
-                duration_secs: duration.abs(),
+                // Sorting guarantees pair[1] >= pair[0], but defend against equal timestamps
+                // / clock regressions by clamping with .max(0) before the cast (consistent
+                // with the #6893 clamp-before-use pattern).
+                duration_secs: duration.max(0),
             });
         }
-        // Add last event with 0 duration (still active)
+        // Add last event with 0 duration (still active) — after sorting, last()=newest (currently active).
         if let Some(last) = ctx_events.last() {
             result.push(RecentEvent {
                 time: last.timestamp.format("%H:%M").to_string(),
@@ -628,6 +639,41 @@ mod tests {
         // First entry should have ~300s duration (5 min gap)
         assert!(recent[0]["duration_secs"].as_i64().unwrap() > 0);
         // Last entry should have 0 duration (still active)
+        assert_eq!(recent[1]["duration_secs"].as_i64().unwrap(), 0);
+    }
+
+    /// #6915 regression guard: even when events arrive in get_events' actual DESC
+    /// (newest-first) order, recent_activity must serialize as an oldest→newest chronology,
+    /// and the newest app must be labeled "still active" (duration 0, last entry). Before
+    /// sorting, the oldest came last and was wrongly labeled "still active" while the first
+    /// entry became the newest, reversing the array.
+    #[test]
+    fn recent_events_handle_desc_input() {
+        // Reverse of make_events (DESC, newest-first): VSCode (t-5, newest) first, then Slack (t-10).
+        let desc_events = vec![
+            Event::Context(ContextEvent {
+                app_name: "VSCode".to_string(),
+                window_title: "main.rs".to_string(),
+                timestamp: Utc::now() - Duration::minutes(5),
+                ..Default::default()
+            }),
+            Event::Context(ContextEvent {
+                app_name: "Slack".to_string(),
+                window_title: "General".to_string(),
+                timestamp: Utc::now() - Duration::minutes(10),
+                ..Default::default()
+            }),
+        ];
+        let assembler = ContextAssembler::new(noop_filter());
+        let ctx = assembler.build(&make_current(), &desc_events, &[], &make_metrics());
+        let parsed: serde_json::Value = serde_json::from_str(&ctx.user_context_json).unwrap();
+        let recent = parsed["recent_activity"].as_array().unwrap();
+        assert_eq!(recent.len(), 2);
+        // Chronological sort: first entry = oldest Slack, ~300s positive duration.
+        assert_eq!(recent[0]["app"], "Slack");
+        assert!(recent[0]["duration_secs"].as_i64().unwrap() > 0);
+        // Last = newest VSCode, "still active" (0). Before sorting, Slack (oldest) came here.
+        assert_eq!(recent[1]["app"], "VSCode");
         assert_eq!(recent[1]["duration_secs"].as_i64().unwrap(), 0);
     }
 

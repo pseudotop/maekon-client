@@ -144,6 +144,18 @@ pub(crate) mod ax {
     /// - `element`: The accessibility element that triggered it
     /// - `notification`: The notification name (CFStringRef)
     /// - `refcon`: User-provided context pointer
+    ///
+    /// # Safety
+    /// This callback is invoked by the ApplicationServices framework on the
+    /// CFRunLoop thread the observer's run-loop source was added to. Implementers
+    /// and the system caller must uphold:
+    /// - `observer`, `element`, and `notification` are borrowed (Get Rule) and
+    ///   valid only for the duration of the call; the callback must not retain or
+    ///   `CFRelease` them.
+    /// - `refcon` is exactly the pointer registered via `AXObserverAddNotification`
+    ///   and carries that registrant's provenance/type; it may be null, so it must
+    ///   be null-checked and cast back only to the type originally registered.
+    /// - The body must not unwind (panic) across this FFI boundary.
     pub type AXObserverCallback = unsafe extern "C" fn(
         observer: AXObserverRef,
         element: AXUIElementRef,

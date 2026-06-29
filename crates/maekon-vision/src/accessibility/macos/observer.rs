@@ -107,6 +107,10 @@ impl FocusObserverHandle {
     /// Creates and immediately releases an observer to validate
     /// that the PID is valid and accessibility permission is granted.
     fn can_create_observer(pid: PidT) -> bool {
+        // SAFETY: `&mut observer` is a valid stack out-pointer for AXObserverCreate
+        // to write into, and `Self::focus_callback` is a matching `extern "C"`
+        // AXObserverCallback. On kAXErrorSuccess the returned observer is owned
+        // (Create Rule) and released exactly once here with CFRelease.
         unsafe {
             let mut observer: AXObserverRef = std::ptr::null();
             let err = AXObserverCreate(pid, Self::focus_callback, &mut observer);
@@ -125,6 +129,13 @@ impl FocusObserverHandle {
     /// on the application element, and runs the CFRunLoop until
     /// `running` is set to false.
     fn run_observer_loop(pid: PidT, state: Arc<ObserverState>) {
+        // SAFETY: `observer` and `app_element` are created here under the Create
+        // Rule and released with CFRelease on every exit path (directly or via
+        // cleanup_observer); the `refcon` passed to AXObserverAddNotification is
+        // `Arc::as_ptr(&state)`, which stays valid for the whole loop because this
+        // scope owns that Arc and never calls Arc::from_raw on it; the run-loop
+        // source from AXObserverGetRunLoopSource is borrowed (Get Rule) and remains
+        // valid while the observer it belongs to is alive.
         unsafe {
             // SAFETY: AXObserverCreate allocates and returns a new
             // AXObserverRef. We own it and must release it.
@@ -379,6 +390,9 @@ mod tests {
     #[test]
     fn callback_handles_null_refcon() {
         // Should not panic or crash.
+        // SAFETY: focus_callback ignores its first three arguments (only `refcon`
+        // is dereferenced), and a null `refcon` hits the early-return guard before
+        // any dereference, so passing all-null pointers performs no invalid access.
         unsafe {
             FocusObserverHandle::focus_callback(
                 std::ptr::null(),

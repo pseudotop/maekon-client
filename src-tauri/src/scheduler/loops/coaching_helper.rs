@@ -19,15 +19,15 @@ pub(super) fn build_pii_sanitizer() -> Option<Arc<dyn PiiSanitizer>> {
     Some(Arc::new(maekon_vision::privacy::VisionPiiSanitizer))
 }
 
-/// Resolve the current `PiiFilterLevel` from an optional `ConfigManager`.
-/// Returns the default level (`Standard`) when no manager is configured —
-/// matches the established scheduler pattern (`config_manager1.as_ref()...`).
-pub(super) fn resolve_pii_level(
-    config_manager: &Option<maekon_core::config_manager::ConfigManager>,
-) -> PiiFilterLevel {
-    config_manager
-        .as_ref()
-        .map(|cm| cm.get().privacy.pii_filter_level)
+/// Resolve the current `PiiFilterLevel` from the per-tick `AppConfig` snapshot.
+/// Returns the default level (`Standard`) when no config is available.
+///
+/// #6830/#4796: reads from the already-computed cheap `Arc<AppConfig>` snapshot
+/// rather than calling `ConfigManager::get()` (a FULL deep clone of AppConfig)
+/// on every coaching tick — the sibling of the `tick_ts_notifications` fix.
+pub(super) fn resolve_pii_level(config: Option<&maekon_core::config::AppConfig>) -> PiiFilterLevel {
+    config
+        .map(|cfg| cfg.privacy.pii_filter_level)
         .unwrap_or_default()
 }
 
@@ -271,7 +271,22 @@ pub(super) async fn evaluate_and_deliver(
 
 #[cfg(test)]
 mod tests {
-    use super::flush_whole_minutes;
+    use super::{flush_whole_minutes, resolve_pii_level};
+    use maekon_core::config::{AppConfig, PiiFilterLevel};
+
+    #[test]
+    fn resolve_pii_level_defaults_to_standard_when_absent() {
+        // #6830: no config snapshot → fail-safe to the default (Standard).
+        assert_eq!(resolve_pii_level(None), PiiFilterLevel::Standard);
+    }
+
+    #[test]
+    fn resolve_pii_level_reads_from_snapshot() {
+        // #6830: reads the level off the passed snapshot (no ConfigManager::get()).
+        let mut cfg = AppConfig::default_config();
+        cfg.privacy.pii_filter_level = PiiFilterLevel::Strict;
+        assert_eq!(resolve_pii_level(Some(&cfg)), PiiFilterLevel::Strict);
+    }
 
     /// The production default poll is 1s — the exact shape that silently
     /// truncated to 0 minutes forever before #5669.

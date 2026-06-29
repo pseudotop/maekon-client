@@ -9,6 +9,7 @@ use maekon_core::config::{
 };
 
 use crate::error::ApiError;
+use crate::services::settings_assembler::is_masked_key;
 use crate::services::settings_endpoint::{api_settings_to_endpoint, ApiEndpointKind};
 use crate::services::settings_validation::{
     parse_ai_access_mode, parse_external_data_policy, parse_llm_provider, parse_mic_input_mode,
@@ -95,7 +96,17 @@ fn apply_audio_settings(config: &mut AppConfig, settings: &AppSettings) -> Resul
     config.audio.max_recording_secs = settings.audio.max_recording_secs;
     config.audio.model_size = parse_whisper_model_size(&settings.audio.model_size)?;
     config.audio.stt_provider = parse_stt_provider(&settings.audio.stt_provider)?;
-    config.audio.cloud_api_key = settings.audio.cloud_api_key.clone();
+    // SECURITY (#7066): the GET path returns a MASKED sentinel for the cloud STT
+    // secret, so an unchanged resubmit carries that sentinel (or an empty value)
+    // rather than the raw key. Treat the masked sentinel / empty value as
+    // 'unchanged' and only overwrite when a genuinely new plaintext key is
+    // supplied — mirroring the AI-provider key write path
+    // (`api_settings_to_endpoint`). Otherwise a round-trip save would clobber the
+    // stored secret with its own mask.
+    let submitted_cloud_api_key = &settings.audio.cloud_api_key;
+    if !submitted_cloud_api_key.is_empty() && !is_masked_key(submitted_cloud_api_key) {
+        config.audio.cloud_api_key = submitted_cloud_api_key.clone();
+    }
     config.audio.cloud_stt_endpoint = settings.audio.cloud_stt_endpoint.clone();
     config.audio.cloud_timeout_secs = settings.audio.cloud_timeout_secs;
     config.audio.mic_input_mode = parse_mic_input_mode(&settings.audio.mic_input_mode)?;
@@ -144,8 +155,8 @@ fn apply_ai_provider_settings(
     config.ai_provider.llm_provider = parse_llm_provider(&settings.ai_provider.llm_provider)?;
     config.ai_provider.external_data_policy =
         parse_external_data_policy(&settings.ai_provider.external_data_policy)?;
-    config.ai_provider.allow_unredacted_external_ocr =
-        settings.ai_provider.allow_unredacted_external_ocr;
+    config.ai_provider.bypass_pii_filter_for_external_ocr =
+        settings.ai_provider.bypass_pii_filter_for_external_ocr;
     config.ai_provider.ocr_validation = OcrValidationConfig {
         enabled: settings.ai_provider.ocr_validation.enabled,
         min_confidence: settings.ai_provider.ocr_validation.min_confidence,
@@ -283,7 +294,7 @@ fn ai_provider_profile_config_from_settings(
         ocr_api,
         llm_api,
         external_data_policy: parse_external_data_policy(&settings.external_data_policy)?,
-        allow_unredacted_external_ocr: settings.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: settings.bypass_pii_filter_for_external_ocr,
         ocr_validation: OcrValidationConfig {
             enabled: settings.ocr_validation.enabled,
             min_confidence: settings.ocr_validation.min_confidence,
@@ -331,7 +342,7 @@ fn sync_selected_saved_ai_provider_profile(config: &mut AiProviderConfig) {
         ocr_api: config.ocr_api.clone(),
         llm_api: config.llm_api.clone(),
         external_data_policy: config.external_data_policy,
-        allow_unredacted_external_ocr: config.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: config.bypass_pii_filter_for_external_ocr,
         ocr_validation: config.ocr_validation.clone(),
         scene_action_override: config.scene_action_override.clone(),
         scene_intelligence: config.scene_intelligence.clone(),

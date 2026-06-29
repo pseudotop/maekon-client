@@ -60,16 +60,22 @@ fn write_with_owner_only(path: &Path, contents: &str) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn write_with_owner_only(path: &Path, contents: &str) -> anyhow::Result<()> {
-    // On Windows the user-profile ACL already excludes other users for files
-    // under %LOCALAPPDATA%/maekon/data. We use `create_new=false` to allow
-    // overwrite after `reset_instance_id` + re-`ensure_instance_id`; the
-    // explicit truncate matches Unix behaviour.
+    // The user-profile ACL already excludes other users for files under
+    // %LOCALAPPDATA%/maekon/data. We use `create_new=false` to allow overwrite
+    // after `reset_instance_id` + re-`ensure_instance_id`; the explicit truncate
+    // matches Unix behaviour.
     let mut f = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(path)?;
     f.write_all(contents.as_bytes())?;
+    drop(f);
+    // #6942 (F8): match the Unix 0o600 with a Windows owner-only DACL via the core
+    // secure_file primitive (now reachable — src-tauri depends on maekon-core).
+    // Defense-in-depth on top of the user-profile ACL.
+    maekon_core::secure_file::set_owner_only_dacl(path)
+        .map_err(|e| anyhow::anyhow!("set owner-only DACL on {}: {e}", path.display()))?;
     Ok(())
 }
 

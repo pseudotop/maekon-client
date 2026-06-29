@@ -469,9 +469,13 @@ pub async fn get_deferred_suggestions(
     // on failure warn and skip the row (suggestion_wiring.rs:257-275 precedent).
     // Priority is stored as "MEDIUM" etc. in SQLite — normalise to lowercase to
     // match the manager path. (#5699)
+    // #6938: order by SOONEST resurface_at (not created_at DESC) — same sibling as
+    // the launch restore (suggestion_wiring.rs). With created_at DESC + LIMIT, a
+    // deferred backlog over 50 dropped the snoozes about to resurface; this snooze
+    // list must surface those first.
     let rows = app_state
         .storage
-        .list_suggestions_by_state("deferred", 50)
+        .list_deferred_suggestions_by_resurface(50)
         .map_err(IpcError::from)?;
 
     let now = chrono::Utc::now();

@@ -36,5 +36,19 @@ pub trait InputDriver: Send + Sync {
 
     async fn hotkey(&self, keys: &[String]) -> Result<(), CoreError>;
 
+    /// Bring the application identified by `app_name` to the foreground.
+    ///
+    /// Returns `Ok(true)` when the platform activation call succeeded, `Ok(false)`
+    /// when activation is unsupported on this driver/platform or the target window
+    /// was not found. Callers MUST NOT treat `false` as a focus switch (it would
+    /// otherwise let `stop_on_failure` presets synthesize input against the wrong,
+    /// un-switched window). Genuine spawn/execution failures surface as `CoreError`.
+    ///
+    /// Default: `Ok(false)` (no-op / unsupported drivers). The real platform
+    /// adapter overrides this with an actual activation call.
+    async fn activate_app(&self, _app_name: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     fn platform(&self) -> &str;
 }

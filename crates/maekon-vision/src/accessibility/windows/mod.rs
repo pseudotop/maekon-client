@@ -96,6 +96,9 @@ mod inner {
         /// When detected, text extraction is skipped to prevent memory
         /// inspection of sensitive accessibility data.
         fn is_debugger_attached() -> bool {
+            // SAFETY: `IsDebuggerPresent` is a Win32 API that takes no arguments and
+            // returns a `BOOL`; it only reads the `BeingDebugged` flag in the current
+            // process's PEB and involves no pointers, so the call is always sound.
             unsafe { windows_sys::Win32::System::Diagnostics::Debug::IsDebuggerPresent() != 0 }
         }
 

@@ -35,6 +35,48 @@ const SIGNIFICANT_EVENT_LOOKBACK_MINS: i64 = 5;
 const DEFAULT_FOCUS_SCORE: f32 = 0.5;
 /// Elevated focus score for significant event triggers.
 const SIGNIFICANT_EVENT_FOCUS_SCORE: f32 = 0.7;
+/// Watchdog for the in-flight analysis reservation (#7079).
+///
+/// The in-flight flag normally clears when a run completes or restores its
+/// claim. This watchdog is a safety valve: if a run holds the slot for longer
+/// than this (e.g. its task was force-aborted at shutdown before it could
+/// release), the next caller reclaims the slot so analysis cannot wedge
+/// permanently. It is deliberately far larger than any plausible analysis
+/// round-trip and is independent of the user-configurable `throttle_secs`.
+const ANALYSIS_INFLIGHT_WATCHDOG_SECS: u64 = 600;
+
+/// In-flight reservation state for the analysis throttle.
+///
+/// Holds the throttle timestamp together with an explicit in-flight flag and a
+/// monotonic generation token. This decouples concurrent-duplicate dedup from
+/// the throttle window (#7079): `throttle_secs` governs only the temporal
+/// spacing between successive runs, while `in_flight` independently blocks a
+/// second concurrent run regardless of how small `throttle_secs` is configured.
+#[derive(Default)]
+struct AnalysisClaimState {
+    /// Timestamp the slot was reserved (at claim) or last committed (at
+    /// completion). Drives the throttle window and, while `in_flight`, the
+    /// watchdog that reclaims a slot abandoned by a dead/cancelled run.
+    last_analysis_at: Option<chrono::DateTime<Utc>>,
+    /// True from claim until the owning run completes or restores. Blocks a
+    /// concurrent duplicate analysis independent of `throttle_secs`.
+    in_flight: bool,
+    /// Monotonic id advanced on every successful claim. `complete`/`restore`
+    /// only mutate state when this still matches the claiming run, so a run
+    /// reclaimed by the watchdog cannot clobber the new owner's reservation.
+    generation: u64,
+}
+
+/// Handle returned by `claim_analysis_slot`, identifying the run that owns the
+/// in-flight reservation. `Copy` so the success path and every early-return
+/// path can pass it to `complete`/`restore` without move-checker friction.
+#[derive(Clone, Copy)]
+struct AnalysisClaim {
+    /// Throttle timestamp to restore if this run fails (no work committed).
+    prev: Option<chrono::DateTime<Utc>>,
+    /// Generation this run owns; checked by `complete`/`restore`.
+    generation: u64,
+}
 
 /// Central orchestrator for the analysis cycle.
 /// Concrete struct, NOT a port trait (ADR-011 section 3).
@@ -45,7 +87,8 @@ pub struct ContextAnalyzer {
     context_assembler: ContextAssembler,
     vector_retriever: tokio::sync::RwLock<Option<VectorRetriever>>,
     config: AnalysisConfig,
-    last_analysis_at: Mutex<Option<chrono::DateTime<Utc>>>,
+    /// Decoupled throttle + in-flight reservation state (#7079).
+    analysis_claim: Mutex<AnalysisClaimState>,
     last_patterns_hash: Mutex<u64>,
     /// Current segment stats snapshot, updated by the monitor loop via `set_segment_stats()`.
     /// Read by `analyze()` / `analyze_if_changed()` to enrich the LLM context with
@@ -72,7 +115,7 @@ impl ContextAnalyzer {
             context_assembler,
             vector_retriever: tokio::sync::RwLock::new(None),
             config,
-            last_analysis_at: Mutex::new(None),
+            analysis_claim: Mutex::new(AnalysisClaimState::default()),
             last_patterns_hash: Mutex::new(0),
             segment_stats: tokio::sync::RwLock::new(None),
             accessibility_text: tokio::sync::RwLock::new(None),
@@ -97,7 +140,7 @@ impl ContextAnalyzer {
             context_assembler,
             vector_retriever: tokio::sync::RwLock::new(None),
             config,
-            last_analysis_at: Mutex::new(None),
+            analysis_claim: Mutex::new(AnalysisClaimState::default()),
             last_patterns_hash: Mutex::new(0),
             segment_stats: tokio::sync::RwLock::new(None),
             accessibility_text: tokio::sync::RwLock::new(None),
@@ -122,7 +165,7 @@ impl ContextAnalyzer {
             context_assembler,
             vector_retriever: tokio::sync::RwLock::new(vector_retriever),
             config,
-            last_analysis_at: Mutex::new(None),
+            analysis_claim: Mutex::new(AnalysisClaimState::default()),
             last_patterns_hash: Mutex::new(0),
             segment_stats: tokio::sync::RwLock::new(None),
             accessibility_text: tokio::sync::RwLock::new(None),
@@ -156,12 +199,14 @@ impl ContextAnalyzer {
 
     /// Full periodic analysis: query events, mine patterns, call LLM.
     pub async fn analyze(&self) -> Result<Vec<Suggestion>, AnalysisError> {
-        // Claim-then-run throttle: atomically check elapsed time AND reserve the
-        // slot (write Some(now)) before releasing the lock and before the LLM
-        // round-trip below. A second concurrent caller then sees the fresh
-        // reservation and bails, preventing a duplicate LLM analysis (#6119).
-        let prev_claim = match self.claim_analysis_slot().await {
-            Some(prev) => prev,
+        // Claim-then-run throttle: atomically check the throttle window AND
+        // reserve the in-flight slot before releasing the lock and before the
+        // LLM round-trip below. The reservation is an explicit in-flight flag
+        // (not just the timestamp), so a second concurrent caller bails even
+        // when `throttle_secs` is below the run duration, preventing a duplicate
+        // LLM analysis regardless of throttle configuration (#6119, #7079).
+        let claim = match self.claim_analysis_slot().await {
+            Some(claim) => claim,
             None => {
                 debug!("Analysis throttled — skipping");
                 return Ok(vec![]);
@@ -181,7 +226,7 @@ impl ContextAnalyzer {
             Err(e) => {
                 // Restore the prior claim so a failed fetch does not consume the
                 // throttle window — the next tick can retry immediately (#6119).
-                self.restore_analysis_claim(prev_claim).await;
+                self.restore_analysis_claim(claim).await;
                 return Err(e.into());
             }
         };
@@ -190,7 +235,7 @@ impl ContextAnalyzer {
             debug!("No events found for analysis");
             // No work was done; release the reservation so an empty tick does not
             // count toward the throttle window (#6119).
-            self.restore_analysis_claim(prev_claim).await;
+            self.restore_analysis_claim(claim).await;
             return Ok(vec![]);
         }
 
@@ -299,20 +344,16 @@ impl ContextAnalyzer {
             Err(e) => {
                 // Restore the prior claim so a failed LLM run can be retried on
                 // the next tick rather than being throttled out (#6119).
-                self.restore_analysis_claim(prev_claim).await;
+                self.restore_analysis_claim(claim).await;
                 return Err(e.into());
             }
         };
 
         let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
-        // Refresh the reservation timestamp to mark the completed run. The slot
-        // was already claimed at entry; this advances the throttle window to the
-        // moment the analysis actually finished.
-        {
-            let mut last = self.last_analysis_at.lock().await;
-            *last = Some(Utc::now());
-        }
+        // Commit the completed run: advance the throttle window to now and
+        // release the in-flight reservation (#6119, #7079).
+        self.complete_analysis_claim(claim).await;
 
         // Update patterns hash
         let hash = Self::compute_patterns_hash(&patterns);
@@ -366,11 +407,12 @@ impl ContextAnalyzer {
         window_title: &str,
         ocr_text: Option<&str>,
     ) -> Result<Vec<Suggestion>, AnalysisError> {
-        // Claim-then-run throttle (see analyze()): reserve the slot before the
-        // LLM round-trip so a concurrent caller cannot run a duplicate analysis
-        // on the shared ContextAnalyzer (#6119).
-        let prev_claim = match self.claim_analysis_slot().await {
-            Some(prev) => prev,
+        // Claim-then-run throttle (see analyze()): reserve the in-flight slot
+        // before the LLM round-trip so a concurrent caller cannot run a
+        // duplicate analysis on the shared ContextAnalyzer, independent of
+        // `throttle_secs` (#6119, #7079).
+        let claim = match self.claim_analysis_slot().await {
+            Some(claim) => claim,
             None => return Ok(vec![]),
         };
 
@@ -384,7 +426,7 @@ impl ContextAnalyzer {
         {
             Ok(events) => events,
             Err(e) => {
-                self.restore_analysis_claim(prev_claim).await;
+                self.restore_analysis_claim(claim).await;
                 return Err(e.into());
             }
         };
@@ -423,65 +465,109 @@ impl ContextAnalyzer {
         {
             Ok(suggestions) => suggestions,
             Err(e) => {
-                self.restore_analysis_claim(prev_claim).await;
+                self.restore_analysis_claim(claim).await;
                 return Err(e.into());
             }
         };
 
         let filtered = self.filter_suggestions(Self::attach_context_scope(suggestions, &current));
 
-        // Refresh the reservation timestamp to mark completion (slot already
-        // claimed at entry).
-        {
-            let mut last = self.last_analysis_at.lock().await;
-            *last = Some(Utc::now());
-        }
+        // Commit completion: advance the throttle window and release the
+        // in-flight reservation (slot already claimed at entry) (#6119, #7079).
+        self.complete_analysis_claim(claim).await;
 
         Ok(filtered)
     }
 
-    /// Atomically check the throttle window AND reserve the analysis slot.
+    /// Atomically enforce the in-flight + throttle gates AND reserve the slot.
     ///
-    /// Holds the `last_analysis_at` lock for the entire check-and-write so the
-    /// throttle is claim-then-run rather than check-only. If enough time has
-    /// elapsed since the last analysis (or none has run yet), this writes an
-    /// in-flight reservation (`Some(now)`) and returns `Some(previous_value)` so
-    /// the caller may restore it on a failed run. A second concurrent caller
-    /// then observes the fresh reservation and is throttled out, returning
-    /// `None` (#6119).
-    async fn claim_analysis_slot(&self) -> Option<Option<chrono::DateTime<Utc>>> {
-        let mut guard = self.last_analysis_at.lock().await;
-        let may_proceed = match *guard {
+    /// Two independent gates are checked under one lock:
+    ///
+    /// 1. **In-flight dedup (#7079)** — while a run holds the slot, a second
+    ///    concurrent caller is rejected outright, *independent of*
+    ///    `throttle_secs`. This is the key decoupling: a sub-latency throttle
+    ///    can no longer let a duplicate concurrent analysis slip through, and a
+    ///    completing run only resets state it actually owns (via the generation
+    ///    token below). A watchdog (`ANALYSIS_INFLIGHT_WATCHDOG_SECS`) reclaims a
+    ///    slot whose owner appears to have died (e.g. its task was force-aborted
+    ///    at shutdown) so analysis cannot wedge permanently.
+    /// 2. **Throttle window (#6119)** — enforces the minimum temporal spacing
+    ///    between successive committed runs.
+    ///
+    /// On success this marks the slot in-flight, advances the generation, writes
+    /// the reservation timestamp, and returns an `AnalysisClaim` carrying the
+    /// prior timestamp (to restore on failure) and the owned generation. A
+    /// caller that fails either gate returns `None`.
+    async fn claim_analysis_slot(&self) -> Option<AnalysisClaim> {
+        let now = Utc::now();
+        let mut state = self.analysis_claim.lock().await;
+
+        // Gate 1: in-flight dedup, decoupled from throttle_secs (#7079).
+        if state.in_flight {
+            let in_flight_secs = state
+                .last_analysis_at
+                .map(|t| (now - t).num_seconds().max(0) as u64)
+                .unwrap_or(0);
+            // A live run still owns the slot — block the duplicate. Only a slot
+            // abandoned past the watchdog falls through to be reclaimed.
+            if in_flight_secs < ANALYSIS_INFLIGHT_WATCHDOG_SECS {
+                return None;
+            }
+        }
+
+        // Gate 2: throttle window since the last committed (or reserved) run.
+        let may_proceed = match state.last_analysis_at {
             None => true,
             Some(last) => {
                 // Clamp a backward clock step to 0 before the unsigned cast (review4
                 // F12 sibling): a negative i64 delta cast `as u64` wraps to ~1.8e19
                 // and would bypass the throttle, letting analysis run when it should
                 // be suppressed.
-                let elapsed = (Utc::now() - last).num_seconds().max(0) as u64;
+                let elapsed = (now - last).num_seconds().max(0) as u64;
                 elapsed >= self.config.throttle_secs
             }
         };
+        if !may_proceed {
+            return None;
+        }
 
-        if may_proceed {
-            let prev = *guard;
-            *guard = Some(Utc::now());
-            Some(prev)
-        } else {
-            None
+        let prev = state.last_analysis_at;
+        state.generation = state.generation.wrapping_add(1);
+        state.in_flight = true;
+        state.last_analysis_at = Some(now);
+        Some(AnalysisClaim {
+            prev,
+            generation: state.generation,
+        })
+    }
+
+    /// Restore the throttle timestamp to its pre-claim value and release the
+    /// in-flight reservation.
+    ///
+    /// Called on an error or no-op path so a failed/empty run does not consume
+    /// the throttle window, letting the next tick retry immediately (#6119). The
+    /// generation guard ensures a run only mutates state it actually owns: if a
+    /// newer claim has since taken the slot (e.g. after a watchdog reclaim), this
+    /// is a no-op and cannot clobber the live reservation (#7079).
+    async fn restore_analysis_claim(&self, claim: AnalysisClaim) {
+        let mut state = self.analysis_claim.lock().await;
+        if state.generation == claim.generation {
+            state.last_analysis_at = claim.prev;
+            state.in_flight = false;
         }
     }
 
-    /// Restore the `last_analysis_at` reservation to its pre-claim value.
+    /// Commit a completed run: advance the throttle window to now and release
+    /// the in-flight reservation.
     ///
-    /// Called on an error or no-op path so a failed/empty run does not consume
-    /// the throttle window, letting the next tick retry immediately. A
-    /// concurrent caller that lost the claim race was already throttled out and
-    /// did not write, so unconditionally restoring the prior value is safe and
-    /// does not clobber another run's timestamp (#6119).
-    async fn restore_analysis_claim(&self, prev: Option<chrono::DateTime<Utc>>) {
-        let mut guard = self.last_analysis_at.lock().await;
-        *guard = prev;
+    /// Gated on the owning generation (#7079) so a run reclaimed by the watchdog
+    /// cannot overwrite the new owner's reservation on a late completion.
+    async fn complete_analysis_claim(&self, claim: AnalysisClaim) {
+        let mut state = self.analysis_claim.lock().await;
+        if state.generation == claim.generation {
+            state.last_analysis_at = Some(Utc::now());
+            state.in_flight = false;
+        }
     }
 
     /// Filter suggestions by min_confidence and cap at max_suggestions.
@@ -509,10 +595,16 @@ impl ContextAnalyzer {
 
     /// Build CurrentActivity from the most recent context event.
     fn build_current_activity(events: &[Event]) -> CurrentActivity {
-        let last_ctx = events.iter().rev().find_map(|e| match e {
-            Event::Context(ctx) => Some(ctx),
-            _ => None,
-        });
+        // #6893: the get_events contract returns timestamp DESC (newest-first), so `.rev().find_map`
+        // picked the oldest context as "current". Select the context with the largest (= newest)
+        // timestamp regardless of ordering.
+        let last_ctx = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Context(ctx) => Some(ctx),
+                _ => None,
+            })
+            .max_by_key(|ctx| ctx.timestamp);
 
         match last_ctx {
             Some(ctx) => CurrentActivity {
@@ -545,9 +637,22 @@ impl ContextAnalyzer {
             .collect();
 
         let total_work_mins = if ctx_events.len() >= 2 {
-            let first = ctx_events.first().expect("len >= 2").timestamp;
-            let last = ctx_events.last().expect("len >= 2").timestamp;
-            ((last - first).num_minutes() as u32).max(1)
+            // #6893: compute session length as an ordering-independent [min, max] timestamp span.
+            // The get_events contract is DESC (newest-first), so first=newest, last=oldest; the
+            // direct (last - first) difference is then negative and `num_minutes() as u32` two's-
+            // complement wraps to ~4.29e9 minutes (.max(1) is useless since it runs after the cast).
+            // Derive the span from earliest/latest and clamp with .max(0) before the cast.
+            let earliest = ctx_events
+                .iter()
+                .map(|ctx| ctx.timestamp)
+                .min()
+                .expect("len >= 2");
+            let latest = ctx_events
+                .iter()
+                .map(|ctx| ctx.timestamp)
+                .max()
+                .expect("len >= 2");
+            ((latest - earliest).num_minutes().max(0) as u32).max(1)
         } else {
             0
         };
@@ -776,12 +881,14 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     /// Provider that records how many times `analyze()` was entered and sleeps
-    /// briefly so two concurrent callers can overlap. Used to prove the throttle
-    /// is claim-then-run: a second caller must be turned away before invoking the
-    /// LLM (#6119).
+    /// for a configurable duration so two concurrent callers can overlap. Used
+    /// to prove the throttle is claim-then-run AND that the in-flight guard
+    /// dedups duplicates independent of `throttle_secs`: a second caller must be
+    /// turned away before invoking the LLM (#6119, #7079).
     struct CountingSlowProvider {
         suggestions: Vec<Suggestion>,
         calls: Arc<AtomicUsize>,
+        sleep: std::time::Duration,
     }
 
     #[async_trait]
@@ -792,7 +899,7 @@ mod tests {
             _system_prompt: &str,
         ) -> Result<Vec<Suggestion>, CoreError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(self.sleep).await;
             Ok(self.suggestions.clone())
         }
 
@@ -847,6 +954,20 @@ mod tests {
         ContextAnalyzer::new(storage, provider, miner, assembler, config)
     }
 
+    /// Build an analyzer with an explicit `throttle_secs`. Used by the #7079
+    /// claim-state tests that drive the private slot machinery directly.
+    fn make_analyzer_with_throttle(throttle_secs: u64) -> ContextAnalyzer {
+        let storage = Arc::new(MockStorage::new(vec![]));
+        let provider = Arc::new(MockAnalysisProvider::new(vec![]));
+        let miner = PatternMiner::new();
+        let assembler = ContextAssembler::new(Box::new(|t: &str| t.to_string()));
+        let config = AnalysisConfig {
+            throttle_secs,
+            ..AnalysisConfig::default()
+        };
+        ContextAnalyzer::new(storage, provider, miner, assembler, config)
+    }
+
     // ── Tests ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -894,6 +1015,7 @@ mod tests {
         let provider = Arc::new(CountingSlowProvider {
             suggestions,
             calls: calls.clone(),
+            sleep: std::time::Duration::from_millis(100),
         });
         let miner = PatternMiner::new();
         let assembler = ContextAssembler::new(Box::new(|t: &str| t.to_string()));
@@ -924,6 +1046,121 @@ mod tests {
         assert_eq!(
             proceeded, 1,
             "exactly one concurrent analyze() should proceed"
+        );
+    }
+
+    /// #7079 (revert-provable): the in-flight guard must dedup a concurrent
+    /// duplicate analysis even when `throttle_secs` is set BELOW the analysis
+    /// round-trip latency. Pre-fix, `throttle_secs` doubled as the only
+    /// in-flight window, so a second caller that arrives after the throttle has
+    /// elapsed (but while the first run is still in flight) would pass the gate
+    /// and start a duplicate LLM analysis. The explicit in-flight flag now
+    /// blocks it regardless of `throttle_secs`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn in_flight_dedup_holds_below_throttle_secs() {
+        let suggestions = vec![make_suggestion("Tip", 0.9)];
+        let events = make_events(10);
+
+        let storage = Arc::new(MockStorage::new(events));
+        let calls = Arc::new(AtomicUsize::new(0));
+        // LLM round-trip (1500ms) intentionally exceeds throttle_secs (1s).
+        let provider = Arc::new(CountingSlowProvider {
+            suggestions,
+            calls: calls.clone(),
+            sleep: std::time::Duration::from_millis(1500),
+        });
+        let miner = PatternMiner::new();
+        let assembler = ContextAssembler::new(Box::new(|t: &str| t.to_string()));
+        let config = AnalysisConfig {
+            throttle_secs: 1,
+            ..AnalysisConfig::default()
+        };
+        let analyzer = Arc::new(ContextAnalyzer::new(
+            storage, provider, miner, assembler, config,
+        ));
+
+        // First caller claims the slot and enters the 1.5s LLM round-trip.
+        let a1 = analyzer.clone();
+        let first = tokio::spawn(async move { a1.analyze().await.unwrap() });
+
+        // Wait until the throttle window (1s) has fully elapsed while the first
+        // run is still in flight. Pre-fix, a second caller here would pass the
+        // throttle and start a duplicate analysis.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        let a2 = analyzer.clone();
+        let second = tokio::spawn(async move { a2.analyze().await.unwrap() });
+
+        let r1 = first.await.unwrap();
+        let r2 = second.await.unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "in-flight guard must dedup the duplicate even when throttle_secs < latency"
+        );
+        let proceeded = usize::from(!r1.is_empty()) + usize::from(!r2.is_empty());
+        assert_eq!(proceeded, 1, "exactly one analyze() should proceed");
+    }
+
+    /// #7079: with the throttle window disabled (`throttle_secs = 0`), the
+    /// in-flight flag alone must still block a concurrent duplicate claim — the
+    /// dedup no longer depends on the throttle timing at all.
+    #[tokio::test]
+    async fn in_flight_flag_blocks_duplicate_with_zero_throttle() {
+        let analyzer = make_analyzer_with_throttle(0);
+
+        // First run claims the slot and is still in flight (not yet completed).
+        let claim = analyzer
+            .claim_analysis_slot()
+            .await
+            .expect("first claim should succeed");
+
+        // throttle_secs = 0 would otherwise admit a second caller immediately;
+        // the in-flight gate must reject it.
+        assert!(
+            analyzer.claim_analysis_slot().await.is_none(),
+            "in-flight run must block a concurrent duplicate regardless of throttle_secs"
+        );
+
+        // After the first run completes, the slot is claimable again.
+        analyzer.complete_analysis_claim(claim).await;
+        assert!(
+            analyzer.claim_analysis_slot().await.is_some(),
+            "slot should be claimable again after completion (throttle_secs = 0)"
+        );
+    }
+
+    /// #7079: a late `restore` from a run whose slot was already reclaimed (or
+    /// re-taken by a newer run) must be a no-op — the generation token guards
+    /// against clobbering the live reservation that defeated the #6119 dedup in
+    /// the original report.
+    #[tokio::test]
+    async fn stale_restore_is_noop_via_generation_guard() {
+        let analyzer = make_analyzer_with_throttle(0);
+
+        // Run A claims, then completes — freeing the slot.
+        let claim_a = analyzer.claim_analysis_slot().await.expect("A claims");
+        analyzer.complete_analysis_claim(claim_a).await;
+
+        // Run B claims the now-free slot under a fresh generation.
+        let claim_b = analyzer.claim_analysis_slot().await.expect("B claims");
+
+        // Run A's delayed restore (e.g. a slow error path) must NOT release B's
+        // in-flight reservation: the generation no longer matches.
+        analyzer.restore_analysis_claim(claim_a).await;
+
+        // B still owns the slot — a third caller is still blocked.
+        assert!(
+            analyzer.claim_analysis_slot().await.is_none(),
+            "A's stale restore must not release B's in-flight reservation"
+        );
+
+        // B completes normally and frees the slot.
+        analyzer.complete_analysis_claim(claim_b).await;
+        assert!(
+            analyzer.claim_analysis_slot().await.is_some(),
+            "slot should be free once the owning run (B) completes"
         );
     }
 
@@ -1054,5 +1291,45 @@ mod tests {
         let current = ContextAnalyzer::build_current_activity(&events);
         // Last event in make_events is index 4 (even), so app is "Slack" (index 4 is even -> VSCode)
         assert!(!current.app_name.is_empty());
+    }
+
+    /// The real production contract of get_events is timestamp DESC (newest-first), but `make_events`
+    /// reverses it into ascending order, which masked the #6893 wrap bug. This helper builds data
+    /// newest-first as the real contract does (index 0 = newest, "Newest" → "Oldest", 20-minute span).
+    fn make_events_desc() -> Vec<Event> {
+        let base = Utc::now();
+        [("Newest", 0i64), ("Middle", 10), ("Oldest", 20)]
+            .into_iter()
+            .map(|(app, mins_ago)| {
+                Event::Context(ContextEvent {
+                    app_name: app.to_string(),
+                    window_title: format!("{app} window"),
+                    timestamp: base - Duration::minutes(mins_ago),
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    /// #6893 regression guard: with real DESC-contract input, total_work_mins must return the actual
+    /// span (20 minutes) instead of u32-wrapping (~4.29e9). The pre-fix code cast a negative delta
+    /// `as u32`, yielding ~4_294_967_276.
+    #[test]
+    fn build_session_metrics_desc_contract_does_not_wrap() {
+        let events = make_events_desc();
+        let metrics = ContextAnalyzer::build_session_metrics(&events);
+        assert_eq!(
+            metrics.total_work_mins, 20,
+            "DESC 입력 span 은 20분이어야 한다(u32 wrap 아님)"
+        );
+    }
+
+    /// #6893 regression guard: with DESC input, "current" must be the newest context (index 0,
+    /// "Newest"). The pre-fix `.rev().find_map` picked the oldest "Oldest".
+    #[test]
+    fn build_current_activity_desc_contract_picks_newest() {
+        let events = make_events_desc();
+        let current = ContextAnalyzer::build_current_activity(&events);
+        assert_eq!(current.app_name, "Newest");
     }
 }

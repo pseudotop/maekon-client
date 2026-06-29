@@ -109,7 +109,7 @@ pub(super) fn anthropic_api_profile_config(api_key: &str) -> ApiAiProviderProfil
         ocr_provider: defaults.ai_provider.ocr_provider,
         llm_provider: "Remote".to_string(),
         external_data_policy: defaults.ai_provider.external_data_policy,
-        allow_unredacted_external_ocr: defaults.ai_provider.allow_unredacted_external_ocr,
+        bypass_pii_filter_for_external_ocr: defaults.ai_provider.bypass_pii_filter_for_external_ocr,
         ocr_validation: OcrValidationSettings::default(),
         scene_action_override: SceneActionOverrideSettings::default(),
         scene_intelligence: SceneIntelligenceSettings::default(),

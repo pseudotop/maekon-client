@@ -184,7 +184,7 @@ function makeDefaultSettings(): AppSettings {
       ocr_provider: 'local',
       llm_provider: 'local',
       external_data_policy: 'disabled',
-      allow_unredacted_external_ocr: false,
+      bypass_pii_filter_for_external_ocr: false,
       ocr_validation: {
         enabled: true,
         min_confidence: 0.25,

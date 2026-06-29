@@ -241,18 +241,26 @@ pub(crate) async fn evaluate_and_notify_transitions<N: TsNotifier>(
 /// function to stay within the monitor-loop closure size limit (500 lines)
 /// (monitor-loop-size hook).
 pub(super) async fn tick_ts_notifications(
-    config_manager: &Option<maekon_core::config_manager::ConfigManager>,
+    // #6830/#4796: take the already-computed per-tick `Arc<AppConfig>` snapshot
+    // (cheap clone) instead of a fresh `ConfigManager::get()` (a FULL deep clone
+    // of AppConfig on every 1s tick, incl. idle) — restoring the "idle tick → 0
+    // deep clone" invariant #4796 claimed but this helper never honored.
+    config: Option<&maekon_core::config::AppConfig>,
     notifier: Option<&crate::notification_manager::NotificationManager>,
     prev_ts_active: &mut bool,
     last_ts_notified_at: &mut Option<std::time::Instant>,
 ) {
-    let cfg = config_manager
-        .as_ref()
-        .map(|cm| cm.get())
-        .unwrap_or_else(maekon_core::config::AppConfig::default_config);
-    let now_active = tracking_schedule_active(&cfg, chrono::Local::now());
+    let default_cfg;
+    let cfg: &maekon_core::config::AppConfig = match config {
+        Some(cfg) => cfg,
+        None => {
+            default_cfg = maekon_core::config::AppConfig::default_config();
+            &default_cfg
+        }
+    };
+    let now_active = tracking_schedule_active(cfg, chrono::Local::now());
     evaluate_and_notify_transitions(
-        &cfg,
+        cfg,
         *prev_ts_active,
         now_active,
         last_ts_notified_at,
@@ -281,6 +289,18 @@ pub(super) async fn tick_ts_notifications(
 /// increase the cadence after much shorter inactivity, so it uses a dedicated
 /// threshold.
 pub(super) const MONITOR_IDLE_BACKOFF_SECS: u64 = 30;
+
+/// Returns true when the carried full-res RGBA frame + its paired OCR regions can
+/// be released. Once no-input idle backoff engages, no clicks will consume them
+/// (`run_gui_tick` consumes the frame_rgba AND the OCR-region click-correlation
+/// only inside the click branch, `click_count > 0`), so dropping them is
+/// observationally invisible to correctness and bounds the worst-case resident
+/// footprint (a 4K RGBA frame is ~33 MB held across idle ticks). Keyed off the
+/// SAME threshold `decide_monitor_tick` uses for idle, so the release point and the
+/// idle-backoff point cannot silently diverge (#6830).
+pub(super) fn should_release_idle_frame(idle_secs: u64) -> bool {
+    idle_secs >= MONITOR_IDLE_BACKOFF_SECS
+}
 
 /// Cadence (seconds) for processing expensive monitor ticks while idle. That is,
 /// while idle we only do osascript/AX work once every 5 seconds.
@@ -1031,6 +1051,45 @@ mod tests {
         assert!(
             capture_permitted_now_with_power(&cfg, &consent(true, true), false, true, now),
             "battery saver must not block capture when pause_on_battery_saver=false"
+        );
+    }
+
+    // ── should_release_idle_frame tests (#6830 idle frame release) ──────────
+
+    #[test]
+    fn should_release_idle_frame_false_below_threshold() {
+        assert!(!should_release_idle_frame(0));
+        assert!(!should_release_idle_frame(MONITOR_IDLE_BACKOFF_SECS - 1));
+    }
+
+    #[test]
+    fn should_release_idle_frame_true_at_and_above_threshold() {
+        assert!(should_release_idle_frame(MONITOR_IDLE_BACKOFF_SECS));
+        assert!(should_release_idle_frame(MONITOR_IDLE_BACKOFF_SECS + 600));
+    }
+
+    /// Boundary-alignment guard (#6830): the frame-release predicate MUST flip at
+    /// exactly the same `idle_secs` at which `decide_monitor_tick` first treats the
+    /// session as idle (both keyed off `MONITOR_IDLE_BACKOFF_SECS`). If a future
+    /// edit changes one idle predicate without the other, this fails — preventing a
+    /// silent divergence where the frame is held through the idle-backoff window.
+    #[test]
+    fn frame_release_threshold_matches_idle_backoff_threshold() {
+        // Just below the threshold: NOT released, and decide_monitor_tick still
+        // processes every tick (active cadence).
+        let below = MONITOR_IDLE_BACKOFF_SECS - 1;
+        assert!(!should_release_idle_frame(below));
+        assert!(
+            decide_monitor_tick(1, below, false).process,
+            "below threshold must still be active (process every tick)"
+        );
+        // At the threshold: released, and decide_monitor_tick enters idle backoff
+        // (tick 1 is skipped at the idle cadence of 5).
+        let at = MONITOR_IDLE_BACKOFF_SECS;
+        assert!(should_release_idle_frame(at));
+        assert!(
+            !decide_monitor_tick(1, at, false).process,
+            "at threshold must be idle backoff (tick 1 skipped at cadence 5)"
         );
     }
 

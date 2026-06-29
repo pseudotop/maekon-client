@@ -2353,13 +2353,14 @@ No active RustSec advisories. Actively maintained. Commercial use: permitted.
 [[audits.hashlink]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
-version = "0.11.0"
+version = "0.12.0"
 notes = """
-Phase 4C Group D audit — hashlink.
-Crate: hashlink/0.11.0. License: MIT OR Apache-2.0.
+Phase 4C Group D audit — hashlink; re-audited at 0.12.0 for the rusqlite 0.40 bump (#6863).
+Crate: hashlink/0.12.0. License: MIT OR Apache-2.0.
 Linked hash map (insertion-order-preserving) built on hashbrown. Contains unsafe code
-for the linked-list node pointers (standard pattern for linked hash maps). No active
-RustSec advisories.
+for the linked-list node pointers (standard pattern for linked hash maps). The 0.11 -> 0.12
+delta is a maintenance bump with no new unsafe surface beyond that node-pointer pattern.
+Pulled transitively via rusqlite. No active RustSec advisories.
 """
 
 [[audits.hdbscan]]
@@ -3118,22 +3119,32 @@ cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out 
 [[audits.libsqlite3-sys]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
-version = "0.37.0"
+version = "0.38.1"
 notes = """
-Phase 6C codec/OCR/FFI deep audit (OOS sprint #4189).
+Phase 6C codec/OCR/FFI deep audit (OOS sprint #4189); re-audited at 0.38.1 for the
+SQLCipher WAL-reset fix bump (#6863).
 Upstream: https://github.com/rusqlite/rusqlite (libsqlite3-sys sub-crate). License: MIT.
 Raw FFI bindings to SQLite C library; used with bundled-sqlcipher feature in maekon-client.
-Bundled C library versions:
-  sqlite3/sqlite3.h: SQLite 3.51.3 (released 2025-02-25 — recent stable).
-  sqlcipher/sqlite3.h: SQLite 3.50.4 (stable; SQLCipher encryption layer).
+Bundled C library versions (the bundled-sqlcipher feature statically links exactly ONE of these):
+  sqlcipher/sqlite3.h: SQLite 3.51.3 (SQLCipher 4.14.0 fork) — ACTIVE engine (linked under bundled-sqlcipher).
+  sqlite3/sqlite3.h: SQLite 3.51.3 — vendored non-cipher amalgamation, NOT linked.
 CVE history (all patched):
   RUSTSEC-2022-0090 / CVE-2022-35737: array-bounds overflow in printf for large strings.
-    patched >= 0.25.1 — current 0.37.0 bundles SQLite 3.51.3 (well beyond 3.39.2 fix).
+    Two distinct boundaries, both satisfied: crate libsqlite3-sys 0.38.1 >= 0.25.1 (clears the RUSTSEC advisory
+    cargo-audit keys on), AND the ACTIVE bundled engine SQLite 3.51.3 >= 3.39.2 (clears the underlying CVE at the C level).
   No other RUSTSEC advisories for libsqlite3-sys.
-Bundled SQLite CVEs: SQLite 3.51.3 has no known active CVEs per cargo audit baseline.
+Bundled SQLite WAL-reset data-race corruption (no CVE assigned): affects WAL mode 3.7.0–3.51.2, FIXED mainline at
+  3.51.3. The ACTIVE engine is now SQLite 3.51.3 (SQLCipher 4.14.0) >= 3.51.3 → OUTSIDE the affected window: this
+  bump fixes the WAL-reset corruption at the engine level (was 3.50.4 under libsqlite3-sys 0.37.0; #6830 / #6863).
+  The prior in-process single shared GuardedConnection (crates/maekon-storage/src/sqlite/mod.rs:113,181), the
+  single-instance plugin (src-tauri/src/main.rs:768,771), and the #6864 cross-process advisory data-dir lock remain
+  as defense-in-depth but are no longer load-bearing for this specific corruption.
+Diff review (0.37.0 -> 0.38.1): the bulk of the delta is the vendored SQLCipher C amalgamation update
+  (4.10.0 / SQLite 3.50.4 -> 4.14.0 / SQLite 3.51.3) — a trusted upstream SQLCipher release, not first-party logic;
+  the Rust surface is bindgen-generated FFI only. Same audit basis as the prior 0.37.0 entry.
 Unsafe usage: all unsafe at FFI boundary only; bindgen-generated bindings, no logic unsafe.
-Active maintenance: 0.37.0 released 2026-03-15; 0.38.0 released 2026-05-26 (no security notes).
-RUSTSEC verification: cargo audit clean at 0.37.0.
+Active maintenance: 0.38.0 released 2026-05-26; 0.38.1 follows. Same maintainer (gwenn) as rusqlite.
+RUSTSEC verification: cargo audit clean at 0.38.1.
 """
 
 [[audits.libwebp-sys]]
@@ -4800,21 +4811,25 @@ for safe-to-deploy dependency certification, not a line-by-line logic review.
 [[audits.rusqlite]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
-version = "0.39.0"
+version = "0.40.1"
 notes = """
-Phase 6C codec/OCR/FFI deep audit (OOS sprint #4189).
+Phase 6C codec/OCR/FFI deep audit (OOS sprint #4189); re-audited at 0.40.1 for the SQLCipher WAL-reset fix bump (#6863).
 Upstream: https://github.com/rusqlite/rusqlite. License: MIT.
 Safe Rust wrapper around SQLite C library. Production-critical in maekon-client.
 Features enabled: bundled-sqlcipher, fallible_uint.
 FFI boundary: all C calls mediated through libsqlite3-sys (see separate entry).
-Bundled SQLite version (via libsqlite3-sys 0.37.0): 3.51.3 (SQLite) / 3.50.4 (SQLCipher).
+Active bundled engine (via libsqlite3-sys 0.38.1, bundled-sqlcipher): SQLite 3.51.3 (SQLCipher 4.14.0 fork) —
+includes the WAL-reset data-race fix (was 3.50.4 under libsqlite3-sys 0.37.0). See the libsqlite3-sys entry (SSOT, #6830 / #6863).
+Diff review (0.39.0 -> 0.40.1): the 0.40.0 breaking changes are confined to VTab/vtab (dequote) + a wasm32 opt-out —
+neither used by maekon-storage (the only first-party rusqlite consumer; surface limited to Connection, Error,
+OptionalExtension, params, Row, ToSql, types). 0.40.1 is the fix for SQL injection via a tainted SAVEPOINT name (#1854).
 CVE history (all patched):
-  RUSTSEC-2020-0014 (memory safety, patched >= 0.23.0 — current 0.39.0 is safe).
+  RUSTSEC-2020-0014 (memory safety, patched >= 0.23.0 — 0.40.1 safe).
   RUSTSEC-2021-0128 (incorrect lifetime bounds on closures, patched >= 0.26.2 — safe).
-  No active advisories for 0.39.0 per cargo audit.
+  No active advisories for 0.40.1 per cargo audit.
 Unsafe usage: unsafe limited to FFI boundary (libsqlite3-sys calls), no unsafe in Rust logic.
-Active maintenance: 0.39.0 released 2026-03-15; 0.40.0 released 2026-05-26 (no security notes).
-RUSTSEC verification: cargo audit clean at 0.39.0.
+Active maintenance: 0.40.0 released 2026-05-26; 0.40.1 follows (tainted-SAVEPOINT-name SQLi fix, #1854).
+RUSTSEC verification: cargo audit clean at 0.40.1.
 """
 
 [[audits.rustc-hash]]
@@ -7253,7 +7268,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.gif]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (197g)
+user-id = 11453 # Aurelia Molzer (HeroicKatora)
 start = "2019-06-01"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7365,7 +7380,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.image]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (197g)
+user-id = 11453 # Aurelia Molzer (HeroicKatora)
 start = "2019-04-13"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7659,14 +7674,14 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): objc
 
 [[trusted.ort]]
 criteria = "safe-to-deploy"
-user-id = 152041 # Carson M. (decahedron1)
+user-id = 152041 # decahedron1
 start = "2022-11-26"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
 [[trusted.ort-sys]]
 criteria = "safe-to-deploy"
-user-id = 152041 # Carson M. (decahedron1)
+user-id = 152041 # decahedron1
 start = "2023-11-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7974,7 +7989,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Tolnay 
 
 [[trusted.tiff]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (197g)
+user-id = 11453 # Aurelia Molzer (HeroicKatora)
 start = "2019-04-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -8072,7 +8087,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Microsoft Web
 
 [[trusted.weezl]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (197g)
+user-id = 11453 # Aurelia Molzer (HeroicKatora)
 start = "2020-06-29"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -8093,7 +8108,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.y4m]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (197g)
+user-id = 11453 # Aurelia Molzer (HeroicKatora)
 start = "2020-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."

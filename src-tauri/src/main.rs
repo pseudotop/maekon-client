@@ -625,6 +625,10 @@ fn main() {
 
     // Windows DLL search order hardening (Spec Section 9.2):
     // Remove CWD from DLL search path to prevent DLL hijacking.
+    // SAFETY: FFI call into the Win32 LibraryLoader API. `w!("")` expands to a
+    // `'static`, NUL-terminated UTF-16 string literal pointer that outlives the
+    // call; SetDllDirectoryW only reads it (the empty string is the documented
+    // value that removes the current directory from the DLL search path).
     #[cfg(target_os = "windows")]
     unsafe {
         windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(windows_sys::core::w!(""));

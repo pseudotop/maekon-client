@@ -149,6 +149,36 @@ impl WebConfig {
         }
         Ok(())
     }
+
+    /// Fail-closed clamp for the INITIAL-LOAD path (#6883), the web counterpart of the
+    /// section interval clamps (#6169/#6177). The write chokepoints
+    /// (`update`/`update_with`/`reload`) run [`Self::validate_bounds`] and REJECT a bad
+    /// config, but the startup load path only clamps — so without this, a well-formed
+    /// `config.json` written before the #6772 strength gate (or hand-edited / restored
+    /// from an older backup) would load `allow_external = true` + a weak / out-of-range
+    /// value verbatim and bind the integration API to `0.0.0.0` with a guessable bearer.
+    ///
+    /// Two corrections, both fail-closed: snap an out-of-CSP-range `port` back to the
+    /// default, and force `allow_external` OFF when the persisted token does not meet
+    /// `validate_integration_auth_token_strength` (the user can re-enable external access
+    /// through the settings write path, which enforces the floor). The returned set
+    /// satisfies [`Self::validate_bounds`] afterwards.
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if !(DEFAULT_WEB_PORT..=DEFAULT_WEB_PORT_END).contains(&self.port) {
+            self.port = DEFAULT_WEB_PORT;
+            clamped.push("web.port");
+        }
+        if self.allow_external {
+            let token = self.integration_auth_token.as_deref().unwrap_or_default();
+            if validate_integration_auth_token_strength(token).is_err() {
+                // Do NOT bind 0.0.0.0 with a sub-strength token at startup.
+                self.allow_external = false;
+                clamped.push("web.allow_external");
+            }
+        }
+        clamped
+    }
 }
 
 pub const MIN_INTEGRATION_AUTH_TOKEN_LEN: usize = 32;
@@ -407,6 +437,69 @@ mod tests {
         strong
             .validate_bounds()
             .expect("strong token should allow external integration bind");
+    }
+
+    // ── #6883 INITIAL-LOAD clamp (fail-closed) ──────────────────────────────
+
+    #[test]
+    fn web_config_clamp_bounds_fail_closes_weak_external_token() {
+        // The #6883 vector: a well-formed external config that never passed the #6772
+        // write-path strength gate (downgrade / hand-edit / restored old backup).
+        let mut weak = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("short".to_string()),
+            ..WebConfig::default()
+        };
+        let clamped = weak.clamp_bounds();
+        assert!(
+            clamped.contains(&"web.allow_external"),
+            "a sub-strength external token must fail-close allow_external"
+        );
+        assert!(
+            !weak.allow_external,
+            "allow_external must be forced off on load"
+        );
+        // Contract: the clamped config must satisfy validate_bounds afterward.
+        weak.validate_bounds()
+            .expect("clamped web config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn web_config_clamp_bounds_snaps_out_of_range_port() {
+        let mut high = WebConfig {
+            port: DEFAULT_WEB_PORT_END + 5,
+            ..WebConfig::default()
+        };
+        let clamped = high.clamp_bounds();
+        assert!(clamped.contains(&"web.port"));
+        assert_eq!(
+            high.port, DEFAULT_WEB_PORT,
+            "out-of-CSP-range port snaps to default"
+        );
+        high.validate_bounds()
+            .expect("clamped port must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn web_config_clamp_bounds_preserves_valid_external_config() {
+        // allow_external=true + strong token + in-range port → nothing to clamp.
+        let mut strong = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("integration-secret-0123456789abcdef".to_string()),
+            ..WebConfig::default()
+        };
+        let clamped = strong.clamp_bounds();
+        assert!(
+            clamped.is_empty(),
+            "a valid external config must not be clamped"
+        );
+        assert!(
+            strong.allow_external,
+            "valid external access must be preserved"
+        );
+        strong
+            .validate_bounds()
+            .expect("an unchanged strong config still validates");
     }
 
     #[test]

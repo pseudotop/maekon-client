@@ -265,6 +265,9 @@ impl OidcDeviceFlowIntegrationAuthPort {
     ) -> Result<Self, CoreError> {
         let client = reqwest::Client::builder()
             .timeout(config.request_timeout)
+            // No redirect following: token/device endpoints are direct and a 30x
+            // to a cleartext host would bypass the per-request scheme check (#6824).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
@@ -334,6 +337,13 @@ impl OidcDeviceFlowIntegrationAuthPort {
         form: &[(String, String)],
         use_dpop: bool,
     ) -> Result<reqwest::Response, CoreError> {
+        // Fail-closed before the device-code / refresh-token / DPoP proof leaves
+        // the device: refuse a cleartext token/device endpoint to a remote host
+        // (transport downgrade), matching the integration transport guard (#6824).
+        crate::integration::http_transport::reject_cleartext_remote_url(
+            url,
+            "integration.oidc.endpoint",
+        )?;
         let mut request = self.client.post(url).form(form);
         if use_dpop {
             let proof = self
@@ -441,11 +451,18 @@ impl OidcDeviceFlowIntegrationAuthPort {
             if status == reqwest::StatusCode::BAD_REQUEST
                 || status == reqwest::StatusCode::UNAUTHORIZED
             {
-                let error_body: OidcTokenErrorResponse =
-                    response.json().await.unwrap_or(OidcTokenErrorResponse {
-                        error: "unknown_error".to_string(),
-                        error_description: None,
-                    });
+                // #6949: cap the OIDC token error response body (OOM guard)
+                let error_body: OidcTokenErrorResponse = crate::outbound::read_body_capped(
+                    response,
+                    crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                )
+                .await
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(OidcTokenErrorResponse {
+                    error: "unknown_error".to_string(),
+                    error_description: None,
+                });
                 let message = error_body
                     .error_description
                     .clone()
@@ -470,10 +487,30 @@ impl OidcDeviceFlowIntegrationAuthPort {
             });
         }
 
-        let payload: OidcTokenSuccessResponse = response.json().await.map_err(|error| {
-            CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
-                "failed to parse integration refresh response: {error}"
-            ))))
+        // #6949: cap the OIDC token refresh success response body (OOM guard)
+        let payload: OidcTokenSuccessResponse = crate::outbound::read_body_capped(
+            response,
+            crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|error| match error {
+            crate::outbound::BodyReadError::Transport(e) => {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration refresh response: {e}"
+                ))))
+            }
+            crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration refresh response: response too large ({len} > {cap})"
+                ))))
+            }
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|error| {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration refresh response: {error}"
+                ))))
+            })
         })?;
 
         let material = StoredAuthMaterial {
@@ -666,10 +703,30 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             });
         }
 
-        let payload: OidcDeviceAuthorizationResponse = response.json().await.map_err(|error| {
-            CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
-                "failed to parse integration device authorization response: {error}"
-            ))))
+        // #6949: cap the OIDC device authorization response body (OOM guard)
+        let payload: OidcDeviceAuthorizationResponse = crate::outbound::read_body_capped(
+            response,
+            crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|error| match error {
+            crate::outbound::BodyReadError::Transport(e) => {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration device authorization response: {e}"
+                ))))
+            }
+            crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration device authorization response: response too large ({len} > {cap})"
+                ))))
+            }
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|error| {
+                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
+                    "failed to parse integration device authorization response: {error}"
+                ))))
+            })
         })?;
         let flow_id = maekon_core::generate_id("flow");
         let flow = IntegrationDeviceAuthorizationFlow {
@@ -746,10 +803,30 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             .await?;
 
         if response.status().is_success() {
-            let payload: OidcTokenSuccessResponse = response.json().await.map_err(|error| {
-                CoreError::Serialization(serde_json::Error::io(std::io::Error::other(format!(
-                    "failed to parse integration token response: {error}"
-                ))))
+            // #6949: cap the OIDC device-polling success response body (OOM guard)
+            let payload: OidcTokenSuccessResponse = crate::outbound::read_body_capped(
+                response,
+                crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::outbound::BodyReadError::Transport(e) => {
+                    CoreError::Serialization(serde_json::Error::io(std::io::Error::other(
+                        format!("failed to parse integration token response: {e}"),
+                    )))
+                }
+                crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                    CoreError::Serialization(serde_json::Error::io(std::io::Error::other(
+                        format!("failed to parse integration token response: response too large ({len} > {cap})"),
+                    )))
+                }
+            })
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    CoreError::Serialization(serde_json::Error::io(std::io::Error::other(
+                        format!("failed to parse integration token response: {error}"),
+                    )))
+                })
             })?;
             let material = StoredAuthMaterial {
                 access_token: payload.access_token,
@@ -763,11 +840,16 @@ impl IntegrationAuthPort for OidcDeviceFlowIntegrationAuthPort {
             return self.current_auth_status().await;
         }
 
+        // #6949: cap the OIDC device-polling error response body (OOM guard)
         let error_body: OidcTokenErrorResponse =
-            response.json().await.unwrap_or(OidcTokenErrorResponse {
-                error: "unknown_error".to_string(),
-                error_description: None,
-            });
+            crate::outbound::read_body_capped(response, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
+                .await
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(OidcTokenErrorResponse {
+                    error: "unknown_error".to_string(),
+                    error_description: None,
+                });
         let message = error_body
             .error_description
             .clone()

@@ -12,6 +12,44 @@ use super::super::{UpdateError, Updater};
 /// deb are well under 500 MB) while still bounding abuse.
 const MAX_UPDATE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// #6941: hard upper bound on updater AUXILIARY artifacts (`.sig`, `.sha256`,
+/// the releases JSON). #6266 capped only the main artifact; these sibling reads
+/// used `response.bytes()`/`response.json()` with no cap, so a multi-GB body from
+/// a MITM'd/compromised GitHub-allowlisted host could OOM the agent before the
+/// signature/checksum is even verified. These artifacts are a few KB at most;
+/// 8 MiB is enormously generous while still bounding abuse.
+pub(crate) const MAX_AUX_UPDATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// #6941: 응답 본문을 하드 캡으로 읽는다. content_length 는 먼저 거부하고,
+/// 청크 스트림은 cap 을 넘는 즉시 중단해서 Content-Length 누락/위조로 cap 을
+/// 우회할 수 없게 한다.
+pub(crate) async fn read_body_capped_update(
+    mut response: reqwest::Response,
+    cap: u64,
+) -> Result<Vec<u8>, UpdateError> {
+    if let Some(len) = response.content_length() {
+        if len > cap {
+            return Err(UpdateError::Download(format!(
+                "response body too large: {len} bytes exceeds cap {cap}"
+            )));
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| UpdateError::Download(format!("Stream error: {e}")))?
+    {
+        if bytes.len() as u64 + chunk.len() as u64 > cap {
+            return Err(UpdateError::Download(format!(
+                "response body exceeded cap {cap} bytes mid-stream; aborted"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 impl Updater {
     /// Apply a delta patch: read current binary, apply bsdiff patch, verify checksum.
     ///
@@ -65,22 +103,14 @@ impl Updater {
             )));
         }
 
-        // #6266: reject an oversized declared body before buffering it into memory.
-        if let Some(len) = response.content_length() {
-            if len > MAX_UPDATE_BYTES {
-                return Err(UpdateError::Download(format!(
-                    "Update artifact too large: {len} bytes exceeds cap {MAX_UPDATE_BYTES}"
-                )));
-            }
-        }
-
-        let bytes = response.bytes().await?;
-        if bytes.len() as u64 > MAX_UPDATE_BYTES {
-            return Err(UpdateError::Download(format!(
-                "Update artifact too large: {} bytes exceeds cap {MAX_UPDATE_BYTES}",
-                bytes.len()
-            )));
-        }
+        // #7000: stream the body under a hard mid-stream cap (content_length
+        // early-reject + per-chunk abort) instead of an unbounded `.bytes()` + a
+        // post-buffer check. A forged/absent Content-Length with a multi-GB body
+        // would otherwise pass the declared-length pre-check and be fully buffered
+        // before the post-check could fire → OOM. Mirrors the streaming sibling
+        // `download_update_with_progress` (#6266) and the aux `.sig`/`.sha256`
+        // reads (#6941, `read_body_capped_update`).
+        let bytes = read_body_capped_update(response, MAX_UPDATE_BYTES).await?;
 
         let expected_hash = self.fetch_expected_sha256(&validated_url).await?;
         let actual_hash = Self::sha256_hex(&bytes);
@@ -252,8 +282,9 @@ impl Updater {
             )));
         }
 
-        let body = response.bytes().await?;
-        let body = String::from_utf8(body.to_vec()).map_err(|e| {
+        // #6941: cap the .sig body (a forged multi-GB body would OOM before verify).
+        let body = read_body_capped_update(response, MAX_AUX_UPDATE_BYTES).await?;
+        let body = String::from_utf8(body).map_err(|e| {
             UpdateError::Integrity(format!("Invalid signature file encoding: {}", e))
         })?;
 
@@ -286,8 +317,9 @@ impl Updater {
             )));
         }
 
-        let body = response.bytes().await?;
-        let body = String::from_utf8(body.to_vec()).map_err(|e| {
+        // #6941: cap the .sha256 body (forged multi-GB body would OOM before verify).
+        let body = read_body_capped_update(response, MAX_AUX_UPDATE_BYTES).await?;
+        let body = String::from_utf8(body).map_err(|e| {
             UpdateError::Integrity(format!("Invalid checksum file encoding: {}", e))
         })?;
 

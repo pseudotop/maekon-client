@@ -8,6 +8,11 @@ pub enum EmbeddingError {
     Core(#[from] CoreError),
     #[error("internal error: {0}")]
     Internal(String),
+    /// Model weights failed the SHA-256 integrity allowlist (#7082 MEMB-3) —
+    /// the downloaded ONNX graph differs from the pinned bytes and must not be
+    /// loaded.
+    #[error("model integrity error: {0}")]
+    Integrity(String),
 }
 
 impl From<EmbeddingError> for CoreError {
@@ -20,6 +25,10 @@ impl From<EmbeddingError> for CoreError {
             EmbeddingError::Internal(msg) => CoreError::Internal {
                 code: InternalCode::Generic,
                 message: format!("[embedding] {msg}"),
+            },
+            EmbeddingError::Integrity(msg) => CoreError::Internal {
+                code: InternalCode::Generic,
+                message: format!("[embedding] integrity: {msg}"),
             },
         }
     }

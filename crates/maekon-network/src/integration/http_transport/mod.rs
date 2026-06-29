@@ -22,6 +22,55 @@ use crate::resilience::extract_retry_after;
 use super::transport::{IntegrationRequestProofFactory, IntegrationTransportConnectRequest};
 use super::WebSocketIntegrationSessionChannel;
 
+/// #6940: map a capped-body-read error (outbound::BodyReadError) to the integration
+/// transport's CoreError. Transport read failures and cap breaches both surface as
+/// `CoreError::Network` (the parse step keeps its own `CoreError::Serialization`).
+pub(super) fn map_integration_body_error(e: crate::outbound::BodyReadError) -> CoreError {
+    let message = match e {
+        crate::outbound::BodyReadError::Transport(err) => {
+            format!("read integration response body: {err}")
+        }
+        crate::outbound::BodyReadError::TooLarge { len, cap } => {
+            format!("integration response exceeded cap {cap} bytes (len {len})")
+        }
+    };
+    CoreError::Network {
+        code: maekon_core::error_codes::NetworkCode::Generic,
+        message,
+    }
+}
+
+/// Reject a transport-downgraded integration URL before any credential leaves
+/// the device. Cleartext `http://`/`ws://` to a **non-loopback** host would
+/// egress Bearer/DPoP tokens and payloads unencrypted (transport downgrade);
+/// `https://`/`wss://` are always allowed, and cleartext is permitted only to
+/// loopback development endpoints. Mirrors the SSE/HTTP `validated_base_url`
+/// invariant (`build_reqwest_client_for_url`) — fail-closed (#6824).
+pub(crate) fn reject_cleartext_remote_url(url: &str, field: &str) -> Result<(), CoreError> {
+    // Decide "cleartext" from the PARSED scheme (what reqwest/tungstenite will
+    // actually connect to), NOT a string prefix: the WHATWG URL parser strips
+    // leading C0 control bytes before parsing, so a prefix test on e.g.
+    // "\u{0}http://evil" would mis-classify it as non-cleartext and let a
+    // server-controlled URL downgrade transport. Unparseable → fail-closed
+    // (reqwest/tungstenite would also fail to connect, so nothing egresses).
+    // (The WS `channel_url` path is also guarded here via `url`; tungstenite
+    // additionally parses it with the stricter `http::Uri`, which rejects the
+    // same control-prefixed vectors outright — both fail closed.)
+    let is_cleartext = reqwest::Url::parse(url)
+        .map(|parsed| matches!(parsed.scheme(), "http" | "ws"))
+        .unwrap_or(false);
+    if is_cleartext && !crate::http_client::host_is_loopback(url) {
+        return Err(CoreError::Validation {
+            code: maekon_core::error_codes::ValidationCode::InvalidField,
+            field: field.to_string(),
+            // Do not interpolate the raw (possibly server-controlled) URL into a
+            // message that may be logged/persisted; `field` identifies the site.
+            message: "remote cleartext URL is not allowed for integration transport; use https:// / wss:// (cleartext is permitted only for loopback development endpoints)".to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpsIntegrationTransportConfig {
     pub bootstrap_url: String,
@@ -128,6 +177,12 @@ impl HttpsIntegrationTransportClient {
         let request_timeout = config.request_timeout;
         let client = reqwest::Client::builder()
             .timeout(request_timeout)
+            // Disable redirect following: integration transport URLs are direct
+            // API endpoints, and a server-controlled 30x to a cleartext host
+            // would bypass the per-request scheme check (reqwest does not strip
+            // the custom DPoP header on redirect and re-sends the body on
+            // 307/308), re-opening the transport-downgrade hole (#6824).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
@@ -234,6 +289,10 @@ impl HttpsIntegrationHttpShared {
         auth: &IntegrationAuthContext,
         body: Option<&impl serde::Serialize>,
     ) -> Result<reqwest::Response, CoreError> {
+        // Fail-closed before any credential egresses: refuse cleartext transport
+        // to a remote host (bootstrap_url + all server-provided session URLs flow
+        // through here) (#6824).
+        reject_cleartext_remote_url(url, "integration.transport.url")?;
         let headers = self.build_headers(auth, method.as_str(), url).await?;
         let mut request = self.client.request(method, url).headers(headers);
         if let Some(body) = body {
@@ -270,7 +329,18 @@ impl HttpsIntegrationHttpShared {
         // failure (empty vs. present vs. unreadable) via a fixed marker — never
         // interpolate the raw body into errors that are logged or persisted.
         // Mirrors `provider_error_body::provider_error_message`. (#6196)
-        let body = response.text().await.ok();
+        //
+        // #6940: cap the ERROR body too — all 3 integration transports route their
+        // non-2xx responses through here BEFORE the success-path cap, so without
+        // this a compromised/misbehaving SaaS endpoint could stream a multi-GB
+        // error body and OOM the agent. A cap breach/read error degrades to None
+        // (classified as unreadable), never an unbounded buffer.
+        let body = crate::outbound::read_text_capped(
+            response,
+            crate::outbound::MAX_INTEGRATION_RESPONSE_BYTES,
+        )
+        .await
+        .ok();
         let body_state = provider_error_body_state(body.as_deref());
 
         match status.as_u16() {

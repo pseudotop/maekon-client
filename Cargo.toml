@@ -49,10 +49,14 @@ eventsource-stream = "0.2"
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 
 # 시스템 모니터링
-sysinfo = "0.39"
+# Pinned to 0.38 (MSRV 1.88): sysinfo 0.39.x bumps the required rustc to 1.95,
+# violating the workspace `rust-version = "1.88.0"` policy. The 0.39 bump landed
+# unintentionally via the Dependabot queue sweep (#6624); 0.38 is the last line
+# honoring the declared MSRV (#6848).
+sysinfo = "0.38"
 
 # 로컬 DB
-rusqlite = { version = "0.39", features = ["bundled-sqlcipher", "fallible_uint"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher", "fallible_uint"] }
 
 # 압축
 flate2 = "1"
@@ -175,6 +179,13 @@ prost-types = "0.14"
 # 입력 시뮬레이션 (크로스 플랫폼 마우스/키보드)
 enigo = { version = "0.6", features = ["serde"] }
 
+# X11 native client (pure-Rust RustConnection — no libxcb). Used by maekon-monitor
+# for native EWMH active-window detection on Linux (#6828, replaces the xdotool fork).
+# Pure-Rust + already in the lockfile transitively (enigo / global-hotkey), so it is
+# declared all-target: the native module then compiles + is unit-testable on the
+# macOS/Windows hosts too, even though it is only CALLED on Linux.
+x11rb = "0.13"
+
 # 자동 업데이트 (self-replace only — reqwest 0.12 중복 제거)
 bsdiff = "0.2"
 self-replace = "1.5"
@@ -218,7 +229,7 @@ objc2-quartz-core = { version = "0.3", features = [
 objc2-user-notifications = "0.3"
 
 # Windows 플랫폼 API
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_Security_Authentication_Identity"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_Security_Authentication_Identity"] }
 windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Ole", "Win32_Foundation", "Win32_System_Variant", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation"] }
 
 # 내부 크레이트

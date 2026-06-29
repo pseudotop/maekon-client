@@ -120,6 +120,12 @@ fn configure_tracking_panel_drag(app: &mut App) {
     if let Some(panel) = app.app_handle().get_webview_window("tracking-panel") {
         if let Ok(handle) = panel.window_handle() {
             if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+                // SAFETY: `appkit.ns_view` is a non-null `NSView*` published by
+                // raw-window-handle for the live "tracking-panel" webview
+                // window; it stays valid while that window exists, which it does
+                // for this synchronous main-thread call. We reborrow it as
+                // `&NSView` only to read `window()` / set a property and never
+                // store the reference past this block.
                 let ns_view =
                     unsafe { &*(appkit.ns_view.as_ptr() as *const objc2_app_kit::NSView) };
                 if let Some(ns_window) = ns_view.window() {

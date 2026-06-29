@@ -64,6 +64,38 @@ pub(crate) fn is_permissive_noop(config: &SandboxConfig) -> bool {
         && config.max_cpu_time_ms == 0
 }
 
+/// Environment variables the sandbox worker subprocess legitimately needs.
+/// Linux: `enigo`'s compiled backend here is x11rb (the `wayland` feature is
+/// not enabled), which needs `DISPLAY` and the X auth cookie — `XAUTHORITY` if
+/// set, otherwise `$HOME/.Xauthority`, so `HOME` must survive too or the X
+/// server rejects the connection on setups without `XAUTHORITY`. `WAYLAND_DISPLAY`
+/// is kept to future-proof enabling the `wayland` feature (which would ALSO need
+/// `XDG_RUNTIME_DIR` added here). macOS/Windows workers read no environment, so
+/// they clear it entirely (empty allowlist). Kept here (cfg-free) so the
+/// filtering logic is testable on any OS.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const LINUX_WORKER_ENV_ALLOWLIST: &[&str] =
+    &["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "HOME"];
+
+/// Select, from a parent environment, only the variables named in `allowlist`.
+///
+/// Used to rebuild a minimal environment for the sandbox worker after
+/// `Command::env_clear()`, so authorization secrets that live in the parent
+/// process environment (`MAEKON_GUI_TICKET_HMAC_SECRET`,
+/// `MAEKON_POLICY_TOKEN_SIGNING_SECRET`, …) never cross the sandbox boundary —
+/// the worker does not need them and must not be able to read them if it is
+/// itself compromised (the exact threat this sandbox isolates) (#6827).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn worker_env_from(
+    parent: impl IntoIterator<Item = (String, String)>,
+    allowlist: &[&str],
+) -> Vec<(String, String)> {
+    parent
+        .into_iter()
+        .filter(|(key, _)| allowlist.contains(&key.as_str()))
+        .collect()
+}
+
 pub fn create_platform_sandbox(config: &SandboxConfig) -> Arc<dyn Sandbox> {
     if !config.enabled {
         return Arc::new(NoOpSandbox);
@@ -155,5 +187,49 @@ mod tests {
         let sandbox = create_platform_sandbox(&config);
         fn assert_send_sync<T: Send + Sync>(_: &T) {}
         assert_send_sync(&sandbox);
+    }
+
+    #[test]
+    fn worker_env_excludes_secrets_keeps_allowlisted() {
+        // #6827: authorization secrets in the parent env must never reach the
+        // worker; only the display vars enigo needs survive the allowlist.
+        let parent = vec![
+            ("DISPLAY".to_string(), ":0".to_string()),
+            (
+                "XAUTHORITY".to_string(),
+                "/run/user/1000/.Xauthority".to_string(),
+            ),
+            ("WAYLAND_DISPLAY".to_string(), "wayland-0".to_string()),
+            ("HOME".to_string(), "/home/user".to_string()),
+            (
+                "MAEKON_GUI_TICKET_HMAC_SECRET".to_string(),
+                "super-secret".to_string(),
+            ),
+            (
+                "MAEKON_POLICY_TOKEN_SIGNING_SECRET".to_string(),
+                "top-secret".to_string(),
+            ),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ];
+
+        let kept = worker_env_from(parent.clone(), LINUX_WORKER_ENV_ALLOWLIST);
+        let keys: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"DISPLAY"));
+        assert!(keys.contains(&"WAYLAND_DISPLAY"));
+        assert!(keys.contains(&"XAUTHORITY"));
+        // HOME is required for enigo/x11rb's $HOME/.Xauthority fallback when
+        // XAUTHORITY is unset — omitting it would break Linux automation.
+        assert!(keys.contains(&"HOME"));
+        assert!(
+            !keys.iter().any(|k| k.contains("SECRET")),
+            "authorization secrets must not survive the allowlist: {keys:?}"
+        );
+        assert!(
+            !keys.contains(&"PATH"),
+            "non-allowlisted vars must be dropped"
+        );
+
+        // macOS / Windows workers use an empty allowlist → fully cleared env.
+        assert!(worker_env_from(parent, &[]).is_empty());
     }
 }

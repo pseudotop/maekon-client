@@ -52,8 +52,29 @@ impl ServerBootstrapContext {
         // transport (OIDC device flow auth).  The provider credential store is
         // constructed separately in ProviderRuntimeContext::build.
         let desktop_secret_store = create_os_secret_store(&config_dir);
-        let integration_runtime =
-            IntegrationRuntimeBuilder::new(config, &config_dir, desktop_secret_store).build()?;
+        // #7073: provision the shared at-rest encryption key so the integration
+        // state store (pending proactive-prompt bodies + insight/audit records) is
+        // AES-256-GCM encrypted, not the lone plaintext-at-rest island. `.db_key`
+        // lives in `data_dir_path`; `load_or_create` is idempotent, so the storage
+        // runtime later loads the SAME key. FAIL-CLOSED: a key-provisioning failure
+        // aborts startup rather than persisting integration state in plaintext,
+        // mirroring StorageRuntimeBuilder.
+        let encryption_key = maekon_storage::encryption::EncryptionKey::load_or_create(
+            data_dir_path,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "at-rest encryption key provisioning failed; refusing to start with the \
+                 integration state store unencrypted: {error}"
+            )
+        })?;
+        let integration_runtime = IntegrationRuntimeBuilder::new(
+            config,
+            &config_dir,
+            desktop_secret_store,
+            Some(Arc::new(encryption_key)),
+        )
+        .build()?;
         let integration_bindings = integration_runtime.bindings();
 
         Ok(Self {

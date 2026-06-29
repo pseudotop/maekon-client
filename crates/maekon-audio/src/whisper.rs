@@ -104,7 +104,9 @@ impl SttProvider for WhisperSttProvider {
         }
 
         let lang = self.language;
-        let samples = audio.samples;
+        // #7115: bind `mut` so the owned source PCM can be zeroized after inference
+        // borrows it (see the `consume_then_wipe` call below).
+        let mut samples = audio.samples;
         let duration_secs = audio.duration_secs;
 
         // Clone the Arc so the closure is 'static — no unsafe required.
@@ -136,12 +138,19 @@ impl SttProvider for WhisperSttProvider {
             params.set_single_segment(false);
             params.set_no_timestamps(true);
 
-            state
-                .full(params, &samples)
-                .map_err(|e| CoreError::SpeechToText {
+            // #7115: lend the owned source PCM to Whisper inference, then zeroize it
+            // before it drops. whisper-rs borrows the samples by reference and never
+            // takes ownership, so this crate owns the raw f32 PCM for the lifetime of
+            // the blocking task; routing the borrow through the shared
+            // `consume_then_wipe` helper extends the #7077/#7113 raw-PCM wipe coverage
+            // to the whisper-feature STT path. The wipe runs on both the success and
+            // error paths (before the `?` below).
+            crate::capture::consume_then_wipe(&mut samples, |s| state.full(params, s)).map_err(
+                |e| CoreError::SpeechToText {
                     code: maekon_core::error_codes::AudioCode::SttFailed,
                     message: format!("transcription failed: {e}"),
-                })?;
+                },
+            )?;
 
             // whisper-rs 0.16: full_n_segments returns c_int directly (no Result),
             // and per-segment text moved to get_segment(i) -> Option<WhisperSegment>
@@ -211,5 +220,29 @@ mod tests {
             assert!(flag.load(Ordering::SeqCst));
         }
         assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn transcribe_lends_then_zeroizes_source_pcm() {
+        // #7115: `transcribe` lends its owned source PCM to whisper-rs inference by
+        // reference and must zeroize it before it drops. The real inference call
+        // (`state.full(params, s)`) needs a loaded Whisper model, so exercise the
+        // exact borrow-then-wipe contract the call site relies on: a `Result`-
+        // returning consumer reads the PCM, the value is forwarded for `?`, and the
+        // source is left wiped.
+        let mut samples = vec![0.5f32, -0.25, 0.75, -1.0];
+        let inference: Result<usize, ()> = crate::capture::consume_then_wipe(&mut samples, |s| {
+            assert_eq!(
+                s,
+                [0.5f32, -0.25, 0.75, -1.0],
+                "inference must see real PCM"
+            );
+            Ok(s.len())
+        });
+        assert_eq!(inference.expect("inference value forwarded for `?`"), 4);
+        assert!(
+            samples.is_empty(),
+            "source PCM must be zeroized after inference borrows it (#7115)"
+        );
     }
 }

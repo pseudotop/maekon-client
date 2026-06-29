@@ -750,8 +750,8 @@ export default function AiAutomationTab() {
           <ToggleRow
             label={t('settingsAutomation.allowUnredactedExternalOcr')}
             description={t('settingsAutomation.allowUnredactedExternalOcrDescription')}
-            checked={formData.ai_provider.allow_unredacted_external_ocr}
-            onChange={(value) => settingsForm.handleAiProviderChange('allow_unredacted_external_ocr', value)}
+            checked={formData.ai_provider.bypass_pii_filter_for_external_ocr}
+            onChange={(value) => settingsForm.handleAiProviderChange('bypass_pii_filter_for_external_ocr', value)}
           />
 
           <SceneIntelligenceConfig

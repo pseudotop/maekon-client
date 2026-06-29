@@ -27,6 +27,16 @@ use crate::provider_error_body::provider_error_message;
 /// <100 MB RSS budget.
 const MAX_NDJSON_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
 
+/// #6916: Aggregate cap on the cross-line accumulated assistant response. The
+/// per-line `MAX_NDJSON_LINE_BYTES` bounds a single newline-free line, but NOT
+/// the running `accumulated` total across many small valid NDJSON lines — and
+/// `read_timeout` resets after every successful read, so a steady trickle never
+/// trips it. A malicious/buggy non-loopback Ollama endpoint could stream an
+/// unbounded number of in-cap chunks and exhaust the 24/7 agent's heap. Mirrors
+/// `http_api_session::MAX_TURN_RESPONSE_BYTES` (8 MiB) — generous for any
+/// legitimate assistant turn, an order of magnitude under the ~100 MB RSS budget.
+const MAX_ACCUMULATED_RESPONSE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
 impl LocalLlmSession {
     /// #6129: Roll back the trailing user message appended at the start of
     /// `send_message` when the send never reaches the success-commit path.
@@ -115,7 +125,11 @@ impl ConversationSession for LocalLlmSession {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body_text = response.text().await.unwrap_or_default();
+            // #6949: cap Ollama error response body (OOM guard)
+            let body_text =
+                crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
+                    .await
+                    .unwrap_or_default();
             // #6129: Roll back the just-pushed user message on non-success
             // status (e.g. 404 model-not-pulled, 5xx) for the same reason.
             self.pop_pending_user_message().await;
@@ -249,6 +263,23 @@ impl ConversationSession for LocalLlmSession {
                         // Streaming content chunk.
                         if !msg.content.is_empty() {
                             accumulated.push_str(&msg.content);
+                            // #6916: bound the cross-line aggregate so a trickle of
+                            // small valid chunks cannot exhaust the heap (read_timeout
+                            // resets per read and the per-line cap does not bound this).
+                            if accumulated.len() > MAX_ACCUMULATED_RESPONSE_BYTES {
+                                warn!(
+                                    session_id = %session_id,
+                                    bytes = accumulated.len(),
+                                    limit = MAX_ACCUMULATED_RESPONSE_BYTES,
+                                    "Ollama accumulated response exceeds size limit; terminating stream"
+                                );
+                                Err(CoreError::Network {
+                                    code: maekon_core::error_codes::NetworkCode::Generic,
+                                    message: format!(
+                                        "Ollama accumulated response exceeded {MAX_ACCUMULATED_RESPONSE_BYTES} bytes"
+                                    ),
+                                })?;
+                            }
                             yield OutboundMessage::Text {
                                 content: msg.content.clone(),
                                 done: false,

@@ -6,6 +6,8 @@
 pub mod reference_server;
 pub mod remote_transport;
 pub mod sync_crypto;
+// #6923/#6925: shared response-body size cap (used by both remote + LAN transport).
+pub(crate) mod http_body;
 
 #[cfg(feature = "lan-sync")]
 pub mod lan_crypto;

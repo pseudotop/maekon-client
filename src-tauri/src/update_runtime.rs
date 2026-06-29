@@ -1,10 +1,10 @@
 use maekon_core::config::UpdateConfig;
 use maekon_web::update_control::{PendingUpdateInfo, UpdateAction, UpdateControl, UpdatePhase};
 use tokio::runtime::Handle;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::update_coordinator;
-use crate::updater::{UpdateCheckResult, Updater};
+use crate::updater::{UpdateAssetType, UpdateCheckResult, Updater};
 
 pub(crate) struct UpdateRuntimeBundle {
     pub(crate) update_control: UpdateControl,
@@ -54,9 +54,36 @@ impl<'a> UpdateRuntimeBuilder<'a> {
                         release,
                         download_url,
                         download_size,
-                        ..
+                        asset_type,
                     })) => {
                         info!("startup update check: v{latest} available");
+                        // #6266/#6830: fail-safe on delta updates — mirror the
+                        // coordinator's check.rs guard. The install path treats the
+                        // downloaded file as a FULL binary (apply_delta_update has no
+                        // production caller), so surfacing a `.patch` as
+                        // PendingApproval could brick the binary on Approve→install.
+                        // This startup path is the sibling that check.rs's guard
+                        // missed (it discarded asset_type via `..`).
+                        if let UpdateAssetType::DeltaPatch { from_version } = &asset_type {
+                            warn!(
+                                from_version = %from_version,
+                                latest = %latest,
+                                "startup update check: delta .patch offered but delta apply is not \
+                                 wired; refusing (would brick the binary)"
+                            );
+                            let mut guard = startup_state.write().await;
+                            guard.phase = UpdatePhase::Error;
+                            guard.message = Some(format!(
+                                "Update {latest} is delta-only (.patch); this client requires a \
+                                 full-binary release and will not install a delta patch."
+                            ));
+                            guard.pending = None;
+                            guard.touch();
+                            if let Err(e) = startup_event_tx.send(guard.clone()) {
+                                debug!("channel send failed: {e}");
+                            }
+                            return;
+                        }
                         // Write to shared state and publish to broadcast.
                         // send() is called while the write guard is held,
                         // matching the coordinator's run_check() pattern.

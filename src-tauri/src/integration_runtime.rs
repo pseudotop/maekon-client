@@ -26,6 +26,7 @@ use maekon_network::integration::{
     IntegrationSessionCoordinator, IntegrationSessionRuntimeProfile, OidcDeviceFlowAuthConfig,
     OidcDeviceFlowIntegrationAuthPort, PolicyAwareIntegrationEgressCoordinator,
 };
+use maekon_storage::encryption::EncryptionKey;
 use maekon_storage::integration_state_store::{
     FileIntegrationStateStore, IntegrationStateStorePolicy,
 };
@@ -38,6 +39,20 @@ use crate::integration_prompt_delivery::{
     IntegrationInboxDeliveryCoordinator, IntegrationInboxDeliveryLoop,
     IntegrationInboxDeliveryLoopProfile,
 };
+
+/// #6936: PII level for integration insight egress to a third-party SaaS backend.
+///
+/// integration insight summaries/derived tags leave the device, so they must be
+/// floored through the egress PII SSOT `ExternalDataPolicy::effective_egress_pii_level`
+/// exactly like the sibling off-device paths (external LLM, window titles, OCR,
+/// remote-embedding #6914). Using the raw `privacy.pii_filter_level` leaked verbatim
+/// content under the reachable `AllowFiltered + Off` config; this floors it to Basic.
+fn integration_egress_pii_level(config: &AppConfig) -> maekon_core::config::PiiFilterLevel {
+    config
+        .ai_provider
+        .external_data_policy
+        .effective_egress_pii_level(config.privacy.pii_filter_level)
+}
 
 #[derive(Clone)]
 pub(crate) struct IntegrationRuntimeBindings {
@@ -237,6 +252,10 @@ pub(crate) struct IntegrationRuntimeBuilder<'a> {
     config: &'a AppConfig,
     config_dir: &'a Path,
     secret_store: Option<Arc<dyn SecretStore>>,
+    /// #7073: shared AES-256-GCM key used to encrypt the integration state store
+    /// at rest. `None` only in tests / degraded fallback; the production
+    /// composition root supplies the same `.db_key` used for SQLite and frames.
+    encryption_key: Option<Arc<EncryptionKey>>,
 }
 
 impl<'a> IntegrationRuntimeBuilder<'a> {
@@ -244,11 +263,13 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
         config: &'a AppConfig,
         config_dir: &'a Path,
         secret_store: Option<Arc<dyn SecretStore>>,
+        encryption_key: Option<Arc<EncryptionKey>>,
     ) -> Self {
         Self {
             config,
             config_dir,
             secret_store,
+            encryption_key,
         }
     }
 
@@ -417,6 +438,8 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
                 // sessions even when egress is enqueued directly at the store).
                 ..Default::default()
             },
+            // #7073: encrypt the integration state at rest with the shared key.
+            self.encryption_key.clone(),
         )?;
         let session_store = Arc::new(integration_state_store.session_store())
             as Arc<dyn maekon_core::ports::integration::IntegrationSessionStorePort>;
@@ -470,7 +493,10 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             )
             .with_pii_sanitizer(
                 Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
-                self.config.privacy.pii_filter_level,
+                // #6936: integration insight summaries/tags egress to a third-party
+                // SaaS backend, so they must pass the egress PII floor SSOT (see
+                // integration_egress_pii_level) like the sibling off-device paths.
+                integration_egress_pii_level(self.config),
             ),
         ) as Arc<dyn IntegrationEgressPort>;
         let egress = Arc::new(ConsentGatedIntegrationEgress::with_gate(
@@ -702,7 +728,7 @@ mod tests {
         config.integration.enabled = true;
         config.integration.auth_token_env_var = Some("MAEKON_TEST_INTEGRATION_TOKEN".to_string());
 
-        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None)
+        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None, None)
             .build()
             .unwrap();
         let bindings = runtime.bindings();
@@ -715,6 +741,35 @@ mod tests {
         assert!(bindings.session.is_none());
     }
 
+    /// #6936 regression guard: integration insight egress PII level must be floored
+    /// through effective_egress_pii_level. AllowFiltered + Off → Basic (not raw Off),
+    /// and must differ from the raw level (else the floor isn't applied = the bug).
+    #[test]
+    fn integration_egress_pii_level_floors_allow_filtered_off() {
+        use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel};
+        let mut config = AppConfig::default_config();
+        config.ai_provider.external_data_policy = ExternalDataPolicy::AllowFiltered;
+        config.privacy.pii_filter_level = PiiFilterLevel::Off;
+
+        let level = super::integration_egress_pii_level(&config);
+        assert_eq!(
+            level,
+            PiiFilterLevel::Basic,
+            "AllowFiltered + Off must floor integration egress to Basic"
+        );
+        assert_ne!(
+            level, config.privacy.pii_filter_level,
+            "egress level equal to raw pii_filter_level means the floor wasn't applied (bug)"
+        );
+
+        // PiiFilterStrict policy pins Strict regardless of configured level.
+        config.ai_provider.external_data_policy = ExternalDataPolicy::PiiFilterStrict;
+        assert_eq!(
+            super::integration_egress_pii_level(&config),
+            PiiFilterLevel::Strict
+        );
+    }
+
     #[test]
     fn build_runtime_preserves_dpop_signing() {
         let temp_dir = TempDir::new().expect("temp dir");
@@ -725,7 +780,7 @@ mod tests {
         config.integration.auth_token_env_var = Some("MAEKON_TEST_INTEGRATION_TOKEN".to_string());
         config.integration.supported_auth_schemes = vec![IntegrationAuthScheme::DpopBearer];
 
-        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None)
+        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None, None)
             .build()
             .unwrap();
         let bindings = runtime.bindings();
@@ -751,12 +806,19 @@ mod tests {
             Some("https://integration.example.com/bootstrap".to_string());
         config.integration.auth_token_env_var = Some("MAEKON_TEST_INTEGRATION_TOKEN".to_string());
 
+        // SAFETY: set_var mutates process-global environment, which is unsound
+        // if another thread reads/writes the environment concurrently. The
+        // `#[serial]` attribute (see comment above) guarantees no other test in
+        // this binary runs while this one holds the env, so there is no
+        // concurrent access.
         unsafe {
             std::env::set_var("MAEKON_TEST_INTEGRATION_TOKEN", "token-value");
         }
-        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None)
+        let runtime = IntegrationRuntimeBuilder::new(&config, temp_dir.path(), None, None)
             .build()
             .unwrap();
+        // SAFETY: same `#[serial]` exclusivity as the set_var above — no other
+        // thread is touching the environment while we remove this key.
         unsafe {
             std::env::remove_var("MAEKON_TEST_INTEGRATION_TOKEN");
         }
