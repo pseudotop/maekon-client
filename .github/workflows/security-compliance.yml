@@ -65,7 +65,7 @@ jobs:
           ./scripts/cargo-cache.sh install cargo-audit --locked --force
           ./scripts/cargo-cache.sh install cargo-deny --version 0.19.7 --locked --force
           ./scripts/cargo-cache.sh install cargo-vet --version 0.10.2 --locked --force
-          ./scripts/cargo-cache.sh install cargo-about --locked --features cli
+          ./scripts/cargo-cache.sh install cargo-about --version 0.8.4 --locked --force
           ./scripts/cargo-cache.sh install cargo-cyclonedx --locked --force
 
       - name: RustSec audit

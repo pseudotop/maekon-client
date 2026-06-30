@@ -11,6 +11,8 @@ updates:
     ignore:
       - dependency-name: "sysinfo"
         versions: [">=0.39"]
+      - dependency-name: "time"
+        versions: [">=0.3.52"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]
