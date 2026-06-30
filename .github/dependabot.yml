@@ -4,7 +4,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    # public repo는 export target이므로 version-update PR은 parent SSOT에서만 받는다.
+    # Dependabot security update PR 한도는 GitHub가 별도로 관리한다.
+    open-pull-requests-limit: 0
     # sysinfo 0.39+ raises its required rustc to 1.95, violating the workspace
     # `rust-version = "1.88.0"` MSRV. Hold at 0.38 until the MSRV is intentionally
     # raised, so a routine Dependabot sweep cannot silently re-break it (#6848).
@@ -27,7 +29,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    # public repo는 export target이므로 GitHub Actions version-update PR도
+    # parent SSOT에서만 받는다.
+    open-pull-requests-limit: 0
     groups:
       gha-all:
         patterns: ["*"]
