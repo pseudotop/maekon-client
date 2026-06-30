@@ -89,7 +89,7 @@ Set `<!-- rollout:0 -->` in the release body. All clients that would otherwise b
 
 ## Behavior when the comment is absent
 
-A release body with no `<!-- rollout:... -->` comment defaults to **100%** (full rollout). This matches the pre-Phase-4 behavior and keeps backward-compat for releases cut before this convention was introduced.
+A release body with no `<!-- rollout:... -->` comment defaults to **0%** (no automatic rollout). This fail-closed default prevents a generated or manually edited release note from exposing a new build to the full stable cohort by accident.
 
 ---
 
@@ -100,8 +100,8 @@ A release body with no `<!-- rollout:... -->` comment defaults to **100%** (full
 | `<!-- rollout:5 -->`   | 5 |
 | `<!-- rollout:100 -->` | 100 |
 | `<!-- rollout:150 -->` | 100 (capped) |
-| `<!-- rollout:abc -->` | 100 (fallback — treat as absent) |
-| (no comment at all) | 100 |
+| `<!-- rollout:abc -->` | 0 (fail-closed) |
+| (no comment at all) | 0 |
 
 ---
 

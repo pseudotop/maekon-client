@@ -39,8 +39,7 @@ pub struct RemoteSyncTransport {
 /// would send it over cleartext, i.e. a non-empty credential AND a non-`https://`
 /// scheme AND a non-loopback host. An empty credential (nothing to leak) or a
 /// loopback dev endpoint returns `false`. Mirrors the cleartext rule enforced by
-/// `http_client::build_reqwest_client_for_url`, except this transport warns rather
-/// than rejecting (low-severity finding `remote-sync-cred-warn`).
+/// `http_client::build_reqwest_client_for_url`.
 fn credential_egresses_cleartext(endpoint: &str, credential: &str) -> bool {
     !credential.is_empty()
         && !endpoint
@@ -72,20 +71,16 @@ impl RemoteSyncTransport {
 
         // Cleartext-credential egress guard: every push/pull/peer request attaches
         // the bearer token / API key (see `auth_header`). If the endpoint is plain
-        // `http://` to a non-loopback host, that credential leaves the device in
-        // cleartext where any on-path observer can capture it. The sister HTTP
-        // dispatchers (`build_reqwest_client_for_url`, `SseStreamClient`) hard-reject
-        // remote cleartext, but this transport keeps a low-severity loud warning so a
-        // misconfigured `[sync] remote_endpoint` cannot silently leak the secret.
-        // Loopback dev endpoints and `https://` are unaffected. Empty credential =
-        // nothing to leak, so stay quiet.
+        // `http://` to a non-loopback host, fail closed before the first request can
+        // expose the credential on the wire. Loopback dev endpoints and `https://`
+        // are unaffected. Empty credential = nothing to leak.
         if credential_egresses_cleartext(&endpoint, &auth_credential) {
-            warn!(
-                endpoint = %endpoint,
-                "remote sync credential will egress over cleartext: endpoint is not https:// \
-                 and not a loopback host — the bearer token / API key is exposed on the wire. \
-                 Use an https:// remote_endpoint."
-            );
+            return Err(CoreError::Config {
+                code: maekon_core::error_codes::ConfigCode::Invalid,
+                message: "sync.remote_endpoint uses cleartext http:// to a non-loopback host while \
+                          remote sync authentication is configured; use https:// or a loopback dev endpoint"
+                    .to_string(),
+            });
         }
 
         Ok(Self {
@@ -765,13 +760,13 @@ mod tests {
         );
     }
 
-    /// Regression: `remote-sync-cred-warn`. The cleartext-credential egress
+    /// Regression: cleartext credential egress. The cleartext-credential egress
     /// predicate must fire ONLY for a non-empty credential bound for a
-    /// non-`https://`, non-loopback endpoint. These cases drive the one-time
-    /// `warn!` emitted in `RemoteSyncTransport::new`.
+    /// non-`https://`, non-loopback endpoint. These cases drive the constructor
+    /// fail-closed guard in `RemoteSyncTransport::new`.
     #[test]
     fn credential_egress_cleartext_predicate() {
-        // Non-empty credential + remote cleartext http:// → warn.
+        // Non-empty credential + remote cleartext http:// → reject.
         assert!(credential_egresses_cleartext(
             "http://sync.example.com",
             "secret-token"
@@ -786,7 +781,7 @@ mod tests {
             "secret-token"
         ));
 
-        // https:// → credential is protected by TLS, no warn (any host).
+        // https:// → credential is protected by TLS, no rejection (any host).
         assert!(!credential_egresses_cleartext(
             "https://sync.example.com",
             "secret-token"
@@ -797,7 +792,7 @@ mod tests {
         ));
 
         // Loopback dev endpoints over cleartext are allowed (mirrors sister
-        // HTTP dispatchers) → no warn.
+        // HTTP dispatchers) → no rejection.
         assert!(!credential_egresses_cleartext(
             "http://localhost:8000/sync",
             "secret-token"
@@ -811,7 +806,7 @@ mod tests {
             "secret-token"
         ));
 
-        // Empty credential → nothing to leak, no warn even on remote cleartext.
+        // Empty credential → nothing to leak, no rejection even on remote cleartext.
         assert!(!credential_egresses_cleartext(
             "http://sync.example.com",
             ""
@@ -819,11 +814,9 @@ mod tests {
     }
 
     /// Constructing a transport against a remote cleartext endpoint with a
-    /// credential must still succeed (warn, not hard-reject) per the
-    /// low-severity finding — behaviour parity with the established pattern
-    /// is the warning, not a constructor error.
+    /// credential must fail closed before any push/pull can attach the secret.
     #[test]
-    fn new_warns_but_succeeds_on_remote_cleartext_with_credential() {
+    fn new_rejects_remote_cleartext_with_credential() {
         let result = RemoteSyncTransport::new(
             "http://sync.example.com".to_string(),
             "dev".to_string(),
@@ -831,16 +824,13 @@ mod tests {
             RemoteSyncAuth::BearerToken,
             "secret-token".to_string(),
         );
-        // `RemoteSyncTransport` is not `Debug`, so bind the Ok value via a match
-        // rather than `.expect()`.
-        let Ok(transport) = result else {
-            panic!("remote cleartext credential must warn, not reject (low-severity finding)");
+        let Err(err) = result else {
+            panic!("remote cleartext credential must be rejected");
         };
-        // Construction succeeded AND retained the configuration: the credential
-        // is kept (warn-not-reject) and the endpoint is stored normalized.
-        assert_eq!(transport.endpoint, "http://sync.example.com");
-        assert_eq!(transport.auth_credential, "secret-token");
-        assert!(matches!(transport.auth_mode, RemoteSyncAuth::BearerToken));
+        assert!(
+            err.to_string().contains("cleartext"),
+            "error must explain cleartext credential egress, got: {err}"
+        );
     }
 
     /// iter-78: domain fallback. 500 (not in specific arms) stays as Network.

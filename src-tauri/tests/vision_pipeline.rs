@@ -342,6 +342,7 @@ async fn frame_processor_capture_and_process_real_invocation() {
         app_bundle_id: None,
         window_bounds: None,
         screen_scale_factor: None,
+        ocr_processing_permitted: true,
     };
 
     // Real async trait method call — drives the entire wired chain.

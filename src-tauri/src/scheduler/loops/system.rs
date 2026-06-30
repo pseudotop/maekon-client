@@ -36,6 +36,22 @@ pub(super) fn collection_permitted(
     crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused)
 }
 
+/// Consent decision for user-derived embedding re-computation.
+///
+/// Re-embedding stale vectors can call remote embedding providers, so it must be
+/// at least as strict as the collection gate and additionally require the
+/// activity_pattern_learning own-field consent.
+pub(super) fn embedding_reembedding_permitted(
+    config_manager: Option<&ConfigManager>,
+    consent_manager: Option<&Arc<dyn ConsentManagerPort>>,
+    paused: bool,
+) -> bool {
+    collection_permitted(config_manager, consent_manager, paused)
+        && consent_manager
+            .map(|c| c.effective_permissions().activity_pattern_learning)
+            .unwrap_or(false)
+}
+
 /// Pure helper for the consent-gate decision specific to the metrics collection
 /// loop (F1 / Option A).
 ///
@@ -304,6 +320,11 @@ impl Scheduler {
                             consent_manager.as_ref(),
                             capture_paused.load(Ordering::Relaxed),
                         );
+                        let embedding_reindex_ok = embedding_reembedding_permitted(
+                            config_manager.as_ref(),
+                            consent_manager.as_ref(),
+                            capture_paused.load(Ordering::Relaxed),
+                        );
 
                         // [HOUSEKEEPING] #6441 F18: reclaim ONNX RSS by evicting the
                         // local embedding model when it has been idle. No-op for
@@ -373,7 +394,7 @@ impl Scheduler {
                                 // consent gate. (mark_stale itself is just a flag, but it
                                 // is the entry point of the re-embedding pipeline, so it
                                 // is enclosed together.)
-                                if collect_ok {
+                                if embedding_reindex_ok {
                                     let config_model = config_manager
                                         .as_ref()
                                         .map(|cm| cm.get().analysis.embedding.local_model.clone())
@@ -1081,7 +1102,7 @@ where
 ///   6. valid consent but capture_paused → false
 #[cfg(test)]
 mod collection_permitted_tests {
-    use super::collection_permitted;
+    use super::{collection_permitted, embedding_reembedding_permitted};
     use maekon_core::config_manager::ConfigManager;
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
     use maekon_core::ports::consent_manager::ConsentManagerPort;
@@ -1116,6 +1137,23 @@ mod collection_permitted_tests {
             ..Default::default()
         };
         // Grant consent valid for 30 days
+        mgr.grant_consent(perms, 30).expect("consent grant failed");
+        mgr
+    }
+
+    fn make_valid_embedding_consent(
+        screen_capture: bool,
+        activity_pattern_learning: bool,
+    ) -> Arc<dyn ConsentManagerPort> {
+        let consent_path = tmp_path(&format!(
+            "consent_embedding_{screen_capture}_{activity_pattern_learning}.json"
+        ));
+        let mgr = Arc::new(ConsentManager::new(consent_path));
+        let perms = ConsentPermissions {
+            screen_capture,
+            activity_pattern_learning,
+            ..Default::default()
+        };
         mgr.grant_consent(perms, 30).expect("consent grant failed");
         mgr
     }
@@ -1221,6 +1259,30 @@ mod collection_permitted_tests {
         assert!(
             !collection_permitted(Some(&cm), Some(&consent), true),
             "must be false when paused=true regardless of consent"
+        );
+    }
+
+    #[test]
+    fn embedding_reembedding_requires_activity_pattern_learning_consent() {
+        let cm = make_config_manager();
+        let consent = make_valid_embedding_consent(true, false);
+        assert!(
+            collection_permitted(Some(&cm), Some(&consent), false),
+            "baseline collection gate is open with valid screen_capture consent"
+        );
+        assert!(
+            !embedding_reembedding_permitted(Some(&cm), Some(&consent), false),
+            "remote embedding re-computation must remain closed without activity_pattern_learning consent"
+        );
+    }
+
+    #[test]
+    fn embedding_reembedding_runs_with_activity_pattern_learning_consent() {
+        let cm = make_config_manager();
+        let consent = make_valid_embedding_consent(true, true);
+        assert!(
+            embedding_reembedding_permitted(Some(&cm), Some(&consent), false),
+            "remote embedding re-computation may run when both collection and activity_pattern_learning gates are open"
         );
     }
 }

@@ -348,9 +348,9 @@ fn is_eligible_for_rollout(installation_id: &str, version: &str, rollout_percent
 }
 
 /// Parse rollout percentage from GitHub release body.
-/// Looks for `<!-- rollout:N -->` comment. Returns 100 if absent or invalid.
+/// Looks for `<!-- rollout:N -->` comment. Returns 0 if absent or invalid.
 fn parse_rollout_percent(body: &Option<String>) -> u8 {
-    let Some(body) = body else { return 100 };
+    let Some(body) = body else { return 0 };
     if let Some(start) = body.find("<!-- rollout:") {
         let after = &body[start + 13..];
         if let Some(end) = after.find("-->") {
@@ -359,7 +359,7 @@ fn parse_rollout_percent(body: &Option<String>) -> u8 {
             }
         }
     }
-    100
+    0
 }
 
 #[cfg(test)]

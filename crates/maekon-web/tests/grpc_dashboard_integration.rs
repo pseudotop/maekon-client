@@ -28,6 +28,15 @@ use maekon_web::proto::dashboard::v1::{
 };
 use maekon_web::storage_port::WebStorage;
 
+const TEST_LOCAL_AUTH_TOKEN: &str = "grpc-test-local-auth-token";
+
+type AuthedDashboardClient = DashboardServiceClient<
+    tonic::service::interceptor::InterceptedService<
+        tonic::transport::Channel,
+        fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status>,
+    >,
+>;
+
 /// Pick a free ephemeral port by binding + immediately dropping a listener.
 /// Tiny race window between drop + server bind, acceptable for test use.
 fn pick_free_port() -> u16 {
@@ -62,6 +71,29 @@ async fn in_memory_storage() -> Arc<dyn WebStorage> {
     Arc::new(storage) as Arc<dyn WebStorage>
 }
 
+fn add_local_auth(mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+    req.metadata_mut().insert(
+        "x-local-auth",
+        TEST_LOCAL_AUTH_TOKEN
+            .parse()
+            .expect("valid local-auth metadata value"),
+    );
+    Ok(req)
+}
+
+async fn connect_dashboard_client(port: u16) -> AuthedDashboardClient {
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let channel = tonic::transport::Channel::from_shared(endpoint)
+        .expect("valid endpoint")
+        .connect()
+        .await
+        .expect("connect to dashboard gRPC server");
+    DashboardServiceClient::with_interceptor(
+        channel,
+        add_local_auth as fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status>,
+    )
+}
+
 // Identity PII sanitizer for tests (#6421): production wiring always provides a
 // sanitizer, so a `None` would (correctly, per the fail-closed fix) redact dashboard
 // text. Tests that assert on real streamed frame content use this pass-through so the
@@ -74,7 +106,7 @@ impl maekon_core::ports::pii_sanitizer::PiiSanitizer for PassthroughPiiSanitizer
 }
 
 /// Build a `GrpcSpawnConfig` with sensible test defaults (deterministic
-/// `MockSystemMonitor`, 16-slot broadcast, no auth token, default
+/// `MockSystemMonitor`, 16-slot broadcast, local-auth token, default
 /// `LoadThresholds`, streaming enabled, cap 50). Callers that need to
 /// override fields can destructure and rebuild.
 fn test_spawn_config(port: u16, storage: Arc<dyn WebStorage>) -> maekon_web::grpc::GrpcSpawnConfig {
@@ -88,7 +120,7 @@ fn test_spawn_config(port: u16, storage: Arc<dyn WebStorage>) -> maekon_web::grp
         system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
         event_tx,
         integration_auth_token: None,
-        local_auth_token: None,
+        local_auth_token: Some(Arc::from(TEST_LOCAL_AUTH_TOKEN)),
         pii_sanitizer: Some(Arc::new(PassthroughPiiSanitizer)
             as Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer>),
         ai_runtime_status_snapshot: None,
@@ -108,10 +140,7 @@ async fn grpc_dashboard_get_agent_info_end_to_end() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_agent_info(GetAgentInfoRequest {})
@@ -160,24 +189,27 @@ async fn grpc_dashboard_local_auth_gate_rejects_unauthenticated_and_accepts_toke
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
+    let mut unauthenticated_client = DashboardServiceClient::connect(endpoint.clone())
         .await
         .expect("connect to dashboard gRPC server");
 
     // No token → Unauthenticated.
-    let err = client
+    let err = unauthenticated_client
         .get_agent_info(GetAgentInfoRequest {})
         .await
         .expect_err("RPC without the local-auth token must be rejected");
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
     // Correct token via `x-local-auth` metadata → accepted.
+    let mut authenticated_client = DashboardServiceClient::connect(endpoint)
+        .await
+        .expect("connect to dashboard gRPC server");
     let mut req = tonic::Request::new(GetAgentInfoRequest {});
     let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
         "x-local-auth".parse().expect("valid metadata key");
     req.metadata_mut()
         .insert(key, "sess-token-xyz".parse().expect("valid metadata value"));
-    client
+    authenticated_client
         .get_agent_info(req)
         .await
         .expect("RPC with the correct local-auth token must succeed");
@@ -196,10 +228,7 @@ async fn grpc_dashboard_health_check_end_to_end() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .health_check(HealthCheckRequest {})
@@ -227,10 +256,7 @@ async fn grpc_dashboard_survives_multiple_sequential_calls() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     // Locks the invariant that DashboardServiceImpl handles concurrent-ish
     // traffic without panicking or leaking state between calls.
@@ -257,10 +283,7 @@ async fn grpc_dashboard_get_session_stats_empty_db() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_session_stats(GetSessionStatsRequest { limit: 0 })
@@ -327,10 +350,7 @@ async fn grpc_dashboard_get_session_stats_aggregates_seeded_sessions() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_session_stats(GetSessionStatsRequest { limit: 10 })
@@ -364,10 +384,7 @@ async fn grpc_dashboard_get_recent_frames_empty_db() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_recent_frames(GetRecentFramesRequest {
@@ -397,10 +414,7 @@ async fn grpc_dashboard_get_recent_frames_clamps_limit() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     // Request limit=9999, since_hours=9999 — server should hard-cap but not
     // reject. Empty DB, so we just verify no error.
@@ -429,10 +443,7 @@ async fn grpc_dashboard_get_productivity_metrics_empty_db() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_productivity_metrics(GetProductivityMetricsRequest { since_hours: 0 })
@@ -459,10 +470,7 @@ async fn grpc_dashboard_get_focus_stats_empty_db() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     let response = client
         .get_focus_stats(GetFocusStatsRequest { days: 0 })
@@ -532,10 +540,7 @@ async fn grpc_dashboard_get_focus_stats_aggregates_seeded_days() {
     )));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint)
-        .await
-        .expect("connect to dashboard gRPC server");
+    let mut client = connect_dashboard_client(port).await;
 
     // days=0 → server default (7). All 3 seeded dates fall within the window.
     let response = client
@@ -581,8 +586,7 @@ async fn grpc_dashboard_subscribe_metrics_emits_initial_hint() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
 
     let mut stream = client
         .subscribe_metrics(SubscribeMetricsRequest {
@@ -627,8 +631,7 @@ async fn grpc_dashboard_subscribe_metrics_rejects_when_streaming_disabled() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
 
     // `streaming_enabled=false` short-circuits BEFORE the stream opens, so the
     // error surfaces at the RPC boundary (not as a stream item).
@@ -662,8 +665,7 @@ async fn grpc_dashboard_subscribe_metrics_interval_emits_buckets() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
 
     let mut stream = client
         .subscribe_metrics(SubscribeMetricsRequest {
@@ -722,7 +724,7 @@ async fn grpc_dashboard_subscribe_metrics_realtime_emits_on_event_tx_tick() {
         system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
         event_tx: event_tx.clone(),
         integration_auth_token: None,
-        local_auth_token: None,
+        local_auth_token: Some(Arc::from(TEST_LOCAL_AUTH_TOKEN)),
         pii_sanitizer: None,
         ai_runtime_status_snapshot: None,
         load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
@@ -732,8 +734,7 @@ async fn grpc_dashboard_subscribe_metrics_realtime_emits_on_event_tx_tick() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
     let mut stream = client
         .subscribe_metrics(SubscribeMetricsRequest {
             interval_secs: 0, // realtime — handler blocks on event_tx
@@ -787,16 +788,9 @@ async fn grpc_dashboard_subscribe_metrics_enforces_active_stream_cap() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut c1 = DashboardServiceClient::connect(endpoint.clone())
-        .await
-        .unwrap();
-    let mut c2 = DashboardServiceClient::connect(endpoint.clone())
-        .await
-        .unwrap();
-    let mut c3 = DashboardServiceClient::connect(endpoint.clone())
-        .await
-        .unwrap();
+    let mut c1 = connect_dashboard_client(port).await;
+    let mut c2 = connect_dashboard_client(port).await;
+    let mut c3 = connect_dashboard_client(port).await;
 
     let req = || SubscribeMetricsRequest {
         interval_secs: 30, // slow cadence, keeps streams alive
@@ -843,8 +837,7 @@ async fn grpc_dashboard_subscribe_metrics_rejects_dns_rebound_authority() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
 
     let mut req = tonic::Request::new(SubscribeMetricsRequest {
         interval_secs: 1,
@@ -875,11 +868,8 @@ async fn grpc_dashboard_subscribe_metrics_survives_reconnect_cycle() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
     for i in 0..5 {
-        let mut client = DashboardServiceClient::connect(endpoint.clone())
-            .await
-            .unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_metrics(SubscribeMetricsRequest {
                 interval_secs: 30,
@@ -914,8 +904,7 @@ async fn grpc_dashboard_subscribe_metrics_honors_opt_out_on_localhost() {
     let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
     wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+    let mut client = connect_dashboard_client(port).await;
     let mut stream = client
         .subscribe_metrics(SubscribeMetricsRequest {
             interval_secs: 1,
@@ -996,7 +985,7 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(cpu_pct, mem_used_mb, mem_total_mb),
             event_tx,
             integration_auth_token: None,
-            local_auth_token: None,
+            local_auth_token: Some(Arc::from(TEST_LOCAL_AUTH_TOKEN)),
             pii_sanitizer: Some(Arc::new(PassthroughPiiSanitizer) as Arc<dyn PiiSanitizer>),
             ai_runtime_status_snapshot: None,
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
@@ -1017,8 +1006,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["frame".to_string()],
@@ -1089,8 +1077,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["idle".to_string()],
@@ -1144,8 +1131,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["frame".to_string()],
@@ -1224,8 +1210,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["frame".to_string()],
@@ -1317,8 +1302,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["frame".to_string()],
@@ -1420,8 +1404,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec![], // empty = all types
@@ -1486,22 +1469,14 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-
         // Open 3 separate clients + streams.
         let req = || SubscribeEventsRequest {
             event_types: vec!["frame".to_string()],
             respect_server_hints: true,
         };
-        let mut c1 = DashboardServiceClient::connect(endpoint.clone())
-            .await
-            .unwrap();
-        let mut c2 = DashboardServiceClient::connect(endpoint.clone())
-            .await
-            .unwrap();
-        let mut c3 = DashboardServiceClient::connect(endpoint.clone())
-            .await
-            .unwrap();
+        let mut c1 = connect_dashboard_client(port).await;
+        let mut c2 = connect_dashboard_client(port).await;
+        let mut c3 = connect_dashboard_client(port).await;
 
         let mut s1 = c1.subscribe_events(req()).await.unwrap().into_inner();
         let mut s2 = c2.subscribe_events(req()).await.unwrap().into_inner();
@@ -1580,8 +1555,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["ai_runtime_status".to_string()],
@@ -1631,8 +1605,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["ai_runtime_status".to_string()],
@@ -1696,7 +1669,7 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
             event_tx,
             integration_auth_token: None,
-            local_auth_token: None,
+            local_auth_token: Some(Arc::from(TEST_LOCAL_AUTH_TOKEN)),
             pii_sanitizer: Some(Arc::new(RedactingSanitizer)),
             ai_runtime_status_snapshot: Some(AiRuntimeStatus {
                 ocr_source: "local".to_string(),
@@ -1713,8 +1686,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["ai_runtime_status".to_string()],
@@ -1784,7 +1756,7 @@ mod subscribe_events_tests {
             system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
             event_tx: event_tx.clone(),
             integration_auth_token: None,
-            local_auth_token: None,
+            local_auth_token: Some(Arc::from(TEST_LOCAL_AUTH_TOKEN)),
             pii_sanitizer: None,
             ai_runtime_status_snapshot: None,
             load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
@@ -1795,8 +1767,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["idle".to_string()],
@@ -1867,8 +1838,7 @@ mod subscribe_events_tests {
         let server_task = tokio::spawn(maekon_web::grpc::serve_optional(cfg));
         wait_for_server_ready(port, Duration::from_secs(5)).await;
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let mut client = DashboardServiceClient::connect(endpoint).await.unwrap();
+        let mut client = connect_dashboard_client(port).await;
         let mut stream = client
             .subscribe_events(SubscribeEventsRequest {
                 event_types: vec!["frame".to_string()],

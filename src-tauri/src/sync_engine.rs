@@ -109,24 +109,10 @@ impl SyncEngine {
         device_id: String,
         device_name: String,
     ) -> Self {
-        // Seed the push watermark from storage so we never re-push rows that
-        // were already successfully pushed in a previous process lifetime.
-        let initial_watermark = match extractor.local_watermark().await {
-            Ok(wm) => {
-                if wm != Hlc::default() {
-                    debug!(
-                        wall_ms = wm.wall_ms,
-                        counter = wm.counter,
-                        "initialized push watermark from storage"
-                    );
-                }
-                wm
-            }
-            Err(e) => {
-                warn!("failed to read initial push watermark, starting from zero: {e}");
-                Hlc::default()
-            }
-        };
+        // `local_watermark()`는 DB 전역 최대값이라 peer-origin 고수위 행이 self-origin
+        // 미전송 행을 가릴 수 있다. durable "last successful push" 저장소가 생기기
+        // 전까지는 0에서 시작해 중복 전송을 허용하고, receiver의 idempotent merge에 맡긴다.
+        let initial_watermark = Hlc::default();
 
         Self {
             extractor,
@@ -297,17 +283,17 @@ impl SyncEngine {
         }
 
         // --- Pull phase ---
-        let local_watermark = self.extractor.local_watermark().await?;
+        // Pull must not start from the DB-global local max HLC. A high local row
+        // or a previously merged high-HLC peer can otherwise hide an unseen lower
+        // HLC changeset from another peer forever. Start at ZERO and let the
+        // merger's idempotent/LWW rules absorb duplicates while the transport
+        // walks forward within this cycle.
+        let mut pull_watermark = Hlc::default();
         let mut merge_result: Option<SyncResult> = None;
 
         // Pull changesets in a loop until no more are available
         loop {
-            let watermark = merge_result
-                .as_ref()
-                .map(|r| &r.new_watermark)
-                .unwrap_or(&local_watermark);
-
-            match self.transport.pull(watermark).await? {
+            match self.transport.pull(&pull_watermark).await? {
                 None => break,
                 Some(changeset) => {
                     info!(
@@ -323,6 +309,16 @@ impl SyncEngine {
                         tombstoned = result.tombstoned,
                         "merge completed"
                     );
+                    if !result.new_watermark.is_after(&pull_watermark) {
+                        warn!(
+                            wall_ms = result.new_watermark.wall_ms,
+                            counter = result.new_watermark.counter,
+                            "pull transport returned a non-advancing watermark; stopping pull loop"
+                        );
+                        merge_result = Some(result);
+                        break;
+                    }
+                    pull_watermark = result.new_watermark.clone();
                     merge_result = Some(result);
                 }
             }
@@ -349,25 +345,22 @@ impl SyncEngine {
             // happen in a legally-retained ledger). Best-effort: a ledger write
             // failure is logged inside the helper, never fails the sync.
             if delivered > 0 {
-                // dedup_key = the changeset's watermark (the DB-global max HLC at
-                // extraction time, sync_extractor::compute_max_hlc — it only rises
-                // when new rows are extracted). So a re-push of the EXACT same
-                // batch reuses the same key and dedups; this fires when the
-                // in-memory `last_push_watermark` is lost AND `local_watermark()`
-                // re-seeds `since` at/below the pushed boundary (notably the
-                // read-failure fallback to `Hlc::default()` → since=0 → re-extract
-                // all). An ordinary restart re-seeds `since` to the DB max and
-                // re-extracts nothing, so no duplicate arises. On the (infallible)
-                // serialize failure, fall back to a UNIQUE id rather than an empty
-                // key — err toward recording the egress, never silently collapsing.
+                // dedup_key = the changeset's watermark. Startup intentionally begins
+                // at zero to avoid skipping lower self-origin rows behind a higher
+                // peer/global HLC, so a restart can re-push an already delivered batch;
+                // the stable watermark makes that exact-batch ledger row dedup.
+                // On the (infallible) serialize failure, fall back to a UNIQUE id rather
+                // than an empty key — err toward recording the egress, never silently
+                // collapsing.
                 let dedup_key = serde_json::to_string(&local_changes.watermark)
                     .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
                 self.record_push_egress(&local_changes, "CrossDeviceSync", &dedup_key, delivered);
+
+                // Advance only after at least one confirmed delivery. `Ok(0)` means
+                // no destination received the batch, so the same rows must retry.
+                let new_watermark = local_changes.watermark.clone();
+                *self.last_push_watermark.lock() = new_watermark;
             }
-            // Advance watermark only after a successful push so that a
-            // transient transport failure causes a retry of the same rows.
-            let new_watermark = local_changes.watermark.clone();
-            *self.last_push_watermark.lock() = new_watermark;
         }
 
         Ok(merge_result)
@@ -605,16 +598,24 @@ mod tests {
 
     struct MockExtractor {
         changeset: ChangeSet,
+        local_watermark: Hlc,
         /// Records the `since` argument from each `get_changes_since` call.
         since_log: std::sync::Mutex<Vec<Hlc>>,
     }
 
     impl MockExtractor {
         fn new(changeset: ChangeSet) -> Self {
+            let local_watermark = changeset.watermark.clone();
             Self {
                 changeset,
+                local_watermark,
                 since_log: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        fn with_local_watermark(mut self, local_watermark: Hlc) -> Self {
+            self.local_watermark = local_watermark;
+            self
         }
     }
 
@@ -625,7 +626,7 @@ mod tests {
             Ok(self.changeset.clone())
         }
         async fn local_watermark(&self) -> Result<Hlc, CoreError> {
-            Ok(self.changeset.watermark.clone())
+            Ok(self.local_watermark.clone())
         }
     }
 
@@ -785,6 +786,26 @@ mod tests {
         }
     }
 
+    struct PullRecordingTransport {
+        since_log: std::sync::Mutex<Vec<Hlc>>,
+    }
+
+    #[async_trait]
+    impl SyncTransport for PullRecordingTransport {
+        async fn push(&self, _changes: &ChangeSet) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+
+        async fn pull(&self, since: &Hlc) -> Result<Option<ChangeSet>, CoreError> {
+            self.since_log.lock().unwrap().push(since.clone());
+            Ok(None)
+        }
+
+        async fn discover_peers(&self) -> Result<Vec<PeerInfo>, CoreError> {
+            Ok(vec![])
+        }
+    }
+
     /// A sink that always fails, to pin the best-effort/warn-only contract: a
     /// ledger-write error must NOT fail the sync push it audits.
     struct FailingEgressSink;
@@ -902,6 +923,42 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(merger.apply_count.load(Ordering::SeqCst), 1);
         assert!(transport.push_count.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn pull_starts_from_zero_not_db_global_local_watermark() {
+        let high_local_watermark = Hlc {
+            wall_ms: 9000,
+            counter: 0,
+            device_id: "dev-a".to_string(),
+        };
+        let extractor = Arc::new(
+            MockExtractor::new(ChangeSet::default()).with_local_watermark(high_local_watermark),
+        );
+        let transport = Arc::new(PullRecordingTransport {
+            since_log: std::sync::Mutex::new(Vec::new()),
+        });
+        let engine = SyncEngine::new(
+            extractor,
+            Arc::new(MockMerger {
+                apply_count: AtomicUsize::new(0),
+            }),
+            transport.clone(),
+            make_consent_manager(true),
+            None,
+            "dev-a".to_string(),
+            "Test".to_string(),
+        )
+        .await;
+
+        engine.run_cycle().await.unwrap();
+
+        let log = transport.since_log.lock().unwrap();
+        assert_eq!(
+            log.first(),
+            Some(&Hlc::default()),
+            "pull must not use the DB-global local max as its peer receive cursor"
+        );
     }
 
     // ── #5143: egress-ledger auditing ──────────────────────────────────
@@ -1514,6 +1571,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_delivery_does_not_advance_push_watermark() {
+        let global_watermark = Hlc {
+            wall_ms: 1000,
+            counter: 0,
+            device_id: "dev-a".to_string(),
+        };
+        let changeset_watermark = Hlc {
+            wall_ms: 5000,
+            counter: 0,
+            device_id: "dev-a".to_string(),
+        };
+        let extractor = Arc::new(
+            MockExtractor::new(ChangeSet {
+                segments: vec![serde_json::json!({"id": "x"})],
+                origin_device_id: "dev-a".to_string(),
+                watermark: changeset_watermark,
+                ..Default::default()
+            })
+            .with_local_watermark(global_watermark),
+        );
+        let engine = SyncEngine::new(
+            extractor.clone(),
+            Arc::new(MockMerger {
+                apply_count: AtomicUsize::new(0),
+            }),
+            Arc::new(ZeroDeliveryTransport),
+            make_consent_manager(true),
+            None,
+            "dev-a".to_string(),
+            "Test".to_string(),
+        )
+        .await;
+
+        engine.run_cycle().await.unwrap();
+        engine.run_cycle().await.unwrap();
+
+        let log = extractor.since_log.lock().unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!(
+            log[0],
+            Hlc::default(),
+            "first push should start from zero, not DB-global local_watermark"
+        );
+        assert_eq!(
+            log[1],
+            Hlc::default(),
+            "zero confirmed deliveries must leave the push watermark unchanged for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_starts_from_zero_not_db_global_local_watermark() {
+        let global_watermark = Hlc {
+            wall_ms: 9000,
+            counter: 0,
+            device_id: "peer-b".to_string(),
+        };
+        let local_watermark = Hlc {
+            wall_ms: 1000,
+            counter: 0,
+            device_id: "dev-a".to_string(),
+        };
+        let extractor = Arc::new(
+            MockExtractor::new(ChangeSet {
+                segments: vec![serde_json::json!({"id": "seg-1"})],
+                origin_device_id: "dev-a".to_string(),
+                watermark: local_watermark,
+                ..Default::default()
+            })
+            .with_local_watermark(global_watermark),
+        );
+
+        let engine = SyncEngine::new(
+            extractor.clone(),
+            Arc::new(MockMerger {
+                apply_count: AtomicUsize::new(0),
+            }),
+            Arc::new(MockTransport {
+                pull_result: std::sync::Mutex::new(vec![]),
+                push_count: AtomicUsize::new(0),
+            }),
+            make_consent_manager(true),
+            None,
+            "dev-a".to_string(),
+            "Test".to_string(),
+        )
+        .await;
+
+        engine.run_cycle().await.unwrap();
+
+        let log = extractor.since_log.lock().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0],
+            Hlc::default(),
+            "push startup must not seed from DB-global local_watermark"
+        );
+    }
+
+    #[tokio::test]
     async fn egress_sink_failure_does_not_fail_the_sync() {
         // Best-effort contract: a ledger-write Err is swallowed; the push and the
         // cycle still succeed (a regression swapping warn-only for `?` fails here).
@@ -1758,16 +1915,14 @@ mod tests {
         )
         .await;
 
-        // First cycle: extractor is called with the initial watermark (seeded from local_watermark)
+        // First cycle starts from zero; only a confirmed delivery advances the push watermark.
         engine.run_cycle().await.unwrap();
         // Second cycle: extractor should receive the advanced watermark, not Hlc::default()
         engine.run_cycle().await.unwrap();
 
         let log = extractor.since_log.lock().unwrap();
         assert_eq!(log.len(), 2);
-        // Both calls should use the same watermark since the changeset watermark
-        // equals the initial local_watermark.
-        assert_eq!(log[0], watermark, "first push should use seeded watermark");
+        assert_eq!(log[0], Hlc::default(), "first push should start from zero");
         assert_eq!(
             log[1], watermark,
             "second push should use advanced watermark"

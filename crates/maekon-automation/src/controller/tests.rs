@@ -848,6 +848,15 @@ async fn confirmation_policy_confirm_denies_direct_intent_when_rejected() {
         matches!(err, crate::error::AutomationError::UserDenied),
         "expected UserDenied after denial, got: {err:?}"
     );
+
+    let logger = controller.audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(
+        denied.len(),
+        1,
+        "user-denied direct intent must produce one terminal denial audit entry"
+    );
+    assert_eq!(denied[0].command_id, "direct-policy-confirm-deny");
 }
 
 #[tokio::test]
@@ -1724,6 +1733,15 @@ async fn confirmation_policy_confirm_denies_when_rejected() {
         matches!(err, crate::error::AutomationError::UserDenied),
         "expected UserDenied after denial, got: {err:?}"
     );
+
+    let logger = controller.audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(
+        denied.len(),
+        1,
+        "user-denied intent hint must produce one terminal denial audit entry"
+    );
+    assert_eq!(denied[0].command_id, "policy-confirm-deny");
 }
 
 #[tokio::test]

@@ -1125,7 +1125,7 @@ fn sqlcipher_open_with_encryption_key() {
 }
 
 #[test]
-fn sqlcipher_fallback_for_unencrypted_db() {
+fn sqlcipher_plaintext_db_with_encryption_key_fails_closed() {
     use crate::encryption::EncryptionKey;
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("plain.db");
@@ -1136,11 +1136,16 @@ fn sqlcipher_fallback_for_unencrypted_db() {
         storage.set_meta("hello", "world");
     }
 
-    // Reopen with an encryption key — should fall back to unencrypted
+    // Reopen with an encryption key — must not fall back to plaintext.
     let key = EncryptionKey::from_bytes([0x42; 32]);
-    let storage = SqliteStorage::open(&db_path, 30, Some(&key)).unwrap();
-    // The fallback path reopens without encryption, so data is accessible
-    assert_eq!(storage.get_meta("hello"), Some("world".to_string()));
+    let msg = match SqliteStorage::open(&db_path, 30, Some(&key)) {
+        Ok(_) => panic!("plaintext DB must fail closed when encryption is requested"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("plaintext SQLite database"),
+        "expected a plaintext fail-closed error, got: {msg}"
+    );
 }
 
 #[test]

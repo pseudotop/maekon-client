@@ -2379,6 +2379,48 @@ fn local_model_arm_llm_is_not_external_for_catalog_default() {
 }
 
 #[test]
+fn local_model_remote_cleartext_ollama_degrades_to_local_without_egress() {
+    let config = AiProviderConfig {
+        access_mode: AiAccessMode::LocalModel,
+        llm_api: Some(ExternalApiEndpoint {
+            endpoint: "http://10.0.0.5:11434/v1/responses".to_string(),
+            api_key: String::new(),
+            model: Some("qwen3:8b".to_string()),
+            timeout_secs: 5,
+            provider_type: AiProviderType::Ollama,
+            surface_id: Some("provider_surface.ollama.local_http".to_string()),
+            credential: None,
+        }),
+        ..AiProviderConfig::default()
+    };
+
+    let adapters = resolve_ai_provider_adapters(
+        &config,
+        PiiFilterLevel::Standard,
+        None,
+        None,
+        None,
+        maekon_network::CircuitBreakerRegistry::new(),
+        None,
+    )
+    .expect("LocalModel cleartext guard must ok-degrade");
+
+    assert_eq!(adapters.llm_source, ProviderSource::Local);
+    assert!(
+        !adapters.llm.is_external(),
+        "remote cleartext Ollama must not create an external provider"
+    );
+    let reason = adapters
+        .llm_fallback_reason
+        .as_deref()
+        .expect("cleartext rejection should be visible in fallback reason");
+    assert!(
+        reason.contains("cleartext http://"),
+        "fallback reason should name cleartext rejection, got: {reason}"
+    );
+}
+
+#[test]
 fn provider_source_local_ollama_as_str() {
     assert_eq!(ProviderSource::LocalOllama.as_str(), "local-ollama");
 }

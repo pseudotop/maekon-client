@@ -56,7 +56,7 @@ pub fn resolve_sandbox_config(
 
 pub fn default_strict_config(base_config: &SandboxConfig) -> SandboxConfig {
     SandboxConfig {
-        enabled: base_config.enabled,
+        enabled: true,
         profile: SandboxProfile::Strict,
         allowed_read_paths: base_config.allowed_read_paths.clone(),
         allowed_write_paths: Vec::new(),
@@ -198,6 +198,7 @@ mod tests {
         };
 
         let strict = default_strict_config(&base);
+        assert!(strict.enabled);
         assert!(matches!(strict.profile, SandboxProfile::Strict));
         assert!(strict.allowed_write_paths.is_empty());
         assert!(!strict.allow_network);

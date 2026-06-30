@@ -167,9 +167,15 @@ impl FrameProcessor for EdgeFrameProcessor {
             // Reuse the long-lived, cached OCR extractor instead of building a
             // fresh `OcrExtractor` per frame, which re-initialized Tesseract and
             // defeated the `LepTess` cache (#6132). Cloning the `Arc` is cheap and
-            // shares the cached instance with the blocking closure.
+            // shares the cached instance with the blocking closure. When
+            // ocr_processing consent is absent, pass `None` so the blocking
+            // closure does no OCR work at all.
             #[cfg(feature = "ocr")]
-            let ocr_extractor = self.ocr_extractor.clone();
+            let ocr_extractor = if capture_request.ocr_processing_permitted {
+                self.ocr_extractor.clone()
+            } else {
+                None
+            };
             let scale_factor = capture_request.screen_scale_factor;
             // #6315: pii_level is needed for the per-region sanitize that now runs
             // INSIDE the blocking closure (not only the cfg(ocr) title sanitize), so

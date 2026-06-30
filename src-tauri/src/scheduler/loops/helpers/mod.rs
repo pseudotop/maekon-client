@@ -30,7 +30,7 @@ mod tests {
     use maekon_core::models::system::SystemMetrics;
     use maekon_core::ports::storage::MetricsStorage;
     use maekon_monitor::input_activity::InputActivityCollector;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Mutex;
     use tokio::sync::broadcast;
 
@@ -344,6 +344,23 @@ mod tests {
         }
     }
 
+    struct RecordingFrameProcessor {
+        frame: ProcessedFrame,
+        saw_ocr_permitted: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameProcessor for RecordingFrameProcessor {
+        async fn capture_and_process(
+            &self,
+            capture_request: &CaptureRequest,
+        ) -> Result<ProcessedFrame, maekon_core::error::CoreError> {
+            self.saw_ocr_permitted
+                .store(capture_request.ocr_processing_permitted, Ordering::Relaxed);
+            Ok(self.frame.clone())
+        }
+    }
+
     // ── Tests ─────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -381,6 +398,7 @@ mod tests {
             app_bundle_id: None,
             window_bounds: None,
             screen_scale_factor: None,
+            ocr_processing_permitted: true,
         };
 
         let (ocr_hint, _, _) = handle_frame_capture(
@@ -467,6 +485,7 @@ mod tests {
             app_bundle_id: None,
             window_bounds: None,
             screen_scale_factor: None,
+            ocr_processing_permitted: true,
         };
 
         let (ocr_hint, regions, _) = handle_frame_capture(
@@ -506,6 +525,86 @@ mod tests {
         );
     }
 
+    /// Own-field gate (#4802): without ocr_processing consent, OCR-only raw
+    /// pixels must not leave the frame capture helper.
+    #[tokio::test]
+    async fn ocr_raw_rgba_not_returned_when_own_field_denied() {
+        let mut frame = frame_with_ocr("contact user@example.com");
+        frame.raw_rgba = Some(vec![255, 0, 0, 255]);
+        let processor: Arc<dyn FrameProcessor> = Arc::new(StaticFrameProcessor { frame });
+        let storage = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let capture_req = CaptureRequest {
+            trigger_type: "active_window_change".to_string(),
+            importance: 1.0,
+            app_name: "Notes".to_string(),
+            window_title: "meeting notes".to_string(),
+            monitor_id: None,
+            app_bundle_id: None,
+            window_bounds: None,
+            screen_scale_factor: None,
+            ocr_processing_permitted: true,
+        };
+
+        let (_, _, raw_rgba) = handle_frame_capture(
+            &capture_req,
+            &processor,
+            &None,
+            &sqlite,
+            "test-session",
+            maekon_core::config::PiiFilterLevel::Strict,
+            false,
+            &None,
+        )
+        .await;
+
+        assert!(
+            raw_rgba.is_none(),
+            "raw RGBA must not be returned when ocr_processing is not granted"
+        );
+    }
+
+    /// Own-field gate (#4802): scheduler must pass the current ocr_processing
+    /// consent decision into the processor before OCR work can start.
+    #[tokio::test]
+    async fn ocr_processor_request_reflects_own_field_denial() {
+        let saw_ocr_permitted = Arc::new(AtomicBool::new(true));
+        let processor: Arc<dyn FrameProcessor> = Arc::new(RecordingFrameProcessor {
+            frame: frame_with_ocr("contact user@example.com"),
+            saw_ocr_permitted: saw_ocr_permitted.clone(),
+        });
+        let storage = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let capture_req = CaptureRequest {
+            trigger_type: "active_window_change".to_string(),
+            importance: 1.0,
+            app_name: "Notes".to_string(),
+            window_title: "meeting notes".to_string(),
+            monitor_id: None,
+            app_bundle_id: None,
+            window_bounds: None,
+            screen_scale_factor: None,
+            ocr_processing_permitted: true,
+        };
+
+        handle_frame_capture(
+            &capture_req,
+            &processor,
+            &None,
+            &sqlite,
+            "test-session",
+            maekon_core::config::PiiFilterLevel::Strict,
+            false,
+            &None,
+        )
+        .await;
+
+        assert!(
+            !saw_ocr_permitted.load(Ordering::Relaxed),
+            "processor request must carry ocr_processing_permitted=false"
+        );
+    }
+
     /// Own-field gate (#4802): with ocr_processing consent, OCR text/regions must be extracted.
     #[tokio::test]
     async fn ocr_extracted_when_own_field_granted() {
@@ -524,6 +623,7 @@ mod tests {
             app_bundle_id: None,
             window_bounds: None,
             screen_scale_factor: None,
+            ocr_processing_permitted: true,
         };
 
         let (ocr_hint, regions, _) = handle_frame_capture(
@@ -581,6 +681,7 @@ mod tests {
             app_bundle_id: None,
             window_bounds: Some(bounds),
             screen_scale_factor: None,
+            ocr_processing_permitted: true,
         };
 
         let (tx, mut rx) = broadcast::channel::<RealtimeEvent>(8);

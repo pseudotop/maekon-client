@@ -122,13 +122,7 @@ impl CloudSttProvider {
     }
 }
 
-/// Truncate `body` to at most `max_chars` Unicode scalar values in a char-boundary-safe way.
-///
-/// Returns a `&str` slice of `body`.  When the body is longer than `max_chars` the slice ends
-/// exactly at a character boundary so the caller never sees a partial multi-byte sequence.
-/// This is used to produce a bounded, frontend-safe error preview from a raw provider HTTP
-/// response body, preventing both unbounded message size and potential info-leakage of
-/// provider-internal details beyond a short diagnostic hint.
+#[cfg(test)]
 fn truncate_provider_body(body: &str, max_chars: usize) -> &str {
     match body.char_indices().nth(max_chars) {
         // nth(n) returns the (byte_index, char) of the (n+1)-th character — i.e. the first
@@ -138,6 +132,19 @@ fn truncate_provider_body(body: &str, max_chars: usize) -> &str {
         // Fewer than max_chars chars in the string: return the whole thing.
         None => body,
     }
+}
+
+fn provider_body_log_preview(body: &str) -> String {
+    if body.is_empty() {
+        return "[redacted provider error body: 0 bytes]".to_string();
+    }
+
+    format!("[redacted provider error body: {} bytes]", body.len())
+}
+
+fn provider_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let body_summary = provider_body_log_preview(body);
+    format!("cloud STT error: HTTP {status} — {body_summary}")
 }
 
 /// Maximum cloud-STT response body this provider will buffer (#6989).
@@ -276,21 +283,21 @@ impl SttProvider for CloudSttProvider {
                 });
             let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
-            // Log the full provider body at warn level for server-side/debug inspection.
-            // The body is NOT embedded verbatim in the error surfaced to the frontend to
-            // prevent leaking provider internals (API plans, internal stack traces, etc.)
-            // and to bound error message size.  err.code follows ADR-019 observability
-            // convention so Loki/Grafana can group by code without regex on the body.
+            // Never log the provider body verbatim: error responses can echo transcript
+            // text, credentials, request IDs, or provider internals. Keep structured
+            // status/size signals plus a redacted marker for observability.
+            let provider_body_preview = provider_body_log_preview(&body);
             warn!(
                 http.status = status.as_u16(),
                 err.code = "stt_failed",
-                provider_body = %body,
+                provider_body_len = body.len(),
+                provider_body_preview = %provider_body_preview,
                 "cloud STT provider returned error"
             );
 
-            // Surface only a short, sanitised summary to the frontend.
-            let body_preview = truncate_provider_body(&body, 200);
-            let message = format!("cloud STT error: HTTP {status} — {body_preview}");
+            // 상위 fallback/VAD 경로가 이 오류 문자열을 다시 로그/이벤트로 내보내므로
+            // provider 본문은 에러 메시지에도 넣지 않는다.
+            let message = provider_error_message(status, &body);
 
             // Semantic HTTP status mapping per iter-54/55/56 pattern — even STT
             // domain errors benefit from differentiating auth/timeout/rate-limit
@@ -427,19 +434,54 @@ mod tests {
     }
 
     #[test]
-    fn truncate_message_does_not_contain_excess_body() {
-        // Simulate the exact format used in the error path.
-        let long_body = "x".repeat(500);
-        let preview = truncate_provider_body(&long_body, 200);
-        let message = format!("cloud STT error: HTTP 500 — {preview}");
-        // The preview embedded in the message must be exactly 200 chars, not 500.
+    fn provider_error_message_omits_raw_provider_body() {
+        let body =
+            "provider echoed email alice@example.com token sk-live-secret phone 010-1234-5678";
+        let message = provider_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body);
+
         assert!(
-            message.contains(&"x".repeat(200)),
-            "message must contain the 200-char preview"
+            message.contains("HTTP 500"),
+            "message must keep status diagnostics: {message}"
         );
         assert!(
-            !message.contains(&"x".repeat(201)),
-            "message must NOT contain more than 200 consecutive body chars"
+            message.contains("[redacted provider error body:"),
+            "message must include a redacted provider-body summary: {message}"
+        );
+        assert!(
+            !message.contains("alice@example.com"),
+            "error message must not preserve provider-echoed email: {message}"
+        );
+        assert!(
+            !message.contains("sk-live-secret"),
+            "error message must not preserve provider token-like text: {message}"
+        );
+        assert!(
+            !message.contains("010-1234-5678"),
+            "error message must not preserve provider-echoed phone number: {message}"
+        );
+    }
+
+    #[test]
+    fn provider_body_log_preview_masks_sensitive_values() {
+        let body =
+            "provider echoed email alice@example.com token sk-live-secret phone 010-1234-5678";
+        let preview = provider_body_log_preview(body);
+
+        assert!(
+            !preview.contains("alice@example.com"),
+            "log preview must not preserve provider-echoed email: {preview}"
+        );
+        assert!(
+            !preview.contains("sk-live-secret"),
+            "log preview must not preserve provider token-like text: {preview}"
+        );
+        assert!(
+            !preview.contains("010-1234-5678"),
+            "log preview must not preserve provider-echoed phone number: {preview}"
+        );
+        assert!(
+            preview.contains("[redacted"),
+            "log preview should retain a diagnostic redaction marker: {preview}"
         );
     }
 
@@ -599,6 +641,36 @@ mod tests {
         assert!(
             matches!(err, CoreError::SpeechToText { .. }),
             "500 → SpeechToText (domain fallback), got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stt_provider_error_omits_raw_provider_body_from_core_error() {
+        let mut server = mockito::Server::new_async().await;
+        let sensitive_body =
+            "provider echoed email alice@example.com token sk-live-secret phone 010-1234-5678";
+        let _mock = server
+            .mock("POST", "/")
+            .with_status(500)
+            .with_body(sensitive_body)
+            .create_async()
+            .await;
+        let provider =
+            CloudSttProvider::new("sk-test", server.url(), SttLanguage::Auto, 10).unwrap();
+        let audio = maekon_core::models::audio::AudioBuffer::new(vec![0.0f32; 16_000]);
+
+        let err = provider.transcribe(audio).await.unwrap_err().to_string();
+        assert!(
+            !err.contains("alice@example.com"),
+            "CoreError display must not preserve provider-echoed email: {err}"
+        );
+        assert!(
+            !err.contains("sk-live-secret"),
+            "CoreError display must not preserve provider token-like text: {err}"
+        );
+        assert!(
+            !err.contains("010-1234-5678"),
+            "CoreError display must not preserve provider-echoed phone number: {err}"
         );
     }
 

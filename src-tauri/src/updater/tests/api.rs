@@ -182,7 +182,7 @@ async fn check_for_updates_with_mock_api_available() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v{}","name":"New","body":"","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"{{"tag_name":"v{}","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
             newer_version, asset_name, asset_name
         ))
         .create_async()
@@ -263,7 +263,7 @@ async fn prerelease_found_when_enabled() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"[{{"tag_name":"v99.0.0-rc.1","name":"RC","body":"","prerelease":true,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
+            r#"[{{"tag_name":"v99.0.0-rc.1","name":"RC","body":"<!-- rollout:100 -->","prerelease":true,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             asset_name, asset_name
         ))
         .create_async()
@@ -310,7 +310,7 @@ async fn check_for_updates_rejects_release_below_min_allowed_version() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v99.0.0","name":"New","body":"","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
             asset_name, asset_name
         ))
         .create_async()
@@ -375,7 +375,7 @@ async fn check_for_updates_offers_release_within_max_allowed_version() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v99.0.0","name":"New","body":"","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
             asset_name, asset_name
         ))
         .create_async()
