@@ -879,6 +879,7 @@ async fn loopback_server_unaffected_when_external_disabled() {
     use maekon_web::grpc::{serve_optional, GrpcSpawnConfig, LoadPolicy};
 
     let loopback_port = next_test_port();
+    let local_auth_token: Arc<str> = Arc::from("loopback-test-token");
 
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
     let loopback_cfg = GrpcSpawnConfig {
@@ -887,7 +888,7 @@ async fn loopback_server_unaffected_when_external_disabled() {
         system_monitor: MockSystemMonitor::new(20.0, 2048, 8192),
         event_tx,
         integration_auth_token: None,
-        local_auth_token: None,
+        local_auth_token: Some(Arc::clone(&local_auth_token)),
         pii_sanitizer: None,
         ai_runtime_status_snapshot: None,
         load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
@@ -920,10 +921,13 @@ async fn loopback_server_unaffected_when_external_disabled() {
 
     // GetAgentInfo on the loopback should work (returns actual data).
     use maekon_web::proto::dashboard::v1::GetAgentInfoRequest as Req;
-    let response = client
-        .get_agent_info(Req {})
-        .await
-        .expect("GetAgentInfo ok");
+    let mut req = tonic::Request::new(Req {});
+    req.metadata_mut().insert(
+        "x-local-auth",
+        tonic::metadata::MetadataValue::try_from(local_auth_token.as_ref())
+            .expect("valid local auth token"),
+    );
+    let response = client.get_agent_info(req).await.expect("GetAgentInfo ok");
     assert!(
         !response.into_inner().version.is_empty(),
         "version should be non-empty from loopback server"

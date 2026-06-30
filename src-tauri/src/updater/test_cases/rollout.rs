@@ -44,18 +44,24 @@ fn parse_rollout_present() {
 #[test]
 fn parse_rollout_absent() {
     let body = Some("## Changes\n- Fix bugs".to_string());
-    assert_eq!(parse_rollout_percent(&body), 100);
+    assert_eq!(parse_rollout_percent(&body), 0);
 }
 
 #[test]
 fn parse_rollout_none() {
-    assert_eq!(parse_rollout_percent(&None), 100);
+    assert_eq!(parse_rollout_percent(&None), 0);
 }
 
 #[test]
 fn parse_rollout_caps_at_100() {
     let body = Some("<!-- rollout:150 -->".to_string());
     assert_eq!(parse_rollout_percent(&body), 100);
+}
+
+#[test]
+fn parse_rollout_malformed_fails_closed() {
+    let body = Some("<!-- rollout:abc -->".to_string());
+    assert_eq!(parse_rollout_percent(&body), 0);
 }
 
 // ── D10 defensive None handling + rollout-gate end-to-end ─────────

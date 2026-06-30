@@ -658,8 +658,8 @@ async fn require_local_auth(
     };
 
     // Accept the token via X-Local-Auth, Authorization: Bearer, or the
-    // maekon_local_auth cookie (the only channel EventSource/SSE can use). No
-    // query-param channel — TraceLayer logs request URIs (token would leak to logs).
+    // maekon_local_auth cookie. The query-param channel is intentionally limited
+    // to EventSource endpoints because it is easy to copy/share as a URL.
     let presented = request
         .headers()
         .get(LOCAL_AUTH_HEADER)
@@ -678,13 +678,13 @@ async fn require_local_auth(
                 .map(ToString::to_string)
         })
         .or_else(|| read_local_auth_cookie(request.headers()))
-        // SSE/EventSource over a cross-origin Tauri WebView (tauri://localhost →
-        // 127.0.0.1) can use NEITHER a header (EventSource sets none) NOR a cookie
-        // (a cookie set on the tauri.localhost document is never sent to the
-        // 127.0.0.1 origin). The query param is the only working channel; it is
-        // safe because the TraceLayer make_span below logs the PATH only, never the
-        // query string, so the token never reaches logs.
-        .or_else(|| read_local_auth_query(request.uri()));
+        .or_else(|| {
+            if local_auth_query_allowed(request.method(), request.uri()) {
+                read_local_auth_query(request.uri())
+            } else {
+                None
+            }
+        });
 
     let authorized = presented
         .as_deref()
@@ -717,6 +717,17 @@ fn read_local_auth_query(uri: &axum::http::Uri) -> Option<String> {
             None
         }
     })
+}
+
+fn local_auth_query_allowed(method: &axum::http::Method, uri: &axum::http::Uri) -> bool {
+    if method != axum::http::Method::GET {
+        return false;
+    }
+
+    matches!(
+        uri.path(),
+        "/stream" | "/update/stream" | "/api/stream" | "/api/update/stream"
+    )
 }
 
 /// Read the `maekon_local_auth` token from the Cookie header — the same-origin
@@ -1446,10 +1457,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_auth_accepts_query_token_for_cross_origin_sse() {
-        // Cross-origin EventSource (Tauri) can use neither a header nor a cookie —
-        // the ?local_auth= query param is its only channel. The query is redacted
-        // from the access log (see build_router make_span).
+    async fn local_auth_rejects_query_token_for_non_sse_routes() {
+        // Cross-origin EventSource needs ?local_auth= on the SSE allowlist only.
+        // Normal REST endpoints must keep using header/cookie auth so a copied
+        // URL is not a full local-API credential.
         let status = metrics_status(
             gated_app("secret"),
             Request::builder()
@@ -1458,7 +1469,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -216,6 +216,13 @@ impl AppConfig {
         // range. Reject configured base ports outside that range at write/reload
         // chokepoints so the UI never boots against a blocked loopback API origin.
         self.web.validate_bounds()?;
+        // Selected AI providers may carry API keys or screen context to external
+        // endpoints. Keep that security validation at the root write/reload
+        // chokepoint so non-web callers and hand-edited config reloads cannot
+        // bypass the provider-specific guard.
+        self.ai_provider
+            .validate_selected_remote_endpoints()
+            .map_err(|err| err.to_string())?;
         Ok(())
     }
 
@@ -1133,6 +1140,29 @@ mod tests {
         assert!(
             err.contains("interval_secs"),
             "error must name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn app_config_validate_bounds_rejects_remote_cleartext_ai_endpoint() {
+        let mut config = AppConfig::default_config();
+        config.ai_provider.llm_provider = LlmProviderType::Remote;
+        config.ai_provider.llm_api = Some(ExternalApiEndpoint {
+            endpoint: "http://10.0.0.5:8080/v1/chat/completions".to_string(),
+            api_key: "secret-key".to_string(),
+            model: None,
+            timeout_secs: 30,
+            provider_type: AiProviderType::Generic,
+            surface_id: None,
+            credential: None,
+        });
+
+        let err = config.validate_bounds().expect_err(
+            "AppConfig::validate_bounds must cover selected AI remote endpoint validation",
+        );
+        assert!(
+            err.contains("cleartext http://") && err.contains("llm_api"),
+            "error must name the cleartext AI endpoint, got: {err}"
         );
     }
 

@@ -219,13 +219,13 @@ fn parse_rollout_present() {
 fn parse_rollout_absent() {
     assert_eq!(
         parse_rollout_percent(&Some("## Changes\n- Fix bugs".to_string())),
-        100
+        0
     );
 }
 
 #[test]
 fn parse_rollout_none() {
-    assert_eq!(parse_rollout_percent(&None), 100);
+    assert_eq!(parse_rollout_percent(&None), 0);
 }
 
 #[test]
@@ -233,6 +233,14 @@ fn parse_rollout_caps_at_100() {
     assert_eq!(
         parse_rollout_percent(&Some("<!-- rollout:150 -->".to_string())),
         100
+    );
+}
+
+#[test]
+fn parse_rollout_malformed_fails_closed() {
+    assert_eq!(
+        parse_rollout_percent(&Some("<!-- rollout:abc -->".to_string())),
+        0
     );
 }
 

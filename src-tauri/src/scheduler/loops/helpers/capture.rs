@@ -38,7 +38,10 @@ pub(crate) async fn handle_frame_capture(
     ocr_permitted: bool,
     event_tx: &Option<broadcast::Sender<RealtimeEvent>>,
 ) -> FrameCaptureResult {
-    match processor.capture_and_process(capture_req).await {
+    let mut gated_capture_req = capture_req.clone();
+    gated_capture_req.ocr_processing_permitted = ocr_permitted;
+
+    match processor.capture_and_process(&gated_capture_req).await {
         Ok(frame) => {
             debug!("frame completed: {:?}", frame.metadata.trigger_type);
 
@@ -52,10 +55,14 @@ pub(crate) async fn handle_frame_capture(
             } else {
                 Vec::new()
             };
-            let raw_rgba = frame.raw_rgba.map(|rgba| {
-                let (w, h) = frame.metadata.resolution;
-                (rgba, w, h)
-            });
+            let raw_rgba = if ocr_permitted {
+                frame.raw_rgba.map(|rgba| {
+                    let (w, h) = frame.metadata.resolution;
+                    (rgba, w, h)
+                })
+            } else {
+                None
+            };
 
             let (file_path, ocr_text) = if let Some(ref payload) = frame.image_payload {
                 let (data_str, ocr) = match payload {

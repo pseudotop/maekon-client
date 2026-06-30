@@ -80,8 +80,8 @@ pub fn honor_opt_out(
 /// host a loopback bind alone does not isolate other local users, so the gRPC surface must
 /// require the same per-session token the REST `/api` surface does.
 ///
-/// Returns `Ok(())` when no token is configured (mirrors REST's "no token → no gate" for
-/// test / unconfigured builds). Otherwise the request must present the token via the
+/// Returns `Err` when no token is configured (mirrors REST's fail-closed
+/// `require_local_auth`). Otherwise the request must present the token via the
 /// `x-local-auth` metadata key or `authorization: Bearer <token>`; compared in constant
 /// time (subtle) to avoid a timing side channel.
 pub fn check_local_auth(
@@ -89,7 +89,9 @@ pub fn check_local_auth(
     configured_token: Option<&str>,
 ) -> Result<(), Status> {
     let Some(expected) = configured_token.map(str::trim).filter(|t| !t.is_empty()) else {
-        return Ok(());
+        return Err(Status::unauthenticated(
+            "local-auth token is not configured",
+        ));
     };
     let presented = metadata
         .get("x-local-auth")
@@ -371,12 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn local_auth_no_token_configured_allows() {
-        // Mirrors REST: when no per-session token is configured there is no gate.
-        check_local_auth(&tonic::metadata::MetadataMap::new(), None)
-            .expect("no configured token must allow");
-        check_local_auth(&tonic::metadata::MetadataMap::new(), Some("   "))
-            .expect("whitespace-only configured token normalizes to no-gate");
+    fn local_auth_no_token_configured_fails_closed() {
+        let err = check_local_auth(&tonic::metadata::MetadataMap::new(), None)
+            .expect_err("no configured token must fail closed");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        let err = check_local_auth(&tonic::metadata::MetadataMap::new(), Some("   "))
+            .expect_err("whitespace-only configured token must fail closed");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
     #[test]

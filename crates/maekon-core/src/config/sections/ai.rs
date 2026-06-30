@@ -165,7 +165,15 @@ impl AiProviderConfig {
                     validate_remote_endpoint(self.llm_api.as_ref(), "llm_api")?;
                 }
             }
-            AiAccessMode::LocalModel => {}
+            AiAccessMode::LocalModel => {
+                if self
+                    .llm_api
+                    .as_ref()
+                    .is_some_and(|endpoint| endpoint.provider_type == AiProviderType::Ollama)
+                {
+                    validate_local_model_ollama_endpoint(self.llm_api.as_ref(), "llm_api")?;
+                }
+            }
             AiAccessMode::ProviderSubscriptionCli => {
                 if self.ocr_provider == OcrProviderType::Remote {
                     validate_subprocess_or_remote_endpoint(
@@ -324,6 +332,48 @@ fn validate_remote_endpoint(
 
     reject_blocked_model(endpoint)?;
 
+    Ok(())
+}
+
+fn validate_local_model_ollama_endpoint(
+    endpoint: Option<&ExternalApiEndpoint>,
+    field_name: &str,
+) -> Result<(), CoreError> {
+    let Some(endpoint) = endpoint else {
+        return Ok(());
+    };
+
+    let endpoint_url = endpoint.endpoint.trim();
+    if endpoint_url.is_empty() {
+        return Err(CoreError::Config {
+            code: crate::error_codes::ConfigCode::Missing,
+            message: format!("`{field_name}.endpoint` must not be empty."),
+        });
+    }
+    if !(endpoint_url.starts_with("http://") || endpoint_url.starts_with("https://")) {
+        return Err(CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!("`{field_name}.endpoint` must be an http:// or https:// URL."),
+        });
+    }
+    if endpoint_url.starts_with("http://") && endpoint_is_confident_remote_ip(endpoint_url) {
+        return Err(CoreError::Config {
+            code: crate::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "`{field_name}.endpoint` uses cleartext http:// to a non-loopback host; \
+                 use https:// for a remote Ollama endpoint (cleartext is allowed only for \
+                 loopback/local Ollama) to avoid leaking screen context."
+            ),
+        });
+    }
+    if endpoint.timeout_secs == 0 {
+        return Err(CoreError::Config {
+            code: crate::error_codes::ConfigCode::OutOfRange,
+            message: format!("`{field_name}.timeout_secs` must be >= 1."),
+        });
+    }
+
+    reject_blocked_model(endpoint)?;
     Ok(())
 }
 
@@ -571,6 +621,28 @@ mod cleartext_gate_tests {
     fn validate_remote_endpoint_allows_remote_https() {
         let ep = remote_endpoint("https://api.openai.com/v1");
         validate_remote_endpoint(Some(&ep), "llm_api").expect("remote https:// must be allowed");
+    }
+
+    #[test]
+    fn local_model_ollama_rejects_remote_cleartext_ip() {
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::LocalModel,
+            llm_api: Some(ExternalApiEndpoint {
+                endpoint: "http://10.0.0.5:11434/v1/responses".to_string(),
+                api_key: String::new(),
+                model: Some("qwen3:8b".to_string()),
+                timeout_secs: 30,
+                provider_type: AiProviderType::Ollama,
+                surface_id: Some("provider_surface.ollama.local_http".to_string()),
+                credential: None,
+            }),
+            ..AiProviderConfig::default()
+        };
+
+        let err = config
+            .validate_selected_remote_endpoints()
+            .expect_err("LocalModel Ollama must reject remote cleartext IP endpoints");
+        assert!(format!("{err}").contains("cleartext http://"), "got: {err}");
     }
 }
 

@@ -224,6 +224,7 @@ impl AutomationController {
         cmd: &IntentCommand,
     ) -> Result<IntentResult, AutomationError> {
         self.ensure_enabled()?;
+        let start = Instant::now();
 
         {
             let mut logger = self.audit_logger.write().await;
@@ -235,11 +236,30 @@ impl AutomationController {
             );
         }
 
-        self.enforce_intent_confirmation_policy(&cmd.command_id, "intent", &cmd.intent)
-            .await?;
+        if let Err(err) = self
+            .enforce_intent_confirmation_policy(&cmd.command_id, "intent", &cmd.intent)
+            .await
+        {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let mut logger = self.audit_logger.write().await;
+            logger.log_with_status_and_time(
+                AuditLevel::Basic,
+                &cmd.command_id,
+                &cmd.session_id,
+                "denied",
+                AuditStatus::Denied,
+                &format!(
+                    "{}, error={}, elapsed={}ms",
+                    audit_intent_label(&cmd.intent),
+                    err,
+                    elapsed_ms
+                ),
+                elapsed_ms,
+            );
+            return Err(err);
+        }
 
         let executor = self.scoped_intent_executor(cmd)?;
-        let start = Instant::now();
         let result = executor.execute(&cmd.intent).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -288,8 +308,28 @@ impl AutomationController {
         let start = Instant::now();
         let planned_intent = planner.plan(intent_hint).await?;
 
-        self.enforce_intent_confirmation_policy(command_id, "intent-hint", &planned_intent)
-            .await?;
+        if let Err(err) = self
+            .enforce_intent_confirmation_policy(command_id, "intent-hint", &planned_intent)
+            .await
+        {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let mut logger = self.audit_logger.write().await;
+            logger.log_with_status_and_time(
+                AuditLevel::Basic,
+                command_id,
+                session_id,
+                "denied",
+                AuditStatus::Denied,
+                &format!(
+                    "{}, error={}, elapsed={}ms",
+                    audit_intent_label(&planned_intent),
+                    err,
+                    elapsed_ms
+                ),
+                elapsed_ms,
+            );
+            return Err(err);
+        }
 
         let intent_command = IntentCommand {
             command_id: command_id.to_string(),

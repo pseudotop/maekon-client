@@ -31,6 +31,12 @@ pub struct CaptureRequest {
     /// `None` or `Some(1.0)` keeps OCR boxes in source pixels. HiDPI callers can
     /// inject `Some(2.0)` so OCR boxes align with logical window coordinates.
     pub screen_scale_factor: Option<f64>,
+    /// Whether OCR/text-region processing is allowed for this capture.
+    ///
+    /// Screen capture consent permits image capture, but OCR processing requires
+    /// its own consent gate. Callers must pass the current effective
+    /// `ocr_processing` decision before invoking a `FrameProcessor`.
+    pub ocr_processing_permitted: bool,
 }
 
 /// Captures and processes screen frames based on importance level.

@@ -62,6 +62,15 @@ pub struct LanSyncTransport {
     crypto_provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+fn keep_lowest_watermark_candidate(best: &mut Option<ChangeSet>, candidate: ChangeSet) {
+    if best
+        .as_ref()
+        .is_none_or(|current| candidate.watermark < current.watermark)
+    {
+        *best = Some(candidate);
+    }
+}
+
 impl LanSyncTransport {
     /// Create and start the LAN sync transport.
     ///
@@ -366,9 +375,11 @@ impl SyncTransport for LanSyncTransport {
             return Ok(None);
         }
 
+        let mut best: Option<ChangeSet> = None;
+
         for (peer_id, peer) in &peers {
             match self.pull_from_peer(peer_id, peer, since).await {
-                Ok(Some(cs)) => return Ok(Some(cs)),
+                Ok(Some(cs)) => keep_lowest_watermark_candidate(&mut best, cs),
                 Ok(None) => continue,
                 Err(e) => {
                     debug!(peer_id, error = %e, "pull from peer failed, trying next");
@@ -377,7 +388,7 @@ impl SyncTransport for LanSyncTransport {
             }
         }
 
-        Ok(None)
+        Ok(best)
     }
 
     /// Discover peers via mDNS.
@@ -411,6 +422,36 @@ impl SyncTransport for LanSyncTransport {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pull_selection_tests {
+    use super::*;
+
+    fn candidate(device_id: &str, wall_ms: u64) -> ChangeSet {
+        ChangeSet {
+            origin_device_id: device_id.to_string(),
+            watermark: Hlc {
+                wall_ms,
+                counter: 0,
+                device_id: device_id.to_string(),
+            },
+            segments: vec![serde_json::json!({"id": device_id})],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lowest_watermark_candidate_wins_even_if_seen_after_high_candidate() {
+        let mut best = None;
+
+        keep_lowest_watermark_candidate(&mut best, candidate("high-peer", 5000));
+        keep_lowest_watermark_candidate(&mut best, candidate("low-peer", 900));
+
+        let selected = best.expect("a candidate should be selected");
+        assert_eq!(selected.origin_device_id, "low-peer");
+        assert_eq!(selected.watermark.wall_ms, 900);
     }
 }
 

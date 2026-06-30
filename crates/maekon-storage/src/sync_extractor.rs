@@ -192,7 +192,7 @@ impl SqliteSyncExtractor {
     }
 
     /// Find the maximum HLC across all syncable tables.
-    fn compute_max_hlc(conn: &Connection, device_id: &str) -> Result<Hlc, StorageError> {
+    fn compute_max_hlc(conn: &Connection) -> Result<Hlc, StorageError> {
         // Mirror of the sync table set — see the GDPR SYNC GUARD on
         // `backfill_origin_device_id` before adding any table (#4478 G3).
         let tables = [
@@ -207,22 +207,22 @@ impl SqliteSyncExtractor {
         let mut max = Hlc::default();
         for table in &tables {
             let sql = format!(
-                "SELECT COALESCE(MAX(hlc_wall_ms), 0), \
-                        COALESCE(MAX(hlc_counter), 0) \
-                 FROM {table} WHERE hlc_wall_ms = (\
-                   SELECT COALESCE(MAX(hlc_wall_ms), 0) FROM {table}\
-                 )"
+                "SELECT hlc_wall_ms, hlc_counter, origin_device_id \
+                 FROM {table} \
+                 ORDER BY hlc_wall_ms DESC, hlc_counter DESC, origin_device_id DESC \
+                 LIMIT 1"
             );
-            let (wall_ms, counter): (u64, u32) = conn
-                .query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?)))
+            let candidate: Option<Hlc> = conn
+                .query_row(&sql, [], |row| {
+                    Ok(Hlc {
+                        wall_ms: row.get(0)?,
+                        counter: row.get(1)?,
+                        device_id: row.get(2)?,
+                    })
+                })
+                .optional()
                 .map_err(|e| StorageError::Internal(format!("max HLC query on {table}: {e}")))?;
-
-            let candidate = Hlc {
-                wall_ms,
-                counter,
-                device_id: device_id.to_string(),
-            };
-            if candidate > max {
+            if let Some(candidate) = candidate.filter(|candidate| candidate > &max) {
                 max = candidate;
             }
         }
@@ -232,24 +232,26 @@ impl SqliteSyncExtractor {
         // advances the peer's watermark PAST the tombstones (B2). NOT added to the `tables`
         // array above — that array drives `backfill_origin_device_id`, which must never
         // touch the retained outbox.
-        let (tw, tc): (u64, u32) = conn
+        let candidate: Option<Hlc> = conn
             .query_row(
-                "SELECT COALESCE(MAX(hlc_wall_ms), 0), COALESCE(MAX(hlc_counter), 0) \
-                 FROM sync_tombstones WHERE hlc_wall_ms = (\
-                   SELECT COALESCE(MAX(hlc_wall_ms), 0) FROM sync_tombstones\
-                 )",
+                "SELECT hlc_wall_ms, hlc_counter, origin_device_id \
+                 FROM sync_tombstones \
+                 ORDER BY hlc_wall_ms DESC, hlc_counter DESC, origin_device_id DESC \
+                 LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok(Hlc {
+                        wall_ms: row.get(0)?,
+                        counter: row.get(1)?,
+                        device_id: row.get(2)?,
+                    })
+                },
             )
+            .optional()
             .map_err(|e| {
                 StorageError::Internal(format!("max HLC query on sync_tombstones: {e}"))
             })?;
-        let candidate = Hlc {
-            wall_ms: tw,
-            counter: tc,
-            device_id: device_id.to_string(),
-        };
-        if candidate > max {
+        if let Some(candidate) = candidate.filter(|candidate| candidate > &max) {
             max = candidate;
         }
 
@@ -411,7 +413,7 @@ impl SqliteSyncExtractor {
         // the self-origin check so relay peers carry content-free erasures.
         let tombstones = Self::query_tombstones_since(conn, since)?;
 
-        // Compute the new watermark as the DB-GLOBAL max HLC for this device
+        // Compute the new watermark as the DB-GLOBAL max HLC tuple
         // (compute_max_hlc scans each whole syncable table with no `> since`
         // filter — it is NOT the max of just this batch). This DB-global
         // monotonicity is load-bearing: the watermark is the egress-ledger
@@ -419,8 +421,9 @@ impl SqliteSyncExtractor {
         // always get distinct keys and only an exact same-batch re-push
         // collapses. Do NOT "fix" this toward batch-max — it would let two
         // different egresses share a record_id and silently drop an audit row.
-        // It is origin-agnostic by design so both scopes share one watermark.
-        let watermark = Self::compute_max_hlc(conn, device_id)?;
+        // It is origin-agnostic by design so both scopes share one watermark, but
+        // preserves origin_device_id as the HLC tie-breaker.
+        let watermark = Self::compute_max_hlc(conn)?;
 
         Ok(ChangeSet {
             kind: ChangeSetKind::Data,
@@ -495,12 +498,11 @@ impl ChangeExtractor for SqliteSyncExtractor {
 
     async fn local_watermark(&self) -> Result<Hlc, CoreError> {
         let conn = self.conn.clone();
-        let device_id = self.device_id.clone();
 
         tokio::task::spawn_blocking(move || {
             // Read — read_lock (independent of deletion_flag).
             let read = conn.read_lock();
-            Self::compute_max_hlc(read.conn(), &device_id)
+            Self::compute_max_hlc(read.conn())
         })
         .await
         .map_err(|e| CoreError::Internal {
@@ -574,6 +576,41 @@ mod tests {
         let wm = extractor.local_watermark().await.unwrap();
         assert_eq!(wm.wall_ms, 0);
         assert_eq!(wm.counter, 0);
+    }
+
+    #[tokio::test]
+    async fn local_watermark_preserves_origin_device_tie_breaker() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            for (id, origin) in [("seg-low", "aa-peer"), ("seg-high", "zz-peer")] {
+                guard
+                    .execute(
+                        "INSERT INTO activity_segments \
+                     (id, start_time, end_time, duration_secs, trigger_reason, \
+                      dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES (?1, '2026-01-01T00:00:00', '2026-01-01T01:00:00', \
+                             3600, 'timer', 'Development', 777, 2, ?2)",
+                        rusqlite::params![id, origin],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let extractor = SqliteSyncExtractor::new(
+            storage.connection_arc(),
+            "local-a".to_string(),
+            "Test".to_string(),
+            SyncConfig::default(),
+        );
+        let wm = extractor.local_watermark().await.unwrap();
+        assert_eq!(wm.wall_ms, 777);
+        assert_eq!(wm.counter, 2);
+        assert_eq!(
+            wm.device_id, "zz-peer",
+            "watermark must keep the max origin_device_id tie-breaker"
+        );
     }
 
     #[tokio::test]

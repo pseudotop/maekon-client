@@ -397,8 +397,7 @@ pub async fn serve(cfg: GrpcSpawnConfig) -> Result<(), GrpcServeError> {
     let service = DashboardServiceImpl::from_spawn_config(&cfg);
     // #6420: per-session local-auth gate, mirroring the REST `require_local_auth`
     // middleware. Applied to the dashboard service ONLY — the health service stays open
-    // so `grpc_health_probe` liveness checks work without a token. `None` disables the
-    // gate (matches REST's behavior for test / unconfigured builds).
+    // so `grpc_health_probe` liveness checks work without a token. `None` fails closed.
     let local_auth = cfg.local_auth_token.clone();
 
     // Register the standard grpc.health.v1 health service for external

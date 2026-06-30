@@ -410,6 +410,23 @@ pub(super) fn resolve_local_model_llm_provider(
         base = target.base_url.trim_end_matches('/'),
         path = transport_path
     );
+    let is_loopback = endpoint_is_loopback(&intent_endpoint_url);
+
+    if intent_endpoint_url.starts_with("http://") && !is_loopback {
+        let reason = format!(
+            "LocalModel Ollama endpoint uses cleartext http:// to a non-loopback host; \
+             refusing remote cleartext egress: {intent_endpoint_url}"
+        );
+        warn!(
+            endpoint = %intent_endpoint_url,
+            "LocalModel remote cleartext Ollama endpoint rejected, falling back to local rule-based LLM"
+        );
+        return Ok((
+            Arc::new(LocalLlmProvider::new()) as Arc<dyn LlmProvider>,
+            ProviderSource::Local,
+            Some(reason),
+        ));
+    }
 
     // Resolve default model from catalog when not set in config.
     let model = target.default_model.clone().or_else(|| {
@@ -468,8 +485,6 @@ pub(super) fn resolve_local_model_llm_provider(
     //
     // Loopback: no guard required (same posture as in-process rule matcher).
     // Non-loopback (LAN Ollama): route through guard_external_llm_provider.
-    let is_loopback = endpoint_is_loopback(&intent_endpoint_url);
-
     if is_loopback {
         // First-use log: document the process-boundary privacy delta.
         tracing::info!(

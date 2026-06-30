@@ -329,6 +329,7 @@ pub async fn trigger_manual_capture(
         app_bundle_id,
         window_bounds,
         screen_scale_factor: None,
+        ocr_processing_permitted: permissions.ocr_processing,
     };
 
     let frame = frame_processor
@@ -803,6 +804,7 @@ pub async fn analyze_current_scene(
             app_bundle_id,
             window_bounds,
             screen_scale_factor: None,
+            ocr_processing_permitted: permissions.ocr_processing,
         };
         match fp.capture_and_process(&request).await {
             Ok(frame) => {

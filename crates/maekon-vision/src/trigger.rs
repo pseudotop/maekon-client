@@ -155,6 +155,7 @@ impl CaptureTrigger for SmartCaptureTrigger {
             // sets this field after receiving the CaptureRequest.
             window_bounds: None,
             screen_scale_factor: None,
+            ocr_processing_permitted: false,
         })
     }
 }

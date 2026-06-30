@@ -27,7 +27,7 @@ pub struct GrpcSpawnConfig {
     /// #6420: per-session local-auth token — the same token the REST `/api` surface
     /// requires via `require_local_auth`. When `Some`, the loopback gRPC dashboard
     /// requires it on every RPC (via `x-local-auth` or `Bearer` metadata); `None`
-    /// disables the gate (test / unconfigured builds), matching REST.
+    /// fails closed.
     pub local_auth_token: Option<Arc<str>>,
     /// PII sanitisation port; applied to AiRuntimeStatus.*_fallback_reason
     /// before snapshot emission on SubscribeEvents. `None` → pass-through
