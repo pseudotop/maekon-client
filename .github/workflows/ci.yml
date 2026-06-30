@@ -41,6 +41,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify public export PR author
+        if: ${{ github.event_name == 'pull_request' && (startsWith(github.head_ref, 'codex/public-export-') || startsWith(github.head_ref, 'release/public-export-')) }}
+        env:
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_AUTHOR_LOGIN" != "maekon-release-bot[bot]" && "$PR_AUTHOR_LOGIN" != "maekon-release-bot" ]]; then
+            echo "::error::public export PR ${PR_HEAD_REF} must be opened by maekon-release-bot via the Public Export PR workflow; got ${PR_AUTHOR_LOGIN} (${PR_AUTHOR_TYPE}). Close the manual PR and dispatch the workflow instead of gh pr create."
+            exit 1
+          fi
+          if [[ "$PR_AUTHOR_TYPE" != "Bot" ]]; then
+            echo "::error::public export PR ${PR_HEAD_REF} must be App-authored; got author type ${PR_AUTHOR_TYPE}."
+            exit 1
+          fi
+
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
