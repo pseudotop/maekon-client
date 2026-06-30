@@ -38,6 +38,44 @@ jobs:
             exit 1
           fi
 
+      - name: Verify public main ruleset prerequisites
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruleset_id="$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '.[] | select(.name == "main-protection" and .target == "branch" and .enforcement == "active") | .id' \
+            | head -n 1)"
+          if [[ -z "${ruleset_id}" ]]; then
+            echo "::error::public export requires an active branch ruleset named main-protection"
+            exit 1
+          fi
+
+          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" --jq '(.bypass_actors | length) == 0')" != "true" ]]; then
+            echo "::error::main-protection must not allow bypass actors for public export"
+            exit 1
+          fi
+
+          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" --jq '(.conditions.ref_name.include // []) | index("~DEFAULT_BRANCH") != null')" != "true" ]]; then
+            echo "::error::main-protection must apply to the default branch"
+            exit 1
+          fi
+
+          pull_request_rule_count="$(gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" \
+            --jq '[.rules[] | select(.type == "pull_request" and .parameters.require_code_owner_review == true and .parameters.required_approving_review_count >= 1)] | length')"
+          if [[ "${pull_request_rule_count}" == "0" ]]; then
+            echo "::error::main-protection must require CODEOWNER review and at least one approving review"
+            exit 1
+          fi
+
+          change_detection_count="$(gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" \
+            --jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "Change Detection")] | length')"
+          if [[ "${change_detection_count}" == "0" ]]; then
+            echo "::error::main-protection must require the Change Detection status check"
+            exit 1
+          fi
+
       - name: Generate release App token
         id: app_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
