@@ -13,6 +13,11 @@ updates:
         versions: [">=0.39"]
       - dependency-name: "time"
         versions: [">=0.3.52"]
+      # Dependabot grouped cargo updater가 tauri-build 2.6.3 lockfile 갱신 중
+      # updater 내부 RuntimeError로 실패한다. updater 또는 Tauri 체인이 안정화될
+      # 때까지 정확히 해당 버전만 보류한다.
+      - dependency-name: "tauri-build"
+        versions: ["2.6.3"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]
