@@ -1,5 +1,8 @@
 use crate::policy::{AuditLevel, ExecutionPolicy};
-use maekon_core::config::{SandboxConfig, SandboxProfile};
+use maekon_core::config::{
+    PermissionNetworkDecision, PermissionNetworkMode, PermissionProfileV2, SandboxConfig,
+    SandboxProfile,
+};
 
 pub fn resolve_sandbox_profile(policy: &ExecutionPolicy) -> SandboxProfile {
     if let Some(profile) = policy.sandbox_profile {
@@ -54,6 +57,67 @@ pub fn resolve_sandbox_config(
     }
 }
 
+pub fn resolve_permission_profile_v2(
+    policy: &ExecutionPolicy,
+    base_config: &SandboxConfig,
+) -> PermissionProfileV2 {
+    let resolved = resolve_sandbox_config(policy, base_config);
+    PermissionProfileV2::from_legacy_sandbox(&resolved)
+}
+
+/// Fail closed when a V2 permission profile contains rules the legacy
+/// `SandboxConfig` runtime cannot faithfully enforce yet.
+pub fn validate_permission_profile_v2_runtime_support(
+    profile: &PermissionProfileV2,
+) -> Result<(), String> {
+    let filesystem_has_allow_rules =
+        !profile.filesystem.read.is_empty() || !profile.filesystem.write.is_empty();
+    let filesystem_has_deny_rules =
+        !profile.filesystem.deny.is_empty() || !profile.filesystem.deny_globs.is_empty();
+    if filesystem_has_allow_rules && filesystem_has_deny_rules {
+        return Err(
+            "deny_globs/deny filesystem rules cannot be represented by the legacy SandboxConfig runtime"
+                .to_string(),
+        );
+    }
+
+    if profile.network.enabled {
+        for (target, mode) in [
+            ("127.0.0.1:0", PermissionNetworkMode::Bind),
+            ("127.0.0.1:11434", PermissionNetworkMode::Connect),
+            ("192.168.1.10:8080", PermissionNetworkMode::Connect),
+        ] {
+            if profile.network.decision_for_target(target, mode)
+                == PermissionNetworkDecision::Denied
+            {
+                return Err(
+                    "network local/private target or bind rules cannot be represented by the legacy SandboxConfig runtime"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    if !profile.unix_sockets.allow.is_empty()
+        || !profile.unix_sockets.deny.is_empty()
+        || profile.unix_sockets.audit_enabled
+    {
+        return Err(
+            "unix socket allow/deny/audit rules cannot be represented by the legacy SandboxConfig runtime"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+pub fn validate_sandbox_config_permission_profile_v2_runtime_support(
+    config: &SandboxConfig,
+) -> Result<(), String> {
+    let profile = PermissionProfileV2::from_legacy_sandbox(config);
+    validate_permission_profile_v2_runtime_support(&profile)
+}
+
 pub fn default_strict_config(base_config: &SandboxConfig) -> SandboxConfig {
     SandboxConfig {
         enabled: true,
@@ -69,6 +133,7 @@ pub fn default_strict_config(base_config: &SandboxConfig) -> SandboxConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maekon_core::config::{PermissionAccess, PermissionNetworkDecision, PermissionNetworkMode};
 
     fn make_policy(audit: AuditLevel, sudo: bool) -> ExecutionPolicy {
         ExecutionPolicy {
@@ -202,5 +267,104 @@ mod tests {
         assert!(matches!(strict.profile, SandboxProfile::Strict));
         assert!(strict.allowed_write_paths.is_empty());
         assert!(!strict.allow_network);
+    }
+
+    #[test]
+    fn resolves_permission_profile_v2_from_effective_sandbox_config() {
+        let mut policy = make_policy(AuditLevel::Basic, false);
+        policy.allowed_paths = vec!["/tmp/extra".to_string()];
+        policy.max_execution_time_ms = 3000;
+
+        let base = SandboxConfig {
+            allowed_read_paths: vec!["/usr/lib".to_string()],
+            allowed_write_paths: vec!["/tmp/out".to_string()],
+            max_memory_bytes: 1024,
+            ..Default::default()
+        };
+
+        let profile = resolve_permission_profile_v2(&policy, &base);
+
+        assert_eq!(
+            profile.filesystem.access_for_path("/tmp/extra/readme.md"),
+            PermissionAccess::Read
+        );
+        assert_eq!(
+            profile.filesystem.access_for_path("/tmp/out/result.txt"),
+            PermissionAccess::Write
+        );
+        assert_eq!(profile.max_memory_bytes, 1024);
+        assert_eq!(profile.max_cpu_time_ms, 3000);
+    }
+
+    #[test]
+    fn resolved_permission_profile_v2_keeps_secret_denies_after_policy_path_merge() {
+        let mut policy = make_policy(AuditLevel::Basic, false);
+        policy.allowed_paths = vec!["/workspace".to_string()];
+
+        let profile = resolve_permission_profile_v2(&policy, &SandboxConfig::default());
+
+        assert_eq!(
+            profile.filesystem.access_for_path("/workspace/README.md"),
+            PermissionAccess::Read
+        );
+        assert_eq!(
+            profile.filesystem.access_for_path("/workspace/.env"),
+            PermissionAccess::Denied
+        );
+    }
+
+    #[test]
+    fn resolved_permission_profile_v2_network_stays_denied_until_policy_enables_it() {
+        let policy = make_policy(AuditLevel::Detailed, false);
+        let profile = resolve_permission_profile_v2(&policy, &SandboxConfig::default());
+
+        assert_eq!(
+            profile
+                .network
+                .decision_for_target("api.openai.com", PermissionNetworkMode::Connect),
+            PermissionNetworkDecision::Denied
+        );
+
+        let mut network_policy = make_policy(AuditLevel::Detailed, false);
+        network_policy.allow_network = Some(true);
+        let network_profile =
+            resolve_permission_profile_v2(&network_policy, &SandboxConfig::default());
+
+        assert_eq!(
+            network_profile
+                .network
+                .decision_for_target("api.openai.com", PermissionNetworkMode::Connect),
+            PermissionNetworkDecision::Allowed
+        );
+        assert_eq!(
+            network_profile
+                .network
+                .decision_for_target("localhost:11434", PermissionNetworkMode::Connect),
+            PermissionNetworkDecision::Denied
+        );
+    }
+
+    #[test]
+    fn permission_profile_v2_runtime_guard_rejects_secret_denies_legacy_cannot_enforce() {
+        let mut policy = make_policy(AuditLevel::Basic, false);
+        policy.allowed_paths = vec!["/workspace".to_string()];
+
+        let profile = resolve_permission_profile_v2(&policy, &SandboxConfig::default());
+        let err = validate_permission_profile_v2_runtime_support(&profile)
+            .expect_err("legacy runtime cannot express allow path plus secret deny globs");
+
+        assert!(err.contains("deny_globs"));
+    }
+
+    #[test]
+    fn permission_profile_v2_runtime_guard_rejects_network_target_rules_legacy_cannot_enforce() {
+        let mut policy = make_policy(AuditLevel::Detailed, false);
+        policy.allow_network = Some(true);
+
+        let profile = resolve_permission_profile_v2(&policy, &SandboxConfig::default());
+        let err = validate_permission_profile_v2_runtime_support(&profile)
+            .expect_err("legacy runtime cannot express V2 local/private network target rules");
+
+        assert!(err.contains("network"));
     }
 }

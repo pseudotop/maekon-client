@@ -174,12 +174,12 @@ Copy-Item "\\server\share\maekon\config.json" "$configDir\config.json" -Force
 
 Reference Group Policy templates are published under [`docs/gpo/`](../gpo/):
 
-- [`docs/gpo/maekon.admx`](../gpo/maekon.admx) — policy definitions for the six lockable Maekon settings
+- [`docs/gpo/maekon.admx`](../gpo/maekon.admx) — reference policy definitions for the legacy/high-signal managed settings subset
 - [`docs/gpo/en-US/maekon.adml`](../gpo/en-US/maekon.adml) — English display strings
 
 Install by copying `maekon.admx` into the Central Store (`%SystemRoot%\PolicyDefinitions` or the domain SYSVOL Central Store) and `maekon.adml` into the matching `en-US\` subfolder. The policies then appear under **Computer Configuration → Administrative Templates → Maekon**, writing values under `HKLM\Software\Policies\Maekon`.
 
-> **Status (E20-45 #4837):** these are *reference* templates. (1) They were authored on a non-Windows host — validate with `admchk.exe` (or load in `gpedit.msc`) before production rollout. (2) The registry values they set are **not yet auto-translated** into `managed.json`; a registry→`managed.json` bridge is future work. Until that ships, the **enforced** policy path is the `managed.json` file distributed via MDM (see [Managed Policy Lock](#managed-policy-lock-managedjson) below) — the ADMX template documents the same six-field policy surface for GPO authoring.
+> **Status (E20-45 #4837 / E74 #7438):** these are *reference* templates. (1) They were authored on a non-Windows host — validate with `admchk.exe` (or load in `gpedit.msc`) before production rollout. (2) The registry values they set are **not yet auto-translated** into `managed.json`; a registry→`managed.json` bridge is future work. Until that ships, the **enforced** policy path is the `managed.json` file distributed via MDM (see [Managed Policy Lock](#managed-policy-lock-managedjson) below). The ADMX template documents the legacy/high-signal subset; `managed.json` schema v2 is the complete enforced contract.
 
 ### 4. Auto-Start via Registry
 
@@ -328,26 +328,53 @@ supports (a newer version is rejected fail-closed at load). A unit test
 with the lockable allowlist — adding a new locked field without updating the schema
 fails the build.
 
-**Lockable fields** (MVP allowlist — each is optional; omit to leave it
+**Lockable fields** (schema v2 allowlist — each is optional; omit to leave it
 user-controlled):
 
 | Field | Type | Effect when locked |
 |-------|------|--------------------|
 | `privacy.pii_filter_level` | `"Off"`/`"Basic"`/`"Standard"`/`"Strict"` | Forces the PII filter level |
+| `privacy.min_pii_filter_level` | `"Off"`/`"Basic"`/`"Standard"`/`"Strict"` | Enforces a minimum PII floor without lowering stricter user settings |
 | `telemetry.enabled` | bool | Forces telemetry on/off |
 | `telemetry.crash_reports` | bool | Forces crash-report inclusion |
 | `vision.capture_enabled` | bool | Forces screen capture on/off |
 | `audio.cloud_stt_policy` | `"allow"`/`"require_admin_approval"`/`"disabled"` | Forces the cloud-STT egress policy |
 | `update.enabled` | bool | Locking `false` is a fleet update kill-switch |
+| `update.min_allowed_version` / `update.max_allowed_version` | string | Pins updater version floor/ceiling |
+| `features.automation` / `external_ocr_llm` / `telemetry` / `sync` | `"disabled"`/`"allowed_with_user_consent"` | Disables high-risk surfaces or leaves local consent/runtime gates in force; policy cannot enable a feature by itself |
+| reserved feature pins (`browser_verification`, `record_to_template`, `remote_observe_approve`) | n/a | Not accepted until their runtime gates are wired; recognized reserved pins fail closed instead of silently advertising an unenforced lock |
+| `permission_profiles.allowed_profiles` / `denied_profiles` | string array | Controls built-in reviewed automation permission-profile availability; deny wins and non-compliant legacy sandbox profiles are clamped to the strictest allowed built-in profile |
+| `provider_surfaces.allowlist` | string array | Allows only listed `provider_surface.*` IDs for remote OCR/LLM; empty plus `enforce=true` is default-deny |
+| `sandbox_network.*` | bool/string | Requires sandboxing, raises sandbox strictness, or denies network/local bind authority; local target/bind denial conservatively disables legacy sandbox network access |
+| `audit.min_retention_days` / `audit.export_required` | integer/bool | Enforces audit-retention floor and enterprise export requirement metadata |
+| `signature.require_signature` / `bundle_signature` / `key_id` | bool/string/string | Fails closed when a required signed bundle is missing its signature metadata |
 
 **Example** — lock privacy/telemetry/capture for a regulated fleet:
 
 ```json
 {
-  "schema_version": 1,
-  "privacy": { "pii_filter_level": "Strict" },
+  "schema_version": 2,
+  "privacy": { "min_pii_filter_level": "Strict" },
   "telemetry": { "enabled": false, "crash_reports": false },
-  "vision": { "capture_enabled": false }
+  "vision": { "capture_enabled": false },
+  "features": {
+    "automation": "disabled",
+    "external_ocr_llm": "disabled",
+    "sync": "disabled"
+  },
+  "provider_surfaces": {
+    "enforce": true,
+    "allowlist": []
+  },
+  "sandbox_network": {
+    "require_sandbox_enabled": true,
+    "minimum_profile": "Strict",
+    "deny_network": true
+  },
+  "audit": {
+    "min_retention_days": 90,
+    "export_required": true
+  }
 }
 ```
 
@@ -357,13 +384,15 @@ user-controlled):
 - **Present but malformed / bad enum / future `schema_version`** ⇒ **fail-closed**:
   the client refuses to start unmanaged (a broken policy file means the admin
   *intended* locks; silently ignoring it would be fail-open on privacy/telemetry).
+- `signature.require_signature=true` without `signature.bundle_signature` ⇒
+  **fail-closed**.
 - Unknown extra keys are tolerated, so a newer policy file does not brick an
   older client.
 - Locks take effect at next launch (`managed.json` is read once at startup).
 
-> ADMX templates (managed via GPO) and staged-rollout cohorts build on this layer
-> and are tracked separately. This MVP ships the `managed.json` file + enforcement
-> only.
+> ADMX templates (managed via GPO) and staged-rollout cohorts build on this layer.
+> The `managed.json` file remains the enforced contract until a registry bridge
+> is shipped.
 
 ### Remote kill-switch (disable updates via MDM)
 
@@ -377,7 +406,7 @@ above:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "update": { "enabled": false }
 }
 ```

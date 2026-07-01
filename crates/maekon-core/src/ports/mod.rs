@@ -35,6 +35,7 @@ pub mod integration;
 pub mod intent_planner;
 pub mod lan_pin_store;
 pub mod llm_provider;
+pub mod mcp_readonly;
 pub mod memory_graph_port;
 pub mod model_downloader;
 pub mod monitor;

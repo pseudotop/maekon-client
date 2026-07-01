@@ -8,8 +8,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1,
-      "description": "managed.json schema version. The current client supports version 1 (ManagedConfig::SUPPORTED_SCHEMA_VERSION). A file authored for a newer version is rejected fail-closed."
+      "const": 2,
+      "description": "managed.json schema version. The current client supports version 2 (ManagedConfig::SUPPORTED_SCHEMA_VERSION). A file authored for a newer version is rejected fail-closed; version 1 files remain readable for migration compatibility."
     },
     "privacy": {
       "type": "object",
@@ -20,6 +20,11 @@
           "type": "string",
           "enum": ["Off", "Basic", "Standard", "Strict"],
           "description": "Locks privacy.pii_filter_level. Higher levels mask more PII on-device before any upload."
+        },
+        "min_pii_filter_level": {
+          "type": "string",
+          "enum": ["Off", "Basic", "Standard", "Strict"],
+          "description": "Enforces a minimum privacy.pii_filter_level floor without lowering a stricter user value."
         }
       }
     },
@@ -79,6 +84,120 @@
           "description": "Locks update.max_allowed_version (semver). Freezes the fleet at/below a known-good version — a soft update kill-switch that, unlike enabled=false, still permits updates up to the cap. A release above this ceiling is held (reported up-to-date), not installed (#4836). Must be >= min_allowed_version when both are set."
         }
       }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Runtime-enforced feature pins that can disable high-risk surfaces or allow them only when local user consent and runtime gates still permit them. Managed policy cannot turn a feature on by itself. Reserved pins for browser_verification, record_to_template, and remote_observe_approve are intentionally not published here until their runtime gates are wired; a client that recognizes one of those reserved fields rejects the bundle fail-closed instead of silently advertising an unenforced lock.",
+      "properties": {
+        "automation": { "$ref": "#/$defs/managedFeaturePin" },
+        "external_ocr_llm": { "$ref": "#/$defs/managedFeaturePin" },
+        "telemetry": { "$ref": "#/$defs/managedFeaturePin" },
+        "sync": { "$ref": "#/$defs/managedFeaturePin" }
+      }
+    },
+    "permission_profiles": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Allowed or denied built-in permission-profile identifiers for reviewed automation bundles. The managed overlay clamps the legacy sandbox profile to the strictest allowed built-in profile when the current profile is denied.",
+      "properties": {
+        "allowed_profiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional allowlist. Empty means user-controlled unless a denial also matches."
+        },
+        "denied_profiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Denylist that wins over allowed_profiles."
+        }
+      }
+    },
+    "provider_surfaces": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Provider surface allowlist. When enforced, remote OCR/LLM surfaces not listed here are forced back to local providers.",
+      "properties": {
+        "enforce": {
+          "type": "boolean",
+          "description": "When true, enforce allowlist even when it is empty. A non-empty allowlist also enables enforcement."
+        },
+        "allowlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Canonical provider_surface.* identifiers allowed for remote OCR/LLM. Empty plus enforce=true is default-deny."
+        }
+      }
+    },
+    "sandbox_network": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Sandbox and network constraints that only narrow runtime authority. Local target or bind denial conservatively clamps the legacy sandbox network flag off because the legacy AppConfig cannot represent local-only submodes.",
+      "properties": {
+        "require_sandbox_enabled": {
+          "type": "boolean",
+          "description": "Forces automation.sandbox.enabled=true."
+        },
+        "minimum_profile": {
+          "type": "string",
+          "enum": ["Permissive", "Standard", "Strict"],
+          "description": "Minimum sandbox strictness. Less restrictive user profiles are raised to this profile."
+        },
+        "deny_network": {
+          "type": "boolean",
+          "description": "Forces automation.sandbox.allow_network=false."
+        },
+        "deny_local_targets": {
+          "type": "boolean",
+          "description": "Denies local/private network targets in Permission Profile V2 policy evaluation."
+        },
+        "deny_local_binding": {
+          "type": "boolean",
+          "description": "Denies local bind/listen behavior in Permission Profile V2 policy evaluation."
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Audit retention and export requirements.",
+      "properties": {
+        "min_retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum ai_session.audit_retention_days floor."
+        },
+        "export_required": {
+          "type": "boolean",
+          "description": "Marks audit export as required for enterprise review surfaces."
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional signed bundle metadata. If require_signature=true and bundle_signature is absent, loading fails closed.",
+      "properties": {
+        "require_signature": {
+          "type": "boolean",
+          "description": "Require bundle_signature to be present before the managed policy is accepted."
+        },
+        "bundle_signature": {
+          "type": "string",
+          "description": "Detached or embedded signature string for the policy bundle."
+        },
+        "key_id": {
+          "type": "string",
+          "description": "Administrator-managed signing key identifier."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "managedFeaturePin": {
+      "type": "string",
+      "enum": ["disabled", "allowed_with_user_consent"],
+      "description": "Feature pin state. disabled hard-disables the feature; allowed_with_user_consent does not enable it and leaves local consent/runtime gates in force."
     }
   }
 }

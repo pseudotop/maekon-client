@@ -324,7 +324,7 @@ const fallbackAutomationStatus = {
   pending_audit_entries: 0,
 }
 
-const fallbackAuditLogs = []
+const fallbackAuditLogs: unknown[] = []
 
 const fallbackAutomationPresets = {
   presets: [
@@ -439,6 +439,10 @@ export async function mockDefaultApiFallbacks(page: Page): Promise<void> {
     },
   ])
   await mockStaticJson(page, '**/api/focus/suggestions**', [])
+  await mockStaticJson(page, '**/api/coaching/stats/today**', {
+    nudges_count: 0,
+    current_regime: null,
+  })
   await mockStaticJson(page, '**/api/ai/provider-surfaces**', {
     version: 1,
     updated_at: '2026-03-01T00:00:00Z',

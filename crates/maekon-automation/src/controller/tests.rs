@@ -390,7 +390,8 @@ async fn execute_with_timeout_returns_timeout_result() {
 
 #[tokio::test]
 async fn audit_level_none_skips_logging() {
-    let policy = make_policy(AuditLevel::None, 0);
+    let mut policy = make_policy(AuditLevel::None, 0);
+    policy.sandbox_profile = Some(maekon_core::config::SandboxProfile::Standard);
     let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
     controller.set_enabled(true);
     wire_noop_inline_action_executor(&mut controller);
@@ -1317,6 +1318,44 @@ async fn execute_command_enabled_with_valid_policy() {
 
     let result = controller.execute_command(&cmd).await.unwrap();
     assert!(matches!(result, CommandResult::Success));
+}
+
+#[tokio::test]
+async fn execute_command_fails_closed_when_permission_profile_v2_outstrips_legacy_runtime() {
+    let mut policy = make_policy(AuditLevel::Basic, 5000);
+    policy.allowed_paths = vec!["/workspace".to_string()];
+    let (mut controller, policy_client, audit_logger) = make_controller_with_policy(policy.clone());
+    controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-v2-runtime-guard".to_string(),
+        session_id: "sess-v2-runtime-guard".to_string(),
+        action: AutomationAction::KeyType {
+            text: "hello".to_string(),
+        },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_v2guard".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    };
+
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(
+        matches!(result, CommandResult::Failed(ref message) if message.contains("permission profile v2") && message.contains("deny_globs")),
+        "permission profile v2 runtime gap must fail closed before dispatch, got {result:?}"
+    );
+
+    let logger = audit_logger.read().await;
+    let failed = logger.entries_by_status(&crate::audit::AuditStatus::Failed, 10);
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].command_id, "cmd-v2-runtime-guard");
+    assert!(
+        logger
+            .entries_by_status(&crate::audit::AuditStatus::Completed, 10)
+            .is_empty(),
+        "permission profile v2 runtime guard must not be audited as Completed"
+    );
 }
 
 #[tokio::test]
