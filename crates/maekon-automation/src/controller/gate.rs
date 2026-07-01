@@ -124,6 +124,14 @@ impl CommandExecutionGate {
         }
 
         let (resolved_config, audit_level) = self.resolve_for_command(cmd).await;
+        if let Err(reason) = resolver::validate_sandbox_config_permission_profile_v2_runtime_support(
+            &resolved_config,
+        ) {
+            let message = format!("permission profile v2 runtime unsupported: {reason}");
+            let mut logger = self.audit_logger.write().await;
+            logger.log_failed(&cmd.command_id, &cmd.session_id, &message);
+            return Ok(CommandResult::Failed(message));
+        }
 
         {
             let mut logger = self.audit_logger.write().await;

@@ -50,6 +50,7 @@ export function RouteErrorFallback({
         className={`flex min-h-full items-center justify-center p-8 ${radius.md}`}
         role="alert"
         aria-live="assertive"
+        data-testid="route-error-fallback"
       >
         <div className="w-full max-w-md text-center">
           <div className="mb-4 flex justify-center" aria-hidden="true">
@@ -75,7 +76,12 @@ export function RouteErrorFallback({
   }
 
   return (
-    <div className={`flex min-h-full items-center justify-center p-8 ${radius.md}`} role="alert" aria-live="assertive">
+    <div
+      className={`flex min-h-full items-center justify-center p-8 ${radius.md}`}
+      role="alert"
+      aria-live="assertive"
+      data-testid="route-error-fallback"
+    >
       <div className="w-full max-w-md text-center">
         {/* Error icon (decorative — labelled by the role="alert" heading below) */}
         <div className="mb-4 flex justify-center" aria-hidden="true">

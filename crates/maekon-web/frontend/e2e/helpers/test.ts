@@ -12,5 +12,5 @@ const test = base.extend({
   },
 })
 
-export { test, expect }
 export type { Page, Request, Route } from '@playwright/test'
+export { expect, test }

@@ -15,7 +15,9 @@ mod sections;
 pub use app_config::AppConfig;
 pub use enums::*;
 pub use managed::{
-    load_managed_config, ManagedAudio, ManagedConfig, ManagedPrivacy, ManagedTelemetry,
-    ManagedUpdate, ManagedVision,
+    load_managed_config, ManagedAudio, ManagedAuditPolicy, ManagedConfig, ManagedEffectiveReport,
+    ManagedEffectiveSetting, ManagedFeaturePin, ManagedFeaturePins, ManagedPermissionProfilePolicy,
+    ManagedPrivacy, ManagedProviderSurfacePolicy, ManagedSandboxNetworkPolicy,
+    ManagedSignaturePolicy, ManagedTelemetry, ManagedUpdate, ManagedVision,
 };
 pub use sections::*;

@@ -6,7 +6,9 @@
   docs/contracts/managed.schema.json and crates/maekon-core/src/config/managed.rs)
   to Windows Group Policy. Importing this into the Central Store
   (%SystemRoot%\PolicyDefinitions or the domain SYSVOL Central Store) surfaces the
-  six lockable Maekon policies under Computer Configuration > Administrative Templates.
+  the legacy/high-signal subset of lockable Maekon policies under Computer
+  Configuration > Administrative Templates. managed.json schema v2 is the complete
+  enforced contract.
 
   STATUS: reference template. (1) Validate with `admchk.exe` (or load in gpedit.msc)
   on a Windows host before deployment — it was authored on a non-Windows host and is
@@ -14,7 +16,7 @@
   distributed via MDM/file (see enterprise-deployment.md). The registry values these
   policies write under HKLM\Software\Policies\Maekon are NOT yet auto-translated into
   managed.json; a registry->managed.json bridge is future work. Until then, treat this
-  as the canonical documentation of the policy surface and author managed.json directly.
+  as reference documentation for the GPO subset and author managed.json directly.
 -->
 <policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"

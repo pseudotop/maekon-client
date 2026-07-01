@@ -39,5 +39,7 @@ pub mod local_llm;
 pub mod overlay;
 pub mod policy;
 pub mod presets;
+pub mod record_template;
 pub mod resolver;
 pub mod sandbox;
+pub mod template_package;

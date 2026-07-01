@@ -147,6 +147,7 @@ mod tests {
         let managed = ManagedConfig {
             privacy: ManagedPrivacy {
                 pii_filter_level: Some(level),
+                min_pii_filter_level: None,
             },
             ..Default::default()
         };

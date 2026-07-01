@@ -1004,6 +1004,7 @@ mod managed_policy {
         let managed = ManagedConfig {
             privacy: ManagedPrivacy {
                 pii_filter_level: Some(level),
+                ..Default::default()
             },
             ..Default::default()
         };
