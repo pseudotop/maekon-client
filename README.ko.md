@@ -9,6 +9,10 @@
 <p align="center">
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
+<p align="center">
+  <a href="https://maekon.dev">웹사이트</a> · <a href="https://docs.maekon.dev">공식 문서</a> · <a href="https://github.com/pseudotop/maekon-client/releases">릴리스</a>
+</p>
+
 
 # Maekon
 
