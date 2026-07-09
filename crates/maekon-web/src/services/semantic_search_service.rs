@@ -11,8 +11,29 @@
 //! Source: #5733 spike, validated against 40 docs × 18 queries.
 //!
 //! Availability fallback: when the embedding pipeline is unavailable in hybrid
-//! mode, the service degrades gracefully to keyword-only (warn-logged). The
-//! "semantic" mode retains its previous 503 behaviour.
+//! mode, the service degrades gracefully to keyword-only (warn-logged).
+//!
+//! # Capability boundary (mode=semantic, #7574)
+//!
+//! Unlike hybrid mode, `mode=semantic` never degrades to keyword — a caller
+//! who explicitly asked for semantic search wants vector results, not a
+//! silent keyword substitution. When this build has no vector/embedding
+//! pipeline wired up (the production default: `vector_store` /
+//! `embedding_provider` / `adaptive_search` are only assigned under
+//! `#[cfg(test)]`), that is a **permanent build-time capability gap**, not a
+//! transient outage. `execute` reports this as [`SearchExecutionError::SemanticNotConfigured`],
+//! which the HTTP layer (`crate::error::ApiError`) maps to **501 Not
+//! Implemented** with the message `"semantic search is not configured in
+//! this build; use mode=keyword or mode=hybrid"`. This replaces the prior
+//! behaviour of returning `CoreError::ServiceUnavailable` (HTTP 503), which
+//! misleadingly implied a temporary outage the client should retry rather
+//! than an absent feature the client should route around.
+//!
+//! Genuine runtime failures inside an otherwise-configured pipeline (e.g. the
+//! embedding provider itself erroring mid-request) still surface as ordinary
+//! [`CoreError`] via [`SearchExecutionError::Core`], preserving their typed
+//! wire code and HTTP mapping (typically 503) — only the "nothing is wired up
+//! at all" case is reclassified as a capability boundary.
 //!
 //! # Retired: +0.1 flat FTS boost (`fts_boost_set`)
 //!
@@ -235,6 +256,40 @@ pub(crate) fn fuse_keyword_first(
     tier0
 }
 
+/// Error returned by [`execute`].
+///
+/// Distinguishes the "semantic search is not configured in this build"
+/// capability boundary from ordinary [`CoreError`] failures, so
+/// `crate::error::ApiError` can map it to HTTP 501 Not Implemented instead of
+/// the misleading transient-outage semantics of HTTP 503 -- without touching
+/// the shared `CoreError` wire-code contract
+/// (`crates/maekon-core/tests/wire_contract_snapshot.rs`).
+#[derive(Debug, thiserror::Error)]
+pub enum SearchExecutionError {
+    /// Ordinary `CoreError`, passed through unchanged so its typed wire code
+    /// (e.g. `provider.analysis_failed`, `network.timeout`) and existing HTTP
+    /// mapping survive.
+    #[error(transparent)]
+    Core(#[from] CoreError),
+
+    /// `mode=semantic` was requested but this build has no vector/embedding
+    /// pipeline wired up. A permanent build-time capability gap, not a
+    /// transient outage -- the caller should switch to `mode=keyword` or
+    /// `mode=hybrid` instead of retrying.
+    #[error("semantic search is not configured in this build; use mode=keyword or mode=hybrid")]
+    SemanticNotConfigured,
+}
+
+impl SearchExecutionError {
+    /// Wire code for telemetry/logging, mirroring `CoreError::code()`.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SearchExecutionError::Core(e) => e.code(),
+            SearchExecutionError::SemanticNotConfigured => "service.not_implemented",
+        }
+    }
+}
+
 /// Execute a search with mode dispatch and provider availability checks.
 ///
 /// Iter-96: return `CoreError` instead of `String` so the typed
@@ -242,12 +297,16 @@ pub(crate) fn fuse_keyword_first(
 /// conditions become `ServiceUnavailable` (wire code
 /// `service.unavailable`); inner search failures preserve their own
 /// wire codes (e.g. `provider.analysis_failed`, `internal.io`).
+///
+/// #7574: `mode=semantic` with no vector/embedding pipeline configured no
+/// longer folds into `CoreError::ServiceUnavailable` -- see
+/// [`SearchExecutionError::SemanticNotConfigured`].
 pub async fn execute(
     state: &AppState,
     query: &str,
     limit: usize,
     mode: &str,
-) -> Result<Vec<SemanticSearchResult>, CoreError> {
+) -> Result<Vec<SemanticSearchResult>, SearchExecutionError> {
     match mode {
         "keyword" => {
             let ts = state.analysis.text_search.as_ref().ok_or_else(|| {
@@ -258,12 +317,12 @@ pub async fn execute(
                             .to_string(),
                 }
             })?;
-            keyword_search(ts, state, query, limit).await
+            Ok(keyword_search(ts, state, query, limit).await?)
         }
         "hybrid" => {
             // Hybrid: try vector path; if embedding pipeline is unavailable or
             // returns an error, degrade to keyword-only (warn-logged). The
-            // "semantic" mode retains its 503 behaviour below.
+            // "semantic" mode never degrades -- see the `_` arm below.
             if let Some(ref adaptive) = state.analysis.adaptive_search {
                 match state.analysis.embedding_provider.as_ref() {
                     Some(ep) => {
@@ -302,46 +361,34 @@ pub async fn execute(
                     }
                 }
             }
-            // Degraded path — keyword fallback
+            // Degraded path -- keyword fallback
             match state.analysis.text_search.as_ref() {
-                Some(ts) => keyword_search(ts, state, query, limit).await,
-                None => Err(CoreError::ServiceUnavailable {
+                Some(ts) => Ok(keyword_search(ts, state, query, limit).await?),
+                None => Err(SearchExecutionError::Core(CoreError::ServiceUnavailable {
                     code: maekon_core::error_codes::ServiceCode::Unavailable,
                     message:
                         "Search is not available (neither embedding pipeline nor text search configured)"
                             .to_string(),
-                }),
+                })),
             }
         }
         _ => {
-            // "semantic" and any unknown mode — prefer adaptive, fall back to
-            // vector store. No keyword degradation on semantic; caller gets 503.
+            // "semantic" and any unknown mode -- prefer adaptive, fall back to
+            // vector store. No keyword degradation on semantic: an absent
+            // pipeline is a capability boundary (SemanticNotConfigured ->
+            // HTTP 501), not a transient failure to retry.
+            let embedding_provider = state.analysis.embedding_provider.as_ref();
             if let Some(ref adaptive) = state.analysis.adaptive_search {
-                let ep = state.analysis.embedding_provider.as_ref().ok_or_else(|| {
-                    CoreError::ServiceUnavailable {
-                        code: maekon_core::error_codes::ServiceCode::Unavailable,
-                        message:
-                            "Semantic search is not available (embedding provider not configured)"
-                                .to_string(),
-                    }
-                })?;
-                return adaptive_vector_search(adaptive, ep, state, query, limit, false).await;
+                let ep = embedding_provider.ok_or(SearchExecutionError::SemanticNotConfigured)?;
+                return Ok(adaptive_vector_search(adaptive, ep, state, query, limit, false).await?);
             }
-            let vs = state.analysis.vector_store.as_ref().ok_or_else(|| {
-                CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "Semantic search is not available (embedding pipeline not configured)"
-                        .to_string(),
-                }
-            })?;
-            let ep = state.analysis.embedding_provider.as_ref().ok_or_else(|| {
-                CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "Semantic search is not available (embedding provider not configured)"
-                        .to_string(),
-                }
-            })?;
-            vector_search(vs, ep, state, query, limit, false).await
+            let vs = state
+                .analysis
+                .vector_store
+                .as_ref()
+                .ok_or(SearchExecutionError::SemanticNotConfigured)?;
+            let ep = embedding_provider.ok_or(SearchExecutionError::SemanticNotConfigured)?;
+            Ok(vector_search(vs, ep, state, query, limit, false).await?)
         }
     }
 }
@@ -828,10 +875,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use maekon_storage::sqlite::SqliteStorage;
-    use tokio::sync::broadcast;
-
-    use crate::RealtimeEvent;
 
     struct MarkerSanitizer;
 
@@ -896,8 +939,8 @@ mod tests {
         async fn mark_stale(&self, _id: &str) -> Result<u64, CoreError> {
             Ok(0)
         }
-        async fn update_vector(&self, _id: i64, _v: Vec<f32>, _m: &str) -> Result<(), CoreError> {
-            Ok(())
+        async fn update_vector(&self, _id: i64, _v: Vec<f32>, _m: &str) -> Result<u64, CoreError> {
+            Ok(1)
         }
         async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
             Ok(None)
@@ -959,10 +1002,9 @@ mod tests {
         }
     }
 
+    // #7738 D-4: funnel through the canonical test-state helper.
     fn build_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("open_in_memory"));
-        let (tx, _rx) = broadcast::channel::<RealtimeEvent>(10);
-        AppState::with_core(storage, tx)
+        crate::test_local_auth::test_app_state_with_event_capacity(10)
     }
 
     #[tokio::test]
@@ -1030,18 +1072,80 @@ mod tests {
         assert!(sent.contains("[PHONE]"));
     }
 
+    /// #7574 regression: when no vector/embedding pipeline is configured (the
+    /// production default -- `vector_store` / `embedding_provider` /
+    /// `adaptive_search` are only wired under `#[cfg(test)]`), `execute` must
+    /// report the explicit capability boundary (`SemanticNotConfigured`) with
+    /// its honest message, not a generic `CoreError::ServiceUnavailable`.
+    ///
+    /// Fails before the fix: previously this same setup produced
+    /// `CoreError::ServiceUnavailable { code: service.unavailable, .. }`,
+    /// which the HTTP layer mapped to 503 -- misleadingly implying a
+    /// transient outage a client should retry, when in fact this build never
+    /// implements semantic search at all.
     #[tokio::test]
-    async fn execute_errors_when_vector_store_missing() {
+    async fn execute_reports_capability_boundary_when_pipeline_absent() {
         let state = build_state();
         let err = execute(&state, "hello", 10, "semantic").await.unwrap_err();
-        // Iter-96: previously asserted on the stringified error; now asserts
-        // on the typed wire code (service.unavailable) so the test protects
-        // against future drift that would silently re-stringify.
-        assert_eq!(err.code(), "service.unavailable");
         assert!(
-            err.to_string().to_lowercase().contains("not available"),
-            "unexpected error: {err}"
+            matches!(err, SearchExecutionError::SemanticNotConfigured),
+            "expected SemanticNotConfigured, got: {err:?}"
         );
+        assert_eq!(err.code(), "service.not_implemented");
+        assert!(
+            err.to_string()
+                .contains("semantic search is not configured in this build"),
+            "unexpected error message: {err}"
+        );
+        assert!(
+            err.to_string().contains("mode=keyword") && err.to_string().contains("mode=hybrid"),
+            "message must point callers at the working modes: {err}"
+        );
+    }
+
+    /// #7574 regression: the capability boundary is scoped to `mode=semantic`
+    /// only. With the same "nothing configured" state, `mode=keyword` and
+    /// `mode=hybrid` must both keep returning functional keyword results
+    /// (hybrid via its existing degrade-to-keyword path).
+    #[tokio::test]
+    async fn keyword_and_hybrid_modes_still_work_when_semantic_pipeline_absent() {
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
+        state.analysis.text_search = Some(storage);
+        // vector_store / embedding_provider / adaptive_search intentionally
+        // left None -- the production default this fix targets.
+
+        state
+            .analysis
+            .text_search
+            .as_ref()
+            .unwrap()
+            .sync_segment(
+                "seg-boundary-001",
+                "capability boundary regression document",
+            )
+            .await
+            .unwrap();
+
+        let keyword_results = execute(&state, "boundary", 10, "keyword")
+            .await
+            .expect("keyword mode must keep working");
+        assert_eq!(keyword_results.len(), 1);
+        assert_eq!(keyword_results[0].segment_id, "seg-boundary-001");
+
+        let hybrid_results = execute(&state, "boundary", 10, "hybrid")
+            .await
+            .expect("hybrid mode must degrade to keyword, not error");
+        assert_eq!(hybrid_results.len(), 1);
+        assert_eq!(hybrid_results[0].segment_id, "seg-boundary-001");
+
+        let semantic_err = execute(&state, "boundary", 10, "semantic")
+            .await
+            .expect_err("semantic mode must still report the capability boundary");
+        assert!(matches!(
+            semantic_err,
+            SearchExecutionError::SemanticNotConfigured
+        ));
     }
 
     // ── hybrid fallback: embedding failure → keyword (#5766) ─────────────────
@@ -1053,9 +1157,8 @@ mod tests {
         let brute = Arc::new(CountingVectorStore {
             calls: AtomicUsize::new(0),
         });
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
-        let (tx, _) = broadcast::channel::<RealtimeEvent>(10);
-        let mut state = AppState::with_core(storage.clone(), tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
         state.analysis.vector_store = Some(brute.clone());
         state.analysis.embedding_provider = Some(Arc::new(FailingEmbedding));
         state.analysis.text_search = Some(storage);
@@ -1108,9 +1211,8 @@ mod tests {
         let brute = Arc::new(CountingVectorStore {
             calls: AtomicUsize::new(0),
         });
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
-        let (tx, _) = broadcast::channel::<RealtimeEvent>(10);
-        let mut state = AppState::with_core(storage.clone(), tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
         state.analysis.vector_store = Some(brute);
         state.analysis.embedding_provider = Some(Arc::new(FailingEmbedding));
         state.analysis.text_search = Some(storage);
@@ -1123,9 +1225,8 @@ mod tests {
     /// Hybrid mode with NO embedding provider configured at all degrades to keyword.
     #[tokio::test]
     async fn hybrid_degrades_when_no_embedding_provider_configured() {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
-        let (tx, _) = broadcast::channel::<RealtimeEvent>(10);
-        let mut state = AppState::with_core(storage.clone(), tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
         state.analysis.text_search = Some(storage);
         // embedding_provider intentionally None, no vector_store
 
@@ -1142,5 +1243,42 @@ mod tests {
             .await
             .expect("must degrade gracefully to keyword");
         assert!(!results.is_empty());
+    }
+
+    // ── keyword mode: FTS BM25 relevance ordering (#7912 T3.3-Tier1) ──────────
+
+    /// The dashboard keyword mode's value contract: `mode=keyword` returns FTS5
+    /// BM25 relevance-ranked results end-to-end (`execute` -> `keyword_search`
+    /// -> `search_fts`), NOT recency-ordered ones. Uses a real `SqliteStorage`
+    /// as the `text_search` provider (no theater mock) so the ordering asserted
+    /// here is the genuine FTS5 `ORDER BY rank` the UI depends on.
+    #[tokio::test]
+    async fn keyword_mode_preserves_bm25_relevance_order() {
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
+        state.analysis.text_search = Some(storage);
+        let ts = state.analysis.text_search.as_ref().unwrap();
+
+        // seg-heavy mentions "rust" twice -> stronger BM25 relevance than
+        // seg-light (once); seg-none does not match at all.
+        ts.sync_segment("seg-light", "rust programming language systems")
+            .await
+            .unwrap();
+        ts.sync_segment("seg-heavy", "rust compiler optimization rust")
+            .await
+            .unwrap();
+        ts.sync_segment("seg-none", "python web development")
+            .await
+            .unwrap();
+
+        let results = execute(&state, "rust", 10, "keyword").await.unwrap();
+
+        let ids: Vec<&str> = results.iter().map(|r| r.segment_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["seg-heavy", "seg-light"],
+            "keyword mode must return FTS BM25 relevance order (double-mention \
+             first), excluding the non-matching python segment"
+        );
     }
 }

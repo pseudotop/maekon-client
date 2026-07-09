@@ -10,9 +10,25 @@ pub struct SuggestionViewDto {
     pub source: String,
     pub confidence_score: f64,
     pub created_at: String,
-    pub is_read: bool,
     pub reasoning: Option<String>,
     pub context_scope: Option<SuggestionContextScopeDto>,
+    /// One-click automation affordance derived for a BOUND, pending suggestion
+    /// (T4.1 #7917, ADR-027). `None` on unbound and on all history/stale views:
+    /// only the live pending build sites populate it, and only when
+    /// `suggested_action_preset` maps ∧ automation is enabled ∧ the preset
+    /// resolves in the live builtins+custom list. The run command re-derives the
+    /// preset server-side and ignores client data, so this is label-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<SuggestionActionDto>,
+}
+
+/// Label-only automation affordance attached to a bound suggestion view
+/// (T4.1 #7917). Carries no preset id: `run_suggestion_action` re-derives the
+/// preset from the suggestion's own `(type, source)` and never trusts a
+/// client-supplied id.
+#[derive(Clone, Debug, Serialize)]
+pub struct SuggestionActionDto {
+    pub label: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -85,16 +101,4 @@ pub struct DailyStatDto {
     pub accepted: u32,
     pub rejected: u32,
     pub deferred: u32,
-}
-
-#[derive(Serialize)]
-pub struct DeferredSuggestionDto {
-    pub id: String,
-    pub title: String,
-    pub body: String,
-    pub priority: String,
-    pub source: String,
-    pub deferred_at: String,
-    pub resurface_at: String,
-    pub remaining_minutes: i64,
 }

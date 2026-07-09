@@ -1,0 +1,45 @@
+# cargo-audit configuration (RustSec).
+#
+# F-SC-04: cargo-audit does NOT read deny.toml, so the "RustSec audit" CI step
+# (./scripts/cargo-cache.sh audit) previously failed on the same advisories that
+# `cargo deny` already accepts via deny.toml. This file mirrors the accepted
+# VULNERABILITY-class advisory IDs from deny.toml [advisories].ignore so that
+# cargo-audit and cargo-deny suppress exactly the same accepted advisories, and
+# so local `cargo audit` and CI behave identically (the stated F-SC-04 intent).
+#
+# SCOPE: this list contains ONLY the vulnerability-class advisories that cargo-audit
+# treats as errors. Unmaintained- and unsound-class advisories are intentionally
+# NOT listed here: cargo-audit reports them as non-failing "allowed warnings", and
+# that warning channel is the documented visibility mechanism for the transitive
+# unmaintained/unsound advisories (F-SC-C37-03: "governance transferred to
+# unsound = warn + cargo-audit warning channel"). cargo-deny reports only
+# "advisories ok" for these transitive advisories (unmaintained = "workspace"
+# skips first-party-only; unsound is non-failing), so cargo-audit is their sole
+# surfacing channel. Suppressing them here would hide that channel — do not add
+# unmaintained/unsound IDs to this list.
+#
+# SSOT: deny.toml [advisories] is the single source of rationale and Review-by
+# expiry for these suppressions. This file only mirrors the two vulnerability IDs.
+# When deny.toml's ignore list changes, update this list in the same commit.
+# The verify_exemption_expiry.py CI gate scans deny.toml (not this file) for the
+# Review-by dates that bound these suppressions.
+
+[advisories]
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml DoS-class advisories (quadratic
+# run time on duplicate attribute names; unbounded namespace-declaration allocation
+# in NsReader). Severity 7.5 (high). All four in-tree quick-xml versions are purely
+# transitive and platform-split, with no direct dependency and no semver-compatible
+# lockfile update (fix requires quick-xml >= 0.41.0, a breaking major for each
+# upstream that pins a 0.x range):
+#   quick-xml 0.38.4  plist 1.8.0 -> tauri 2.11.2            (macOS app-bundle plist)
+#   quick-xml 0.37.5  tauri-winrt-notification               (Windows notifications)
+#   quick-xml 0.30.0  xcb build-dependency                   (Linux X11)
+#   quick-xml 0.39.2  wayland-scanner (proc-macro build dep) (Linux Wayland)
+# Practical risk is low: these parse trusted OS/app metadata and build-time schemas,
+# not attacker-controlled XML. Upstream-bound; prefer a real fix once tauri/plist/
+# tauri-winrt-notification/xcb/wayland ship quick-xml >= 0.41. Mirrors deny.toml.
+# Bounded by deny.toml Review-by: 2026-11-16 (upstream Tauri/plist resolution).
+ignore = [
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

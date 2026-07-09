@@ -66,8 +66,8 @@ impl VectorStore for MockVectorStore {
         _id: i64,
         _vector: Vec<f32>,
         _model_id: &str,
-    ) -> Result<(), CoreError> {
-        Ok(())
+    ) -> Result<u64, CoreError> {
+        Ok(1)
     }
     async fn search_quantized(
         &self,
@@ -139,8 +139,8 @@ impl VectorStore for MockVectorStoreWithMetadata {
     async fn get_stale_vectors(&self, _l: usize) -> Result<Vec<(i64, String)>, CoreError> {
         Ok(vec![])
     }
-    async fn update_vector(&self, _i: i64, _v: Vec<f32>, _m: &str) -> Result<(), CoreError> {
-        Ok(())
+    async fn update_vector(&self, _i: i64, _v: Vec<f32>, _m: &str) -> Result<u64, CoreError> {
+        Ok(1)
     }
     async fn search_quantized(
         &self,
@@ -334,8 +334,16 @@ async fn refresh_count_updates_atomic() {
 async fn search_delegates_to_brute_force() {
     let store = Arc::new(MockVectorStore::new(100));
     let index = Arc::new(MockVectorIndex::new());
-    let coordinator =
-        AdaptiveSearchCoordinator::new(store.clone(), index.clone(), SearchConfig::default());
+    // INT8 dispatch (search_quantized) is only exercised when quantization is
+    // enabled; with it disabled the coordinator routes to the f32 path (#7479).
+    let coordinator = AdaptiveSearchCoordinator::new(
+        store.clone(),
+        index.clone(),
+        SearchConfig {
+            quantization_enabled: true,
+            ..Default::default()
+        },
+    );
     coordinator.set_cached_count(100);
 
     let _ = coordinator
@@ -350,8 +358,15 @@ async fn search_delegates_to_brute_force() {
 async fn search_delegates_to_ivf() {
     let store = Arc::new(MockVectorStore::new(50_000));
     let index = Arc::new(MockVectorIndex::new());
-    let coordinator =
-        AdaptiveSearchCoordinator::new(store.clone(), index.clone(), SearchConfig::default());
+    // INT8 IVF dispatch only applies when quantization is enabled (#7479).
+    let coordinator = AdaptiveSearchCoordinator::new(
+        store.clone(),
+        index.clone(),
+        SearchConfig {
+            quantization_enabled: true,
+            ..Default::default()
+        },
+    );
     coordinator.set_cached_count(50_000);
 
     let _ = coordinator
@@ -366,8 +381,15 @@ async fn search_delegates_to_ivf() {
 async fn search_delegates_to_ivf_binary() {
     let store = Arc::new(MockVectorStore::new(200_000));
     let index = Arc::new(MockVectorIndex::new());
-    let coordinator =
-        AdaptiveSearchCoordinator::new(store.clone(), index.clone(), SearchConfig::default());
+    // INT8 IVF+binary dispatch only applies when quantization is enabled (#7479).
+    let coordinator = AdaptiveSearchCoordinator::new(
+        store.clone(),
+        index.clone(),
+        SearchConfig {
+            quantization_enabled: true,
+            ..Default::default()
+        },
+    );
     coordinator.set_cached_count(200_000);
 
     let _ = coordinator
@@ -376,6 +398,121 @@ async fn search_delegates_to_ivf_binary() {
 
     assert!(!store.brute_force_called.load(Ordering::Relaxed));
     assert!(index.ivf_binary_called.load(Ordering::Relaxed));
+}
+
+/// Mock store that mirrors the real SqliteStorage quantization contract:
+/// `search_quantized` filters `vector_int8 IS NOT NULL` (empty when vectors are
+/// f32-only), while `search_filtered` scans the f32 column and returns results.
+struct F32OnlyVectorStore {
+    quantized_called: AtomicBool,
+    filtered_called: AtomicBool,
+}
+
+impl F32OnlyVectorStore {
+    fn new() -> Self {
+        Self {
+            quantized_called: AtomicBool::new(false),
+            filtered_called: AtomicBool::new(false),
+        }
+    }
+
+    fn one_result() -> SearchResult {
+        SearchResult {
+            segment_id: "seg-f32".to_string(),
+            content_type: maekon_core::models::embedding::EmbeddingContentType::ContentActivity,
+            content_label: Some("f32".to_string()),
+            score: 0.9,
+            similarity: 0.9,
+            time_decay: 1.0,
+            timestamp: chrono::Utc::now(),
+            original_text: "f32 stored text".to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl VectorStore for F32OnlyVectorStore {
+    async fn store(&self, _v: Vec<f32>, _m: EmbeddingMetadata) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn search(&self, _q: &[f32], _l: usize, _t: f32) -> Result<Vec<SearchResult>, CoreError> {
+        Ok(vec![Self::one_result()])
+    }
+    async fn search_filtered(
+        &self,
+        _q: &[f32],
+        _l: usize,
+        _t: f32,
+        _f: &SearchFilters,
+    ) -> Result<Vec<SearchResult>, CoreError> {
+        self.filtered_called.store(true, Ordering::Relaxed);
+        Ok(vec![Self::one_result()])
+    }
+    async fn enforce_retention(&self, _d: u32) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+    async fn mark_stale(&self, _m: &str) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+    async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+        Ok(None)
+    }
+    async fn get_stale_vectors(&self, _l: usize) -> Result<Vec<(i64, String)>, CoreError> {
+        Ok(vec![])
+    }
+    async fn update_vector(&self, _i: i64, _v: Vec<f32>, _m: &str) -> Result<u64, CoreError> {
+        Ok(1)
+    }
+    async fn search_quantized(
+        &self,
+        _q: &QuantizedVector,
+        _l: usize,
+        _t: f32,
+        _f: &SearchFilters,
+    ) -> Result<Vec<SearchResult>, CoreError> {
+        // f32-only rows have vector_int8 = NULL → the INT8 scan finds nothing.
+        self.quantized_called.store(true, Ordering::Relaxed);
+        Ok(vec![])
+    }
+    async fn count_active_vectors(&self) -> Result<u64, CoreError> {
+        Ok(100)
+    }
+}
+
+#[tokio::test]
+async fn search_without_quantization_returns_f32_results() {
+    // Regression for #7479: with INT8 quantization disabled (the default), the
+    // default BruteForceInt8 tier called search_quantized unconditionally, which
+    // filters `vector_int8 IS NOT NULL` and returns nothing for f32-only vectors.
+    // RAG then silently returned []. The coordinator must fall back to the f32
+    // search_filtered path so results are actually returned.
+    let store = Arc::new(F32OnlyVectorStore::new());
+    let index = Arc::new(MockVectorIndex::new());
+    // quantization_enabled defaults to false.
+    let coordinator =
+        AdaptiveSearchCoordinator::new(store.clone(), index.clone(), SearchConfig::default());
+    coordinator.set_cached_count(100); // BruteForceInt8 tier in auto mode
+
+    let results = coordinator
+        .search(&[0.1, 0.2, 0.3], 5, 168.0, &SearchFilters::default())
+        .await
+        .expect("search must succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "f32-only store must return results via the f32 search path when quantization is disabled"
+    );
+    assert_eq!(results[0].segment_id, "seg-f32");
+    assert!(
+        store.filtered_called.load(Ordering::Relaxed),
+        "the f32 search_filtered path must be used when quantization is disabled"
+    );
+    assert!(
+        !store.quantized_called.load(Ordering::Relaxed),
+        "the INT8 search_quantized path must be skipped when quantization is disabled"
+    );
+    assert!(!index.ivf_called.load(Ordering::Relaxed));
 }
 
 // ── Backward compatibility tests (Task 22) ──────────────────
@@ -388,6 +525,9 @@ async fn brute_force_config_skips_indexing() {
     let index = Arc::new(MockVectorIndex::new());
     let config = SearchConfig {
         forced_strategy: Some("brute_force".to_string()),
+        // The INT8 brute-force scan (search_quantized) only runs when
+        // quantization is enabled; otherwise the f32 path is used (#7479).
+        quantization_enabled: true,
         ..Default::default()
     };
     let coordinator = AdaptiveSearchCoordinator::new(store.clone(), index.clone(), config);
@@ -650,9 +790,17 @@ mod hnsw_tests {
         let index = Arc::new(MockVectorIndex::new());
         let ann = Arc::new(MockAnnIndex::new(vec![]).with_search_fail());
 
-        let coordinator =
-            AdaptiveSearchCoordinator::new(store.clone(), index, SearchConfig::default())
-                .with_ann_index(ann);
+        // The INT8 brute-force fallback (search_quantized) only runs when
+        // quantization is enabled; otherwise the f32 path is used (#7479).
+        let coordinator = AdaptiveSearchCoordinator::new(
+            store.clone(),
+            index,
+            SearchConfig {
+                quantization_enabled: true,
+                ..Default::default()
+            },
+        )
+        .with_ann_index(ann);
         coordinator.set_cached_count(7_000);
 
         // HNSW search fails → should gracefully fall back to brute-force

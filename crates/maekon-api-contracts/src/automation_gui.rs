@@ -51,7 +51,7 @@ pub struct GuiExecutionRequest {
     pub ticket: GuiExecutionTicket,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GuiCreateSessionResponse {
     pub schema_version: String,
@@ -62,6 +62,16 @@ pub struct GuiCreateSessionResponse {
     )]
     pub session: GuiInteractionSession,
     pub capability_token: String,
+}
+
+impl std::fmt::Debug for GuiCreateSessionResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuiCreateSessionResponse")
+            .field("schema_version", &self.schema_version)
+            .field("session", &self.session)
+            .field("capability_token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +229,42 @@ mod tests {
         let json = r#"{"id": "session-abc"}"#;
         let path: GuiSessionPath = serde_json::from_str(json).unwrap();
         assert_eq!(path.id, "session-abc");
+    }
+
+    #[test]
+    fn create_session_response_debug_redacts_capability_token() {
+        let session: GuiInteractionSession = serde_json::from_value(serde_json::json!({
+            "session_id": "s1",
+            "state": "executed",
+            "scene": {
+                "scene_id": "sc1",
+                "captured_at": "2026-01-01T00:00:00Z",
+                "screen_width": 1920,
+                "screen_height": 1080,
+                "elements": []
+            },
+            "focus": {
+                "app_name": "App",
+                "window_title": "Win",
+                "pid": 100,
+                "captured_at": "2026-01-01T00:00:00Z",
+                "focus_hash": "hash"
+            },
+            "candidates": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2026-01-01T01:00:00Z"
+        }))
+        .unwrap();
+        let response = GuiCreateSessionResponse {
+            schema_version: "gui.create-session.v1".to_string(),
+            session,
+            capability_token: "secret-token".to_string(),
+        };
+
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

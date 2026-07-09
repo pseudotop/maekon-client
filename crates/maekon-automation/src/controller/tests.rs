@@ -1400,6 +1400,118 @@ async fn execute_command_default_disabled_sandbox_without_inline_audits_failed()
     );
 }
 
+/// Records every in-process input-driver call so a controller-level test can
+/// prove an action actually reached the inline driver instead of being silently
+/// dropped by a NoOp sandbox that still reports Success (#7476).
+#[derive(Default)]
+struct RecordingInlineDriver {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl maekon_core::ports::input_driver::InputDriver for RecordingInlineDriver {
+    async fn mouse_move(&self, x: i32, y: i32) -> Result<(), CoreError> {
+        self.calls.lock().unwrap().push(format!("move:{x},{y}"));
+        Ok(())
+    }
+    async fn mouse_click(&self, button: &str, x: i32, y: i32) -> Result<(), CoreError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("click:{button},{x},{y}"));
+        Ok(())
+    }
+    async fn type_text(&self, text: &str) -> Result<(), CoreError> {
+        self.calls.lock().unwrap().push(format!("type:{text}"));
+        Ok(())
+    }
+    async fn key_press(&self, key: &str) -> Result<(), CoreError> {
+        self.calls.lock().unwrap().push(format!("press:{key}"));
+        Ok(())
+    }
+    async fn key_release(&self, key: &str) -> Result<(), CoreError> {
+        self.calls.lock().unwrap().push(format!("release:{key}"));
+        Ok(())
+    }
+    async fn hotkey(&self, keys: &[String]) -> Result<(), CoreError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("hotkey:{}", keys.join("+")));
+        Ok(())
+    }
+    fn platform(&self) -> &str {
+        "recording"
+    }
+}
+
+/// #7476: In the default state (automation enabled + sandbox disabled), a trusted
+/// internal command resolves its sandbox via `default_strict_config`. Before the
+/// fix that forced `enabled: true`, so `dispatch` skipped the `!enabled` branch and
+/// routed the action to the wired `NoOpSandbox`, which silently dropped it yet
+/// returned `Success` (durably audited `Completed`) — the explicit inline input
+/// driver was never reached. The action MUST reach the inline driver instead of
+/// being a silent no-op success.
+#[tokio::test]
+async fn internal_trusted_command_reaches_inline_driver_not_silent_noop() {
+    use super::gate::GUI_SESSION_POLICY_TOKEN;
+
+    let policy_client = Arc::new(PolicyClient::new());
+    let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+    let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+    // Default state: sandbox disabled (SandboxConfig::default().enabled == false).
+    let sandbox_config = SandboxConfig::default();
+    let mut controller =
+        AutomationController::new(policy_client, audit_logger.clone(), sandbox, sandbox_config);
+    controller.set_enabled(true);
+
+    let recorder = Arc::new(RecordingInlineDriver::default());
+    let driver: Arc<dyn maekon_core::ports::input_driver::InputDriver> = recorder.clone();
+    controller.set_inline_action_executor(driver);
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-7476".to_string(),
+        session_id: "sess-7476".to_string(),
+        action: AutomationAction::KeyType {
+            text: "hello".to_string(),
+        },
+        timeout_ms: None,
+        // Trusted internal sentinel token → resolve_for_command uses default_strict_config.
+        policy_token: GUI_SESSION_POLICY_TOKEN.to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    };
+
+    let result = controller
+        .execute_command(&cmd)
+        .await
+        .expect("execute_command must return a result");
+
+    // The action reached the explicit inline driver (was NOT silently dropped by the
+    // NoOp sandbox). This is the pre-fix failure: with the forced-enabled strict
+    // config the recorder captured nothing yet the result was Success.
+    {
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &["type:hello".to_string()],
+            "internal trusted command must reach the inline driver, got {calls:?}"
+        );
+    }
+    assert!(
+        matches!(result, CommandResult::Success),
+        "inline execution should report Success, got {result:?}"
+    );
+
+    // The audit trail records a genuine, executed Completed for this command — not a
+    // skipped no-op that never touched an input driver.
+    let logger = audit_logger.read().await;
+    let completed = logger.entries_by_status(&crate::audit::AuditStatus::Completed, 10);
+    assert!(
+        completed.iter().any(|entry| entry.command_id == "cmd-7476"),
+        "the executed command must be audited Completed, got {completed:?}"
+    );
+}
+
 #[tokio::test]
 async fn execute_command_block_policy_audits_denial() {
     // Regression (automation-deny-audit): a ConfirmationRequirement::Block policy

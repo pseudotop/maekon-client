@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::super::enums::{CoachingTone, DataLookback, OverlayMode};
+use super::super::enums::{CoachingTone, OverlayMode};
 
 /// Coaching engine configuration.
 ///
@@ -15,10 +15,6 @@ pub struct CoachingConfig {
     /// Per-profile configuration.
     #[serde(default = "default_profile_configs")]
     pub profiles: HashMap<String, ProfileConfig>,
-
-    /// Lookback window for historical comparisons.
-    #[serde(default)]
-    pub data_lookback: DataLookback,
 
     /// Message tone preference.
     #[serde(default)]
@@ -50,7 +46,6 @@ impl Default for CoachingConfig {
         Self {
             enabled: false,
             profiles: default_profile_configs(),
-            data_lookback: DataLookback::default(),
             tone: CoachingTone::default(),
             quiet_hours: vec![],
             regime_goals: HashMap::new(),

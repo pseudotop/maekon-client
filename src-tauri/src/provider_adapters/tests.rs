@@ -951,6 +951,10 @@ struct FakeExternalOcrProvider {
     responses: Vec<OcrResult>,
 }
 
+struct TrackingExternalOcrProvider {
+    seen_call: Arc<std::sync::Mutex<bool>>,
+}
+
 struct FakeExternalLlmProvider {
     seen_context: Arc<std::sync::Mutex<Option<ScreenContext>>>,
 }
@@ -1038,6 +1042,26 @@ impl OcrProvider for FakeExternalOcrProvider {
 
     fn provider_name(&self) -> &str {
         "fake-external"
+    }
+
+    fn is_external(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
+impl OcrProvider for TrackingExternalOcrProvider {
+    async fn extract_elements(
+        &self,
+        _image: &[u8],
+        _image_format: &str,
+    ) -> Result<Vec<OcrResult>, CoreError> {
+        *self.seen_call.lock().unwrap() = true;
+        Ok(vec![])
+    }
+
+    fn provider_name(&self) -> &str {
+        "tracking-external"
     }
 
     fn is_external(&self) -> bool {
@@ -2024,6 +2048,39 @@ async fn guarded_ocr_provider_denies_without_ocr_consent_and_audits_it() {
         .details
         .as_deref()
         .is_some_and(|details| details.contains("reason=OCR consent is required")));
+}
+
+#[tokio::test]
+async fn guarded_ocr_provider_does_not_call_external_ocr_when_sanitization_unavailable() {
+    let seen_call = Arc::new(std::sync::Mutex::new(false));
+    let inner = Arc::new(TrackingExternalOcrProvider {
+        seen_call: seen_call.clone(),
+    }) as Arc<dyn OcrProvider>;
+    let (privacy_guard, _temp_dir) = make_external_ocr_guard(
+        true,
+        Some(WindowInfo {
+            title: "main.rs".to_string(),
+            app_name: "Code".to_string(),
+            app_bundle_id: None,
+            pid: 16,
+            bounds: None,
+        }),
+        None,
+    );
+    let guarded = guarded_ocr::GuardedOcrProvider::new(
+        inner,
+        privacy_guard,
+        false,
+        OcrValidationConfig::default(),
+    );
+
+    let err = guarded.extract_elements(b"dummy", "png").await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("sanitization")
+            || err.to_string().contains("external image sanitization")
+    );
+    assert!(!*seen_call.lock().unwrap());
 }
 
 #[tokio::test]

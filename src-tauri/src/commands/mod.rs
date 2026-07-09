@@ -11,7 +11,6 @@ pub(crate) mod capture;
 pub(crate) mod capture_status;
 pub(crate) mod coaching;
 pub mod consent;
-pub(crate) mod dashboard;
 pub(crate) mod detection;
 pub(crate) mod error_report;
 pub(crate) mod focus;
@@ -21,12 +20,10 @@ pub(crate) mod notification;
 pub(crate) mod onboarding;
 pub(crate) mod permissions;
 pub(crate) mod settings;
-pub(crate) mod shortcuts;
 pub(crate) mod suggestion_parser;
 pub(crate) mod suggestions;
 pub(crate) mod sync;
 pub(crate) mod system;
-pub(crate) mod tracking_schedule;
 pub(crate) mod tray;
 
 /// Recursively merge `patch` into `base`.

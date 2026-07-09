@@ -2,12 +2,14 @@ import { resolveApiUrl, resolveLocalAuthToken, withResolvedLocalAuthHeaders } fr
 import type {
   AppSettings,
   AppUsage,
+  AuditChainReport,
   AuditEntry,
   AutomationContracts,
   AutomationStats,
   AutomationStatus,
   BackupArchive,
   BackupParams,
+  ClaimListResponse,
   CoachingStatsToday,
   CoachingTemplateListDto,
   ConsentPermissions,
@@ -20,6 +22,7 @@ import type {
   DeleteResult,
   DesktopPermissionSnapshot,
   DiagnosticsBundleResponse,
+  EgressLedgerResponse,
   Event,
   ExecuteIntentHintRequest,
   ExecuteIntentHintResponse,
@@ -73,10 +76,12 @@ import type {
   ReportParams,
   ReportResponse,
   RestoreResult,
+  RetractClaimResponse,
   SceneCalibrationReport,
   SearchParams,
   SearchResponse,
   SecretBackendCapabilities,
+  SemanticSearchCapabilities,
   SemanticSearchResult,
   Session,
   StartPomodoroRequest,
@@ -780,6 +785,86 @@ export async function fetchAuditLogs(limit = 50, status?: string): Promise<Audit
   return res.json()
 }
 
+// #7600: HTTP path for the durable audit-log hash-chain integrity check
+// (ADR-072). Standalone-browser counterpart of the desktop `verify_audit_log`
+// Tauri IPC command — used by the audit page's "Verify integrity" affordance
+// via the IS_TAURI switch so the compliance capability is reachable from
+// every frontend surface, not just the desktop webview.
+export async function fetchAuditVerify(): Promise<AuditChainReport> {
+  const res = await fetchWithRetry(`${BASE_URL}/audit/verify`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Audit chain verification failed' }))
+    throw new Error(err.error || 'Audit chain verification failed')
+  }
+  return res.json()
+}
+
+// T1.2 (#7910): read-only egress transparency browser — "what left this device".
+// Serves the erase-retained #4803 egress ledger. When both `from` and `to`
+// (RFC3339) are supplied the server returns that inclusive range; otherwise the
+// most recent entries capped at `limit`.
+export interface EgressLedgerParams {
+  limit?: number
+  from?: string
+  to?: string
+}
+
+export async function fetchEgressLedger(params: EgressLedgerParams = {}): Promise<EgressLedgerResponse> {
+  const query = new URLSearchParams()
+  if (params.limit != null) query.set('limit', String(params.limit))
+  if (params.from) query.set('from', params.from)
+  if (params.to) query.set('to', params.to)
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/privacy/egress-ledger${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Egress ledger query failed' }))
+    throw new Error(err.error || 'Egress ledger query failed')
+  }
+  return res.json()
+}
+
+// T1.3 (#7911): memory-graph claims browser — the durable ADR-023 beliefs the
+// agent accumulates about the user. Filters combine (AND); `status` omitted
+// hides retracted claims (pass 'retracted' or 'all' to include them). `from`/`to`
+// are epoch SECONDS on the claim's created_at.
+export interface ClaimListParams {
+  kind?: string
+  status?: string
+  from?: number
+  to?: number
+  limit?: number
+}
+
+export async function fetchClaims(params: ClaimListParams = {}): Promise<ClaimListResponse> {
+  const query = new URLSearchParams()
+  if (params.kind) query.set('kind', params.kind)
+  if (params.status) query.set('status', params.status)
+  if (params.from != null) query.set('from', String(params.from))
+  if (params.to != null) query.set('to', String(params.to))
+  if (params.limit != null) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/memory/claims${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Claims query failed' }))
+    throw new Error(err.error || 'Claims query failed')
+  }
+  return res.json()
+}
+
+// Retract a claim: flips it to `retracted` (hidden from digests + retrieval),
+// preserving the record. Idempotent — retracting a retracted claim is a 200
+// no-op (`already_retracted: true`).
+export async function retractClaim(claimId: string): Promise<RetractClaimResponse> {
+  const res = await fetchWithRetry(`${BASE_URL}/memory/claims/${encodeURIComponent(claimId)}/retract`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Retract failed' }))
+    throw new Error(err.error || 'Retract failed')
+  }
+  return res.json()
+}
+
 export async function fetchPolicies(): Promise<PoliciesInfo> {
   const res = await fetchWithRetry(`${BASE_URL}/automation/policies`)
   if (!res.ok) throw new Error('policy query failure')
@@ -1336,6 +1421,15 @@ export async function fetchSemanticSearch(
     const err = await res.json().catch(() => ({ error: 'Semantic search failed' }))
     throw new Error(err.error || 'Semantic search failed')
   }
+  return res.json()
+}
+
+// #7600: capability check the Search page uses to honestly label/disable the
+// "Semantic" mode toggle instead of silently degrading (hybrid mode) or
+// surfacing an unexplained HTTP 501 (semantic mode) after the user searches.
+export async function fetchSemanticSearchCapabilities(): Promise<SemanticSearchCapabilities> {
+  const res = await fetchWithRetry(`${BASE_URL}/semantic-search/capabilities`)
+  if (!res.ok) throw new Error('Semantic search capability query failed')
   return res.json()
 }
 

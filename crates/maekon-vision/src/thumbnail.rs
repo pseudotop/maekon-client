@@ -51,7 +51,8 @@ impl ByteBudgetCache {
     fn new(budget_bytes: usize) -> Self {
         Self {
             inner: LruCache::new(
-                NonZeroUsize::new(MAX_CACHE_ENTRIES).expect("MAX_CACHE_ENTRIES must be > 0"),
+                NonZeroUsize::new(MAX_CACHE_ENTRIES)
+                    .unwrap_or_else(|| panic!("MAX_CACHE_ENTRIES must be > 0")),
             ),
             total_bytes: 0,
             budget_bytes,

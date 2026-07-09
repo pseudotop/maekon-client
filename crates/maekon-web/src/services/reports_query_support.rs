@@ -20,13 +20,15 @@ pub(crate) fn resolve_report_window(
         ReportPeriod::Week => {
             let to = now;
             let from = to - Duration::days(7);
-            let window = TimeWindow::new(from, to).expect("now - 7d <= now");
+            let window = TimeWindow::new(from, to)
+                .map_err(|e| ApiError::BadRequest(format!("invalid weekly report window: {e}")))?;
             Ok((window, "Weekly Activity Report".to_string()))
         }
         ReportPeriod::Month => {
             let to = now;
             let from = to - Duration::days(30);
-            let window = TimeWindow::new(from, to).expect("now - 30d <= now");
+            let window = TimeWindow::new(from, to)
+                .map_err(|e| ApiError::BadRequest(format!("invalid monthly report window: {e}")))?;
             Ok((window, "Monthly Activity Report".to_string()))
         }
         ReportPeriod::Custom => {

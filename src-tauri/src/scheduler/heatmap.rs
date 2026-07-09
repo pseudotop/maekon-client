@@ -64,11 +64,6 @@ impl HeatmapAggregator {
 
         Some(normalized)
     }
-
-    #[allow(dead_code)] // Public API for tests and future consumers
-    pub const fn grid_size() -> usize {
-        GRID_SIZE
-    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,10 @@
 //!
 //! Run with: `cargo bench -p maekon-analysis --features hnsw`
 
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use maekon_analysis::HnswAdapter;
 use maekon_core::ports::ann_index::AnnIndex;

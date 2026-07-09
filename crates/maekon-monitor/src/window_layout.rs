@@ -48,15 +48,13 @@ impl WindowLayoutTracker {
         window_title: &str,
         bounds: Option<WindowBounds>,
     ) -> Option<WindowLayoutEvent> {
-        let current = match bounds {
-            Some(b) => PreviousWindowState {
-                app_name: app_name.to_string(),
-                window_title: window_title.to_string(),
-                position: (b.x, b.y),
-                size: (b.width, b.height),
-                is_fullscreen: self.is_fullscreen(&b),
-            },
-            None => return None,
+        let b = bounds?;
+        let current = PreviousWindowState {
+            app_name: app_name.to_string(),
+            window_title: window_title.to_string(),
+            position: (b.x, b.y),
+            size: (b.width, b.height),
+            is_fullscreen: self.is_fullscreen(&b),
         };
 
         let mut prev_guard = self.prev_state.lock().ok()?;
@@ -142,7 +140,6 @@ impl WindowLayoutTracker {
         }
     }
 
-    #[allow(dead_code)]
     pub fn detect_minimize(&self, bounds: Option<WindowBounds>) -> bool {
         match bounds {
             Some(b) => b.width < 100 || b.height < 100,

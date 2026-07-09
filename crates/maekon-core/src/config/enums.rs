@@ -152,18 +152,6 @@ pub enum CoachingTone {
     DataDriven,
 }
 
-/// Historical comparison window for coaching baselines.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DataLookback {
-    /// Compare against today's data only.
-    #[default]
-    Today,
-    /// Rolling 7-day comparison.
-    Week,
-    /// Rolling 30-day comparison.
-    Month,
-}
-
 /// Overlay display mode (Phase 2 — MagicOverlay). Stored in config for forward compatibility.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverlayMode {
@@ -437,16 +425,6 @@ pub enum ConfirmationRequirement {
     Block,
 }
 
-impl std::fmt::Display for DataLookback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Today => f.write_str("today"),
-            Self::Week => f.write_str("week"),
-            Self::Month => f.write_str("month"),
-        }
-    }
-}
-
 impl std::fmt::Display for SttLanguage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -493,13 +471,6 @@ impl std::fmt::Display for ConfirmationRequirement {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_data_lookback_display() {
-        assert_eq!(DataLookback::Today.to_string(), "today");
-        assert_eq!(DataLookback::Week.to_string(), "week");
-        assert_eq!(DataLookback::Month.to_string(), "month");
-    }
 
     #[test]
     fn test_stt_language_display() {

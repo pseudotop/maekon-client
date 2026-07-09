@@ -17,9 +17,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: Parameters<typeof mockListen>) => mockListen(...args),
 }))
 
-// @tauri-apps/api/core invoke mock — returns get_audio_status in voice_activity mode
+// @tauri-apps/api/core invoke mock — returns get_audio_status in voice_activity mode.
+// #7600: get_feature_capabilities is checked FIRST (COMPILE-capability gate) — must
+// resolve audio_compiled=true here or the hook short-circuits before reaching
+// get_audio_status, and micMode never flips to 'voice_activity' (the VAD listener
+// registration below depends on that transition).
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
+    if (cmd === 'get_feature_capabilities') {
+      return { features: [], audio_compiled: true }
+    }
     if (cmd === 'get_audio_status') {
       return {
         enabled: true,

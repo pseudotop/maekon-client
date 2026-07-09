@@ -2,6 +2,10 @@
 //!
 //! Run with: `cargo bench -p maekon-analysis -- coaching`
 
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use maekon_analysis::coaching_engine::adaptive_scorer::{AdaptiveScorer, CoachingFeatures};
 use maekon_analysis::coaching_engine::tunable_params::TunableParams;

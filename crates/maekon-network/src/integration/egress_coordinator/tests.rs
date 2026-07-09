@@ -15,89 +15,17 @@ use maekon_core::models::integration::{
     IntegrationPrivacyClassification, IntegrationSessionState, IntegrationSessionStatus,
     QueuedIntegrationEgressMessage,
 };
-use maekon_core::ports::integration::{
-    IntegrationEgressPort, IntegrationOutboxPort, IntegrationSessionPort,
-};
+use maekon_core::ports::integration::{IntegrationEgressPort, IntegrationOutboxPort};
 use tokio::sync::Mutex;
 
 use super::budget::{estimate_queued_bytes, MAX_OUTBOX_BYTES, MAX_OUTBOX_ITEMS};
 use super::IntegrationEgressCoordinator;
+use crate::integration::test_support::FakeIntegrationSessionPort;
 use crate::integration::transport::{
     IntegrationEgressTransportClient, IntegrationEgressTransportResponse,
 };
 
 // ── Mock implementations ─────────────────────────────────────────────────────
-
-struct MockSessionPort {
-    state: Arc<Mutex<Option<IntegrationSessionState>>>,
-}
-
-#[async_trait]
-impl IntegrationSessionPort for MockSessionPort {
-    async fn connect(
-        &self,
-        _requested_scopes: Vec<IntegrationCapabilityScope>,
-    ) -> Result<IntegrationSessionState, CoreError> {
-        self.state
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| CoreError::ServiceUnavailable {
-                code: maekon_core::error_codes::ServiceCode::Unavailable,
-                message: "no session".to_string(),
-            })
-    }
-
-    async fn current_session(&self) -> Result<Option<IntegrationSessionState>, CoreError> {
-        Ok(self.state.lock().await.clone())
-    }
-
-    async fn heartbeat(&self, _session_id: &str) -> Result<IntegrationSessionState, CoreError> {
-        self.state
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| CoreError::ServiceUnavailable {
-                code: maekon_core::error_codes::ServiceCode::Unavailable,
-                message: "no session".to_string(),
-            })
-    }
-
-    async fn store_ack_cursor(
-        &self,
-        session_id: &str,
-        cursor: IntegrationAckCursor,
-    ) -> Result<IntegrationSessionState, CoreError> {
-        let mut guard = self.state.lock().await;
-        let state = guard
-            .as_mut()
-            .ok_or_else(|| CoreError::ServiceUnavailable {
-                code: maekon_core::error_codes::ServiceCode::Unavailable,
-                message: "no session".to_string(),
-            })?;
-        if state.session_id != session_id {
-            return Err(CoreError::NotFound {
-                code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
-                resource_type: "integration_session".to_string(),
-                id: session_id.to_string(),
-            });
-        }
-        if let Some(existing) = state
-            .ack_cursors
-            .iter_mut()
-            .find(|existing| existing.stream_id == cursor.stream_id)
-        {
-            *existing = cursor;
-        } else {
-            state.ack_cursors.push(cursor);
-        }
-        Ok(state.clone())
-    }
-
-    async fn disconnect(&self, _session_id: &str) -> Result<(), CoreError> {
-        Ok(())
-    }
-}
 
 struct MockOutbox {
     items: Arc<Mutex<VecDeque<QueuedIntegrationEgressMessage>>>,
@@ -246,9 +174,7 @@ async fn enqueue_persists_to_outbox() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string()],
@@ -279,9 +205,7 @@ async fn flush_sends_and_clears_pending_items() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string(), "queue-2".to_string()],
@@ -306,9 +230,7 @@ async fn flush_sends_and_clears_pending_items() {
 #[tokio::test]
 async fn flush_requires_connected_session() {
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(None)),
-        }),
+        Arc::new(FakeIntegrationSessionPort::new()),
         Arc::new(MockOutbox {
             items: Arc::new(Mutex::new(VecDeque::from(vec![queued_item("1")]))),
             last_cursor: Arc::new(Mutex::new(None)),
@@ -334,9 +256,7 @@ async fn flush_only_clears_acknowledged_items() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string()],
@@ -368,9 +288,7 @@ async fn egress_coordinator_outbox_exhausted_on_max_items() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec![],
@@ -429,8 +347,8 @@ async fn flush_requires_matching_session_scope() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(IntegrationSessionState {
+        Arc::new(FakeIntegrationSessionPort::with_session(
+            IntegrationSessionState {
                 session_id: "session-1".to_string(),
                 device_id: "device-1".to_string(),
                 status: IntegrationSessionStatus::Connected,
@@ -442,8 +360,8 @@ async fn flush_requires_matching_session_scope() {
                 requested_scopes: vec![IntegrationCapabilityScope::PromptRead],
                 granted_scopes: vec![IntegrationCapabilityScope::PromptRead],
                 ack_cursors: Vec::new(),
-            }))),
-        }),
+            },
+        )),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string()],
@@ -468,9 +386,7 @@ async fn enqueue_message_rejected_when_byte_cap_exceeded() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec![],
@@ -547,9 +463,7 @@ async fn enqueue_message_byte_cap_not_exceeded_under_concurrency() {
         last_cursor: std::sync::Arc::new(Mutex::new(None)),
     });
     let coordinator = StdArc::new(IntegrationEgressCoordinator::new(
-        StdArc::new(MockSessionPort {
-            state: std::sync::Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        StdArc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         StdArc::new(MockEgressTransport {
             acknowledged_queue_ids: vec![],
@@ -642,9 +556,7 @@ async fn pending_bytes_decremented_after_successful_flush() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string(), "queue-2".to_string()],
@@ -696,9 +608,7 @@ async fn enqueue_concurrent_with_flush_no_pending_bytes_drift() {
         last_cursor: StdArc::new(Mutex::new(None)),
     });
     let coordinator = StdArc::new(IntegrationEgressCoordinator::new(
-        StdArc::new(MockSessionPort {
-            state: StdArc::new(Mutex::new(Some(connected_session()))),
-        }),
+        StdArc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         StdArc::new(AckAllTransport),
         usize::MAX / 2,
@@ -772,9 +682,7 @@ async fn reconcile_pending_bytes_seeds_from_full_persisted_backlog() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec![],
@@ -822,9 +730,7 @@ async fn flush_decrement_clamps_at_zero_no_underflow() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec!["queue-1".to_string(), "queue-2".to_string()],
@@ -866,9 +772,7 @@ async fn enqueue_message_byte_cap_rollback_correctness() {
         last_cursor: Arc::new(Mutex::new(None)),
     });
     let coordinator = IntegrationEgressCoordinator::new(
-        Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(connected_session()))),
-        }),
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
         outbox.clone(),
         Arc::new(MockEgressTransport {
             acknowledged_queue_ids: vec![],
@@ -966,5 +870,65 @@ async fn enqueue_message_byte_cap_rollback_correctness() {
         post_reject_bytes, pre_reject_bytes,
         "F-QA-C27-03: incomplete pending_bytes rollback after rejection \
          (pre={pre_reject_bytes}, post={post_reject_bytes}) — risk of a missing fetch_sub"
+    );
+}
+
+// ── #7617 (LOW finding #6 / RL-02): lost-wakeup regression ─────────────────
+
+/// `Notify::notify_one()` stores a single wake-up permit even when raised
+/// before anyone is waiting. This reproduces the runtime loop's actual race:
+/// the producer enqueues (and notifies) while the consumer is busy in a
+/// SIBLING `select!` arm, and only calls `wait_for_pending_egress` afterward.
+/// With the pre-fix `notify_waiters()` call this notification would have been
+/// silently discarded (it only wakes tasks already parked in `.notified()`),
+/// leaving the waiter to block for the full timeout.
+#[tokio::test]
+async fn enqueue_wakes_a_waiter_that_starts_waiting_after_the_notify_fires() {
+    use maekon_core::ports::integration::IntegrationEgressSignalPort;
+    use std::time::Duration;
+
+    let outbox = Arc::new(MockOutbox {
+        items: Arc::new(Mutex::new(VecDeque::new())),
+        last_cursor: Arc::new(Mutex::new(None)),
+    });
+    let coordinator = IntegrationEgressCoordinator::new(
+        Arc::new(FakeIntegrationSessionPort::with_session(connected_session())),
+        outbox,
+        Arc::new(MockEgressTransport {
+            acknowledged_queue_ids: vec!["queue-1".to_string()],
+            cursor: None,
+        }),
+        10,
+    );
+
+    // Simulate "the runtime loop is mid-await in a sibling select! arm":
+    // enqueue (and thus notify) BEFORE anyone calls wait_for_pending_egress.
+    let queued = queued_item("1");
+    let IntegrationOutboundPayload::Insight(packet) = queued.payload else {
+        panic!("expected insight payload");
+    };
+    coordinator
+        .enqueue_insight(queued.envelope, packet)
+        .await
+        .unwrap();
+
+    // Now the consumer starts waiting -- the notify already happened.
+    let short_timeout = Duration::from_millis(200);
+    let start = tokio::time::Instant::now();
+    let signalled = coordinator
+        .wait_for_pending_egress(short_timeout)
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        signalled,
+        "a notify raised before the wait started must still be observed -- \
+         notify_one() stores a permit; notify_waiters() would have discarded it"
+    );
+    assert!(
+        elapsed < short_timeout,
+        "the waiter must return immediately via the stored permit, not wait out \
+         the full timeout (elapsed={elapsed:?}, timeout={short_timeout:?})"
     );
 }

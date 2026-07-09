@@ -51,51 +51,64 @@ impl SqliteStorage {
     }
 
     pub(super) fn extract_event_id(event: &Event) -> String {
-        match event {
-            Event::User(user_event) => user_event.event_id.to_string(),
-            Event::System(system_event) => system_event.event_id.to_string(),
-            Event::Context(context_event) => {
-                format!(
-                    "ctx_{}_{}_{}",
-                    context_event.timestamp.timestamp_millis(),
-                    context_event.app_name,
-                    context_event
-                        .window_title
-                        .chars()
-                        .take(20)
-                        .collect::<String>()
-                )
-            }
-            Event::Input(input_event) => {
-                format!(
-                    "input_{}_{}",
-                    input_event.timestamp.timestamp_millis(),
-                    input_event.app_name
-                )
-            }
-            Event::Process(process_event) => {
-                format!("proc_{}", process_event.timestamp.timestamp_millis())
-            }
-            Event::Window(window_event) => {
-                format!(
-                    "win_{}_{:?}",
-                    window_event.timestamp.timestamp_millis(),
-                    window_event.event_type
-                )
-            }
-            Event::Clipboard(cb) => {
-                format!("clip_{}", cb.timestamp.timestamp_millis())
-            }
-            Event::FileAccess(fa) => {
-                format!(
-                    "fa_{}_{}",
-                    fa.timestamp.timestamp_millis(),
-                    fa.relative_path.display()
-                )
-            }
+        storage_event_id(event)
+    }
+}
+
+/// Storage primary key for an [`Event`] — the SAME derivation `save_event` /
+/// `save_events_batch` use for the `events.event_id` column.
+///
+/// Public so upload producers can pair the persisted id with the (possibly
+/// egress-filtered) upload payload (#7946): the id must be derived from the
+/// ORIGINAL event, because egress filtering can change id-relevant fields
+/// (e.g. a Context event's window title feeds the id).
+pub fn storage_event_id(event: &Event) -> String {
+    match event {
+        Event::User(user_event) => user_event.event_id.to_string(),
+        Event::System(system_event) => system_event.event_id.to_string(),
+        Event::Context(context_event) => {
+            format!(
+                "ctx_{}_{}_{}",
+                context_event.timestamp.timestamp_millis(),
+                context_event.app_name,
+                context_event
+                    .window_title
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+            )
+        }
+        Event::Input(input_event) => {
+            format!(
+                "input_{}_{}",
+                input_event.timestamp.timestamp_millis(),
+                input_event.app_name
+            )
+        }
+        Event::Process(process_event) => {
+            format!("proc_{}", process_event.timestamp.timestamp_millis())
+        }
+        Event::Window(window_event) => {
+            format!(
+                "win_{}_{:?}",
+                window_event.timestamp.timestamp_millis(),
+                window_event.event_type
+            )
+        }
+        Event::Clipboard(cb) => {
+            format!("clip_{}", cb.timestamp.timestamp_millis())
+        }
+        Event::FileAccess(fa) => {
+            format!(
+                "fa_{}_{}",
+                fa.timestamp.timestamp_millis(),
+                fa.relative_path.display()
+            )
         }
     }
+}
 
+impl SqliteStorage {
     pub(super) fn extract_event_type(event: &Event) -> String {
         match event {
             Event::User(user_event) => format!("{:?}", user_event.event_type),
@@ -304,28 +317,6 @@ impl StorageService for SqliteStorage {
 
             debug!("{}items event sent completed", ids.len());
             Ok(())
-        })
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn mark_unsent_as_sent_before(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
-        let cutoff = before.to_rfc3339();
-
-        self.with_conn(move |conn| {
-            let updated: usize = conn
-                .execute(
-                    "UPDATE events SET is_sent = 1 WHERE is_sent = 0 AND timestamp < ?1",
-                    rusqlite::params![cutoff],
-                )
-                .map_err(|e| {
-                    StorageError::Internal(format!("Failed to mark unsent as sent: {e}"))
-                })?;
-
-            if updated > 0 {
-                debug!("{updated} unsent events marked as sent");
-            }
-            Ok(updated)
         })
         .await
         .map_err(Into::into)

@@ -14,10 +14,12 @@ use maekon_api_contracts::integration::IntegrationOutboundRuntimeStatus;
 use maekon_core::config::CredentialBackendKind;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::adaptive_search::AdaptiveSearchPort;
+use maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort;
 use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::automation::AutomationPort;
 use maekon_core::ports::coaching::CoachingPort;
 use maekon_core::ports::conversation_session::SessionManager;
+use maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort;
 use maekon_core::ports::embedding_provider::EmbeddingProvider;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::integration::{
@@ -28,6 +30,7 @@ use maekon_core::ports::memory_graph_port::MemoryGraphPort;
 use maekon_core::ports::override_store::OverrideStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
+use maekon_core::ports::regime_storage::RegimeStoragePort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
@@ -60,6 +63,24 @@ pub struct CoreState {
     /// #4478 G3: one-shot erasure-propagation signal shared with the SyncEngine;
     /// the "Delete all data" endpoint sets it so a local erasure reaches LAN peers.
     pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// #7600: durable audit-log hash-chain verifier (the same `SqliteStorage`
+    /// as `storage`, as an `AuditChainVerifierPort`). Lets `GET /audit/verify`
+    /// reach the real ADR-072 verification instead of the compliance
+    /// capability being reachable only via the desktop `verify_audit_log` IPC
+    /// command.
+    pub audit_chain_verifier: Option<Arc<dyn AuditChainVerifierPort>>,
+    /// #7910: read-only egress-ledger reader (the same `SqliteStorage` as
+    /// `storage`, cast to an `EgressLedgerReaderPort`). Lets
+    /// `GET /api/privacy/egress-ledger` render the egress transparency browser
+    /// ("what left this device") from the erase-retained #4803 ledger. Read
+    /// only — no mutation surface, since the ledger is compliance evidence.
+    pub egress_ledger_reader: Option<Arc<dyn EgressLedgerReaderPort>>,
+    /// #7678 D2: regime storage (the same `SqliteStorage`-backed store used by
+    /// the scheduler, as a `RegimeStoragePort`). Lets the dashboard digest
+    /// endpoint resolve human-readable regime labels (name > auto_label)
+    /// instead of leaking the opaque positional `regime_id` ("regime-N") into
+    /// the timeline (mirrors the #7480 coaching-path fix).
+    pub regime_storage: Option<Arc<dyn RegimeStoragePort>>,
 }
 
 /// Per-session local-API authentication (E20-41 #4833).
@@ -307,6 +328,9 @@ impl AppState {
                 update_control: None,
                 memory_graph: None,
                 erasure_requested: None,
+                audit_chain_verifier: None,
+                egress_ledger_reader: None,
+                regime_storage: None,
             },
             auth: Default::default(),
             secrets: Default::default(),

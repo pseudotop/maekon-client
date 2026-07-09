@@ -124,7 +124,14 @@ impl IntegrationEgressPort for PolicyAwareIntegrationEgressCoordinator {
             IntegrationOutboundPayload::Insight(packet) => {
                 let decision = self.policy.authorize_insight(&envelope, packet).await?;
 
-                if decision.audit_required {
+                // #7617 (MED finding #4 / PE-AUDIT-before-enqueue): Deny and
+                // RequireUserApproval never reach `inner.enqueue_message` at
+                // all, so auditing them here immediately is accurate -- the
+                // decision IS the final outcome. Allow is different: audit it
+                // ONLY after the message is actually queued (below), not here.
+                if decision.audit_required
+                    && !matches!(decision.disposition, IntegrationEgressDisposition::Allow)
+                {
                     self.audit
                         .record_insight_decision(Self::to_audit_record(
                             &envelope, packet, &decision,
@@ -137,9 +144,27 @@ impl IntegrationEgressPort for PolicyAwareIntegrationEgressCoordinator {
                         // D5 iter-12: sanitize packet before egress to external backend.
                         let sanitized_payload =
                             IntegrationOutboundPayload::Insight(self.sanitize_packet(packet)?);
+                        // #7617 (MED finding #4 / PE-AUDIT-before-enqueue):
+                        // build the audit record from borrowed data BEFORE
+                        // `envelope` is moved into `enqueue_message`, but only
+                        // persist it AFTER the enqueue actually succeeds. The
+                        // producer checkpoint does not advance on an enqueue
+                        // failure (e.g. the outbox is at its 512-item
+                        // backpressure cap), so the identical candidate is
+                        // reprocessed next producer cycle -- auditing before
+                        // enqueue previously wrote a false "Allow" record on
+                        // every one of those retries, evicting the ring-
+                        // buffered compliance trail's real history.
+                        let pending_audit_record = decision
+                            .audit_required
+                            .then(|| Self::to_audit_record(&envelope, packet, &decision));
                         self.inner
                             .enqueue_message(envelope, sanitized_payload)
-                            .await
+                            .await?;
+                        if let Some(record) = pending_audit_record {
+                            self.audit.record_insight_decision(record).await?;
+                        }
+                        Ok(())
                     }
                     IntegrationEgressDisposition::Deny => Err(CoreError::PolicyDenied {
                         code: maekon_core::error_codes::PolicyCode::Denied,
@@ -213,6 +238,7 @@ mod tests {
         InsightSourceWindow, IntegrationCapabilityScope, IntegrationMessageType, IntegrationOrigin,
         IntegrationPrivacyClassification, IntegrationPromptReceipt, IntegrationPromptReceiptAction,
     };
+    use maekon_core::ports::pii_sanitizer::FakePiiSanitizer;
 
     struct MockEgress {
         enqueued: Arc<Mutex<Vec<(IntegrationEnvelope, IntegrationOutboundPayload)>>>,
@@ -283,13 +309,10 @@ mod tests {
         }
     }
 
-    struct MockSanitizer;
-
-    impl PiiSanitizer for MockSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            text.replace("alice@example.com", "[EMAIL]")
-                .replace("010-1234-5678", "[PHONE]")
-        }
+    fn mock_sanitizer() -> FakePiiSanitizer {
+        FakePiiSanitizer::new()
+            .with_email("alice@example.com")
+            .with_phone("010-1234-5678")
     }
 
     fn sample_envelope() -> IntegrationEnvelope {
@@ -348,7 +371,7 @@ mod tests {
                 records: records.clone(),
             }),
         )
-        .with_pii_sanitizer(Arc::new(MockSanitizer), PiiFilterLevel::Strict);
+        .with_pii_sanitizer(Arc::new(mock_sanitizer()), PiiFilterLevel::Strict);
 
         coordinator
             .enqueue_insight(sample_envelope(), sample_packet())
@@ -401,7 +424,7 @@ mod tests {
                 records: records.clone(),
             }),
         )
-        .with_pii_sanitizer(Arc::new(MockSanitizer), PiiFilterLevel::Strict);
+        .with_pii_sanitizer(Arc::new(mock_sanitizer()), PiiFilterLevel::Strict);
 
         coordinator
             .enqueue_message(
@@ -474,5 +497,153 @@ mod tests {
         assert!(matches!(err, CoreError::ConsentRequired { .. }));
         assert!(enqueued.lock().await.is_empty());
         assert_eq!(records.lock().await.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // #7617 (MED finding #4 / PE-AUDIT-before-enqueue): a backpressured
+    // enqueue (outbox at capacity) must not write a false "Allow" audit
+    // record for a packet that was never actually queued.
+    // ------------------------------------------------------------------
+
+    struct FailingEgress;
+
+    #[async_trait]
+    impl IntegrationEgressPort for FailingEgress {
+        async fn enqueue_message(
+            &self,
+            _envelope: IntegrationEnvelope,
+            _payload: IntegrationOutboundPayload,
+        ) -> Result<(), CoreError> {
+            Err(CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "integration outbox full (512 items pending)".to_string(),
+            })
+        }
+
+        async fn flush(&self) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+
+        async fn last_ack_cursor(&self) -> Result<Option<IntegrationAckCursor>, CoreError> {
+            Ok(None)
+        }
+    }
+
+    /// A single backpressured attempt: the enqueue fails, and NO audit record
+    /// is written for it (before the fix, the record was written BEFORE the
+    /// enqueue call, unconditionally on an Allow decision).
+    #[tokio::test]
+    async fn enqueue_insight_allow_does_not_audit_when_enqueue_fails() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = PolicyAwareIntegrationEgressCoordinator::new(
+            Arc::new(FailingEgress),
+            Arc::new(MockPolicy {
+                decision: IntegrationEgressDecision::allow(),
+            }),
+            Arc::new(MockAudit {
+                records: records.clone(),
+            }),
+        )
+        .with_pii_sanitizer(Arc::new(mock_sanitizer()), PiiFilterLevel::Strict);
+
+        let err = coordinator
+            .enqueue_insight(sample_envelope(), sample_packet())
+            .await
+            .expect_err("a backpressured enqueue must propagate the failure");
+        assert!(matches!(err, CoreError::ServiceUnavailable { .. }));
+
+        assert!(
+            records.lock().await.is_empty(),
+            "a failed enqueue must not write an audit record for a packet that was \
+             never actually queued"
+        );
+    }
+
+    /// A producer that retries the identical (un-checkpointed) candidate
+    /// after a backpressured failure must end up with exactly ONE audit
+    /// record once the retry succeeds -- not one false record per failed
+    /// attempt plus one from the eventual success.
+    #[tokio::test]
+    async fn enqueue_insight_allow_audits_once_after_a_failed_then_succeeded_retry() {
+        struct FlakyEgress {
+            fail_next: std::sync::atomic::AtomicBool,
+            enqueued: Arc<Mutex<Vec<(IntegrationEnvelope, IntegrationOutboundPayload)>>>,
+        }
+
+        #[async_trait]
+        impl IntegrationEgressPort for FlakyEgress {
+            async fn enqueue_message(
+                &self,
+                envelope: IntegrationEnvelope,
+                payload: IntegrationOutboundPayload,
+            ) -> Result<(), CoreError> {
+                if self
+                    .fail_next
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Err(CoreError::ServiceUnavailable {
+                        code: maekon_core::error_codes::ServiceCode::Unavailable,
+                        message: "integration outbox full (512 items pending)".to_string(),
+                    });
+                }
+                self.enqueued.lock().await.push((envelope, payload));
+                Ok(())
+            }
+
+            async fn flush(&self) -> Result<usize, CoreError> {
+                Ok(0)
+            }
+
+            async fn last_ack_cursor(&self) -> Result<Option<IntegrationAckCursor>, CoreError> {
+                Ok(None)
+            }
+        }
+
+        let enqueued = Arc::new(Mutex::new(Vec::new()));
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = PolicyAwareIntegrationEgressCoordinator::new(
+            Arc::new(FlakyEgress {
+                fail_next: std::sync::atomic::AtomicBool::new(true),
+                enqueued: enqueued.clone(),
+            }),
+            Arc::new(MockPolicy {
+                decision: IntegrationEgressDecision::allow(),
+            }),
+            Arc::new(MockAudit {
+                records: records.clone(),
+            }),
+        )
+        .with_pii_sanitizer(Arc::new(mock_sanitizer()), PiiFilterLevel::Strict);
+
+        // First attempt: simulated backpressure. The producer's checkpoint is
+        // never advanced on this error (see producer_coordinator.rs), so the
+        // caller re-processes the IDENTICAL candidate next cycle -- modelled
+        // here by simply calling enqueue_insight again with the same
+        // deterministic envelope/packet ids.
+        coordinator
+            .enqueue_insight(sample_envelope(), sample_packet())
+            .await
+            .expect_err("first attempt must fail (simulated backpressure)");
+        assert!(
+            records.lock().await.is_empty(),
+            "no audit record must exist after the failed attempt"
+        );
+
+        // Retry: the flaky egress now accepts the message.
+        coordinator
+            .enqueue_insight(sample_envelope(), sample_packet())
+            .await
+            .expect("retry must succeed once backpressure clears");
+
+        assert_eq!(
+            enqueued.lock().await.len(),
+            1,
+            "exactly one message actually reached the inner egress"
+        );
+        assert_eq!(
+            records.lock().await.len(),
+            1,
+            "exactly one audit record must exist -- not one false record per retry"
+        );
     }
 }

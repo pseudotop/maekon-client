@@ -195,12 +195,8 @@ async fn test_save_gui_interaction_async_safe() {
     let result = tokio::task::spawn_blocking(move || {
         let input = NewGuiInteraction {
             event_id: &event_id,
-            segment_id: None,
             timestamp: &timestamp,
-            element_text: None,
-            element_type: Some("Click"),
             interaction_type: "Click",
-            bbox_json: None,
             app_name: &app_name,
             type_confidence: 1.0,
         };
@@ -226,12 +222,8 @@ async fn test_save_gui_interaction_async_safe() {
         let inner = tokio::task::spawn_blocking(move || {
             let input = NewGuiInteraction {
                 event_id: &event_id2,
-                segment_id: None,
                 timestamp: &timestamp2,
-                element_text: None,
-                element_type: Some("Click"),
                 interaction_type: "Click",
-                bbox_json: None,
                 app_name: &app_name2,
                 type_confidence: 1.0,
             };

@@ -37,8 +37,9 @@ pub fn consent_gated_telemetry_config(
     config: &TelemetryConfig,
     consent: &dyn ConsentManagerPort,
 ) -> TelemetryConfig {
-    // effective_permissions() is the fail-closed accessor: zeroed unless Valid.
-    let consent_grants_telemetry = consent.effective_permissions().telemetry;
+    // telemetry_permitted() is the fail-closed accessor: zeroed unless Valid
+    // (default method over effective_permissions() — ADR-026 / #7728).
+    let consent_grants_telemetry = consent.telemetry_permitted();
     TelemetryConfig {
         enabled: config.enabled && consent_grants_telemetry,
         ..config.clone()

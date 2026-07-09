@@ -8,7 +8,6 @@
 // Connection handle, but is currently unused because every active
 // test uses `open_storage()` + `storage.connection_arc()` instead.
 // Keep the helper available for the follow-up phase.
-#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 

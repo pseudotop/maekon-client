@@ -25,7 +25,7 @@
 // Rationale is embedded here so public source remains self-contained.
 #![allow(clippy::significant_drop_tightening)]
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 
 //! # maekon-network
 //! ## Feature Flags
@@ -87,7 +87,11 @@ pub mod local_llm_session;
 pub(crate) mod mutex_ext;
 pub mod oauth;
 pub mod ollama_discovery;
-pub(crate) mod outbound;
+// #7724: promoted from `pub(crate)` — `hardened_client_builder`/`read_body_capped`/
+// `read_text_capped`/`BodyReadError` are network's public hardened-HTTP-primitive
+// API (see the module doc-comment in `outbound.rs` for which consumers can and
+// cannot reach it).
+pub mod outbound;
 mod provider_error_body;
 pub mod provider_model_catalog_client;
 pub mod remote_embedding_client;

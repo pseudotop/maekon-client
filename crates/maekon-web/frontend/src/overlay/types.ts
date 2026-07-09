@@ -67,6 +67,16 @@ export interface FocusModePayload {
   auto?: boolean
 }
 
+/**
+ * Label-only one-click automation affordance for a BOUND, pending suggestion
+ * (T4.1 #7917, ADR-027). Present only on live pending items whose (type, source)
+ * derives a runnable preset and whose automation is enabled. Carries no preset
+ * id — `run_suggestion_action` re-derives it server-side.
+ */
+export interface SuggestionActionDto {
+  label: string
+}
+
 export interface SuggestionViewDto {
   id: string
   title: string
@@ -76,13 +86,13 @@ export interface SuggestionViewDto {
   source: string
   confidence_score: number
   created_at: string
-  is_read: boolean
   reasoning: string | null
   context_scope?: {
     app_name?: string | null
     window_title?: string | null
     target_id?: string | null
   } | null
+  action?: SuggestionActionDto | null
 }
 
 export type SuggestionSurfacePlacement = 'adjacent-popover' | 'window-side-panel' | 'bottom-dock'

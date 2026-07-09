@@ -115,6 +115,8 @@ const ExportSection = lazy(() => import('../pages/reports/ExportSection'))
 const DataSection = lazy(() => import('../pages/privacy-page/DataSection'))
 const ConsentSection = lazy(() => import('../pages/privacy-page/ConsentSection'))
 const PrivacyExportSection = lazy(() => import('../pages/privacy-page/ExportSection'))
+const EgressLedgerSection = lazy(() => import('../pages/privacy-page/EgressLedgerSection'))
+const ClaimsSection = lazy(() => import('../pages/privacy-page/ClaimsSection'))
 
 // --- Lazy imports: Updates sub-routes ---
 const StatusSection = lazy(() => import('../pages/updates/StatusSection'))
@@ -362,6 +364,8 @@ export const routeTree: RouteNode[] = [
     component: PrivacyLayout,
     children: [
       { path: 'data', labelKey: 'sidebar.dataControls', component: DataSection },
+      { path: 'egress', labelKey: 'sidebar.egressLedger', component: EgressLedgerSection },
+      { path: 'claims', labelKey: 'sidebar.claimsBrowser', component: ClaimsSection },
       { path: 'consent', labelKey: 'sidebar.dangerZone', component: ConsentSection },
       { path: 'export', labelKey: 'sidebar.dataExport', component: PrivacyExportSection },
     ],

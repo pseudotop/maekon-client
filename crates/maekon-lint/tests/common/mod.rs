@@ -7,7 +7,6 @@
 
 // Not every gate uses every helper; the unused ones in a given test binary are
 // expected.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 

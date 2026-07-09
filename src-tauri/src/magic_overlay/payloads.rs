@@ -19,7 +19,6 @@ pub struct OverlayUpgradePayload {
     pub personalized_text: String,
 }
 
-#[allow(dead_code)] // retained for future IPC command usage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayFocusPayload {
     pub x: i32,
@@ -48,7 +47,6 @@ pub struct OverlayFullscreenPolicyPayload {
     pub reason: String,
 }
 
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionElementPayload {
     pub element_id: String,
@@ -62,7 +60,6 @@ pub struct DetectionElementPayload {
     pub source: String,
 }
 
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionScenePayload {
     pub scene_id: String,

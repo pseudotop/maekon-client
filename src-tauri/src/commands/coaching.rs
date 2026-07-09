@@ -1,8 +1,6 @@
-use serde::Serialize;
 use tauri::command;
 
 use crate::ipc_error::IpcError;
-use crate::magic_overlay::OverlayFullscreenPolicyPayload;
 use crate::runtime_state::{AppState, ConfigRuntimeState};
 // ADR-026: `state.storage` is the concrete `Arc<SqliteStorage>`, so the inherent
 // (synchronous) coaching/habit twins would shadow the async trait methods of the
@@ -97,109 +95,6 @@ pub async fn submit_coaching_feedback(
         engine.record_feedback(&message_id, positive).await;
     }
     Ok(())
-}
-
-/// Set the overlay display mode (minimal/rich/adaptive).
-#[command]
-pub async fn set_overlay_mode(
-    state: tauri::State<'_, AppState>,
-    mode: String,
-) -> Result<(), IpcError> {
-    use maekon_core::config::OverlayMode;
-
-    let overlay_mode = match mode.as_str() {
-        "minimal" => OverlayMode::Minimal,
-        "rich" => OverlayMode::Rich,
-        "adaptive" => OverlayMode::Adaptive,
-        _ => {
-            return Err(IpcError::new(
-                "validation.invalid_arguments",
-                format!("Invalid overlay mode: {mode}"),
-            ));
-        }
-    };
-
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_mode(overlay_mode).await;
-    }
-    Ok(())
-}
-
-/// Cycle overlay mode: Minimal → Rich → Adaptive → Minimal.
-#[command]
-pub async fn toggle_overlay_mode(state: tauri::State<'_, AppState>) -> Result<String, IpcError> {
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.toggle_mode().await;
-        let mode = overlay.get_mode().await;
-        Ok(format!("{:?}", mode))
-    } else {
-        // Precondition: overlay must be initialized. The frontend should
-        // retry after overlay activation or surface this as "feature
-        // temporarily unavailable".
-        Err(IpcError::new(
-            "service.unavailable",
-            "overlay not available",
-        ))
-    }
-}
-
-/// Get current overlay state (mode and visibility).
-#[command]
-pub async fn get_overlay_state(
-    state: tauri::State<'_, AppState>,
-) -> Result<OverlayStateResponse, IpcError> {
-    use maekon_core::config::OverlayMode;
-
-    let (mode, visible) = if let Some(ref overlay) = state.magic_overlay {
-        (overlay.get_mode().await, overlay.is_visible().await)
-    } else {
-        (OverlayMode::Minimal, false)
-    };
-
-    Ok(OverlayStateResponse {
-        mode: format!("{:?}", mode).to_lowercase(),
-        visible,
-    })
-}
-
-/// Overlay state response for IPC.
-#[derive(Serialize)]
-pub struct OverlayStateResponse {
-    pub mode: String,
-    pub visible: bool,
-}
-
-/// Fullscreen policy response for overlay IPC diagnostics.
-#[derive(Serialize)]
-pub struct OverlayFullscreenPolicyResponse {
-    pub ok: bool,
-    pub state: Option<OverlayFullscreenPolicyPayload>,
-}
-
-/// Toggle overlay between click-through and interactive modes.
-#[command]
-pub async fn toggle_overlay_interactive(
-    state: tauri::State<'_, AppState>,
-    interactive: bool,
-) -> Result<(), IpcError> {
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_interactive(interactive);
-    }
-    Ok(())
-}
-
-/// Return the latest fullscreen policy decision for overlay triggering.
-#[command]
-pub async fn get_overlay_fullscreen_policy_state(
-    state: tauri::State<'_, AppState>,
-) -> Result<OverlayFullscreenPolicyResponse, IpcError> {
-    Ok(OverlayFullscreenPolicyResponse {
-        ok: true,
-        state: state
-            .magic_overlay
-            .as_ref()
-            .and_then(|overlay| overlay.fullscreen_policy_state()),
-    })
 }
 
 /// Toggle overlay suggestions panel mode.

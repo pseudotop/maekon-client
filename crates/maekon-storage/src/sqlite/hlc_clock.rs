@@ -26,16 +26,11 @@ use std::sync::OnceLock;
 use maekon_core::sync::Hlc;
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// The 6 authoritative synced tables — mirror of the extractor's GDPR SYNC GUARD set
-/// (`sync_extractor.rs`). Used only to compute the seed floor.
-const SYNCED_TABLES: [&str; 6] = [
-    "activity_segments",
-    "regimes",
-    "regime_overrides",
-    "embedding_vectors",
-    "suggestions",
-    "trigger_params_snapshots",
-];
+/// The 6 authoritative synced tables. Used only to compute the seed floor —
+/// single source of truth is `table_descriptor::ALL_TABLE_NAMES` (#7742;
+/// previously a 4th hand-copied array alongside `sync_merger` and
+/// `sync_extractor`'s own copies).
+use crate::sync_table_descriptor::ALL_TABLE_NAMES as SYNCED_TABLES;
 
 /// The retained `app_meta` key that anchors the clock across a GDPR wipe (written by the
 /// erasure epic's S2; absent until then).

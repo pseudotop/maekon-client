@@ -14,6 +14,19 @@
 //! this builder so redirect following is disabled by construction. Existing
 //! guard precedents: `integration/http_transport`,
 //! `integration/auth/oidc_device_flow`.
+//!
+//! #7724: `hardened_client_builder`/`read_body_capped`/`read_text_capped`/
+//! [`BodyReadError`] are `pub` (not `pub(crate)`) so any crate that depends on
+//! `maekon-network` can adopt the same primitives instead of hand-rolling a
+//! near-duplicate. Two current near-duplicates — `src-tauri/src/updater` and
+//! `maekon-audio::cloud_stt` — cannot actually reach this `pub` API: `updater`
+//! is compiled unconditionally (not feature-gated) while `maekon-network` is an
+//! optional dependency only pulled in by the `analysis` feature (CI enforces a
+//! `--no-default-features` build cell that excludes it), and `maekon-audio`
+//! cannot depend on `maekon-network` at all — `scripts/check-crate-boundaries.sh`
+//! forbids adapter-to-adapter crate edges. Both keep local copies (documented at
+//! their call sites); this promotion exists for any *other* consumer that
+//! already depends on `maekon-network` unconditionally.
 
 use reqwest::redirect::Policy;
 
@@ -25,7 +38,7 @@ use reqwest::redirect::Policy;
 /// DNS pinning, etc.) is preserved as-is.
 ///
 /// [`ClientBuilder`]: reqwest::ClientBuilder
-pub(crate) fn hardened_client_builder() -> reqwest::ClientBuilder {
+pub fn hardened_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder().redirect(Policy::none())
 }
 
@@ -51,7 +64,7 @@ pub(crate) const MAX_AUTH_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// Callers map it to their own error type (CoreError / NetworkError), and
 /// transport errors are preserved in `Transport` so the `e.is_timeout()` branch
 /// can be kept.
-pub(crate) enum BodyReadError {
+pub enum BodyReadError {
     /// Network/transport read error (original reqwest error preserved — enables timeout branching).
     Transport(reqwest::Error),
     /// Response body exceeded the cap — fail-closed.
@@ -71,7 +84,7 @@ pub(crate) enum BodyReadError {
 ///
 /// The sync transport (read_body_capped/read_text_capped) is unified onto this
 /// helper as well.
-pub(crate) async fn read_body_capped(
+pub async fn read_body_capped(
     mut resp: reqwest::Response,
     cap: u64,
 ) -> Result<Vec<u8>, BodyReadError> {
@@ -101,10 +114,7 @@ pub(crate) async fn read_body_capped(
 }
 
 /// Converts the `read_body_capped` result into a UTF-8 lossy string (for text responses).
-pub(crate) async fn read_text_capped(
-    resp: reqwest::Response,
-    cap: u64,
-) -> Result<String, BodyReadError> {
+pub async fn read_text_capped(resp: reqwest::Response, cap: u64) -> Result<String, BodyReadError> {
     let bytes = read_body_capped(resp, cap).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

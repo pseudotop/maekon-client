@@ -37,7 +37,11 @@ impl FileSkillLoader {
     }
 
     /// Parse YAML frontmatter and body from a Markdown file's content.
-    fn parse_frontmatter(content: &str) -> Option<(SkillMeta, String)> {
+    ///
+    /// Public for integration-test access to the canonical parser (#7734);
+    /// not a stability surface — this is an internal app-library helper, not
+    /// a published API.
+    pub fn parse_frontmatter(content: &str) -> Option<(SkillMeta, String)> {
         let trimmed = content.trim_start();
         if !trimmed.starts_with("---") {
             return None;

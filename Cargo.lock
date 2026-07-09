@@ -1569,9 +1569,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -4430,15 +4430,16 @@ dependencies = [
  "hdbscan",
  "lru",
  "maekon-core",
+ "maekon-storage",
  "rand 0.10.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "usearch",
- "uuid",
 ]
 
 [[package]]
@@ -4464,7 +4465,6 @@ dependencies = [
  "block2",
  "bsdiff",
  "chrono",
- "chrono-tz",
  "clap",
  "directories",
  "dispatch2",
@@ -4474,7 +4474,6 @@ dependencies = [
  "image",
  "jsonwebtoken",
  "keyring",
- "lru",
  "maekon-analysis",
  "maekon-api-contracts",
  "maekon-audio",
@@ -4597,6 +4596,7 @@ dependencies = [
  "futures-core",
  "gethostname",
  "parking_lot",
+ "schemars 1.2.1",
  "semver",
  "serde",
  "serde_json",
@@ -4700,7 +4700,6 @@ dependencies = [
  "tokio-test",
  "tokio-tungstenite",
  "tonic",
- "tonic-health",
  "tonic-prost",
  "tracing",
  "tracing-subscriber",
@@ -4795,7 +4794,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
  "webp",
  "windows 0.62.2",
  "windows-sys 0.61.2",
@@ -4858,7 +4856,6 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "ulid",
- "uuid",
  "x509-parser",
 ]
 

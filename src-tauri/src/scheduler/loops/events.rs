@@ -1,14 +1,124 @@
 use chrono::Utc;
 use maekon_core::models::event::{Event, ProcessSnapshotEvent};
+use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_monitor::input_activity::InputActivityCollector;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::super::config::PlatformEgressPolicy;
+use super::super::egress_policy::PlatformEgressPolicy;
 use super::super::Scheduler;
 use crate::focus_mode::FocusModeState;
+
+/// Desired-state transition for a consent-gated OS input hook (#7698 S1).
+///
+/// Compares whether a hook is currently alive against the freshly-computed
+/// consent decision and returns the transition (if any) the caller must
+/// perform. Kept as a pure, allocation-free function (no I/O) so the
+/// decision logic is unit-testable without spinning up a real OS-level
+/// key/mouse tap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookTransition {
+    /// Keep the current state — it already matches the desired consent state.
+    NoOp,
+    /// Consent (re-)granted while no hook is running: start one.
+    Start,
+    /// Consent revoked while a hook is running: stop it.
+    Stop,
+}
+
+fn decide_hook_transition(hook_running: bool, consent_granted: bool) -> HookTransition {
+    match (hook_running, consent_granted) {
+        (false, true) => HookTransition::Start,
+        (true, false) => HookTransition::Stop,
+        _ => HookTransition::NoOp,
+    }
+}
+
+/// Reconcile the platform key-category hook's running state against the LIVE
+/// `activity_pattern_learning` consent + `text_intelligence` config.
+///
+/// Called once at loop startup (matching the previous spawn-time-only gate in
+/// `run_scheduler_loops`, so an already-granted user sees no capture delay)
+/// and again on every `input_activity_interval` tick, so a runtime
+/// `withdraw_consent()` actually stops the OS-level tap instead of leaving it
+/// running until the next app restart (#7698 S1).
+///
+/// On the revoke transition, the accrued keyboard counters are drained
+/// immediately via `reset_keyboard()` (fail-closed) so activity captured
+/// during the now-closed window cannot surface in a later snapshot taken
+/// after consent is re-granted.
+async fn reconcile_key_hook(
+    key_hook: &mut Option<maekon_monitor::key_hook::KeyHook>,
+    collector: &Arc<InputActivityCollector>,
+    config_mgr: &Option<maekon_core::config_manager::ConfigManager>,
+    consent: &maekon_core::consent::ConsentPermissions,
+) {
+    let text_intel = config_mgr
+        .as_ref()
+        .map(|cm| cm.get().analysis.text_intelligence.clone())
+        .unwrap_or_default();
+    let desired =
+        text_intel.enabled && text_intel.input_pattern_detail && consent.activity_pattern_learning;
+
+    match decide_hook_transition(key_hook.is_some(), desired) {
+        HookTransition::Start => {
+            *key_hook = maekon_monitor::key_hook::KeyHook::start(collector.clone());
+            if key_hook.is_some() {
+                info!("key-category hook started (activity_pattern_learning consent granted)");
+            }
+        }
+        HookTransition::Stop => {
+            if let Some(mut hook) = key_hook.take() {
+                // KeyHook::stop() blocks on a thread join; offload it so the
+                // tokio worker running this loop is never stalled by it.
+                if let Err(e) = tokio::task::spawn_blocking(move || hook.stop()).await {
+                    warn!("key-category hook stop task panicked: {e}");
+                }
+            }
+            collector.reset_keyboard();
+            info!(
+                "key-category hook stopped — activity_pattern_learning consent revoked; \
+                 keyboard counters drained"
+            );
+        }
+        HookTransition::NoOp => {}
+    }
+}
+
+/// Reconcile the platform mouse-activity hook's running state against the
+/// LIVE `input_activity` consent. Symmetric to `reconcile_key_hook()` for the
+/// mouse channel — see that function's doc for the full rationale.
+async fn reconcile_mouse_hook(
+    mouse_hook: &mut Option<maekon_monitor::mouse_hook::MouseHook>,
+    collector: &Arc<InputActivityCollector>,
+    consent: &maekon_core::consent::ConsentPermissions,
+) {
+    match decide_hook_transition(mouse_hook.is_some(), consent.input_activity) {
+        HookTransition::Start => {
+            *mouse_hook = maekon_monitor::mouse_hook::MouseHook::start(collector.clone());
+            if mouse_hook.is_some() {
+                info!("mouse-activity hook started (input_activity consent granted)");
+            }
+        }
+        HookTransition::Stop => {
+            if let Some(mut hook) = mouse_hook.take() {
+                // MouseHook::stop() blocks on a thread join; offload it so the
+                // tokio worker running this loop is never stalled by it.
+                if let Err(e) = tokio::task::spawn_blocking(move || hook.stop()).await {
+                    warn!("mouse-activity hook stop task panicked: {e}");
+                }
+            }
+            collector.reset_mouse();
+            info!(
+                "mouse-activity hook stopped — input_activity consent revoked; \
+                 mouse counters drained"
+            );
+        }
+        HookTransition::NoOp => {}
+    }
+}
 
 impl Scheduler {
     #[tracing::instrument(skip_all)]
@@ -71,16 +181,30 @@ impl Scheduler {
             let mut input_interval = super::intervals::coalescing_interval(input_activity_interval);
             let mut foreground_pid: Option<u32> = None;
 
+            // #7698 S1: platform key/mouse OS-level hooks now live here instead
+            // of being spawned once (and never revisited) at scheduler startup.
+            // Establish the initial state synchronously so an already-granted
+            // user sees no capture delay (matching the previous spawn-time-only
+            // behavior), then `reconcile_key_hook`/`reconcile_mouse_hook` inside
+            // the `input_interval` tick below keep them in sync with LIVE
+            // consent for the rest of the session.
+            let mut key_hook: Option<maekon_monitor::key_hook::KeyHook> = None;
+            let mut mouse_hook: Option<maekon_monitor::mouse_hook::MouseHook> = None;
+            {
+                let startup_consent =
+                    ConsentGate::from_ref(consent9.as_ref()).permissions_snapshot();
+                reconcile_key_hook(&mut key_hook, &input_collector9, &config9, &startup_consent)
+                    .await;
+                reconcile_mouse_hook(&mut mouse_hook, &input_collector9, &startup_consent).await;
+            }
+
             loop {
                 tokio::select! {
                     _ = process_interval.tick() => {
                         // Row 7: 4-term composite gate (CONS-PC02 / D13).
-                        // effective_permissions() returns permissions only in the Valid state —
-                        // Expired/UpdateRequired return all-false, so a stale consent record is
-                        // also fail-closed (Task 3).
-                        let consent = consent9.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent9.as_ref()).permissions_snapshot();
                         let paused = capture_paused9.load(Ordering::Relaxed);
                         let permitted = config9.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -121,16 +245,22 @@ impl Scheduler {
 
                                 if let Some(ref sink) = uploader9 {
                                     // #4803: egress audit (uploaded/blocked).
-                                    let etype = super::super::config::egress_event_type(&event);
-                                    let bytes = super::super::config::egress_byte_count(&event);
+                                    let etype = super::super::egress_policy::egress_event_type(&event);
+                                    let bytes = super::super::egress_policy::egress_byte_count(&event);
                                     let consent_state = egress9.consent_state_snapshot();
+                                    // #7946: persisted id travels with the filtered payload.
+                                    let upload_storage_id =
+                                        maekon_storage::sqlite::storage_event_id(&event);
                                     if let Some(upload_event) = egress9.prepare_event_for_upload(event) {
-                                        sink.enqueue(upload_event);
-                                        super::super::config::record_event_egress(
+                                        sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                            storage_id: upload_storage_id,
+                                            event: upload_event,
+                                        });
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite9, etype, bytes, "uploaded", &consent_state,
                                         ).await;
                                     } else {
-                                        super::super::config::record_event_egress(
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite9, etype, bytes, "blocked", &consent_state,
                                         ).await;
                                     }
@@ -149,12 +279,20 @@ impl Scheduler {
                         // composite gate, but each adds its own-field gate on top
                         // (input_activity / clipboard_monitoring / file_access_monitoring) to
                         // decide honestly per-field (CONS-PC02 / D13).
-                        // effective_permissions() returns permissions only in the Valid state —
-                        // Expired/UpdateRequired return all-false, so a stale consent record is
-                        // also fail-closed (Task 3).
-                        let consent = consent9.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent9.as_ref()).permissions_snapshot();
+
+                        // #7698 S1: reconcile the OS-level key/mouse taps against LIVE
+                        // consent on every tick, independent of the composite gate below
+                        // (`permitted`) — mirrors the ORIGINAL spawn-time gate, which used
+                        // only the own-field consent (activity_pattern_learning /
+                        // input_activity), never the TS/paused composite bundle. Runs before
+                        // any `continue` in this arm so a revoke still stops the taps even
+                        // when the composite gate is already closed for another reason.
+                        reconcile_key_hook(&mut key_hook, &input_collector9, &config9, &consent).await;
+                        reconcile_mouse_hook(&mut mouse_hook, &input_collector9, &consent).await;
+
                         let paused = capture_paused9.load(Ordering::Relaxed);
                         let permitted = config9.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -182,16 +320,22 @@ impl Scheduler {
 
                                 if let Some(ref sink) = uploader9 {
                                     // #4803: egress audit (uploaded/blocked).
-                                    let etype = super::super::config::egress_event_type(&event);
-                                    let bytes = super::super::config::egress_byte_count(&event);
+                                    let etype = super::super::egress_policy::egress_event_type(&event);
+                                    let bytes = super::super::egress_policy::egress_byte_count(&event);
                                     let consent_state = egress9.consent_state_snapshot();
+                                    // #7946: persisted id travels with the filtered payload.
+                                    let upload_storage_id =
+                                        maekon_storage::sqlite::storage_event_id(&event);
                                     if let Some(upload_event) = egress9.prepare_event_for_upload(event) {
-                                        sink.enqueue(upload_event);
-                                        super::super::config::record_event_egress(
+                                        sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                            storage_id: upload_storage_id,
+                                            event: upload_event,
+                                        });
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite9, etype, bytes, "uploaded", &consent_state,
                                         ).await;
                                     } else {
-                                        super::super::config::record_event_egress(
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite9, etype, bytes, "blocked", &consent_state,
                                         ).await;
                                     }
@@ -291,6 +435,42 @@ impl Scheduler {
     }
 }
 
+/// #7698 S1: unit tests for the pure hook-transition decision function used by
+/// `reconcile_key_hook`/`reconcile_mouse_hook`. The actual OS-level key/mouse
+/// taps cannot be exercised in a unit test, so this proves the DECISION logic
+/// (start on grant, stop on revoke, no-op otherwise) directly — the same
+/// logic the reconcile functions above call every `input_activity_interval`
+/// tick.
+#[cfg(test)]
+mod hook_transition_tests {
+    use super::{decide_hook_transition, HookTransition};
+
+    /// Before this fix, `withdraw_consent()` never touched the hooks (they
+    /// were spawned once at scheduler startup from a snapshot of consent —
+    /// see `run_scheduler_loops` history for #7698 S1), so a revoke while a
+    /// hook was running had NO transition at all. This proves the fix: a
+    /// running hook with revoked consent now decides `Stop`.
+    #[test]
+    fn stops_when_consent_revoked_while_hook_running() {
+        assert_eq!(decide_hook_transition(true, false), HookTransition::Stop);
+    }
+
+    #[test]
+    fn starts_when_consent_granted_and_no_hook_running() {
+        assert_eq!(decide_hook_transition(false, true), HookTransition::Start);
+    }
+
+    #[test]
+    fn no_op_when_already_running_and_still_granted() {
+        assert_eq!(decide_hook_transition(true, true), HookTransition::NoOp);
+    }
+
+    #[test]
+    fn no_op_when_already_stopped_and_still_revoked() {
+        assert_eq!(decide_hook_transition(false, false), HookTransition::NoOp);
+    }
+}
+
 /// Unit tests for the consent-decision flow of the clipboard/file-access
 /// own-field gates.
 ///
@@ -315,13 +495,17 @@ mod own_field_gate_tests {
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
     use std::sync::Arc;
 
-    /// Unique temporary consent-file path for tests (same as the tmp_path
-    /// pattern in system.rs).
+    /// Unique temporary consent-file path for tests (per-process monotonic
+    /// counter — see the collision note on `tmp_path` in system.rs; a bare
+    /// `subsec_nanos()` nonce collided under heavy parallel `--workspace` load).
     fn tmp_consent_path(suffix: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nonce = format!(
+            "{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         std::env::temp_dir().join(format!("maekon_events_test_{nonce}_{suffix}"))
     }
 

@@ -6,7 +6,6 @@ use maekon_core::error::CoreError;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::ports::api_client::{SseClient, SseEvent};
 use parking_lot::Mutex;
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +16,7 @@ use tracing::{debug, info, warn};
 use crate::auth::TokenManager;
 use crate::error::NetworkError;
 use crate::http_client::build_reqwest_client_for_url;
+use crate::resilience::jittered_backoff_delay;
 
 /// Default SSE activity timeout — triggers a reconnect when no message arrives
 /// for 5 minutes.
@@ -28,6 +28,10 @@ const ACTIVITY_TIMEOUT_SECS: u64 = 300;
 /// this prevents an unbounded reconnect loop caused by a server that drops the
 /// connection right after the handshake.)
 const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+
+/// Base reconnect delay (1s) fed to [`jittered_backoff_delay`] — matches the
+/// pre-#7725 hand-rolled schedule's starting value.
+const SSE_RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Maximum byte size accepted for a single SSE event (data + event-name + id).
 ///
@@ -143,7 +147,13 @@ impl SseStreamClient {
 
         match url.scheme() {
             "https" => Ok(trimmed.to_string()),
-            "http" if !tls.enabled && Self::is_loopback_or_localhost_url(&url) => {
+            // Delegate loopback classification to the crate's canonical helper
+            // (`http_client::host_is_loopback`) instead of re-implementing it.
+            // The hand-rolled version here (#7720 E1a) never stripped IPv6
+            // brackets before parsing, so `[::1]` was rejected on the SSE path
+            // while the REST path accepted it — a live consistency divergence
+            // (fail-closed direction, not a security hole, but still a bug).
+            "http" if !tls.enabled && crate::http_client::host_is_loopback(trimmed) => {
                 Ok(trimmed.to_string())
             }
             "http" => Err(NetworkError::Config(
@@ -153,15 +163,6 @@ impl SseStreamClient {
                 "unsupported SSE URL scheme `{scheme}`; expected https"
             ))),
         }
-    }
-
-    fn is_loopback_or_localhost_url(url: &reqwest::Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-
-        host.eq_ignore_ascii_case("localhost")
-            || host.parse::<IpAddr>().is_ok_and(|addr| addr.is_loopback())
     }
 
     /// Returns the last received SSE event ID, if any.
@@ -233,13 +234,15 @@ impl SseStreamClient {
 impl SseClient for SseStreamClient {
     async fn connect(&self, session_id: &str, tx: mpsc::Sender<SseEvent>) -> Result<(), CoreError> {
         let url = self.stream_url(session_id)?;
-        let max_retry = self.max_retry_secs;
+        let max_retry = Duration::from_secs(self.max_retry_secs);
 
         info!("SSE connection started");
 
-        let mut retry_delay = 1u64;
         // Consecutive reconnect-attempt count — only reset to 0 once the stream
-        // has delivered at least one real event.
+        // has delivered at least one real event. Also drives the jittered
+        // backoff delay below (`reconnect_attempts - 1` as the 0-based
+        // attempt index — `reconnect_attempts` is incremented immediately
+        // before each of the three backoff sites, so it is always >= 1 there).
         let mut reconnect_attempts = 0u32;
 
         loop {
@@ -278,9 +281,13 @@ impl SseClient for SseStreamClient {
                         });
                     }
 
-                    warn!("SSE reconnect waiting: {retry_delay}s");
-                    tokio::time::sleep(Duration::from_secs(retry_delay)).await;
-                    retry_delay = (retry_delay * 2).min(max_retry);
+                    let delay = jittered_backoff_delay(
+                        reconnect_attempts - 1,
+                        SSE_RECONNECT_BASE_DELAY,
+                        max_retry,
+                    );
+                    warn!(delay_ms = delay.as_millis() as u64, "SSE reconnect waiting");
+                    tokio::time::sleep(delay).await;
                     continue;
                 }
             };
@@ -323,9 +330,13 @@ impl SseClient for SseStreamClient {
                     });
                 }
 
-                warn!("SSE reconnect waiting: {retry_delay}s");
-                tokio::time::sleep(Duration::from_secs(retry_delay)).await;
-                retry_delay = (retry_delay * 2).min(max_retry);
+                let delay = jittered_backoff_delay(
+                    reconnect_attempts - 1,
+                    SSE_RECONNECT_BASE_DELAY,
+                    max_retry,
+                );
+                warn!(delay_ms = delay.as_millis() as u64, "SSE reconnect waiting");
+                tokio::time::sleep(delay).await;
                 continue;
             }
 
@@ -364,7 +375,6 @@ impl SseClient for SseStreamClient {
                         // healthy, so the backoff/give-up budget can reset.
                         if !made_progress {
                             made_progress = true;
-                            retry_delay = 1;
                             reconnect_attempts = 0;
                         }
 
@@ -451,9 +461,10 @@ impl SseClient for SseStreamClient {
                 });
             }
 
-            warn!("SSE reconnect waiting: {retry_delay}s");
-            tokio::time::sleep(Duration::from_secs(retry_delay)).await;
-            retry_delay = (retry_delay * 2).min(max_retry);
+            let delay =
+                jittered_backoff_delay(reconnect_attempts - 1, SSE_RECONNECT_BASE_DELAY, max_retry);
+            warn!(delay_ms = delay.as_millis() as u64, "SSE reconnect waiting");
+            tokio::time::sleep(delay).await;
         }
     }
 }
@@ -467,6 +478,58 @@ mod tests {
     /// #175/#176); mirrors `auth::tests::primary_password`.
     fn primary_password() -> String {
         String::from_utf8(vec![b'x'; 16]).expect("password fixture bytes must be UTF-8")
+    }
+
+    // ── reconnect backoff envelope (#7725: adopted `resilience::jittered_backoff_delay`,
+    // replacing the ~85% hand-rolled `retry_delay = (retry_delay * 2).min(max_retry)`
+    // doubling that used to live in this file) ──────────────────────────────
+
+    #[test]
+    fn reconnect_base_delay_matches_pre_migration_starting_value() {
+        // The pre-#7725 hand-rolled loop started `retry_delay` at 1s; pin that
+        // this site's shared-helper migration preserved the same starting value.
+        assert_eq!(SSE_RECONNECT_BASE_DELAY, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reconnect_delay_envelope_matches_pre_migration_doubling_schedule() {
+        // `reconnect_attempts` at the call site is 1-based, so attempt 0 here
+        // corresponds to the first failure (reconnect_attempts == 1). Without
+        // jitter the pre-migration schedule doubled 1s -> 2s -> 4s -> ...; the
+        // migrated site keeps that same base/growth via `jittered_backoff_delay`,
+        // widened by up to 25% jitter. Pin the envelope (not an exact value)
+        // since the delay is now randomized.
+        let max = Duration::from_secs(30);
+        for (attempt, exp_secs) in [(0u32, 1u64), (1, 2), (2, 4), (3, 8), (4, 16)] {
+            let floor = Duration::from_secs(exp_secs);
+            let ceiling = Duration::from_millis(exp_secs * 1000 + exp_secs * 250);
+            for _ in 0..50 {
+                let delay = jittered_backoff_delay(attempt, SSE_RECONNECT_BASE_DELAY, max);
+                assert!(
+                    delay >= floor,
+                    "attempt {attempt}: delay {delay:?} must be >= exponential floor {floor:?}"
+                );
+                assert!(
+                    delay <= ceiling,
+                    "attempt {attempt}: delay {delay:?} must be <= exp + 25% ({ceiling:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_delay_never_exceeds_max_retry_secs() {
+        // Regardless of how high `reconnect_attempts` climbs before
+        // MAX_RECONNECT_ATTEMPTS gives up, the delay must stay capped at the
+        // instance's configured `max_retry_secs`.
+        let max = Duration::from_secs(30);
+        for attempt in 0..MAX_RECONNECT_ATTEMPTS {
+            let delay = jittered_backoff_delay(attempt, SSE_RECONNECT_BASE_DELAY, max);
+            assert!(
+                delay <= max,
+                "attempt {attempt}: delay {delay:?} must be <= max {max:?}"
+            );
+        }
     }
 
     #[test]
@@ -552,6 +615,41 @@ mod tests {
         assert!(
             matches!(cfg_err, crate::error::NetworkError::Config(_)),
             "remote cleartext HTTP must yield NetworkError::Config; got: {cfg_err:?}"
+        );
+    }
+
+    #[test]
+    fn validated_base_url_bracketed_ipv6_loopback_matches_http_client_host_is_loopback() {
+        // Regression for #7720 (E1a): the SSE loopback check historically parsed
+        // the host straight into `IpAddr`, without stripping IPv6 brackets first.
+        // `[::1]` never parses as a bare `IpAddr`, so the SSE path rejected an
+        // IPv6-loopback endpoint that the REST path's canonical
+        // `http_client::host_is_loopback` already accepted (fail-closed
+        // inconsistency, not a security hole). The SSE path must delegate to the
+        // same canonical helper so both paths agree.
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+
+        // Bracketed IPv6 loopback: the REST-path helper already accepts this URL.
+        let loopback_url = "http://[::1]:9999";
+        assert!(
+            crate::http_client::host_is_loopback(loopback_url),
+            "canonical REST helper must accept bracketed IPv6 loopback"
+        );
+        let accepted = SseStreamClient::validated_base_url(loopback_url, &tls).expect(
+            "SSE path must accept the same bracketed IPv6 loopback URL that the REST path accepts",
+        );
+        assert_eq!(accepted, loopback_url);
+
+        // Genuinely-remote cleartext IPv6 host must still be rejected on both paths.
+        let remote_url = "http://[2001:db8::1]:9999";
+        assert!(!crate::http_client::host_is_loopback(remote_url));
+        let rejected = SseStreamClient::validated_base_url(remote_url, &tls).unwrap_err();
+        assert!(
+            matches!(rejected, crate::error::NetworkError::Config(_)),
+            "remote cleartext IPv6 host must yield NetworkError::Config; got: {rejected:?}"
         );
     }
 

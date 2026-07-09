@@ -140,10 +140,12 @@ pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> Man
     .with_audio_runtime(audio_runtime_state)
     .with_suggestion_runtime(suggestion_runtime_state)
     .with_detection_runtime(detection_runtime_state)
-    // #5703: wire automation state so the live controller is reachable from all
-    // 7 automation IPC commands (list_automation_presets, run_automation_preset,
-    // execute_automation_hint, analyze_automation_scene, get_pending_confirmations,
-    // confirm_automation_command, check_automation_available).
+    // #5703: wire automation state so the live controller is reachable from the
+    // confirmation-flow IPC commands (get_pending_confirmations,
+    // confirm_automation_command). #7600: the other 5 automation IPCs
+    // (list_automation_presets, run_automation_preset, execute_automation_hint,
+    // analyze_automation_scene, check_automation_available) were removed as
+    // dead duplicates — the frontend drives them via the embedded HTTP API.
     .with_automation_runtime(automation_runtime_state)
     // #6264: wire sync state so the 4 cross-device-sync IPC commands reach the
     // live SyncEngine once the agent runtime populates the shared slot

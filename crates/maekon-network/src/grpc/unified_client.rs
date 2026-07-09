@@ -269,6 +269,7 @@ impl UnifiedClient {
         if self.config.should_use_grpc_for_context() {
             self.heartbeat_grpc(session_id).await
         } else {
+            self.http_client.send_heartbeat(session_id).await?;
             Ok(true)
         }
     }
@@ -464,6 +465,13 @@ impl UnifiedClient {
                 feedback_type: rest_feedback_type,
                 comment: comment.map(String::from),
                 timestamp: chrono::Utc::now(),
+                // #7600: this narrow (suggestion_id, action, comment) API predates
+                // regime_id and has already lost it by the time it reaches this REST
+                // fallback branch — GrpcApiAdapter::send_feedback narrows the full
+                // SuggestionFeedback down to these 3 args before calling in. Carrying
+                // regime_id through the gRPC/REST client surface is a separate,
+                // out-of-scope follow-up from the local per-regime learning loop.
+                regime_id: None,
             };
 
             self.http_client.send_feedback(&feedback).await?;
@@ -493,6 +501,40 @@ impl UnifiedClient {
 mod tests {
     use super::*;
 
+    fn primary_password() -> String {
+        String::from_utf8(vec![b'x'; 16]).expect("password fixture bytes must be UTF-8")
+    }
+
+    // Test fixture talks to a mockito server, not a real TLS endpoint — the
+    // legacy non-TLS constructor is the documented/intended choice here
+    // (see TokenManager::new doc comment), matching the same-pattern
+    // #[allow(deprecated)] used by sibling test fixtures in http_client.rs
+    // / sse_client.rs / auth/tests.rs.
+    #[allow(deprecated)]
+    async fn authed_unified_client(
+        server: &mut mockito::ServerGuard,
+    ) -> (UnifiedClient, mockito::Mock) {
+        let login_mock = server
+            .mock("POST", "/api/v1/auth/tokens")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"test_jwt","refresh_token":"ref","expires_in":3600}"#)
+            .create_async()
+            .await;
+        let token_manager = Arc::new(TokenManager::new(&server.url()));
+        token_manager
+            .login("test@test.com", &primary_password())
+            .await
+            .unwrap();
+        let config = GrpcConfig {
+            rest_endpoint: server.url(),
+            use_grpc_context: false,
+            ..GrpcConfig::default()
+        };
+        let client = UnifiedClient::new(config, token_manager).unwrap();
+        (client, login_mock)
+    }
+
     #[test]
     fn test_auth_response() {
         let response = AuthResponse {
@@ -515,5 +557,22 @@ mod tests {
         };
         assert_eq!(response.session_id, "session-123");
         assert_eq!(response.client_id, "client-789");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rest_mode_posts_to_rest_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let (client, login_mock) = authed_unified_client(&mut server).await;
+        let heartbeat_mock = server
+            .mock("POST", "/user_context/sessions/sess_rest/heartbeat")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let alive = client.heartbeat("sess_rest").await.unwrap();
+
+        assert!(alive);
+        login_mock.assert_async().await;
+        heartbeat_mock.assert_async().await;
     }
 }

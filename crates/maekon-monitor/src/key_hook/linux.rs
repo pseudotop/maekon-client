@@ -49,7 +49,20 @@ pub fn run_x11_record_hook(
     // If `xinput` is not installed, we fall back to a no-op with a warning.
     info!("starting X11 key observer via xinput test-xi2");
 
-    let mut child = match std::process::Command::new("xinput")
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a bare `xinput` spawn — a bare name is PATH-resolved, so a same-named
+    // binary planted ahead of the trusted system dirs on `$PATH` would
+    // hijack this passive key observer. Fail closed (mirrors the existing
+    // "xinput not found" warning + return) when it is not found.
+    let Some(xinput_path) = crate::trusted_binary::resolve_trusted_binary("xinput") else {
+        warn!(
+            "xinput not found under the trusted directory allowlist -- install with \
+             'sudo apt install xinput' for key-category tracking on Linux"
+        );
+        return;
+    };
+
+    let mut child = match std::process::Command::new(xinput_path)
         .args(["test-xi2", "--root"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

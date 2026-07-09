@@ -17,13 +17,24 @@
 )]
 // P2 nursery-hardening (PR-B): all PartialEq derives also derive Eq when
 // possible. Float-carrying types use site-level #[allow] with reason.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
+// H1 (#7719): `significant_drop_tightening` is now enforced workspace-wide too
+// (was previously never declared by this crate). Production sites are fixed
+// (consent.rs — explicit `drop()` after last guard use); test-only manual
+// mock implementations (feature_perf.rs, lan_pin_store.rs, secret_store.rs
+// `#[cfg(test)] mod tests`) keep the simple lock-guard-per-call style, so
+// tests are exempted like the 6 sibling crates that already carry this
+// pattern (audio/embedding/monitor/suggestion/vision/web).
+#![cfg_attr(test, allow(clippy::significant_drop_tightening))]
 
 //! # maekon-core
 
 pub mod ai_model_lifecycle_policy;
 pub mod app_registry;
+pub mod backoff;
 pub mod binary_quantizer;
+pub mod capture_gate;
+pub mod circuit_breaker;
 pub mod codex_approval;
 pub mod config;
 pub mod config_manager;
@@ -33,13 +44,17 @@ pub mod error_codes;
 pub mod id_generation;
 pub mod ivf_index;
 pub mod models;
+pub mod net_policy;
 pub mod path_redaction;
 pub mod ports;
 pub mod provider_surface;
+pub mod provider_surface_catalog;
 pub mod quantization;
+pub mod resource_budget;
 pub mod sanitized_display;
 pub mod secure_file;
 pub mod sync;
+pub mod sync_engine;
 pub mod types;
 
 pub use id_generation::{generate_id, generate_id_checked, IdError};

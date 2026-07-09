@@ -20,14 +20,20 @@ pub fn notify_ready() {
     // No-op on non-Linux or when systemd-notify feature disabled.
 }
 
+// #7719: same "no production caller today" status as the non-Linux stub
+// below — unverifiable from a non-Linux host, kept conservatively.
 #[cfg(all(target_os = "linux", feature = "systemd-notify"))]
-#[allow(dead_code)] // no caller yet; will be wired in shutdown path
+#[allow(dead_code)]
 pub fn notify_stopping() {
     let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
 }
 
+// #7719: unlike `notify_ready` (called from setup.rs), no production caller
+// signals systemd Type=notify STOPPING today — this is only exercised by its
+// own test. Kept as the paired lifecycle notification for whenever a
+// graceful-stop path calls it.
 #[cfg(not(all(target_os = "linux", feature = "systemd-notify")))]
-#[allow(dead_code)] // no caller on non-Linux yet; will be wired in shutdown path
+#[allow(dead_code)]
 pub fn notify_stopping() {}
 
 #[cfg(test)]

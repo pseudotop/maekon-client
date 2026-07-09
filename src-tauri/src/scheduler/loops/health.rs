@@ -62,6 +62,10 @@ pub(crate) fn spawn_health_check_loop(
                         }
                         info!(server = srv, llm = llm, cli = cli, "connection status changed");
                     }
+                    // #7947: self RSS/CPU budget sampling now runs as its own
+                    // always-on loop (`spawn_resource_health_loop`), decoupled
+                    // from the health-probe wiring so it also runs in minimal /
+                    // OSS configs where this health loop is not spawned.
                 }
                 _ = shutdown_rx.changed() => {
                     info!("health check loop shutdown");

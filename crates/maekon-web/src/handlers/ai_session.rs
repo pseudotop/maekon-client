@@ -117,12 +117,17 @@ pub async fn send_message(
                         .unwrap_or_else(|_| {
                             Event::default().event("error").data("serialize error")
                         }),
-                    OutboundMessage::Result { .. } => Event::default()
-                        .event("result")
-                        .json_data(&outbound)
-                        .unwrap_or_else(|_| {
-                            Event::default().event("error").data("serialize error")
-                        }),
+                    OutboundMessage::Result { done, .. } => {
+                        if *done {
+                            mgr.record_success(&sid).await;
+                        }
+                        Event::default()
+                            .event("result")
+                            .json_data(&outbound)
+                            .unwrap_or_else(|_| {
+                                Event::default().event("error").data("serialize error")
+                            })
+                    }
                     OutboundMessage::ToolUse { .. } => Event::default()
                         .event("tool_use")
                         .json_data(&outbound)
@@ -187,10 +192,9 @@ mod tests {
     use maekon_core::error::CoreError;
     use maekon_core::models::ai_session::{ConversationSessionInfo, SessionState};
     use maekon_core::ports::conversation_session::{ConversationSession, SessionManager};
-    use maekon_storage::sqlite::SqliteStorage;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
     // ── Mock SessionManager ──────────────────────────────────────
@@ -300,6 +304,8 @@ mod tests {
 
         async fn touch_session(&self, _session_id: &str) {}
 
+        async fn record_success(&self, _session_id: &str) {}
+
         async fn report_failure(&self, _session_id: &str, _error: &CoreError) -> SessionState {
             SessionState::Failed
         }
@@ -311,20 +317,12 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────
 
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
+    use crate::test_local_auth::{authed_loopback_router as loopback_app, test_app_state};
 
     fn test_app_state_with_session_manager() -> AppState {
         let mut state = test_app_state();
         state.session.manager = Some(Arc::new(MockSessionManager::new()));
         state
-    }
-
-    fn loopback_app(state: AppState) -> axum::Router {
-        crate::test_local_auth::authed_loopback_router(state)
     }
 
     // ── Tests ────────────────────────────────────────────────────

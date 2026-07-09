@@ -1,0 +1,1499 @@
+# UPSTREAM-DELTA.patch -- tray-icon 0.23.1
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tray-icon-0.23.1.crate) -> vendored source at patches/tray-icon-0.23.1/.
+# This is the ground-truth record of what Maekon changed relative to
+# upstream. See ../README.md for the refresh procedure and the why/what
+# summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tray-icon/tray-icon-0.23.1.crate -o /tmp/tray-icon-0.23.1.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tray-icon-0.23.1.crate -C /tmp/pristine
+#   diff -ruN --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tray-icon-0.23.1 patches/tray-icon-0.23.1 > patches/tray-icon-0.23.1/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock (per-patch-crate lockfiles were removed as non-shipping
+# Dependabot noise, PR #5862 / commit 1a4a0a85f0), target/.
+#
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -53,7 +53,6 @@
+ 
+ [dependencies.muda]
+ version = "0.19.1"
+-features = ["gtk"]
+ default-features = false
+ 
+ [dependencies.once_cell]
+@@ -83,16 +82,10 @@
+ [dev-dependencies.winit]
+ version = "0.30"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.dirs]
+-version = "6"
+-
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.libappindicator]
+-version = "0.9"
+-
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dev-dependencies.gtk]
++[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.png]
+ version = "0.18"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.png]
++[target.'cfg(target_os = "macos")'.dependencies.png]
+ version = "0.18"
+ 
+ [target.'cfg(target_os = "macos")'.dependencies.objc2]
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/README.md vendored/README.md
+--- upstream/README.md
++++ vendored/README.md
+@@ -1,11 +1,15 @@
+ tray-icon lets you create tray icons for desktop applications.
+ 
++## Maekon E31 patch note
++
++This local patch keeps Windows and macOS tray support available for Tauri while removing the GTK3/libappindicator dependency path from the Maekon Linux graph. Do not enable this tray backend for Linux until a GTK4/WebKitGTK 6 compatible replacement is selected.
++
+ ## Platforms supported:
+ 
+ - Windows
+ - macOS
+-- Linux (gtk Only)
+-- FreeBSD (gtk Only)
++- Linux (disabled in the Maekon E31 patch)
++- FreeBSD (disabled in the Maekon E31 patch)
+ 
+ ## Platform-specific notes:
+ 
+@@ -18,29 +22,9 @@
+ - `libxdo`: Enables linking to `libxdo` which is used for the predfined `Copy`, `Cut`, `Paste` and `SelectAll` menu item, see https://github.com/tauri-apps/muda#cargo-features
+ - `serde`: Enables de/serializing derives.
+ 
+-## Dependencies (Linux Only)
++## Linux/BSD support in the Maekon patch
+ 
+-On Linux, `gtk`, `libxdo` is used to make the predfined `Copy`, `Cut`, `Paste` and `SelectAll` menu items work and `libappindicator` or `libayatnat-appindicator` are used to create the tray icon, so make sure to install them on your system.
+-
+-#### Arch Linux / Manjaro:
+-
+-```sh
+-pacman -S gtk3 xdotool libappindicator-gtk3 #or libayatana-appindicator
+-```
+-
+-#### Debian / Ubuntu:
+-
+-```sh
+-sudo apt install libgtk-3-dev libxdo-dev libappindicator3-dev #or libayatana-appindicator3-dev
+-```
+-
+-## Dependencies in FreeBSD
+-
+-Install this dependencies in order to compile `tray-icon`. Instructions using `pkg`:
+-
+-```sh
+-pkg install -y rust glib pkgconf gtk3
+-```
++The upstream Linux/BSD tray backend depends on GTK3/libappindicator. The Maekon E31 patch disables that backend and returns an unsupported-platform error instead. Do not add GTK3/libappindicator packages back to the Maekon Linux graph; select a GTK4/WebKitGTK 6 compatible tray replacement first.
+ 
+ ## Examples
+ 
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/lib.rs vendored/src/lib.rs
+--- upstream/src/lib.rs
++++ vendored/src/lib.rs
+@@ -6,33 +6,28 @@
+ 
+ //! tray-icon lets you create tray icons for desktop applications.
+ //!
++//! Maekon E31 patch note: this local patch keeps Windows and macOS tray support
++//! available for Tauri while removing the GTK3/libappindicator dependency path
++//! from the Maekon Linux graph. Do not enable this tray backend for Linux until a
++//! GTK4/WebKitGTK 6 compatible replacement is selected.
++//!
+ //! # Platforms supported:
+ //!
+ //! - Windows
+ //! - macOS
+-//! - Linux (gtk Only)
++//! - Linux (disabled in the Maekon E31 patch)
+ //!
+ //! # Platform-specific notes:
+ //!
+ //! - On Windows and Linux, an event loop must be running on the thread, on Windows, a win32 event loop and on Linux, a gtk event loop. It doesn't need to be the main thread but you have to create the tray icon on the same thread as the event loop.
+ //! - On macOS, an event loop must be running on the main thread so you also need to create the tray icon on the main thread. You must make sure that the event loop is already running and not just created before creating a TrayIcon to prevent issues with fullscreen apps. In Winit for example the earliest you can create icons is on [`StartCause::Init`](https://docs.rs/winit/latest/winit/event/enum.StartCause.html#variant.Init).
+ //!
+-//! # Dependencies (Linux Only)
++//! # Linux/BSD support
+ //!
+-//! On Linux, `gtk`, `libxdo` is used to make the predfined `Copy`, `Cut`, `Paste` and `SelectAll` menu items work and `libappindicator` or `libayatnat-appindicator` are used to create the tray icon, so make sure to install them on your system.
++//! The Maekon E31 patch disables the upstream GTK3/libappindicator backend on
++//! Linux and BSD targets. Construction returns an unsupported-platform error
++//! until a GTK4/WebKitGTK 6 compatible backend is selected.
+ //!
+-//! #### Arch Linux / Manjaro:
+-//!
+-//! ```sh
+-//! pacman -S gtk3 xdotool libappindicator-gtk3 #or libayatana-appindicator
+-//! ```
+-//!
+-//! #### Debian / Ubuntu:
+-//!
+-//! ```sh
+-//! sudo apt install libgtk-3-dev libxdo-dev libappindicator3-dev #or libayatana-appindicator3-dev
+-//! ```
+-//!
+ //! # Examples
+ //!
+ //! #### Create a tray icon without a menu.
+@@ -121,9 +116,9 @@
+ //! [tao]: https://docs.rs/tao
+ 
+ use std::{
+-    cell::RefCell,
+-    path::{Path, PathBuf},
+-    rc::Rc,
++  cell::RefCell,
++  path::{Path, PathBuf},
++  rc::Rc,
+ };
+ 
+ use counter::Counter;
+@@ -142,7 +137,7 @@
+ 
+ /// Re-export of [muda](::muda) crate and used for tray context menu.
+ pub mod menu {
+-    pub use muda::*;
++  pub use muda::*;
+ }
+ pub use muda::dpi;
+ 
+@@ -150,191 +145,191 @@
+ 
+ /// Attributes to use when creating a tray icon.
+ pub struct TrayIconAttributes {
+-    /// Tray icon tooltip
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub tooltip: Option<String>,
++  /// Tray icon tooltip
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub tooltip: Option<String>,
+ 
+-    /// Tray menu
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux**: once a menu is set, it cannot be removed.
+-    pub menu: Option<Box<dyn menu::ContextMenu>>,
++  /// Tray menu
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux**: once a menu is set, it cannot be removed.
++  pub menu: Option<Box<dyn menu::ContextMenu>>,
+ 
+-    /// Tray icon
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
+-    ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
+-    pub icon: Option<Icon>,
++  /// Tray icon
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
++  ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
++  pub icon: Option<Icon>,
+ 
+-    /// Tray icon temp dir path. **Linux only**.
+-    pub temp_dir_path: Option<PathBuf>,
++  /// Tray icon temp dir path. **Linux only**.
++  pub temp_dir_path: Option<PathBuf>,
+ 
+-    /// Use the icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
+-    pub icon_is_template: bool,
++  /// Use the icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
++  pub icon_is_template: bool,
+ 
+-    /// Whether to show the tray menu on left click or not, default is `true`.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub menu_on_left_click: bool,
++  /// Whether to show the tray menu on left click or not, default is `true`.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub menu_on_left_click: bool,
+ 
+-    /// Whether to show the tray menu on right click or not, default is `true`.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub menu_on_right_click: bool,
++  /// Whether to show the tray menu on right click or not, default is `true`.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub menu_on_right_click: bool,
+ 
+-    /// Tray icon title.
+-    ///
+-    /// ## Platform-specific
+-    ///
+-    /// - **Linux:** The title will not be shown unless there is an icon
+-    ///   as well.  The title is useful for numerical and other frequently
+-    ///   updated information.  In general, it shouldn't be shown unless a
+-    ///   user requests it as it can take up a significant amount of space
+-    ///   on the user's panel.  This may not be shown in all visualizations.
+-    /// - **Windows:** Unsupported.
+-    pub title: Option<String>,
++  /// Tray icon title.
++  ///
++  /// ## Platform-specific
++  ///
++  /// - **Linux:** The title will not be shown unless there is an icon
++  ///   as well.  The title is useful for numerical and other frequently
++  ///   updated information.  In general, it shouldn't be shown unless a
++  ///   user requests it as it can take up a significant amount of space
++  ///   on the user's panel.  This may not be shown in all visualizations.
++  /// - **Windows:** Unsupported.
++  pub title: Option<String>,
+ }
+ 
+ impl Default for TrayIconAttributes {
+-    fn default() -> Self {
+-        Self {
+-            tooltip: None,
+-            menu: None,
+-            icon: None,
+-            temp_dir_path: None,
+-            icon_is_template: false,
+-            menu_on_left_click: true,
+-            menu_on_right_click: true,
+-            title: None,
+-        }
++  fn default() -> Self {
++    Self {
++      tooltip: None,
++      menu: None,
++      icon: None,
++      temp_dir_path: None,
++      icon_is_template: false,
++      menu_on_left_click: true,
++      menu_on_right_click: true,
++      title: None,
+     }
++  }
+ }
+ 
+ /// [`TrayIcon`] builder struct and associated methods.
+ #[derive(Default)]
+ pub struct TrayIconBuilder {
+-    id: TrayIconId,
+-    attrs: TrayIconAttributes,
++  id: TrayIconId,
++  attrs: TrayIconAttributes,
+ }
+ 
+ impl TrayIconBuilder {
+-    /// Creates a new [`TrayIconBuilder`] with default [`TrayIconAttributes`].
+-    ///
+-    /// See [`TrayIcon::new`] for more info.
+-    pub fn new() -> Self {
+-        Self {
+-            id: TrayIconId::new_unique(),
+-            attrs: TrayIconAttributes::default(),
+-        }
++  /// Creates a new [`TrayIconBuilder`] with default [`TrayIconAttributes`].
++  ///
++  /// See [`TrayIcon::new`] for more info.
++  pub fn new() -> Self {
++    Self {
++      id: TrayIconId::new_unique(),
++      attrs: TrayIconAttributes::default(),
+     }
++  }
+ 
+-    /// Sets the unique id to build the tray icon with.
+-    pub fn with_id<I: Into<TrayIconId>>(mut self, id: I) -> Self {
+-        self.id = id.into();
+-        self
+-    }
++  /// Sets the unique id to build the tray icon with.
++  pub fn with_id<I: Into<TrayIconId>>(mut self, id: I) -> Self {
++    self.id = id.into();
++    self
++  }
+ 
+-    /// Set the a menu for this tray icon.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux**: once a menu is set, it cannot be removed or replaced but you can change its content.
+-    pub fn with_menu(mut self, menu: Box<dyn menu::ContextMenu>) -> Self {
+-        self.attrs.menu = Some(menu);
+-        self
+-    }
++  /// Set the a menu for this tray icon.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux**: once a menu is set, it cannot be removed or replaced but you can change its content.
++  pub fn with_menu(mut self, menu: Box<dyn menu::ContextMenu>) -> Self {
++    self.attrs.menu = Some(menu);
++    self
++  }
+ 
+-    /// Set an icon for this tray icon.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
+-    ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
+-    pub fn with_icon(mut self, icon: Icon) -> Self {
+-        self.attrs.icon = Some(icon);
+-        self
+-    }
++  /// Set an icon for this tray icon.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
++  ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
++  pub fn with_icon(mut self, icon: Icon) -> Self {
++    self.attrs.icon = Some(icon);
++    self
++  }
+ 
+-    /// Set a tooltip for this tray icon.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn with_tooltip<S: AsRef<str>>(mut self, s: S) -> Self {
+-        self.attrs.tooltip = Some(s.as_ref().to_string());
+-        self
+-    }
++  /// Set a tooltip for this tray icon.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn with_tooltip<S: AsRef<str>>(mut self, s: S) -> Self {
++    self.attrs.tooltip = Some(s.as_ref().to_string());
++    self
++  }
+ 
+-    /// Set the tray icon title.
+-    ///
+-    /// ## Platform-specific
+-    ///
+-    /// - **Linux:** The title will not be shown unless there is an icon
+-    ///   as well.  The title is useful for numerical and other frequently
+-    ///   updated information.  In general, it shouldn't be shown unless a
+-    ///   user requests it as it can take up a significant amount of space
+-    ///   on the user's panel.  This may not be shown in all visualizations.
+-    /// - **Windows:** Unsupported.
+-    pub fn with_title<S: AsRef<str>>(mut self, title: S) -> Self {
+-        self.attrs.title.replace(title.as_ref().to_string());
+-        self
+-    }
++  /// Set the tray icon title.
++  ///
++  /// ## Platform-specific
++  ///
++  /// - **Linux:** The title will not be shown unless there is an icon
++  ///   as well.  The title is useful for numerical and other frequently
++  ///   updated information.  In general, it shouldn't be shown unless a
++  ///   user requests it as it can take up a significant amount of space
++  ///   on the user's panel.  This may not be shown in all visualizations.
++  /// - **Windows:** Unsupported.
++  pub fn with_title<S: AsRef<str>>(mut self, title: S) -> Self {
++    self.attrs.title.replace(title.as_ref().to_string());
++    self
++  }
+ 
+-    /// Set tray icon temp dir path. **Linux only**.
+-    ///
+-    /// On Linux, we need to write the icon to the disk and usually it will
+-    /// be `$XDG_RUNTIME_DIR/tray-icon` or `$TEMP/tray-icon`.
+-    pub fn with_temp_dir_path<P: AsRef<Path>>(mut self, s: P) -> Self {
+-        self.attrs.temp_dir_path = Some(s.as_ref().to_path_buf());
+-        self
+-    }
++  /// Set tray icon temp dir path. **Linux only**.
++  ///
++  /// On Linux, we need to write the icon to the disk and usually it will
++  /// be `$XDG_RUNTIME_DIR/tray-icon` or `$TEMP/tray-icon`.
++  pub fn with_temp_dir_path<P: AsRef<Path>>(mut self, s: P) -> Self {
++    self.attrs.temp_dir_path = Some(s.as_ref().to_path_buf());
++    self
++  }
+ 
+-    /// Use the icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
+-    pub fn with_icon_as_template(mut self, is_template: bool) -> Self {
+-        self.attrs.icon_is_template = is_template;
+-        self
+-    }
++  /// Use the icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
++  pub fn with_icon_as_template(mut self, is_template: bool) -> Self {
++    self.attrs.icon_is_template = is_template;
++    self
++  }
+ 
+-    /// Whether to show the tray menu on left click or not, default is `true`.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn with_menu_on_left_click(mut self, enable: bool) -> Self {
+-        self.attrs.menu_on_left_click = enable;
+-        self
+-    }
++  /// Whether to show the tray menu on left click or not, default is `true`.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn with_menu_on_left_click(mut self, enable: bool) -> Self {
++    self.attrs.menu_on_left_click = enable;
++    self
++  }
+ 
+-    /// Whether to show the tray menu on right click or not, default is `true`.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn with_menu_on_right_click(mut self, enable: bool) -> Self {
+-        self.attrs.menu_on_right_click = enable;
+-        self
+-    }
++  /// Whether to show the tray menu on right click or not, default is `true`.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn with_menu_on_right_click(mut self, enable: bool) -> Self {
++    self.attrs.menu_on_right_click = enable;
++    self
++  }
+ 
+-    /// Access the unique id that will be assigned to the tray icon
+-    /// this builder will create.
+-    pub fn id(&self) -> &TrayIconId {
+-        &self.id
+-    }
++  /// Access the unique id that will be assigned to the tray icon
++  /// this builder will create.
++  pub fn id(&self) -> &TrayIconId {
++    &self.id
++  }
+ 
+-    /// Builds and adds a new [`TrayIcon`] to the system tray.
+-    pub fn build(self) -> Result<TrayIcon> {
+-        TrayIcon::with_id(self.id, self.attrs)
+-    }
++  /// Builds and adds a new [`TrayIcon`] to the system tray.
++  pub fn build(self) -> Result<TrayIcon> {
++    TrayIcon::with_id(self.id, self.attrs)
++  }
+ }
+ 
+ /// Tray icon struct and associated methods.
+@@ -342,205 +337,196 @@
+ /// This type is reference-counted and the icon is removed when the last instance is dropped.
+ #[derive(Clone)]
+ pub struct TrayIcon {
+-    id: TrayIconId,
+-    tray: Rc<RefCell<platform_impl::TrayIcon>>,
++  id: TrayIconId,
++  tray: Rc<RefCell<platform_impl::TrayIcon>>,
+ }
+ 
+ impl TrayIcon {
+-    /// Builds and adds a new tray icon to the system tray.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
+-    ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
+-    pub fn new(attrs: TrayIconAttributes) -> Result<Self> {
+-        let id = TrayIconId::new_unique();
+-        Ok(Self {
+-            tray: Rc::new(RefCell::new(platform_impl::TrayIcon::new(
+-                id.clone(),
+-                attrs,
+-            )?)),
+-            id,
+-        })
+-    }
++  /// Builds and adds a new tray icon to the system tray.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Sometimes the icon won't be visible unless a menu is set.
++  ///   Setting an empty [`Menu`](crate::menu::Menu) is enough.
++  pub fn new(attrs: TrayIconAttributes) -> Result<Self> {
++    let id = TrayIconId::new_unique();
++    Ok(Self {
++      tray: Rc::new(RefCell::new(platform_impl::TrayIcon::new(
++        id.clone(),
++        attrs,
++      )?)),
++      id,
++    })
++  }
+ 
+-    /// Builds and adds a new tray icon to the system tray with the specified Id.
+-    ///
+-    /// See [`TrayIcon::new`] for more info.
+-    pub fn with_id<I: Into<TrayIconId>>(id: I, attrs: TrayIconAttributes) -> Result<Self> {
+-        let id = id.into();
+-        Ok(Self {
+-            tray: Rc::new(RefCell::new(platform_impl::TrayIcon::new(
+-                id.clone(),
+-                attrs,
+-            )?)),
+-            id,
+-        })
+-    }
++  /// Builds and adds a new tray icon to the system tray with the specified Id.
++  ///
++  /// See [`TrayIcon::new`] for more info.
++  pub fn with_id<I: Into<TrayIconId>>(id: I, attrs: TrayIconAttributes) -> Result<Self> {
++    let id = id.into();
++    Ok(Self {
++      tray: Rc::new(RefCell::new(platform_impl::TrayIcon::new(
++        id.clone(),
++        attrs,
++      )?)),
++      id,
++    })
++  }
+ 
+-    /// Returns the id associated with this tray icon.
+-    pub fn id(&self) -> &TrayIconId {
+-        &self.id
+-    }
++  /// Returns the id associated with this tray icon.
++  pub fn id(&self) -> &TrayIconId {
++    &self.id
++  }
+ 
+-    /// Set new tray icon. If `None` is provided, it will remove the icon.
+-    pub fn set_icon(&self, icon: Option<Icon>) -> Result<()> {
+-        self.tray.borrow_mut().set_icon(icon)
+-    }
++  /// Set new tray icon. If `None` is provided, it will remove the icon.
++  pub fn set_icon(&self, icon: Option<Icon>) -> Result<()> {
++    self.tray.borrow_mut().set_icon(icon)
++  }
+ 
+-    /// Set new tray menu.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux**: once a menu is set it cannot be removed so `None` has no effect
+-    pub fn set_menu(&self, menu: Option<Box<dyn menu::ContextMenu>>) {
+-        self.tray.borrow_mut().set_menu(menu)
+-    }
++  /// Set new tray menu.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux**: once a menu is set it cannot be removed so `None` has no effect
++  pub fn set_menu(&self, menu: Option<Box<dyn menu::ContextMenu>>) {
++    self.tray.borrow_mut().set_menu(menu)
++  }
+ 
+-    /// Sets the tooltip for this tray icon.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported
+-    pub fn set_tooltip<S: AsRef<str>>(&self, tooltip: Option<S>) -> Result<()> {
+-        self.tray.borrow_mut().set_tooltip(tooltip)
+-    }
++  /// Sets the tooltip for this tray icon.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported
++  pub fn set_tooltip<S: AsRef<str>>(&self, tooltip: Option<S>) -> Result<()> {
++    self.tray.borrow_mut().set_tooltip(tooltip)
++  }
+ 
+-    /// Sets the tooltip for this tray icon.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** The title will not be shown unless there is an icon
+-    ///   as well.  The title is useful for numerical and other frequently
+-    ///   updated information.  In general, it shouldn't be shown unless a
+-    ///   user requests it as it can take up a significant amount of space
+-    ///   on the user's panel.  This may not be shown in all visualizations.
+-    /// - **Windows:** Unsupported
+-    pub fn set_title<S: AsRef<str>>(&self, title: Option<S>) {
+-        self.tray.borrow_mut().set_title(title)
+-    }
++  /// Sets the tooltip for this tray icon.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** The title will not be shown unless there is an icon
++  ///   as well.  The title is useful for numerical and other frequently
++  ///   updated information.  In general, it shouldn't be shown unless a
++  ///   user requests it as it can take up a significant amount of space
++  ///   on the user's panel.  This may not be shown in all visualizations.
++  /// - **Windows:** Unsupported
++  pub fn set_title<S: AsRef<str>>(&self, title: Option<S>) {
++    self.tray.borrow_mut().set_title(title)
++  }
+ 
+-    /// Show or hide this tray icon
+-    pub fn set_visible(&self, visible: bool) -> Result<()> {
+-        self.tray.borrow_mut().set_visible(visible)
+-    }
++  /// Show or hide this tray icon
++  pub fn set_visible(&self, visible: bool) -> Result<()> {
++    self.tray.borrow_mut().set_visible(visible)
++  }
+ 
+-    /// Sets the tray icon temp dir path. **Linux only**.
+-    ///
+-    /// On Linux, we need to write the icon to the disk and usually it will
+-    /// be `$XDG_RUNTIME_DIR/tray-icon` or `$TEMP/tray-icon`.
+-    pub fn set_temp_dir_path<P: AsRef<Path>>(&self, path: Option<P>) {
+-        #[cfg(any(
+-            target_os = "linux",
+-            target_os = "dragonfly",
+-            target_os = "freebsd",
+-            target_os = "netbsd",
+-            target_os = "openbsd"
+-        ))]
+-        self.tray.borrow_mut().set_temp_dir_path(path);
+-        #[cfg(not(any(
+-            target_os = "linux",
+-            target_os = "dragonfly",
+-            target_os = "freebsd",
+-            target_os = "netbsd",
+-            target_os = "openbsd"
+-        )))]
+-        let _ = path;
+-    }
++  /// Sets the tray icon temp dir path. **Linux only**.
++  ///
++  /// On Linux, we need to write the icon to the disk and usually it will
++  /// be `$XDG_RUNTIME_DIR/tray-icon` or `$TEMP/tray-icon`.
++  pub fn set_temp_dir_path<P: AsRef<Path>>(&self, path: Option<P>) {
++    #[cfg(any(
++      target_os = "linux",
++      target_os = "dragonfly",
++      target_os = "freebsd",
++      target_os = "netbsd",
++      target_os = "openbsd"
++    ))]
++    self.tray.borrow_mut().set_temp_dir_path(path);
++    #[cfg(not(any(
++      target_os = "linux",
++      target_os = "dragonfly",
++      target_os = "freebsd",
++      target_os = "netbsd",
++      target_os = "openbsd"
++    )))]
++    let _ = path;
++  }
+ 
+-    /// Set the current icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
+-    pub fn set_icon_as_template(&self, is_template: bool) {
+-        #[cfg(target_os = "macos")]
+-        self.tray.borrow_mut().set_icon_as_template(is_template);
+-        #[cfg(not(target_os = "macos"))]
+-        let _ = is_template;
+-    }
++  /// Set the current icon as a [template](https://developer.apple.com/documentation/appkit/nsimage/1520017-template?language=objc). **macOS only**.
++  pub fn set_icon_as_template(&self, is_template: bool) {
++    #[cfg(target_os = "macos")]
++    self.tray.borrow_mut().set_icon_as_template(is_template);
++    #[cfg(not(target_os = "macos"))]
++    let _ = is_template;
++  }
+ 
+-    pub fn set_icon_with_as_template(&self, icon: Option<Icon>, is_template: bool) -> Result<()> {
+-        #[cfg(target_os = "macos")]
+-        return self
+-            .tray
+-            .borrow_mut()
+-            .set_icon_with_as_template(icon, is_template);
+-        #[cfg(not(target_os = "macos"))]
+-        {
+-            let _ = icon;
+-            let _ = is_template;
+-            Ok(())
+-        }
++  pub fn set_icon_with_as_template(&self, icon: Option<Icon>, is_template: bool) -> Result<()> {
++    #[cfg(target_os = "macos")]
++    return self
++      .tray
++      .borrow_mut()
++      .set_icon_with_as_template(icon, is_template);
++    #[cfg(not(target_os = "macos"))]
++    {
++      let _ = icon;
++      let _ = is_template;
++      Ok(())
+     }
++  }
+ 
+-    /// Disable or enable showing the tray menu on left click.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn set_show_menu_on_left_click(&self, enable: bool) {
+-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+-        self.tray.borrow_mut().set_show_menu_on_left_click(enable);
+-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+-        let _ = enable;
+-    }
++  /// Disable or enable showing the tray menu on left click.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn set_show_menu_on_left_click(&self, enable: bool) {
++    #[cfg(any(target_os = "macos", target_os = "windows"))]
++    self.tray.borrow_mut().set_show_menu_on_left_click(enable);
++    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
++    let _ = enable;
++  }
+ 
+-    /// Disable or enable showing the tray menu on right click.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn set_show_menu_on_right_click(&self, enable: bool) {
+-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+-        self.tray.borrow_mut().set_show_menu_on_right_click(enable);
+-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+-        let _ = enable;
+-    }
++  /// Disable or enable showing the tray menu on right click.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn set_show_menu_on_right_click(&self, enable: bool) {
++    #[cfg(any(target_os = "macos", target_os = "windows"))]
++    self.tray.borrow_mut().set_show_menu_on_right_click(enable);
++    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
++    let _ = enable;
++  }
+ 
+-    /// Manually show the tray menu at the current cursor position.
+-    ///
+-    /// This is useful when you want to control when the menu is displayed,
+-    /// for example after updating menu items dynamically.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux:** Unsupported.
+-    pub fn show_menu(&self) {
+-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+-        self.tray.borrow().show_menu();
+-    }
++  /// Manually show the tray menu at the current cursor position.
++  ///
++  /// This is useful when you want to control when the menu is displayed,
++  /// for example after updating menu items dynamically.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux:** Unsupported.
++  pub fn show_menu(&self) {
++    #[cfg(any(target_os = "macos", target_os = "windows"))]
++    self.tray.borrow().show_menu();
++  }
+ 
+-    /// Get tray icon rect.
+-    ///
+-    /// ## Platform-specific:
+-    ///
+-    /// - **Linux**: Unsupported.
+-    pub fn rect(&self) -> Option<Rect> {
+-        self.tray.borrow().rect()
+-    }
++  /// Get tray icon rect.
++  ///
++  /// ## Platform-specific:
++  ///
++  /// - **Linux**: Unsupported.
++  pub fn rect(&self) -> Option<Rect> {
++    self.tray.borrow().rect()
++  }
+ 
+-    /// Get the tray icon's underlying [window handle](windows_sys::Win32::Foundation::HWND) **Windows only**.
+-    ///
+-    /// This window handle is valid as long as the tray icon.
+-    #[cfg(windows)]
+-    pub fn window_handle(&self) -> windows_sys::Win32::Foundation::HWND {
+-        self.tray.borrow().hwnd()
+-    }
++  /// Get the tray icon's underlying [window handle](windows_sys::Win32::Foundation::HWND) **Windows only**.
++  ///
++  /// This window handle is valid as long as the tray icon.
++  #[cfg(windows)]
++  pub fn window_handle(&self) -> windows_sys::Win32::Foundation::HWND {
++    self.tray.borrow().hwnd()
++  }
+ 
+-    /// Get the tray icon's underlying [NSStatusItem](objc2_app_kit::NSStatusItem) **macOS only**.
+-    ///
+-    /// Returns `None` if the status item is not available.
+-    #[cfg(target_os = "macos")]
+-    pub fn ns_status_item(&self) -> Option<objc2::rc::Retained<objc2_app_kit::NSStatusItem>> {
+-        self.tray.borrow().ns_status_item().cloned()
+-    }
++  /// Get the tray icon's underlying [NSStatusItem](objc2_app_kit::NSStatusItem) **macOS only**.
++  ///
++  /// Returns `None` if the status item is not available.
++  #[cfg(target_os = "macos")]
++  pub fn ns_status_item(&self) -> Option<objc2::rc::Retained<objc2_app_kit::NSStatusItem>> {
++    self.tray.borrow().ns_status_item().cloned()
++  }
+ 
+-    /// Get the tray icon's underlying [AppIndicator](libappindicator::AppIndicator) **Linux only**.
+-    ///
+-    /// # Safety
+-    ///
+-    /// The returned pointer is valid as long as the `TrayIcon` is.
+-    #[cfg(all(unix, not(target_os = "macos")))]
+-    pub unsafe fn app_indicator(&self) -> *const libappindicator::AppIndicator {
+-        self.tray.borrow().app_indicator() as *const _
+-    }
+ }
+ 
+ /// Describes a tray icon event.
+@@ -554,58 +540,58 @@
+ #[cfg_attr(feature = "serde", serde(tag = "type"))]
+ #[non_exhaustive]
+ pub enum TrayIconEvent {
+-    /// A click happened on the tray icon.
+-    #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+-    Click {
+-        /// Id of the tray icon which triggered this event.
+-        id: TrayIconId,
+-        /// Physical Position of this event.
+-        position: dpi::PhysicalPosition<f64>,
+-        /// Position and size of the tray icon.
+-        rect: Rect,
+-        /// Mouse button that triggered this event.
+-        button: MouseButton,
+-        /// Mouse button state when this event was triggered.
+-        button_state: MouseButtonState,
+-    },
+-    /// A double click happened on the tray icon. **Windows Only**
+-    DoubleClick {
+-        /// Id of the tray icon which triggered this event.
+-        id: TrayIconId,
+-        /// Physical Position of this event.
+-        position: dpi::PhysicalPosition<f64>,
+-        /// Position and size of the tray icon.
+-        rect: Rect,
+-        /// Mouse button that triggered this event.
+-        button: MouseButton,
+-    },
+-    /// The mouse entered the tray icon region.
+-    Enter {
+-        /// Id of the tray icon which triggered this event.
+-        id: TrayIconId,
+-        /// Physical Position of this event.
+-        position: dpi::PhysicalPosition<f64>,
+-        /// Position and size of the tray icon.
+-        rect: Rect,
+-    },
+-    /// The mouse moved over the tray icon region.
+-    Move {
+-        /// Id of the tray icon which triggered this event.
+-        id: TrayIconId,
+-        /// Physical Position of this event.
+-        position: dpi::PhysicalPosition<f64>,
+-        /// Position and size of the tray icon.
+-        rect: Rect,
+-    },
+-    /// The mouse left the tray icon region.
+-    Leave {
+-        /// Id of the tray icon which triggered this event.
+-        id: TrayIconId,
+-        /// Physical Position of this event.
+-        position: dpi::PhysicalPosition<f64>,
+-        /// Position and size of the tray icon.
+-        rect: Rect,
+-    },
++  /// A click happened on the tray icon.
++  #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
++  Click {
++    /// Id of the tray icon which triggered this event.
++    id: TrayIconId,
++    /// Physical Position of this event.
++    position: dpi::PhysicalPosition<f64>,
++    /// Position and size of the tray icon.
++    rect: Rect,
++    /// Mouse button that triggered this event.
++    button: MouseButton,
++    /// Mouse button state when this event was triggered.
++    button_state: MouseButtonState,
++  },
++  /// A double click happened on the tray icon. **Windows Only**
++  DoubleClick {
++    /// Id of the tray icon which triggered this event.
++    id: TrayIconId,
++    /// Physical Position of this event.
++    position: dpi::PhysicalPosition<f64>,
++    /// Position and size of the tray icon.
++    rect: Rect,
++    /// Mouse button that triggered this event.
++    button: MouseButton,
++  },
++  /// The mouse entered the tray icon region.
++  Enter {
++    /// Id of the tray icon which triggered this event.
++    id: TrayIconId,
++    /// Physical Position of this event.
++    position: dpi::PhysicalPosition<f64>,
++    /// Position and size of the tray icon.
++    rect: Rect,
++  },
++  /// The mouse moved over the tray icon region.
++  Move {
++    /// Id of the tray icon which triggered this event.
++    id: TrayIconId,
++    /// Physical Position of this event.
++    position: dpi::PhysicalPosition<f64>,
++    /// Position and size of the tray icon.
++    rect: Rect,
++  },
++  /// The mouse left the tray icon region.
++  Leave {
++    /// Id of the tray icon which triggered this event.
++    id: TrayIconId,
++    /// Physical Position of this event.
++    position: dpi::PhysicalPosition<f64>,
++    /// Position and size of the tray icon.
++    rect: Rect,
++  },
+ }
+ 
+ /// Describes the mouse button state.
+@@ -613,9 +599,9 @@
+ #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ #[derive(Default)]
+ pub enum MouseButtonState {
+-    #[default]
+-    Up,
+-    Down,
++  #[default]
++  Up,
++  Down,
+ }
+ 
+ /// Describes which mouse button triggered the event..
+@@ -623,27 +609,27 @@
+ #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ #[derive(Default)]
+ pub enum MouseButton {
+-    #[default]
+-    Left,
+-    Right,
+-    Middle,
++  #[default]
++  Left,
++  Right,
++  Middle,
+ }
+ 
+ /// Describes a rectangle including position (x - y axis) and size.
+ #[derive(Debug, PartialEq, Clone, Copy)]
+ #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Rect {
+-    pub size: dpi::PhysicalSize<u32>,
+-    pub position: dpi::PhysicalPosition<f64>,
++  pub size: dpi::PhysicalSize<u32>,
++  pub position: dpi::PhysicalPosition<f64>,
+ }
+ 
+ impl Default for Rect {
+-    fn default() -> Self {
+-        Self {
+-            size: dpi::PhysicalSize::new(0, 0),
+-            position: dpi::PhysicalPosition::new(0., 0.),
+-        }
++  fn default() -> Self {
++    Self {
++      size: dpi::PhysicalSize::new(0, 0),
++      position: dpi::PhysicalPosition::new(0., 0.),
+     }
++  }
+ }
+ 
+ /// A reciever that could be used to listen to tray events.
+@@ -654,89 +640,89 @@
+ static TRAY_EVENT_HANDLER: OnceCell<Option<TrayIconEventHandler>> = OnceCell::new();
+ 
+ impl TrayIconEvent {
+-    /// Returns the id of the tray icon which triggered this event.
+-    pub fn id(&self) -> &TrayIconId {
+-        match self {
+-            TrayIconEvent::Click { id, .. } => id,
+-            TrayIconEvent::DoubleClick { id, .. } => id,
+-            TrayIconEvent::Enter { id, .. } => id,
+-            TrayIconEvent::Move { id, .. } => id,
+-            TrayIconEvent::Leave { id, .. } => id,
+-        }
++  /// Returns the id of the tray icon which triggered this event.
++  pub fn id(&self) -> &TrayIconId {
++    match self {
++      TrayIconEvent::Click { id, .. } => id,
++      TrayIconEvent::DoubleClick { id, .. } => id,
++      TrayIconEvent::Enter { id, .. } => id,
++      TrayIconEvent::Move { id, .. } => id,
++      TrayIconEvent::Leave { id, .. } => id,
+     }
++  }
+ 
+-    /// Gets a reference to the event channel's [`TrayIconEventReceiver`]
+-    /// which can be used to listen for tray events.
+-    ///
+-    /// ## Note
+-    ///
+-    /// This will not receive any events if [`TrayIconEvent::set_event_handler`] has been called with a `Some` value.
+-    pub fn receiver<'a>() -> &'a TrayIconEventReceiver {
+-        &TRAY_CHANNEL.1
+-    }
++  /// Gets a reference to the event channel's [`TrayIconEventReceiver`]
++  /// which can be used to listen for tray events.
++  ///
++  /// ## Note
++  ///
++  /// This will not receive any events if [`TrayIconEvent::set_event_handler`] has been called with a `Some` value.
++  pub fn receiver<'a>() -> &'a TrayIconEventReceiver {
++    &TRAY_CHANNEL.1
++  }
+ 
+-    /// Set a handler to be called for new events. Useful for implementing custom event sender.
+-    ///
+-    /// ## Note
+-    ///
+-    /// Calling this function with a `Some` value,
+-    /// will not send new events to the channel associated with [`TrayIconEvent::receiver`]
+-    pub fn set_event_handler<F: Fn(TrayIconEvent) + Send + Sync + 'static>(f: Option<F>) {
+-        if let Some(f) = f {
+-            let _ = TRAY_EVENT_HANDLER.set(Some(Box::new(f)));
+-        } else {
+-            let _ = TRAY_EVENT_HANDLER.set(None);
+-        }
++  /// Set a handler to be called for new events. Useful for implementing custom event sender.
++  ///
++  /// ## Note
++  ///
++  /// Calling this function with a `Some` value,
++  /// will not send new events to the channel associated with [`TrayIconEvent::receiver`]
++  pub fn set_event_handler<F: Fn(TrayIconEvent) + Send + Sync + 'static>(f: Option<F>) {
++    if let Some(f) = f {
++      let _ = TRAY_EVENT_HANDLER.set(Some(Box::new(f)));
++    } else {
++      let _ = TRAY_EVENT_HANDLER.set(None);
+     }
++  }
+ 
+-    #[allow(unused)]
+-    pub(crate) fn send(event: TrayIconEvent) {
+-        if let Some(handler) = TRAY_EVENT_HANDLER.get_or_init(|| None) {
+-            handler(event);
+-        } else {
+-            let _ = TRAY_CHANNEL.0.send(event);
+-        }
++  #[allow(unused)]
++  pub(crate) fn send(event: TrayIconEvent) {
++    if let Some(handler) = TRAY_EVENT_HANDLER.get_or_init(|| None) {
++      handler(event);
++    } else {
++      let _ = TRAY_CHANNEL.0.send(event);
+     }
++  }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+ 
+-    #[cfg(feature = "serde")]
+-    #[test]
+-    fn it_serializes() {
+-        use super::*;
+-        let event = TrayIconEvent::Click {
+-            button: MouseButton::Left,
+-            button_state: MouseButtonState::Down,
+-            id: TrayIconId::new("id"),
+-            position: dpi::PhysicalPosition::default(),
+-            rect: Rect::default(),
+-        };
++  #[cfg(feature = "serde")]
++  #[test]
++  fn it_serializes() {
++    use super::*;
++    let event = TrayIconEvent::Click {
++      button: MouseButton::Left,
++      button_state: MouseButtonState::Down,
++      id: TrayIconId::new("id"),
++      position: dpi::PhysicalPosition::default(),
++      rect: Rect::default(),
++    };
+ 
+-        let value = serde_json::to_value(&event).unwrap();
+-        assert_eq!(
+-            value,
+-            serde_json::json!({
+-                "type": "Click",
+-                "button": "Left",
+-                "buttonState": "Down",
+-                "id": "id",
+-                "position": {
+-                    "x": 0.0,
+-                    "y": 0.0,
+-                },
+-                "rect": {
+-                    "size": {
+-                        "width": 0,
+-                        "height": 0,
+-                    },
+-                    "position": {
+-                        "x": 0.0,
+-                        "y": 0.0,
+-                    },
+-                }
+-            })
+-        )
+-    }
++    let value = serde_json::to_value(&event).unwrap();
++    assert_eq!(
++      value,
++      serde_json::json!({
++          "type": "Click",
++          "button": "Left",
++          "buttonState": "Down",
++          "id": "id",
++          "position": {
++              "x": 0.0,
++              "y": 0.0,
++          },
++          "rect": {
++              "size": {
++                  "width": 0,
++                  "height": 0,
++              },
++              "position": {
++                  "x": 0.0,
++                  "y": 0.0,
++              },
++          }
++      })
++    )
++  }
+ }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/disabled.rs vendored/src/platform_impl/disabled.rs
+--- upstream/src/platform_impl/disabled.rs
++++ vendored/src/platform_impl/disabled.rs
+@@ -0,0 +1,59 @@
++// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++use std::{
++    io,
++    path::{Path, PathBuf},
++};
++
++use crate::{Icon, TrayIconAttributes, TrayIconId};
++
++pub(crate) type PlatformIcon = crate::icon::NoIcon;
++
++pub struct TrayIcon;
++
++fn disabled_error() -> crate::Error {
++    crate::Error::OsError(io::Error::new(
++        io::ErrorKind::Unsupported,
++        "Maekon E31 disables the GTK3/libappindicator tray backend on Linux and BSD targets",
++    ))
++}
++
++impl TrayIcon {
++    pub fn new(id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
++        let _ = (id, attrs);
++        Err(disabled_error())
++    }
++
++    pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
++        let _ = icon;
++        Err(disabled_error())
++    }
++
++    pub fn set_menu(&mut self, menu: Option<Box<dyn crate::menu::ContextMenu>>) {
++        let _ = menu;
++    }
++
++    pub fn set_tooltip<S: AsRef<str>>(&mut self, tooltip: Option<S>) -> crate::Result<()> {
++        let _ = tooltip;
++        Err(disabled_error())
++    }
++
++    pub fn set_title<S: AsRef<str>>(&mut self, title: Option<S>) {
++        let _ = title;
++    }
++
++    pub fn set_visible(&mut self, visible: bool) -> crate::Result<()> {
++        let _ = visible;
++        Err(disabled_error())
++    }
++
++    pub fn set_temp_dir_path<P: AsRef<Path>>(&mut self, path: Option<P>) {
++        let _ = path.map(|p| PathBuf::from(p.as_ref()));
++    }
++
++    pub fn rect(&self) -> Option<crate::Rect> {
++        None
++    }
++}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/gtk/icon.rs vendored/src/platform_impl/gtk/icon.rs
+--- upstream/src/platform_impl/gtk/icon.rs
++++ vendored/src/platform_impl/gtk/icon.rs
+@@ -1,38 +0,0 @@
+-// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+-// SPDX-License-Identifier: Apache-2.0
+-// SPDX-License-Identifier: MIT
+-
+-use std::{fs::File, io::BufWriter, path::Path};
+-
+-use crate::icon::BadIcon;
+-
+-#[derive(Debug, Clone)]
+-pub struct PlatformIcon {
+-    rgba: Vec<u8>,
+-    width: i32,
+-    height: i32,
+-}
+-
+-impl PlatformIcon {
+-    pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, BadIcon> {
+-        Ok(Self {
+-            rgba,
+-            width: width as i32,
+-            height: height as i32,
+-        })
+-    }
+-
+-    pub fn write_to_png(&self, path: impl AsRef<Path>) -> crate::Result<()> {
+-        let png = File::create(path)?;
+-        let w = &mut BufWriter::new(png);
+-
+-        let mut encoder = png::Encoder::new(w, self.width as _, self.height as _);
+-        encoder.set_color(png::ColorType::Rgba);
+-        encoder.set_depth(png::BitDepth::Eight);
+-
+-        let mut writer = encoder.write_header()?;
+-        writer.write_image_data(&self.rgba)?;
+-
+-        Ok(())
+-    }
+-}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/gtk/mod.rs vendored/src/platform_impl/gtk/mod.rs
+--- upstream/src/platform_impl/gtk/mod.rs
++++ vendored/src/platform_impl/gtk/mod.rs
+@@ -1,159 +0,0 @@
+-// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+-// SPDX-License-Identifier: Apache-2.0
+-// SPDX-License-Identifier: MIT
+-
+-mod icon;
+-use std::path::{Path, PathBuf};
+-
+-use crate::icon::Icon;
+-pub(crate) use icon::PlatformIcon;
+-
+-use crate::{TrayIconAttributes, TrayIconId};
+-use libappindicator::{AppIndicator, AppIndicatorStatus};
+-
+-pub struct TrayIcon {
+-    id: TrayIconId,
+-    indicator: AppIndicator,
+-    temp_dir_path: Option<PathBuf>,
+-    path: PathBuf,
+-    counter: u32,
+-    menu: Option<Box<dyn muda::ContextMenu>>,
+-}
+-
+-impl TrayIcon {
+-    pub fn new(id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
+-        let mut indicator = AppIndicator::new(&format!("tray-icon tray app {}", id.as_ref()), "");
+-        indicator.set_status(AppIndicatorStatus::Active);
+-
+-        let (parent_path, icon_path) = temp_icon_path(attrs.temp_dir_path.as_ref(), &id, 0)?;
+-
+-        if let Some(icon) = attrs.icon {
+-            icon.inner.write_to_png(&icon_path)?;
+-        }
+-
+-        indicator.set_icon_theme_path(&parent_path.to_string_lossy());
+-        indicator.set_icon_full(&icon_path.to_string_lossy(), "icon");
+-
+-        if let Some(menu) = &attrs.menu {
+-            indicator.set_menu(&mut menu.gtk_context_menu());
+-        }
+-
+-        if let Some(title) = attrs.title {
+-            indicator.set_label(title.as_str(), "");
+-        }
+-
+-        Ok(Self {
+-            id,
+-            indicator,
+-            path: icon_path,
+-            temp_dir_path: attrs.temp_dir_path,
+-            counter: 0,
+-            menu: attrs.menu,
+-        })
+-    }
+-    pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
+-        let _ = std::fs::remove_file(&self.path);
+-
+-        self.counter += 1;
+-
+-        let (parent_path, icon_path) =
+-            temp_icon_path(self.temp_dir_path.as_ref(), &self.id, self.counter)?;
+-
+-        if let Some(icon) = icon {
+-            icon.inner.write_to_png(&icon_path)?;
+-        }
+-
+-        self.indicator
+-            .set_icon_theme_path(&parent_path.to_string_lossy());
+-        self.indicator
+-            .set_icon_full(&icon_path.to_string_lossy(), "tray icon");
+-        self.path = icon_path;
+-
+-        Ok(())
+-    }
+-
+-    pub fn set_menu(&mut self, menu: Option<Box<dyn crate::menu::ContextMenu>>) {
+-        if let Some(menu) = &menu {
+-            self.indicator.set_menu(&mut menu.gtk_context_menu());
+-        }
+-        self.menu = menu;
+-    }
+-
+-    pub fn set_tooltip<S: AsRef<str>>(&mut self, _tooltip: Option<S>) -> crate::Result<()> {
+-        Ok(())
+-    }
+-
+-    pub fn set_title<S: AsRef<str>>(&mut self, title: Option<S>) {
+-        self.indicator
+-            .set_label(title.as_ref().map(|t| t.as_ref()).unwrap_or(""), "");
+-    }
+-
+-    pub fn set_visible(&mut self, visible: bool) -> crate::Result<()> {
+-        if visible {
+-            self.indicator.set_status(AppIndicatorStatus::Active);
+-        } else {
+-            self.indicator.set_status(AppIndicatorStatus::Passive);
+-        }
+-
+-        Ok(())
+-    }
+-
+-    pub fn set_temp_dir_path<P: AsRef<Path>>(&mut self, path: Option<P>) {
+-        self.temp_dir_path = path.map(|p| p.as_ref().to_path_buf());
+-    }
+-
+-    pub fn rect(&self) -> Option<crate::Rect> {
+-        None
+-    }
+-
+-    pub fn app_indicator(&self) -> &AppIndicator {
+-        &self.indicator
+-    }
+-}
+-
+-impl Drop for TrayIcon {
+-    fn drop(&mut self) {
+-        self.indicator.set_status(AppIndicatorStatus::Passive);
+-        let _ = std::fs::remove_file(&self.path);
+-    }
+-}
+-
+-/// Generates an icon path in one of the following dirs:
+-/// 1. If `temp_icon_dir` is `Some` use that.
+-/// 2. `$XDG_RUNTIME_DIR/tray-icon`
+-/// 3. `/tmp/tray-icon`
+-fn temp_icon_path(
+-    temp_icon_dir: Option<&PathBuf>,
+-    id: &TrayIconId,
+-    counter: u32,
+-) -> std::io::Result<(PathBuf, PathBuf)> {
+-    let parent_path = match temp_icon_dir.as_ref() {
+-        Some(path) => path.to_path_buf(),
+-        None => dirs::runtime_dir()
+-            .unwrap_or_else(std::env::temp_dir)
+-            .join("tray-icon"),
+-    };
+-
+-    std::fs::create_dir_all(&parent_path)?;
+-    let icon_path = parent_path.join(format!("tray-icon-{}-{}.png", id.as_ref(), counter));
+-    Ok((parent_path, icon_path))
+-}
+-
+-#[test]
+-fn temp_icon_path_preference_order() {
+-    let runtime_dir = option_env!("XDG_RUNTIME_DIR");
+-    let override_dir = PathBuf::from("/tmp/tao-tests");
+-
+-    let (dir1, _file1) = temp_icon_path(Some(&override_dir), &"00".into(), 00).unwrap();
+-    let (dir2, _file1) = temp_icon_path(None, &"00".into(), 00).unwrap();
+-    std::env::remove_var("XDG_RUNTIME_DIR");
+-    let (dir3, _file2) = temp_icon_path(None, &"00".into(), 00).unwrap();
+-
+-    assert_eq!(dir1, override_dir);
+-    if let Some(runtime_dir) = runtime_dir {
+-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+-        assert_eq!(dir2, PathBuf::from(format!("{}/tray-icon", runtime_dir)));
+-    }
+-
+-    assert_eq!(dir3, PathBuf::from("/tmp/tray-icon"));
+-}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/mod.rs vendored/src/platform_impl/mod.rs
+--- upstream/src/platform_impl/mod.rs
++++ vendored/src/platform_impl/mod.rs
+@@ -12,7 +12,7 @@
+     target_os = "netbsd",
+     target_os = "openbsd"
+ ))]
+-#[path = "gtk/mod.rs"]
++#[path = "disabled.rs"]
+ mod platform;
+ #[cfg(target_os = "macos")]
+ #[path = "macos/mod.rs"]

@@ -1,10 +1,12 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 847
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::error::NetworkError;
+use crate::resilience::jittered_backoff_delay;
 use crossbeam::queue::SegQueue;
 use maekon_core::error::CoreError;
-use maekon_core::models::event::{Event, EventBatch};
+use maekon_core::models::event::EventBatch;
 use maekon_core::ports::api_client::ApiClient;
+use maekon_core::ports::batch_sink::QueuedUpload;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +21,15 @@ const QUEUE_PRESSURE_WARN_RATIO: f64 = 0.80;
 
 /// Threshold ratio (90%) at which a critical error is emitted.
 const QUEUE_PRESSURE_CRITICAL_RATIO: f64 = 0.90;
+
+/// Base per-batch retry delay fed to [`jittered_backoff_delay`] (#7725) —
+/// matches the pre-migration hand-rolled `retry_delay = Duration::from_secs(1)`
+/// starting value.
+const UPLOAD_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+
+/// Cap on the per-batch retry delay — matches the pre-migration hand-rolled
+/// `.min(Duration::from_secs(30))` ceiling.
+const UPLOAD_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// Classify an upload failure as transient (worth retrying / requeueing) or
 /// permanent (must be dropped). Mirrors the classification used by
@@ -50,7 +61,7 @@ fn is_retryable(error: &CoreError) -> bool {
 
 pub struct BatchUploader {
     api_client: Arc<dyn ApiClient>,
-    queue: Arc<SegQueue<Event>>,
+    queue: Arc<SegQueue<QueuedUpload>>,
     queue_size: AtomicUsize,
     session_id: String,
     max_batch_size: usize,
@@ -137,23 +148,24 @@ impl BatchUploader {
     /// exceed `max_queue_size` due to a benign TOCTOU race between the size
     /// check and the push. This is acceptable because the SegQueue is unbounded
     /// and the overshoot is limited to the number of concurrent callers.
-    pub fn enqueue(&self, event: Event) {
+    pub fn enqueue(&self, item: QueuedUpload) {
         let size = self.queue_size.load(Ordering::Relaxed);
 
         // If at capacity, drop the oldest entry to make room (newer data is
-        // more valuable for monitoring).
+        // more valuable for monitoring). Dropped items keep is_sent=0 in
+        // storage and are recovered by the startup re-prime (#7946).
         if size >= self.max_queue_size {
             self.drop_oldest(1);
         }
 
-        self.queue.push(event);
+        self.queue.push(item);
         let new_size = self.queue_size.fetch_add(1, Ordering::Relaxed) + 1;
         self.check_pressure(new_size);
         debug!("event add (lock-free), current size: {new_size}");
     }
 
-    pub fn enqueue_many(&self, events: Vec<Event>) {
-        let count = events.len();
+    pub fn enqueue_many(&self, items: Vec<QueuedUpload>) {
+        let count = items.len();
         if count == 0 {
             return;
         }
@@ -168,8 +180,8 @@ impl BatchUploader {
             self.drop_oldest(overflow);
         }
 
-        for event in events {
-            self.queue.push(event);
+        for item in items {
+            self.queue.push(item);
         }
         let new_size = self.queue_size.fetch_add(count, Ordering::Relaxed) + count;
         self.check_pressure(new_size);
@@ -240,16 +252,16 @@ impl BatchUploader {
         }
     }
 
-    pub async fn flush(&self) -> Result<usize, NetworkError> {
+    pub async fn flush(&self) -> Result<Vec<String>, NetworkError> {
         if (self.upload_suppressed)() {
             debug!("upload flush suppressed — tracking schedule active");
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         let current_size = self.queue_size.load(Ordering::Relaxed);
 
         if current_size == 0 {
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         // Circuit breaker fast-fail. When HalfOpen, `check()` admits this caller
@@ -272,16 +284,16 @@ impl BatchUploader {
         let batch_size = self.compute_batch_size(current_size);
         let drain_count = current_size.min(batch_size);
 
-        let mut events = Vec::with_capacity(drain_count);
+        let mut items = Vec::with_capacity(drain_count);
         for _ in 0..drain_count {
-            if let Some(event) = self.queue.pop() {
-                events.push(event);
+            if let Some(item) = self.queue.pop() {
+                items.push(item);
             } else {
                 break;
             }
         }
 
-        let actual_count = events.len();
+        let actual_count = items.len();
         if actual_count == 0 {
             // A concurrent flush drained the queue between the size snapshot and
             // the pop loop. Treat the empty drain as a benign no-op success: if
@@ -293,18 +305,19 @@ impl BatchUploader {
             if admitted_as_probe {
                 self.circuit_breaker.record_success();
             }
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         self.queue_size.fetch_sub(actual_count, Ordering::Relaxed);
 
+        // The batch clones the payloads so `items` (storage ids + payloads)
+        // survives for the success return (ids) and the requeue path (#7946).
         let batch = EventBatch {
             session_id: self.session_id.clone(),
-            events,
+            events: items.iter().map(|q| q.event.clone()).collect(),
             created_at: chrono::Utc::now(),
         };
 
-        let mut retry_delay = Duration::from_secs(1);
         for attempt in 0..=self.max_retries {
             match self.api_client.upload_batch(&batch).await {
                 Ok(()) => {
@@ -313,7 +326,7 @@ impl BatchUploader {
                     }
                     self.circuit_breaker.record_success();
                     debug!("batch upload success: {actual_count}items event");
-                    return Ok(actual_count);
+                    return Ok(items.into_iter().map(|q| q.storage_id).collect());
                 }
                 Err(e) => {
                     // Permanent 4xx failures (Auth / Validation / NotFound) will
@@ -339,13 +352,17 @@ impl BatchUploader {
                     }
 
                     if attempt < self.max_retries {
+                        let delay = jittered_backoff_delay(
+                            attempt,
+                            UPLOAD_RETRY_BASE_DELAY,
+                            UPLOAD_RETRY_MAX_DELAY,
+                        );
                         warn!(
-                            "batch upload failure (attempt {}/{}): {e}",
+                            "batch upload failure (attempt {}/{}): {e}, retrying in {delay:?}",
                             attempt + 1,
                             self.max_retries + 1
                         );
-                        tokio::time::sleep(retry_delay).await;
-                        retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
+                        tokio::time::sleep(delay).await;
                     } else {
                         error!("batch upload final failure: {e}");
                         if let Some(ref flag) = self.last_upload_ok {
@@ -353,18 +370,18 @@ impl BatchUploader {
                         }
                         self.circuit_breaker.record_failure();
                         self.failed_batches.fetch_add(1, Ordering::Relaxed);
-                        self.requeue_failed_events(batch.events);
+                        self.requeue_failed_events(items);
                         return Err(e.into());
                     }
                 }
             }
         }
 
-        Ok(0)
+        Ok(Vec::new())
     }
 
-    fn requeue_failed_events(&self, events: Vec<Event>) {
-        let count = events.len();
+    fn requeue_failed_events(&self, items: Vec<QueuedUpload>) {
+        let count = items.len();
         let current_size = self.queue_size.load(Ordering::Relaxed);
 
         // Respect the queue limit when requeueing failed events.
@@ -375,8 +392,8 @@ impl BatchUploader {
             self.drop_oldest(overflow);
         }
 
-        for event in events {
-            self.queue.push(event);
+        for item in items {
+            self.queue.push(item);
         }
         self.queue_size.fetch_add(count, Ordering::Relaxed);
         warn!("failure event {count}items requeued");
@@ -385,15 +402,15 @@ impl BatchUploader {
 
 #[async_trait::async_trait]
 impl maekon_core::ports::batch_sink::BatchSink for BatchUploader {
-    fn enqueue(&self, event: Event) {
-        BatchUploader::enqueue(self, event);
+    fn enqueue(&self, item: QueuedUpload) {
+        BatchUploader::enqueue(self, item);
     }
 
-    fn enqueue_many(&self, events: Vec<Event>) {
-        BatchUploader::enqueue_many(self, events);
+    fn enqueue_many(&self, items: Vec<QueuedUpload>) {
+        BatchUploader::enqueue_many(self, items);
     }
 
-    async fn flush(&self) -> Result<usize, CoreError> {
+    async fn flush(&self) -> Result<Vec<String>, CoreError> {
         BatchUploader::flush(self).await.map_err(Into::into)
     }
 
@@ -467,6 +484,77 @@ mod tests {
     use super::*;
     use maekon_core::models::event::{ContextEvent, Event};
 
+    // ── retry backoff envelope (#7725: adopted `resilience::jittered_backoff_delay`,
+    // replacing the hand-rolled `retry_delay = (retry_delay * 2).min(Duration::from_secs(30))`
+    // doubling that used to live in `flush()`) ─────────────────────────────
+
+    #[test]
+    fn upload_retry_constants_match_pre_migration_tuning() {
+        // Pin the base/max tuning this site had before the migration so a
+        // future edit cannot silently widen or shrink the retry window.
+        assert_eq!(UPLOAD_RETRY_BASE_DELAY, Duration::from_secs(1));
+        assert_eq!(UPLOAD_RETRY_MAX_DELAY, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn upload_retry_delay_envelope_matches_pre_migration_doubling_schedule() {
+        // `attempt` in `flush()` is the 0-based loop counter, so attempt 0 is
+        // the first retry. Without jitter the pre-migration schedule doubled
+        // 1s -> 2s -> 4s -> ...; pin the envelope (floor = bare exponential,
+        // ceiling = exponential + 25% jitter) rather than an exact value since
+        // the delay is now randomized.
+        for (attempt, exp_secs) in [(0u32, 1u64), (1, 2), (2, 4), (3, 8), (4, 16)] {
+            let floor = Duration::from_secs(exp_secs);
+            let ceiling = Duration::from_millis(exp_secs * 1000 + exp_secs * 250);
+            for _ in 0..50 {
+                let delay = jittered_backoff_delay(
+                    attempt,
+                    UPLOAD_RETRY_BASE_DELAY,
+                    UPLOAD_RETRY_MAX_DELAY,
+                );
+                assert!(
+                    delay >= floor,
+                    "attempt {attempt}: delay {delay:?} must be >= exponential floor {floor:?}"
+                );
+                assert!(
+                    delay <= ceiling,
+                    "attempt {attempt}: delay {delay:?} must be <= exp + 25% ({ceiling:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn upload_retry_delay_is_actually_randomized() {
+        // Revert-proof guard: if this site's migration were reverted to a
+        // deterministic curve (e.g. `resilience::exponential_delay`, which
+        // carries no randomness), every sample below would be identical and
+        // this test would fail — proving the envelope tests above are not
+        // vacuously satisfied by a non-jittered implementation. Attempt 2
+        // (exp = 4s) has a 1s jitter span, wide enough that 200 samples
+        // collapsing to a single value is not a plausible false negative.
+        let samples: std::collections::HashSet<_> = (0..200)
+            .map(|_| jittered_backoff_delay(2, UPLOAD_RETRY_BASE_DELAY, UPLOAD_RETRY_MAX_DELAY))
+            .collect();
+        assert!(
+            samples.len() > 1,
+            "expected multiple distinct jittered delays across 200 samples, got only {samples:?} \
+             — jitter may have been silently dropped"
+        );
+    }
+
+    #[test]
+    fn upload_retry_delay_never_exceeds_max() {
+        for attempt in [5u32, 10, 32, 63, u32::MAX] {
+            let delay =
+                jittered_backoff_delay(attempt, UPLOAD_RETRY_BASE_DELAY, UPLOAD_RETRY_MAX_DELAY);
+            assert!(
+                delay <= UPLOAD_RETRY_MAX_DELAY,
+                "attempt {attempt}: delay {delay:?} must be <= {UPLOAD_RETRY_MAX_DELAY:?}"
+            );
+        }
+    }
+
     struct MockApiClient {
         should_fail: bool,
     }
@@ -508,14 +596,19 @@ mod tests {
         }
     }
 
-    fn make_test_event() -> Event {
-        Event::Context(ContextEvent {
-            app_name: "test".to_string(),
-            window_title: "Test".to_string(),
-            prev_app_name: None,
-            timestamp: chrono::Utc::now(),
-            ..Default::default()
-        })
+    fn make_test_event() -> QueuedUpload {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        QueuedUpload {
+            storage_id: format!("test-evt-{n}"),
+            event: Event::Context(ContextEvent {
+                app_name: "test".to_string(),
+                window_title: "Test".to_string(),
+                prev_app_name: None,
+                timestamp: chrono::Utc::now(),
+                ..Default::default()
+            }),
+        }
     }
 
     #[tokio::test]
@@ -528,8 +621,44 @@ mod tests {
         assert_eq!(uploader.queue_size(), 2);
 
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 2);
+        assert_eq!(sent.len(), 2);
         assert_eq!(uploader.queue_size(), 0);
+    }
+
+    /// #7946: flush returns EXACTLY the storage ids of the drained batch —
+    /// the caller marks these rows as sent, so id fidelity is the contract.
+    #[tokio::test]
+    async fn flush_returns_exact_storage_ids_of_uploaded_batch() {
+        let client = Arc::new(MockApiClient { should_fail: false });
+        let uploader = BatchUploader::new(client, "sess_ids".to_string(), 100, 3);
+
+        let a = make_test_event();
+        let b = make_test_event();
+        let expected: Vec<String> = vec![a.storage_id.clone(), b.storage_id.clone()];
+        uploader.enqueue(a);
+        uploader.enqueue(b);
+
+        let mut sent = uploader.flush().await.unwrap();
+        sent.sort();
+        let mut want = expected;
+        want.sort();
+        assert_eq!(sent, want);
+    }
+
+    /// #7946: requeued items keep their storage-id pairing — a later
+    /// successful flush confirms the ORIGINAL ids.
+    #[tokio::test]
+    async fn requeue_preserves_storage_ids_for_later_flush() {
+        let client = Arc::new(MockApiClient { should_fail: false });
+        let uploader = BatchUploader::new(client, "sess_rq".to_string(), 100, 0);
+
+        let item = make_test_event();
+        let expected_id = item.storage_id.clone();
+        uploader.requeue_failed_events(vec![item]);
+        assert_eq!(uploader.queue_size(), 1);
+
+        let sent = uploader.flush().await.unwrap();
+        assert_eq!(sent, vec![expected_id]);
     }
 
     #[tokio::test]
@@ -537,7 +666,7 @@ mod tests {
         let client = Arc::new(MockApiClient { should_fail: false });
         let uploader = BatchUploader::new(client, "sess_1".to_string(), 100, 3);
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 0);
+        assert_eq!(sent.len(), 0);
     }
 
     /// Regression (batch-probe-leak): when `flush()` is admitted as a HalfOpen
@@ -572,7 +701,7 @@ mod tests {
         assert!(uploader.queue.pop().is_none(), "queue must be empty");
 
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 0, "empty drain returns Ok(0)");
+        assert_eq!(sent.len(), 0, "empty drain returns an empty id list");
 
         // The probe slot must have been released. Because record_success() closes
         // the breaker, a follow-up check() observes Closed — not Open from a
@@ -595,7 +724,7 @@ mod tests {
         assert_eq!(uploader.queue_size(), 5);
 
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 2);
+        assert_eq!(sent.len(), 2);
         assert_eq!(uploader.queue_size(), 3);
     }
 
@@ -609,7 +738,7 @@ mod tests {
         }
 
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 5); // all sent
+        assert_eq!(sent.len(), 5); // all sent
     }
 
     #[tokio::test]
@@ -622,7 +751,7 @@ mod tests {
         }
 
         let sent = uploader.flush().await.unwrap();
-        assert_eq!(sent, 40); // 20 * 2 = 40
+        assert_eq!(sent.len(), 40); // 20 * 2 = 40
     }
 
     struct FlakeyApiClient {
@@ -684,7 +813,11 @@ mod tests {
             .flush()
             .await
             .expect("flush must succeed after transient failure clears on attempt 2");
-        assert_eq!(flushed, 1, "exactly 1 event must be confirmed uploaded");
+        assert_eq!(
+            flushed.len(),
+            1,
+            "exactly 1 event must be confirmed uploaded"
+        );
     }
 
     #[tokio::test]
@@ -933,7 +1066,7 @@ mod tests {
         sink.enqueue_many(vec![make_test_event(), make_test_event()]);
 
         let sent = sink.flush().await.unwrap();
-        assert_eq!(sent, 3);
+        assert_eq!(sent.len(), 3);
     }
 
     #[test]

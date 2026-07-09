@@ -1,7 +1,12 @@
+// OOS-TBD: ADR-013 file split (#7929) — LOC: 401 (production); the file crosses
+// the 900-line giant threshold on test bulk, not production code. Split the test
+// module into a sibling `memory_graph_impl_tests.rs` if it grows further.
 //! `MemoryGraphPort` implementation over SQLite (ADR-023 substrate).
 //!
 //! Async port; all blocking SQLite work is offloaded via `with_conn`
 //! (spawn_blocking). Pure local persistence, no network dependency.
+
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use maekon_core::error::CoreError;
@@ -129,14 +134,27 @@ impl MemoryGraphPort for SqliteStorage {
         status: ClaimStatus,
         updated_at: i64,
     ) -> Result<(), CoreError> {
-        let claim_id = claim_id.to_string();
+        let id = claim_id.to_string();
         let status = status.as_str().to_string();
         self.with_conn(move |conn| {
             conn.execute(
                 "UPDATE memory_claims SET status = ?1, updated_at = ?2 WHERE claim_id = ?3",
-                params![status, updated_at, claim_id],
+                params![status, updated_at, id],
             )
             .map_err(|e| StorageError::Internal(format!("set_claim_status: {e}")))?;
+            // Affected-rows guard: an UPDATE that matched no row means the claim
+            // id does not exist. Surface it as NotFound (→ 404 at the web layer)
+            // so a caller can never silently no-op against a wrong id — the
+            // pre-existing `Ok(())` hid this. The check lives INSIDE the write
+            // closure, which `with_conn` skips entirely during a consent-erase
+            // (deletion_flag set), so erasure still returns `Ok(())` rather than
+            // a spurious NotFound. Mirrors `override_store_impl::delete_override`.
+            if conn.changes() == 0 {
+                return Err(StorageError::NotFound {
+                    resource_type: "MemoryClaim".to_string(),
+                    id,
+                });
+            }
             Ok(())
         })
         .await
@@ -221,6 +239,51 @@ impl MemoryGraphPort for SqliteStorage {
             }
             debug!("edges_from {src_id}: {} edges", out.len());
             Ok(out)
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn edges_from_many(
+        &self,
+        src_ids: &[String],
+    ) -> Result<HashMap<String, Vec<MemoryEdge>>, CoreError> {
+        if src_ids.is_empty() {
+            // No ids → empty map, no DB round trip (mirrors tags.rs batch reads).
+            return Ok(HashMap::new());
+        }
+        let src_ids = src_ids.to_vec();
+        self.with_conn_read(move |conn| {
+            // Dynamic IN clause (one placeholder per id), the crate's convention
+            // for batched reads (see `tags::get_tag_ids_for_frames`). Ordering
+            // by `created_at ASC` keeps each per-`src_id` group in exactly the
+            // order `edges_from` returns, so grouping is equivalence-preserving.
+            let placeholders = vec!["?"; src_ids.len()].join(",");
+            let sql = format!(
+                "SELECT {EDGE_COLS} FROM memory_edges \
+                 WHERE src_id IN ({placeholders}) ORDER BY created_at ASC"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| StorageError::Internal(format!("prepare edges_from_many: {e}")))?;
+            let params: Vec<&dyn rusqlite::types::ToSql> = src_ids
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let rows = stmt
+                .query_map(params.as_slice(), map_edge_row)
+                .map_err(|e| StorageError::Internal(format!("query edges_from_many: {e}")))?;
+            let mut map: HashMap<String, Vec<MemoryEdge>> = HashMap::new();
+            for r in rows {
+                let edge = r.map_err(|e| StorageError::Internal(format!("read edge row: {e}")))?;
+                map.entry(edge.src_id.clone()).or_default().push(edge);
+            }
+            debug!(
+                "edges_from_many {} ids: {} groups",
+                src_ids.len(),
+                map.len()
+            );
+            Ok(map)
         })
         .await
         .map_err(Into::into)
@@ -520,6 +583,122 @@ mod tests {
             .unwrap();
         assert_eq!(superseded.len(), 1);
         assert_eq!(superseded[0].updated_at, 1_700_000_500);
+    }
+
+    #[tokio::test]
+    async fn set_claim_status_missing_claim_returns_not_found() {
+        // Affected-rows guard: updating a non-existent claim now surfaces
+        // NotFound instead of the pre-existing silent Ok(()).
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let err = storage
+            .set_claim_status("clm_ghost", ClaimStatus::Retracted, 1_700_000_000)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::NotFound { .. }),
+            "missing claim must map to NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_claim_status_existing_claim_is_ok() {
+        // The affected-rows guard must NOT fire when the claim exists.
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage
+            .save_claim(&claim("clm_present", ClaimStatus::Active))
+            .await
+            .unwrap();
+        storage
+            .set_claim_status("clm_present", ClaimStatus::Retracted, 1_700_000_900)
+            .await
+            .expect("existing claim update succeeds");
+        let got = storage.get_claim("clm_present").await.unwrap().unwrap();
+        assert_eq!(got.status, ClaimStatus::Retracted);
+        assert_eq!(got.updated_at, 1_700_000_900);
+    }
+
+    #[tokio::test]
+    async fn edges_from_many_empty_ids_returns_empty_map() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let map = storage.edges_from_many(&[]).await.unwrap();
+        assert!(map.is_empty(), "empty id set → empty map, no DB round trip");
+    }
+
+    #[tokio::test]
+    async fn edges_from_many_equals_per_claim_edges_from() {
+        // Equivalence: the batched read grouped by src_id must equal the per-claim
+        // edges_from loop it replaces, on a real SQLite fixture with mixed edge
+        // types across several claims (including a claim with zero edges).
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        for id in ["clm_a", "clm_b", "clm_c"] {
+            storage
+                .save_claim(&claim(id, ClaimStatus::Active))
+                .await
+                .unwrap();
+        }
+        // clm_a: two evidence edges (distinct created_at to pin ordering).
+        storage
+            .add_edge(&MemoryEdge {
+                edge_id: "edg_a1".to_string(),
+                src_id: "clm_a".to_string(),
+                dst_id: "seg_1".to_string(),
+                edge_type: EdgeType::Evidence,
+                confidence: 1.0,
+                evidence_ref: Some("seg_1".to_string()),
+                source: "rule".to_string(),
+                created_at: 1_700_000_000,
+            })
+            .await
+            .unwrap();
+        storage
+            .add_edge(&MemoryEdge {
+                edge_id: "edg_a2".to_string(),
+                src_id: "clm_a".to_string(),
+                dst_id: "seg_2".to_string(),
+                edge_type: EdgeType::Evidence,
+                confidence: 1.0,
+                evidence_ref: Some("seg_2".to_string()),
+                source: "rule".to_string(),
+                created_at: 1_700_000_010,
+            })
+            .await
+            .unwrap();
+        // clm_b: one supersedes edge. clm_c: intentionally edge-less.
+        storage
+            .add_edge(&MemoryEdge {
+                edge_id: "edg_b1".to_string(),
+                src_id: "clm_b".to_string(),
+                dst_id: "clm_a".to_string(),
+                edge_type: EdgeType::Supersedes,
+                confidence: 0.95,
+                evidence_ref: None,
+                source: "llm".to_string(),
+                created_at: 1_700_000_005,
+            })
+            .await
+            .unwrap();
+
+        let ids = vec![
+            "clm_a".to_string(),
+            "clm_b".to_string(),
+            "clm_c".to_string(),
+        ];
+        let batched = storage.edges_from_many(&ids).await.unwrap();
+
+        // Per-claim reference the batched call replaces.
+        for id in &ids {
+            let per_claim = storage.edges_from(id, None).await.unwrap();
+            let from_batch = batched.get(id).cloned().unwrap_or_default();
+            assert_eq!(
+                from_batch, per_claim,
+                "group for {id} must match edges_from"
+            );
+        }
+        // Edge-less claim yields no map entry (per-claim edges_from returns []).
+        assert!(!batched.contains_key("clm_c"));
+        // Ordering pinned within clm_a's group (created_at ASC).
+        assert_eq!(batched["clm_a"][0].edge_id, "edg_a1");
+        assert_eq!(batched["clm_a"][1].edge_id, "edg_a2");
     }
 
     fn claim_at(id: &str, created_at: i64) -> MemoryClaim {

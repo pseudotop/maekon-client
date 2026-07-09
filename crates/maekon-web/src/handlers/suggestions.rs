@@ -59,33 +59,16 @@ pub async fn submit_suggestion_feedback(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppState;
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
 
     use chrono::Utc;
     use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::broadcast;
     use tower::ServiceExt;
 
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
-
-    fn test_app_state_with_storage() -> (AppState, Arc<SqliteStorage>) {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        let state = AppState::with_core(storage.clone(), event_tx);
-        (state, storage)
-    }
-
-    fn loopback_app(state: AppState) -> axum::Router {
-        crate::test_local_auth::authed_loopback_router(state)
-    }
+    use crate::test_local_auth::{
+        authed_loopback_router as loopback_app, test_app_state, test_app_state_with_storage,
+    };
 
     fn sample_suggestion(suggestion_id: &str) -> Suggestion {
         Suggestion {

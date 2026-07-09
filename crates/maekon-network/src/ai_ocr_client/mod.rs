@@ -37,7 +37,6 @@ pub struct RemoteOcrProvider {
     model: Option<String>,
     provider_type: AiProviderType,
     surface_id: Option<String>,
-    #[allow(dead_code)]
     timeout_secs: u64,
     breaker: Arc<CircuitBreaker>,
 }

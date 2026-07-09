@@ -454,13 +454,10 @@ fn endpoint_host_prefix(endpoint: &str) -> Option<&str> {
     let (scheme, authority) = endpoint.split_at(scheme_len);
 
     // Determine where to start searching for the port colon. For a bracketed
-    // IPv6 host the port can only appear after the closing ']'.
+    // IPv6 host the port can only appear after the closing ']' — a malformed
+    // bracket (no ']') means no usable port boundary, so bail with None.
     let search_start = if authority.starts_with('[') {
-        match authority.find(']') {
-            Some(close) => close + 1,
-            // Malformed bracket — no usable port boundary.
-            None => return None,
-        }
+        authority.find(']')? + 1
     } else {
         0
     };

@@ -104,8 +104,24 @@ pub struct VisionConfig {
     pub privacy_mode: bool,
 }
 
-/// Floor for `vision.capture_throttle_ms` (#6169).
-pub(crate) const VISION_CAPTURE_THROTTLE_MS_FLOOR: u64 = 100;
+/// Floor for `vision.capture_throttle_ms` (#6169, raised #7726).
+///
+/// #6169 originally set this floor to 100ms — deliberately lower than the
+/// 1000ms scheduler-poll floors, chosen only to keep `is_throttled`'s duration
+/// arithmetic away from zero (panic-avoidance), not calibrated against actual
+/// capture cost. Meanwhile `src-tauri/src/commands/settings.rs` independently
+/// hardcoded a 1000ms floor for the same field from the original client
+/// migration onward and was never reconciled with the 100ms core value — a
+/// live 3-boundary disagreement (#7726 ctd-W2 E4). A full-importance capture
+/// event runs the OS screenshot + delta/WebP encode + optional OCR pipeline,
+/// which is materially heavier per iteration than a plain metrics poll, so a
+/// sub-second floor risks the client's CPU budget under a WebView-supplied
+/// (or hand-edited config) low value. This floor is raised to 1000ms —
+/// matching the value every desktop Settings-UI write has enforced in
+/// practice since the original migration — so all three boundaries
+/// (core file-load/clamp path, the maekon-web HTTP API, and the Tauri WebView
+/// `update_setting` IPC command) now agree on a single, CPU-protective floor.
+pub(crate) const VISION_CAPTURE_THROTTLE_MS_FLOOR: u64 = 1_000;
 
 impl VisionConfig {
     /// Validate that vision configuration values are within acceptable bounds.

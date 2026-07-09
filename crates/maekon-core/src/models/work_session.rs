@@ -328,48 +328,6 @@ pub struct CategoryUsage {
     pub session_count: u32,
 }
 
-#[deprecated(
-    since = "0.4.0",
-    note = "Use maekon_core::models::suggestion::Suggestion with SuggestionSource::RuleBased instead"
-)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LocalSuggestion {
-    NeedFocusTime {
-        communication_ratio: f32,
-        suggested_focus_mins: u32,
-    },
-    TakeBreak {
-        continuous_work_mins: u32,
-    },
-    RestoreContext {
-        interrupted_app: String,
-        interrupted_at: DateTime<Utc>,
-        snapshot_frame_id: i64,
-    },
-    PatternDetected {
-        pattern_description: String,
-        confidence: f32,
-    },
-    ExcessiveCommunication {
-        today_communication_mins: u32,
-        avg_communication_mins: u32,
-    },
-}
-
-#[allow(deprecated)]
-impl LocalSuggestion {
-    pub fn priority(&self) -> u8 {
-        match self {
-            Self::RestoreContext { .. } => 100, // immediate recovery needed
-            Self::TakeBreak { .. } => 80,
-            Self::NeedFocusTime { .. } => 60,
-            Self::ExcessiveCommunication { .. } => 40,
-            Self::PatternDetected { .. } => 20,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,20 +406,5 @@ mod tests {
         metrics.communication_secs = 1200; // 20 min
         assert!((metrics.deep_work_ratio() - 0.667).abs() < 0.01);
         assert!((metrics.communication_ratio() - 0.333).abs() < 0.01);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn local_suggestion_priority() {
-        let restore = LocalSuggestion::RestoreContext {
-            interrupted_app: "Code".to_string(),
-            interrupted_at: Utc::now(),
-            snapshot_frame_id: 1,
-        };
-        let break_suggestion = LocalSuggestion::TakeBreak {
-            continuous_work_mins: 120,
-        };
-
-        assert!(restore.priority() > break_suggestion.priority());
     }
 }

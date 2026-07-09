@@ -24,7 +24,12 @@ pub struct VerificationResult {
     pub text_found: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// NOTE: Debug is hand-written (not derived) to mask `policy_token` (#7600).
+// This is a signed capability token (see `maekon-automation::policy`, which
+// already refuses to log it raw — `policy_token_fingerprint` is the sanctioned
+// log surface); a derived Debug would emit it verbatim under any `{:?}`, so a
+// single error-path `?command` could leak it to a file/OTel log sink.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IntentCommand {
     pub command_id: String,
     pub session_id: String,
@@ -35,6 +40,20 @@ pub struct IntentCommand {
     /// #6333 A20: provenance marker; not serialized (deserialized commands are External).
     #[serde(skip)]
     pub origin: CommandOrigin,
+}
+
+impl std::fmt::Debug for IntentCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntentCommand")
+            .field("command_id", &self.command_id)
+            .field("session_id", &self.session_id)
+            .field("intent", &self.intent)
+            .field("config", &self.config)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("policy_token", &"[REDACTED]")
+            .field("origin", &self.origin)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

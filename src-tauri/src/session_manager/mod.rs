@@ -146,7 +146,10 @@ impl SessionManagerImpl {
     /// of `resolve_local_llm_target(&config.ai_provider)` so that
     /// `create_local_llm_session` can honour wizard-written custom Ollama
     /// endpoints without needing access to the full `AppConfig`.
-    pub fn with_local_llm_target(
+    // #7734: narrowed from `pub` — `LocalLlmTarget` itself is `pub(crate)`
+    // and the sole call site is internal to this crate (private_interfaces
+    // lint fallout from the `[lib]` target enabler; behavior-neutral).
+    pub(crate) fn with_local_llm_target(
         mut self,
         target: crate::session_manager::factory::LocalLlmTarget,
     ) -> Self {
@@ -166,7 +169,11 @@ impl SessionManagerImpl {
     }
 
     /// Attach the privacy guard applied to external chat sessions.
-    pub fn with_privacy_guard(mut self, guard: Arc<dyn ConversationContentGuard>) -> Self {
+    // #7734: narrowed from `pub` — `ConversationContentGuard` itself is
+    // `pub(crate)` and every call site (production + in-crate unit tests) is
+    // internal to this crate (private_interfaces lint fallout from the
+    // `[lib]` target enabler; behavior-neutral).
+    pub(crate) fn with_privacy_guard(mut self, guard: Arc<dyn ConversationContentGuard>) -> Self {
         self.privacy_guard = Some(guard);
         self
     }
@@ -237,6 +244,19 @@ impl SessionManagerImpl {
             managed.state = SessionState::Active;
             if previous != SessionState::Active {
                 self.emit_state_change(session_id, previous, SessionState::Active, "user activity");
+            }
+        }
+    }
+
+    /// Record a completed successful turn and reset transient retry budget.
+    pub async fn record_success(&self, session_id: &str) {
+        if let Some(managed) = self.sessions.write().await.get_mut(session_id) {
+            let previous = managed.state;
+            managed.last_active = Instant::now();
+            managed.retry_count = 0;
+            managed.state = SessionState::Active;
+            if previous != SessionState::Active {
+                self.emit_state_change(session_id, previous, SessionState::Active, "turn success");
             }
         }
     }
@@ -416,6 +436,10 @@ impl SessionManager for SessionManagerImpl {
 
     async fn touch_session(&self, session_id: &str) {
         SessionManagerImpl::touch_session(self, session_id).await;
+    }
+
+    async fn record_success(&self, session_id: &str) {
+        SessionManagerImpl::record_success(self, session_id).await;
     }
 
     async fn report_failure(&self, session_id: &str, error: &CoreError) -> SessionState {

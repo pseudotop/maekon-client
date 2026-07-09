@@ -297,8 +297,8 @@ mod tests {
             _id: i64,
             _vector: Vec<f32>,
             _model_id: &str,
-        ) -> Result<(), CoreError> {
-            Ok(())
+        ) -> Result<u64, CoreError> {
+            Ok(1)
         }
 
         async fn search_quantized(

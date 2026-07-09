@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use maekon_core::models::suggestion::{FeedbackType, SuggestionSource, SuggestionType};
+use maekon_core::models::suggestion::{
+    FeedbackTallyRecord, FeedbackType, SuggestionSource, SuggestionType,
+};
 use std::collections::HashMap;
 
 const MIN_SAMPLES: u32 = 5;
@@ -10,6 +12,18 @@ const HEAVY_PENALTY: f64 = -0.3;
 const LIGHT_PENALTY: f64 = -0.15;
 const ACCEPTANCE_BOOST: f64 = 0.1;
 const SUPPRESSION_THRESHOLD: f64 = 0.2;
+
+/// Sliding-window length (hours) for the scorer's self-decay: a `(type, source)`
+/// tally older than this reads as neutral (score 0.0) and is reset on the next
+/// `record`. Rationale: relevance preferences drift over a work session, so a
+/// day-old rejection streak should not keep suppressing suggestions forever; 12h
+/// ≈ one working day, letting yesterday's mood fade by the next morning.
+///
+/// #7913 T2.1c made this WALL-CLOCK-anchored across restarts: `last_updated` is
+/// persisted with the tally, so a daily-restart user neither loses state (the old
+/// RAM-only bug) nor escapes decay (a naive "reset last_updated on load" bug).
+/// Do NOT silently change this length — coaching/relevance product behavior
+/// already shifted once this week (#7930); a change needs its own decision.
 const TALLY_DECAY_HOURS: i64 = 12;
 
 struct FeedbackTally {
@@ -113,6 +127,60 @@ impl FeedbackScorer {
         let boost = self.score(suggestion_type, source);
         *relevance = (*relevance + boost).clamp(0.0, 1.0);
         *relevance >= SUPPRESSION_THRESHOLD
+    }
+
+    /// Snapshot the tally for one `(type, source)` as a persistable record for
+    /// write-through after `record` (#7913 T2.1c). `None` when no tally exists.
+    pub fn tally_record(
+        &self,
+        suggestion_type: &SuggestionType,
+        source: &SuggestionSource,
+    ) -> Option<FeedbackTallyRecord> {
+        let tally = self
+            .tallies
+            .get(&(suggestion_type.clone(), source.clone()))?;
+        Some(FeedbackTallyRecord {
+            suggestion_type: suggestion_type.clone(),
+            source: source.clone(),
+            accepted: tally.accepted,
+            rejected: tally.rejected,
+            deferred: tally.deferred,
+            last_updated: tally.last_updated,
+        })
+    }
+
+    /// Snapshot every tally as persistable records (#7913 T2.1c).
+    pub fn snapshot(&self) -> Vec<FeedbackTallyRecord> {
+        self.tallies
+            .iter()
+            .map(|((suggestion_type, source), tally)| FeedbackTallyRecord {
+                suggestion_type: suggestion_type.clone(),
+                source: source.clone(),
+                accepted: tally.accepted,
+                rejected: tally.rejected,
+                deferred: tally.deferred,
+                last_updated: tally.last_updated,
+            })
+            .collect()
+    }
+
+    /// Load persisted tallies on startup (#7913 T2.1c), PRESERVING each
+    /// `last_updated` so the 12h self-decay stays wall-clock-anchored: a tally
+    /// that aged past `TALLY_DECAY_HOURS` while the process was down reads as
+    /// decayed (score 0.0) via the existing `is_stale` path, and is reset on its
+    /// next `record` — the decay clock is NOT restarted by the load.
+    pub fn hydrate(&mut self, records: Vec<FeedbackTallyRecord>) {
+        for r in records {
+            self.tallies.insert(
+                (r.suggestion_type, r.source),
+                FeedbackTally {
+                    accepted: r.accepted,
+                    rejected: r.rejected,
+                    deferred: r.deferred,
+                    last_updated: r.last_updated,
+                },
+            );
+        }
     }
 }
 
@@ -309,5 +377,75 @@ mod tests {
             &SuggestionSource::LlmLocal,
         );
         assert!((score - 0.0).abs() < f64::EPSILON);
+    }
+
+    /// #7913 T2.1c — snapshot/hydrate round-trips a live tally so the learned
+    /// penalty survives a restart (a fresh scorer hydrated from the snapshot
+    /// reproduces the same score).
+    #[test]
+    fn snapshot_and_hydrate_roundtrip_preserves_score() {
+        let mut scorer = FeedbackScorer::new();
+        for _ in 0..10 {
+            scorer.record(
+                SuggestionType::EmailDraft,
+                SuggestionSource::RuleBased,
+                &FeedbackType::Rejected,
+            );
+        }
+        let before = scorer.score(&SuggestionType::EmailDraft, &SuggestionSource::RuleBased);
+        assert!((before - HEAVY_PENALTY).abs() < f64::EPSILON);
+
+        let snapshot = scorer.snapshot();
+        assert_eq!(snapshot.len(), 1);
+
+        // A fresh scorer hydrated from the snapshot reproduces the same score.
+        let mut restored = FeedbackScorer::new();
+        restored.hydrate(snapshot);
+        let after = restored.score(&SuggestionType::EmailDraft, &SuggestionSource::RuleBased);
+        assert!((after - HEAVY_PENALTY).abs() < f64::EPSILON);
+    }
+
+    /// #7913 T2.1c — DECAY on load: a persisted tally whose `last_updated` is
+    /// older than `TALLY_DECAY_HOURS` reads as decayed (score 0.0) after hydrate,
+    /// because the wall-clock anchor is preserved rather than reset. This is the
+    /// "daily-restart user does not escape decay" property.
+    #[test]
+    fn hydrate_applies_wall_clock_decay_for_stale_last_updated() {
+        // A record with strong rejections but a last_updated 13h in the past
+        // (> TALLY_DECAY_HOURS = 12) — should read as decayed on load.
+        let stale = FeedbackTallyRecord {
+            suggestion_type: SuggestionType::WorkGuidance,
+            source: SuggestionSource::LlmServer,
+            accepted: 0,
+            rejected: 10,
+            deferred: 0,
+            last_updated: Utc::now() - chrono::Duration::hours(13),
+        };
+        let mut scorer = FeedbackScorer::new();
+        scorer.hydrate(vec![stale]);
+
+        let score = scorer.score(&SuggestionType::WorkGuidance, &SuggestionSource::LlmServer);
+        assert!(
+            (score - 0.0).abs() < f64::EPSILON,
+            "a tally aged past the decay window must read as neutral on load, got {score}"
+        );
+
+        // Sanity: an otherwise-identical FRESH tally (last_updated now) is NOT
+        // decayed — proving the decay is time-driven, not blanket-zeroed on load.
+        let fresh = FeedbackTallyRecord {
+            suggestion_type: SuggestionType::WorkGuidance,
+            source: SuggestionSource::LlmServer,
+            accepted: 0,
+            rejected: 10,
+            deferred: 0,
+            last_updated: Utc::now(),
+        };
+        let mut scorer2 = FeedbackScorer::new();
+        scorer2.hydrate(vec![fresh]);
+        let score2 = scorer2.score(&SuggestionType::WorkGuidance, &SuggestionSource::LlmServer);
+        assert!(
+            (score2 - HEAVY_PENALTY).abs() < f64::EPSILON,
+            "a fresh tally must retain its learned penalty, got {score2}"
+        );
     }
 }

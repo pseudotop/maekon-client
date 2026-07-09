@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,6 +29,7 @@ gethostname = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
 futures-core = "0.3"
+schemars = { version = "1", optional = true, features = ["chrono04"] }
 
 # #6942: Windows owner-only DACL primitive (secure_file::set_owner_only_dacl) —
 # the Unix 0o600 equivalent for config.json/consent.json plaintext-secret files.
@@ -41,6 +45,26 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 tempfile = "3"
 criterion = { workspace = true }
+# #7735 E-1: `sync_engine`'s 2 `#[tokio::test(start_paused = true)]` tests need
+# `tokio::time::{pause, advance}` (test-util). Previously these compiled only via
+# transitive feature unification through src-tauri's `tokio-test` dev-dependency;
+# now that the tests live in this crate, `test-util` must be declared directly.
+# Precedent: crates/maekon-analysis/Cargo.toml dev-dependencies.
+tokio = { workspace = true, features = ["test-util"] }
+
+# #7729 (ctd-W2 G2): canonical port test-doubles (FakePiiSanitizer, FakeOcrProvider)
+# live next to their port trait definitions, gated `cfg(any(test, feature =
+# "test-support"))`. `test-support` carries no extra deps of its own (the fakes
+# only use crate-local types + std), so this feature declaration is deliberately
+# dependency-free. INVARIANT (mirrors maekon-web's `test-support` precedent):
+# this feature must NEVER be enabled by default, and downstream crates must
+# enable it ONLY via `[dev-dependencies]` (never `[dependencies]`), so it never
+# reaches the shipped `maekon-app` binary — every `maekon-core` consumer in this
+# workspace is `[dependencies]`-only for its production build, and dev-dependency
+# features do not propagate into that graph under resolver = "2".
+[features]
+schema = ["dep:schemars"]
+test-support = []
 
 [[bench]]
 name = "core_bench"

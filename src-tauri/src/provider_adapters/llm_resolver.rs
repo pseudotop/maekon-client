@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use maekon_api_contracts::provider_specs::provider_surface_spec;
 use maekon_automation::local_llm::LocalLlmProvider;
 use maekon_core::config::{AiProviderConfig, AiProviderType, LlmProviderType};
 use maekon_core::error::CoreError;
@@ -10,7 +9,9 @@ use maekon_core::ports::llm_provider::LlmProvider;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::oauth::OAuthPort;
 use maekon_core::ports::secret_store::SecretStoreSet;
-use maekon_core::provider_surface::{provider_type_from_vendor_id, provider_vendor_id_or_default};
+use maekon_core::provider_surface::{
+    provider_surface_spec, provider_type_from_vendor_id, provider_vendor_id_or_default,
+};
 // Migrated from `server` to `analysis`: `analysis = [dep:maekon-network]` is
 // default-on; `server` implies `analysis`, so `RemoteLlmProvider` is
 // available in all four CI cells (default, server, grpc, --no-default-features).
@@ -182,7 +183,7 @@ fn unsupported_detected_cli_reason(
     provider_label: &str,
 ) -> Option<String> {
     detected.iter().find_map(|surface| {
-        let spec = provider_surface_spec(&surface.detected.surface_id).ok()?;
+        let spec = provider_surface_spec(&surface.detected.surface_id)?;
         let surface_provider_type = provider_type_from_vendor_id(&spec.vendor_id)?;
         if surface_provider_type != provider_type
             || runtime_supported_for_surface(&surface.detected.surface_id)

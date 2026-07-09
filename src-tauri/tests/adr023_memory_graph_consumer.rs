@@ -52,7 +52,9 @@ fn offline_segment(id: &str) -> SegmentSummary {
 
 fn offline_digest(segment_ids: &[&str], on: NaiveDate) -> DailyDigest {
     let segments: Vec<SegmentSummary> = segment_ids.iter().map(|s| offline_segment(s)).collect();
-    DailyDigestGenerator::generate(&segments, on, None)
+    // #7678 D2: no regime manager in this offline-path test — the generator
+    // falls back to `dominant_category` ("Development") for the timeline label.
+    DailyDigestGenerator::generate(&segments, on, None, &[])
 }
 
 async fn persist_pairs(storage: &SqliteStorage, pairs: &[(MemoryClaim, Vec<MemoryEdge>)]) {

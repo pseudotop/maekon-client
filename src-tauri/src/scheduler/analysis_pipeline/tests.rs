@@ -4,8 +4,11 @@ use super::*;
 use chrono::{DateTime, Utc};
 use maekon_core::config::{ClusteringAlgorithm, PiiFilterLevel, TieredMemoryConfig};
 use maekon_core::error::CoreError;
+use maekon_core::models::app_registry::KeystrokeProfile;
 use maekon_core::models::event::{InputActivityEvent, KeyboardActivity, MouseActivity};
-use maekon_core::models::tiered_memory::{CalibrationEntry, PresetProfile, ResolvedParams};
+use maekon_core::models::tiered_memory::{
+    CalibrationEntry, PresetProfile, ResolvedParams, WorkType,
+};
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
 use maekon_core::types::TimeWindow;
 use std::sync::Arc;
@@ -84,9 +87,6 @@ impl maekon_core::ports::storage::StorageService for NoopStorage {
     }
     async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
         Ok(())
-    }
-    async fn mark_unsent_as_sent_before(&self, _before: DateTime<Utc>) -> Result<usize, CoreError> {
-        Ok(0)
     }
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
         Ok(0)
@@ -278,6 +278,44 @@ async fn content_tracker_accumulates_on_same_app() {
 }
 
 #[tokio::test]
+async fn analysis_tick_uses_subcategory_classifier_for_terminal_commands() {
+    let mut ts = make_trigger_state();
+    let storage: Arc<dyn maekon_core::ports::storage::StorageService> = Arc::new(NoopStorage);
+    let mut input = make_input_snap();
+    input.app_name = "Terminal".to_string();
+    input.keyboard = KeyboardActivity {
+        keystrokes_per_min: 30,
+        total_keystrokes: 100,
+        typing_bursts: 1,
+        shortcut_count: 0,
+        correction_count: 0,
+    };
+    input.keystroke_profile = Some(KeystrokeProfile {
+        enter_ratio: 0.20,
+        total_keystrokes: 100,
+        ..KeystrokeProfile::default()
+    });
+
+    run_analysis_tick(
+        &mut ts,
+        "Terminal",
+        "dev@host: ~/projects/oneshim",
+        &None,
+        false,
+        &input,
+        None,
+        None,
+        &storage,
+        PiiFilterLevel::Off,
+    )
+    .await;
+
+    let activities = ts.content_tracker.drain_all(Utc::now());
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0].work_type, WorkType::TerminalCommands);
+}
+
+#[tokio::test]
 async fn regime_classification_runs() {
     let mut ts = make_trigger_state();
     let storage: Arc<dyn maekon_core::ports::storage::StorageService> = Arc::new(NoopStorage);
@@ -432,7 +470,7 @@ async fn drift_detection_sets_last_drift_flag() {
 }
 
 #[tokio::test]
-async fn on_demand_recluster_keeps_request_when_samples_are_insufficient() {
+async fn on_demand_recluster_clears_request_when_samples_are_insufficient() {
     let mut ts = make_trigger_state();
     let now = Utc::now();
     let previous_detection = now - chrono::Duration::minutes(10);
@@ -446,9 +484,9 @@ async fn on_demand_recluster_keeps_request_when_samples_are_insufficient() {
     super::regime::run_periodic_regime_detection(&mut ts, now).await;
 
     assert!(
-        ts.recluster_requested
+        !ts.recluster_requested
             .load(std::sync::atomic::Ordering::Relaxed),
-        "insufficient samples must not consume the on-demand request"
+        "insufficient samples must consume the on-demand request to avoid a tick hot-loop"
     );
     assert_eq!(
         ts.last_detection_time,

@@ -24,7 +24,7 @@ pub(super) struct AnalysisResult {
 /// activity_pattern_learning, and calibration reader/writer stores.
 /// `injected_regime_manager` and `injected_regime_classifier` are the
 /// composition-root-supplied handles; when `None`, fresh ones are
-/// constructed here. See `agent_runtime::AgentRuntimeBuilder::with_regime_handles`.
+/// constructed here. See `agent_runtime::AgentRuntimeBundle::with_regime_handles`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_analysis_pipeline(
     config: &AppConfig,
@@ -125,7 +125,12 @@ pub(super) fn build_analysis_pipeline(
             let state = AdaptiveTriggerState {
                 trigger: maekon_analysis::AdaptiveTrigger::new(),
                 segment_buffer: maekon_analysis::SegmentBuffer::new(buf_cap),
-                calibration_buffer: maekon_analysis::CalibrationBuffer::new(buf_cap, 60),
+                // #7678 D4: was hardcoded to 60s, silently ignoring the configured
+                // `buffer_flush_interval_secs` (default 30s) — now wired through.
+                calibration_buffer: maekon_analysis::CalibrationBuffer::new(
+                    buf_cap,
+                    tm_config.buffer_flush_interval_secs,
+                ),
                 title_bar_parser: maekon_analysis::TitleBarParser::new(),
                 work_type_classifier: maekon_analysis::WorkTypeClassifier::new(),
                 content_tracker: maekon_analysis::ContentTracker::new(),

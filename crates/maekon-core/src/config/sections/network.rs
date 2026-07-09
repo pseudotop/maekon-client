@@ -90,7 +90,11 @@ impl Default for GrpcConfig {
 
 // ── WebConfig ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// NOTE: Debug is hand-written (not derived) to mask `integration_auth_token`
+// (#7600). This is the SOURCE config struct backing the external integration
+// bearer secret; a derived Debug would emit it verbatim under any `{:?}`, so
+// a single error-path `?config` could leak it to a file/OTel log sink.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebConfig {
     #[serde(default = "default_web_enabled")]
     pub enabled: bool,
@@ -132,6 +136,27 @@ impl Default for WebConfig {
             grpc_streaming_enabled: true,
             grpc_max_concurrent_streams: default_max_concurrent_streams(),
         }
+    }
+}
+
+impl std::fmt::Debug for WebConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebConfig")
+            .field("enabled", &self.enabled)
+            .field("port", &self.port)
+            .field("allow_external", &self.allow_external)
+            .field(
+                "integration_auth_token",
+                &self.integration_auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("grpc_port", &self.grpc_port)
+            .field("grpc_load_thresholds", &self.grpc_load_thresholds)
+            .field("grpc_streaming_enabled", &self.grpc_streaming_enabled)
+            .field(
+                "grpc_max_concurrent_streams",
+                &self.grpc_max_concurrent_streams,
+            )
+            .finish()
     }
 }
 
@@ -534,5 +559,35 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         let parsed: WebConfig = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed.grpc_port, 55_555);
+    }
+
+    #[test]
+    fn web_config_debug_redacts_integration_auth_token() {
+        let cfg = WebConfig {
+            allow_external: true,
+            integration_auth_token: Some("integration-secret-0123456789abcdef".to_string()),
+            ..WebConfig::default()
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("integration-secret-0123456789abcdef"),
+            "Debug must not leak the integration_auth_token: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "integration_auth_token must render as [REDACTED]: {rendered}"
+        );
+        // Non-secret fields must still be visible for diagnostics.
+        assert!(rendered.contains("allow_external"));
+    }
+
+    #[test]
+    fn web_config_debug_none_token_does_not_claim_redacted() {
+        let cfg = WebConfig::default();
+        let rendered = format!("{cfg:?}");
+        assert!(
+            rendered.contains("integration_auth_token: None"),
+            "an absent token must render as None, not a redacted placeholder: {rendered}"
+        );
     }
 }

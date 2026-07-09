@@ -22,17 +22,6 @@ use maekon_core::models::daily_digest::DailyDigest;
 
 use super::SqliteStorage;
 
-/// Defense-in-depth PII scrub for text stored in gui_interactions.
-/// Replaces strings containing '@' (likely emails) with "[FILTERED]".
-/// This is a lightweight fallback — primary filtering is the caller's responsibility.
-pub(super) fn scrub_basic_pii(text: &str) -> String {
-    // If text contains an '@' sign, it likely contains an email address
-    if text.contains('@') {
-        return "[FILTERED]".to_string();
-    }
-    text.to_string()
-}
-
 impl SqliteStorage {
     /// Parse a daily digest row from its constituent JSON columns.
     pub(super) fn parse_daily_digest_row(

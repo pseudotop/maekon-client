@@ -24,7 +24,7 @@ fn create_srgb_color(r: f64, g: f64, b: f64, a: f64) -> CFRetained<CGColor> {
     // SAFETY: `components` is a stack array of exactly 4 f64 (RGBA) that
     // outlives the call, and `as_ptr()` points to its first element. CGColor::new
     // reads exactly that many components for the device-RGB color space, so the
-    // read stays in-bounds; it only returns None on allocation failure, which
-    // `.expect` surfaces.
-    unsafe { CGColor::new(color_space.as_deref(), components.as_ptr()) }.expect("CGColor creation")
+    // read stays in-bounds; it only returns None on allocation failure.
+    unsafe { CGColor::new(color_space.as_deref(), components.as_ptr()) }
+        .unwrap_or_else(|| panic!("CGColor creation"))
 }

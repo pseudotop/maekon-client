@@ -204,7 +204,13 @@ export default function GeneralTab() {
       </div>
 
       <div id="section-schedule">
-        <ScheduleSettings schedule={formData.schedule} onChange={settingsForm.handleScheduleChange} />
+        <ScheduleSettings
+          schedule={formData.schedule}
+          onChange={settingsForm.handleScheduleChange}
+          // #7678: fail-closed while the capability snapshot query is still loading
+          // (`undefined`) or unavailable outside Tauri, mirroring the `audioCompiled` gate.
+          powerStatusAvailable={data.featureCapabilities?.power_status_available === true}
+        />
       </div>
 
       <Card variant="default" padding="lg">

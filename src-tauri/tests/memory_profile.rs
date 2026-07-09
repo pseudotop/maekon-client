@@ -8,6 +8,7 @@
 use image::{DynamicImage, Rgba, RgbaImage};
 use maekon_core::models::event::{Event, UserEvent, UserEventType};
 use maekon_core::models::frame::FrameMetadata;
+use maekon_core::resource_budget;
 use maekon_storage::sqlite::SqliteStorage;
 use maekon_vision::{delta, encoder, encoder::WebPQuality, thumbnail};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,22 +59,21 @@ fn sample_cpu_percent() -> f32 {
 }
 
 // ============================================================================
-// #4829: absolute resource-budget assertions (RSS / CPU)
+// #4829 / #7918: absolute resource-budget assertions (RSS / CPU)
 // ----------------------------------------------------------------------------
-// NOTE: the 100MB RSS / 200% CPU numbers below are **provisional**, not a
-// confirmed product SSOT. They are intentionally set generously so they catch
-// leak regressions without being flaky in CI. Once the official product-level
-// resource budget (SSOT) is confirmed, replace these with that constant.
-// No RSS/CPU budget constant exists in production (verified via grep), so these
-// are kept as test-local constants.
+// The budget numbers are the SINGLE SOURCE OF TRUTH in
+// `maekon_core::resource_budget` (#7918). They used to be test-local
+// `PROVISIONAL_*` constants here; they were promoted to that SSOT module so the
+// scheduler health loop and the `get_resource_usage_snapshot` diagnostics IPC
+// enforce the exact same numbers. They remain provisional (generous, to catch
+// gross regressions/leaks without CI flakiness) — see the SSOT module docs for
+// the aspirational-target-vs-enforcement-ceiling rationale.
+//
+// This test is promoted to a NIGHTLY scheduled workflow lane
+// (`.github/workflows/maekon-client-budget-nightly.yml`), not a per-PR check
+// (repo CI cost policy). A failing assert fails the nightly run — that is the
+// signal — but never blocks a PR.
 // ============================================================================
-
-/// Provisional RSS upper bound (bytes). 200MB — not a confirmed SSOT (provisional).
-const PROVISIONAL_RSS_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
-
-/// Provisional CPU-usage upper bound (%). This is a multi-core aggregate, so it is
-/// set to 200% (two cores fully utilized). Not a confirmed SSOT (provisional).
-const PROVISIONAL_CPU_BUDGET_PERCENT: f32 = 200.0;
 
 fn create_test_image(width: u32, height: u32, seed: u8) -> DynamicImage {
     let mut img = RgbaImage::new(width, height);
@@ -531,19 +531,19 @@ fn test_absolute_resource_budget() {
         elapsed.as_secs_f64(),
     );
     println!(
-        "provisional budgets — RSS <= {:.0} MB, CPU <= {:.0}% (NOT confirmed SSOT)",
-        PROVISIONAL_RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
-        PROVISIONAL_CPU_BUDGET_PERCENT,
+        "provisional budgets (SSOT: maekon_core::resource_budget) — RSS <= {:.0} MB, CPU <= {:.0}%",
+        resource_budget::RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
+        resource_budget::CPU_BUDGET_PERCENT,
     );
 
-    // --- absolute budget assertion (provisional) ---
+    // --- absolute budget assertion (provisional SSOT ceiling) ---
     assert!(
-        peak_rss <= PROVISIONAL_RSS_BUDGET_BYTES,
+        resource_budget::rss_within_budget(peak_rss),
         "peak RSS {:.2} MB exceeds the provisional budget of {:.0} MB. \
          (Could be a real regression or an overly tight provisional budget — \
-         re-tune once the SSOT is confirmed)",
+         re-tune the SSOT in maekon_core::resource_budget)",
         peak_rss as f64 / 1024.0 / 1024.0,
-        PROVISIONAL_RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
+        resource_budget::RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
     );
 
     // If the CPU measurement is 0.0 (happens in some environments), skip the
@@ -551,11 +551,11 @@ fn test_absolute_resource_budget() {
     // verify the upper bound when it is greater than 0.0.
     if cpu_percent > 0.0 {
         assert!(
-            cpu_percent <= PROVISIONAL_CPU_BUDGET_PERCENT,
+            resource_budget::cpu_within_budget(cpu_percent),
             "CPU {:.1}% exceeds the provisional budget of {:.0}%. \
-             (Re-tune once the SSOT is confirmed)",
+             (Re-tune the SSOT in maekon_core::resource_budget)",
             cpu_percent,
-            PROVISIONAL_CPU_BUDGET_PERCENT,
+            resource_budget::CPU_BUDGET_PERCENT,
         );
     } else {
         println!("[INFO] CPU measurement is 0.0 — skipping the CPU assertion in this environment");

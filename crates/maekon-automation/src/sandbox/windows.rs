@@ -29,6 +29,9 @@
 //!   would break the only reachable (`Permissive`) automation path. The deny-only
 //!   admin SID delivers the privilege containment without that functional
 //!   regression, so `privilege_restriction` is now backed by a real control.
+//!   The `disable_most_sids` policy bit (Standard/Strict) is not yet mapped to
+//!   `SidsToRestrict` (#7979) — moot today because those profiles fail closed
+//!   below.
 //! - **Filesystem isolation**: Not enforced (Job Objects do not isolate FS).
 //! - **Syscall filtering**: Not available on Windows.
 //! - **Network isolation**: Not enforced (would require Windows Firewall rules).
@@ -492,6 +495,10 @@ fn create_job_object(limits: &JobObjectLimits) -> Result<(), AutomationError> {
 /// token (the source is opened with `TOKEN_ASSIGN_PRIMARY`), so it can be handed to
 /// `CreateProcessAsUserW` to actually launch the worker under it (see
 /// `spawn_process_with_token`).
+///
+/// `disable_most_sids` is accepted but NOT yet enforced — `SidsToRestrict`
+/// stays null (#7979). It is unreachable in practice: Standard/Strict (the only
+/// profiles that set it) fail closed on Windows before any spawn.
 #[cfg(feature = "windows-sandbox")]
 fn create_restricted_token(
     restrictions: &TokenRestrictions,
@@ -557,6 +564,11 @@ fn create_restricted_token(
             0,
             std::ptr::null(), // delete privileges
             0,
+            // `SidsToRestrict` is deliberately null: the `disable_most_sids`
+            // policy bit (Standard/Strict) has no Win32 enforcement yet (#7979).
+            // This cannot weaken a running sandbox today — Standard/Strict fail
+            // closed on Windows before any spawn (see module docs), so only
+            // Permissive (`disable_most_sids: false`) ever reaches this call.
             std::ptr::null(), // restrict SIDs
             &mut restricted_token,
         )
@@ -571,6 +583,7 @@ fn create_restricted_token(
     tracing::debug!(
         disable_admin = restrictions.disable_admin_sid,
         remove_privs = restrictions.remove_privileges,
+        restrict_most_sids_pending = restrictions.disable_most_sids,
         deny_only_sids = disable_sid_count,
         "Restricted token created (admin SID demoted to deny-only; applied to the worker via CreateProcessAsUserW)"
     );
@@ -628,6 +641,7 @@ fn create_restricted_token(restrictions: &TokenRestrictions) -> Result<(), Autom
     tracing::debug!(
         disable_admin = restrictions.disable_admin_sid,
         remove_privs = restrictions.remove_privileges,
+        restrict_most_sids = restrictions.disable_most_sids,
         "Restricted Token stub (windows-sandbox feature disabled; token restriction unenforced)"
     );
     Ok(())

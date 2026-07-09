@@ -320,6 +320,7 @@ impl ConsentManager {
             .as_ref()
             .map(|r| r.permissions.clone())
             .unwrap_or_default();
+        drop(st); // #7719: release before building the return tuple (no further guard use)
         (status, permissions)
     }
 
@@ -359,6 +360,9 @@ impl ConsentManager {
         // this grant only opens a fresh local collection window. Retracting a pending
         // erasure here is the rejected option (a) in #4630.
         st.current_consent = Some(record);
+        // #7719: release the writer guard here — deletion_flag below is a
+        // separate atomic, not part of the documented atomicity span above.
+        drop(st);
         // #4928: a re-grant opens a fresh LOCAL collection window — clear the
         // erasure-blocking flag to resume funnel writes. (The REMOTE propagation
         // signal `pending_deletion` is left untouched by grant per #4630(b) — the
@@ -435,6 +439,9 @@ impl ConsentManager {
             st.pending_erasure_at = Some(now);
             st.pending_erasure_nonce = Some(nonce);
         }
+        // #7719: release the writer guard here — deletion_flag below is a
+        // separate atomic, not part of the documented atomicity span above.
+        drop(st);
         // #4928: set the erasure-blocking flag right before erase (it must be set
         // before erase so an in-flight writer does not race the wipe). Any write
         // that enters the funnel after this point is skipped as a no-op.

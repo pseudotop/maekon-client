@@ -14,9 +14,15 @@ pub struct AutostartCapabilities {
     pub environment: EnvironmentKind,
 }
 
+// #7719: `autostart/mod.rs` constructs each variant behind its own
+// `#[cfg(target_os = "...")]` arm — on any single build target only that
+// platform's variants are actually constructed, so the others read as "dead"
+// there. Allowed enum-wide (mirrors `active_window_parse.rs`'s cross-platform
+// pure-logic seam) rather than per-variant `cfg_attr`, since every variant
+// here maps to exactly one `#[cfg(target_os = ...)]` arm in `mod.rs`.
+#[allow(dead_code)]
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-#[allow(dead_code)] // Linux-only variants are cfg-gated; dead_code fires on macOS/Windows builds
 pub enum UnsupportedReason {
     SnapSandbox,
     FlatpakSandbox,
@@ -25,9 +31,9 @@ pub enum UnsupportedReason {
     UnsupportedPlatform,
 }
 
+#[allow(dead_code)]
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Linux-only variants are cfg-gated; dead_code fires on macOS/Windows builds
 pub enum EnvironmentKind {
     MacOs,
     Windows,

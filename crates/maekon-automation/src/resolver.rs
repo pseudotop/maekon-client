@@ -120,7 +120,16 @@ pub fn validate_sandbox_config_permission_profile_v2_runtime_support(
 
 pub fn default_strict_config(base_config: &SandboxConfig) -> SandboxConfig {
     SandboxConfig {
-        enabled: true,
+        // Preserve the operator's sandbox switch, mirroring `resolve_sandbox_config`
+        // (`enabled: base_config.enabled` above). Forcing `enabled: true` here routed
+        // every action to whatever sandbox was wired at construction — a `NoOpSandbox`
+        // when the operator disabled the sandbox (the default state) — which silently
+        // dropped the action yet reported `CommandResult::Success` and durably audited
+        // it as `Completed`, corrupting the audit trail (#7476). When disabled, the
+        // dispatcher's `!enabled` branch instead runs the action via the explicit
+        // inline input driver, or fails closed when none is wired — never a silent
+        // no-op success.
+        enabled: base_config.enabled,
         profile: SandboxProfile::Strict,
         allowed_read_paths: base_config.allowed_read_paths.clone(),
         allowed_write_paths: Vec::new(),
@@ -257,6 +266,7 @@ mod tests {
     #[test]
     fn default_strict_blocks_write_and_network() {
         let base = SandboxConfig {
+            enabled: true,
             allowed_write_paths: vec!["/tmp".to_string()],
             allow_network: true,
             ..Default::default()
@@ -267,6 +277,27 @@ mod tests {
         assert!(matches!(strict.profile, SandboxProfile::Strict));
         assert!(strict.allowed_write_paths.is_empty());
         assert!(!strict.allow_network);
+    }
+
+    #[test]
+    fn default_strict_preserves_operator_sandbox_switch() {
+        // #7476: `default_strict_config` must mirror `resolve_sandbox_config` and
+        // preserve `base_config.enabled`. Forcing `enabled: true` when the operator
+        // disabled the sandbox routed the action to the wired `NoOpSandbox`, which
+        // silently dropped it yet reported success. A disabled base must yield a
+        // disabled strict config so the dispatcher's `!enabled` branch runs the
+        // action inline (or fails closed) instead of silently no-op'ing.
+        let disabled_base = SandboxConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!default_strict_config(&disabled_base).enabled);
+
+        let enabled_base = SandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(default_strict_config(&enabled_base).enabled);
     }
 
     #[test]

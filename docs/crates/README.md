@@ -57,7 +57,7 @@ Tooling package
 | **maekon-suggestion** | `crates/maekon-suggestion` | Suggestion queue, history, feedback pipeline | [Details](./maekon-suggestion.md) |
 | **maekon-web** | `crates/maekon-web` | Local web delivery layer: Axum + embedded frontend | [Details](./maekon-web.md) |
 | **maekon-automation** | `crates/maekon-automation` | Policy, sandbox, audit, GUI automation execution | [Details](./maekon-automation.md) |
-| **maekon-analysis** | `crates/maekon-analysis` | Analysis pipeline, coaching, regime/tiered-memory logic | Pending dedicated crate doc |
+| **maekon-analysis** | `crates/maekon-analysis` | Analysis pipeline, coaching, regime/tiered-memory logic, focus/workflow intelligence (#7735 E-2) | [Details](./maekon-analysis.md) |
 | **maekon-embedding** | `crates/maekon-embedding` | Local embedding provider adapter | Pending dedicated crate doc |
 | **maekon-lint** | `crates/maekon-lint` | Workspace-local tooling and language/lint helpers | Pending dedicated crate doc |
 | **maekon-sandbox-worker** | `crates/maekon-sandbox-worker` | Out-of-process sandboxed automation action executor (stdin JSON → stdout JSON under platform sandbox) | Pending dedicated crate doc |

@@ -51,6 +51,13 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     /// Defaults to a fresh registry for standalone use; the composition root
     /// overrides it with the shared Arc via `with_breaker_registry`.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// #7932 Part B: the ONE shared `Arc<PolicyClient>` from the composition root
+    /// (Port Instance Sharing). Injected so the automation controller and the
+    /// Codex approval decider hold the SAME durable policy store instance — a
+    /// within-session CRUD add via the controller is then immediately visible to
+    /// the decider's `verdict_for`. `None` for standalone construction, where the
+    /// controller builds its own persistent client.
+    policy_client: Option<Arc<PolicyClient>>,
 }
 
 impl<'a> AutomationControllerBuilder<'a> {
@@ -75,7 +82,17 @@ impl<'a> AutomationControllerBuilder<'a> {
             #[cfg(feature = "analysis")]
             oauth_port: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            policy_client: None,
         }
+    }
+
+    /// Inject the single shared `Arc<PolicyClient>` from the composition root
+    /// (#7932 Part B, Port Instance Sharing). The built controller uses THIS
+    /// instance instead of constructing its own, so it shares the in-memory
+    /// policy set with the Codex approval decider within a session.
+    pub(crate) fn with_policy_client(mut self, policy_client: Arc<PolicyClient>) -> Self {
+        self.policy_client = Some(policy_client);
+        self
     }
 
     /// Inject the single shared workspace-wide circuit-breaker registry from the
@@ -204,6 +221,8 @@ impl<'a> AutomationControllerBuilder<'a> {
                     self.app_handle,
                     self.cli_health_flag.clone(),
                     self._runtime_handle,
+                    self.data_dir,
+                    self.policy_client.clone(),
                 ))),
                 // Forward the live handle so the web layer can read it at request time
                 // (as_option_bool()) even after the build-time SSE snapshot is stale.
@@ -225,6 +244,8 @@ impl<'a> AutomationControllerBuilder<'a> {
                         controller: Some(Arc::new(build_noop_controller(
                             self.config,
                             self.audit_logger,
+                            self.data_dir,
+                            self.policy_client.clone(),
                         ))),
                         llm_call_health: None, // NoOp fallback — rule-matcher only, no Ollama
                     };
@@ -263,6 +284,7 @@ fn discover_skill_loader() -> Option<Arc<dyn SkillLoader>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_controller_from_runtime(
     config: &AppConfig,
     audit_logger: Arc<RwLock<AuditLogger>>,
@@ -271,6 +293,8 @@ fn build_controller_from_runtime(
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     runtime_handle: &Handle,
+    data_dir: &Path,
+    shared_policy_client: Option<Arc<PolicyClient>>,
 ) -> AutomationController {
     // Clone handle early so we can wire the confirmation callback after
     // the overlay driver consumes the original.
@@ -281,7 +305,19 @@ fn build_controller_from_runtime(
         llm = runtime.llm_provider_name,
         "AI provider adapters resolved"
     );
-    let policy_client = Arc::new(PolicyClient::new());
+    // #7915 + #7932 Part B: durable policy store so CRUD-granted execution
+    // policies survive restart. Prefer the ONE shared Arc<PolicyClient> injected
+    // from the composition root (Port Instance Sharing) so a within-session CRUD
+    // add via this controller is immediately visible to the Codex approval
+    // decider, which holds the SAME instance. Fall back to a self-built
+    // persistent client only for standalone construction (no injected handle),
+    // where cross-instance convergence still happens across restart via the
+    // shared file.
+    let policy_client = shared_policy_client.unwrap_or_else(|| {
+        Arc::new(PolicyClient::with_persistence(
+            data_dir.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+        ))
+    });
     let sandbox = create_platform_sandbox(&config.automation.sandbox);
     let mut controller = if let Some(flag) = cli_health_flag {
         AutomationController::new(
@@ -325,7 +361,20 @@ fn build_controller_from_runtime(
             crate::platform_overlay::create_platform_overlay_driver()
         };
 
-    let hmac_secret = std::env::var("MAEKON_GUI_TICKET_HMAC_SECRET").ok();
+    // #7916: auto-provision the GUI HITL ticket HMAC secret. An explicit
+    // `MAEKON_GUI_TICKET_HMAC_SECRET` env var still overrides (power-user / test
+    // / benchmark path); otherwise the secret is loaded-or-generated in the OS
+    // keychain via the same secret-store backend that holds provider
+    // credentials. If neither source yields a secret the resolver returns
+    // `None` and the trust core stays fail-closed (`require_hmac_secret`). The
+    // store factory is invoked lazily, so the env-override fast path never
+    // touches the keychain.
+    let hmac_secret =
+        crate::gui_ticket_secret::resolve_gui_ticket_hmac_secret(runtime_handle, || {
+            let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
+                .unwrap_or_else(|_| data_dir.to_path_buf());
+            crate::provider_secret_backend::create_os_secret_store(&config_dir)
+        });
     if let Err(error) = controller.configure_gui_interaction(
         focus_probe,
         overlay_driver,
@@ -350,8 +399,19 @@ fn build_controller_from_runtime(
 fn build_noop_controller(
     config: &AppConfig,
     audit_logger: Arc<RwLock<AuditLogger>>,
+    data_dir: &Path,
+    shared_policy_client: Option<Arc<PolicyClient>>,
 ) -> AutomationController {
-    let policy_client = Arc::new(PolicyClient::new());
+    // #7915 + #7932 Part B: even on the NoOp fallback path, persist policy CRUD
+    // so the set is durable. This path DOES persist, so it takes the SAME shared
+    // Arc<PolicyClient> as the Codex approval decider (Port Instance Sharing) for
+    // within-session convergence; it falls back to a self-built persistent client
+    // only for standalone construction with no injected handle.
+    let policy_client = shared_policy_client.unwrap_or_else(|| {
+        Arc::new(PolicyClient::with_persistence(
+            data_dir.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+        ))
+    });
     let sandbox = create_platform_sandbox(&config.automation.sandbox);
     let mut controller = AutomationController::new(
         policy_client,

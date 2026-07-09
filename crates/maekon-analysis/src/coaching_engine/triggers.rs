@@ -58,7 +58,7 @@ impl CoachingEngine {
         // 3. Goal threshold
         {
             let mut gt = self.goal_tracker.write().await;
-            if let Some(threshold) = gt.check_threshold(regime_label) {
+            if let Some(threshold) = gt.peek_threshold(regime_label) {
                 let progress = gt.progress(regime_label);
                 let (target, current) = progress
                     .map(|p| (p.target_minutes, p.current_minutes))
@@ -85,6 +85,21 @@ impl CoachingEngine {
         }
 
         None
+    }
+
+    /// Commit trigger side effects after all coaching guards have passed.
+    pub(super) async fn commit_trigger(&self, trigger: &TriggerType) -> bool {
+        match trigger {
+            TriggerType::GoalThreshold {
+                regime_label,
+                threshold_percent,
+                ..
+            } => {
+                let mut gt = self.goal_tracker.write().await;
+                gt.mark_threshold_notified(regime_label, *threshold_percent)
+            }
+            _ => true,
+        }
     }
 
     /// Map a trigger to a coaching profile, checking if that profile is enabled.
@@ -211,9 +226,23 @@ impl CoachingEngine {
         let switch_count = *self.context_switch_count.read().await;
         vars.insert("context_switches".to_string(), switch_count.to_string());
 
-        // Historical comparison — EMA of regime dwell duration
-        let avgs = self.regime_avg_duration.read().await;
-        let avg_secs = avgs.get(regime_label).copied().unwrap_or(1800.0) as u64;
+        // Historical comparison — EMA of regime dwell duration.
+        // `regime_avg_duration` is written keyed by the opaque `regime_id`, not
+        // the human `regime_label` (see `on_regime_change`, and the #7480
+        // avg_regime_duration_secs() call site which correctly looks up by id).
+        // Looking this up by `regime_label` here would always miss and silently
+        // fall back to the 1800s default, so use `current_regime_id` (which
+        // `detect_trigger`/`on_regime_change` keep in sync with the active
+        // regime for this tick) as the lookup key instead.
+        let avg_secs = {
+            let current_id = self.current_regime_id.read().await;
+            let avgs = self.regime_avg_duration.read().await;
+            current_id
+                .as_deref()
+                .and_then(|id| avgs.get(id))
+                .copied()
+                .unwrap_or(1800.0) as u64
+        };
         vars.insert("comparison".to_string(), super::humanize_duration(avg_secs));
 
         // Previous context — last known regime before the current one
@@ -743,5 +772,46 @@ mod tests {
 
         let vars = engine.build_variables("Work", 600, "App").await;
         assert_eq!(vars.get("context_switches").unwrap(), "2");
+    }
+
+    #[tokio::test]
+    async fn build_variables_comparison_uses_regime_id_key_not_label() {
+        let engine = CoachingEngine::new(enabled_config());
+
+        // Complete one dwell in regime id "coding" so `regime_avg_duration`
+        // records an EMA keyed by that id (on_regime_change writes the PREV
+        // id's key, so the recording happens on the transition OUT).
+        engine.on_regime_change(Some("coding")).await;
+        // on_regime_change uses num_seconds() which truncates sub-second dwell
+        // to 0 — sleep past 1s so a positive EMA is recorded.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        engine.on_regime_change(Some("email")).await;
+        // Re-enter "coding" so current_regime_id == "coding" again (this is
+        // the id build_variables must key its lookup on).
+        engine.on_regime_change(Some("coding")).await;
+
+        let stored_avg = *engine
+            .regime_avg_duration
+            .read()
+            .await
+            .get("coding")
+            .expect("EMA should have been recorded for regime id 'coding'");
+
+        // build_variables is called with the HUMAN label ("Deep Work"), which
+        // differs from the id key ("coding") used above — the bug looked this
+        // label up directly in `regime_avg_duration` and always missed.
+        let vars = engine.build_variables("Deep Work", 600, "VS Code").await;
+
+        let expected = super::super::helpers::humanize_duration(stored_avg as u64);
+        assert_eq!(
+            vars.get("comparison").unwrap(),
+            &expected,
+            "comparison should reflect the stored regime-id EMA, not the 1800s default"
+        );
+        assert_ne!(
+            vars.get("comparison").unwrap(),
+            &super::super::helpers::humanize_duration(1800),
+            "comparison must not silently fall back to the 1800s default when history exists"
+        );
     }
 }

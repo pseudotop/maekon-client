@@ -58,12 +58,6 @@ pub(crate) enum DebugNotificationCliCommand {
 
 #[cfg(debug_assertions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DebugPowerCliCommand {
-    CaptureBurstAudit,
-}
-
-#[cfg(debug_assertions)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DebugPointerCaptureCliCommand {
     Probe { frames: u32, interval_ms: u64 },
 }

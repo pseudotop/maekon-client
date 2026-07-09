@@ -32,7 +32,7 @@ To enable an effective response, please include as much of the following informa
 The following areas are of particular security importance in Maekon.
 
 - **Screen Capture and PII Filter** (`maekon-vision`): Bypassing the masking of personally identifiable information on-screen
-- **Local SQLite Storage** (`maekon-storage`): Unauthorized access to unencrypted data
+- **Local SQLite Storage** (`maekon-storage`): Compromise of the SQLCipher at-rest encryption or its key material (`.db_key`) — the database is encrypted at rest by default
 - **JWT Authentication Tokens** (`maekon-network`): Token theft or validation bypass
 - **Automation Control** (`maekon-automation`): Arbitrary command execution via policy validation bypass
 - **Auto-Update** (`maekon-app`): Bypassing integrity verification of update binaries

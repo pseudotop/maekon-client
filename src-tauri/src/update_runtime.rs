@@ -1,10 +1,8 @@
 use maekon_core::config::UpdateConfig;
-use maekon_web::update_control::{PendingUpdateInfo, UpdateAction, UpdateControl, UpdatePhase};
+use maekon_web::update_control::{UpdateAction, UpdateControl};
 use tokio::runtime::Handle;
-use tracing::{debug, info, warn};
 
 use crate::update_coordinator;
-use crate::updater::{UpdateAssetType, UpdateCheckResult, Updater};
 
 pub(crate) struct UpdateRuntimeBundle {
     pub(crate) update_control: UpdateControl,
@@ -34,90 +32,6 @@ impl<'a> UpdateRuntimeBuilder<'a> {
         );
 
         if self.config.enabled {
-            // Fire-and-forget startup update check (non-blocking, 3s timeout).
-            // Publishes to broadcast channel so the Tauri event bridge can
-            // forward the result to the frontend immediately.
-            let startup_config = self.config.clone();
-            let startup_event_tx = update_control.event_tx.clone();
-            let startup_state = update_control.state.clone();
-            self.runtime_handle.spawn(async move {
-                let updater = Updater::new(startup_config);
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    updater.check_for_updates(),
-                )
-                .await
-                {
-                    Ok(Ok(UpdateCheckResult::Available {
-                        current,
-                        latest,
-                        release,
-                        download_url,
-                        download_size,
-                        asset_type,
-                    })) => {
-                        info!("startup update check: v{latest} available");
-                        // #6266/#6830: fail-safe on delta updates — mirror the
-                        // coordinator's check.rs guard. The install path treats the
-                        // downloaded file as a FULL binary (apply_delta_update has no
-                        // production caller), so surfacing a `.patch` as
-                        // PendingApproval could brick the binary on Approve→install.
-                        // This startup path is the sibling that check.rs's guard
-                        // missed (it discarded asset_type via `..`).
-                        if let UpdateAssetType::DeltaPatch { from_version } = &asset_type {
-                            warn!(
-                                from_version = %from_version,
-                                latest = %latest,
-                                "startup update check: delta .patch offered but delta apply is not \
-                                 wired; refusing (would brick the binary)"
-                            );
-                            let mut guard = startup_state.write().await;
-                            guard.phase = UpdatePhase::Error;
-                            guard.message = Some(format!(
-                                "Update {latest} is delta-only (.patch); this client requires a \
-                                 full-binary release and will not install a delta patch."
-                            ));
-                            guard.pending = None;
-                            guard.touch();
-                            if let Err(e) = startup_event_tx.send(guard.clone()) {
-                                debug!("channel send failed: {e}");
-                            }
-                            return;
-                        }
-                        // Write to shared state and publish to broadcast.
-                        // send() is called while the write guard is held,
-                        // matching the coordinator's run_check() pattern.
-                        let mut guard = startup_state.write().await;
-                        guard.phase = UpdatePhase::PendingApproval;
-                        guard.message =
-                            Some(format!("New version detected: {} -> {}", current, latest));
-                        guard.pending = Some(PendingUpdateInfo {
-                            current_version: current.to_string(),
-                            latest_version: latest.to_string(),
-                            release_url: release.html_url.clone(),
-                            release_name: release.name.clone(),
-                            published_at: release.published_at.clone(),
-                            download_url,
-                            release_notes: release.body.clone(),
-                            download_size_bytes: download_size,
-                        });
-                        guard.touch();
-                        if let Err(e) = startup_event_tx.send(guard.clone()) {
-                            debug!("channel send failed: {e}");
-                        }
-                    }
-                    Ok(Ok(UpdateCheckResult::UpToDate { .. })) => {
-                        debug!("startup update check: up to date");
-                    }
-                    Ok(Err(e)) => {
-                        debug!("startup update check failed: {e}");
-                    }
-                    Err(_) => {
-                        debug!("startup update check: timed out");
-                    }
-                }
-            });
-
             let update_config = self.config.clone();
             let update_state = update_control.state.clone();
             let update_status_tx = Some(update_control.event_tx.clone());
@@ -142,64 +56,15 @@ impl<'a> UpdateRuntimeBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[test]
+    fn update_runtime_uses_coordinator_as_single_startup_status_writer() {
+        let source = include_str!("update_runtime.rs");
+        let timeout_call = concat!("tokio::time", "::timeout");
+        let direct_probe_call = concat!("check_for", "_updates(),");
 
-    /// Verifies the broadcast contract: when the startup check detects an
-    /// Available update, it writes PendingApproval to shared state and
-    /// publishes to the broadcast channel.
-    ///
-    /// Tests the state-write + broadcast pattern in isolation. The actual
-    /// startup check integration (with real Updater + tokio runtime handle)
-    /// is verified manually; coordinator tests cover the equivalent
-    /// run_check() logic.
-    #[tokio::test]
-    async fn startup_check_publishes_to_broadcast_on_available() {
-        let config = maekon_core::config::UpdateConfig {
-            enabled: true,
-            auto_install: false,
-            check_interval_hours: 24,
-            ..Default::default()
-        };
-
-        let (action_tx, _action_rx) = tokio::sync::mpsc::unbounded_channel::<UpdateAction>();
-        let control = UpdateControl::new(
-            action_tx,
-            crate::update_coordinator::initial_status(&config, false),
+        assert!(
+            !source.contains(timeout_call) && !source.contains(direct_probe_call),
+            "UpdateRuntimeBuilder must not run its own update probe; the coordinator is the single UpdateStatus writer"
         );
-
-        // Subscribe BEFORE spawning so we catch the event
-        let mut rx = control.subscribe();
-        let event_tx = control.event_tx.clone();
-        let state = control.state.clone();
-
-        // Simulate the startup check's Available path
-        tokio::spawn(async move {
-            let mut guard = state.write().await;
-            guard.phase = UpdatePhase::PendingApproval;
-            guard.message = Some("New version detected: 0.1.0 -> 0.2.0".to_string());
-            guard.pending = Some(PendingUpdateInfo {
-                current_version: "0.1.0".to_string(),
-                latest_version: "0.2.0".to_string(),
-                release_url: "https://example.com".to_string(),
-                release_name: Some("v0.2.0".to_string()),
-                published_at: None,
-                download_url: "https://example.com/download".to_string(),
-                release_notes: None,
-                download_size_bytes: None,
-            });
-            guard.touch();
-            let _ = event_tx.send(guard.clone());
-        });
-
-        let status = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect("timeout waiting for broadcast")
-            .expect("broadcast recv error");
-
-        assert_eq!(status.phase, UpdatePhase::PendingApproval);
-        assert!(status.pending.is_some());
-        let pending = status.pending.unwrap();
-        assert_eq!(pending.current_version, "0.1.0");
-        assert_eq!(pending.latest_version, "0.2.0");
     }
 }

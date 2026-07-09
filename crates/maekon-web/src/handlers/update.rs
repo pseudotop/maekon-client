@@ -46,18 +46,16 @@ mod tests {
     use crate::services::web_contexts::UpdateWebContext;
     use crate::update_control::{UpdateAction, UpdateControl, UpdatePhase};
     use crate::AppState;
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::{broadcast, mpsc};
+    // #7738 D-4: funnel through the canonical test-state helper.
+    use crate::test_local_auth::test_app_state;
+    use tokio::sync::mpsc;
 
     async fn make_state_with_update_control() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
         let (action_tx, mut action_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move { while action_rx.recv().await.is_some() {} });
         let control = UpdateControl::new(action_tx, UpdateStatus::default());
 
-        let mut state = AppState::with_core(storage, event_tx);
+        let mut state = test_app_state();
         state.core.update_control = Some(control);
         state
     }

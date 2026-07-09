@@ -61,11 +61,10 @@ struct EmbeddingData {
     /// Position of this embedding in the original `input` array.
     ///
     /// OpenAI-compatible servers echo an `index` field so clients can reorder
-    /// when a strict-spec server returns `data` out of request order.  Defaults
-    /// to `0` when the server omits it; in that case the server-provided order
-    /// is preserved (a stable sort keeps equal-`index` items in place).
+    /// when a strict-spec server returns `data` out of request order. When every
+    /// item omits it, the server-provided order is preserved.
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
 }
 
 impl RemoteEmbeddingProvider {
@@ -118,7 +117,9 @@ impl RemoteEmbeddingProvider {
         let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
-            .expect("하드닝 embedding HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+            .unwrap_or_else(|error| {
+                panic!("hardened embedding HTTP client build failed (TLS backend init): {error}")
+            });
 
         // D7: resolve per-endpoint breaker; malformed endpoint falls back to
         // a "none" key so at least the construction succeeds and runtime
@@ -364,9 +365,37 @@ impl RemoteEmbeddingProvider {
 
         // Restore request order before positional binding: an OpenAI-compatible
         // server may return `data` reordered, with the original position carried
-        // in each item's `index` field (#6128). Stable sort keeps the
-        // server-provided order when `index` is absent (defaults to 0).
-        parsed.data.sort_by_key(|d| d.index);
+        // in each item's `index` field (#6128). If a server provides indices,
+        // require a complete, unique, in-range 0..N-1 set; otherwise duplicate or
+        // out-of-range indices can silently bind vectors to the wrong input.
+        if parsed.data.iter().any(|d| d.index.is_some()) {
+            let mut seen = vec![false; texts.len()];
+            for item in &parsed.data {
+                let Some(index) = item.index else {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: "Embedding API mixed indexed and unindexed vectors".to_string(),
+                    });
+                };
+                if index >= texts.len() {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!(
+                            "Embedding API returned index {index} out of range for {} inputs",
+                            texts.len()
+                        ),
+                    });
+                }
+                if seen[index] {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("Embedding API returned duplicate index {index}"),
+                    });
+                }
+                seen[index] = true;
+            }
+            parsed.data.sort_by_key(|d| d.index.unwrap_or(usize::MAX));
+        }
 
         let target_dims = self.dimensions;
         let embeddings: Vec<Vec<f32>> = parsed
@@ -581,6 +610,84 @@ mod tests {
         assert!(
             err.to_string().contains("mismatch"),
             "error message should mention the count mismatch, got: {err}"
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_indices_error() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "data": [
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"index": 0, "embedding": [0.4, 0.5, 0.6]}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let err = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await
+            .expect_err("duplicate indices must error, not bind ambiguously");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "error message should mention duplicate indices, got: {err}"
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn out_of_range_response_index_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "data": [
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"index": 2, "embedding": [0.4, 0.5, 0.6]}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let err = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await
+            .expect_err("out-of-range index must error before positional binding");
+        assert!(
+            err.to_string().contains("out of range"),
+            "error message should mention the index range, got: {err}"
         );
         mock.assert_async().await;
     }

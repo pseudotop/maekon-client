@@ -1,7 +1,6 @@
 //! Install orchestration: binary swap, rollback, pending marker, restart.
 // OOS-TBD: ADR-013 file split applied — install.rs (1077L) split into
 // download.rs / verification.rs / url.rs / archive.rs + this mod.rs.
-#![allow(dead_code)] // Install helpers called from updater apply/verify paths
 
 mod archive;
 mod download;
@@ -21,6 +20,10 @@ pub(crate) use verification::SignatureKeySource;
 /// the current process.
 ///
 /// `75` (EX_TEMPFAIL, from `sysexits(3)`) signals "temporary failure; try again".
+// Only the `cfg(unix)` respawn arm of `execute_rollback` exits with this code;
+// Windows rollback is fail-loud unimplemented (#5988), so the const is unused
+// there by design.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const ROLLBACK_EXIT_CODE: i32 = 75;
 
 impl Updater {
@@ -240,6 +243,11 @@ impl Updater {
 
     /// Swap-only core: verify backup, broadcast event, rename backup into place.
     /// Does NOT spawn the replacement binary.
+    // The production caller is the `cfg(not(windows))` arm of `execute_rollback`
+    // (#5988: swapping a RUNNING .exe is impossible on Windows), so on Windows
+    // only the tests call this. Kept compiled + tested there because the future
+    // Task 12 `self_replace` implementation reuses this swap-only core.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn execute_rollback_swap_only<F>(
         backup_path: &Path,
         current_exe_path: &Path,

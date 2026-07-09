@@ -1,14 +1,15 @@
 //! REST handlers for the tracking-schedule configuration and status endpoints.
 //!
-//! Three endpoints mirror the Tauri IPC commands defined in
-//! `src-tauri/src/commands/tracking_schedule.rs`:
-//!
 //! - `GET  /api/tracking-schedule`         — return current config
 //! - `PUT  /api/tracking-schedule`         — validate + persist new config
 //! - `GET  /api/tracking-schedule/status`  — real-time status snapshot
 //!
 //! A.15 (TDD red): stub handlers returning 501.
 //! A.16 (TDD green): real logic supplied here.
+//!
+//! #7600: the sibling Tauri IPC commands (`src-tauri/src/commands/tracking_schedule.rs`)
+//! were removed as dead duplicates — this REST surface is now the sole
+//! implementation the frontend uses.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
@@ -119,12 +120,12 @@ pub async fn get_status(State(context): State<ConfigWebContext>) -> Json<Trackin
     Json(compute_status(&cfg))
 }
 
-// ── Status compute helpers (duplicated from src-tauri/src/commands/tracking_schedule.rs) ─
+// ── Status compute helpers ─────────────────────────────────────────────────
+// #7600: this used to be duplicated from src-tauri/src/commands/tracking_schedule.rs
+// (a sibling Tauri IPC implementation). That command module was removed as a
+// dead duplicate, so this REST-side implementation is now the sole copy.
 
 /// Compute a `TrackingScheduleStatus` snapshot for the given config.
-///
-/// Mirrors `get_tracking_schedule_status_inner` in the Tauri command module.
-/// Duplicated here because `maekon-web` cannot import from the binary crate.
 fn compute_status(cfg: &TrackingScheduleConfig) -> TrackingScheduleStatus {
     if !cfg.enabled || cfg.windows.is_empty() {
         return TrackingScheduleStatus {
@@ -160,8 +161,6 @@ fn compute_status(cfg: &TrackingScheduleConfig) -> TrackingScheduleStatus {
 
 /// Convert a `DateTime<Local>` to a `DateTime<FixedOffset>` whose wall-clock
 /// fields match the target IANA timezone.
-///
-/// Mirrors `convert_to_target_tz` in `src-tauri/src/commands/tracking_schedule.rs`.
 fn convert_to_target_tz(local: &DateTime<Local>, tz_name: &str) -> DateTime<chrono::FixedOffset> {
     if tz_name == "Local" {
         return local.fixed_offset();
@@ -176,8 +175,6 @@ fn convert_to_target_tz(local: &DateTime<Local>, tz_name: &str) -> DateTime<chro
 
 /// Walk forward minute-by-minute until the active window closes, returning
 /// the transition UTC time as RFC 3339. Caps at 24 hours.
-///
-/// Mirrors `compute_ends_at` in `src-tauri/src/commands/tracking_schedule.rs`.
 fn compute_ends_at(now: DateTime<chrono::FixedOffset>, window: &TrackingWindow) -> Option<String> {
     let mut probe = now;
     let cap = now + chrono::Duration::hours(24);
@@ -195,8 +192,6 @@ fn compute_ends_at(now: DateTime<chrono::FixedOffset>, window: &TrackingWindow) 
 /// Scan forward minute-by-minute over the next 7 days to find the next window
 /// start (inactive → active rising edge). Returns an RFC 3339 UTC string or
 /// `None` if no window starts within 7 days.
-///
-/// Mirrors `compute_next_starts_at` in `src-tauri/src/commands/tracking_schedule.rs`.
 fn compute_next_starts_at(cfg: &TrackingScheduleConfig) -> Option<String> {
     if !cfg.enabled || cfg.windows.is_empty() {
         return None;

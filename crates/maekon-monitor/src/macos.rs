@@ -7,17 +7,14 @@ use core_foundation::base::{CFType, TCFType};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
-use core_graphics::event::CGEvent;
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::window::{
     copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
     kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerName,
     kCGWindowOwnerPID,
 };
-use maekon_core::models::context::{MousePosition, WindowBounds, WindowInfo};
+use maekon_core::models::context::{WindowBounds, WindowInfo};
 use maekon_core::models::system::PowerStatus;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -25,14 +22,15 @@ use tracing::{debug, warn};
 
 const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
 
-/// Consecutive timeout counter — circuit breaker to avoid spawning osascript
-/// every cycle when Accessibility permission is missing.
-static CONSECUTIVE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
-
-/// #6830: independent breaker for the `ioreg` idle-time fork (a different binary
-/// than osascript — distinct availability), so a host where `ioreg` is missing or
-/// hangs cannot make the monitor fork it on every tick. Mirrors the linux idle breakers.
-static IOREG_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
+/// Bare tool names resolved via [`crate::trusted_binary::resolve_trusted_binary`]
+/// (SEC-MON-01) at each spawn site, rather than baked in as hard-coded literal
+/// paths — this generalizes the original #7483 fix (which hard-coded these two
+/// exact `/usr/...` paths) through the shared trusted-directory resolver so
+/// every helper in this crate goes through one mechanism instead of diverging
+/// per call site.
+const OSASCRIPT_TOOL: &str = "osascript";
+const IOREG_TOOL: &str = "ioreg";
+const PMSET_TOOL: &str = "pmset";
 
 /// After this many consecutive timeouts, skip osascript entirely and return
 /// `Ok(None)` until the counter is reset (e.g. after a successful call).
@@ -41,6 +39,18 @@ const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 /// After the circuit breaker trips, only retry once every N calls to check
 /// if the permission was granted in the meantime.
 const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 60;
+
+/// Circuit breaker to avoid spawning osascript every cycle when Accessibility
+/// permission is missing. Shared `CircuitBreaker` struct (#7720 E6
+/// consolidation) — previously a hand-rolled `AtomicU32` counter duplicating
+/// the same state machine as [`IOREG_BREAKER`] below.
+static OSASCRIPT_BREAKER: CircuitBreaker =
+    CircuitBreaker::new(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_RETRY_INTERVAL);
+
+/// #6830: independent breaker for the `ioreg` idle-time fork (a different binary
+/// than osascript — distinct availability), so a host where `ioreg` is missing or
+/// hangs cannot make the monitor fork it on every tick. Mirrors the linux idle breakers.
+static IOREG_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
 
 /// Public entry point for active-window detection on macOS.
 ///
@@ -291,39 +301,14 @@ fn pick_frontmost_layer_zero(windows: &[RawCgWindow]) -> Option<&RawCgWindow> {
 /// Circuit-breaker retry gate for the osascript fallback. Returns `true` if the
 /// caller may proceed to spawn osascript, `false` if it must short-circuit.
 ///
-/// When the breaker is open (>= THRESHOLD consecutive timeouts) only the caller
-/// that atomically claims the retry slot at a RETRY_INTERVAL boundary proceeds;
-/// every other caller increments-and-skips. The `compare_exchange` prevents two
-/// concurrent callers that read the same boundary value from both spawning
-/// osascript (#6007 finding 17). Extracted from `get_active_window_via_osascript`
-/// so the atomic-claim logic is unit-testable without forking a subprocess.
+/// Delegates to the shared [`CircuitBreaker`] (#7720 E6 consolidation) — this
+/// used to be a hand-rolled `AtomicU32` state machine duplicating the same
+/// atomic-claim logic (`compare_exchange` prevents two concurrent callers that
+/// read the same retry-interval-boundary value from both spawning osascript,
+/// #6007 finding 17). Kept as a thin named wrapper so the call site and the
+/// existing test names below stay stable.
 fn circuit_breaker_should_proceed() -> bool {
-    let timeouts = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
-    if timeouts >= CIRCUIT_BREAKER_THRESHOLD {
-        // Circuit breaker is open — periodically retry to detect permission grant.
-        if !timeouts.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
-            CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        // Atomically claim the retry slot: only the caller that successfully
-        // transitions the counter from `timeouts` to `timeouts + 1` may proceed.
-        // Concurrent callers that lose the CAS observe the incremented value on
-        // their next load — no longer a multiple of CIRCUIT_BREAKER_RETRY_INTERVAL
-        // — so they short-circuit without spawning a redundant osascript.
-        if CONSECUTIVE_TIMEOUTS
-            .compare_exchange(timeouts, timeouts + 1, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            // Another concurrent caller claimed this retry slot first.
-            return false;
-        }
-        warn!(
-            "osascript circuit breaker: retrying after {} skipped calls \
-             (grant Accessibility permission in System Settings)",
-            timeouts - CIRCUIT_BREAKER_THRESHOLD
-        );
-    }
-    true
+    OSASCRIPT_BREAKER.should_proceed()
 }
 
 /// Legacy osascript-based active-window detection. KEPT VERBATIM as the
@@ -338,13 +323,24 @@ async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, Monitor
         return Ok(None);
     }
 
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // spawning a bare `osascript` — fail closed (no PATH fallback) when the
+    // binary is not found under any trusted system directory.
+    let osascript_path =
+        crate::trusted_binary::resolve_trusted_binary(OSASCRIPT_TOOL).ok_or_else(|| {
+            MonitorError::Internal(
+                "osascript not found under the trusted directory allowlist".to_string(),
+            )
+        })?;
+
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("osascript")
+        Command::new(osascript_path)
             .kill_on_drop(true)
             .arg("-e")
             .arg(
                 r#"tell application "System Events"
+            set fieldSeparator to ASCII character 31
             set frontApp to first application process whose frontmost is true
             set appName to name of frontApp
             set appPid to unix id of frontApp
@@ -361,7 +357,7 @@ async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, Monitor
                 set winPos to position of frontWin
                 set winSize to size of frontWin
             end try
-            return appName & "|" & winTitle & "|" & (item 1 of winPos as integer) & "|" & (item 2 of winPos as integer) & "|" & (item 1 of winSize as integer) & "|" & (item 2 of winSize as integer) & "|" & (appPid as integer) & "|" & appBundleId
+            return appName & fieldSeparator & winTitle & fieldSeparator & (item 1 of winPos as integer) & fieldSeparator & (item 2 of winPos as integer) & fieldSeparator & (item 1 of winSize as integer) & fieldSeparator & (item 2 of winSize as integer) & fieldSeparator & (appPid as integer) & fieldSeparator & appBundleId
         end tell"#,
             )
             .output(),
@@ -371,13 +367,13 @@ async fn get_active_window_via_osascript() -> Result<Option<WindowInfo>, Monitor
     let output = match output {
         Ok(result) => {
             // osascript completed (success or failure, but did not hang)
-            CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+            OSASCRIPT_BREAKER.record_success();
             result
                 .map_err(|e| MonitorError::Internal(format!("osascript execution failure: {e}")))?
         }
         Err(_elapsed) => {
-            let prev = CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-            if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
+            OSASCRIPT_BREAKER.record_failure();
+            if OSASCRIPT_BREAKER.failure_count() == CIRCUIT_BREAKER_THRESHOLD {
                 warn!(
                     "osascript timed out {} consecutive times — circuit breaker engaged. \
                      Grant Accessibility permission in System Settings > Privacy & Security > Accessibility",
@@ -488,9 +484,19 @@ fn own_app_name_candidates(current_exe: &Path) -> Vec<String> {
 }
 
 pub async fn current_power_status_macos() -> Result<PowerStatus, MonitorError> {
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a hard-coded literal path — fail closed when `pmset` is not found under
+    // any trusted system directory.
+    let pmset_path =
+        crate::trusted_binary::resolve_trusted_binary(PMSET_TOOL).ok_or_else(|| {
+            MonitorError::Internal(
+                "pmset not found under the trusted directory allowlist".to_string(),
+            )
+        })?;
+
     let output = timeout(
         Duration::from_secs(2),
-        Command::new("/usr/bin/pmset")
+        Command::new(pmset_path)
             .kill_on_drop(true)
             .arg("-g")
             .arg("batt")
@@ -517,9 +523,19 @@ pub async fn get_idle_time_macos() -> Option<u64> {
     if !IOREG_BREAKER.should_proceed() {
         return None;
     }
+
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a hard-coded literal path. A resolution miss is treated the same as a
+    // spawn failure (record_failure + None) — the same fail-closed outcome
+    // the breaker already applies to an absent/hung `ioreg`.
+    let Some(ioreg_path) = crate::trusted_binary::resolve_trusted_binary(IOREG_TOOL) else {
+        IOREG_BREAKER.record_failure();
+        return None;
+    };
+
     let result = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("ioreg")
+        Command::new(ioreg_path)
             .kill_on_drop(true)
             .args(["-c", "IOHIDSystem", "-d", "4"])
             .output(),
@@ -560,33 +576,36 @@ pub async fn get_idle_time_macos() -> Option<u64> {
     None
 }
 
-pub fn get_mouse_position_macos() -> Option<MousePosition> {
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
-
-    let event = CGEvent::new(source).ok()?;
-    let location = event.location();
-
-    Some(MousePosition {
-        x: location.x as i32,
-        y: location.y as i32,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
-    // Tests below mutate the module-level CONSECUTIVE_TIMEOUTS static.
+    // Tests below mutate the module-level OSASCRIPT_BREAKER static (shared
+    // CircuitBreaker, #7720 E6 consolidation).
     // #[serial] forces them to run one at a time to prevent cross-test
-    // races where one test's store(0) reset clobbers another's
-    // store(CIRCUIT_BREAKER_THRESHOLD) precondition.
+    // races where one test's reset clobbers another's
+    // set_failure_count(CIRCUIT_BREAKER_THRESHOLD) precondition.
+
+    #[test]
+    fn subprocess_paths_resolve_absolute_under_trusted_allowlist() {
+        // SEC-MON-01: the paths are no longer literal constants — they are
+        // resolved through the shared trusted-directory allowlist at each
+        // spawn site. This locks that the base-OS tools this crate depends on
+        // (osascript/ioreg/pmset all ship with every macOS install under
+        // /usr/bin or /usr/sbin) still resolve to an absolute path there.
+        for tool in [OSASCRIPT_TOOL, IOREG_TOOL, PMSET_TOOL] {
+            let resolved = crate::trusted_binary::resolve_trusted_binary(tool)
+                .unwrap_or_else(|| panic!("{tool} must resolve under the trusted allowlist"));
+            assert!(resolved.is_absolute(), "{tool} path must be absolute");
+        }
+    }
 
     #[tokio::test]
     #[serial]
     async fn get_active_window_returns_result() {
         // Reset circuit breaker for test isolation
-        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+        OSASCRIPT_BREAKER.record_success();
         let result = get_active_window_macos().await;
         // Either Ok(Some(..)) if a foreground window is resolvable (native or
         // osascript), Ok(None) if not, or Err if osascript timed out.
@@ -604,16 +623,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires an interactive macOS CoreGraphics session"]
-    fn get_mouse_position_returns_result() {
-        let pos = get_mouse_position_macos();
-        if let Some(p) = pos {
-            assert!(p.x >= 0 && p.x < 32000);
-            assert!(p.y >= 0 && p.y < 32000);
-        }
-    }
-
     const _: () = {
         assert!(CIRCUIT_BREAKER_THRESHOLD >= 2);
         assert!(CIRCUIT_BREAKER_THRESHOLD <= 10);
@@ -627,7 +636,7 @@ mod tests {
         // exercise it directly: the native CGWindowList path runs first in the
         // orchestrator and (on a host with a live window server) would resolve a
         // real window, bypassing the breaker entirely.
-        CONSECUTIVE_TIMEOUTS.store(CIRCUIT_BREAKER_THRESHOLD, Ordering::Relaxed);
+        OSASCRIPT_BREAKER.set_failure_count(CIRCUIT_BREAKER_THRESHOLD);
 
         // Should return Ok(None) immediately without spawning osascript.
         let result = get_active_window_via_osascript()
@@ -639,18 +648,18 @@ mod tests {
         );
 
         // Counter should have incremented
-        let count = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
+        let count = OSASCRIPT_BREAKER.failure_count();
         assert!(count > CIRCUIT_BREAKER_THRESHOLD);
 
         // Reset for other tests
-        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+        OSASCRIPT_BREAKER.record_success();
     }
 
     #[test]
     #[serial]
     fn circuit_breaker_reset_on_zero() {
-        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
-        assert_eq!(CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed), 0);
+        OSASCRIPT_BREAKER.record_success();
+        assert_eq!(OSASCRIPT_BREAKER.failure_count(), 0);
     }
 
     #[test]
@@ -793,14 +802,17 @@ mod tests {
     }
 
     /// Verify that when the counter is exactly at a retry boundary, only ONE
-    /// concurrent caller is allowed to proceed (the CAS winner); all subsequent
-    /// callers that arrive while the counter still reads the same multiple-of-N
-    /// value lose the CAS and short-circuit to Ok(None).
+    /// concurrent caller is allowed to proceed (the CAS winner); a caller that
+    /// arrives while the counter still reads the same multiple-of-N value loses
+    /// the CAS and short-circuits to Ok(None).
     ///
-    /// This tests the atomic-claim logic introduced to fix the double-spawn race
-    /// (finding #6007): without the CAS, two callers that both read the same
-    /// multiple-of-CIRCUIT_BREAKER_RETRY_INTERVAL value would both pass the
-    /// `is_multiple_of` gate and both spawn `osascript`.
+    /// This is a black-box regression check against this site's exact tuning
+    /// constants (threshold=3, retry_interval=60), through the shared
+    /// [`CircuitBreaker`]'s public API. The double-spawn race this guards
+    /// against (finding #6007) — and the canonical white-box proof of the
+    /// underlying `compare_exchange` semantics — now live once, centrally, in
+    /// `maekon_core::circuit_breaker::tests::retry_slot_claimed_only_once`
+    /// (#7720 E6 consolidation).
     #[test]
     #[serial]
     fn circuit_breaker_retry_slot_claimed_only_once() {
@@ -815,12 +827,12 @@ mod tests {
 
         // First caller at the boundary claims the slot (proceeds) and advances the
         // counter exactly one past the boundary.
-        CONSECUTIVE_TIMEOUTS.store(retry_boundary, Ordering::Relaxed);
+        OSASCRIPT_BREAKER.set_failure_count(retry_boundary);
         assert!(
             circuit_breaker_should_proceed(),
             "first caller at the retry boundary must claim the slot and proceed"
         );
-        let after_first = CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed);
+        let after_first = OSASCRIPT_BREAKER.failure_count();
         assert_eq!(
             after_first,
             retry_boundary + 1,
@@ -839,34 +851,6 @@ mod tests {
             "a caller arriving after the slot was claimed must short-circuit"
         );
 
-        // Directly prove the atomic claim: two callers that both read the SAME
-        // boundary value — exactly one CAS succeeds, the other loses.
-        CONSECUTIVE_TIMEOUTS.store(retry_boundary, Ordering::Relaxed);
-        let a = CONSECUTIVE_TIMEOUTS.compare_exchange(
-            retry_boundary,
-            retry_boundary + 1,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
-        let b = CONSECUTIVE_TIMEOUTS.compare_exchange(
-            retry_boundary,
-            retry_boundary + 1,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
-        // The winning CAS returns Ok(old_value) — the value that was replaced.
-        // The losing CAS returns Err(current_value) — what it found instead.
-        assert_eq!(
-            a,
-            Ok(retry_boundary),
-            "CAS winner must return Ok(old value) == Ok(retry_boundary)"
-        );
-        assert_eq!(
-            b,
-            Err(retry_boundary + 1),
-            "CAS loser must return Err(current value) == Err(retry_boundary + 1)"
-        );
-
-        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+        OSASCRIPT_BREAKER.record_success();
     }
 }

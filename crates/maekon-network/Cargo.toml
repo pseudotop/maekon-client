@@ -9,9 +9,12 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 default = []
-grpc = ["tonic", "tonic-prost", "prost", "prost-types", "tonic-health", "tonic/tls-native-roots"]
+grpc = ["tonic", "tonic-prost", "prost", "prost-types", "tonic/tls-native-roots"]
 lan-sync = ["rcgen", "mdns-sd", "axum-server", "rustls-pki-types", "rustls", "reqwest/rustls"]
 
 [dependencies]
@@ -63,7 +66,6 @@ tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
-tonic-health = { workspace = true, optional = true }
 
 # Process-group reap for the Codex app-server transport (E21 #4865 / #24347).
 [target.'cfg(unix)'.dependencies]
@@ -77,6 +79,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 criterion = { workspace = true }
 maekon-storage = { workspace = true }
 tempfile = { workspace = true }
+# #7729 ctd-W2 G2: canonical `FakePiiSanitizer` test double lives in maekon-core
+# next to the `PiiSanitizer` port, gated `test-support`. Enabled ONLY here (dev
+# builds), never via `[dependencies]`, so it never reaches the shipped binary.
+maekon-core = { workspace = true, features = ["test-support"] }
 
 [[bench]]
 name = "compression_bench"

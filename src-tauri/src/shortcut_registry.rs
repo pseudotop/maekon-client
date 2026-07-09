@@ -31,6 +31,10 @@ pub(crate) fn reset() {
     registry().lock().clear();
 }
 
+// Only consumed by this module's own test assertions today (no production
+// caller since the diagnostics IPC surface was never wired up); scoped to
+// `cfg(test)` so it doesn't trip the production-build dead_code lint.
+#[cfg(test)]
 pub(crate) fn records() -> Vec<ShortcutRegistrationRecord> {
     registry().lock().clone()
 }

@@ -2,9 +2,9 @@
 //!
 //! The on-device suggestion pipeline (queue → score → accept/reject/defer →
 //! history) learns ENTIRELY locally: `FeedbackSender::send_feedback` fires the
-//! `FeedbackSignalSink` (CoachingEngine + RegimeClassifier) BEFORE any network
-//! call (see `maekon-suggestion/src/feedback.rs`). The only reason a server is
-//! involved at all is the optional cross-user feedback POST.
+//! `FeedbackSignalSink` (`RegimeClassifier`, per-regime — see #7600) BEFORE
+//! any network call (see `maekon-suggestion/src/feedback.rs`). The only
+//! reason a server is involved at all is the optional cross-user feedback POST.
 //!
 //! `FeedbackSender` nonetheless REQUIRES an `Arc<dyn ApiClient>`. Rather than
 //! change that crate's port surface (a breaking change), an OSS build injects
@@ -83,6 +83,7 @@ mod tests {
             feedback_type: FeedbackType::Accepted,
             timestamp: Utc::now(),
             comment: None,
+            regime_id: None,
         };
         client
             .send_feedback(&feedback)
@@ -124,7 +125,7 @@ mod tests {
             Some(Arc::new(CountingSink(fired.clone()))),
         );
         sender
-            .accept("sug_local_e2e", None)
+            .accept("sug_local_e2e", None, None)
             .await
             .expect("local accept succeeds without a server");
         assert_eq!(

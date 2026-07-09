@@ -363,42 +363,21 @@ pub struct SegmentDetailRecord {
 }
 
 /// Input DTO for inserting a GUI interaction event (V13, extended V22).
+///
+/// #7678 D3: `segment_id`/`element_text`/`element_type`/`bbox_json` were
+/// removed (V43) — the production writer never populated them (constant
+/// `element_type: Some("Click")` and `segment_id`/`element_text`/`bbox_json`
+/// always `None`), so the columns advertised richer data than the table ever
+/// carried. See `migration/v43_gui_interactions_drop_unused_columns.rs`.
 #[derive(Debug, Clone)]
 pub struct NewGuiInteraction<'a> {
     pub event_id: &'a str,
-    pub segment_id: Option<&'a str>,
     pub timestamp: &'a str,
-    pub element_text: Option<&'a str>,
-    pub element_type: Option<&'a str>,
     pub interaction_type: &'a str,
-    pub bbox_json: Option<&'a str>,
     pub app_name: &'a str,
     /// Classification confidence for the inferred element type (0.0-1.0).
     /// Added in V22; defaults to 1.0 for backward compatibility.
     pub type_confidence: f32,
-}
-
-/// A GUI interaction event record from the V13 gui_interactions table (extended V22).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GuiInteractionRecord {
-    pub id: i64,
-    pub event_id: String,
-    pub segment_id: Option<String>,
-    pub timestamp: String,
-    pub element_text: Option<String>,
-    pub element_type: Option<String>,
-    pub interaction_type: String,
-    pub bbox_json: Option<String>,
-    pub app_name: String,
-    pub created_at: String,
-    /// Classification confidence for the inferred element type (0.0-1.0).
-    /// Added in V22; defaults to 1.0 for rows created before V22.
-    #[serde(default = "default_type_confidence")]
-    pub type_confidence: f32,
-}
-
-fn default_type_confidence() -> f32 {
-    1.0
 }
 
 /// Row from the `feedback_retries` table (V24).

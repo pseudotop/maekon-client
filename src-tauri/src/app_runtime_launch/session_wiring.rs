@@ -14,6 +14,22 @@ pub(super) type SessionManagerLaunch = Option<(Arc<SessionManagerImpl>, std::tim
 /// command (single-instance dead-writer guard).
 pub(super) type CodexApprovalRegistry = crate::provider_adapters::CodexApprovalRegistry;
 
+/// Builds the ONE shared `Arc<PolicyClient>` over the durable policy store that
+/// the composition root injects into BOTH the Codex approval decider (via
+/// [`build_session_manager`]) AND the automation controller (via the web
+/// wiring). Port Instance Sharing: this is the single owner of the policy-store
+/// handle, so a within-session CRUD add via the controller is immediately
+/// visible to the decider's `verdict_for` — previously the two held separate
+/// instances that converged only across restart (#7915 made them share the
+/// file, #7932 makes them share the live instance).
+pub(super) fn build_shared_policy_client(
+    data_dir_path: &std::path::Path,
+) -> Arc<maekon_automation::policy::PolicyClient> {
+    Arc::new(maekon_automation::policy::PolicyClient::with_persistence(
+        data_dir_path.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_session_manager(
     app_handle: &AppHandle,
@@ -30,6 +46,11 @@ pub(super) fn build_session_manager(
     // registry from the composition root, threaded into the session manager so
     // `HttpApiSession`s share one breaker with the other network adapters.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    // #7932 Part B: the ONE shared Arc<PolicyClient> from the composition root
+    // (Port Instance Sharing). The Codex approval decider below uses THIS instance
+    // — the SAME one injected into the automation controller — so a within-session
+    // CRUD add via the controller is immediately visible to `verdict_for`.
+    policy_client: Arc<maekon_automation::policy::PolicyClient>,
 ) -> (SessionManagerLaunch, CodexApprovalRegistry) {
     let storage_for_audit = sqlite_storage.clone();
     // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
@@ -129,7 +150,12 @@ pub(super) fn build_session_manager(
     let approval_registry: CodexApprovalRegistry =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     let codex_approval_decider = {
-        let policy_client = Arc::new(maekon_automation::policy::PolicyClient::new());
+        // #7915 + #7932 Part B: use the ONE shared Arc<PolicyClient> from the
+        // composition root (Port Instance Sharing) — the SAME instance the
+        // automation controller holds. A previously-granted process is matched
+        // instead of re-escalating as NoMatch (across restart, #7915), AND a
+        // within-session CRUD add via the controller is now immediately visible
+        // here (#7932) instead of converging only on the next restart.
         let policy_port: Arc<dyn maekon_core::ports::codex_approval::ApprovalPolicyPort> =
             Arc::new(crate::codex_approval_policy::PolicyClientApprovalAdapter::new(policy_client));
         let ui_hook: Arc<dyn maekon_core::ports::codex_approval::UiApprovalHook> =

@@ -8,7 +8,7 @@
 
 use maekon_core::config::WebConfig;
 use maekon_storage::sqlite::SqliteStorage;
-use maekon_web::WebServer;
+use maekon_web::{WebServer, WebServerRequiredDeps};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
@@ -17,9 +17,95 @@ use tracing::debug;
 /// E20-41 (#4833): a known token to satisfy the require_local_auth gate in tests.
 const TEST_LOCAL_AUTH_TOKEN: &str = "test-local-auth-token-e20-41";
 
+/// #7738 D-1/D-2: local hand-rolled `WebServerRequiredDeps` builder for THIS
+/// external integration-test crate. `maekon-web`'s `test_app_state*` helpers
+/// are `pub(crate)` and stay that way (D-4 scope) — external test crates keep
+/// their own local construction. Reuses real production port implementations
+/// already in this crate's dependency graph (`maekon-automation`,
+/// `maekon-monitor`, `maekon-vision`, `maekon-storage`); the 2 diagnostics
+/// ports with no externally-reachable production impl (their real adapters
+/// are `src-tauri`-internal, not part of the public API this test crate
+/// links against) get small manual stubs (project convention: no mockall).
+fn test_required_deps(storage: &Arc<SqliteStorage>) -> WebServerRequiredDeps {
+    struct StubRuntimeLogProvider;
+    #[async_trait::async_trait]
+    impl maekon_core::ports::runtime_log_provider::RuntimeLogProvider for StubRuntimeLogProvider {
+        async fn snapshot(
+            &self,
+            _line_limit: usize,
+        ) -> Result<
+            maekon_core::models::bug_report::RuntimeLogSnapshot,
+            maekon_core::error::CoreError,
+        > {
+            Ok(maekon_core::models::bug_report::RuntimeLogSnapshot {
+                log_dir: String::new(),
+                log_file: None,
+                line_count: 0,
+                recent_text: String::new(),
+            })
+        }
+    }
+
+    struct StubProviderCliDiagnostics;
+    impl maekon_web::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider
+        for StubProviderCliDiagnostics
+    {
+        fn provider_cli_diagnostics(
+            &self,
+        ) -> maekon_core::ports::provider_cli_diagnostics::ProviderCliDiagnosticsFuture<'_>
+        {
+            Box::pin(async { Vec::new() })
+        }
+    }
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let config_manager =
+        maekon_core::config_manager::ConfigManager::with_path(temp_dir.path().join("config.json"))
+            .expect("config manager");
+    // No drain task needed — UpdateControl::new never sends on construction.
+    let (action_tx, _action_rx) = tokio::sync::mpsc::unbounded_channel();
+    let update_control = maekon_web::update_control::UpdateControl::new(
+        action_tx,
+        maekon_api_contracts::update::UpdateStatus::default(),
+    );
+    let audit_logger_inner = Arc::new(tokio::sync::RwLock::new(
+        maekon_automation::audit::AuditLogger::default(),
+    ));
+
+    WebServerRequiredDeps {
+        memory_graph: storage.clone()
+            as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+        audit_chain_verifier: storage.clone()
+            as Arc<dyn maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort>,
+        egress_ledger_reader: storage.clone()
+            as Arc<dyn maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort>,
+        regime_storage: Arc::new(
+            maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
+                storage.connection_arc(),
+            ),
+        ) as Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort>,
+        text_search: storage.clone()
+            as Arc<dyn maekon_core::ports::text_search::TextSearchProvider>,
+        audit_logger: Arc::new(maekon_automation::audit::AuditLogAdapter::new(
+            audit_logger_inner,
+        )),
+        config_manager,
+        update_control,
+        local_auth_token: Arc::from(TEST_LOCAL_AUTH_TOKEN),
+        frames_dir: temp_dir.path().to_path_buf(),
+        pii_sanitizer: Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
+        runtime_log_provider: Arc::new(StubRuntimeLogProvider),
+        system_info_provider: Arc::new(maekon_monitor::system_info::SysInfoProvider::new()),
+        provider_cli_diagnostics: Arc::new(StubProviderCliDiagnostics),
+    }
+}
+
 #[tokio::test]
 async fn web_server_starts_responds_and_shuts_down() {
     let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+    // #7738 D-1: event_tx is now a required constructor arg.
+    let (event_tx, _) = tokio::sync::broadcast::channel(16);
+    let required_deps = test_required_deps(&storage);
 
     // Start inside the production-allowed fallback range; WebServer::run only
     // probes DEFAULT_WEB_PORT..=DEFAULT_WEB_PORT_END.
@@ -32,10 +118,10 @@ async fn web_server_starts_responds_and_shuts_down() {
     let (bound_port_tx, bound_port_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let server = WebServer::new(storage, config)
+    let server = WebServer::new(storage, event_tx, config)
         .with_bound_port_state(bound_port_state.clone())
-        .with_local_auth_token(Arc::from(TEST_LOCAL_AUTH_TOKEN))
-        .with_bound_port_notifier(bound_port_tx);
+        .with_bound_port_notifier(bound_port_tx)
+        .with_required_deps(required_deps);
 
     // Start the server in a background task
     let server_handle = tokio::spawn(async move { server.run(shutdown_rx).await });

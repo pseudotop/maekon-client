@@ -552,6 +552,7 @@
     "pauseOnLockDesc": "屏幕锁定时停止数据采集",
     "pauseOnBattery": "省电模式时暂停",
     "pauseOnBatteryDesc": "省电模式下停止数据采集",
+    "pauseOnBatteryUnavailable": "此平台不支持此功能 — 目前仅 macOS 支持检测电池/电源状态。此开关无法在此处启用。",
     "telemetryTitle": "遥测",
     "telemetryDesc": "控制发送到服务器的远程遥测数据。",
     "telemetryEnabled": "启用遥测",
@@ -783,7 +784,9 @@
       "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
       "endpoint": "Endpoint URL",
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
-      "cloud_timeout": "Timeout (sec)"
+      "cloud_timeout": "Timeout (sec)",
+      "notCompiledTitle": "此构建版本不可用",
+      "notCompiledDescription": "此构建版本编译时未包含音频/语音转文字支持。启用此开关并下载模型将无法正常工作。"
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -797,6 +800,102 @@
     }
   },
   "privacy": {
+    "claims": {
+      "title": "记忆主张",
+      "description": "以只读方式查看代理根据你的活动形成的持久信念（本地第二大脑记忆）。撤回主张会将其从摘要和后续建议中隐藏，同时为透明起见保留记录。",
+      "kindLabel": "类型",
+      "statusLabel": "状态",
+      "rangeLabel": "形成时间",
+      "kind": {
+        "all": "所有类型",
+        "semantic": "语义",
+        "episodic": "情景",
+        "procedural": "程序",
+        "reflective": "反思"
+      },
+      "status": {
+        "active_superseded": "活跃与已取代",
+        "active": "活跃",
+        "superseded": "已取代",
+        "retracted": "已撤回",
+        "all": "所有状态"
+      },
+      "range": {
+        "24h": "过去 24 小时",
+        "7d": "过去 7 天",
+        "30d": "过去 30 天",
+        "all": "全部时间"
+      },
+      "col": {
+        "time": "形成时间",
+        "kind": "类型",
+        "statement": "信念",
+        "source": "来源",
+        "confidence": "置信度",
+        "evidence": "证据",
+        "status": "状态",
+        "actions": "操作"
+      },
+      "count": "显示 {{total}} 条中的 {{shown}} 条",
+      "retractedLabel": "已撤回",
+      "loadError": "无法加载记忆主张",
+      "empty": {
+        "noneTitle": "尚无主张",
+        "noneDesc": "主张是代理根据你的工作模式形成的持久信念，例如\"深度工作时段集中在上午\"。目前尚未累积任何主张；随着每日摘要的生成，它们会逐渐累积。",
+        "filteredTitle": "没有符合这些筛选条件的主张",
+        "filteredDesc": "没有符合所选类型、状态和时间范围的主张。除非选择包含已撤回主张的状态，否则已撤回的主张会被隐藏。"
+      },
+      "retract": {
+        "button": "撤回",
+        "confirmTitle": "要撤回此主张吗？",
+        "confirmMessage": "撤回此信念：\n\n\"{{text}}\"",
+        "confirmNote": "撤回会将此主张从摘要和后续建议中隐藏。记录会保留（不会删除），因此更改仍可审计。",
+        "confirmButton": "撤回主张",
+        "success": "主张已撤回",
+        "alreadyRetracted": "该主张已被撤回"
+      }
+    },
+    "egress": {
+      "title": "外发透明度",
+      "description": "本设备外发内容的只读记录。基于防篡改的外发账本，即使在您擦除数据后仍作为合规证据保留。",
+      "rangeLabel": "时间范围",
+      "dispositionLabel": "处理状态",
+      "range": {
+        "24h": "最近 24 小时",
+        "7d": "最近 7 天",
+        "30d": "最近 30 天",
+        "all": "全部时间"
+      },
+      "disposition": {
+        "all": "全部",
+        "uploaded": "已上传",
+        "blocked": "已拦截",
+        "capture_blocked": "捕获已阻止"
+      },
+      "badge": {
+        "uploaded": "已上传",
+        "blocked": "已拦截",
+        "capture_blocked": "捕获已阻止（已排除的应用）"
+      },
+      "col": {
+        "time": "时间",
+        "eventType": "事件",
+        "destination": "目标",
+        "disposition": "处理状态",
+        "bytes": "大小",
+        "recipients": "接收方数量",
+        "consent": "同意"
+      },
+      "captureBlockedBytesHint": "被有意不予捕获的帧——没有发送任何内容。",
+      "entryCount": "{{count}} 条",
+      "empty": {
+        "ledgerTitle": "尚无内容离开此设备",
+        "ledgerDesc": "外发账本为空。当数据被上传、同步或捕获被阻止时，审计条目将显示在此处。",
+        "rangeTitle": "该范围内没有条目",
+        "rangeDesc": "没有符合所选时间范围和处理状态筛选条件的外发条目。"
+      },
+      "loadError": "加载外发账本失败"
+    },
     "title": "隐私管理",
     "storageStats": "存储统计",
     "totalFrames": "总帧数",
@@ -974,7 +1073,13 @@
     "similarity": "Similarity",
     "timeDecay": "Time decay",
     "type": "Type",
-    "summary": "Summary"
+    "summary": "Summary",
+    "semanticUnavailable": "语义搜索（不可用）",
+    "semanticUnavailableHint": "仅支持关键字搜索 — 此构建版本的语义搜索需要嵌入配置。",
+    "keyword": "关键词",
+    "keywordPlaceholder": "按关键词搜索你的活动...",
+    "keywordScopeHint": "按关键词相关度（BM25）对活动摘要进行排序。",
+    "textScopeHint": "搜索截图、窗口标题、OCR 文本和事件。"
   },
   "shortcuts": {
     "title": "键盘快捷键",
@@ -1214,6 +1319,32 @@
     "intentHintViewHistory": "在执行历史中查看",
     "intentHintErrorCheckHistory": "请求可能已执行 — 请检查执行历史记录。"
   },
+  "guiPicker": {
+    "title": "指定并确认操作",
+    "description": "扫描当前聚焦的窗口，高亮可操作的目标，确认其中一个即可通过沙箱化的自动化门控执行。",
+    "appNameLabel": "应用名称（可选）",
+    "appNamePlaceholder": "留空则扫描当前聚焦的窗口",
+    "scanButton": "扫描目标",
+    "disabledHint": "请在设置中启用自动化以使用指定并确认功能。",
+    "candidatesTitle": "已高亮的目标",
+    "noCandidates": "在当前聚焦的窗口中未找到可操作的目标。",
+    "selectCandidate": "请先选择一个已高亮的目标。",
+    "actionLabel": "操作",
+    "actionClick": "点击",
+    "actionTypeText": "输入文本",
+    "typeTextLabel": "要输入的文本",
+    "typeTextPlaceholder": "要输入到目标的文本",
+    "confirmButton": "确认目标",
+    "reset": "重新开始",
+    "ticketMinted": "已生成执行凭据",
+    "ticketExpires": "将于 {{expiresAt}} 过期",
+    "executeButton": "执行操作",
+    "executionSucceeded": "操作已完成",
+    "executionFailed": "操作未完成",
+    "resultSteps": "已完成 {{total}} 个步骤中的 {{completed}} 个",
+    "viewHistory": "在历史记录中查看",
+    "error": "出现了问题。"
+  },
   "settingsAutomation": {
     "title": "自动化",
     "enabled": "启用自动化",
@@ -1229,6 +1360,8 @@
     "ocrProvider": "OCR 提供商",
     "llmProvider": "LLM 提供商",
     "ocrProviderHint": "除非需要远程 OCR 质量或多模态 LLM 接口，否则请保持 OCR 本地执行。",
+    "ocrLocalUnavailableTitle": "此构建版本不支持此功能",
+    "ocrLocalUnavailableDescription": "此构建版本在当前平台上没有本地 OCR 引擎（原生 OCR 仅支持 macOS/Windows，且未编译内置的 Tesseract 回退方案）。本地 OCR 将始终静默返回零结果 — 请改用远程 OCR。",
     "llmProviderHint": "远程 LLM 可以增强能力，但会遵循所选访问路径和外部数据策略。",
     "providerSelectionLockedBadge": "已锁定",
     "providerSelectionLockedCli": "安装的 provider CLI 模式会将 LLM 提供商固定为 Remote。",
@@ -1439,7 +1572,17 @@
   "auditLog": {
     "title": "审计日志",
     "entries": "审计条目",
-    "details": "详情"
+    "details": "详情",
+    "chainIntegrity": "审计链完整性",
+    "chainIntegrityHint": "验证持久审计日志的防篡改 SHA-256 哈希链。",
+    "verifyIntegrity": "验证完整性",
+    "verifyFailed": "验证失败",
+    "chainIntact": "链完整",
+    "chainVerifiedCount": "已验证 {{count}} 条记录。",
+    "chainLegacyCount": "已排除 {{count}} 条旧版（哈希链之前）记录。",
+    "chainBroken": "检测到完整性中断",
+    "chainBrokenDetail": "首个损坏记录位于 seq {{seq}}：{{reason}}",
+    "chainBrokenUnknown": "由于未知原因，链验证失败。"
   },
   "widgets": {
     "title": "小组件",
@@ -1617,6 +1760,8 @@
     }
   },
   "sidebar": {
+    "claimsBrowser": "记忆主张",
+    "egressLedger": "外发账本",
     "overview": "概览",
     "systemMetrics": "系统指标",
     "activeProcesses": "活动进程",
@@ -2040,7 +2185,8 @@
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
     "mic_privacy_stopped": "麦克风已停止 — 隐私门已激活",
-    "searchMessagesPlaceholder": "搜索消息..."
+    "searchMessagesPlaceholder": "搜索消息...",
+    "audio_not_compiled": "此构建版本不支持音频"
   },
   "policies": {
     "title": "执行策略",
@@ -2094,6 +2240,11 @@
     "targetBadgeLabel": "{{target}} 的新建议",
     "currentTarget": "当前目标",
     "noAutoAction": "无自动操作",
+    "runAction": "运行 {{label}}",
+    "runActionPending": "运行中…",
+    "gateNotice": "通过自动化门执行 — 将应用您的确认设置。",
+    "toastActionRan": "操作已运行",
+    "actionFailed": "无法运行操作:",
     "replayTargetLocked": "目标已锁定",
     "replayProposalShown": "已显示建议",
     "replayConsentGate": "同意门控",
@@ -2422,7 +2573,7 @@
     "maxSuggestions": "最大建议数",
     "regimeDetectionIntervalHours": "模式检测间隔（小时）",
     "embedding": "嵌入",
-    "embeddingDescription": "为语义搜索启用向量嵌入",
+    "embeddingDescription": "为 AI 分析上下文检索启用向量嵌入 — 不会启用搜索页面的语义模式",
     "guiIntelligence": "GUI 智能分析",
     "guiIntelligenceDescription": "检测并汇总 GUI 交互模式",
     "textIntelligence": "文本智能分析",

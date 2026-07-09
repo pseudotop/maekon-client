@@ -1,13 +1,20 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 771
 mod models;
+mod persistence;
 mod token;
 
 // ── Public re-exports (external API) ────────────────────────────────
 pub use models::{AuditLevel, ExecutionPolicy, PolicyCache, ProcessOutput};
 
+/// File name of the durable execution-policy store within the app data dir
+/// (#7915). Shared by every wiring site so the automation controller and the
+/// Codex approval decider read/write the SAME persisted set.
+pub const POLICY_STORE_FILE_NAME: &str = "automation_policies.json";
+
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use tokio::sync::RwLock;
 
 use crate::controller::AutomationCommand;
@@ -25,30 +32,105 @@ pub struct PolicyClient {
     policy_cache: RwLock<PolicyCache>,
     allowed_processes: RwLock<HashSet<String>>,
     validated_tokens: RwLock<HashMap<String, chrono::DateTime<Utc>>>,
+    /// Durable store path (#7915). `Some` → write-through-persist every mutation
+    /// and reload on construction; `None` → legacy in-memory-only client
+    /// (`new()`). The ONLY fork between the two constructors.
+    storage_path: Option<PathBuf>,
 }
 
 impl PolicyClient {
+    /// In-memory-only client: loads nothing and persists nothing. Kept for the
+    /// many test/bench call sites. Prefer [`PolicyClient::with_persistence`].
     pub fn new() -> Self {
         Self {
             policy_cache: RwLock::new(PolicyCache::default()),
             allowed_processes: RwLock::new(HashSet::new()),
             validated_tokens: RwLock::new(HashMap::new()),
+            storage_path: None,
         }
     }
 
-    pub async fn update_policies(&self, policies: Vec<ExecutionPolicy>) {
-        let mut cache = self.policy_cache.write().await;
-        let mut allowed = self.allowed_processes.write().await;
-        let mut validated = self.validated_tokens.write().await;
-
-        allowed.clear();
+    /// Durable client (#7915): loads the persisted policy set from `path`
+    /// FAIL-CLOSED (corrupt/missing/unknown-schema starts EMPTY, like a fresh
+    /// install), and write-through-persists every mutation — so user-granted
+    /// execution policies survive restart and Codex stops re-escalating a
+    /// previously-granted process as `NoMatch`.
+    pub fn with_persistence(path: PathBuf) -> Self {
+        let policies = persistence::load_policies(&path);
+        let mut allowed = HashSet::new();
         for policy in &policies {
             allowed.insert(policy.process_name.clone());
         }
+        let cache = PolicyCache {
+            policies,
+            ..PolicyCache::default()
+        };
+        Self {
+            policy_cache: RwLock::new(cache),
+            allowed_processes: RwLock::new(allowed),
+            validated_tokens: RwLock::new(HashMap::new()),
+            storage_path: Some(path),
+        }
+    }
 
-        cache.policies = policies;
-        cache.last_updated = Utc::now();
-        validated.clear();
+    /// Write-through persist of the current policy set (#7915); no-op for an
+    /// in-memory client. A persist failure is logged but does NOT fail the
+    /// mutation or roll back the in-memory update (the grant still works this
+    /// session); load is fail-closed, so a write fault never widens permissions.
+    fn persist(&self, policies: &[ExecutionPolicy]) {
+        let Some(path) = self.storage_path.as_ref() else {
+            return;
+        };
+        if let Err(e) = persistence::save_policies(path, policies) {
+            tracing::error!(
+                path = %path.display(),
+                error = %e,
+                "failed to persist automation execution policies — in-memory grant will not survive restart"
+            );
+        }
+    }
+
+    /// Durably persist the policy set, PROPAGATING a write failure to the caller
+    /// as a typed error (#7932). Used by the persist-first revocation path where
+    /// durability is a security requirement — unlike the write-through [`persist`]
+    /// used on the fail-safe add path, a revocation must never silently succeed
+    /// in memory while the on-disk file still grants the permission (it would
+    /// resurrect on restart). No-op `Ok` for an in-memory client (no store path),
+    /// whose state is entirely session-local anyway.
+    fn persist_checked(&self, policies: &[ExecutionPolicy]) -> Result<(), AutomationError> {
+        let Some(path) = self.storage_path.as_ref() else {
+            return Ok(());
+        };
+        persistence::save_policies(path, policies).map_err(|e| {
+            tracing::error!(
+                path = %path.display(),
+                error = %e,
+                "failed to durably persist policy revocation — in-memory state left unchanged, revocation rejected (fail-visible)"
+            );
+            AutomationError::Internal(format!(
+                "failed to persist policy revocation to {}: {e}",
+                path.display()
+            ))
+        })
+    }
+
+    pub async fn update_policies(&self, policies: Vec<ExecutionPolicy>) {
+        let snapshot = {
+            let mut cache = self.policy_cache.write().await;
+            let mut allowed = self.allowed_processes.write().await;
+            let mut validated = self.validated_tokens.write().await;
+
+            allowed.clear();
+            for policy in &policies {
+                allowed.insert(policy.process_name.clone());
+            }
+
+            cache.policies = policies;
+            cache.last_updated = Utc::now();
+            validated.clear();
+            cache.policies.clone()
+        };
+        self.persist(&snapshot);
     }
 
     pub async fn is_cache_valid(&self) -> bool {
@@ -256,34 +338,64 @@ impl PolicyClient {
             .cloned()
     }
 
-    /// Add or replace a single execution policy by `policy_id`.
+    /// Add or replace a single execution policy by `policy_id`. Write-through
+    /// persisted (#7915) when the client was built via `with_persistence`.
     pub async fn add_policy(&self, policy: ExecutionPolicy) {
-        let mut cache = self.policy_cache.write().await;
-        cache.policies.retain(|p| p.policy_id != policy.policy_id);
-        let name = policy.process_name.clone();
-        cache.policies.push(policy);
-        cache.last_updated = Utc::now();
-        let mut allowed = self.allowed_processes.write().await;
-        allowed.insert(name);
-    }
-
-    /// Remove a policy by `policy_id`. Returns `true` if a policy was removed.
-    pub async fn remove_policy(&self, policy_id: &str) -> bool {
-        let mut cache = self.policy_cache.write().await;
-        let before = cache.policies.len();
-        cache.policies.retain(|p| p.policy_id != policy_id);
-        if cache.policies.len() < before {
+        let snapshot = {
+            let mut cache = self.policy_cache.write().await;
+            cache.policies.retain(|p| p.policy_id != policy.policy_id);
+            let name = policy.process_name.clone();
+            cache.policies.push(policy);
             cache.last_updated = Utc::now();
             let mut allowed = self.allowed_processes.write().await;
-            *allowed = cache
-                .policies
-                .iter()
-                .map(|p| p.process_name.clone())
-                .collect();
-            true
-        } else {
-            false
+            allowed.insert(name);
+            cache.policies.clone()
+        };
+        self.persist(&snapshot);
+    }
+
+    /// Remove a policy by `policy_id`. Returns `Ok(true)` if a policy was
+    /// removed, `Ok(false)` if no policy matched.
+    ///
+    /// PERSIST-FIRST revocation (#7932): a revocation is committed to disk BEFORE
+    /// the in-memory state changes. The removed set is atomically written
+    /// (temp+rename via `secure_file`) first; only on write success does the
+    /// in-memory cache and allowed-process index drop the policy. On persist
+    /// failure the in-memory state is left UNCHANGED and a typed error is
+    /// returned, so a revoked execution permission can never silently resurrect
+    /// on restart (the durable file matching a stale in-memory removal). A
+    /// revocation is therefore all-or-nothing and any durability failure is
+    /// surfaced to the caller. This deliberately differs from [`add_policy`]'s
+    /// write-through order: a grant lost on crash is fail-safe (permission
+    /// narrows), but a revocation lost on crash is fail-open (permission widens).
+    ///
+    /// The `policy_cache` write lock is held across the whole read → persist →
+    /// commit so a concurrent mutation cannot interleave between the durable
+    /// write and the in-memory commit and desync disk from memory.
+    pub async fn remove_policy(&self, policy_id: &str) -> Result<bool, AutomationError> {
+        let mut cache = self.policy_cache.write().await;
+        let before = cache.policies.len();
+        // Compute the removed set WITHOUT mutating the live cache yet, so a
+        // persist failure below leaves the in-memory state exactly as it was.
+        let updated: Vec<ExecutionPolicy> = cache
+            .policies
+            .iter()
+            .filter(|p| p.policy_id != policy_id)
+            .cloned()
+            .collect();
+        if updated.len() == before {
+            // No policy matched — nothing to revoke, no durability obligation.
+            return Ok(false);
         }
+        // Durability FIRST: commit the revocation to disk. On failure the memory
+        // is untouched and the typed error surfaces to the caller.
+        self.persist_checked(&updated)?;
+        // Durable write succeeded — now commit the removal to memory.
+        let mut allowed = self.allowed_processes.write().await;
+        *allowed = updated.iter().map(|p| p.process_name.clone()).collect();
+        cache.policies = updated;
+        cache.last_updated = Utc::now();
+        Ok(true)
     }
 
     /// Return a snapshot of all execution policies.
@@ -797,7 +909,9 @@ mod tests {
     #[tokio::test]
     async fn remove_policy_returns_false_for_unknown() {
         let client = PolicyClient::new();
-        assert!(!client.remove_policy("nonexistent").await);
+        // An in-memory client never persists, so remove is infallible; an unknown
+        // id is a no-op that returns Ok(false).
+        assert!(!client.remove_policy("nonexistent").await.unwrap());
     }
 
     #[tokio::test]
@@ -811,7 +925,7 @@ mod tests {
         client.add_policy(p2).await;
         assert_eq!(client.list_policies().await.len(), 2);
 
-        assert!(client.remove_policy("pol-1").await);
+        assert!(client.remove_policy("pol-1").await.unwrap());
         assert_eq!(client.list_policies().await.len(), 1);
         assert!(!client.is_process_allowed("git").await);
         assert!(client.is_process_allowed("ls").await);

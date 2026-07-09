@@ -13,8 +13,8 @@ pub use automation::AutomationIntent;
 pub use command::{IntentCommand, IntentConfig, IntentResult, VerificationResult};
 pub use elements::{ElementBounds, FinderSource, UiElement};
 pub use workflow::{
-    builtin_presets, platform_alt_modifier, platform_modifier, PresetCategory, WorkflowPreset,
-    WorkflowStep,
+    builtin_presets, platform_alt_modifier, platform_modifier, suggested_action_preset,
+    PresetCategory, WorkflowPreset, WorkflowStep, PRESET_DEEP_WORK_START,
 };
 
 #[cfg(test)]
@@ -209,6 +209,32 @@ mod tests {
         let deser: IntentCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(deser.command_id, "cmd-1");
         assert_eq!(deser.policy_token, "token-abc");
+    }
+
+    #[test]
+    fn intent_command_debug_redacts_policy_token() {
+        let cmd = IntentCommand {
+            command_id: "cmd-2".to_string(),
+            session_id: "sess-2".to_string(),
+            intent: AutomationIntent::ExecuteHotkey {
+                keys: vec!["Ctrl".to_string(), "S".to_string()],
+            },
+            config: None,
+            timeout_ms: Some(5000),
+            policy_token: "pol-2:nonce_5678:hcafebabe".to_string(),
+            origin: crate::models::automation::CommandOrigin::External,
+        };
+        let rendered = format!("{cmd:?}");
+        assert!(
+            !rendered.contains("pol-2:nonce_5678:hcafebabe"),
+            "Debug must not leak the policy_token: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "policy_token must render as [REDACTED]: {rendered}"
+        );
+        // Non-secret fields must still be visible for diagnostics.
+        assert!(rendered.contains("cmd-2"));
     }
 
     #[test]

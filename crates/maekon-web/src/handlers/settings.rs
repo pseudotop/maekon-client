@@ -42,10 +42,7 @@ mod tests {
     use maekon_core::config::AppConfig;
     use maekon_core::config::UpdateChannel;
     use maekon_core::config_manager::ConfigManager;
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
 
     #[test]
     fn default_settings_valid() {
@@ -176,9 +173,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_path = temp_dir.path().join("config.json");
         let config_manager = ConfigManager::with_path(config_path).expect("config manager");
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(8);
-        let mut state = crate::AppState::with_core(storage, event_tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.core.config_manager = Some(config_manager.clone());
         let context = SettingsWebContext::from_state(&state);
 
@@ -201,9 +197,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_path = temp_dir.path().join("config.json");
         let config_manager = ConfigManager::with_path(config_path).expect("config manager");
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(8);
-        let mut state = crate::AppState::with_core(storage, event_tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.core.config_manager = Some(config_manager);
         let context = SettingsWebContext::from_state(&state);
 

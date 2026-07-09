@@ -26,7 +26,6 @@ pub mod memory_graph;
 pub mod pomodoro;
 pub mod provider_cli_diagnostics;
 pub mod recalibration;
-pub mod remote_approval;
 pub mod session;
 pub mod skill;
 pub mod storage_records;

@@ -23,7 +23,6 @@ use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Variants constructed per-platform; serialized to frontend via serde
 pub enum DesktopPermissionState {
     Granted,
     NeedsAttention,
@@ -84,7 +83,13 @@ pub fn open_desktop_permission_settings(permission_kind: &str) -> Result<(), Str
         let url = macos_permission_settings_url(permission_kind).ok_or_else(|| {
             format!("Unsupported desktop permission settings kind: {permission_kind}")
         })?;
-        let status = std::process::Command::new("open")
+        // SEC-MON-01: resolve against the shared trusted-directory allowlist
+        // (maekon-monitor) instead of spawning a bare `open` — fail closed
+        // (no PATH fallback) when the binary is not found under any trusted
+        // system directory.
+        let open_path = maekon_monitor::resolve_trusted_binary("open")
+            .ok_or_else(|| "open not found under the trusted directory allowlist".to_string())?;
+        let status = std::process::Command::new(open_path)
             .arg(url)
             .status()
             .map_err(|err| format!("Failed to open macOS System Settings: {err}"))?;

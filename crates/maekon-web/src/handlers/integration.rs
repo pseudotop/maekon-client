@@ -159,9 +159,8 @@ mod tests {
         IntegrationAuditPort, IntegrationAuthPort, IntegrationInboxPort, IntegrationInboxStorePort,
         IntegrationOutboxPort, IntegrationRuntimeTelemetryPort, IntegrationSessionPort,
     };
-    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
+    use tokio::sync::Mutex;
 
     struct TestSessionPort(Option<IntegrationSessionState>);
 
@@ -483,9 +482,8 @@ mod tests {
         }
     }
 
+    // #7738 D-4: funnel through the canonical test-state helper.
     fn test_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(8);
         let inbox_prompts = Arc::new(Mutex::new(vec![StoredProactivePrompt {
             prompt: ProactivePrompt {
                 prompt_id: "prompt-1".to_string(),
@@ -507,7 +505,7 @@ mod tests {
             presented_at: None,
             dismiss_reason: None,
         }]));
-        let mut state = AppState::with_core(storage, event_tx);
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.integration.runtime_status = Some(IntegrationOutboundRuntimeStatus {
             enabled: true,
             bootstrap_configured: true,

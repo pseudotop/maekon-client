@@ -1,4 +1,17 @@
-#![allow(dead_code)] // Diagnostic module; invoked on-demand via debug IPC commands and scheduler health checks
+//! RSS + CPU self-process resource tracking + linear-regression
+//! leak-growth-rate analysis.
+//!
+// #7918: this module is now LIVE. `MemoryTracker` is wired into the scheduler
+// health-check loop (`scheduler/loops/resource_health.rs`), which records a
+// self-RSS/CPU snapshot each health tick and logs a budget-breach warning
+// against the resource-budget SSOT (`maekon_core::resource_budget`); and
+// `sample_self_resource_usage` backs the `get_resource_usage_snapshot`
+// diagnostics IPC (`commands/system.rs`). (Before #7918 it had zero live
+// callers — #7719's stale-comment note.) `#![allow(dead_code)]` is retained
+// because a handful of diagnostic helpers here (`get_current_rss` free fn,
+// `log_analysis`, `MemoryAnalysis::growth_bytes`/`growth_percent`) remain
+// utility-only, exercised solely by this module's own tests.
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -13,6 +26,10 @@ const MAX_SNAPSHOTS: usize = 1000;
 pub struct MemorySnapshot {
     /// RSS (Resident Set Size) in bytes
     pub rss_bytes: u64,
+    /// #7918: self-process CPU usage (%, multi-core aggregate) measured over
+    /// the interval since the previous refresh of the shared `System`. `0.0`
+    /// on the first snapshot (no prior baseline) and on unsupported platforms.
+    pub cpu_percent: f32,
     pub heap_bytes: u64,
     pub timestamp: Instant,
 }
@@ -76,9 +93,14 @@ impl MemoryTracker {
     pub fn record_snapshot(&self) -> Option<MemorySnapshot> {
         // F-PF-C21-05: measure RSS via the shared `System` instance — removes the
         // per-call `System::new()`.
-        let rss = self.get_rss_shared()?;
+        // #7918: the same refresh also yields CPU usage over the interval since
+        // the previous refresh (the health loop's ~5s tick cadence is a natural
+        // sampling window — no artificial sleep needed, unlike a one-shot
+        // sampler).
+        let (rss, cpu) = self.sample_shared()?;
         let snapshot = MemorySnapshot {
             rss_bytes: rss,
+            cpu_percent: cpu,
             heap_bytes: 0, // platform-specific implementation pending
             timestamp: Instant::now(),
         };
@@ -139,17 +161,20 @@ impl MemoryTracker {
         }
     }
 
-    /// F-PF-C21-05: return the current process RSS via the shared `System`
-    /// instance. Returns None on unsupported platforms (same semantics as the
-    /// `get_current_rss()` free function).
-    fn get_rss_shared(&self) -> Option<u64> {
+    /// F-PF-C21-05 / #7918: return the current process RSS (bytes) + CPU usage
+    /// (%, multi-core aggregate) via the shared `System` instance. CPU usage is
+    /// computed by `sysinfo` from the delta since the previous refresh of this
+    /// same `System`, so a periodic caller (the health loop) gets a real
+    /// interval measurement for free. Returns None on unsupported platforms
+    /// (same semantics as the `get_current_rss()` free function).
+    fn sample_shared(&self) -> Option<(u64, f32)> {
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         {
             use sysinfo::{Pid, ProcessesToUpdate};
             let pid = Pid::from_u32(std::process::id());
             let mut sys = self.system.lock().ok()?;
             sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-            sys.process(pid).map(|p| p.memory())
+            sys.process(pid).map(|p| (p.memory(), p.cpu_usage()))
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         None
@@ -246,6 +271,50 @@ pub fn get_current_rss() -> Option<u64> {
     None
 }
 
+/// #7918: a one-shot self-process resource sample (RSS + CPU%), for on-demand
+/// diagnostics readers such as the `get_resource_usage_snapshot` IPC.
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceUsageSample {
+    /// RSS (Resident Set Size) in bytes.
+    pub rss_bytes: u64,
+    /// CPU usage (%, multi-core aggregate — can exceed 100% on a multi-threaded
+    /// process). Sampled over `MINIMUM_CPU_UPDATE_INTERVAL` between two
+    /// refreshes.
+    pub cpu_percent: f32,
+}
+
+/// #7918: sample the current process's RSS + CPU usage via sysinfo, for
+/// on-demand callers (the diagnostics IPC) that do not share a long-lived
+/// `System` the way `MemoryTracker` does.
+///
+/// Unlike `MemoryTracker::record_snapshot` — which reuses a shared `System` and
+/// therefore reads CPU across the caller's own tick cadence — this creates a
+/// throwaway `System` and must perform two refreshes separated by
+/// `MINIMUM_CPU_UPDATE_INTERVAL` to obtain a meaningful CPU delta. It therefore
+/// BLOCKS for that interval and must be called off the async executor (e.g. via
+/// `spawn_blocking`). Returns `None` on unsupported platforms.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub fn sample_self_resource_usage() -> Option<ResourceUsageSample> {
+    use sysinfo::{Pid, ProcessesToUpdate, System, MINIMUM_CPU_UPDATE_INTERVAL};
+
+    let pid = Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    // 1st refresh — establish the CPU-usage baseline.
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+    // 2nd refresh — CPU usage is now derived from the elapsed interval.
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map(|p| ResourceUsageSample {
+        rss_bytes: p.memory(),
+        cpu_percent: p.cpu_usage(),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn sample_self_resource_usage() -> Option<ResourceUsageSample> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,22 +347,52 @@ mod tests {
         }
     }
 
+    /// #7918: `sample_self_resource_usage` returns a real RSS on supported
+    /// platforms. CPU is not asserted for a value (it can legitimately read
+    /// 0.0 on an idle process), only that the sample is produced.
+    #[test]
+    fn test_sample_self_resource_usage() {
+        let sample = sample_self_resource_usage();
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            let sample = sample.expect("self resource sample must be Some on macOS/Linux");
+            assert!(sample.rss_bytes > 0, "self RSS must be > 0");
+            assert!(sample.cpu_percent >= 0.0, "self CPU must be non-negative");
+        }
+    }
+
+    /// #7918: `record_snapshot` now populates `cpu_percent`. The first snapshot
+    /// reads 0.0 (no prior refresh baseline), so we only assert the field is
+    /// present and non-negative — not a specific value.
+    #[test]
+    fn test_record_snapshot_populates_cpu_field() {
+        let tracker = MemoryTracker::new();
+        if let Some(snapshot) = tracker.record_snapshot() {
+            assert!(
+                snapshot.cpu_percent >= 0.0,
+                "cpu_percent must be non-negative"
+            );
+        }
+    }
+
     #[test]
     fn test_growth_rate_calculation() {
         let base = Instant::now();
         let snapshots = vec![
             MemorySnapshot {
                 rss_bytes: 100_000_000,
+                cpu_percent: 0.0,
                 heap_bytes: 0,
                 timestamp: base,
             },
             MemorySnapshot {
                 rss_bytes: 101_000_000,
+                cpu_percent: 0.0,
                 heap_bytes: 0,
                 timestamp: base + Duration::from_secs(1),
             },
             MemorySnapshot {
                 rss_bytes: 102_000_000,
+                cpu_percent: 0.0,
                 heap_bytes: 0,
                 timestamp: base + Duration::from_secs(2),
             },
@@ -364,6 +463,7 @@ mod tests {
             for i in 0..=(MAX_SNAPSHOTS) {
                 snapshots.push(MemorySnapshot {
                     rss_bytes: 100_000_000 + i as u64 * 1000,
+                    cpu_percent: 0.0,
                     heap_bytes: 0,
                     timestamp: base,
                 });

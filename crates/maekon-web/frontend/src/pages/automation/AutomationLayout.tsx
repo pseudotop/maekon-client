@@ -13,6 +13,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { colors, typography } from '../../styles/tokens'
 import type { BadgeColor } from '../../styles/variants'
 import { cn } from '../../utils/cn'
+// #7916: GUI HITL picker (highlight → confirm → ticket → gated execution)
+import GuiPickerPanel from './GuiPickerPanel'
 // #5705: natural-language automation entry point visible on all 3 tabs
 import IntentHintBar from './IntentHintBar'
 
@@ -118,6 +120,8 @@ export default function AutomationLayout() {
 
       {/* #5705: Intent hint bar — visible above status cards on all 3 tabs */}
       <IntentHintBar status={status} />
+
+      <GuiPickerPanel status={status} />
 
       {/* Status cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
