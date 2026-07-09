@@ -2,8 +2,8 @@
 use maekon_api_contracts::ai_providers::ProviderTransportSpec;
 #[cfg(feature = "analysis")]
 use maekon_api_contracts::provider_specs::{
-    self, parse_surface_execution_kind, provider_surface_catalog, provider_surface_spec,
-    ProviderSurfaceSpec, ProviderTransportKind, SurfaceExecutionKind,
+    self, provider_surface_catalog, provider_surface_spec, ProviderSurfaceSpec,
+    ProviderTransportKind, SurfaceExecutionKind,
 };
 #[cfg(feature = "analysis")]
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AiProviderType, ExternalApiEndpoint};
@@ -53,8 +53,7 @@ fn managed_oauth_surface_specs() -> Result<Vec<&'static ProviderSurfaceSpec>, St
         .surfaces
         .iter()
         .filter(|surface| {
-            parse_surface_execution_kind(&surface.execution_kind).ok()
-                == Some(SurfaceExecutionKind::ManagedHttp)
+            surface.execution_kind == SurfaceExecutionKind::ManagedHttp
                 && surface
                     .credential_kind
                     .eq_ignore_ascii_case("managed_oauth")
@@ -178,14 +177,7 @@ fn managed_oauth_surface(
             resource_type: "provider_surface".to_string(),
             id: msg,
         })?;
-    // Iter-107: catalog metadata has bad execution_kind value = invalid
-    // catalog data (programmer/catalog bug). Config::Invalid fits the
-    // "catalog contains an unsupported value" semantic better than Internal.
-    if parse_surface_execution_kind(&surface.execution_kind).map_err(|msg| CoreError::Config {
-        code: maekon_core::error_codes::ConfigCode::Invalid,
-        message: msg,
-    })? != SurfaceExecutionKind::ManagedHttp
-    {
+    if surface.execution_kind != SurfaceExecutionKind::ManagedHttp {
         return Err(CoreError::Config {
             code: maekon_core::error_codes::ConfigCode::Invalid,
             message: "Selected provider surface does not use managed OAuth transport.".to_string(),

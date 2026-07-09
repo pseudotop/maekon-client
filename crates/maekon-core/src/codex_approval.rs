@@ -508,8 +508,8 @@ fn strip_surrounding_quotes(token: &str) -> &str {
     token
 }
 
-/// Maximum recursion depth when unwrapping nested shell-interpreter wrappers
-/// (e.g. `bash -c "sh -c '...'"`). A small cap is enough for any legitimate
+/// Maximum recursion depth when unwrapping nested command wrappers (e.g.
+/// `sudo bash -c "sh -c '...'"`). A small cap is enough for any legitimate
 /// command and prevents a crafted, deeply-nested wrapper from blowing the stack
 /// or starving the gate. Once the cap is hit we still screen the wrapper's own
 /// argv (program-gated + joined checks), we just stop re-tokenizing deeper.
@@ -521,6 +521,183 @@ const MAX_WRAPPER_DEPTH: usize = 3;
 /// command hidden inside a wrapper (e.g. `bash -lc "rm -rf /"`) cannot bypass
 /// the program-gated checks below (which would otherwise see `program=="bash"`).
 const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Execution wrappers whose trailing argv is another command. These wrappers
+/// are not dangerous by themselves, but they can hide the real program from the
+/// program-gated rules below (`sudo rm -rf /`, `env rm -rf /`, `timeout 5 rm …`).
+const EXEC_WRAPPERS: &[&str] = &[
+    "sudo", "doas", "env", "nice", "timeout", "nohup", "xargs", "stdbuf", "setsid",
+];
+
+fn program_basename_lower(token: &str) -> String {
+    token
+        .rsplit('/')
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase()
+}
+
+fn env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn option_takes_value(token: &str, short: &[char], long: &[&str]) -> bool {
+    if token.starts_with("--") {
+        let option = token.split_once('=').map(|(name, _)| name).unwrap_or(token);
+        return long.contains(&option);
+    }
+    if token.len() < 2 || !token.starts_with('-') || token == "-" {
+        return false;
+    }
+    let mut chars = token[1..].chars();
+    let Some(flag) = chars.next() else {
+        return false;
+    };
+    short.contains(&flag)
+}
+
+fn skip_wrapper_options(
+    norm: &[String],
+    mut idx: usize,
+    short_value_options: &[char],
+    long_value_options: &[&str],
+) -> usize {
+    while idx < norm.len() {
+        let arg = norm[idx].as_str();
+        if arg == "--" {
+            return idx + 1;
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            break;
+        }
+        let takes_separate_value = option_takes_value(arg, short_value_options, long_value_options)
+            && !arg.contains('=')
+            && (arg.len() == 2 || arg.starts_with("--"));
+        idx += 1;
+        if takes_separate_value && idx < norm.len() {
+            idx += 1;
+        }
+    }
+    idx
+}
+
+fn payload_from(norm: &[String], idx: usize) -> Option<Vec<String>> {
+    (idx < norm.len()).then(|| norm[idx..].to_vec())
+}
+
+fn env_wrapper_payload(norm: &[String]) -> Option<Vec<String>> {
+    let mut idx = 1;
+    while idx < norm.len() {
+        let arg = norm[idx].as_str();
+        if arg == "--" {
+            return payload_from(norm, idx + 1);
+        }
+        if arg == "-S" || arg == "--split-string" {
+            if idx + 1 >= norm.len() {
+                return None;
+            }
+            let script = norm[idx + 1..].join(" ");
+            return Some(shell_split(strip_surrounding_quotes(&script)));
+        }
+        if let Some(script) = arg.strip_prefix("--split-string=") {
+            return Some(shell_split(strip_surrounding_quotes(script)));
+        }
+        if env_assignment(arg) {
+            idx += 1;
+            continue;
+        }
+        if arg.starts_with('-') && arg != "-" {
+            let takes_separate_value =
+                option_takes_value(arg, &['u', 'C'], &["--unset", "--chdir"])
+                    && !arg.contains('=')
+                    && (arg.len() == 2 || arg.starts_with("--"));
+            idx += 1;
+            if takes_separate_value && idx < norm.len() {
+                idx += 1;
+            }
+            continue;
+        }
+        return payload_from(norm, idx);
+    }
+    None
+}
+
+fn exec_wrapper_payload(norm: &[String]) -> Option<Vec<String>> {
+    if norm.len() < 2 {
+        return None;
+    }
+    let wrapper = program_basename_lower(&norm[0]);
+    if !EXEC_WRAPPERS.contains(&wrapper.as_str()) {
+        return None;
+    }
+    match wrapper.as_str() {
+        "sudo" | "doas" => {
+            let idx = skip_wrapper_options(
+                norm,
+                1,
+                &['u', 'g', 'h', 'p', 'C', 'D', 'r', 't', 'U', 'T'],
+                &[
+                    "--user",
+                    "--group",
+                    "--host",
+                    "--prompt",
+                    "--chdir",
+                    "--role",
+                    "--type",
+                    "--other-user",
+                    "--command-timeout",
+                ],
+            );
+            payload_from(norm, idx)
+        }
+        "env" => env_wrapper_payload(norm),
+        "nice" => {
+            let idx = skip_wrapper_options(norm, 1, &['n'], &["--adjustment"]);
+            payload_from(norm, idx)
+        }
+        "timeout" => {
+            let duration_idx =
+                skip_wrapper_options(norm, 1, &['k', 's'], &["--kill-after", "--signal"]);
+            payload_from(norm, duration_idx + 1)
+        }
+        "nohup" => payload_from(norm, 1),
+        "xargs" => {
+            let idx = skip_wrapper_options(
+                norm,
+                1,
+                &['a', 'd', 'E', 'e', 'I', 'i', 'L', 'l', 'n', 'P', 's'],
+                &[
+                    "--arg-file",
+                    "--delimiter",
+                    "--eof",
+                    "--replace",
+                    "--max-lines",
+                    "--max-args",
+                    "--max-procs",
+                    "--max-chars",
+                ],
+            );
+            payload_from(norm, idx)
+        }
+        "stdbuf" => {
+            let idx = skip_wrapper_options(
+                norm,
+                1,
+                &['i', 'o', 'e'],
+                &["--input", "--output", "--error"],
+            );
+            payload_from(norm, idx)
+        }
+        "setsid" => {
+            let idx = skip_wrapper_options(norm, 1, &[], &[]);
+            payload_from(norm, idx)
+        }
+        _ => None,
+    }
+}
 
 /// Flags that introduce an inline command string for a shell interpreter. We
 /// match the canonical `-c` plus the common combined short forms (`-lc`, `-ic`,
@@ -577,12 +754,20 @@ fn is_dangerous_inner(argv: &[String], depth: usize) -> bool {
         .iter()
         .map(|a| strip_surrounding_quotes(a).to_string())
         .collect();
-    let program = norm[0]
-        .rsplit('/')
-        .next()
-        .unwrap_or(&norm[0])
-        .to_ascii_lowercase();
+    let program = program_basename_lower(&norm[0]);
     let joined = norm.join(" ").replace(['"', '\''], "").to_ascii_lowercase();
+
+    // Exec-wrapper prefix unwrap (#7482): `sudo`, `env`, `timeout`, `nice`,
+    // `xargs`, and siblings can put the real program after wrapper flags. The
+    // destructive rules below are program-gated, so they must see the payload
+    // command rather than the wrapper program.
+    if depth < MAX_WRAPPER_DEPTH {
+        if let Some(inner) = exec_wrapper_payload(&norm) {
+            if is_dangerous_inner(&inner, depth + 1) {
+                return true;
+            }
+        }
+    }
 
     // Shell-interpreter wrapper unwrap (#6166): a destructive command can hide
     // inside `bash -lc "rm -rf /"` / `sh -c "dd if=/dev/zero of=/dev/sda"`. The
@@ -974,6 +1159,34 @@ mod tests {
         assert!(is_dangerous(&svec(&["bash", "-c", "sh -c \"rm -rf /\""])));
     }
 
+    /// #7482 — exec wrappers must not hide the real program from the static
+    /// dangerous-command backstop. These wrappers parse options before spawning
+    /// a trailing command, so the screen must unwrap that payload first.
+    #[test]
+    fn dangerous_exec_wrapper_unwraps_payload_command() {
+        let cases = vec![
+            svec(&["env", "rm", "-rf", "/"]),
+            svec(&["env", "-i", "PATH=/usr/bin", "rm", "-r", "-f", "/"]),
+            svec(&["env", "-S", "rm -rf /"]),
+            svec(&["sudo", "rm", "-rf", "/"]),
+            svec(&["sudo", "-n", "-u", "root", "rm", "-rf", "/"]),
+            svec(&["doas", "-u", "root", "rm", "-rf", "/"]),
+            svec(&["nice", "-n", "5", "rm", "-rf", "/"]),
+            svec(&["timeout", "5", "rm", "-rf", "/"]),
+            svec(&["timeout", "-k", "1", "5", "rm", "-rf", "/"]),
+            svec(&["nohup", "rm", "-rf", "/"]),
+            svec(&["setsid", "-w", "rm", "-rf", "/"]),
+            svec(&["stdbuf", "-oL", "rm", "-rf", "/"]),
+            svec(&["xargs", "-I", "{}", "rm", "-rf", "/"]),
+            svec(&["sudo", "bash", "-lc", "rm -rf /"]),
+            svec(&["env", "FOO=bar", "sh", "-c", "dd if=/dev/zero of=/dev/sda"]),
+        ];
+
+        for argv in cases {
+            assert!(is_dangerous(&argv), "expected dangerous: {argv:?}");
+        }
+    }
+
     /// #6166 — a benign wrapped command must NOT be flagged just because it is
     /// wrapped in a shell interpreter.
     #[test]
@@ -981,6 +1194,26 @@ mod tests {
         assert!(!is_dangerous(&svec(&["bash", "-lc", "ls -la"])));
         assert!(!is_dangerous(&svec(&["sh", "-c", "rm -rf ./build"])));
         assert!(!is_dangerous(&svec(&["bash", "-lc", "git status"])));
+    }
+
+    /// #7482 — benign commands remain allowed when wrapped; unwrapping must not
+    /// turn every wrapper use into an automatic denial.
+    #[test]
+    fn safe_exec_wrapper_payload_not_dangerous() {
+        let cases = vec![
+            svec(&["env", "PATH=/usr/bin", "git", "status"]),
+            svec(&["sudo", "-n", "git", "status"]),
+            svec(&["nice", "-n", "5", "ls", "-la"]),
+            svec(&["timeout", "5", "rm", "-rf", "./build"]),
+            svec(&["nohup", "cargo", "test"]),
+            svec(&["setsid", "-w", "git", "status"]),
+            svec(&["stdbuf", "-oL", "cargo", "test"]),
+            svec(&["xargs", "-I", "{}", "echo", "{}"]),
+        ];
+
+        for argv in cases {
+            assert!(!is_dangerous(&argv), "expected safe: {argv:?}");
+        }
     }
 
     /// #6167 — `rm` recursion + force flags split or reordered across multiple

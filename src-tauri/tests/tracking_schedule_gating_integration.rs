@@ -43,6 +43,7 @@
 //! §3.3 A.8 / CONS-PC02 / CONS-PI05 / §3.8.
 
 use chrono::Utc;
+use maekon_app::scheduler::{capture_permitted_now, set_battery_saver_active_for_scheduler};
 use maekon_core::config::{AppConfig, TrackingScheduleConfig, TrackingWindow, Weekday};
 use maekon_core::consent::ConsentPermissions;
 use maekon_core::models::event::{
@@ -58,21 +59,33 @@ use std::path::PathBuf;
 
 /// Create an `AppConfig` with tracking schedule set to active (TS window covers
 /// a broad Mon–Fri 00:00–23:59 window so the gate fires during any test run).
+///
+/// #7734: resets the process-global `BATTERY_SAVER_ACTIVE` flag to `false` —
+/// every gate test in this file calls this fixture (or [`cfg_ts_inactive`])
+/// first, under the shared `#[serial_test::serial(ts_gating)]` guard, so this
+/// is the single reset point for the real `capture_permitted_now`'s
+/// battery-saver term (no reliance on process-start default).
 fn cfg_ts_active() -> AppConfig {
+    set_battery_saver_active_for_scheduler(false);
     let mut cfg = AppConfig::default_config();
-    // Active hours: full day, all 5 weekdays — ensures active_hours gate = true.
-    cfg.schedule.active_hours_enabled = true;
-    cfg.schedule.active_start_hour = 0;
-    cfg.schedule.active_end_hour = 0; // midnight wrap = full day
-    cfg.schedule.active_days = vec![
-        Weekday::Mon,
-        Weekday::Tue,
-        Weekday::Wed,
-        Weekday::Thu,
-        Weekday::Fri,
-        Weekday::Sat,
-        Weekday::Sun,
-    ];
+    // Explicit, not relying on Default: the real capture_permitted_now gate
+    // requires cfg.vision.capture_enabled and treats
+    // cfg.schedule.pause_on_battery_saver=false as neutralizing the
+    // battery-saver term regardless of the (reset-to-false) global flag.
+    cfg.vision.capture_enabled = true;
+    cfg.schedule.pause_on_battery_saver = false;
+    // #7734: active_hours must never gate this fixture — TS is the only
+    // variable under test. Previously this used
+    // `active_start_hour = active_end_hour = 0` under the OLD hand-rolled
+    // `active_hours_check()`'s (incorrect) assumption that an equal
+    // start/end means "full day". The real `should_run_now_with_time`
+    // (src-tauri/src/scheduler/schedule.rs) documents the opposite:
+    // "Equal (end == start): treated as empty window -> returns false" —
+    // so that combination made active_hours ALWAYS deny, silently masking
+    // the TS-active assertions below (they still passed, but for the wrong
+    // reason). Disabling active_hours entirely is the correct way to take
+    // it out of the picture.
+    cfg.schedule.active_hours_enabled = false;
     // Tracking schedule: enabled with an all-day window on every day.
     cfg.tracking_schedule = TrackingScheduleConfig {
         enabled: true,
@@ -96,22 +109,18 @@ fn cfg_ts_active() -> AppConfig {
 }
 
 /// Create an `AppConfig` with tracking schedule disabled.
-/// Active hours cover all days/hours so the only variable is TS.
+/// Active hours are disabled so the only variable is TS (see [`cfg_ts_active`]
+/// for why an equal-start/end "full day" encoding is wrong against the real
+/// gate).
+///
+/// #7734: see [`cfg_ts_active`] for the `BATTERY_SAVER_ACTIVE` reset +
+/// explicit-field rationale (identical here).
 fn cfg_ts_inactive() -> AppConfig {
+    set_battery_saver_active_for_scheduler(false);
     let mut cfg = AppConfig::default_config();
-    // Active hours: full week, all hours.
-    cfg.schedule.active_hours_enabled = true;
-    cfg.schedule.active_start_hour = 0;
-    cfg.schedule.active_end_hour = 0; // midnight wrap = full day
-    cfg.schedule.active_days = vec![
-        Weekday::Mon,
-        Weekday::Tue,
-        Weekday::Wed,
-        Weekday::Thu,
-        Weekday::Fri,
-        Weekday::Sat,
-        Weekday::Sun,
-    ];
+    cfg.vision.capture_enabled = true;
+    cfg.schedule.pause_on_battery_saver = false;
+    cfg.schedule.active_hours_enabled = false;
     // TS disabled — not firing.
     cfg.tracking_schedule = TrackingScheduleConfig::default();
     cfg
@@ -249,74 +258,11 @@ fn make_file_access_event() -> Event {
     })
 }
 
-/// Verify the 4-term gate result for a given config, consent, and paused state.
-///
-/// Implements the 4-term composite gate using public `maekon-core` types —
-/// mirrors `crate::scheduler::capture_permitted_now` exactly.
-///
-/// Note: the binary crate has no `[lib]` target so `maekon_app::scheduler::`
-/// is not reachable from integration tests. This function duplicates the same
-/// logic using the public `TrackingWindow::window_is_active` API added in A.3
-/// and the same `ConsentPermissions::screen_capture` check.
-fn gate_result(cfg: &AppConfig, consent: &ConsentPermissions, capture_paused: bool) -> bool {
-    use chrono::Local;
-    let now = Local::now();
-    // Term 1: consent top-authority
-    if !consent.screen_capture {
-        return false;
-    }
-    // Term 2: active_hours gate
-    if !active_hours_check(cfg, now) {
-        return false;
-    }
-    // Term 3: tracking-schedule mute gate
-    let ts_active = cfg.tracking_schedule.enabled
-        && cfg
-            .tracking_schedule
-            .windows
-            .iter()
-            .any(|w| w.window_is_active(now));
-    if ts_active {
-        return false;
-    }
-    // Term 4: tray-pause veto
-    !capture_paused
-}
-
-/// Implements the active-hours check from `should_run_now_with_time`.
-fn active_hours_check(cfg: &AppConfig, now: chrono::DateTime<chrono::Local>) -> bool {
-    use chrono::Timelike as _;
-    let sched = &cfg.schedule;
-    if !sched.active_hours_enabled {
-        return true;
-    }
-    let weekday = {
-        use chrono::Datelike as _;
-        match now.weekday() {
-            chrono::Weekday::Mon => Weekday::Mon,
-            chrono::Weekday::Tue => Weekday::Tue,
-            chrono::Weekday::Wed => Weekday::Wed,
-            chrono::Weekday::Thu => Weekday::Thu,
-            chrono::Weekday::Fri => Weekday::Fri,
-            chrono::Weekday::Sat => Weekday::Sat,
-            chrono::Weekday::Sun => Weekday::Sun,
-        }
-    };
-    if !sched.active_days.contains(&weekday) {
-        return false;
-    }
-    let hour = now.hour() as u8;
-    let start = sched.active_start_hour;
-    let end = sched.active_end_hour;
-    if start == end {
-        return true; // full day
-    }
-    if start < end {
-        hour >= start && hour < end
-    } else {
-        hour >= start || hour < end
-    }
-}
+// #7734: the hand-rolled `gate_result()`/`active_hours_check()` duplicate of
+// the 4/5-term composite gate (previously required because the binary crate
+// had no `[lib]` target) is removed — all call sites below now use the real
+// `maekon_app::scheduler::capture_permitted_now` (exact 3-arg drop-in),
+// imported at the top of this file.
 
 // ── Gate delegation helpers (Tier 2) ─────────────────────────────────────────
 //
@@ -331,28 +277,28 @@ fn active_hours_check(cfg: &AppConfig, now: chrono::DateTime<chrono::Local>) -> 
 /// confirms the gate logic closes when TS is active (consent granted, not paused).
 fn analysis_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
     // Gate closed = loop skips = !gate_result.
-    !gate_result(cfg, &consent_granted(), false)
+    !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the focus loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_focus_loop` now calls `capture_permitted_now`.
 fn focus_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
-    !gate_result(cfg, &consent_granted(), false)
+    !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the coaching loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_coaching_loop` now calls `capture_permitted_now`.
 fn coaching_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
-    !gate_result(cfg, &consent_granted(), false)
+    !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the cross-device sync loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_cross_device_sync_loop` now calls `capture_permitted_now`.
 fn cross_device_sync_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
-    !gate_result(cfg, &consent_granted(), false)
+    !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the audio IPC `start_audio_capture` command would reject
@@ -361,7 +307,7 @@ fn cross_device_sync_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
 /// A.9: wired — `commands::audio::start_audio_capture` now calls `capture_permitted_now`
 /// and returns `validation.invalid_arguments` when !permitted.
 fn audio_ipc_would_refuse_during_ts(cfg: &AppConfig) -> bool {
-    !gate_result(cfg, &consent_granted(), false)
+    !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 // ── Tier 1: Per-variant event suppress (TS active → zero rows) ──────────────
@@ -388,7 +334,7 @@ async fn ts_active_suppresses_window_switch_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     // Gate must be closed when TS is active.
     assert!(
@@ -417,7 +363,7 @@ async fn ts_active_suppresses_process_snapshot_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -444,7 +390,7 @@ async fn ts_active_suppresses_input_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -471,7 +417,7 @@ async fn ts_active_suppresses_clipboard_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -498,7 +444,7 @@ async fn ts_active_suppresses_file_access_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -531,7 +477,7 @@ async fn ts_inactive_allows_window_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         permitted,
@@ -559,7 +505,7 @@ async fn ts_inactive_allows_process_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         permitted,
@@ -587,7 +533,7 @@ async fn ts_inactive_allows_input_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         permitted,
@@ -615,7 +561,7 @@ async fn ts_inactive_allows_clipboard_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         permitted,
@@ -643,7 +589,7 @@ async fn ts_inactive_allows_file_access_events() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         permitted,
@@ -674,7 +620,7 @@ async fn consent_revoked_suppresses_events_during_ts_inactive() {
     let capture_paused = false;
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -710,7 +656,7 @@ async fn capture_paused_suppresses_events_during_ts_inactive() {
     let capture_paused = true; // tray-toggle veto active
     let storage = in_memory_storage();
 
-    let permitted = gate_result(&cfg, &consent, capture_paused);
+    let permitted = capture_permitted_now(&cfg, &consent, capture_paused);
 
     assert!(
         !permitted,
@@ -856,7 +802,7 @@ fn heartbeat_loop_continues_during_ts() {
     let capture_paused = false;
 
     // Gate result is false (TS active) — but heartbeat is independent of capture gate.
-    let capture_gate = gate_result(&cfg, &consent, capture_paused);
+    let capture_gate = capture_permitted_now(&cfg, &consent, capture_paused);
 
     // Heartbeat should continue regardless of capture gate.
     // The heartbeat loop checks only server connectivity, never capture_permitted_now.
@@ -886,7 +832,7 @@ fn oauth_refresh_loop_continues_during_ts() {
     let consent = consent_granted();
     let capture_paused = false;
 
-    let capture_gate = gate_result(&cfg, &consent, capture_paused);
+    let capture_gate = capture_permitted_now(&cfg, &consent, capture_paused);
 
     // OAuth refresh is intentionally ungated — token validity must persist
     // through TS windows for seamless server reconnection post-window.
@@ -937,25 +883,25 @@ fn oauth_refresh_loop_continues_during_ts() {
 async fn gate_truth_table_end_to_end() {
     // When TS active + consent granted + not paused → gate = false
     assert!(
-        !gate_result(&cfg_ts_active(), &consent_granted(), false),
+        !capture_permitted_now(&cfg_ts_active(), &consent_granted(), false),
         "TS active + consent granted + not paused → gate must be closed"
     );
 
     // When TS inactive + consent granted + not paused → gate = true
     assert!(
-        gate_result(&cfg_ts_inactive(), &consent_granted(), false),
+        capture_permitted_now(&cfg_ts_inactive(), &consent_granted(), false),
         "TS inactive + consent granted + not paused → gate must be open"
     );
 
     // When TS inactive + consent revoked + not paused → gate = false (consent veto)
     assert!(
-        !gate_result(&cfg_ts_inactive(), &consent_revoked(), false),
+        !capture_permitted_now(&cfg_ts_inactive(), &consent_revoked(), false),
         "TS inactive + consent revoked → gate must be closed (consent top-authority)"
     );
 
     // When TS inactive + consent granted + paused → gate = false (tray-pause veto)
     assert!(
-        !gate_result(&cfg_ts_inactive(), &consent_granted(), true),
+        !capture_permitted_now(&cfg_ts_inactive(), &consent_granted(), true),
         "TS inactive + consent granted + capture_paused → gate must be closed (tray veto)"
     );
 
@@ -964,7 +910,7 @@ async fn gate_truth_table_end_to_end() {
 
     // Gate open: write and confirm.
     let cfg_open = cfg_ts_inactive();
-    let permitted_open = gate_result(&cfg_open, &consent_granted(), false);
+    let permitted_open = capture_permitted_now(&cfg_open, &consent_granted(), false);
     if permitted_open {
         storage.save_event(&make_window_event()).await.unwrap();
     }
@@ -976,7 +922,7 @@ async fn gate_truth_table_end_to_end() {
     // Gate closed: no write.
     let storage2 = in_memory_storage();
     let cfg_closed = cfg_ts_active();
-    let permitted_closed = gate_result(&cfg_closed, &consent_granted(), false);
+    let permitted_closed = capture_permitted_now(&cfg_closed, &consent_granted(), false);
     if permitted_closed {
         storage2.save_event(&make_window_event()).await.unwrap();
     }

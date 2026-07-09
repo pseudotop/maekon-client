@@ -12,6 +12,15 @@ pub struct FocusModeState {
     last_deactivation: RwLock<Option<Instant>>,
 }
 
+// #7734: `pub mod focus_mode` (the `[lib]` target enabler) makes this type
+// reachable, tripping clippy::new_without_default under `-D warnings`. Trivial
+// forwarding impl — no behavior change.
+impl Default for FocusModeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FocusModeState {
     pub fn new() -> Self {
         Self {

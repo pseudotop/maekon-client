@@ -99,10 +99,14 @@ impl Default for EventRateLimiter {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)]
 impl EventRateLimiter {
     /// Test-only: shift `last_refill` of a specific bucket to a past Instant
     /// so tests can assert refill behavior without sleeping.
+    // Both methods' only callers live in `#[cfg(test)] mod tests` below; a
+    // `--lib` check with only the `test-support` feature enabled (no
+    // `cfg(test)`) compiles them without that caller, so they read as dead
+    // there.
+    #[allow(dead_code)]
     pub(super) fn set_last_refill_for_test(&mut self, event_type: &str, t: Instant) {
         if let Some(bucket) = self.buckets.get_mut(event_type) {
             bucket.last_refill = t;
@@ -111,6 +115,7 @@ impl EventRateLimiter {
 
     /// Test-only: count of distinct buckets (lets tests assert the
     /// MAX_BUCKETS cap without reaching into the private field).
+    #[allow(dead_code)]
     pub(super) fn bucket_count_for_test(&self) -> usize {
         self.buckets.len()
     }

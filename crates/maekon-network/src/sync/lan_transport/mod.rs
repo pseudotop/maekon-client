@@ -44,11 +44,14 @@ const PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// to already-tracked peers are accepted; new device_ids are dropped.
 const MAX_VERIFIED_PEERS: usize = 256;
 
-#[allow(dead_code)]
 pub struct LanSyncTransport {
     discovery: parking_lot::Mutex<LanDiscovery>,
     server: parking_lot::Mutex<LanPeerServer>,
     local_device_id: String,
+    // Human-readable name; `local_device_id` (used throughout auth.rs/
+    // operations.rs) is the functional identifier. Not read back today — kept
+    // for a future peer-list "friendly name" surface.
+    #[allow(dead_code)]
     local_device_name: String,
     passphrase: String,
     /// Verified peers (device_id -> LanPeerInfo).

@@ -193,6 +193,38 @@ impl SystemMonitor for SysInfoMonitor {
     }
 }
 
+/// Whether [`SysInfoMonitor::current_power_status`] returns REAL battery/power
+/// data on this platform.
+///
+/// Only macOS has a live bridge today (`pmset -g batt` via
+/// `crate::macos::current_power_status_macos`) — Windows and Linux always take
+/// the `#[cfg(not(target_os = "macos"))]` branch above and return
+/// `PowerStatus::default()` (an empty struct: no external-power/battery-percent
+/// signal, `low_battery`/`battery_saver_active` permanently `false`). A user
+/// enabling `schedule.pause_on_battery_saver` on those platforms would be
+/// opting into a toggle that can never actually fire.
+///
+/// `FeatureCapabilitySnapshot.power_status_available` (src-tauri) is the
+/// single consumer of this predicate (#7678).
+#[must_use]
+pub const fn power_status_platform_supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::power_status_platform_supported;
+
+    /// Cross-checks against the documented macOS-only allow-list so a future
+    /// edit to `current_power_status`'s cfg branches without updating this
+    /// flag is caught here instead of silently drifting (#7678, mirrors
+    /// maekon-vision's `native_ocr_platform_supported` cross-check, #7602).
+    #[test]
+    fn matches_documented_macos_only_allow_list() {
+        assert_eq!(power_status_platform_supported(), cfg!(target_os = "macos"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

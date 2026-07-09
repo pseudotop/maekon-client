@@ -3,6 +3,11 @@
 //! Uses `SqliteStorage::open_in_memory(30)` to run against a fully-migrated
 //! in-memory database without any file I/O.
 
+// Integration test binary (`tests/*.rs` is its own crate root, entirely
+// test-only) — not covered by `src/main.rs`'s crate-level lint config
+// (#7719 `significant_drop_tightening` workspace enforcement).
+#![allow(clippy::significant_drop_tightening)]
+
 use maekon_storage::sqlite::SqliteStorage;
 
 /// Helper: insert sample data into core tables so we can verify deletion.
@@ -83,11 +88,12 @@ fn seed_sample_data(storage: &SqliteStorage) {
         )
         .expect("insert FTS5 row");
 
-    // V13: GUI interactions
+    // V13: GUI interactions (segment_id/element_text/element_type/bbox_json
+    // dropped in V43 — #7678 D3, never populated by the production writer)
     guard
         .execute(
-            "INSERT INTO gui_interactions (event_id, segment_id, timestamp, interaction_type, app_name) \
-             VALUES ('gui1', 'seg1', '2026-01-01T00:00:00Z', 'click', 'Firefox')",
+            "INSERT INTO gui_interactions (event_id, timestamp, interaction_type, app_name) \
+             VALUES ('gui1', '2026-01-01T00:00:00Z', 'click', 'Firefox')",
             [],
         )
         .expect("insert gui interaction");
@@ -285,6 +291,9 @@ fn delete_all_data_clears_all_tables() {
         "coaching_events",
         "regime_goals",
         "coaching_effectiveness",
+        // V44: feedback-learning state (#7913 T2.1c).
+        "feedback_scorer_tallies",
+        "regime_reaction_stats",
         // #4478: V18-V31 user-data tables (audit_log/session_audit_log excluded
         // pending a SOC2 retention decision; app_meta/schema_version are metadata).
         "ai_conversation_messages",

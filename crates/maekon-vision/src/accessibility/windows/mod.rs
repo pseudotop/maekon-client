@@ -56,11 +56,10 @@ mod types;
 
 #[cfg(target_os = "windows")]
 mod inner {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
     use async_trait::async_trait;
     use tracing::{debug, warn};
 
+    use maekon_core::circuit_breaker::CircuitBreaker;
     use maekon_core::config::PiiFilterLevel;
     use maekon_core::error::CoreError;
     use maekon_core::models::focused_element::{AccessibilityElement, FocusedElementInfo};
@@ -70,12 +69,22 @@ mod inner {
     use super::types::RawFocusedElement;
 
     // ── Circuit breaker ───────────────────────────────────────────────
+    //
+    // Delegates to the shared `maekon_core::circuit_breaker::CircuitBreaker`
+    // (#7720 E6 consolidation). This module previously hand-rolled its own
+    // `AtomicU32` state machine, which had drifted to a version *missing* the
+    // `compare_exchange` retry-slot claim (#6007 finding 17) that the shared
+    // struct carries — without it, two concurrent callers that both observe
+    // the counter at the same retry-interval boundary would both pass the
+    // gate and both issue a COM/UIA call.
 
-    /// Consecutive COM/UIA failures before the circuit breaker opens.
-    static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
     /// After threshold is hit, retry once every N calls (~30s at 3s poll).
     const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 10;
+
+    /// Consecutive COM/UIA failures before the circuit breaker opens.
+    static BREAKER: CircuitBreaker =
+        CircuitBreaker::new(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_RETRY_INTERVAL);
 
     // ── Public extractor struct ───────────────────────────────────────
 
@@ -105,27 +114,16 @@ mod inner {
         // ── Circuit breaker helpers ───────────────────────────────────
 
         fn circuit_allows() -> bool {
-            let failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed);
-            if failures >= CIRCUIT_BREAKER_THRESHOLD {
-                if !failures.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
-                    CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-                    return false;
-                }
-                warn!(
-                    "WindowsUiaAccessibility: circuit breaker retry after {} skipped",
-                    failures - CIRCUIT_BREAKER_THRESHOLD
-                );
-            }
-            true
+            BREAKER.should_proceed()
         }
 
         fn record_success() {
-            CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+            BREAKER.record_success();
         }
 
         fn record_failure() {
-            let prev = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
+            BREAKER.record_failure();
+            if BREAKER.failure_count() == CIRCUIT_BREAKER_THRESHOLD {
                 warn!(
                     "WindowsUiaAccessibility: circuit breaker tripped after \
                      {CIRCUIT_BREAKER_THRESHOLD} consecutive failures"
@@ -135,12 +133,12 @@ mod inner {
 
         #[cfg(test)]
         pub(super) fn reset_circuit_for_test() {
-            CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+            BREAKER.record_success();
         }
 
         #[cfg(test)]
         pub(super) fn set_circuit_failures_for_test(failures: u32) {
-            CONSECUTIVE_FAILURES.store(failures, Ordering::Relaxed);
+            BREAKER.set_failure_count(failures);
         }
 
         #[cfg(test)]

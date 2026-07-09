@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::thread;
@@ -570,14 +571,42 @@ fn run_probe_command_with_timeout(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("probe_failed:{err}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "probe_failed:stdout pipe missing".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "probe_failed:stderr pipe missing".to_string())?;
+    let stdout_reader = thread::spawn(move || {
+        let mut reader = stdout;
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).map(|_| buf)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut reader = stderr;
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).map(|_| buf)
+    });
 
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|err| format!("probe_failed:{err}"));
+            Ok(Some(status)) => {
+                let stdout = stdout_reader
+                    .join()
+                    .map_err(|_| "probe_failed:stdout reader panicked".to_string())?
+                    .map_err(|err| format!("probe_failed:{err}"))?;
+                let stderr = stderr_reader
+                    .join()
+                    .map_err(|_| "probe_failed:stderr reader panicked".to_string())?
+                    .map_err(|err| format!("probe_failed:{err}"))?;
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
@@ -587,6 +616,8 @@ fn run_probe_command_with_timeout(
                     if let Err(e) = child.wait() {
                         debug!("process wait failed: {e}");
                     }
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Err(format!("probe_timeout:{}ms", timeout.as_millis()));
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -598,6 +629,8 @@ fn run_probe_command_with_timeout(
                 if let Err(e) = child.wait() {
                     debug!("process wait failed: {e}");
                 }
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(format!("probe_failed:{err}"));
             }
         }
@@ -755,6 +788,25 @@ mod tests {
         .expect_err("fake auth probe should time out");
 
         assert!(detail.starts_with("probe_timeout:"));
+    }
+
+    #[test]
+    fn fake_auth_probe_large_stdout_does_not_timeout() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let executable_path = write_fake_claude_auth_cli(temp_dir.path());
+
+        let output = run_probe_command_with_timeout(
+            &executable_path,
+            &[
+                "stdout-big".to_string(),
+                "literal arg with spaces".to_string(),
+            ],
+            Duration::from_secs(10),
+        )
+        .expect("large stdout probe should drain pipes and exit");
+
+        assert!(output.status.success());
+        assert!(output.stdout.len() > 100_000);
     }
 
     #[test]
@@ -947,6 +999,11 @@ fn main() {
                 "success" => println!("{}", r#"{"loggedIn":true,"authMethod":"oauth"}"#),
                 "failure" => println!("{}", r#"{"loggedIn":false,"authMethod":"none"}"#),
                 "invalid" => println!("not-json"),
+                "stdout-big" => {
+                    for _ in 0..200_000 {
+                        print!("x");
+                    }
+                }
                 "stderr-pii" => {
                     eprintln!("active account alice@example.com in org org_123");
                     std::process::exit(42);

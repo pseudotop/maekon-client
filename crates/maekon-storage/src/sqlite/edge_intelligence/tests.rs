@@ -1,6 +1,5 @@
 use chrono::Utc;
-#[allow(deprecated)]
-use maekon_core::models::work_session::{AppCategory, FocusMetrics, Interruption, LocalSuggestion};
+use maekon_core::models::work_session::{AppCategory, FocusMetrics, Interruption};
 
 use super::super::SqliteStorage;
 
@@ -75,26 +74,50 @@ fn focus_metrics_lifecycle() {
     storage.update_focus_metrics(&today, &full_metrics).unwrap();
 }
 
+/// #7733: `save_local_suggestion` (the deprecated `LocalSuggestion` enum writer)
+/// was deleted as dead code, but the `local_suggestions` table itself is a live
+/// read path (`FewShotStorage`, `LocalSuggestionQueryPort`,
+/// `WebStorage::list_recent_local_suggestions`). This test now writes fixture
+/// rows via raw SQL — the same shape the (now-deleted) writer used to produce —
+/// to keep `mark_suggestion_shown`/`mark_suggestion_dismissed`/`mark_suggestion_acted`
+/// covered end-to-end against real legacy-shaped rows.
 #[test]
-#[allow(deprecated)]
 fn local_suggestion_persistence() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
 
-    let suggestion = LocalSuggestion::NeedFocusTime {
-        communication_ratio: 0.6,
-        suggested_focus_mins: 25,
+    let id: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
+            rusqlite::params![
+                "NeedFocusTime",
+                serde_json::json!({
+                    "communication_ratio": 0.6,
+                    "suggested_focus_mins": 25,
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
     };
-
-    let id = storage.save_local_suggestion(&suggestion).unwrap();
     assert!(id > 0);
 
     storage.mark_suggestion_shown(id).unwrap();
     storage.mark_suggestion_dismissed(id).unwrap();
 
-    let suggestion2 = LocalSuggestion::TakeBreak {
-        continuous_work_mins: 90,
+    let id2: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
+            rusqlite::params![
+                "TakeBreak",
+                serde_json::json!({ "continuous_work_mins": 90 }).to_string()
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
     };
-    let id2 = storage.save_local_suggestion(&suggestion2).unwrap();
     storage.mark_suggestion_acted(id2).unwrap();
 }
 

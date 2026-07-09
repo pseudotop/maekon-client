@@ -71,16 +71,21 @@ fn ext_grpc_handles_declared_before_if_block() {
     );
 }
 
-/// Check that setup.rs registers the handles into Tauri managed state via
-/// `app.manage`. Without registering them in managed state, the handles vanish
-/// once AppRuntimeLaunchResult is dropped.
+/// Check that the setup module registers the handles into Tauri managed state
+/// via `app.manage`. Without registering them in managed state, the handles
+/// vanish once AppRuntimeLaunchResult is dropped.
+///
+/// Hygiene (#7909 PR): #7823 moved `src/setup.rs` into the `src/setup/`
+/// directory module but left this `include_str!` pointing at the deleted flat
+/// file, breaking `--all-targets` compilation. The `app.manage(ExtGrpcHandles`
+/// call now lives in `src/setup/mod.rs`.
 #[test]
 fn setup_registers_ext_grpc_handles_as_managed_state() {
-    let src = include_str!("../src/setup.rs");
+    let src = include_str!("../src/setup/mod.rs");
 
     assert!(
         src.contains("ExtGrpcHandles"),
-        "F-RR-C36-01: setup.rs must pass ext_grpc_supervisor + ext_cert_watcher to \
+        "F-RR-C36-01: setup/mod.rs must pass ext_grpc_supervisor + ext_cert_watcher to \
          `app.manage(ExtGrpcHandles {{ ... }})` so Tauri owns the handles for the app lifetime"
     );
 }

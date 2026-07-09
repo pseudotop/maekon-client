@@ -43,10 +43,9 @@ use crate::types::TimeWindow;
 use crate::models::daily_digest::DailyDigest;
 use crate::models::storage_records::{
     DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord, FocusWorkSessionRecord,
-    FrameExportRecord, FrameRecord, FrameTagLinkRecord, GuiInteractionRecord, HourlyMetricsRecord,
-    LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow,
-    SegmentDetailRecord, SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord,
-    TagRecord,
+    FrameExportRecord, FrameRecord, FrameTagLinkRecord, HourlyMetricsRecord, LocalSuggestionRecord,
+    MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow, SegmentDetailRecord,
+    SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
 };
 use crate::models::work_session::FocusMetrics;
 use crate::ports::annotation_storage::AnnotationStorage;
@@ -398,14 +397,6 @@ pub trait GuiInteractionStorage: Send + Sync {
     /// is the primary safeguard.
     async fn save_gui_interaction(&self, _input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
         Ok(()) // No-op default — storage adapters override
-    }
-
-    /// List GUI interaction events for a given segment.
-    async fn list_gui_interactions_for_segment(
-        &self,
-        _segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        Ok(vec![])
     }
 
     /// Count GUI interactions per hour within a date range.

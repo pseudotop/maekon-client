@@ -29,7 +29,10 @@ use self::provider_config::OAuthProviderConfig;
 /// Active OAuth flow state.
 struct ActiveFlow {
     provider_id: String,
-    #[allow(dead_code)] // Retained for potential token re-exchange
+    // Actual PKCE enforcement uses a separately-cloned `verifier` local at the
+    // token-exchange call site (not this field) — this is a retained copy for
+    // potential retry/resume, not read back today.
+    #[allow(dead_code)]
     pkce_verifier: String,
     cancel_tx: Option<oneshot::Sender<()>>,
     /// Background task handle retained so `OAuthClient::drop` can abort
@@ -111,7 +114,11 @@ impl OAuthClient {
             // redirect-following client.
             http: crate::outbound::hardened_client_builder()
                 .build()
-                .expect("OAuth HTTP client must build with redirects disabled (#7068/#6892)"),
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "OAuth HTTP client must build with redirects disabled (#7068/#6892): {error}"
+                    )
+                }),
             secret_store,
             providers: provider_map,
             active_flows: Arc::new(Mutex::new(HashMap::new())),
@@ -218,7 +225,7 @@ impl Drop for OAuthClient {
     /// the channel is closed on its own; abort is best-effort here.
     fn drop(&mut self) {
         if let Ok(flows) = self.active_flows.try_lock() {
-            for (_, flow) in flows.iter() {
+            for flow in flows.values() {
                 if let Some(ref h) = flow.handle {
                     h.abort();
                 }

@@ -27,6 +27,10 @@ pub struct SessionInfo {
     pub created_at: String,
 }
 
+// Mirrors the real token-storage wire shape; not every field is read back by
+// the mock server's own handlers, but this is a shared fixture (`mod
+// mock_server;`, `#[path = ...]`-included by multiple integration test crate
+// roots) so keep the full shape rather than trimming per-consumer.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TokenInfo {
@@ -34,12 +38,14 @@ pub struct TokenInfo {
     pub expires_at: i64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     #[serde(alias = "email")]
     pub identifier: String,
     pub password: String,
+    // Mirrors the real login request wire shape (shared fixture, see
+    // TokenInfo); the mock server does not branch on org scoping.
+    #[allow(dead_code)]
     #[serde(default)]
     pub organization_id: Option<String>,
 }
@@ -52,10 +58,12 @@ pub struct LoginResponse {
     pub expires_in: i64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SessionCreateRequest {
     pub client_id: String,
+    // Mirrors the real session-create request wire shape (shared fixture,
+    // see TokenInfo); the mock server does not branch on metadata.
+    #[allow(dead_code)]
     pub metadata: Option<HashMap<String, String>>,
 }
 

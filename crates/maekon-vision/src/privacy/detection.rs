@@ -1,4 +1,4 @@
-use maekon_core::config::PiiFilterLevel;
+use maekon_core::config::{PiiFilterLevel, PrivacyConfig};
 
 use super::redaction::{
     mask_api_keys, mask_credit_cards, mask_emails, mask_iban, mask_ip_addresses, mask_korean_id,
@@ -441,4 +441,26 @@ pub fn should_exclude(
     }
 
     false
+}
+
+/// Convenience wrapper over [`should_exclude`] taking the whole
+/// [`PrivacyConfig`].
+///
+/// Every boundary that enforces the exclusion policy (capture-time gate,
+/// egress upload, external OCR, external LLM) must resolve the same five
+/// config fields in the same order; routing them all through this single
+/// seam keeps the wiring from drifting between call sites (#7909).
+pub fn should_exclude_by_policy(
+    privacy: &PrivacyConfig,
+    app_name: &str,
+    window_title: &str,
+) -> bool {
+    should_exclude(
+        app_name,
+        window_title,
+        &privacy.excluded_apps,
+        &privacy.excluded_app_patterns,
+        &privacy.excluded_title_patterns,
+        privacy.auto_exclude_sensitive,
+    )
 }

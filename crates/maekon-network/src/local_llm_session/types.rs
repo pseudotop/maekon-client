@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 use maekon_core::config::AiSessionConfig;
 use maekon_core::models::ai_session::{ChatMessage, ChatRole, SessionState};
@@ -66,6 +66,11 @@ pub struct LocalLlmSession {
     pub(super) model: String,
     pub(super) base_url: String,
     pub(super) history: Arc<RwLock<Vec<ChatMessage>>>,
+    /// #7574: per-session turn guard. Held from the top of `send_message`
+    /// until the returned stream is fully drained (or dropped early), so
+    /// concurrent `send_message` calls on the same session serialize instead
+    /// of racing on `history` (mirrors `GenericSubprocessSession::send_lock`).
+    pub(super) send_lock: Arc<AsyncMutex<()>>,
     /// Retained for session introspection; content is pre-seeded into `history`.
     #[allow(dead_code)]
     pub(super) system_prompt: Option<String>,
@@ -103,6 +108,7 @@ impl LocalLlmSession {
             model,
             base_url: base_url.trim_end_matches('/').to_string(),
             history: Arc::new(RwLock::new(initial_history)),
+            send_lock: Arc::new(AsyncMutex::new(())),
             system_prompt,
             state: parking_lot::Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),

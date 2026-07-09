@@ -198,6 +198,49 @@ impl InputActivityCollector {
             .unwrap_or_default()
     }
 
+    /// Zero every keyboard-only counter (keystrokes, bursts, shortcuts,
+    /// corrections, key-category breakdown) and clear the recent-shortcuts
+    /// ring buffer, WITHOUT touching any mouse counter.
+    ///
+    /// Used by the key-hook consent reconciler (#7698 S1) at the moment
+    /// `activity_pattern_learning` consent transitions granted -> revoked, so
+    /// keystrokes captured during the now-revoked window cannot surface in a
+    /// LATER snapshot taken after consent is re-granted. Mouse counters are
+    /// left untouched so a live, still-consented mouse hook does not lose its
+    /// own accrued data as a side effect of the keyboard-only revoke.
+    pub fn reset_keyboard(&self) {
+        self.total_keystrokes.store(0, Ordering::Relaxed);
+        self.typing_bursts.store(0, Ordering::Relaxed);
+        self.shortcut_count.store(0, Ordering::Relaxed);
+        self.correction_count.store(0, Ordering::Relaxed);
+        self.enter_count.store(0, Ordering::Relaxed);
+        self.tab_count.store(0, Ordering::Relaxed);
+        self.arrow_count.store(0, Ordering::Relaxed);
+        self.backspace_count.store(0, Ordering::Relaxed);
+        self.special_count.store(0, Ordering::Relaxed);
+        if let Ok(mut buf) = self.recent_shortcuts.lock() {
+            buf.clear();
+        }
+    }
+
+    /// Zero every mouse-only counter (clicks, scroll, double/right click,
+    /// move distance, last click position), WITHOUT touching any keyboard
+    /// counter.
+    ///
+    /// Used by the mouse-hook consent reconciler (#7698 S1) at the moment
+    /// `input_activity` consent transitions granted -> revoked — see
+    /// `reset_keyboard()` for the full rationale (symmetric fix for the mouse
+    /// channel).
+    pub fn reset_mouse(&self) {
+        self.click_count.store(0, Ordering::Relaxed);
+        self.scroll_count.store(0, Ordering::Relaxed);
+        self.double_click_count.store(0, Ordering::Relaxed);
+        self.right_click_count.store(0, Ordering::Relaxed);
+        self.last_click_x.store(i32::MIN, Ordering::Relaxed);
+        self.last_click_y.store(i32::MIN, Ordering::Relaxed);
+        self.move_distance.store(0, Ordering::Relaxed);
+    }
+
     fn record_activity(&self) {
         let now_ms = Utc::now().timestamp_millis() as u64;
         let last_ms = self.last_activity_ms.swap(now_ms, Ordering::Relaxed);
@@ -215,6 +258,19 @@ impl InputActivityCollector {
 
     /// Returns a normalized activity score (0.0–1.0) without resetting counters.
     /// Used by the capture trigger to boost importance when input activity is high.
+    ///
+    /// # Consent invariant (#7698 S1)
+    ///
+    /// This method does NOT itself check consent. It relies on its callers'
+    /// upstream invariant instead: the key/mouse OS-level hooks that feed this
+    /// collector are stopped, and their counters are zeroed via
+    /// `reset_keyboard()`/`reset_mouse()`, at the exact moment
+    /// `activity_pattern_learning`/`input_activity` consent transitions to
+    /// revoked (see `reconcile_key_hook`/`reconcile_mouse_hook` in
+    /// `src-tauri/src/scheduler/loops/events.rs`). As long as that reconcile
+    /// runs, no post-revoke input can reach these counters, so this peek
+    /// cannot be boosted by revoked-consent activity without a separate
+    /// consent check here.
     pub fn peek_activity_level(&self) -> f32 {
         let clicks = self.click_count.load(Ordering::Relaxed);
         let keys = self.total_keystrokes.load(Ordering::Relaxed);
@@ -549,6 +605,81 @@ mod tests {
 
         let snapshot = collector.take_snapshot();
         assert!(snapshot.keystroke_profile.is_none());
+    }
+
+    /// #7698 S1: `reset_keyboard()` must zero every keyboard counter but leave
+    /// mouse counters untouched — the collector is shared by both hooks, so a
+    /// keyboard-only consent revoke must not discard still-consented mouse data.
+    #[test]
+    fn reset_keyboard_clears_only_keyboard_counters() {
+        let collector = InputActivityCollector::new();
+        collector.record_categorized_keystroke(KeyCategory::Enter, true, false);
+        collector.record_click();
+        collector.record_scroll();
+
+        collector.reset_keyboard();
+
+        let snapshot = collector.take_snapshot();
+        assert_eq!(snapshot.keyboard.total_keystrokes, 0);
+        assert_eq!(snapshot.keyboard.shortcut_count, 0);
+        assert!(snapshot.keystroke_profile.is_none());
+        // Mouse counters recorded before the keyboard-only reset survive it.
+        assert_eq!(snapshot.mouse.click_count, 1);
+        assert_eq!(snapshot.mouse.scroll_count, 1);
+    }
+
+    /// #7698 S1: `reset_mouse()` must zero every mouse counter (including the
+    /// last click position) but leave keyboard counters untouched.
+    #[test]
+    fn reset_mouse_clears_only_mouse_counters() {
+        let collector = InputActivityCollector::new();
+        collector.record_click_at(10, 20);
+        collector.record_scroll();
+        collector.record_keystroke(false, false);
+
+        collector.reset_mouse();
+
+        let snapshot = collector.take_snapshot();
+        assert_eq!(snapshot.mouse.click_count, 0);
+        assert_eq!(snapshot.mouse.scroll_count, 0);
+        assert_eq!(snapshot.mouse.last_position, None);
+        // Keyboard counters recorded before the mouse-only reset survive it.
+        assert_eq!(snapshot.keyboard.total_keystrokes, 1);
+    }
+
+    /// #7698 S1 regression: prior to this fix there was no drain-on-revoke
+    /// mechanism at all, so keystrokes recorded while a hook kept running
+    /// through a revoked-consent window (or simply left un-drained by the
+    /// own-field gate — see `monitor_input_helpers_do_not_drain_without_input_activity_consent`
+    /// in `scheduler::loops::monitor`, which proves counts are RETAINED, not
+    /// zeroed, while the own-field gate is closed) would surface in the FIRST
+    /// snapshot taken after consent is re-granted, leaking revoked-window
+    /// activity into the granted window's data. `reset_keyboard()` called at
+    /// the revoke transition closes that gap.
+    #[test]
+    fn reset_keyboard_prevents_revoked_window_keystrokes_from_leaking_into_next_grant() {
+        let collector = InputActivityCollector::new();
+
+        // Activity recorded while consent was granted, already flushed once.
+        collector.record_keystroke(false, false);
+        let _ = collector.take_snapshot();
+
+        // Activity that arrives during the revoked window (the bug this fixes:
+        // a still-running hook, or un-drained residual counts).
+        collector.record_categorized_keystroke(KeyCategory::Enter, false, false);
+        collector.record_categorized_keystroke(KeyCategory::Backspace, false, false);
+
+        // S1 fix: the revoke-transition reconcile drains the collector immediately.
+        collector.reset_keyboard();
+
+        // Consent is re-granted; the next snapshot must NOT contain the
+        // revoked-window keystrokes.
+        let post_regrant = collector.take_snapshot();
+        assert_eq!(
+            post_regrant.keyboard.total_keystrokes, 0,
+            "revoked-window keystrokes must not leak into the post-regrant snapshot"
+        );
+        assert!(post_regrant.keystroke_profile.is_none());
     }
 
     #[test]

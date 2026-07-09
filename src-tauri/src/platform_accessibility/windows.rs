@@ -54,7 +54,19 @@ pub(super) fn query_windows_accessibility_nodes() -> Result<Vec<AccessibilityNod
         }
     "#;
 
-    let mut command = Command::new("powershell");
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `powershell` — fail closed
+    // (no PATH fallback) when the binary is not found under the trusted
+    // System32 directories.
+    let powershell_path =
+        maekon_monitor::resolve_trusted_binary("powershell").ok_or_else(|| {
+            CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "powershell not found under the trusted directory allowlist".to_string(),
+            }
+        })?;
+
+    let mut command = Command::new(powershell_path);
     command.args([
         "-NoProfile",
         "-NonInteractive",

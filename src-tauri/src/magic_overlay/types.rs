@@ -25,7 +25,10 @@ pub struct OverlayUpgradePayload {
 }
 
 /// Focus highlight bounding box.
-#[allow(dead_code)] // retained for future IPC command usage
+// #7719: only constructed by `MagicOverlayHandle::update_focus_highlight`,
+// itself dead today (see that method's doc comment) — focus-highlight
+// updates now route through the `OverlayDriver` trait instead.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayFocusPayload {
     pub x: i32,
@@ -43,6 +46,9 @@ pub struct OverlayGoalPayload {
 }
 
 /// Overlay display mode change.
+// #7719: only constructed by `MagicOverlayHandle::set_mode`, itself dead
+// today (#7686 removed its only IPC caller) — kept alongside it.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayModePayload {
     pub mode: OverlayMode,
@@ -86,7 +92,6 @@ pub struct OverlayFullscreenPolicyPayload {
 }
 
 /// A single UI element in the detection overlay scene.
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionElementPayload {
     pub element_id: String,
@@ -101,7 +106,6 @@ pub struct DetectionElementPayload {
 }
 
 /// Full UI scene sent to the detection overlay.
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionScenePayload {
     pub scene_id: String,
@@ -116,6 +120,9 @@ pub struct DetectionScenePayload {
 
 #[derive(Debug)]
 pub(super) struct OverlayState {
+    // Written by `set_mode`, read by `get_mode`/`toggle_mode` — all three
+    // dead today (#7686 removed the mode-switching IPC surface).
+    #[allow(dead_code)]
     pub(super) mode: OverlayMode,
     pub(super) visible: bool,
     pub(super) current_message_id: Option<String>,

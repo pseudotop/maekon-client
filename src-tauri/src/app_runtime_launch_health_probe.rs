@@ -189,3 +189,22 @@ pub(crate) fn spawn_healthy_writer(probe: Option<&HealthProbe>, handle: &tokio::
         tracing::debug!("health probe: spawn_healthy_writer dispatched");
     }
 }
+
+pub(crate) fn mark_clean_shutdown() {
+    let current_exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!("health probe clean-shutdown skipped: current_exe failed: {e}");
+            return;
+        }
+    };
+    let Some(install_dir) = current_exe.parent().map(std::path::Path::to_path_buf) else {
+        tracing::warn!("health probe clean-shutdown skipped: current_exe has no parent");
+        return;
+    };
+
+    let probe = HealthProbe::new(install_dir, CURRENT_VERSION.to_string());
+    if let Err(e) = probe.mark_clean_shutdown() {
+        tracing::warn!("health probe clean-shutdown marker failed: {e}");
+    }
+}

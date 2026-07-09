@@ -76,6 +76,10 @@ impl RegimeManager {
     /// 2. Apply merge rule (similar centroids AND both below min_samples_for_merge)
     /// 3. Apply limit rule (> max_active → merge closest pair)
     pub fn update_from_detection(&mut self, detected: Vec<Regime>) {
+        let preexisting_len = self.regimes.len();
+        let mut rolling_window_counts: std::collections::HashMap<usize, u64> =
+            std::collections::HashMap::new();
+
         for det in detected {
             // Try to match with existing active regime
             let best_match = self
@@ -100,7 +104,13 @@ impl RegimeManager {
                         &det.centroid,
                         det.sample_count,
                     );
-                    existing.sample_count += det.sample_count;
+                    if idx < preexisting_len {
+                        let window_count = rolling_window_counts.entry(idx).or_insert(0);
+                        *window_count += det.sample_count;
+                        existing.sample_count = existing.sample_count.max(*window_count);
+                    } else {
+                        existing.sample_count += det.sample_count;
+                    }
                     existing.last_seen = det.last_seen;
                     existing.auto_label = generate_auto_label(&existing.centroid, &[]);
                     continue;
@@ -133,7 +143,13 @@ impl RegimeManager {
                     &det.centroid,
                     det.sample_count,
                 );
-                existing.sample_count += det.sample_count;
+                if idx < preexisting_len {
+                    let window_count = rolling_window_counts.entry(idx).or_insert(0);
+                    *window_count += det.sample_count;
+                    existing.sample_count = existing.sample_count.max(*window_count);
+                } else {
+                    existing.sample_count += det.sample_count;
+                }
                 existing.last_seen = det.last_seen;
                 existing.status = RegimeStatus::Active;
                 existing.auto_label = generate_auto_label(&existing.centroid, &[]);
@@ -514,6 +530,32 @@ mod tests {
 
         assert_eq!(mgr.active_regimes().len(), 2);
         assert_eq!(mgr.all_regimes().len(), 2);
+    }
+
+    #[test]
+    fn redetection_uses_window_sample_count_without_accumulating_overlap() {
+        let config = TieredMemoryConfig::default();
+        let mut mgr = RegimeManager::new(&config);
+
+        mgr.update_from_detection(vec![make_regime(
+            "r-0",
+            coding_centroid(),
+            80,
+            RegimeStatus::Active,
+        )]);
+        mgr.update_from_detection(vec![make_regime(
+            "r-0",
+            coding_centroid(),
+            90,
+            RegimeStatus::Active,
+        )]);
+
+        assert_eq!(mgr.all_regimes().len(), 1);
+        assert_eq!(
+            mgr.all_regimes()[0].sample_count,
+            90,
+            "detector sample_count is a rolling window size; overlapping windows must not accumulate"
+        );
     }
 
     #[test]

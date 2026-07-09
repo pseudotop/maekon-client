@@ -143,11 +143,11 @@ mod tests {
 
     use maekon_core::models::coaching::GoalProgressView;
     use maekon_core::ports::coaching::CoachingPort;
-    use maekon_storage::sqlite::SqliteStorage;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::broadcast;
     use tower::ServiceExt;
+
+    use crate::test_local_auth::{authed_loopback_router as loopback_app, test_app_state};
 
     struct MockCoachingEngine;
 
@@ -190,20 +190,10 @@ mod tests {
         }
     }
 
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
-
     fn test_app_state_with_coaching() -> AppState {
         let mut state = test_app_state();
         state.analysis.coaching_engine = Some(Arc::new(MockCoachingEngine));
         state
-    }
-
-    fn loopback_app(state: AppState) -> axum::Router {
-        crate::test_local_auth::authed_loopback_router(state)
     }
 
     #[tokio::test]

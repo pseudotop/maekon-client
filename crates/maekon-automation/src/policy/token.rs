@@ -187,8 +187,8 @@ pub(super) fn verify_policy_token_signature(
 
     // Build HMAC and verify in constant time via hmac::Mac::verify_slice
     let payload = build_signature_payload(policy_id, nonce, command_hash);
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .unwrap_or_else(|error| panic!("HMAC accepts any key length: {error}"));
     mac.update(payload.as_bytes());
     mac.verify_slice(&sig_bytes).is_ok()
 }
@@ -234,8 +234,8 @@ pub(super) fn compute_policy_token_signature(
     secret: &str,
 ) -> String {
     let payload = build_signature_payload(policy_id, nonce, command_hash);
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .unwrap_or_else(|error| panic!("HMAC accepts any key length: {error}"));
     mac.update(payload.as_bytes());
     let result = mac.finalize();
     result

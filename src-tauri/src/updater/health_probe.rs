@@ -135,6 +135,7 @@ impl HealthProbe {
 
     /// Builder: override the healthy-threshold. Primarily for tests
     /// (inject a short duration so `spawn_healthy_writer` fires quickly).
+    #[allow(dead_code)]
     pub fn with_threshold(mut self, threshold: Duration) -> Self {
         self.healthy_threshold = threshold;
         self
@@ -248,6 +249,15 @@ impl HealthProbe {
                 StartupAction::Normal
             }
         }
+    }
+
+    /// Mark a clean process shutdown as a successful boot when the app exits
+    /// before the healthy-writer threshold fires.
+    pub fn mark_clean_shutdown(&self) -> Result<(), ProbeError> {
+        if !self.install_pending_path().exists() || self.self_healthy_path().exists() {
+            return Ok(());
+        }
+        write_self_healthy_and_cleanup(&self.install_dir, &self.current_version)
     }
 
     fn check_startup_state_inner(&self) -> Result<StartupAction, ProbeError> {

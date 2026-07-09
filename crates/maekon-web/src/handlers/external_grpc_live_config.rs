@@ -69,14 +69,10 @@ mod tests {
     use crate::grpc::external::metrics::ExternalMetrics;
     use crate::grpc::LoadPolicy;
     use maekon_core::config::LoadThresholds;
-    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
-    use tokio::sync::broadcast;
 
     fn fixture_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
+        crate::test_local_auth::test_app_state()
     }
 
     fn fixture_live() -> Arc<LiveExternalConfig> {

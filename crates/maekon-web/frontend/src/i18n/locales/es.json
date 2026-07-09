@@ -552,6 +552,7 @@
     "pauseOnLockDesc": "Detener la recopilación cuando la pantalla esté bloqueada",
     "pauseOnBattery": "Pausar en ahorro de batería",
     "pauseOnBatteryDesc": "Detener la recopilación en modo de ahorro de batería",
+    "pauseOnBatteryUnavailable": "No disponible en esta plataforma — el estado de batería/energía solo se detecta en macOS por ahora. Este interruptor no se puede activar aquí.",
     "telemetryTitle": "Telemetría",
     "telemetryDesc": "Controle los datos de telemetría remota enviados al servidor.",
     "telemetryEnabled": "Habilitar telemetría",
@@ -783,7 +784,9 @@
       "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
       "endpoint": "Endpoint URL",
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
-      "cloud_timeout": "Timeout (sec)"
+      "cloud_timeout": "Timeout (sec)",
+      "notCompiledTitle": "No disponible en esta compilación",
+      "notCompiledDescription": "Esta compilación se creó sin soporte de audio/voz a texto. Activar esta opción y descargar un modelo no funcionará."
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -797,6 +800,102 @@
     }
   },
   "privacy": {
+    "claims": {
+      "title": "Afirmaciones de memoria",
+      "description": "Una vista de solo lectura de las creencias duraderas que el agente ha formado sobre ti a partir de tu actividad: la memoria local de segundo cerebro. Retractar una afirmación la oculta de tus resúmenes y sugerencias futuras, conservando el registro por transparencia.",
+      "kindLabel": "Tipo",
+      "statusLabel": "Estado",
+      "rangeLabel": "Formada",
+      "kind": {
+        "all": "Todos los tipos",
+        "semantic": "Semántica",
+        "episodic": "Episódica",
+        "procedural": "Procedimental",
+        "reflective": "Reflexiva"
+      },
+      "status": {
+        "active_superseded": "Activas y reemplazadas",
+        "active": "Activa",
+        "superseded": "Reemplazada",
+        "retracted": "Retractada",
+        "all": "Todos los estados"
+      },
+      "range": {
+        "24h": "Últimas 24 horas",
+        "7d": "Últimos 7 días",
+        "30d": "Últimos 30 días",
+        "all": "Todo el tiempo"
+      },
+      "col": {
+        "time": "Formada",
+        "kind": "Tipo",
+        "statement": "Creencia",
+        "source": "Origen",
+        "confidence": "Confianza",
+        "evidence": "Evidencia",
+        "status": "Estado",
+        "actions": "Acciones"
+      },
+      "count": "Mostrando {{shown}} de {{total}} afirmaciones",
+      "retractedLabel": "retractada",
+      "loadError": "No se pudieron cargar las afirmaciones de memoria",
+      "empty": {
+        "noneTitle": "Aún no hay afirmaciones",
+        "noneDesc": "Una afirmación es una creencia duradera que el agente forma sobre tus patrones de trabajo, por ejemplo, «los bloques de trabajo profundo se concentran por la mañana». Todavía no se ha acumulado ninguna; se acumulan a medida que se generan los resúmenes diarios.",
+        "filteredTitle": "Ninguna afirmación coincide con estos filtros",
+        "filteredDesc": "Ninguna afirmación coincide con el tipo, el estado y el intervalo de tiempo seleccionados. Las afirmaciones retractadas se ocultan a menos que elijas un estado que las incluya."
+      },
+      "retract": {
+        "button": "Retractar",
+        "confirmTitle": "¿Retractar esta afirmación?",
+        "confirmMessage": "Retractar esta creencia:\n\n«{{text}}»",
+        "confirmNote": "Retractar oculta esta afirmación de tus resúmenes y sugerencias futuras. El registro se conserva (no se elimina), por lo que el cambio sigue siendo auditable.",
+        "confirmButton": "Retractar afirmación",
+        "success": "Afirmación retractada",
+        "alreadyRetracted": "La afirmación ya estaba retractada"
+      }
+    },
+    "egress": {
+      "title": "Transparencia de salida",
+      "description": "Un registro de solo lectura de lo que ha salido de este dispositivo. Respaldado por el libro mayor de salida a prueba de manipulaciones, que se conserva como evidencia de cumplimiento incluso después de borrar tus datos.",
+      "rangeLabel": "Intervalo de tiempo",
+      "dispositionLabel": "Disposición",
+      "range": {
+        "24h": "Últimas 24 horas",
+        "7d": "Últimos 7 días",
+        "30d": "Últimos 30 días",
+        "all": "Todo el tiempo"
+      },
+      "disposition": {
+        "all": "Todas",
+        "uploaded": "Subido",
+        "blocked": "Bloqueado",
+        "capture_blocked": "Captura bloqueada"
+      },
+      "badge": {
+        "uploaded": "subido",
+        "blocked": "bloqueado",
+        "capture_blocked": "captura bloqueada (app excluida)"
+      },
+      "col": {
+        "time": "Hora",
+        "eventType": "Evento",
+        "destination": "Destino",
+        "disposition": "Disposición",
+        "bytes": "Tamaño",
+        "recipients": "Destinatarios",
+        "consent": "Consentimiento"
+      },
+      "captureBlockedBytesHint": "Un fotograma que deliberadamente no se capturó: no se envió nada.",
+      "entryCount": "{{count}} entradas",
+      "empty": {
+        "ledgerTitle": "Todavía no ha salido nada de este dispositivo",
+        "ledgerDesc": "El libro mayor de salida está vacío. Cuando se suban o sincronicen datos, o se bloquee una captura, aparecerá aquí una entrada de auditoría.",
+        "rangeTitle": "No hay entradas en el intervalo",
+        "rangeDesc": "Ninguna entrada de salida coincide con el intervalo de tiempo y el filtro de disposición seleccionados."
+      },
+      "loadError": "No se pudo cargar el libro mayor de salida"
+    },
     "title": "Gestión de privacidad",
     "storageStats": "Estadísticas de almacenamiento",
     "totalFrames": "Total de fotogramas",
@@ -974,7 +1073,13 @@
     "similarity": "Similarity",
     "timeDecay": "Time decay",
     "type": "Type",
-    "summary": "Summary"
+    "summary": "Summary",
+    "semanticUnavailable": "Semántica (no disponible)",
+    "semanticUnavailableHint": "Solo búsqueda por palabras clave — la búsqueda semántica requiere configuración de embeddings en esta compilación.",
+    "keyword": "Palabra clave",
+    "keywordPlaceholder": "Busca tu actividad por palabra clave...",
+    "keywordScopeHint": "Ordena los resúmenes de tu actividad por relevancia de palabra clave (BM25).",
+    "textScopeHint": "Busca en capturas de pantalla, títulos de ventana, texto OCR y eventos."
   },
   "shortcuts": {
     "title": "Atajos de teclado",
@@ -1214,6 +1319,32 @@
     "intentHintViewHistory": "Ver en historial de ejecución",
     "intentHintErrorCheckHistory": "Es posible que la solicitud se haya ejecutado — revisa el historial de ejecución."
   },
+  "guiPicker": {
+    "title": "Acciones de señalar y confirmar",
+    "description": "Escanea la ventana enfocada, resalta los objetivos accionables y confirma uno para ejecutarlo a través de las barreras de automatización en entorno aislado.",
+    "appNameLabel": "Nombre de la app (opcional)",
+    "appNamePlaceholder": "Déjalo en blanco para escanear la ventana enfocada",
+    "scanButton": "Escanear objetivos",
+    "disabledHint": "Habilita la automatización en la configuración para usar señalar y confirmar.",
+    "candidatesTitle": "Objetivos resaltados",
+    "noCandidates": "No se encontraron objetivos accionables en la ventana enfocada.",
+    "selectCandidate": "Selecciona primero un objetivo resaltado.",
+    "actionLabel": "Acción",
+    "actionClick": "Clic",
+    "actionTypeText": "Escribir texto",
+    "typeTextLabel": "Texto a escribir",
+    "typeTextPlaceholder": "Texto para introducir en el objetivo",
+    "confirmButton": "Confirmar objetivo",
+    "reset": "Empezar de nuevo",
+    "ticketMinted": "Ticket de ejecución emitido",
+    "ticketExpires": "Caduca el {{expiresAt}}",
+    "executeButton": "Ejecutar acción",
+    "executionSucceeded": "Acción completada",
+    "executionFailed": "La acción no se completó",
+    "resultSteps": "{{completed}} de {{total}} pasos completados",
+    "viewHistory": "Ver en el historial",
+    "error": "Algo salió mal."
+  },
   "settingsAutomation": {
     "title": "Automatización",
     "enabled": "Habilitar automatización",
@@ -1229,6 +1360,8 @@
     "ocrProvider": "Proveedor OCR",
     "llmProvider": "Proveedor LLM",
     "ocrProviderHint": "Mantenga OCR local salvo que necesite calidad remota o una superficie LLM multimodal.",
+    "ocrLocalUnavailableTitle": "No disponible en esta compilación",
+    "ocrLocalUnavailableDescription": "Esta compilación no tiene un motor de OCR local en esta plataforma (el OCR nativo es solo para macOS/Windows, y el respaldo Tesseract incluido no está compilado). El OCR local siempre devolvería silenciosamente cero resultados — cambie a OCR remoto.",
     "llmProviderHint": "Los LLM remotos pueden ampliar capacidades, pero usan la ruta de acceso y la política de datos externas seleccionadas.",
     "providerSelectionLockedBadge": "Bloqueado",
     "providerSelectionLockedCli": "El modo CLI del proveedor instalado fija el proveedor LLM en Remote.",
@@ -1439,7 +1572,17 @@
   "auditLog": {
     "title": "Registro de auditoría",
     "entries": "Entradas de auditoría",
-    "details": "Detalles"
+    "details": "Detalles",
+    "chainIntegrity": "Integridad de la cadena de auditoría",
+    "chainIntegrityHint": "Verifica la cadena de hash SHA-256 a prueba de manipulaciones del registro de auditoría persistente.",
+    "verifyIntegrity": "Verificar integridad",
+    "verifyFailed": "Verificación fallida",
+    "chainIntact": "Cadena intacta",
+    "chainVerifiedCount": "{{count}} entradas verificadas.",
+    "chainLegacyCount": "Se excluyeron {{count}} entradas antiguas (previas a la cadena de hash).",
+    "chainBroken": "Se detectó una ruptura de integridad",
+    "chainBrokenDetail": "Primera entrada dañada en seq {{seq}}: {{reason}}",
+    "chainBrokenUnknown": "La verificación de la cadena falló por un motivo desconocido."
   },
   "widgets": {
     "title": "Widgets",
@@ -1617,6 +1760,8 @@
     }
   },
   "sidebar": {
+    "claimsBrowser": "Afirmaciones de memoria",
+    "egressLedger": "Libro de salida",
     "overview": "Resumen",
     "systemMetrics": "Métricas del sistema",
     "activeProcesses": "Procesos activos",
@@ -2040,7 +2185,8 @@
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
     "mic_privacy_stopped": "Micrófono detenido — barrera de privacidad activa",
-    "searchMessagesPlaceholder": "Buscar mensajes..."
+    "searchMessagesPlaceholder": "Buscar mensajes...",
+    "audio_not_compiled": "El audio no está disponible en esta compilación"
   },
   "policies": {
     "title": "Políticas de ejecución",
@@ -2094,6 +2240,11 @@
     "targetBadgeLabel": "nuevas sugerencias para {{target}}",
     "currentTarget": "Objetivo actual",
     "noAutoAction": "Sin acción automática",
+    "runAction": "Ejecutar {{label}}",
+    "runActionPending": "Ejecutando…",
+    "gateNotice": "Se ejecuta a través de la puerta de automatización — se aplican tus ajustes de confirmación.",
+    "toastActionRan": "Acción ejecutada",
+    "actionFailed": "No se pudo ejecutar la acción:",
     "replayTargetLocked": "Objetivo fijado",
     "replayProposalShown": "Propuesta mostrada",
     "replayConsentGate": "Puerta de consentimiento",
@@ -2422,7 +2573,7 @@
     "maxSuggestions": "Sugerencias máximas",
     "regimeDetectionIntervalHours": "Intervalo de detección de régimen (horas)",
     "embedding": "Incrustación",
-    "embeddingDescription": "Habilita la incrustación vectorial para la búsqueda semántica",
+    "embeddingDescription": "Habilita la incrustación vectorial para la recuperación de contexto del análisis de IA; no activa el modo semántico de la página de búsqueda",
     "guiIntelligence": "Inteligencia de GUI",
     "guiIntelligenceDescription": "Detecta y agrega patrones de interacción de la GUI",
     "textIntelligence": "Inteligencia de texto",

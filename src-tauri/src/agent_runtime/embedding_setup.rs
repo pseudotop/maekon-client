@@ -4,6 +4,7 @@ use tracing::{info, warn};
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use maekon_core::config::AppConfig;
 use maekon_core::config::PiiFilterLevel;
+use maekon_core::error::CoreError;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 
@@ -34,6 +35,8 @@ const EXTERNAL_DEFAULT_MODEL: &str = "text-embedding-3-small";
 /// Default output dimensionality for `text-embedding-3-small`.
 #[cfg(feature = "analysis")]
 const EXTERNAL_DEFAULT_DIMS: usize = 384;
+
+const QUANTIZED_BACKFILL_BATCH_SIZE: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Target resolution helper
@@ -138,6 +141,15 @@ pub(super) fn resolve_remote_embedding_target(
 /// Using the raw `privacy.pii_filter_level` directly would leak verbatim under the `AllowFiltered + Off`
 /// combination. Local on-device embedding masking is not egress, so this floor is not applied there
 /// (avoiding over-masking).
+///
+/// Only called (in production) from the `feature = "analysis"`-gated
+/// `egress_pii_level` binding above, but this pure function is also exercised
+/// directly by unit tests below that are gated on `not(feature = "embedding")`
+/// (independent of `analysis`) — kept unconditional with a matching allow
+/// rather than hard-gated, so `cargo test --no-default-features` (a
+/// hypothetical future cell) would not lose that coverage (#7743 ctd-W3 A2b
+/// follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 fn embedding_egress_pii_level(config: &AppConfig) -> PiiFilterLevel {
     config
         .ai_provider
@@ -282,6 +294,10 @@ pub(super) fn build_embedding_components(
         // #6914: off-device (remote) embedding egress passes through the egress PII floor SSOT
         // (RemoteEmbeddingProvider sanitizer = final gate just before POST). Local pipeline masking
         // is not egress, so it keeps the raw pii_level. See embedding_egress_pii_level for details.
+        // Only the two `feature = "analysis"`-gated match arms below (Local-demoted-to-loopback
+        // and Remote) read this — under `--no-default-features` neither arm compiles, so the
+        // binding itself is gated to match its sole consumers.
+        #[cfg(feature = "analysis")]
         let egress_pii_level = embedding_egress_pii_level(config);
 
         // Create EmbeddingProvider based on config
@@ -487,6 +503,10 @@ pub(super) fn build_embedding_components(
                 skip_float32,
             ));
             embedding_pipeline_arc = Some(pipeline);
+            schedule_quantized_backfill(
+                vector_store.clone(),
+                embedding_config.quantization_enabled,
+            );
 
             // Build LlmSegmentSummarizer if LLM summary is enabled.
             //
@@ -670,6 +690,37 @@ impl maekon_core::ports::embedding_provider::EmbeddingProvider for RemoteFallbac
         let fallback = self.fallback.evict_if_idle(idle_after);
         primary || fallback
     }
+}
+
+fn schedule_quantized_backfill(
+    vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore>,
+    quantization_enabled: bool,
+) {
+    if !quantization_enabled {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        match backfill_quantized_vectors_once(vector_store, QUANTIZED_BACKFILL_BATCH_SIZE).await {
+            Ok(0) => {}
+            Ok(rows) => info!(
+                rows = rows,
+                "Backfilled INT8 quantization for existing embedding vectors"
+            ),
+            Err(error) => warn!("Failed to backfill INT8 quantization: {error}"),
+        }
+    });
+}
+
+async fn backfill_quantized_vectors_once(
+    vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore>,
+    batch_size: usize,
+) -> Result<u64, CoreError> {
+    let pending = vector_store.count_unquantized().await?;
+    if pending == 0 {
+        return Ok(0);
+    }
+    vector_store.backfill_quantized(batch_size).await
 }
 
 /// Pure-function tests for `resolve_remote_embedding_target`.
@@ -874,10 +925,105 @@ mod target_resolver_tests {
 mod tests {
     use super::*;
     use maekon_core::error::CoreError;
+    use maekon_core::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
     use maekon_core::ports::embedding_provider::{EmbeddingProvider, NoOpEmbeddingProvider};
+    use maekon_core::ports::vector_store::VectorStore;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// A primary provider that always fails — used to verify the fallback path.
     struct FailingProvider;
+
+    struct BackfillVectorStore {
+        pending: AtomicU64,
+        count_calls: AtomicUsize,
+        backfill_calls: AtomicUsize,
+        last_batch_size: AtomicUsize,
+    }
+
+    impl BackfillVectorStore {
+        fn new(pending: u64) -> Self {
+            Self {
+                pending: AtomicU64::new(pending),
+                count_calls: AtomicUsize::new(0),
+                backfill_calls: AtomicUsize::new(0),
+                last_batch_size: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VectorStore for BackfillVectorStore {
+        async fn store(
+            &self,
+            _vector: Vec<f32>,
+            _metadata: EmbeddingMetadata,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn search_filtered(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+            _filters: &SearchFilters,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn enforce_retention(&self, _max_days: u32) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn mark_stale(&self, _old_model_id: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn update_vector(
+            &self,
+            _id: i64,
+            _vector: Vec<f32>,
+            _model_id: &str,
+        ) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn count_unquantized(&self) -> Result<u64, CoreError> {
+            self.count_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.pending.load(Ordering::SeqCst))
+        }
+
+        async fn backfill_quantized(&self, batch_size: usize) -> Result<u64, CoreError> {
+            self.backfill_calls.fetch_add(1, Ordering::SeqCst);
+            self.last_batch_size.store(batch_size, Ordering::SeqCst);
+            Ok(self.pending.swap(0, Ordering::SeqCst))
+        }
+
+        async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
+
+        async fn get_stale_vectors(&self, _limit: usize) -> Result<Vec<(i64, String)>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn get_metadata_by_ids(
+            &self,
+            _ids: &[u64],
+        ) -> Result<HashMap<u64, EmbeddingMetadata>, CoreError> {
+            Ok(HashMap::new())
+        }
+    }
 
     #[async_trait::async_trait]
     impl EmbeddingProvider for FailingProvider {
@@ -918,6 +1064,31 @@ mod tests {
             .expect("batch fallback should succeed");
         assert_eq!(batch.len(), 2);
         assert!(batch.iter().all(|v| v.len() == 384));
+    }
+
+    #[tokio::test]
+    async fn quantized_backfill_runs_when_pending_rows_exist() {
+        let store = Arc::new(BackfillVectorStore::new(3));
+        let rows = backfill_quantized_vectors_once(store.clone(), 17)
+            .await
+            .unwrap();
+
+        assert_eq!(rows, 3);
+        assert_eq!(store.count_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.backfill_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.last_batch_size.load(Ordering::SeqCst), 17);
+    }
+
+    #[tokio::test]
+    async fn quantized_backfill_skips_when_no_pending_rows() {
+        let store = Arc::new(BackfillVectorStore::new(0));
+        let rows = backfill_quantized_vectors_once(store.clone(), 17)
+            .await
+            .unwrap();
+
+        assert_eq!(rows, 0);
+        assert_eq!(store.count_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.backfill_calls.load(Ordering::SeqCst), 0);
     }
 
     /// Privacy regression (D′ lead review): the Local-arm demotion target must

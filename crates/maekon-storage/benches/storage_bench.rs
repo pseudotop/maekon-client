@@ -1,4 +1,11 @@
-#![allow(clippy::redundant_closure, clippy::unit_arg)]
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(
+    clippy::redundant_closure,
+    clippy::unit_arg,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 
 use std::hint::black_box;
 

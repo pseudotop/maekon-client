@@ -710,6 +710,9 @@ fn apply_resource_limits_sync(limits: &ResourceLimits) -> std::io::Result<()> {
 /// When the `linux-sandbox` feature is enabled and kernel supports Landlock,
 /// restricts filesystem access to the configured read/write paths.
 /// Otherwise logs the rules and returns `Ok(())`.
+// #7719: `#[cfg(target_os = "linux")]`-gated module, not compiled on the
+// macOS/Windows hosts used for this sweep — kept verbatim (unverifiable from
+// here; CI's ubuntu-latest runner is the authority for this file).
 #[allow(dead_code)]
 fn apply_landlock_rules(rules: &LandlockRules) -> Result<(), AutomationError> {
     #[cfg(feature = "linux-sandbox")]
@@ -799,6 +802,9 @@ fn apply_landlock_rules(rules: &LandlockRules) -> Result<(), AutomationError> {
 ///
 /// Sets `RLIMIT_AS` (virtual memory) and `RLIMIT_CPU` (CPU seconds) on the
 /// current process. Only effective when applied before exec in a child process.
+// #7719: `#[cfg(target_os = "linux")]`-gated module, not compiled on the
+// macOS/Windows hosts used for this sweep — kept verbatim (unverifiable from
+// here; CI's ubuntu-latest runner is the authority for this file).
 #[allow(dead_code)]
 fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), AutomationError> {
     if limits.max_memory_bytes > 0 {

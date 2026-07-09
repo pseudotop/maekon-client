@@ -9,10 +9,11 @@
 //!
 //! 1. `PINNED_REVISIONS` records the Hugging Face *commit* (not a moving tag
 //!    such as `main`) that each allowlisted digest was captured at. It is the
-//!    provenance of every digest and the value to feed a revision-aware
-//!    downloader once one is available — fastembed 5.x's `InitOptions` exposes
-//!    no revision parameter and `pull_from_hf` resolves the repo's default
-//!    (branch-tracking) ref, so today the content pin below is the enforcement.
+//!    provenance of every digest. fastembed 5.x's `InitOptions` exposes no
+//!    revision parameter and `pull_from_hf` resolves the repo's default
+//!    (branch-tracking) ref, so verification reads hf-hub's `refs/main` cache
+//!    entry and rejects the model if the loaded snapshot commit differs from
+//!    the pinned revision.
 //! 2. `WEIGHT_DIGESTS` is a SHA-256 allowlist of the ONNX weights file, keyed by
 //!    model id. **Content pinning via SHA-256 is strictly stronger than revision
 //!    pinning**: a matching digest guarantees the exact bytes of the pinned
@@ -222,16 +223,29 @@ pub fn cache_dir() -> PathBuf {
 /// Locate the ONNX weights file in the hf-hub cache layout
 /// (`<cache>/models--<org>--<name>/snapshots/<commit>/<weight_file>`).
 #[must_use]
-pub fn locate_weight(cache_dir: &Path, hf_repo: &str, weight_file: &str) -> Option<PathBuf> {
+pub fn locate_weight(
+    cache_dir: &Path,
+    hf_repo: &str,
+    revision: &str,
+    weight_file: &str,
+) -> Option<PathBuf> {
     let repo_dir = cache_dir.join(format!("models--{}", hf_repo.replace('/', "--")));
-    let snapshots = repo_dir.join("snapshots");
-    for entry in std::fs::read_dir(&snapshots).ok()?.flatten() {
-        let candidate = entry.path().join(weight_file);
-        if candidate.exists() {
-            return Some(candidate);
-        }
+    let candidate = repo_dir
+        .join("snapshots")
+        .join(revision.trim())
+        .join(weight_file);
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
     }
-    None
+}
+
+fn cached_main_revision(cache_dir: &Path, hf_repo: &str) -> Option<String> {
+    let repo_dir = cache_dir.join(format!("models--{}", hf_repo.replace('/', "--")));
+    let revision = std::fs::read_to_string(repo_dir.join("refs").join("main")).ok()?;
+    let revision = revision.trim();
+    (!revision.is_empty()).then(|| revision.to_string())
 }
 
 /// Verify the downloaded weights for `model_id` against the SHA-256 allowlist.
@@ -273,10 +287,30 @@ fn verify_with(
         );
         return Ok(IntegrityOutcome::Skipped);
     };
-    let Some(path) = locate_weight(cache_dir, hf_repo, weight_file) else {
+    let Some(pinned_revision) = pinned_revision(model_id) else {
         return Err(EmbeddingError::Integrity(format!(
-            "weights file {weight_file} for {model_id} not found under cache {} — cannot verify \
-             integrity (#7082 MEMB-3)",
+            "pinned revision for embedding model {model_id} is missing while a digest is enforced \
+             — refusing to verify ambiguous weights (#7102)"
+        )));
+    };
+    let Some(loaded_revision) = cached_main_revision(cache_dir, hf_repo) else {
+        return Err(EmbeddingError::Integrity(format!(
+            "Hugging Face cache ref main for {hf_repo} is missing under cache {} — cannot verify \
+             loaded weights against pinned revision {pinned_revision} (#7082 MEMB-3)",
+            cache_dir.display()
+        )));
+    };
+    if loaded_revision != pinned_revision {
+        return Err(EmbeddingError::Integrity(format!(
+            "loaded Hugging Face revision {loaded_revision} for embedding model {model_id} \
+             ({hf_repo}) does not match pinned revision {pinned_revision} — refusing to load \
+             branch-tracking weights (#7082 MEMB-3)"
+        )));
+    }
+    let Some(path) = locate_weight(cache_dir, hf_repo, &loaded_revision, weight_file) else {
+        return Err(EmbeddingError::Integrity(format!(
+            "weights file {weight_file} for {model_id} not found at pinned revision \
+             {pinned_revision} under cache {} — cannot verify integrity (#7082 MEMB-3)",
             cache_dir.display()
         )));
     };
@@ -323,19 +357,21 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache = tmp.path();
         // <cache>/models--Org--repo/snapshots/<commit>/onnx/model.onnx
+        let revision = "deadbeef";
         let snap = cache
             .join("models--Org--repo")
             .join("snapshots")
-            .join("deadbeef");
+            .join(revision);
         fs::create_dir_all(snap.join("onnx")).expect("mkdir");
         let weights = snap.join("onnx/model.onnx");
         fs::write(&weights, b"hello").expect("write weights");
 
-        let found = locate_weight(cache, "Org/repo", "onnx/model.onnx").expect("located");
+        let found = locate_weight(cache, "Org/repo", revision, "onnx/model.onnx").expect("located");
         assert_eq!(found, weights);
         // Wrong repo / file → not found.
-        assert!(locate_weight(cache, "Org/other", "onnx/model.onnx").is_none());
-        assert!(locate_weight(cache, "Org/repo", "onnx/missing.onnx").is_none());
+        assert!(locate_weight(cache, "Org/other", revision, "onnx/model.onnx").is_none());
+        assert!(locate_weight(cache, "Org/repo", revision, "onnx/missing.onnx").is_none());
+        assert!(locate_weight(cache, "Org/repo", "other", "onnx/model.onnx").is_none());
     }
 
     #[test]
@@ -343,10 +379,12 @@ mod tests {
         use std::fs;
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache = tmp.path();
-        let snap = cache
-            .join("models--Org--repo")
-            .join("snapshots")
-            .join("commit0");
+        let model_id = "all-MiniLM-L6-v2-Q";
+        let revision = pinned_revision(model_id).expect("model must have a pinned revision");
+        let repo_dir = cache.join("models--Org--repo");
+        fs::create_dir_all(repo_dir.join("refs")).expect("refs dir");
+        fs::write(repo_dir.join("refs/main"), revision).expect("write main ref");
+        let snap = repo_dir.join("snapshots").join(revision);
         fs::create_dir_all(snap.join("onnx")).expect("mkdir");
         fs::write(snap.join("onnx/model.onnx"), b"hello").expect("write");
 
@@ -354,7 +392,7 @@ mod tests {
         assert_eq!(
             verify_with(
                 Some(HELLO_SHA256),
-                "m",
+                model_id,
                 cache,
                 "Org/repo",
                 "onnx/model.onnx"
@@ -365,7 +403,7 @@ mod tests {
         // Pinned digest does NOT match → fail-closed Integrity error.
         assert!(
             matches!(
-                verify_with(Some("00"), "m", cache, "Org/repo", "onnx/model.onnx"),
+                verify_with(Some("00"), model_id, cache, "Org/repo", "onnx/model.onnx"),
                 Err(EmbeddingError::Integrity(_))
             ),
             "a pinned digest that does not match the cached weights must fail closed"
@@ -375,7 +413,7 @@ mod tests {
             matches!(
                 verify_with(
                     Some(HELLO_SHA256),
-                    "m",
+                    model_id,
                     cache,
                     "Org/missing",
                     "onnx/model.onnx"
@@ -388,6 +426,41 @@ mod tests {
         assert_eq!(
             verify_with(None, "m", cache, "Org/missing", "onnx/model.onnx").expect("skip"),
             IntegrityOutcome::Skipped
+        );
+    }
+
+    #[test]
+    fn verify_with_fails_closed_when_pinned_snapshot_is_missing() {
+        use std::fs;
+        let model_id = "all-MiniLM-L6-v2-Q";
+        let pinned = pinned_revision(model_id).expect("model must have a pinned revision");
+        let other_commit = "0000000000000000000000000000000000000000";
+        assert_ne!(other_commit, pinned);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path();
+        let repo_dir = cache.join("models--Org--repo");
+        fs::create_dir_all(repo_dir.join("refs")).expect("refs dir");
+        fs::write(repo_dir.join("refs/main"), other_commit).expect("write main ref");
+        let snap = repo_dir.join("snapshots").join(other_commit);
+        fs::create_dir_all(snap.join("onnx")).expect("mkdir");
+        fs::write(snap.join("onnx/model.onnx"), b"hello").expect("write");
+
+        let err = verify_with(
+            Some(HELLO_SHA256),
+            model_id,
+            cache,
+            "Org/repo",
+            "onnx/model.onnx",
+        )
+        .expect_err("a matching non-pinned snapshot must not verify");
+        assert!(
+            matches!(
+                err,
+                EmbeddingError::Integrity(ref msg)
+                    if msg.contains(pinned) && msg.contains(other_commit)
+            ),
+            "error should name loaded commit {other_commit} and pinned commit {pinned}: {err}"
         );
     }
 

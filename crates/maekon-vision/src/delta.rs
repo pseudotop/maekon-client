@@ -150,7 +150,6 @@ fn is_tile_changed_fast(
 
 /// Compute delta with adjustable sensitivity threshold.
 /// Public API for consumers needing fine-grained change detection; currently exercised by tests.
-#[allow(dead_code)]
 pub fn compute_delta_adaptive(
     prev: &DynamicImage,
     curr: &DynamicImage,

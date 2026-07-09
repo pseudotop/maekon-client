@@ -4,6 +4,15 @@ mod ocr_provider;
 mod parsing;
 pub(crate) mod runtime;
 mod surface_selection;
+// `trust` (BinaryTrust / install_path_trust / default_allowed_roots) is
+// consumed only by `session_manager::factory::connect_codex_app_server`,
+// which is `#[cfg(feature = "analysis")]` — gating the whole module (its
+// unit tests included) keeps `--no-default-features` from tripping
+// `dead_code` on it (#7743 ctd-W3 A2b follow-up). The consumer side was
+// already gated (`#[cfg(feature = "analysis")] use
+// crate::subprocess_provider::trust;` in factory.rs); this makes the
+// producer side match.
+#[cfg(feature = "analysis")]
 pub(crate) mod trust;
 
 use maekon_core::error::CoreError;
@@ -43,6 +52,10 @@ const CLI_AUTH_PROBE_TIMEOUT_SECS: u64 = 2;
 /// it gets a more generous budget. The whole connect+request is wrapped in a
 /// timeout; on expiry the probe degrades to `Unknown` and the dropped
 /// `AppServerProcess` reaps the spawned process group.
+// Only imported by `auth_probe.rs`'s already-`#[cfg(feature = "analysis")]`
+// `use super::CLI_APP_SERVER_AUTH_PROBE_TIMEOUT_SECS;` — gate the
+// definition to match (#7743 ctd-W3 A2b follow-up).
+#[cfg(feature = "analysis")]
 const CLI_APP_SERVER_AUTH_PROBE_TIMEOUT_SECS: u64 = 8;
 const ACTION_SCHEMA_JSON: &str = r#"{
   "type": "object",

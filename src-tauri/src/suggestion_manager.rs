@@ -1,4 +1,3 @@
-use lru::LruCache;
 use maekon_storage::sqlite::SqliteStorage;
 use maekon_suggestion::deferred::DeferredManager;
 use maekon_suggestion::feedback::FeedbackSender;
@@ -6,32 +5,22 @@ use maekon_suggestion::feedback_retry::FeedbackRetryQueue;
 use maekon_suggestion::history::SuggestionHistory;
 use maekon_suggestion::queue::SuggestionQueue;
 use maekon_suggestion::scorer::FeedbackScorer;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-/// Maximum number of read-status entries to track. More than enough for
-/// max 50 queue items + some history overlap. Using an LRU cache prevents
-/// unbounded growth when suggestions are continuously received.
-#[allow(dead_code)] // wired in app_runtime_launch; IPC commands access via AppState
-const READ_IDS_CAPACITY: usize = 200;
 
 /// Thin wrapper providing unified access to suggestion pipeline components.
 /// CRITICAL: `queue` and `history` must be the SAME Arc instances passed
 /// to SuggestionReceiver, so SSE-received suggestions appear in IPC queries.
-#[allow(dead_code)] // wired in app_runtime_launch; IPC commands access via AppState
 pub struct SuggestionManager {
     queue: Arc<Mutex<SuggestionQueue>>,
     history: Arc<Mutex<SuggestionHistory>>,
     feedback: Arc<FeedbackSender>,
-    read_ids: Mutex<LruCache<String, ()>>,
     scorer: Arc<Mutex<FeedbackScorer>>,
     deferred: Arc<Mutex<DeferredManager>>,
     retry_queue: Arc<Mutex<FeedbackRetryQueue>>,
     storage: Arc<SqliteStorage>,
 }
 
-#[allow(dead_code)] // wired in app_runtime_launch
 impl SuggestionManager {
     pub fn new(
         queue: Arc<Mutex<SuggestionQueue>>,
@@ -46,10 +35,6 @@ impl SuggestionManager {
             queue,
             history,
             feedback,
-            // Safe: READ_IDS_CAPACITY is a compile-time constant (200), always > 0.
-            read_ids: Mutex::new(LruCache::new(
-                NonZeroUsize::new(READ_IDS_CAPACITY).expect("non-zero capacity"),
-            )),
             scorer,
             deferred,
             retry_queue,
@@ -83,16 +68,5 @@ impl SuggestionManager {
 
     pub fn storage(&self) -> &Arc<SqliteStorage> {
         &self.storage
-    }
-
-    pub async fn mark_read(&self, suggestion_id: &str) {
-        self.read_ids
-            .lock()
-            .await
-            .put(suggestion_id.to_string(), ());
-    }
-
-    pub async fn is_read(&self, suggestion_id: &str) -> bool {
-        self.read_ids.lock().await.contains(suggestion_id)
     }
 }

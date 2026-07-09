@@ -51,7 +51,7 @@ fn state_writer() -> &'static Sender<(PathBuf, MainWindowState)> {
                     }
                 }
             })
-            .expect("spawn window-state-writer thread");
+            .unwrap_or_else(|error| panic!("spawn window-state-writer thread: {error}"));
         tx
     })
 }

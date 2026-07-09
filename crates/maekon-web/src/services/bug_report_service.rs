@@ -152,7 +152,8 @@ fn generate_bug_id(app_version: &str, os_info: &str) -> BugId {
     let random_bytes: [u8; 8] = rand::random();
     hasher.update(random_bytes);
     let hash = hasher.finalize();
-    BugId::new(format!("BUG-{}", hex::encode(&hash[..6]))).expect("format is valid")
+    BugId::new(format!("BUG-{}", hex::encode(&hash[..6])))
+        .unwrap_or_else(|error| panic!("format is valid: {error}"))
 }
 
 fn parse_pii_level(level: Option<&str>) -> PiiFilterLevel {
@@ -304,13 +305,11 @@ mod tests {
         ));
     }
 
-    struct MockSanitizer;
-    impl PiiSanitizer for MockSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            text.replace("user@example.com", "[EMAIL]")
-                .replace("/Users/alice", "[USER]")
-                .replace("sk_live_abc123", "[PROVIDER_SECRET]")
-        }
+    fn mock_sanitizer() -> maekon_core::ports::pii_sanitizer::FakePiiSanitizer {
+        maekon_core::ports::pii_sanitizer::FakePiiSanitizer::new()
+            .with_email("user@example.com")
+            .with_replacement("/Users/alice", "[USER]")
+            .with_replacement("sk_live_abc123", "[PROVIDER_SECRET]")
     }
 
     #[test]
@@ -370,7 +369,7 @@ mod tests {
             pii_filter_level: PiiFilterLevel::Standard,
         };
 
-        sanitize_bundle(&MockSanitizer, &mut bundle, PiiFilterLevel::Standard);
+        sanitize_bundle(&mock_sanitizer(), &mut bundle, PiiFilterLevel::Standard);
 
         let details = bundle.diagnostics.recent_audit_entries[0]
             .details
@@ -437,7 +436,7 @@ mod tests {
             pii_filter_level: PiiFilterLevel::Standard,
         };
 
-        sanitize_bundle(&MockSanitizer, &mut bundle, PiiFilterLevel::Standard);
+        sanitize_bundle(&mock_sanitizer(), &mut bundle, PiiFilterLevel::Standard);
 
         assert_eq!(
             bundle.diagnostics.settings_snapshot.audio.cloud_api_key, "",
@@ -516,7 +515,7 @@ mod tests {
         };
 
         // Even with Off level, sanitize_bundle enforces Standard minimum
-        sanitize_bundle(&MockSanitizer, &mut bundle, PiiFilterLevel::Off);
+        sanitize_bundle(&mock_sanitizer(), &mut bundle, PiiFilterLevel::Off);
 
         let err = bundle.diagnostics.health.storage_error.as_ref().unwrap();
         assert!(err.contains("[USER]"));

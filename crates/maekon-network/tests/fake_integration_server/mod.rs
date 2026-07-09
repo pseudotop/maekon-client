@@ -1,3 +1,8 @@
+// Integration test binary submodule (`tests/integration_fake_server.rs`'s
+// mock server) — entirely test-only, not covered by the library's crate-wide
+// allow (#7719 `significant_drop_tightening` workspace enforcement).
+#![allow(clippy::significant_drop_tightening)]
+
 use std::sync::Arc;
 
 use axum::{

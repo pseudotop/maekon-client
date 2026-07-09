@@ -172,6 +172,17 @@ impl IntegrationEgressCoordinator {
 #[async_trait]
 impl IntegrationEgressSignalPort for IntegrationEgressCoordinator {
     async fn wait_for_pending_egress(&self, timeout: Duration) -> Result<bool, CoreError> {
+        // #7617 (LOW finding #6 / RL-02): `Notify::notify_one()` stores a
+        // single wake-up permit even when called before anyone is waiting,
+        // so a `flush_notify.notify_one()` raised while the runtime loop is
+        // mid-await in a SIBLING `select!` arm (connect/heartbeat/inbox) is
+        // not discarded -- `.notified()` consumes the stored permit and
+        // returns immediately the next time it is awaited. This crate's
+        // runtime loop is a single-consumer per coordinator instance, so a
+        // stored single permit is exactly the right semantics (unlike
+        // `notify_waiters()`, which only wakes tasks ALREADY waiting and
+        // stores nothing for a future call). See `enqueue_message` below for
+        // the producer side.
         match tokio::time::timeout(timeout, self.flush_notify.notified()).await {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
@@ -225,7 +236,20 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
 
         match self.outbox.enqueue_message(envelope, payload).await {
             Ok(_queue_id) => {
-                self.flush_notify.notify_waiters();
+                // #7617 (LOW finding #6 / RL-02): use `notify_one()` (stores a
+                // permit) instead of `notify_waiters()` (wakes only tasks
+                // already parked in `.notified()`, storing nothing). The
+                // runtime loop's `select!` future set is re-created every
+                // loop iteration, so a `notify_waiters()` raised while the
+                // loop is mid-await in a sibling arm (connect/heartbeat/
+                // inbox) was silently discarded -- the queued item then had
+                // to wait for the next periodic egress tick (up to 4x the
+                // base interval under the #6516 quiet-backoff) instead of
+                // being flushed promptly. `notify_one()` is exactly the right
+                // primitive for this single-consumer-per-coordinator loop: at
+                // most one permit is ever meaningful since there is only one
+                // `wait_for_pending_egress` caller.
+                self.flush_notify.notify_one();
                 Ok(())
             }
             Err(e) => {

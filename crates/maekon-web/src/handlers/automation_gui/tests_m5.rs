@@ -23,9 +23,8 @@ use maekon_core::models::ui_scene::{NormalizedBounds, UiScene, UiSceneElement};
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::focus_probe::FocusProbe;
 use maekon_core::ports::overlay_driver::OverlayDriver;
-use maekon_storage::sqlite::SqliteStorage;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 
 const M5_HMAC_SECRET: &str = "m5-hmac-secret-32-bytes-long!!!!";
 
@@ -224,10 +223,9 @@ fn make_controller_with(
     Arc::new(controller)
 }
 
+// #7738 D-4: funnel through the canonical test-state helper.
 fn make_state_with(controller: Arc<AutomationController>) -> AppState {
-    let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-    let (event_tx, _) = broadcast::channel(16);
-    let mut state = AppState::with_core(storage, event_tx);
+    let mut state = crate::test_local_auth::test_app_state();
     state.automation.controller = Some(controller);
     state
 }

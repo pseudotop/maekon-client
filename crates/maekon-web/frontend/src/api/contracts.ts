@@ -1178,6 +1178,33 @@ export interface FeatureCapability {
 
 export interface FeatureCapabilitySnapshot {
   features: FeatureCapability[]
+  /**
+   * COMPILE-capability flag (#7600): true only when this binary was built with the `audio`
+   * cargo feature. Optional on the TS side (existing test fixtures predate this field) — treat
+   * a missing value as `false` (fail-closed): the shipped release build never compiles audio in.
+   */
+  audio_compiled?: boolean
+  /**
+   * PLATFORM-capability flag (#7678): true only when a local OCR engine (platform-native or
+   * leptess/Tesseract) is actually compiled + usable on this platform. `false` on Linux in
+   * every shipped build today. Optional on the TS side (existing test fixtures predate this
+   * field) — treat a missing value as `false` (fail-closed).
+   */
+  ocr_available?: boolean
+  /**
+   * PLATFORM-capability flag (#7678): true only when real battery/power data is available
+   * (macOS only today — Windows/Linux always report an empty default). Optional on the TS side
+   * (existing test fixtures predate this field) — treat a missing value as `false` (fail-closed).
+   */
+  power_status_available?: boolean
+  /**
+   * PLATFORM-capability flag (#7678): true when active-window detection is expected to work
+   * reliably (always on macOS/Windows; false on Linux under a Wayland session with no
+   * dependable native path). Optional on the TS side — treat a missing value as `false`
+   * (fail-closed). No dedicated settings UI reads this today; present for
+   * telemetry/consumers.
+   */
+  active_window_available?: boolean
 }
 
 export type DesktopPermissionState = 'granted' | 'needs_attention' | 'not_required' | 'unavailable'
@@ -1231,6 +1258,88 @@ export interface AuditEntry {
   status: string
   details: string | null
   elapsed_ms: number | null
+}
+
+/** A single hash-chain integrity break (#4834/ADR-072/#7600). */
+export interface AuditChainBreak {
+  seq: number
+  reason: string
+}
+
+/**
+ * Result of verifying the durable `audit_log` SHA-256 hash chain (#4834,
+ * ADR-072, #7600 — `GET /api/audit/verify` / desktop `verify_audit_log` IPC).
+ * A SHA-256-only chain is tamper-evident (detects accidental/partial
+ * corruption, simple row edits, deletions, and reordering) but not
+ * tamper-proof.
+ */
+export interface AuditChainReport {
+  ok: boolean
+  first_seq: number | null
+  last_seq: number | null
+  verified_count: number
+  legacy_unchained_count: number
+  first_break: AuditChainBreak | null
+}
+
+/**
+ * One egress-ledger row (T1.2, #7910 — `GET /api/privacy/egress-ledger`). The
+ * audit record of a single egress (or prevented-capture) event: the ledger's
+ * own nine columns, which record *that* egress happened (byte counts,
+ * destination sink, disposition) — never *what* was sent. A `capture_blocked`
+ * row (destination `local.capture`, byte/recipient 0) is prevented-capture
+ * evidence — a frame deliberately NOT captured, not an upload.
+ */
+export interface EgressLedgerEntry {
+  record_id: string
+  event_type: string
+  event_id: string | null
+  byte_count: number
+  recipient_count: number
+  destination: string
+  disposition: string
+  consent_state: string
+  occurred_at: string
+}
+
+/** Response body for `GET /api/privacy/egress-ledger`. */
+export interface EgressLedgerResponse {
+  entries: EgressLedgerEntry[]
+}
+
+/**
+ * One memory-graph claim node (T1.3, #7911 — `GET /api/memory/claims`). A
+ * durable ADR-023 belief the agent has accumulated about the user, plus a cheap
+ * evidence/provenance summary derived from its outbound edges. Timestamps are
+ * epoch SECONDS (the frontend humanizes them). `evidence_segment_ids` are ids of
+ * the captured segments supporting the belief — ids only, never content.
+ */
+export interface Claim {
+  claim_id: string
+  kind: string
+  text: string
+  source: string
+  confidence: number
+  status: string
+  created_at: number
+  updated_at: number
+  evidence_count: number
+  evidence_segment_ids: string[]
+  supersedes_claim_ids: string[]
+}
+
+/** Response body for `GET /api/memory/claims`. */
+export interface ClaimListResponse {
+  claims: Claim[]
+  /** Total matches before the `limit` truncation (for "N of M"). */
+  total: number
+}
+
+/** Response body for `POST /api/memory/claims/{id}/retract`. */
+export interface RetractClaimResponse {
+  claim: Claim
+  /** True when the claim was already retracted (idempotent no-op). */
+  already_retracted: boolean
 }
 
 export interface AutomationStats {
@@ -1645,6 +1754,16 @@ export interface SemanticSearchResult {
   llm_summary: string | null
   dominant_category: string | null
   regime_label: string | null
+}
+
+/**
+ * #7600: `GET /api/semantic-search/capabilities`. `semantic_available` is `false`
+ * whenever the vector/embedding pipeline is not wired up (e.g. `maekon-embedding`
+ * compiled out of the shipped build) — `mode=semantic` would return HTTP 501 in
+ * that case, and `mode=hybrid` silently degrades to keyword-only results.
+ */
+export interface SemanticSearchCapabilities {
+  semantic_available: boolean
 }
 
 // ── Weekly Digest types ──────────────────────────────────────────

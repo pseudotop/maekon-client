@@ -30,13 +30,11 @@ mod tests {
     use maekon_core::config_manager::ConfigManager;
     use maekon_core::error::CoreError;
     use maekon_core::ports::secret_store::SecretStore;
-    use maekon_storage::sqlite::SqliteStorage;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
 
     struct TestSecretStore {
         values: Mutex<HashMap<(String, String), String>>,
@@ -94,9 +92,8 @@ mod tests {
         let config_path = temp_dir.path().join("config.json");
         let config_manager = ConfigManager::with_path(config_path).expect("config manager");
         config_manager.update(config).expect("save config");
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("sqlite"));
-        let (event_tx, _) = broadcast::channel(8);
-        let mut state = AppState::with_core(storage, event_tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.core.config_manager = Some(config_manager);
         state.secrets.store = Some(secret_store);
         state

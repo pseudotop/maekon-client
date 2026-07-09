@@ -3,6 +3,10 @@
 //! `SysInfoMonitor` is IO-bound (reads `/proc`, sysctl, etc.) but measuring
 //! its latency is valuable for understanding scheduler loop budgets.
 
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use maekon_core::ports::monitor::SystemMonitor;
 use maekon_monitor::system::SysInfoMonitor;

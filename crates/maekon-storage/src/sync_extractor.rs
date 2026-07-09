@@ -12,6 +12,7 @@ use tracing::debug;
 use crate::error::StorageError;
 use crate::sqlite::hlc_clock::ERASURE_HLC_META_KEY;
 use crate::sqlite::GuardedConnection;
+use crate::sync_table_descriptor as table_descriptor;
 use maekon_core::config::SyncConfig;
 use maekon_core::error::CoreError;
 use maekon_core::models::sync::{ChangeSet, ChangeSetKind, Tombstone};
@@ -65,14 +66,10 @@ impl SqliteSyncExtractor {
         // Do NOT add `memory_claims`/`memory_edges` (ADR-023) — they are intentionally
         // device-local; syncing LLM-enriched claims would need all of the above plus a
         // PII gate the extractor does not have.
-        let tables = [
-            "activity_segments",
-            "regimes",
-            "regime_overrides",
-            "embedding_vectors",
-            "suggestions",
-            "trigger_params_snapshots",
-        ];
+        //
+        // Single source of truth for the 6 synced tables — see
+        // `table_descriptor::ALL_TABLE_NAMES` (#7742).
+        let tables = table_descriptor::ALL_TABLE_NAMES;
         let mut total = 0u64;
         for table in &tables {
             let sql =
@@ -195,14 +192,7 @@ impl SqliteSyncExtractor {
     fn compute_max_hlc(conn: &Connection) -> Result<Hlc, StorageError> {
         // Mirror of the sync table set — see the GDPR SYNC GUARD on
         // `backfill_origin_device_id` before adding any table (#4478 G3).
-        let tables = [
-            "activity_segments",
-            "regimes",
-            "regime_overrides",
-            "embedding_vectors",
-            "suggestions",
-            "trigger_params_snapshots",
-        ];
+        let tables = table_descriptor::ALL_TABLE_NAMES;
 
         let mut max = Hlc::default();
         for table in &tables {
@@ -283,54 +273,31 @@ impl SqliteSyncExtractor {
         sync_config: &SyncConfig,
         self_origin: bool,
     ) -> Result<ChangeSet, StorageError> {
-        let include_content = sync_config.include_content_activities;
         let include_llm_summary = sync_config.include_llm_summary;
-        let include_embed_text = sync_config.include_embedding_text;
         // Self-origin push scope binds origin_device_id = this device; pull serves all.
         let origin_scope: Option<&str> = if self_origin { Some(device_id) } else { None };
 
-        // --- Build per-table JSON extraction queries ---
-        // Each query uses json_object() to produce a self-contained JSON row.
-
-        // activity_segments (append-only). Content fields are INDEPENDENTLY gated:
-        // `llm_summary` (an LLM narrative of screen activity) behind include_llm_summary,
-        // `content_activities_json` behind include_content_activities — both default off
-        // so a data-minimized sync carries neither (#5174 privacy parity). trigger_reason
-        // (NOT NULL) is always emitted so the peer's merge_segment INSERT satisfies the
+        // --- Per-table JSON extraction queries ---
+        // Each `TableDescriptor::extractor_select_expr` builds a self-contained
+        // `json_object(...)` SELECT projection — the single source for each table's
+        // column list, shared with `sync_merger`'s write side (#7742). Data-minimization
+        // gating (`llm_summary` / `content_activities_json` / embedding `original_text`)
+        // is `ExtractorGate` data on the descriptor, not hand-built here; `trigger_reason`
+        // (NOT NULL) is always emitted so the peer's merge INSERT satisfies the
         // constraint (#5202).
-        let llm_summary_col = if include_llm_summary {
-            "'llm_summary',llm_summary,"
-        } else {
-            ""
-        };
-        let content_activities_col = if include_content {
-            "'content_activities_json',content_activities_json,"
-        } else {
-            ""
-        };
-        let seg_cols = format!(
-            "json_object('id',id,'start_time',start_time,'end_time',end_time,\
-             'duration_secs',duration_secs,'trigger_reason',trigger_reason,\
-             'regime_id',regime_id,\
-             'dominant_category',dominant_category,'app_breakdown',app_breakdown,\
-             {llm_summary_col}{content_activities_col}\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)"
-        );
-        let segments =
-            Self::query_table_changes(conn, "activity_segments", &seg_cols, since, origin_scope)?;
+        let segments = Self::query_table_changes(
+            conn,
+            table_descriptor::ACTIVITY_SEGMENTS.data_table,
+            &table_descriptor::ACTIVITY_SEGMENTS.extractor_select_expr(sync_config),
+            since,
+            origin_scope,
+        )?;
 
         // regimes (LWW, includes tombstone columns)
         let regimes = Self::query_table_changes(
             conn,
-            "regimes",
-            "json_object('id',id,'label',label,'detected_at',detected_at,\
-             'last_seen_at',last_seen_at,'occurrence_count',occurrence_count,\
-             'avg_density',avg_density,'avg_importance',avg_importance,\
-             'dominant_category',dominant_category,'params_snapshot_id',params_snapshot_id,\
-             'is_active',is_active,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)",
+            table_descriptor::REGIMES.data_table,
+            &table_descriptor::REGIMES.extractor_select_expr(sync_config),
             since,
             origin_scope,
         )?;
@@ -338,38 +305,27 @@ impl SqliteSyncExtractor {
         // regime_overrides (append-only)
         let overrides = Self::query_table_changes(
             conn,
-            "regime_overrides",
-            "json_object('override_id',override_id,'segment_id',segment_id,\
-             'original_regime_id',original_regime_id,'action_type',action_type,\
-             'action_data',action_data,'created_at',created_at,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)",
+            table_descriptor::REGIME_OVERRIDES.data_table,
+            &table_descriptor::REGIME_OVERRIDES.extractor_select_expr(sync_config),
             since,
             origin_scope,
         )?;
 
-        // embedding_vectors (LWW, includes tombstone; respects include_embed_text)
-        let embed_cols = if include_embed_text {
-            "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
-             'content_label',content_label,'original_text',original_text,\
-             'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
-             'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)"
-        } else {
-            "json_object('id',id,'segment_id',segment_id,'content_type',content_type,\
-             'content_label',content_label,\
-             'vector',hex(vector),'model_id',model_id,'timestamp',timestamp,\
-             'is_stale',is_stale,'is_deleted',is_deleted,'deleted_at',deleted_at,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)"
-        };
-        let mut embeddings =
-            Self::query_table_changes(conn, "embedding_vectors", embed_cols, since, origin_scope)?;
+        // embedding_vectors (LWW, includes tombstone; `original_text` respects
+        // include_embedding_text via the descriptor's `ExtractorGate`)
+        let mut embeddings = Self::query_table_changes(
+            conn,
+            table_descriptor::EMBEDDING_VECTORS.data_table,
+            &table_descriptor::EMBEDDING_VECTORS.extractor_select_expr(sync_config),
+            since,
+            origin_scope,
+        )?;
         // #5210: a SEGMENT_SUMMARY embedding's text AND vector both represent the
         // llm_summary screen-activity narrative. When include_llm_summary is off, exclude
         // those rows entirely (not just their original_text) so include_embedding_text is
-        // not a backdoor that re-exposes the gated narrative. They regenerate locally.
+        // not a backdoor that re-exposes the gated narrative. They regenerate locally. This
+        // is a whole-ROW filter (not a column gate), so it stays here rather than in the
+        // shared descriptor.
         if !include_llm_summary {
             embeddings.retain(|e| {
                 e.get("content_type").and_then(|v| v.as_str()) != Some("SEGMENT_SUMMARY")
@@ -379,18 +335,8 @@ impl SqliteSyncExtractor {
         // suggestions (LWW, monotonic status merge)
         let suggestions = Self::query_table_changes(
             conn,
-            "suggestions",
-            "json_object('suggestion_id',suggestion_id,'suggestion_type',suggestion_type,\
-             'source',source,'content',content,'priority',priority,\
-             'confidence_score',confidence_score,'relevance_score',relevance_score,\
-             'is_actionable',is_actionable,'reasoning',reasoning,\
-             'context_app',context_app,'context_window',context_window,\
-             'context_target_id',context_target_id,\
-             'shown_at',shown_at,'dismissed_at',dismissed_at,'acted_at',acted_at,\
-             'created_at',created_at,'expires_at',expires_at,\
-             'is_deleted',is_deleted,'deleted_at',deleted_at,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)",
+            table_descriptor::SUGGESTIONS.data_table,
+            &table_descriptor::SUGGESTIONS.extractor_select_expr(sync_config),
             since,
             origin_scope,
         )?;
@@ -398,11 +344,8 @@ impl SqliteSyncExtractor {
         // trigger_params_snapshots (append-only)
         let param_snapshots = Self::query_table_changes(
             conn,
-            "trigger_params_snapshots",
-            "json_object('id',id,'created_at',created_at,'preset',preset,\
-             'params_json',params_json,\
-             'hlc_wall_ms',hlc_wall_ms,'hlc_counter',hlc_counter,\
-             'origin_device_id',origin_device_id)",
+            table_descriptor::TRIGGER_PARAMS_SNAPSHOTS.data_table,
+            &table_descriptor::TRIGGER_PARAMS_SNAPSHOTS.extractor_select_expr(sync_config),
             since,
             origin_scope,
         )?;

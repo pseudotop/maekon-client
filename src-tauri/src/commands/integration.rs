@@ -1,86 +1,16 @@
+// #7600: integration_auth_status, integration_start_device_authorization,
+// integration_poll_device_authorization, integration_cancel_device_authorization,
+// and integration_reset_auth_state were removed as dead IPC duplicates — the
+// React frontend drives the device-auth flow via the embedded HTTP API
+// (GET/POST /integration/auth/*) instead. The OAuth-flow commands below remain
+// live IPC callers.
+
 use tauri::command;
 
-use maekon_api_contracts::integration::IntegrationDeviceAuthorizationCommandResult;
-use maekon_core::models::integration::default_integration_runtime_scopes;
 use maekon_core::ports::oauth::{OAuthConnectionStatus, OAuthFlowHandle, OAuthFlowStatus};
 
 use crate::ipc_error::IpcError;
-use crate::runtime_state::{IntegrationAuthState, OAuthCoordinatorState, OAuthState};
-
-fn require_integration_auth(
-    state: &IntegrationAuthState,
-) -> Result<std::sync::Arc<dyn maekon_core::ports::integration::IntegrationAuthPort>, IpcError> {
-    state.0.clone().ok_or_else(|| {
-        IpcError::new(
-            "service.unavailable",
-            "Integration auth is not configured for this runtime",
-        )
-    })
-}
-
-#[command]
-pub async fn integration_auth_status(
-    integration_auth: tauri::State<'_, IntegrationAuthState>,
-) -> Result<maekon_core::models::integration::IntegrationAuthStatus, IpcError> {
-    let port = require_integration_auth(&integration_auth)?;
-    port.current_auth_status().await.map_err(IpcError::from)
-}
-
-#[command]
-pub async fn integration_start_device_authorization(
-    integration_auth: tauri::State<'_, IntegrationAuthState>,
-) -> Result<IntegrationDeviceAuthorizationCommandResult, IpcError> {
-    let port = require_integration_auth(&integration_auth)?;
-    let flow = port
-        .start_device_authorization(&default_integration_runtime_scopes(), None)
-        .await
-        .map_err(IpcError::from)?;
-    let auth_status = port.current_auth_status().await.map_err(IpcError::from)?;
-    Ok(IntegrationDeviceAuthorizationCommandResult {
-        auth_status,
-        flow: Some(flow),
-    })
-}
-
-#[command]
-pub async fn integration_poll_device_authorization(
-    flow_id: String,
-    integration_auth: tauri::State<'_, IntegrationAuthState>,
-) -> Result<IntegrationDeviceAuthorizationCommandResult, IpcError> {
-    let port = require_integration_auth(&integration_auth)?;
-    let auth_status = port
-        .poll_device_authorization(&flow_id)
-        .await
-        .map_err(IpcError::from)?;
-    Ok(IntegrationDeviceAuthorizationCommandResult {
-        flow: auth_status.pending_flow.clone(),
-        auth_status,
-    })
-}
-
-#[command]
-pub async fn integration_cancel_device_authorization(
-    flow_id: String,
-    integration_auth: tauri::State<'_, IntegrationAuthState>,
-) -> Result<(), IpcError> {
-    let port = require_integration_auth(&integration_auth)?;
-    port.cancel_device_authorization(&flow_id)
-        .await
-        .map_err(IpcError::from)
-}
-
-#[command]
-pub async fn integration_reset_auth_state(
-    integration_auth: tauri::State<'_, IntegrationAuthState>,
-) -> Result<IntegrationDeviceAuthorizationCommandResult, IpcError> {
-    let port = require_integration_auth(&integration_auth)?;
-    port.reset_auth_state().await.map_err(IpcError::from)?;
-    let auth_status = port.current_auth_status().await.map_err(IpcError::from)?;
-    Ok(IntegrationDeviceAuthorizationCommandResult {
-        flow: auth_status.pending_flow.clone(),
-        auth_status,
-    })
-}
+use crate::runtime_state::{OAuthCoordinatorState, OAuthState};
 
 // ── OAuth IPC commands ──────────────────────────────────────
 

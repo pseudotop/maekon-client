@@ -302,7 +302,11 @@ impl AutomationPort for AutomationController {
     }
 
     async fn remove_execution_policy(&self, policy_id: &str) -> Result<bool, CoreError> {
-        let removed = self.policy_client.remove_policy(policy_id).await;
+        // #7932: persist-first revocation. A durability failure surfaces as an
+        // Err (AutomationError::Internal → CoreError::Internal → HTTP 500) rather
+        // than a silent success that would resurrect the policy on restart. No
+        // audit event is emitted on failure — the delete did not durably happen.
+        let removed = self.policy_client.remove_policy(policy_id).await?;
         {
             let mut logger = self.audit_logger.write().await;
             logger.log_event(

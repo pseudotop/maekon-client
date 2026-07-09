@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
+import { Alert, Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
 import { colors, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -31,8 +31,17 @@ const MODEL_LABELS: Record<ModelSize, string> = {
 
 export default function AudioTab() {
   const { t } = useTranslation()
-  const { form } = useSettingsFormContext()
+  const { form, data } = useSettingsFormContext()
   const formData = form.formData
+
+  // #7600: COMPILE-capability gate, not just `config.audio.enabled`. `maekon-audio`
+  // is compiled OUT of the shipped `grpc,windows-sandbox` release build, so the
+  // enable checkbox + model download must be honestly disabled instead of
+  // offering a download that dead-ends in `service.unavailable`. Fail-closed
+  // while the capability snapshot query is still loading (`undefined`) or
+  // unavailable outside Tauri (standalone browser mode never resolves it).
+  const audioCompiled = data.featureCapabilities?.audio_compiled === true
+  const controlsDisabled = !audioCompiled
 
   const handleAudioChange = (field: string, value: unknown) => {
     form.setFormData((prev) => {
@@ -174,10 +183,20 @@ export default function AudioTab() {
         ]}
       />
 
+      {!audioCompiled && (
+        <Alert variant="warning" title={t('settings.audio.notCompiledTitle', 'Not available in this build')}>
+          {t(
+            'settings.audio.notCompiledDescription',
+            'This build was compiled without audio/speech-to-text support. Enabling this toggle and downloading a model would not work.',
+          )}
+        </Alert>
+      )}
+
       <Checkbox
         checked={enabled}
         onChange={(e) => handleAudioChange('enabled', e.target.checked)}
         label={t('settings.audio.enable', 'Enable audio capture and STT')}
+        disabled={controlsDisabled}
       />
 
       <div className="space-y-2">
@@ -188,7 +207,7 @@ export default function AudioTab() {
           id="audio-model-size"
           value={modelSize}
           onChange={(e) => handleAudioChange('model_size', e.target.value)}
-          disabled={downloading || !enabled}
+          disabled={downloading || !enabled || controlsDisabled}
           className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
         >
           {(Object.entries(MODEL_LABELS) as [ModelSize, string][]).map(([key, label]) => (
@@ -238,7 +257,7 @@ export default function AudioTab() {
             {t('settings.audio.cancel', 'Cancel')}
           </Button>
         ) : (
-          <Button variant="primary" size="sm" onClick={handleDownload} disabled={!enabled}>
+          <Button variant="primary" size="sm" onClick={handleDownload} disabled={!enabled || controlsDisabled}>
             {modelState === 'ready'
               ? t('settings.audio.redownload', 'Re-download')
               : t('settings.audio.download', 'Download')}
@@ -246,10 +265,10 @@ export default function AudioTab() {
         )}
         {modelState === 'ready' && !downloading && (
           <>
-            <Button variant="secondary" size="sm" onClick={handleReload}>
+            <Button variant="secondary" size="sm" onClick={handleReload} disabled={controlsDisabled}>
               {t('settings.audio.reload', 'Reload Engine')}
             </Button>
-            <Button variant="danger" size="sm" onClick={handleDelete}>
+            <Button variant="danger" size="sm" onClick={handleDelete} disabled={controlsDisabled}>
               {t('settings.audio.delete', 'Delete')}
             </Button>
           </>
@@ -264,7 +283,7 @@ export default function AudioTab() {
           id="audio-language"
           value={language}
           onChange={(e) => handleAudioChange('language', e.target.value)}
-          disabled={!enabled}
+          disabled={!enabled || controlsDisabled}
           className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
         >
           <option value="auto">Auto-detect</option>
@@ -286,6 +305,7 @@ export default function AudioTab() {
               value="push_to_talk"
               checked={micInputMode === 'push_to_talk'}
               onChange={() => handleAudioChange('mic_input_mode', 'push_to_talk')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.ptt', 'Push-to-Talk')}</span>
           </label>
@@ -296,6 +316,7 @@ export default function AudioTab() {
               value="voice_activity"
               checked={micInputMode === 'voice_activity'}
               onChange={() => handleAudioChange('mic_input_mode', 'voice_activity')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.vad', 'Voice Activity')}</span>
           </label>
@@ -318,6 +339,7 @@ export default function AudioTab() {
                 step="0.005"
                 value={vadThreshold}
                 onChange={(e) => handleAudioChange('vad_threshold', Number.parseFloat(e.target.value))}
+                disabled={controlsDisabled}
                 className="flex-1"
               />
               <span className={cn('w-12 text-right text-sm tabular-nums', colors.text.secondary)}>
@@ -343,6 +365,7 @@ export default function AudioTab() {
               step="100"
               value={vadSilenceMs}
               onChange={(e) => handleAudioChange('vad_silence_ms', Number.parseInt(e.target.value, 10) || 800)}
+              disabled={controlsDisabled}
               className={cn('w-32 border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -365,6 +388,7 @@ export default function AudioTab() {
               value="local"
               checked={sttProvider === 'local'}
               onChange={() => handleAudioChange('stt_provider', 'local')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.local', 'Local (Whisper)')}</span>
           </label>
@@ -375,6 +399,7 @@ export default function AudioTab() {
               value="cloud"
               checked={sttProvider === 'cloud'}
               onChange={() => handleAudioChange('stt_provider', 'cloud')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.cloud', 'Cloud (OpenAI)')}</span>
           </label>
@@ -394,6 +419,7 @@ export default function AudioTab() {
               value={cloudApiKey}
               onChange={(e) => handleAudioChange('cloud_api_key', e.target.value)}
               placeholder="sk-..."
+              disabled={controlsDisabled}
               className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -410,6 +436,7 @@ export default function AudioTab() {
               value={cloudEndpoint}
               onChange={(e) => handleAudioChange('cloud_stt_endpoint', e.target.value)}
               placeholder="https://api.openai.com/v1/audio/transcriptions"
+              disabled={controlsDisabled}
               className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -428,6 +455,7 @@ export default function AudioTab() {
               step="5"
               value={cloudTimeoutSecs}
               onChange={(e) => handleAudioChange('cloud_timeout_secs', Number.parseInt(e.target.value, 10) || 30)}
+              disabled={controlsDisabled}
               className={cn('w-32 border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
           </div>

@@ -12,8 +12,11 @@ mod tests {
     use chrono::{Duration, Utc};
     use maekon_core::error::CoreError;
 
-    use crate::auth::refresh::parse_retry_after;
+    use crate::auth::refresh::{
+        parse_retry_after, REFRESH_INITIAL_BACKOFF_MS, REFRESH_MAX_BACKOFF_MS, REFRESH_MAX_RETRIES,
+    };
     use crate::auth::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
+    use crate::resilience::jittered_backoff_delay;
 
     // ── Password fixtures ─────────────────────────────────────────────────────
 
@@ -66,6 +69,55 @@ mod tests {
             "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
         );
         assert!(parse_retry_after(&headers).is_none());
+    }
+
+    // ── refresh() backoff envelope (#7725: adopted `resilience::jittered_backoff_delay`,
+    // replacing the hand-rolled `(INITIAL_BACKOFF_MS * 2u64.pow(attempt)).min(MAX_BACKOFF_MS)`
+    // doubling — found during the #7725 fix-class completeness sweep) ──────────
+
+    #[test]
+    fn refresh_backoff_constants_match_pre_migration_tuning() {
+        assert_eq!(REFRESH_MAX_RETRIES, 3);
+        assert_eq!(REFRESH_INITIAL_BACKOFF_MS, 500);
+        assert_eq!(REFRESH_MAX_BACKOFF_MS, 8_000);
+    }
+
+    #[test]
+    fn refresh_backoff_delay_envelope_matches_pre_migration_doubling_schedule() {
+        let base = StdDuration::from_millis(REFRESH_INITIAL_BACKOFF_MS);
+        let max = StdDuration::from_millis(REFRESH_MAX_BACKOFF_MS);
+        // Without jitter the pre-migration schedule doubled 500ms -> 1000ms ->
+        // 2000ms -> 4000ms; pin the envelope (floor = bare exponential,
+        // ceiling = exponential + 25% jitter) rather than an exact value since
+        // the delay is now randomized.
+        for (attempt, exp_ms) in [(0u32, 500u64), (1, 1000), (2, 2000)] {
+            let floor = StdDuration::from_millis(exp_ms);
+            let ceiling = StdDuration::from_millis(exp_ms + exp_ms / 4);
+            for _ in 0..50 {
+                let delay = jittered_backoff_delay(attempt, base, max);
+                assert!(
+                    delay >= floor,
+                    "attempt {attempt}: delay {delay:?} must be >= exponential floor {floor:?}"
+                );
+                assert!(
+                    delay <= ceiling,
+                    "attempt {attempt}: delay {delay:?} must be <= exp + 25% ({ceiling:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_backoff_delay_never_exceeds_max_for_full_retry_range() {
+        let base = StdDuration::from_millis(REFRESH_INITIAL_BACKOFF_MS);
+        let max = StdDuration::from_millis(REFRESH_MAX_BACKOFF_MS);
+        for attempt in 0..REFRESH_MAX_RETRIES {
+            let delay = jittered_backoff_delay(attempt, base, max);
+            assert!(
+                delay <= max,
+                "attempt {attempt}: delay {delay:?} must be <= {max:?}"
+            );
+        }
     }
 
     // ── Constructor smoke tests ───────────────────────────────────────────────

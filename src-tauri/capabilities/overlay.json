@@ -24,6 +24,7 @@
     "allow-get-suggestion-stats",
     "allow-get-suggestion-daily-stats",
     "allow-confirm-automation-command",
+    "allow-run-suggestion-action",
     "allow-respond-codex-approval"
   ]
 }

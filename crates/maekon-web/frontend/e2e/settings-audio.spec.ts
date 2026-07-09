@@ -122,6 +122,48 @@ const mockedSettings = {
   },
 }
 
+/**
+ * Simulate a Tauri desktop build that was compiled WITH the `audio` cargo
+ * feature so the AudioTab interactive controls are enabled.
+ *
+ * #7600 gates every audio control behind a COMPILE-capability flag
+ * (`featureCapabilities.audio_compiled`). That flag is served by the
+ * `get_feature_capabilities` Tauri IPC command, and the query only runs when
+ * `window.__TAURI_INTERNALS__` is present (i.e. the desktop app, not a plain
+ * browser). In standalone Playwright mode the query never runs, so
+ * `audio_compiled` fails closed to `false` and the STT-provider / input-mode
+ * radios render `disabled`. Playwright `.click()` then waits forever for the
+ * radio to become enabled and times out.
+ *
+ * Tests that need to *interact* with those controls (toggle to cloud provider
+ * or voice-activity mode) must therefore stub the IPC bridge the same way
+ * chat-session-create.spec.ts does, reporting `audio_compiled: true`.
+ */
+function mockAudioCompiledTauriIpc(page: Page) {
+  return page.addInitScript(() => {
+    ;(globalThis as Record<string, unknown>).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string) => {
+        if (cmd === 'get_feature_capabilities') {
+          return Promise.resolve({ features: [], audio_compiled: true })
+        }
+        if (cmd === 'get_audio_status') {
+          return Promise.resolve({
+            enabled: true,
+            selected_model: 'base',
+            model_status: { state: 'not_installed' },
+            stt_provider_loaded: false,
+          })
+        }
+        // Catch-all for the remaining settings/permission/event IPC calls
+        // (get_desktop_permission_status, get_secret_backend_capabilities,
+        // plugin:event|listen, etc.) that the settings page fires but these
+        // tests do not assert on.
+        return Promise.resolve(null)
+      },
+    }
+  })
+}
+
 async function mockSettingsApis(page: Page) {
   await mockDynamicJson(page, '**/api/settings', (request) => {
     if (request.method() === 'POST') {
@@ -257,6 +299,10 @@ test.describe('Settings Audio Tab', () => {
   })
 
   test('should show cloud API key field when cloud provider selected', async ({ page }) => {
+    // Enable the STT provider radios (see mockAudioCompiledTauriIpc): without a
+    // compiled-audio capability the cloud radio renders `disabled` and .click()
+    // times out.
+    await mockAudioCompiledTauriIpc(page)
     await gotoAudioTab(page)
 
     const panel = audioPanel(page)
@@ -292,6 +338,10 @@ test.describe('Settings Audio Tab', () => {
   })
 
   test('should show VAD settings when voice activity mode selected', async ({ page }) => {
+    // Enable the input-mode radios (see mockAudioCompiledTauriIpc): without a
+    // compiled-audio capability the voice-activity radio renders `disabled` and
+    // .click() times out.
+    await mockAudioCompiledTauriIpc(page)
     await gotoAudioTab(page)
 
     const panel = audioPanel(page)

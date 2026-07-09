@@ -145,7 +145,13 @@ pub fn launchctl_kickstart_args(domain: &str) -> Vec<String> {
 }
 
 fn launchctl_gui_domain() -> Result<String, String> {
-    let output = Command::new("id")
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `id` — fail closed (no
+    // PATH fallback) when the binary is not found under any trusted system
+    // directory.
+    let id_path = maekon_monitor::resolve_trusted_binary("id")
+        .ok_or_else(|| "id not found under the trusted directory allowlist".to_string())?;
+    let output = Command::new(id_path)
         .arg("-u")
         .output()
         .map_err(|e| format!("id -u failure: {e}"))?;
@@ -163,7 +169,13 @@ fn launchctl_gui_domain() -> Result<String, String> {
 }
 
 fn run_launchctl(args: &[String]) -> Result<(), String> {
-    let output = Command::new("launchctl")
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `launchctl` — fail closed
+    // (no PATH fallback) when the binary is not found under any trusted
+    // system directory.
+    let launchctl_path = maekon_monitor::resolve_trusted_binary("launchctl")
+        .ok_or_else(|| "launchctl not found under the trusted directory allowlist".to_string())?;
+    let output = Command::new(launchctl_path)
         .args(args)
         .output()
         .map_err(|e| format!("launchctl failure: {e}"))?;

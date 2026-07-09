@@ -35,8 +35,6 @@ pub trait StorageService: Send + Sync {
 
     async fn mark_as_sent(&self, event_ids: &[String]) -> Result<(), CoreError>;
 
-    async fn mark_unsent_as_sent_before(&self, before: DateTime<Utc>) -> Result<usize, CoreError>;
-
     async fn enforce_retention(&self) -> Result<usize, CoreError>;
 
     /// Persist an LLM/rule-based suggestion to the unified `suggestions` table.

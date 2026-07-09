@@ -1,5 +1,4 @@
 //! Update state management: last check path, save/load check time, scheduling.
-#![allow(dead_code)] // State helpers called from updater check/install paths
 
 use std::path::PathBuf;
 

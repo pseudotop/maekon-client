@@ -21,11 +21,12 @@
 //!   `SegmentSummary.patterns_detected` (which the scheduler path leaves empty);
 //!   app-node-identity co-occurrence is out of scope (no app nodes in the schema).
 
-use maekon_core::generate_id;
 use maekon_core::models::daily_digest::{DailyDigest, HighlightType};
 use maekon_core::models::memory_graph::{
     ClaimKind, ClaimStatus, EdgeType, MemoryClaim, MemoryEdge,
 };
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
 
 /// Confidence assigned to rule-derived (non-LLM) claims and edges. These are
 /// deterministic promotions of already-stored digest content, so they carry
@@ -57,6 +58,7 @@ pub fn build_claims_from_digest(
     now_secs: i64,
 ) -> Vec<(MemoryClaim, Vec<MemoryEdge>)> {
     let mut out: Vec<(MemoryClaim, Vec<MemoryEdge>)> = Vec::new();
+    let date_key = digest.date.to_string();
 
     // Offline source: timeline entries (no LLM). Each carries a guaranteed
     // `segment_id`, so every timeline claim gets an evidence edge; consecutive
@@ -65,8 +67,9 @@ pub fn build_claims_from_digest(
     // scheduler path leaves `SegmentSummary.patterns_detected` empty).
     let mut prev_claim_id: Option<String> = None;
     for entry in &digest.timeline {
+        let claim_id = stable_id("clm", &["timeline", &date_key, &entry.segment_id]);
         let claim = MemoryClaim {
-            claim_id: generate_id("clm"),
+            claim_id,
             kind: ClaimKind::Episodic,
             text: format!(
                 "{}min in {} ({})",
@@ -90,9 +93,22 @@ pub fn build_claims_from_digest(
 
     // LLM-on source: insight highlights (richer, narrative-derived claims).
     if let Some(ref insight) = digest.insight {
-        for highlight in &insight.highlights {
+        for (idx, highlight) in insight.highlights.iter().enumerate() {
+            let index_key = idx.to_string();
+            let segment_key = highlight.segment_id.as_deref().unwrap_or("");
+            let claim_id = stable_id(
+                "clm",
+                &[
+                    "highlight",
+                    &date_key,
+                    &index_key,
+                    highlight_type_key(&highlight.highlight_type),
+                    &highlight.text,
+                    segment_key,
+                ],
+            );
             let claim = MemoryClaim {
-                claim_id: generate_id("clm"),
+                claim_id,
                 kind: kind_for_highlight(&highlight.highlight_type),
                 text: highlight.text.clone(), // already PII-filtered by DailyInsightGenerator
                 source: "digest_highlight".to_string(),
@@ -115,10 +131,34 @@ pub fn build_claims_from_digest(
     out
 }
 
+fn highlight_type_key(highlight_type: &HighlightType) -> &'static str {
+    match highlight_type {
+        HighlightType::Achievement => "achievement",
+        HighlightType::Warning => "warning",
+        HighlightType::Suggestion => "suggestion",
+    }
+}
+
+fn stable_id(prefix: &str, parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"maekon.claim_promoter.v1");
+    for part in parts {
+        hasher.update([0x1f]);
+        hasher.update(part.as_bytes());
+    }
+
+    let digest = hasher.finalize();
+    let mut suffix = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        let _ = write!(&mut suffix, "{byte:02x}");
+    }
+    format!("{prefix}_{suffix}")
+}
+
 /// Construct an `Evidence` edge from a claim to its supporting `segment_id`.
 fn evidence_edge(claim_id: &str, segment_id: &str, now_secs: i64) -> MemoryEdge {
     MemoryEdge {
-        edge_id: generate_id("edg"),
+        edge_id: stable_id("edg", &["evidence", claim_id, segment_id]),
         src_id: claim_id.to_string(),
         dst_id: segment_id.to_string(),
         edge_type: EdgeType::Evidence,
@@ -133,7 +173,7 @@ fn evidence_edge(claim_id: &str, segment_id: &str, now_secs: i64) -> MemoryEdge 
 /// consecutive timeline claims — `src` = earlier, `dst` = later (#4441 box 5).
 fn sequence_edge(src_claim_id: &str, dst_claim_id: &str, now_secs: i64) -> MemoryEdge {
     MemoryEdge {
-        edge_id: generate_id("edg"),
+        edge_id: stable_id("edg", &["sequence", src_claim_id, dst_claim_id]),
         src_id: src_claim_id.to_string(),
         dst_id: dst_claim_id.to_string(),
         edge_type: EdgeType::Associated,
@@ -274,6 +314,34 @@ mod tests {
     fn empty_digest_yields_no_claims() {
         let digest = digest_with_timeline(&[]);
         assert!(build_claims_from_digest(&digest, NOW).is_empty());
+    }
+
+    #[test]
+    fn build_claims_from_digest_is_deterministic_for_same_digest() {
+        let digest = digest_with_timeline(&["seg-1", "seg-2"]);
+
+        let first = build_claims_from_digest(&digest, NOW);
+        let second = build_claims_from_digest(&digest, NOW);
+
+        let first_claim_ids: Vec<_> = first.iter().map(|(claim, _)| &claim.claim_id).collect();
+        let second_claim_ids: Vec<_> = second.iter().map(|(claim, _)| &claim.claim_id).collect();
+        assert_eq!(
+            first_claim_ids, second_claim_ids,
+            "re-promoting the same digest must upsert the same claims"
+        );
+
+        let first_edge_ids: Vec<_> = first
+            .iter()
+            .flat_map(|(_, edges)| edges.iter().map(|edge| &edge.edge_id))
+            .collect();
+        let second_edge_ids: Vec<_> = second
+            .iter()
+            .flat_map(|(_, edges)| edges.iter().map(|edge| &edge.edge_id))
+            .collect();
+        assert_eq!(
+            first_edge_ids, second_edge_ids,
+            "re-promoting the same digest must upsert the same evidence edges"
+        );
     }
 
     #[test]

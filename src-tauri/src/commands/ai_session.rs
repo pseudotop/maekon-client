@@ -156,6 +156,8 @@ pub async fn send_session_message(
         let mut assistant_tool_use: Option<String> = None;
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
+        let mut stream_failed = false;
+        let mut saw_terminal_result = false;
 
         while let Some(item) = stream.next().await {
             match item {
@@ -180,13 +182,21 @@ pub async fn send_session_message(
                             );
                         }
                         OutboundMessage::Result {
-                            usage: Some(ref u), ..
+                            usage: Some(ref u),
+                            done,
+                            ..
                         } => {
                             total_input = u.input_tokens;
                             total_output = u.output_tokens;
                             mgr_clone
                                 .accumulate_tokens(&session_id, u.input_tokens, u.output_tokens)
                                 .await;
+                            if *done {
+                                saw_terminal_result = true;
+                            }
+                        }
+                        OutboundMessage::Result { done: true, .. } => {
+                            saw_terminal_result = true;
                         }
                         _ => {}
                     }
@@ -209,6 +219,7 @@ pub async fn send_session_message(
                     }
                 }
                 Err(err) => {
+                    stream_failed = true;
                     tracing::warn!(
                         session_id = %session_id,
                         "stream error: {err}"
@@ -226,6 +237,10 @@ pub async fn send_session_message(
                     break;
                 }
             }
+        }
+
+        if !stream_failed && saw_terminal_result {
+            mgr_clone.record_success(&session_id).await;
         }
 
         // Auto-extract suggestions from AI response

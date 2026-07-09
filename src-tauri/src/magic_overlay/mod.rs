@@ -280,6 +280,13 @@ impl MagicOverlayHandle {
         }
     }
 
+    // #7719: unlike `clear_focus_highlight`/`emit_detection_scene`/
+    // `clear_detection_scene` (all live — called from setup_shortcuts.rs,
+    // commands/detection.rs, scheduler/loops/detection_helper.rs), this
+    // method has no caller: focus-highlight updates now route through the
+    // `OverlayDriver` trait (`scheduler/loops/detection_helper::
+    // update_focus_highlight` + `MagicOverlayDriver`), not this
+    // webview-emit path.
     #[allow(dead_code)]
     pub fn update_focus_highlight(&self, highlight: OverlayFocusPayload) {
         // #7076: screen-content event — scoped to the overlay webview only.
@@ -288,7 +295,6 @@ impl MagicOverlayHandle {
         }
     }
 
-    #[allow(dead_code)]
     pub fn clear_focus_highlight(&self) {
         // #7076: paired with the scoped focus update — scoped to the overlay webview.
         if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:clear-focus", ()) {
@@ -297,7 +303,6 @@ impl MagicOverlayHandle {
     }
 
     /// Emit a full UiScene to the detection overlay.
-    #[allow(dead_code)]
     pub async fn emit_detection_scene(&self, scene: &maekon_core::models::ui_scene::UiScene) {
         self.clear_focus_highlight();
 
@@ -332,7 +337,6 @@ impl MagicOverlayHandle {
         );
     }
 
-    #[allow(dead_code)]
     pub async fn clear_detection_scene(&self) {
         // #7076: paired with the scoped detection update — scoped to the overlay webview.
         if let Err(e) = emit_overlay_event(&self.app_handle, "overlay:detection-clear", ()) {
@@ -357,6 +361,11 @@ impl MagicOverlayHandle {
         }
     }
 
+    // #7686 removed the IPC commands that called these overlay-mode accessors.
+    // Kept for the mode-switching surface that magic_overlay is expected to
+    // regain (multi-mode overlay UX is still an active roadmap item) — not
+    // reachable from any current caller, so `-D warnings` flags them.
+    #[allow(dead_code)]
     pub async fn set_mode(&self, mode: OverlayMode) {
         let mut state = self.state.write().await;
         state.mode = mode;
@@ -368,18 +377,22 @@ impl MagicOverlayHandle {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_mode(&self) -> OverlayMode {
         self.state.read().await.mode
     }
 
+    #[allow(dead_code)]
     pub async fn is_visible(&self) -> bool {
         self.state.read().await.visible
     }
 
+    #[allow(dead_code)]
     pub fn fullscreen_policy_state(&self) -> Option<OverlayFullscreenPolicyPayload> {
         self.last_fullscreen_policy.lock().clone()
     }
 
+    #[allow(dead_code)]
     pub async fn toggle_mode(&self) {
         let new_mode = {
             let state = self.state.read().await;

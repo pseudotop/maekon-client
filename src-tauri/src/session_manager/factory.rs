@@ -62,6 +62,16 @@ pub(super) type DefaultTools = Option<Vec<maekon_core::models::ai_session::ToolD
 /// Resolved Ollama base URL + optional default model from config/catalog.
 /// Produced by [`resolve_local_llm_target`] at composition time (session_wiring.rs)
 /// so `create_local_llm_session` never needs raw `AppConfig` access.
+///
+/// Fields are populated unconditionally (`session_wiring.rs` calls
+/// `with_local_llm_target` regardless of feature flags) but read only by
+/// `create_local_llm_session`, which is `#[cfg(feature = "analysis")]` — under
+/// `--no-default-features` nothing reads them (#7743 ctd-W3 A2b follow-up).
+/// Kept unconditional per the module comment above (Decision 1): hard-gating
+/// the struct would also require gating its tests below, several of which
+/// exercise `resolve_local_llm_target` directly and should keep running
+/// regardless of `analysis`.
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct LocalLlmTarget {
     /// Scheme + host + port (no trailing path). E.g. `http://localhost:11434`
@@ -171,6 +181,14 @@ pub(crate) fn resolve_local_llm_target(
 // function consumes their outputs.
 
 /// Outcome of model negotiation reported back to the caller.
+///
+/// Consumed only inside `create_local_llm_session`, `#[cfg(feature =
+/// "analysis")]` — under `--no-default-features` nothing constructs or
+/// matches on this, but it stays unconditional (rather than hard-gated) so
+/// the pure-logic unit tests below — which cover this type directly and are
+/// not otherwise `analysis`-gated — keep running regardless of feature
+/// flags (#7743 ctd-W3 A2b follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NegotiationOutcome {
     /// The requested model was found in the installed list (exact or tag-
@@ -212,6 +230,11 @@ pub(crate) enum NegotiationOutcome {
 /// base name.  The first matching family member (sorted by the OS order of
 /// `/api/tags`) is selected — no arbitrary cross-family selection is made to
 /// prevent accidentally using an embedding or code model for chat.
+///
+/// See `NegotiationOutcome`'s doc comment: consumed only from the
+/// `analysis`-gated `create_local_llm_session`, but kept unconditional so
+/// its unit tests below run regardless of feature flags.
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(crate) fn negotiate_local_llm_model(
     requested: &str,
     explicit: bool,

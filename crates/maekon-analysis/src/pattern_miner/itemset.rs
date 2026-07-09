@@ -26,8 +26,14 @@ pub(super) fn detect_co_occurrence_patterns(
     let mut sorted = app_switches.to_vec();
     sorted.sort_by_key(|(ts, _)| *ts);
 
-    let first_ts = sorted.first().expect("len >= 2").0;
-    let last_ts = sorted.last().expect("len >= 2").0;
+    let Some((first_ts, _)) = sorted.first() else {
+        panic!("len >= 2");
+    };
+    let Some((last_ts, _)) = sorted.last() else {
+        panic!("len >= 2");
+    };
+    let first_ts = *first_ts;
+    let last_ts = *last_ts;
     let window_dur = Duration::minutes(WINDOW_MINS);
 
     // Bucket events into fixed time windows and collect unique apps per window

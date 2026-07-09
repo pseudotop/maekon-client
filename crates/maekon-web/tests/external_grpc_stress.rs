@@ -21,87 +21,41 @@
 
 #![cfg(feature = "stress-test")]
 
+// #7730: `in_memory_storage()` lives under `tests/support/` (not the
+// `maekon-web` library) because it needs `maekon-storage`, an adapter crate
+// — see that file's doc comment + `scripts/check-crate-boundaries.sh`.
+#[path = "support/in_memory_storage.rs"]
+mod in_memory_storage_support;
+use in_memory_storage_support::in_memory_storage;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use maekon_core::config::{AuthMode, ExternalGrpcConfig, JwtAlgorithm};
-use maekon_core::models::ai_session::SessionAuditEntry;
-use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStats, AuditStatus};
 use maekon_core::ports::audit_log::AuditLogPort;
-use maekon_storage::sqlite::SqliteStorage;
 use tokio::task::JoinSet;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use maekon_web::grpc::external::cert_resolver::HotReloadCertResolver;
 use maekon_web::grpc::external::ip_ban::IpBan;
 use maekon_web::grpc::external::jwt_verifier::JwtVerifier;
+use maekon_web::grpc::external::live_config::{LiveExternalConfig, LiveSnapshot};
 use maekon_web::grpc::external::metrics::ExternalMetrics;
 use maekon_web::grpc::external::serve_external;
 use maekon_web::grpc::external::spawn_config::ExternalGrpcSpawnConfig;
+// #7730: NoopAudit / server_cert_pem are shared with
+// `tests/external_grpc_integration.rs` via `test_support` — de-duplicated
+// from the verbatim copies that used to live in this file.
 use maekon_web::grpc::external::test_support::{
-    install_rustls_crypto_provider, test_cert_pair, test_jwt_keypair, test_mint_jwt,
+    install_rustls_crypto_provider, server_cert_pem, test_cert_pair, test_jwt_keypair,
+    test_mint_jwt, NoopAudit,
 };
 use maekon_web::grpc::external::tls_config::load_certified_key;
 use maekon_web::grpc::test_support::mock_system_monitor::MockSystemMonitor;
+use maekon_web::grpc::LoadPolicy;
 use maekon_web::proto::dashboard::v1::dashboard_service_client::DashboardServiceClient;
 use maekon_web::proto::dashboard::v1::{GetAgentInfoRequest, SubscribeEventsRequest};
-use maekon_web::storage_port::WebStorage;
-
-// ── Noop audit ───────────────────────────────────────────────────────────────
-//
-// Local duplicate of the NoopAudit at tests/external_grpc_integration.rs:92.
-// Stress tests do not assert on audit content — see spec §10.2 (test-only PR,
-// no semantic coupling on features2-owned audit semantics).
-
-struct NoopAudit;
-
-#[async_trait::async_trait]
-impl AuditLogPort for NoopAudit {
-    async fn pending_count(&self) -> usize {
-        0
-    }
-    async fn recent_entries(&self, _limit: usize) -> Vec<AuditEntry> {
-        vec![]
-    }
-    async fn entries_by_status(&self, _status: &AuditStatus, _limit: usize) -> Vec<AuditEntry> {
-        vec![]
-    }
-    async fn entries_by_action_prefix(&self, _prefix: &str, _limit: usize) -> Vec<AuditEntry> {
-        vec![]
-    }
-    async fn stats(&self) -> AuditStats {
-        AuditStats::default()
-    }
-    async fn has_pending_batch(&self) -> bool {
-        false
-    }
-    async fn log_event(&self, _action_type: &str, _session_id: &str, _details: &str) {}
-    async fn log_start_if(
-        &self,
-        _level: AuditLevel,
-        _command_id: &str,
-        _session_id: &str,
-        _action_type: &str,
-    ) {
-    }
-    async fn log_complete_with_time(
-        &self,
-        _level: AuditLevel,
-        _command_id: &str,
-        _session_id: &str,
-        _details: &str,
-        _execution_time_ms: u64,
-    ) {
-    }
-    async fn drain_batch(&self) -> Vec<AuditEntry> {
-        vec![]
-    }
-    async fn drain_all(&self) -> Vec<AuditEntry> {
-        vec![]
-    }
-    async fn record_session_event(&self, _entry: SessionAuditEntry) {}
-}
 
 // ── Shutdown pair helper ─────────────────────────────────────────────────────
 
@@ -111,10 +65,6 @@ fn make_test_shutdown_pair() -> (
 ) {
     let (tx, rx) = tokio::sync::watch::channel(false);
     (Arc::new(tx), rx)
-}
-
-fn in_memory_storage() -> Arc<dyn WebStorage> {
-    Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory SQLite")) as Arc<dyn WebStorage>
 }
 
 // ── Server config helper (stress variant) ─────────────────────────────────────
@@ -171,10 +121,17 @@ fn make_jwt_stress_config(
         shutdown_tx,
         pii_sanitizer: None,
         ai_runtime_status_snapshot: None,
-        load_policy: std::sync::Arc::new(maekon_web::grpc::LoadPolicy::new(
-            maekon_core::config::LoadThresholds::default(),
-        )),
-        streaming_enabled: true,
+        // #7730: `ExternalGrpcSpawnConfig` consolidated the old flat
+        // `load_policy` / `streaming_enabled` fields into `live:
+        // Arc<LiveExternalConfig>` (see `spawn_config.rs`) — this file had
+        // not been updated since that refactor (`grpc-stress.yml` is
+        // workflow_dispatch-only, so the drift wasn't caught by default CI).
+        live: Arc::new(LiveExternalConfig::new(LiveSnapshot {
+            streaming_enabled: true,
+            load_policy: Arc::new(LoadPolicy::new(
+                maekon_core::config::LoadThresholds::default(),
+            )),
+        })),
     }
 }
 
@@ -225,11 +182,6 @@ async fn spawn_stress_server(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     (handle, probe_addr)
-}
-
-fn server_cert_pem() -> Vec<u8> {
-    let (cert_path, _) = test_cert_pair();
-    std::fs::read(&cert_path).expect("read server cert PEM")
 }
 
 // ── TLS channel helper (stress variant) ───────────────────────────────────────

@@ -144,6 +144,27 @@ pub struct CoachingEventRow {
     pub feedback_score: Option<f64>,
 }
 
+/// Persisted per-`(profile, trigger)` coaching effectiveness — the restart-
+/// surviving form of `FeedbackTracker`'s in-RAM `EffectivenessScore` (#7913
+/// T2.1b). Maps 1:1 to the pre-existing `coaching_effectiveness` table (V17),
+/// which had a schema but ZERO DML until #7913 wired the writer + load-on-start.
+///
+/// This store is keyed by `(profile_name, trigger_type)` — a reaction to a
+/// COACHING MESSAGE. It is deliberately kept separate from the
+/// suggestion_id-keyed feedback stores (#7600): there is no correlation between
+/// a suggestion card's id and a coaching profile/trigger, so the two keyings
+/// must never be joined.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoachingEffectivenessRecord {
+    pub profile_name: String,
+    pub trigger_type: String,
+    pub total_shown: u32,
+    pub positive_feedback: f32,
+    pub negative_feedback: f32,
+    pub neutral_count: u32,
+    pub behavior_change_count: u32,
+}
+
 /// A single day's habit record for one regime — maps to the `habit_streaks` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HabitStreakRow {

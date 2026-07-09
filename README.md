@@ -9,6 +9,10 @@
 <p align="center">
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
+<p align="center">
+  <a href="https://maekon.dev">Website</a> · <a href="https://docs.maekon.dev">Documentation</a> · <a href="https://github.com/pseudotop/maekon-client/releases">Releases</a>
+</p>
+
 
 # Maekon
 
@@ -45,6 +49,17 @@ from a local source checkout:
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
@@ -105,6 +120,23 @@ Standalone mode remains the production-ready default path for release use.
 - First 5 minutes guide: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
 - Automation event contract: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AI provider contract: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
+
+### Verify these claims in source
+
+The privacy claims above are not marketing copy — each maps to code in this repository that you can read, build, and test. The README and the source are exported together from the same verified tree, so this table always describes the code sitting next to it.
+
+| Claim | Where to verify |
+|---|---|
+| Excluded and sensitive apps are excluded **at capture time**, not only at upload | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), wired into the capture gate in [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| Every off-device hand-off is recorded in a local egress ledger, browsable in-app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + the reader routes in [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| The memory graph's beliefs (claims) about you are browsable and one-click retractable (Privacy → Claims) | claims routes in [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Consent is fail-closed: no valid grant means no capture | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| PII filtering runs before storage and before any egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| Automation cannot bypass policy, sandbox, or audit logging | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### Source sync policy
+
+This repository is a **vetted snapshot export** of Maekon's internal source of truth. Snapshots are exported per release after verification — release tags mark verified states, and the repository tracks releases rather than every internal commit. README and code always come from the same tree, so the claim-to-code links above refer to the exact checkout you are reading.
 
 ## Features
 

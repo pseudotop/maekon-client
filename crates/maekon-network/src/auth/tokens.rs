@@ -61,12 +61,17 @@ impl TokenManager {
 
     /// Legacy constructor — uses a default `reqwest::Client` with no TLS policy.
     ///
-    /// Prefer [`TokenManager::new_with_tls`] in production code so that the
-    /// same TLS settings (HTTPS-only, no certificate-validation bypass) are applied to
-    /// credential requests as to all other network calls.
-    ///
-    /// This constructor is retained for backward compatibility and unit tests
-    /// that talk to `mockito` HTTP servers.
+    /// **Test and example code only.** Every production wiring call site
+    /// (`build_server_transports` in `src-tauri/src/agent_runtime_support.rs`,
+    /// and — since #7733 — `build_suggestion_manager` in
+    /// `src-tauri/src/app_runtime_launch/suggestion_wiring.rs`) uses
+    /// [`TokenManager::new_with_tls`] exclusively and fails loud instead of
+    /// falling back to this constructor on a `[tls]` config error. Do NOT add
+    /// a new production fallback onto this constructor — silently downgrading
+    /// TLS policy enforcement on a privacy product is a security regression,
+    /// not a graceful degrade. It remains available for unit/integration tests
+    /// and examples that talk to `mockito`/loopback stub HTTP servers where
+    /// `[tls]` policy enforcement is not the thing under test.
     #[deprecated(note = "Use new_with_tls() for TLS enforcement")]
     pub fn new(base_url: &str) -> Self {
         Self {
@@ -79,9 +84,13 @@ impl TokenManager {
             // constructor. The redirect-only build cannot fail, so a build error
             // is a fail-loud invariant violation rather than a silent fall back
             // to a redirect-following client.
-            client: crate::outbound::hardened_client_builder().build().expect(
-                "TokenManager HTTP client must build with redirects disabled (#7068/#6892)",
-            ),
+            client: crate::outbound::hardened_client_builder()
+                .build()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "TokenManager HTTP client must build with redirects disabled (#7068/#6892): {error}"
+                    )
+                }),
             state: Arc::new(RwLock::new(None)),
             refresh_lock: Arc::new(Mutex::new(())),
         }

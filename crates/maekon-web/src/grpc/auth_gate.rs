@@ -120,13 +120,11 @@ pub fn check_local_auth(
 }
 
 /// `IpAddr::is_loopback` but with explicit IPv4-mapped-v6 handling. Spec IMP-V2-H.
+///
+/// #7723: delegates to `maekon_core::net_policy::is_loopback_ip_with_mapped`, which
+/// this crate already depends on for the SSRF-guard consolidation.
 pub(super) fn is_local_loopback(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
-        }
-    }
+    maekon_core::net_policy::is_loopback_ip_with_mapped(*ip)
 }
 
 /// 4-LoC RFC 7235-compliant prefix stripper (stdlib doesn't provide).

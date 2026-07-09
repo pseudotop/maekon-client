@@ -1,12 +1,22 @@
-mod cadence;
+// #7600: `AdaptiveCaptureCadence`/`CaptureRateRegime` (a regime-aware
+// 500ms-active/5s-idle capture cadence gate) previously lived in this module
+// as `cadence.rs`. It was removed as advertised-but-inert: its only caller
+// was a `#[cfg(debug_assertions)]` CLI diagnostic
+// (`debug-power capture-burst-audit`), never the shipped scheduler. The
+// shipped capture path throttles on a single fixed `Duration` instead (see
+// `RingThumbnailCadence` in `src-tauri/src/scheduler/loops/monitor_phases.rs`
+// and `cfg.vision.capture_throttle_ms`). Wiring the regime-aware cadence into
+// that path was judged non-trivial (an `Instant`-vs-`DateTime<Utc>` type
+// mismatch, a naming collision with this crate's unrelated work-type
+// `regime_manager` concept, and a 10x default active-state capture-attempt
+// frequency change requiring product sign-off) rather than a clean, low-risk
+// integration, so the type was deleted instead of wired in.
 mod decision;
 mod scoring;
 mod signals;
 
 #[cfg(test)]
 mod tests;
-
-pub use cadence::{AdaptiveCaptureCadence, CaptureRateRegime};
 
 use chrono::{DateTime, Utc};
 use maekon_core::models::tiered_memory::{

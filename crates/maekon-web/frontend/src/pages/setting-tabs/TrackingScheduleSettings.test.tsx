@@ -262,11 +262,12 @@ describe('TrackingScheduleSettings', () => {
   // ── Test 7 — Korean locale (U11 lock) ────────────────────────────────────
 
   /**
-   * Test 7 (U11): Korean locale renders "추적 일정" as the page title, NOT "스케줄".
+   * Test 7 (U11): the Korean locale renders the canonical tracking-schedule
+   * page title (not the transliterated "schedule" fallback).
    *
-   * This is a U11 i18n lock — ensures the Korean translation uses the canonical
-   * "추적 일정" wording. The stub renders a placeholder div that contains neither
-   * string → the "추적 일정" assertion fails.
+   * This is a U11 i18n lock — it ensures the Korean translation uses the
+   * canonical wording. The stub renders a placeholder div that contains
+   * neither string, so the title assertion fails.
    */
   it('Korean locale renders "추적 일정" title and does not render "스케줄" (U11 lock)', async () => {
     // Switch i18n to Korean for this test.

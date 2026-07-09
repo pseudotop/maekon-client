@@ -1,13 +1,27 @@
 use chrono::Utc;
+use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_monitor::input_activity::InputActivityCollector;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use super::super::config::PlatformEgressPolicy;
+use super::super::egress_policy::PlatformEgressPolicy;
 use super::super::shared_regime_state::SharedRegimeState;
 use super::super::Scheduler;
+
+async fn wait_for_startup_delay_or_shutdown(
+    delay: Duration,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    if *shutdown_rx.borrow() {
+        return true;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        changed = shutdown_rx.changed() => changed.is_ok(),
+    }
+}
 
 impl Scheduler {
     /// Periodically check and refresh OAuth tokens.
@@ -128,8 +142,9 @@ impl Scheduler {
                 }
             };
 
-            // Startup delay: wait 10 seconds before first sync
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            if wait_for_startup_delay_or_shutdown(Duration::from_secs(10), &mut shutdown_rx).await {
+                return;
+            }
 
             let mut interval = super::intervals::coalescing_interval(sync_interval);
 
@@ -137,11 +152,9 @@ impl Scheduler {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
-                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
-                        let consent = consent_mgr_s.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent_mgr_s.as_ref()).permissions_snapshot();
                         let paused = capture_paused_s.load(Ordering::Relaxed);
                         let permitted = config_mgr_s.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -258,7 +271,8 @@ impl Scheduler {
         // #4805: bind egress to telemetry consent — inject the shared ConsentManager.
         let egress_policy = Arc::new(
             PlatformEgressPolicy::new(&self.config)
-                .with_consent_manager(self.consent_manager.clone()),
+                .with_consent_manager(self.consent_manager.clone())
+                .with_config_manager(self.config_manager.clone()),
         );
 
         info!(
@@ -270,42 +284,15 @@ impl Scheduler {
 
         let shared_input_collector = Arc::new(InputActivityCollector::new());
 
-        // -- Phase 1.5: Platform key-category hook --
-        // Spawns a passive OS keyboard observer that classifies key events
-        // into KeyCategory and feeds them into InputActivityCollector.
-        // Gated by text_intelligence.input_pattern_detail config flag AND the
-        // activity_pattern_learning consent (review4 monitor): installing a
-        // system-wide OS key observer is GDPR Tier 4 (analysis.rs documents
-        // "input_pattern_detail requires activity_pattern_learning consent"), and
-        // the sibling accessibility extractor / tiered-memory paths already gate on
-        // it. effective_permissions() is Valid-only, so stale (Expired/UpdateRequired)
-        // consent fails closed; a missing ConsentManager also fails closed.
-        let _key_hook = {
-            let text_intel_config = self
-                .config_manager
-                .as_ref()
-                .map(|cm| cm.get().analysis.text_intelligence.clone())
-                .unwrap_or_default();
-
-            let consent_ok = self
-                .consent_manager
-                .as_ref()
-                .map(|cm| cm.effective_permissions().activity_pattern_learning)
-                .unwrap_or(false);
-
-            if text_intel_config.enabled && text_intel_config.input_pattern_detail && consent_ok {
-                maekon_monitor::key_hook::KeyHook::start(shared_input_collector.clone())
-            } else {
-                debug!(
-                    consent_ok,
-                    "key-category hook disabled \
-                     (text_intelligence.input_pattern_detail = false, \
-                     text_intelligence.enabled = false, \
-                     or activity_pattern_learning consent not granted)"
-                );
-                None
-            }
-        };
+        // -- Platform key-category / mouse-activity hooks --
+        // #7698 S1: hook lifecycle management (start on consent grant, stop +
+        // collector-drain on consent revoke) now lives in
+        // `spawn_event_snapshot_loop` (loops/events.rs) — see
+        // `reconcile_key_hook`/`reconcile_mouse_hook` there — instead of being
+        // spawned once here from a startup snapshot of consent that
+        // `withdraw_consent()` could never reach. That loop already ticks on
+        // `input_activity_interval` and reads live consent every tick, so it
+        // is the natural single owner of both hook handles.
 
         // Take adaptive trigger state out of Mutex — it is consumed by the
         // monitor loop and cannot be shared.
@@ -606,7 +593,7 @@ impl Scheduler {
             self.tray_app_handle.clone(),
         ) {
             Some(super::health::spawn_health_check_loop(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(super::super::config::HEALTH_CHECK_INTERVAL_SECS),
                 super::health::AdapterHealthFlags {
                     server_ok: s_flag,
                     llm_ok: l_flag,
@@ -624,6 +611,22 @@ impl Scheduler {
             None
         };
         supervise_opt!(supervisor_set, "health_check", health_task);
+
+        // 14b. Self-resource-budget sampling (#7918/#7927) as an always-on loop
+        //      (#7947). Unlike the health-check loop above — spawned only when the
+        //      server/llm/cli health flags AND the tray handle are all present —
+        //      this runs in EVERY configuration (including minimal / OSS builds),
+        //      so the periodic RSS/CPU budget + leak logging is never silently
+        //      dropped in a config without the health-probe wiring. Local
+        //      diagnostics only, never egressed (ADR-016).
+        supervise!(
+            supervisor_set,
+            "resource_health",
+            super::resource_health::spawn_resource_health_loop(
+                std::time::Duration::from_secs(super::super::config::HEALTH_CHECK_INTERVAL_SECS),
+                shutdown_rx.clone(),
+            )
+        );
 
         // 15. Suggestion SSE + maintenance loops (server feature only). #38: both
         //     are now supervised so an unexpected exit no longer dies silently.
@@ -786,7 +789,27 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn startup_delay_returns_when_shutdown_fires() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+        let wait_task = tokio::spawn(async move {
+            super::wait_for_startup_delay_or_shutdown(Duration::from_secs(3600), &mut shutdown_rx)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        shutdown_tx.send(true).unwrap();
+
+        let shutdown_seen = tokio::time::timeout(Duration::from_millis(200), wait_task)
+            .await
+            .expect("startup delay must not block shutdown")
+            .unwrap();
+        assert!(shutdown_seen);
+    }
 
     /// Verify that the supervisor pattern detects a loop that exits unexpectedly
     /// during runtime (before shutdown_rx fires).

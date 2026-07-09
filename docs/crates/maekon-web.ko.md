@@ -62,14 +62,26 @@ pub struct AppState {
 
 ### WebServer 빌더
 
+`event_tx`는 필수 생성자 인자다 (#7738 D-1) — `new`가 내부에서 만드는 일회용
+채널이 아니라 컴포지션 루트가 공유하는 브로드캐스트 버스를 그대로 넘긴다.
+의존성은 두 개의 페이로드로 분리된다 (#7738 D-2/D-3):
+`WebServerRequiredDeps`(모든 배포 형태에서 조건 없이 항상 배선되는 것으로
+검증된 ~13개 필드 — `memory_graph`, `audit_chain_verifier`,
+`regime_storage`, `text_search`, `audit_logger`, `config_manager`,
+`update_control`, `local_auth_token`, `frames_dir`, `pii_sanitizer`,
+`runtime_log_provider`, `system_info_provider`, `provider_cli_diagnostics`;
+`Default` impl이 없어 리터럴에서 필드 하나만 빠져도 컴파일 에러)는
+`with_required_deps`로, `WebServerRuntimeBindings`(진짜로 선택적/조건부인
+필드 — 자동화가 꺼져 있으면 `None`인 `automation_controller`/
+`ai_runtime_status`, 캡처 초기화 실패 시 `None`인 `frame_storage` 등)는
+`with_runtime_bindings`로 주입한다.
+
 ```rust
-let server = WebServer::new(storage, web_config)
-    .with_config_manager(config_manager)
-    .with_audit_logger(audit_logger)
-    .with_automation_controller(automation_controller)
-    .with_update_control(update_control)
-    .with_event_tx(event_tx)
-    .with_frames_dir(frames_dir);
+let server = WebServer::new(storage, event_tx, web_config)
+    .with_bound_port_state(bound_port_state)
+    .with_bound_port_notifier(bound_port_notifier)
+    .with_required_deps(required_deps)
+    .with_runtime_bindings(runtime_bindings);
 
 server.run(shutdown_rx).await?;
 ```
@@ -330,12 +342,13 @@ pub struct ExternalApiSettings {
 ```rust
 use maekon_web::WebServer;
 
-let server = WebServer::new(storage, web_config)
-    .with_config_manager(config_manager)
-    .with_audit_logger(audit_logger)
-    .with_automation_controller(automation_controller)
-    .with_update_control(update_control)
-    .with_event_tx(event_tx);
+// #7738: event_tx는 필수 생성자 인자다. required_deps는 조건 없이 항상
+// 배선되는 ~13개 필드(config_manager, audit_logger, update_control, ... —
+// 위 "WebServer 빌더" 참조)를, runtime_bindings는 진짜로 선택적/조건부인
+// 필드(automation_controller 등)를 담는다.
+let server = WebServer::new(storage, event_tx, web_config)
+    .with_required_deps(required_deps)
+    .with_runtime_bindings(runtime_bindings);
 
 server.run(shutdown_rx).await?;
 ```

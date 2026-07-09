@@ -1,0 +1,76 @@
+# UPSTREAM-DELTA.patch -- tauri-runtime 2.11.2
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tauri-runtime-2.11.2.crate) -> vendored source at patches/tauri-runtime-2.11.2/.
+# This is the ground-truth record of what Maekon changed relative to
+# upstream. See ../README.md for the refresh procedure and the why/what
+# summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tauri-runtime/tauri-runtime-2.11.2.crate -o /tmp/tauri-runtime-2.11.2.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tauri-runtime-2.11.2.crate -C /tmp/pristine
+#   diff -ruN --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tauri-runtime-2.11.2 patches/tauri-runtime-2.11.2 > patches/tauri-runtime-2.11.2/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock (per-patch-crate lockfiles were removed as non-shipping
+# Dependabot noise, PR #5862 / commit 1a4a0a85f0), target/.
+#
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -97,12 +97,14 @@
+ default-features = false
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gtk]
+-version = "0.18"
+-features = ["v3_24"]
++version = "0.11"
++features = ["v4_6"]
++package = "gtk4"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.webkit2gtk]
+-version = "=2.0"
+-features = ["v2_40"]
++[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.webkit6]
++version = "0.6"
++features = ["v2_50"]
++package = "webkit6"
+ 
+ [target.'cfg(target_os = "android")'.dependencies.jni]
+ version = "0.21"
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/webview.rs vendored/src/webview.rs
+--- upstream/src/webview.rs
++++ vendored/src/webview.rs
+@@ -101,7 +101,7 @@
+     target_os = "netbsd",
+     target_os = "openbsd",
+   ))]
+-  pub webview: webkit2gtk::WebView,
++  pub webview: webkit6::WebView,
+   /// The instance of the webview that initiated the new window request.
+   ///
+   /// The target webview environment **MUST** match the environment of the opener webview. See [`WebviewAttributes::with_environment`].
+@@ -417,7 +417,7 @@
+     target_os = "netbsd",
+     target_os = "openbsd",
+   ))]
+-  pub related_view: Option<webkit2gtk::WebView>,
++  pub related_view: Option<webkit6::WebView>,
+ 
+   #[cfg(target_os = "macos")]
+   pub webview_configuration: Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>>,
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/window.rs vendored/src/window.rs
+--- upstream/src/window.rs
++++ vendored/src/window.rs
+@@ -452,7 +452,7 @@
+     target_os = "netbsd",
+     target_os = "openbsd"
+   ))]
+-  fn transient_for(self, parent: &impl gtk::glib::IsA<gtk::Window>) -> Self;
++  fn transient_for(self, parent: &impl gtk::prelude::IsA<gtk::Window>) -> Self;
+ 
+   /// Enables or disables drag and drop support.
+   #[cfg(windows)]

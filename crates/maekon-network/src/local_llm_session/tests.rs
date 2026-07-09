@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 
@@ -740,6 +741,73 @@ async fn aggregate_accumulated_response_is_capped() {
         saw_cap_error,
         "stream must terminate with the aggregate-cap error once accumulated > 8 MiB"
     );
+}
+
+/// #7574 regression: concurrent `send_message` calls on the same
+/// `LocalLlmSession` must serialize — the second turn blocks while the first
+/// turn's stream is still alive, and proceeds once that stream is dropped.
+/// Before the turn-guard fix, both calls would race directly on `history`
+/// (interleaved push/read of the shared `Vec<ChatMessage>`), so this test
+/// fails before the fix (the second call returns almost immediately instead
+/// of timing out).
+#[tokio::test]
+async fn local_llm_send_message_serializes_until_stream_drops() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/chat")
+        .with_status(200)
+        .with_body(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":true,\"eval_count\":1,\"prompt_eval_count\":1}\n",
+        )
+        .create_async()
+        .await;
+
+    let session = Arc::new(LocalLlmSession::new(
+        "serialize-session".to_string(),
+        "llama3".to_string(),
+        server.url(),
+        None,
+        Arc::new(AiSessionConfig::default()),
+    ));
+
+    fn user_message(content: &str) -> SessionMessage {
+        SessionMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        }
+    }
+
+    let first_stream = session
+        .send_message(&user_message("first"))
+        .await
+        .expect("first turn should start");
+
+    let mut second = {
+        let session = session.clone();
+        tokio::spawn(async move { session.send_message(&user_message("second")).await })
+    };
+
+    // `ResponseStream` (the Ok type) is not `Debug`, so `.expect_err()` cannot be used
+    // here (it would need to format the Ok value); extract the concrete `Elapsed` via
+    // `.err()` instead — this still asserts the timeout actually fired, not merely a
+    // boolean `is_err()`.
+    tokio::time::timeout(Duration::from_millis(100), &mut second)
+        .await
+        .err()
+        .expect("second turn must wait while the first turn stream is still alive");
+
+    drop(first_stream);
+
+    let second_stream = tokio::time::timeout(Duration::from_millis(500), second)
+        .await
+        .expect("second turn should start once the first stream drops")
+        .expect("second task should not panic")
+        .expect("second send_message should succeed");
+    drop(second_stream);
 }
 
 /// #6205: the session HTTP client is built with connect + per-read timeouts via

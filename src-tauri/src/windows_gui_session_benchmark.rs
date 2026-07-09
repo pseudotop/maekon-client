@@ -83,6 +83,13 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
 ) -> Value {
     let started = Instant::now();
     let catalog = benchmark_catalog();
+    // #7947: this standalone benchmark reads ONLY the explicit env override and
+    // deliberately does not consult the keychain-provisioned secret (#7916/#7933)
+    // that the app auto-provisions at launch — the keychain resolver blocks on the
+    // runtime handle from the SYNC launch path, which would panic if called from
+    // within this already-async harness. So a run without the env var set is an
+    // env-provisioning gap for this benchmark, NOT a "secret is missing"
+    // condition in the shipped app (see the caveat below).
     let hmac_secret = std::env::var("MAEKON_GUI_TICKET_HMAC_SECRET")
         .ok()
         .map(|value| value.trim().to_string())
@@ -114,7 +121,13 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     );
 
     if !hmac_secret_present {
-        caveats.push("MAEKON_GUI_TICKET_HMAC_SECRET is missing".to_string());
+        caveats.push(
+            "MAEKON_GUI_TICKET_HMAC_SECRET env override is unset; this benchmark reads \
+             only the env override and does not consult the keychain-provisioned secret \
+             (#7916/#7933) that the app auto-provisions at launch, so it cannot exercise \
+             session creation here — set the env var to run the full GUI session E2E"
+                .to_string(),
+        );
         push_result(
             &mut results,
             CASE_LAUNCHER,
@@ -801,7 +814,7 @@ fn benchmark_catalog() -> GuiBenchmarkHarnessCatalog {
     serde_json::from_str(include_str!(
         "../../docs/contracts/gui-benchmark-harness.v1.json"
     ))
-    .expect("GUI benchmark harness contract must be valid")
+    .unwrap_or_else(|error| panic!("GUI benchmark harness contract must be valid: {error}"))
 }
 
 fn readiness_snapshot(

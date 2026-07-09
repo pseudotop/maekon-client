@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::automation::AutomationIntent;
+use crate::models::suggestion::{SuggestionSource, SuggestionType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowPreset {
@@ -68,6 +69,40 @@ pub fn platform_alt_modifier() -> &'static str {
         "Cmd"
     } else {
         "Alt"
+    }
+}
+
+/// Builtin preset id offered as the one-click automation bound to a
+/// locally-minted `NeedFocusTime` nudge (T4.1 #7917). Kept next to
+/// `builtin_presets()` so the const and the builtin id are edited together; a
+/// guard test (`preset_deep_work_start_const_resolves_to_a_builtin`) asserts the
+/// const still resolves to a real builtin.
+pub const PRESET_DEEP_WORK_START: &str = "deep-work-start";
+
+/// Derived suggestion → automation binding (T4.1 #7917, ADR-027).
+///
+/// Maps a suggestion to a builtin automation preset id PURELY from its
+/// `(type, source)` — there is no persisted binding field and no producer
+/// change. Only the locally-minted, rule-based `NeedFocusTime` nudge earns an
+/// action; a server- or LLM-sourced suggestion of the SAME type gets `None`, so
+/// a network-pushed suggestion can never gain a promptless execution affordance
+/// (ADR-027 frozen invariant: "network-sourced suggestions gain no execution
+/// affordance"). The `source` arm is load-bearing: `NeedFocusTime` is
+/// server-mintable over the SSE/gRPC wire, and LLM-authored content paired with
+/// an execution affordance is prompt-injection-adjacent even for a fixed preset.
+///
+/// This is the single predicate shared by both DTO build sites and the
+/// run-command server-side revalidation, so all three stay consistent by
+/// construction.
+pub fn suggested_action_preset(
+    suggestion_type: &SuggestionType,
+    source: &SuggestionSource,
+) -> Option<&'static str> {
+    match (suggestion_type, source) {
+        (SuggestionType::NeedFocusTime, SuggestionSource::RuleBased) => {
+            Some(PRESET_DEEP_WORK_START)
+        }
+        _ => None,
     }
 }
 
@@ -483,42 +518,131 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
         ai_profile_id: None,
     });
 
-    presets.push(WorkflowPreset {
-        id: "deep-work-start".to_string(),
-        name: "Start Deep Work".to_string(),
-        description: "Open VS Code and dismiss distractions to begin a focused work session"
-            .to_string(),
-        category: PresetCategory::Workflow,
-        steps: vec![
+    // Focus-session setup preset offered as the one-click action on a locally-minted
+    // NeedFocusTime nudge (T4.1 #7917, ADR-027). Redesigned (#7940) away from the prior
+    // developer-centric, partially-destructive steps: it no longer assumes Visual Studio
+    // Code is installed (the NeedFocusTime audience is communication-heavy and often has
+    // no developer tools, so the marquee button used to error on its first press) and it
+    // never blind-closes a window/tab (the old `Alt+Tab` → `Cmd/Ctrl+W` closed whatever
+    // the app switch happened to land on). Every step here is app-agnostic and
+    // non-destructive:
+    //   * `Maekon` is the host app itself, so it exists by construction — activating it
+    //     is a guaranteed target, NOT an app-specific assumption about third-party
+    //     software. Per MAEKON-AUTO-1 (#7070) the activation that PRECEDES a hotkey keeps
+    //     `stop_on_failure: true` so a failed/un-switched activation halts BEFORE the
+    //     "Hide Others" hotkey could fire against the wrong front window.
+    //   * "Hide Others" (macOS: Cmd+Option+H) / "Show Desktop" (Windows/Linux: Win+D)
+    //     only hides or minimizes windows — fully reversible, nothing is closed.
+    // The name/description promise only what the steps actually do (honesty rule): they
+    // clear the screen so the user can start focusing. They do NOT toggle any OS
+    // "Do Not Disturb" or Maekon's own focus mode — that toggle is IPC-only
+    // (`toggle_focus_mode`) and unreachable from the AutomationIntent verb set without a
+    // new intent verb, which is out of scope for a preset-steps redesign.
+    let deep_work_steps = if cfg!(target_os = "macos") {
+        // Activate Maekon first (guaranteed target), THEN hide every other app, so the
+        // user lands on the Maekon dashboard with a clear screen.
+        vec![
             WorkflowStep {
-                name: "Open VS Code".to_string(),
+                name: "Open Maekon dashboard".to_string(),
                 intent: AutomationIntent::ActivateApp {
-                    app_name: "Visual Studio Code".to_string(),
+                    app_name: "Maekon".to_string(),
                 },
                 delay_ms: 0,
                 stop_on_failure: true,
             },
             WorkflowStep {
-                name: "Switch to next app".to_string(),
+                name: "Hide other apps".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
-                    keys: vec![alt.to_string(), "Tab".to_string()],
+                    keys: vec!["Cmd".to_string(), "Option".to_string(), "H".to_string()],
                 },
-                delay_ms: 800,
+                delay_ms: 400,
+                stop_on_failure: false,
+            },
+        ]
+    } else {
+        // No cross-app "hide others" on Windows/Linux, so minimize everything first
+        // (Show Desktop — reversible), THEN bring the Maekon dashboard back to the front.
+        // The activation is the LAST step (no input synthesis follows it), so it stays
+        // MAEKON-AUTO-1-safe while still using `stop_on_failure: true`.
+        vec![
+            WorkflowStep {
+                name: "Show desktop".to_string(),
+                intent: AutomationIntent::ExecuteHotkey {
+                    keys: vec!["Win".to_string(), "D".to_string()],
+                },
+                delay_ms: 0,
                 stop_on_failure: false,
             },
             WorkflowStep {
-                name: "Close current window".to_string(),
-                intent: AutomationIntent::ExecuteHotkey {
-                    keys: vec![m.to_string(), "W".to_string()],
+                name: "Open Maekon dashboard".to_string(),
+                intent: AutomationIntent::ActivateApp {
+                    app_name: "Maekon".to_string(),
                 },
-                delay_ms: 500,
-                stop_on_failure: false,
+                delay_ms: 400,
+                stop_on_failure: true,
             },
-        ],
+        ]
+    };
+
+    presets.push(WorkflowPreset {
+        id: "deep-work-start".to_string(),
+        name: "Clear Distractions".to_string(),
+        description: "Bring the Maekon dashboard forward and tuck other windows out of \
+             the way so you can start a focused work session. Nothing is closed — hidden \
+             or minimized windows come right back."
+            .to_string(),
+        category: PresetCategory::Workflow,
+        steps: deep_work_steps,
         builtin: true,
         platform: None,
         ai_profile_id: None,
     });
 
     presets
+}
+
+#[cfg(test)]
+mod suggestion_binding_tests {
+    use super::*;
+
+    /// Guard: the `PRESET_DEEP_WORK_START` const must resolve to a real builtin
+    /// preset id, so the derived binding can never point at a dangling id.
+    #[test]
+    fn preset_deep_work_start_const_resolves_to_a_builtin() {
+        assert!(
+            builtin_presets()
+                .iter()
+                .any(|p| p.id == PRESET_DEEP_WORK_START),
+            "PRESET_DEEP_WORK_START must match a real builtin_presets() id"
+        );
+    }
+
+    /// The MVP binding maps ONLY `(NeedFocusTime, RuleBased)`. Every other
+    /// (type, source) pair — crucially the server- and LLM-sourced variants of
+    /// the SAME type — resolves to `None`.
+    #[test]
+    fn suggested_action_preset_maps_only_rulebased_need_focus_time() {
+        assert_eq!(
+            suggested_action_preset(&SuggestionType::NeedFocusTime, &SuggestionSource::RuleBased),
+            Some(PRESET_DEEP_WORK_START),
+        );
+        // Same type, non-local source ⇒ no affordance (frozen invariant).
+        assert_eq!(
+            suggested_action_preset(&SuggestionType::NeedFocusTime, &SuggestionSource::LlmServer),
+            None,
+        );
+        assert_eq!(
+            suggested_action_preset(&SuggestionType::NeedFocusTime, &SuggestionSource::LlmLocal),
+            None,
+        );
+        // Unmapped types ⇒ None even when locally rule-based.
+        assert_eq!(
+            suggested_action_preset(&SuggestionType::TakeBreak, &SuggestionSource::RuleBased),
+            None,
+        );
+        assert_eq!(
+            suggested_action_preset(&SuggestionType::WorkGuidance, &SuggestionSource::RuleBased),
+            None,
+        );
+    }
 }

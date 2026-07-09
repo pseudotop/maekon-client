@@ -9,6 +9,10 @@
 <p align="center">
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
+<p align="center">
+  <a href="https://maekon.dev">网站</a> · <a href="https://docs.maekon.dev">文档</a> · <a href="https://github.com/pseudotop/maekon-client/releases">发布</a>
+</p>
+
 
 # Maekon
 
@@ -24,6 +28,17 @@ Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM �
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
@@ -73,6 +88,23 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 - 5 分钟入门指南: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
 - 自动化事件契约: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AI 提供商契约: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
+
+### 在源码中验证这些声明
+
+上述隐私声明不是营销文案 — 每一条都对应本仓库中可以直接阅读、构建和测试的代码。README 与源码从同一个已验证的代码树一起导出，因此本表描述的始终是它旁边的代码。
+
+| 声明 | 验证位置 |
+|---|---|
+| 排除/敏感应用在**捕获时点**被排除，而不仅是上传时 | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)，接入捕获门控: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| 每次离开设备的传输都记录在本地 egress 账本中，可在应用内浏览 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 读取路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 记忆图谱积累的关于你的信念 (claims) 可浏览并可一键撤回 (Privacy → Claims) | claims 路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 同意是 fail-closed 的: 没有有效授权就不捕获 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| PII 过滤在存储之前和任何 egress 之前执行 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| 自动化无法绕过策略、沙箱和审计日志 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### 源码同步策略
+
+本仓库是 Maekon 内部源码的**已验证快照导出**。快照按发布版本在验证后导出 — 发布标签标记已验证状态，仓库跟踪的是发布版本而非每个内部提交。README 与代码始终来自同一代码树，因此上述声明与代码的链接精确指向你正在阅读的检出内容。
 
 ## 功能特性
 

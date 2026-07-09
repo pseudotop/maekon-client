@@ -9,6 +9,10 @@
 <p align="center">
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
+<p align="center">
+  <a href="https://maekon.dev">Sitio web</a> · <a href="https://docs.maekon.dev">Documentación</a> · <a href="https://github.com/pseudotop/maekon-client/releases">Versiones</a>
+</p>
+
 
 # Maekon
 
@@ -24,6 +28,17 @@ El repositorio público ya está disponible, pero los artefactos públicos de Gi
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
@@ -73,6 +88,23 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 - Guía de los primeros 5 minutos: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
 - Contrato de eventos de automatización: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - Contrato de proveedor de IA: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
+
+### Verifica estas afirmaciones en el código fuente
+
+Las afirmaciones de privacidad anteriores no son texto de marketing — cada una corresponde a código de este repositorio que puedes leer, compilar y probar. El README y el código fuente se exportan juntos desde el mismo árbol verificado, por lo que esta tabla siempre describe el código que tiene al lado.
+
+| Afirmación | Dónde verificar |
+|---|---|
+| Las apps excluidas/sensibles se excluyen **en el momento de captura**, no solo al subir | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), conectado a la puerta de captura en [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| Cada envío fuera del dispositivo se registra en un libro de egress local, consultable en la app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + rutas de lectura en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Las creencias (claims) del grafo de memoria sobre ti son consultables y retractables con un clic (Privacy → Claims) | rutas de claims en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| El consentimiento es fail-closed: sin permiso válido no hay captura | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| El filtrado de PII se ejecuta antes del almacenamiento y antes de cualquier egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| La automatización no puede eludir la política, el sandbox ni el registro de auditoría | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### Política de sincronización del código fuente
+
+Este repositorio es una **exportación de instantáneas verificadas** de la fuente interna de Maekon. Las instantáneas se exportan por versión tras su verificación — las etiquetas de versión marcan estados verificados, y el repositorio sigue las versiones, no cada commit interno. El README y el código provienen siempre del mismo árbol, por lo que los enlaces de afirmación-a-código anteriores se refieren exactamente al checkout que estás leyendo.
 
 ## Características
 

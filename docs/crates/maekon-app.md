@@ -37,7 +37,6 @@ src-tauri/src/  (package: maekon-app)
 ├── updater/                     # Auto-update (directory module)
 │                                # D9 multi-key Ed25519 trust (trusted_keys.rs), D10 defensive
 │                                # rollout handling, D11 self-healthy probe with automatic rollback
-├── focus_analyzer/              # Focus analysis (directory module)
 ├── agent_runtime/, session_manager/, session_adapters/, feedback_sink/
 ├── provider_adapters/, subprocess_provider/
 ├── services/                    # Domain services (log_helpers, etc.)
@@ -52,9 +51,9 @@ src-tauri/src/  (package: maekon-app)
 ├── auditing_session.rs, auth_cli.rs, bridge_cli.rs, secret_cli.rs
 ├── integrity_guard.rs, integration_policy.rs, integration_insight_source.rs,
 │   integration_prompt_delivery.rs
-├── capture_services.rs, storage_runtime.rs, sync_engine.rs,
+├── capture_services.rs, storage_runtime.rs,
 │   fallback_stt.rs, feature_capabilities.rs
-├── suggestion_manager.rs, workflow_intelligence.rs
+├── suggestion_manager.rs
 ├── bootstrap_preflight.rs
 ├── desktop_permissions.rs, desktop_startup.rs
 ├── oauth_provider_registry.rs, provider_secret_backend.rs

@@ -23,6 +23,9 @@ use crate::proto::client_v1::{
 /// Simple health check client using the Consumer Contract `ClientHealth.Ping` RPC.
 pub struct GrpcHealthClient {
     client: ClientHealthClient<Channel>,
+    // Only consumed during `connect()`'s endpoint-fallback loop (`all_endpoints`/
+    // `connect_channel`); not read back today — kept for a future reconnect-
+    // on-failure path.
     #[allow(dead_code)]
     config: GrpcConfig,
 }

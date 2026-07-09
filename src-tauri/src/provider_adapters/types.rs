@@ -12,7 +12,6 @@ use tokio::sync::RwLock;
 use maekon_vision::privacy_gateway::{PrivacyGateway, SanitizedImage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Remote and OAuth variants pending provider integration
 pub enum ProviderSource {
     Local,
     /// LocalModel arm with a live Ollama backend (loopback, no egress).
@@ -86,6 +85,15 @@ pub(super) type OcrProviderResolution =
 pub(super) type LlmProviderResolution =
     Result<(Arc<dyn LlmProvider>, ProviderSource, Option<String>), CoreError>;
 
+// Its fields are read only by `GuardedAnalysisProvider` (analysis-only,
+// `provider_adapters/guarded_analysis.rs`), while the producing method
+// (`prepare_text_for_external_llm` below) lives in the broader
+// `ExternalOcrPrivacyGuard` impl block, which stays compiled in every build
+// (that impl block already carries the matching `allow(dead_code)` for its
+// own methods) — so this struct needs its own matching allow rather than a
+// hard `#[cfg(feature = "analysis")]`, which would require also gating the
+// producing method (#7743 ctd-W3 A2b follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(super) struct SanitizedExternalText {
     pub(super) context_json: String,
     pub(super) system_prompt: String,
@@ -289,11 +297,7 @@ impl ExternalOcrPrivacyGuard {
             }
         };
 
-        if !self
-            .consent_manager
-            .effective_permissions()
-            .full_text_extraction
-        {
+        if !self.consent_manager.full_text_extraction_permitted() {
             self.log_event(
                 "privacy.external_llm.denied",
                 &format!(
@@ -326,13 +330,10 @@ impl ExternalOcrPrivacyGuard {
             });
         }
 
-        if maekon_vision::privacy::should_exclude(
+        if maekon_vision::privacy::should_exclude_by_policy(
+            &self.privacy_config,
             &active_window.app_name,
             &active_window.title,
-            &self.privacy_config.excluded_apps,
-            &self.privacy_config.excluded_app_patterns,
-            &self.privacy_config.excluded_title_patterns,
-            self.privacy_config.auto_exclude_sensitive,
         ) {
             self.log_event(
                 "privacy.external_llm.denied",

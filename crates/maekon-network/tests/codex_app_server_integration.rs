@@ -24,6 +24,10 @@
 //! Unix-only (the spawn/reap path + every existing codex test are unix-gated).
 
 #![cfg(unix)]
+// Integration test binary (`tests/*.rs` is its own crate root, entirely
+// test-only) — not covered by the library's crate-wide allow (#7719
+// `significant_drop_tightening` workspace enforcement).
+#![allow(clippy::significant_drop_tightening)]
 
 mod fake_codex_app_server;
 

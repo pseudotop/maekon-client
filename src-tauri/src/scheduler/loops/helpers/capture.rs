@@ -10,7 +10,8 @@ use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::vision::{CaptureRequest, FrameProcessor};
 use tokio::sync::broadcast;
 
-use crate::scheduler::config::{base64_decode, SchedulerStorage};
+use crate::scheduler::config::base64_decode;
+use crate::scheduler::SchedulerStorage;
 
 /// Capture a frame, process it (full/delta/thumbnail), save image data and
 /// metadata.  Returns the OCR text extracted from the frame (if any) and

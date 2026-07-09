@@ -552,6 +552,7 @@
     "pauseOnLockDesc": "画面がロックされたら収集を停止します",
     "pauseOnBattery": "バッテリーセーバー時に一時停止",
     "pauseOnBatteryDesc": "バッテリーセーバーモードで収集を停止します",
+    "pauseOnBatteryUnavailable": "このプラットフォームでは利用できません — バッテリー/電源の状態は現在macOSでのみ検出されます。このトグルはここでは有効にできません。",
     "telemetryTitle": "テレメトリー",
     "telemetryDesc": "サーバーに送信するリモートテレメトリーデータを制御します。",
     "telemetryEnabled": "テレメトリーを有効化",
@@ -783,7 +784,9 @@
       "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
       "endpoint": "Endpoint URL",
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
-      "cloud_timeout": "Timeout (sec)"
+      "cloud_timeout": "Timeout (sec)",
+      "notCompiledTitle": "このビルドでは利用できません",
+      "notCompiledDescription": "このビルドは音声/音声認識サポートなしでコンパイルされています。このトグルを有効にしてモデルをダウンロードしても動作しません。"
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -797,6 +800,102 @@
     }
   },
   "privacy": {
+    "claims": {
+      "title": "メモリの主張",
+      "description": "エージェントがあなたのアクティビティから形成した永続的な信念（ローカルのセカンドブレイン記憶）の読み取り専用ビューです。主張を撤回すると、ダイジェストや今後の提案から非表示になりますが、記録は透明性のために保持されます。",
+      "kindLabel": "種類",
+      "statusLabel": "状態",
+      "rangeLabel": "形成時期",
+      "kind": {
+        "all": "すべての種類",
+        "semantic": "意味",
+        "episodic": "エピソード",
+        "procedural": "手続き",
+        "reflective": "内省"
+      },
+      "status": {
+        "active_superseded": "有効・置換済み",
+        "active": "有効",
+        "superseded": "置換済み",
+        "retracted": "撤回済み",
+        "all": "すべての状態"
+      },
+      "range": {
+        "24h": "過去24時間",
+        "7d": "過去7日間",
+        "30d": "過去30日間",
+        "all": "全期間"
+      },
+      "col": {
+        "time": "形成時期",
+        "kind": "種類",
+        "statement": "信念",
+        "source": "ソース",
+        "confidence": "確信度",
+        "evidence": "根拠",
+        "status": "状態",
+        "actions": "操作"
+      },
+      "count": "{{total}} 件中 {{shown}} 件を表示",
+      "retractedLabel": "撤回済み",
+      "loadError": "メモリの主張を読み込めませんでした",
+      "empty": {
+        "noneTitle": "まだ主張はありません",
+        "noneDesc": "主張とは、エージェントがあなたの作業パターンについて形成する永続的な信念です（例：「集中作業のブロックは午前中に集中する」）。まだ蓄積されていません。日次ダイジェストが生成されるにつれて蓄積されます。",
+        "filteredTitle": "これらのフィルターに一致する主張はありません",
+        "filteredDesc": "選択した種類・状態・期間に一致する主張はありません。撤回済みの主張は、それを含む状態を選択しない限り非表示になります。"
+      },
+      "retract": {
+        "button": "撤回",
+        "confirmTitle": "この主張を撤回しますか？",
+        "confirmMessage": "この信念を撤回します:\n\n「{{text}}」",
+        "confirmNote": "撤回すると、この主張はダイジェストや今後の提案から非表示になります。記録は削除されず保持されるため、変更は監査可能なままです。",
+        "confirmButton": "主張を撤回",
+        "success": "主張を撤回しました",
+        "alreadyRetracted": "この主張はすでに撤回されています"
+      }
+    },
+    "egress": {
+      "title": "送信の透明性",
+      "description": "このデバイスから何が送信されたかの読み取り専用の記録です。改ざん防止の送信台帳に基づいており、データを消去した後もコンプライアンス証拠として保持されます。",
+      "rangeLabel": "期間",
+      "dispositionLabel": "処理状態",
+      "range": {
+        "24h": "過去24時間",
+        "7d": "過去7日間",
+        "30d": "過去30日間",
+        "all": "全期間"
+      },
+      "disposition": {
+        "all": "すべて",
+        "uploaded": "アップロード済み",
+        "blocked": "ブロック済み",
+        "capture_blocked": "キャプチャブロック"
+      },
+      "badge": {
+        "uploaded": "アップロード済み",
+        "blocked": "ブロック済み",
+        "capture_blocked": "キャプチャブロック（除外アプリ）"
+      },
+      "col": {
+        "time": "時刻",
+        "eventType": "イベント",
+        "destination": "送信先",
+        "disposition": "処理状態",
+        "bytes": "サイズ",
+        "recipients": "受信者数",
+        "consent": "同意"
+      },
+      "captureBlockedBytesHint": "意図的にキャプチャされなかったフレームです。送信された内容はありません。",
+      "entryCount": "{{count}} 件",
+      "empty": {
+        "ledgerTitle": "まだこのデバイスから送信されたものはありません",
+        "ledgerDesc": "送信台帳は空です。データがアップロード・同期されたり、キャプチャがブロックされると、監査エントリがここに表示されます。",
+        "rangeTitle": "範囲内にエントリがありません",
+        "rangeDesc": "選択した期間と処理状態フィルターに一致する送信エントリはありません。"
+      },
+      "loadError": "送信台帳の読み込みに失敗しました"
+    },
     "title": "プライバシー管理",
     "storageStats": "ストレージ統計",
     "totalFrames": "フレーム合計",
@@ -974,7 +1073,13 @@
     "similarity": "Similarity",
     "timeDecay": "Time decay",
     "type": "Type",
-    "summary": "Summary"
+    "summary": "Summary",
+    "semanticUnavailable": "セマンティック（利用不可）",
+    "semanticUnavailableHint": "キーワード検索のみ — セマンティック検索にはこのビルドで埋め込み設定が必要です。",
+    "keyword": "キーワード",
+    "keywordPlaceholder": "アクティビティをキーワードで検索...",
+    "keywordScopeHint": "アクティビティの要約をキーワード関連度(BM25)順に並べ替えます。",
+    "textScopeHint": "スクリーンショット、ウィンドウタイトル、OCRテキスト、イベントを検索します。"
   },
   "shortcuts": {
     "title": "キーボードショートカット",
@@ -1214,6 +1319,32 @@
     "intentHintViewHistory": "実行履歴で表示",
     "intentHintErrorCheckHistory": "リクエストはすでに実行された可能性があります — 実行履歴を確認してください。"
   },
+  "guiPicker": {
+    "title": "指定して確認する操作",
+    "description": "フォーカス中のウィンドウをスキャンして操作可能な対象をハイライトし、1つを確認するとサンドボックス化された自動化ゲートを通じて実行します。",
+    "appNameLabel": "アプリ名 (任意)",
+    "appNamePlaceholder": "空欄の場合はフォーカス中のウィンドウをスキャンします",
+    "scanButton": "対象をスキャン",
+    "disabledHint": "指定して確認する操作を使用するには、設定で自動化を有効にしてください。",
+    "candidatesTitle": "ハイライトされた対象",
+    "noCandidates": "フォーカス中のウィンドウで操作可能な対象が見つかりませんでした。",
+    "selectCandidate": "先にハイライトされた対象を選択してください。",
+    "actionLabel": "操作",
+    "actionClick": "クリック",
+    "actionTypeText": "テキスト入力",
+    "typeTextLabel": "入力するテキスト",
+    "typeTextPlaceholder": "対象に入力するテキスト",
+    "confirmButton": "対象を確認",
+    "reset": "やり直す",
+    "ticketMinted": "実行チケットが発行されました",
+    "ticketExpires": "{{expiresAt}} に期限切れ",
+    "executeButton": "操作を実行",
+    "executionSucceeded": "操作が完了しました",
+    "executionFailed": "操作が完了しませんでした",
+    "resultSteps": "{{total}} ステップ中 {{completed}} ステップ完了",
+    "viewHistory": "履歴で表示",
+    "error": "問題が発生しました。"
+  },
   "settingsAutomation": {
     "title": "オートメーション",
     "enabled": "オートメーションを有効化",
@@ -1229,6 +1360,8 @@
     "ocrProvider": "OCRプロバイダー",
     "llmProvider": "LLMプロバイダー",
     "ocrProviderHint": "リモートOCR品質やマルチモーダルLLMサーフェスが必要でない限り、OCRはローカルに保ちます。",
+    "ocrLocalUnavailableTitle": "このビルドでは利用できません",
+    "ocrLocalUnavailableDescription": "このビルドにはこのプラットフォーム用のローカルOCRエンジンがありません（ネイティブOCRはmacOS/Windows専用で、同梱のTesseractフォールバックはコンパイルされていません）。ローカルOCRは常に結果が0件で静かに返されます — リモートOCRに切り替えてください。",
     "llmProviderHint": "リモートLLMは機能を広げられますが、選択したアクセス経路と外部データポリシーに従います。",
     "providerSelectionLockedBadge": "固定",
     "providerSelectionLockedCli": "インストール済み provider CLI モードでは、LLM プロバイダーは Remote に固定されます。",
@@ -1439,7 +1572,17 @@
   "auditLog": {
     "title": "監査ログ",
     "entries": "監査エントリー",
-    "details": "詳細"
+    "details": "詳細",
+    "chainIntegrity": "監査チェーンの整合性",
+    "chainIntegrityHint": "永続監査ログの改ざん検知SHA-256ハッシュチェーンを検証します。",
+    "verifyIntegrity": "整合性を検証",
+    "verifyFailed": "検証に失敗しました",
+    "chainIntact": "チェーンは正常です",
+    "chainVerifiedCount": "{{count}} 件のエントリを検証しました。",
+    "chainLegacyCount": "{{count}} 件のレガシー（ハッシュチェーン導入前）エントリは除外されました。",
+    "chainBroken": "整合性の破損を検出しました",
+    "chainBrokenDetail": "最初の破損エントリ（seq {{seq}}）: {{reason}}",
+    "chainBrokenUnknown": "不明な理由でチェーン検証に失敗しました。"
   },
   "widgets": {
     "title": "ウィジェット",
@@ -1617,6 +1760,8 @@
     }
   },
   "sidebar": {
+    "claimsBrowser": "メモリの主張",
+    "egressLedger": "送信台帳",
     "overview": "概要",
     "systemMetrics": "システムメトリクス",
     "activeProcesses": "実行中のプロセス",
@@ -2040,7 +2185,8 @@
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
     "mic_privacy_stopped": "マイクが停止しました — プライバシーゲートが有効です",
-    "searchMessagesPlaceholder": "メッセージを検索..."
+    "searchMessagesPlaceholder": "メッセージを検索...",
+    "audio_not_compiled": "このビルドでは音声を利用できません"
   },
   "policies": {
     "title": "実行ポリシー",
@@ -2094,6 +2240,11 @@
     "targetBadgeLabel": "{{target}} の新しい提案",
     "currentTarget": "現在の対象",
     "noAutoAction": "自動操作なし",
+    "runAction": "{{label}} を実行",
+    "runActionPending": "実行中…",
+    "gateNotice": "自動化ゲートを通じて実行されます — 確認設定が適用されます。",
+    "toastActionRan": "アクションを実行しました",
+    "actionFailed": "アクションを実行できませんでした:",
     "replayTargetLocked": "対象を固定しました",
     "replayProposalShown": "提案を表示しました",
     "replayConsentGate": "同意ゲート",
@@ -2422,7 +2573,7 @@
     "maxSuggestions": "最大提案数",
     "regimeDetectionIntervalHours": "レジーム検出間隔（時間）",
     "embedding": "埋め込み",
-    "embeddingDescription": "セマンティック検索のためのベクトル埋め込みを有効にします",
+    "embeddingDescription": "AI分析のコンテキスト検索のためのベクトル埋め込みを有効にします — 検索ページのセマンティックモードは有効になりません",
     "guiIntelligence": "GUIインテリジェンス",
     "guiIntelligenceDescription": "GUI操作パターンを検出して集約します",
     "textIntelligence": "テキストインテリジェンス",

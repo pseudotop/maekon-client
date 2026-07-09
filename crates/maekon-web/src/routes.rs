@@ -261,6 +261,10 @@ pub fn api_routes() -> Router<AppState> {
             "/semantic-search",
             get(handlers::semantic_search::semantic_search),
         )
+        .route(
+            "/semantic-search/capabilities",
+            get(handlers::semantic_search::semantic_search_capabilities),
+        )
         .route("/digests", get(handlers::digests::list_digests))
         .route("/digests/current", get(handlers::digests::current_digest))
         .route(
@@ -347,6 +351,23 @@ pub fn api_routes() -> Router<AppState> {
         )
         // Audit entry export (spec §5.9 / D25 / NV1)
         .route("/audit/export", get(handlers::audit_export::export_audit))
+        // Durable audit-log hash-chain integrity verification (ADR-072, #7600)
+        .route("/audit/verify", get(handlers::audit_verify::verify_audit))
+        // Egress transparency browser — read-only "what left this device" audit
+        // panel over the erase-retained #4803 egress ledger (T1.2, #7910)
+        .route(
+            "/privacy/egress-ledger",
+            get(handlers::egress_ledger::get_egress_ledger),
+        )
+        // Memory-graph claims browser — list the ADR-023 claim nodes the agent
+        // accumulates about the user (retracted excluded by default) (T1.3, #7911)
+        .route("/memory/claims", get(handlers::memory_claims::list_claims))
+        // User retraction — flip a claim to Retracted (hides it from digests +
+        // retrieval), status-change only, provenance preserved (T1.3, #7911)
+        .route(
+            "/memory/claims/{id}/retract",
+            post(handlers::memory_claims::retract_claim),
+        )
 }
 
 pub fn integration_routes() -> Router<AppState> {
@@ -366,24 +387,18 @@ pub fn integration_routes() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppState;
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::broadcast;
+    // #7738 D-4: funnel through the canonical test-state helper.
+    use crate::test_local_auth::test_app_state_with_event_capacity;
 
     #[test]
     fn routes_compile() {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(128);
-        let state = AppState::with_core(storage, event_tx);
+        let state = test_app_state_with_event_capacity(128);
         let _app: Router<()> = api_routes().with_state(state);
     }
 
     #[test]
     fn integration_routes_compile() {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(128);
-        let state = AppState::with_core(storage, event_tx);
+        let state = test_app_state_with_event_capacity(128);
         let _app: Router<()> = integration_routes().with_state(state);
     }
 }

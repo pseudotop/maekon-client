@@ -147,6 +147,76 @@ mod tests {
         );
     }
 
+    /// #7932 Part B: a within-session CRUD add via the automation controller's
+    /// port method must be IMMEDIATELY visible to the Codex approval decider's
+    /// `verdict_for`, because the composition root wires BOTH over the SAME
+    /// `Arc<PolicyClient>` (Port Instance Sharing). Before this fix the two held
+    /// separate instances that converged only across restart.
+    #[tokio::test]
+    async fn add_via_shared_controller_handle_is_visible_to_decider_verdict() {
+        use maekon_automation::audit::AuditLogger;
+        use maekon_automation::controller::AutomationController;
+        use maekon_automation::sandbox::NoOpSandbox;
+        use maekon_core::models::automation::ExecutionPolicyDto;
+        use maekon_core::ports::automation::AutomationPort;
+        use maekon_core::ports::sandbox::Sandbox;
+        use tokio::sync::RwLock;
+
+        // ONE shared Arc<PolicyClient> — the single instance the composition root
+        // injects into both the controller and the decider.
+        let shared = Arc::new(PolicyClient::new());
+
+        // Decider side: approval adapter over the shared instance. With no policy
+        // yet, it escalates (NoMatch).
+        let decider = PolicyClientApprovalAdapter::new(shared.clone());
+        assert_eq!(
+            decider.verdict_for("git", &[]).await.unwrap(),
+            PolicyVerdict::NoMatch,
+            "no grant yet — the decider must escalate"
+        );
+
+        // Controller side: a real AutomationController over the SAME shared handle.
+        let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+        let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+        let controller = AutomationController::new(
+            shared.clone(),
+            audit_logger,
+            sandbox,
+            maekon_core::config::SandboxConfig::default(),
+        );
+
+        // A within-session CRUD add via the controller's REAL port method...
+        let dto = ExecutionPolicyDto {
+            policy_id: "pol-shared".to_string(),
+            process_name: "git".to_string(),
+            process_hash: None,
+            allowed_args: vec![],
+            requires_sudo: false,
+            max_execution_time_ms: 5000,
+            audit_level: "Basic".to_string(),
+            sandbox_profile: None,
+            allowed_paths: vec![],
+            allow_network: Some(true),
+            require_signed_token: false,
+            confirmation: "AUTO".to_string(),
+        };
+        controller
+            .add_execution_policy(dto)
+            .await
+            .expect("add_execution_policy must succeed");
+
+        // ...is IMMEDIATELY visible to the decider's verdict_for — no restart —
+        // because both sides hold the same Arc<PolicyClient>.
+        assert_eq!(
+            decider.verdict_for("git", &[]).await.unwrap(),
+            PolicyVerdict::Auto {
+                policy_id: "pol-shared".to_string(),
+                allow_network: true,
+            },
+            "a controller-side add must be visible to the decider within the same session"
+        );
+    }
+
     #[tokio::test]
     async fn args_violating_allowlist_blocks() {
         let client = Arc::new(PolicyClient::new());

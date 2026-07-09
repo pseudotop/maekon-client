@@ -10,6 +10,10 @@ pub mod producer_loop;
 pub mod runtime_loop;
 pub mod runtime_telemetry;
 pub mod session_coordinator;
+// #7729 ctd-W2 G2: canonical `FakeIntegrationSessionPort`, shared by
+// runtime_loop/inbox_coordinator/egress_coordinator's test modules.
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod transport;
 pub mod transport_assembly;
 

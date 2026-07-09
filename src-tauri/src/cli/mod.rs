@@ -58,7 +58,7 @@ pub(crate) use parsers::{
     debug_notification_cli_command_from, debug_notification_cli_hold_seconds_from,
     debug_permissions_cli_command_from, debug_permissions_cli_hold_seconds_from,
     debug_permissions_runtime_cli_command_from, debug_pointer_capture_cli_command_from,
-    debug_pointer_capture_runtime_cli_command_from, debug_power_cli_command_from,
+    debug_pointer_capture_runtime_cli_command_from,
     should_enable_single_instance_for_debug_runtime,
 };
 
@@ -70,17 +70,16 @@ pub(crate) use pointer_capture::{
 pub(crate) use runners::emit_debug_permissions_open_settings_json;
 #[cfg(debug_assertions)]
 pub(crate) use runners::{
-    debug_power_capture_burst_audit_payload, run_debug_autostart_cli_command,
-    run_debug_ax_tree_cli_command, run_debug_notification_cli_command,
-    run_debug_permissions_cli_command, run_debug_permissions_runtime_cli_command,
-    run_debug_power_cli_command,
+    run_debug_autostart_cli_command, run_debug_ax_tree_cli_command,
+    run_debug_notification_cli_command, run_debug_permissions_cli_command,
+    run_debug_permissions_runtime_cli_command,
 };
 
 #[cfg(debug_assertions)]
 pub(crate) use types::{
     DebugAutostartCliCommand, DebugAxTreeCliCommand, DebugNotificationBackend,
     DebugNotificationCliCommand, DebugPermissionsCliCommand, DebugPermissionsRuntimeCliCommand,
-    DebugPointerCaptureCliCommand, DebugPointerCaptureRuntimeCliCommand, DebugPowerCliCommand,
+    DebugPointerCaptureCliCommand, DebugPointerCaptureRuntimeCliCommand,
 };
 
 #[cfg(all(test, debug_assertions))]
@@ -168,18 +167,6 @@ mod cli_runtime_flag_tests {
     }
 
     #[test]
-    fn debug_power_cli_requires_explicit_env_gate() {
-        assert_eq!(
-            debug_power_cli_command_from(["debug-power", "capture-burst-audit"], None),
-            None
-        );
-        assert_eq!(
-            debug_power_cli_command_from(["debug-power", "capture-burst-audit"], Some("1")),
-            Some(DebugPowerCliCommand::CaptureBurstAudit)
-        );
-    }
-
-    #[test]
     fn debug_pointer_capture_cli_requires_explicit_env_gate() {
         assert_eq!(
             debug_pointer_capture_cli_command_from(["debug-pointer-capture", "probe"], None),
@@ -258,18 +245,6 @@ mod cli_runtime_flag_tests {
                 }
             )
         );
-    }
-
-    #[test]
-    fn debug_power_capture_burst_audit_payload_records_no_spurious_wake_burst() {
-        let payload = debug_power_capture_burst_audit_payload();
-
-        assert_eq!(payload["debug_power"], true);
-        assert_eq!(payload["command"], "capture-burst-audit");
-        assert_eq!(payload["initial_capture"], true);
-        assert_eq!(payload["wake_gap_capture"], true);
-        assert_eq!(payload["same_tick_burst_count"], 0);
-        assert_eq!(payload["no_spurious_capture_burst"], true);
     }
 
     #[test]

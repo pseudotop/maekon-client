@@ -38,7 +38,8 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
 
     let reader = ts.calibration_reader.clone();
     let lookback = now - ChronoDuration::days(7);
-    let window = TimeWindow::new(lookback, now).expect("lookback (now - 7d) is always before now");
+    let window = TimeWindow::new(lookback, now)
+        .unwrap_or_else(|error| panic!("lookback (now - 7d) is always before now: {error}"));
 
     match reader.get_entries(&window, true).await {
         Ok(entries) if !entries.is_empty() => {
@@ -81,6 +82,10 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
                     count = features.len(),
                     "regime detection skipped — insufficient samples (need 50)"
                 );
+                if on_demand {
+                    ts.recluster_requested
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
                 if periodic_due && !on_demand {
                     ts.last_detection_time = Some(now);
                 }
@@ -136,6 +141,10 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
         }
         Ok(_) => {
             debug!("regime detection skipped: insufficient data");
+            if on_demand {
+                ts.recluster_requested
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             if periodic_due && !on_demand {
                 ts.last_detection_time = Some(now);
             }
@@ -184,8 +193,8 @@ async fn run_constrained_clustering(
         vec![]
     } else {
         let lookback = now - ChronoDuration::days(7);
-        let window =
-            TimeWindow::new(lookback, now).expect("lookback (now - 7d) is always before now");
+        let window = TimeWindow::new(lookback, now)
+            .unwrap_or_else(|error| panic!("lookback (now - 7d) is always before now: {error}"));
         let segment_ranges = match ts
             .calibration_reader
             .list_segment_time_ranges(&window)

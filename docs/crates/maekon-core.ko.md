@@ -34,19 +34,25 @@ maekon-core/src/
 │   ├── telemetry.rs    # Telemetry 관련 모델
 │   ├── automation.rs   # AutomationAction, MouseButton
 │   └── intent.rs       # AutomationIntent, UiElement, WorkflowPreset
-└── ports/           # 포트 인터페이스 (trait)
-    ├── mod.rs
-    ├── api_client.rs   # ApiClient, SseClient, SseEvent
-    ├── storage.rs      # StorageService
-    ├── monitor.rs      # SystemMonitor, ProcessMonitor, ActivityMonitor
-    ├── vision.rs       # CaptureTrigger, FrameProcessor
-    ├── notifier.rs     # DesktopNotifier
-    ├── compressor.rs   # Compressor
-    ├── element_finder.rs # ElementFinder — UI 요소 탐색
-    ├── input_driver.rs   # InputDriver — 마우스/키보드 입력
-    ├── ocr_provider.rs   # OcrProvider — OCR 텍스트 인식
-    ├── llm_provider.rs   # LlmProvider — LLM 추론
-    └── sandbox.rs        # Sandbox — OS 네이티브 샌드박스
+├── ports/           # 포트 인터페이스 (trait)
+│   ├── mod.rs
+│   ├── api_client.rs   # ApiClient, SseClient, SseEvent
+│   ├── storage.rs      # StorageService
+│   ├── monitor.rs      # SystemMonitor, ProcessMonitor, ActivityMonitor
+│   ├── vision.rs       # CaptureTrigger, FrameProcessor
+│   ├── notifier.rs     # DesktopNotifier
+│   ├── compressor.rs   # Compressor
+│   ├── element_finder.rs # ElementFinder — UI 요소 탐색
+│   ├── input_driver.rs   # InputDriver — 마우스/키보드 입력
+│   ├── ocr_provider.rs   # OcrProvider — OCR 텍스트 인식
+│   ├── llm_provider.rs   # LlmProvider — LLM 추론
+│   └── sandbox.rs        # Sandbox — OS 네이티브 샌드박스
+├── capture_gate.rs  # 추적 스케줄 무음 윈도우, 캡처 프라이버시 게이트 컴포지트,
+│                     # 모니터 전력 케이던스 결정, TsNotifier 포트
+│                     # (src-tauri에서 이동, #7735 E-3: ports-only, tauri 비의존)
+└── sync_engine.rs   # SyncEngine — ChangeExtractor/ChangeMerger/SyncTransport 포트
+                      # 위에서 pull/merge/push 동기화 사이클을 오케스트레이션
+                      # (src-tauri에서 이동, #7735 E-1: ports-only, tauri 비의존)
 ```
 
 ## 주요 모델

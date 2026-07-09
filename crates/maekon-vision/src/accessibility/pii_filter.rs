@@ -18,7 +18,6 @@
 // Called by both the macOS and Windows extractors, plus the cross-platform
 // tests below. It is non-test-dead only on Linux/other targets, which emit a
 // different element shape (see the module doc) and deliberately do not call it.
-#![allow(dead_code)]
 
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::focused_element::{ElementRect, FocusedElementInfo};
@@ -41,6 +40,10 @@ use crate::privacy::sanitize_title_with_level;
 ///   [`sanitize_title_with_level`] at `Basic` (PII patterns masked).
 /// - **Off** — exposes `extracted_text` verbatim (only reachable with explicit
 ///   full-text consent; the caller is responsible for that gate).
+// On Linux the AT-SPI2 extractor does not yet consume the shared filter, so
+// the function is dead in Linux dependency builds; the module stays cfg-free
+// on purpose (single-source PII gating shared by the macOS/Windows extractors).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn apply_pii_level(
     role: String,
     label: Option<String>,

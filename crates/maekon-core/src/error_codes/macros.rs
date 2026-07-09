@@ -35,7 +35,6 @@ macro_rules! define_code_enum {
             /// `pub(crate)` so that (a) the `error_codes/mod.rs` aggregator can
             /// call `{Xyz}Code::all()` and (b) per-enum `#[cfg(test)] mod tests`
             /// blocks inside the enum's own file can enumerate variants.
-            #[allow(dead_code)]
             pub(crate) const fn all() -> &'static [Self] {
                 &[ $( Self::$variant, )+ ]
             }

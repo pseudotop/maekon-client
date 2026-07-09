@@ -1,8 +1,8 @@
 // e2e-tauri/helpers.ts
 
 /**
- * Tauri IPC 커맨드 호출 — window.__TAURI_INTERNALS__.invoke() 래핑
- * WebdriverIO의 executeAsync로 브라우저 컨텍스트에서 실행
+ * Tauri IPC command invocation — wraps window.__TAURI_INTERNALS__.invoke()
+ * Runs inside the browser context via WebdriverIO's executeAsync
  */
 export async function invokeIpc<T = unknown>(command: string, args?: Record<string, unknown>): Promise<T> {
   const result = await browser.executeAsync(
@@ -84,8 +84,8 @@ export async function fetchApiJson<T = unknown>(
 }
 
 /**
- * SSE 이벤트 수신 대기 — /api/stream에서 특정 이벤트 타입 캡처
- * WebView 내부의 EventSource를 사용하므로 CSP connect-src 범위 내에서 동작
+ * Wait for an SSE event — captures a specific event type from /api/stream
+ * Uses the WebView's own EventSource, so it operates within the CSP connect-src scope
  */
 export async function waitForSseEvent(eventType: string, timeoutMs = 10000): Promise<Record<string, unknown>> {
   const result = await browser.executeAsync(

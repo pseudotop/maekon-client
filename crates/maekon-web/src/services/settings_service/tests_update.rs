@@ -446,11 +446,8 @@ async fn update_settings_rejects_api_key_write_for_env_backend() {
     let temp_dir = TempDir::new().expect("temp dir");
     let config_path = temp_dir.path().join("config.json");
     let config_manager = ConfigManager::with_path(config_path).expect("config manager");
-    let storage = Arc::new(
-        maekon_storage::sqlite::SqliteStorage::open_in_memory(30).expect("in-memory sqlite"),
-    );
-    let (event_tx, _) = tokio::sync::broadcast::channel(8);
-    let mut state = crate::AppState::with_core(storage, event_tx);
+    // #7738 D-4: funnel through the canonical test-state helper.
+    let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
     state.core.config_manager = Some(config_manager);
     state.secrets.default_backend_kind = CredentialBackendKind::Env;
     state.secrets.store = Some(Arc::new(TestSecretStore::new()));

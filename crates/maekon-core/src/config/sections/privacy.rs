@@ -467,15 +467,23 @@ fn network_pattern_matches(pattern: &str, target: &str, host: &str) -> bool {
     wildcard_matches(&pattern, target) || wildcard_matches(&pattern, host)
 }
 
+// #7723: the bit-math below (0.0.0.0/8, fc00::/7, fe80::/10) is shared with the
+// SSRF-guard call sites in `feature_capabilities.rs` / `ai_model_catalog_endpoint.rs`
+// via `crate::net_policy`'s primitives — see that module's doc comment for why the
+// three sites keep their own accept/reject combinations instead of one shared policy.
 fn is_local_network_host(host: &str) -> bool {
     host == "localhost"
         || host.ends_with(".localhost")
         || parse_ip(host)
             .map(|ip| match ip {
-                std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.octets()[0] == 0,
+                std::net::IpAddr::V4(ip) => {
+                    ip.is_loopback() || crate::net_policy::is_ipv4_this_network(&ip)
+                }
                 std::net::IpAddr::V6(ip) => ip
                     .to_ipv4_mapped()
-                    .map(|mapped| mapped.is_loopback() || mapped.octets()[0] == 0)
+                    .map(|mapped| {
+                        mapped.is_loopback() || crate::net_policy::is_ipv4_this_network(&mapped)
+                    })
                     .unwrap_or_else(|| ip.is_loopback()),
             })
             .unwrap_or(false)
@@ -489,8 +497,8 @@ fn is_private_network_host(host: &str) -> bool {
                 if let Some(mapped) = ip.to_ipv4_mapped() {
                     mapped.is_private() || mapped.is_link_local()
                 } else {
-                    let first = ip.segments()[0];
-                    (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+                    crate::net_policy::is_unique_local_ipv6(&ip)
+                        || crate::net_policy::is_link_local_ipv6(&ip)
                 }
             }
         })

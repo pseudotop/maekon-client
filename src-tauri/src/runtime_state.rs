@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tauri::{App, Manager};
 
 use crate::magic_overlay::MagicOverlayHandle;
+use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::session_manager::SessionManagerImpl;
 use crate::suggestion_manager::SuggestionManager;
 
@@ -31,6 +32,9 @@ pub(crate) type OAuthCoordinator =
     Option<Arc<maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator>>;
 #[cfg(not(feature = "analysis"))]
 pub(crate) type OAuthCoordinator = Option<()>;
+
+/// Shared finder slot observed by IPC state and scheduler even when automation builds later.
+pub(crate) type SceneFinderSlot = Arc<std::sync::OnceLock<Arc<dyn ElementFinder>>>;
 
 /// Health flags for the analysis LLM provider fallback chain.
 pub struct AnalysisHealthFlags {
@@ -279,11 +283,36 @@ impl ConfigRuntimeState {
     }
 }
 
+/// RAII reservation held for the duration of a single `run_suggestion_action`
+/// (T4.1 #7917). Reserve-then-execute (#6699 house pattern): the id is removed
+/// from the in-flight set when this guard drops, whether the run succeeded,
+/// errored, or panicked. No lock is held across an `.await`.
+pub(crate) struct ActionReservation {
+    in_flight: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
+    suggestion_id: String,
+}
+
+impl Drop for ActionReservation {
+    fn drop(&mut self) {
+        self.in_flight.lock().remove(&self.suggestion_id);
+    }
+}
+
 /// Feature-scoped Tauri managed state for overlay suggestion IPC and shortcuts.
 #[derive(Default)]
 pub struct SuggestionRuntimeState {
     manager: Option<Arc<SuggestionManager>>,
     overlay: Option<MagicOverlayHandle>,
+    /// #7600: shared cross-loop regime snapshot, read by the feedback IPC
+    /// command to attach the live `regime_id` to `SuggestionFeedback` on
+    /// accept/reject/defer. `None` only in test builders that skip wiring.
+    shared_regime: Option<Arc<SharedRegimeState>>,
+    /// #7917: suggestion_ids with a `run_suggestion_action` currently in flight.
+    /// The command-level in-flight guard: a second concurrent run for the same
+    /// id is refused, so a double-fire cannot execute a (side-effectful) preset
+    /// twice under the Auto policy. The UI's disable-while-pending is a UX
+    /// nicety; this is the correctness guarantee.
+    in_flight: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl SuggestionRuntimeState {
@@ -291,7 +320,33 @@ impl SuggestionRuntimeState {
         manager: Option<Arc<SuggestionManager>>,
         overlay: Option<MagicOverlayHandle>,
     ) -> Self {
-        Self { manager, overlay }
+        Self {
+            manager,
+            overlay,
+            shared_regime: None,
+            in_flight: Arc::default(),
+        }
+    }
+
+    /// Reserve `suggestion_id` for execution. Returns `None` if a run for the
+    /// same id is already in flight (the caller must refuse). The returned guard
+    /// releases the reservation on drop (T4.1 #7917).
+    pub(crate) fn try_reserve_action(&self, suggestion_id: &str) -> Option<ActionReservation> {
+        let mut set = self.in_flight.lock();
+        if set.contains(suggestion_id) {
+            return None;
+        }
+        set.insert(suggestion_id.to_string());
+        Some(ActionReservation {
+            in_flight: self.in_flight.clone(),
+            suggestion_id: suggestion_id.to_string(),
+        })
+    }
+
+    /// Attach the shared cross-loop regime snapshot (#7600, chainable).
+    pub(crate) fn with_shared_regime(mut self, shared_regime: Arc<SharedRegimeState>) -> Self {
+        self.shared_regime = Some(shared_regime);
+        self
     }
 
     pub(crate) fn manager(&self) -> Option<Arc<SuggestionManager>> {
@@ -300,6 +355,16 @@ impl SuggestionRuntimeState {
 
     pub(crate) fn overlay(&self) -> Option<MagicOverlayHandle> {
         self.overlay.clone()
+    }
+
+    /// The regime the user is (or was, as of the last monitor-loop tick) in,
+    /// read from the shared cross-loop snapshot (#7600). `None` when regime
+    /// tracking is not wired (test builders) or no regime has been
+    /// classified yet.
+    pub(crate) fn current_regime_id(&self) -> Option<String> {
+        self.shared_regime
+            .as_ref()
+            .and_then(|r| r.snapshot().regime_id)
     }
 }
 
@@ -371,17 +436,19 @@ impl AutomationRuntimeState {
 /// instance and the runtime's populating handle observe the same cell.
 #[derive(Clone, Default)]
 pub struct SyncRuntimeState {
-    engine: Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>,
+    engine: Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>>,
 }
 
 impl SyncRuntimeState {
-    pub(crate) fn engine(&self) -> Option<Arc<crate::sync_engine::SyncEngine>> {
+    pub(crate) fn engine(&self) -> Option<Arc<maekon_core::sync_engine::SyncEngine>> {
         self.engine.get().cloned()
     }
 
     /// Shared write-once slot handle for the agent runtime to populate once the
     /// `SyncEngine` has been built (#6264).
-    pub(crate) fn slot(&self) -> Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>> {
+    pub(crate) fn slot(
+        &self,
+    ) -> Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>> {
         self.engine.clone()
     }
 }
@@ -389,7 +456,7 @@ impl SyncRuntimeState {
 /// Feature-scoped Tauri managed state for detection overlay IPC and shortcuts.
 pub struct DetectionRuntimeState {
     active: Arc<AtomicBool>,
-    scene_finder: Option<Arc<dyn ElementFinder>>,
+    scene_finder: SceneFinderSlot,
     overlay: Option<MagicOverlayHandle>,
 }
 
@@ -397,16 +464,16 @@ impl Default for DetectionRuntimeState {
     fn default() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(false)),
-            scene_finder: None,
+            scene_finder: Arc::new(std::sync::OnceLock::new()),
             overlay: None,
         }
     }
 }
 
 impl DetectionRuntimeState {
-    pub(crate) fn new(
+    pub(crate) fn with_scene_finder_slot(
         active: Arc<AtomicBool>,
-        scene_finder: Option<Arc<dyn ElementFinder>>,
+        scene_finder: SceneFinderSlot,
         overlay: Option<MagicOverlayHandle>,
     ) -> Self {
         Self {
@@ -432,7 +499,7 @@ impl DetectionRuntimeState {
     }
 
     pub(crate) fn scene_finder(&self) -> Option<Arc<dyn ElementFinder>> {
-        self.scene_finder.clone()
+        self.scene_finder.get().cloned()
     }
 
     pub(crate) fn overlay(&self) -> Option<MagicOverlayHandle> {
@@ -450,16 +517,30 @@ pub struct ConnectionStatus {
     pub cli_connected: Arc<AtomicBool>,
 }
 
-#[allow(dead_code)] // runtime_handle/update_control stored for future scheduler access
 pub struct AppState {
+    // #7719: no `State<AppState>`-based IPC command reads this back — the
+    // startup sequence's own `LaunchContext`-style builders (update_runtime,
+    // launch_resources, background_runtime, web_server_runtime) hold and use
+    // their own runtime handle before `AppState` is even constructed. Kept
+    // for whenever a command needs to spawn directly off managed state.
+    #[allow(dead_code)]
     pub runtime_handle: tokio::runtime::Handle,
-    pub background_runtime: Arc<crate::bootstrap_runtime::ManagedBackgroundRuntime>,
+    // #7734: narrowed from `pub` — `ManagedBackgroundRuntime` itself is
+    // `pub(crate)` (composition-root internal), and nothing outside this
+    // crate ever read this field (private_interfaces lint fallout from the
+    // `[lib]` target enabler; behavior-neutral).
+    pub(crate) background_runtime: Arc<crate::bootstrap_runtime::ManagedBackgroundRuntime>,
     pub config: AppConfig,
     pub storage: Arc<SqliteStorage>,
     pub update_control: Option<UpdateControl>,
     pub update_action_tx: tokio::sync::mpsc::UnboundedSender<UpdateAction>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Shared flag for on-demand re-clustering requests from Tauri/REST.
+    // #7719: the SAME `Arc<AtomicBool>` is also threaded through the
+    // scheduler's tracking-schedule state (`scheduler/analysis_pipeline/*.rs`
+    // access it as `ts.recluster_requested`) — that path is what's actually
+    // read; nothing reads it off `AppState` directly today.
+    #[allow(dead_code)]
     pub recluster_requested: Arc<std::sync::atomic::AtomicBool>,
     /// MagicOverlay handle for transparent coaching overlay window.
     pub magic_overlay: Option<MagicOverlayHandle>,
@@ -492,7 +573,6 @@ pub struct AppState {
 
 pub struct OAuthState(pub Option<Arc<dyn OAuthPort>>);
 
-#[allow(dead_code)] // Tauri managed state; inner accessed via pattern match in commands
 pub struct OAuthCoordinatorState(pub OAuthCoordinator);
 
 #[derive(Debug, Clone, Serialize)]
@@ -507,9 +587,21 @@ pub struct SecretBackendCapabilities {
 
 pub struct SecretBackendState(pub SecretBackendCapabilities);
 
-#[allow(dead_code)] // Tauri managed state; inner accessed via pattern match in commands
+// #7719: `app.manage(self.integration_session_state)` registers this as
+// Tauri-managed state, but no IPC command currently extracts
+// `State<IntegrationSessionState>` — same "kept for state-registration
+// symmetry" situation as `IntegrationAuthState` below (#7600).
+#[allow(dead_code)]
 pub struct IntegrationSessionState(pub Option<Arc<dyn IntegrationSessionPort>>);
 
+// #7600: the IPC commands that read this (integration_auth_status,
+// integration_start_device_authorization, integration_poll_device_authorization,
+// integration_cancel_device_authorization, integration_reset_auth_state) were
+// removed as dead duplicates — the frontend drives device-auth via the
+// embedded HTTP API instead. The same `Arc<dyn IntegrationAuthPort>` value is
+// still constructed and wired to `web_server_runtime` for that HTTP path;
+// this Tauri-managed wrapper is kept for state-registration symmetry.
+#[allow(dead_code)]
 pub struct IntegrationAuthState(pub Option<Arc<dyn IntegrationAuthPort>>);
 
 #[derive(Clone)]
@@ -772,9 +864,75 @@ fn credential_backend_kind_to_wire(value: CredentialBackendKind) -> &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::intent::{ElementBounds, UiElement};
+    use maekon_core::models::ui_scene::UiScene;
     use maekon_web::update_control::UpdateAction;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
+
+    struct TestElementFinder;
+
+    #[async_trait]
+    impl ElementFinder for TestElementFinder {
+        async fn find_element(
+            &self,
+            _text: Option<&str>,
+            _role: Option<&str>,
+            _region: Option<&ElementBounds>,
+        ) -> Result<Vec<UiElement>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn analyze_scene(
+            &self,
+            _app_name: Option<&str>,
+            _screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            Err(CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: "test finder does not analyze scenes".to_string(),
+            })
+        }
+
+        async fn analyze_scene_from_image(
+            &self,
+            _image_data: Vec<u8>,
+            _image_format: String,
+            app_name: Option<&str>,
+            screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            self.analyze_scene(app_name, screen_id).await
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+    }
+
+    #[test]
+    fn detection_runtime_state_observes_late_scene_finder_slot_population() {
+        let active = Arc::new(AtomicBool::new(false));
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let state = DetectionRuntimeState::with_scene_finder_slot(active, slot.clone(), None);
+        assert!(
+            state.scene_finder().is_none(),
+            "scene finder starts unavailable before automation runtime is built"
+        );
+
+        let finder: Arc<dyn ElementFinder> = Arc::new(TestElementFinder);
+        slot.set(finder.clone())
+            .unwrap_or_else(|_| panic!("scene finder slot must be empty"));
+
+        let observed = state
+            .scene_finder()
+            .expect("late-populated scene finder must be visible to state readers");
+        assert!(
+            Arc::ptr_eq(&observed, &finder),
+            "state readers must observe the exact finder Arc published later"
+        );
+    }
 
     #[test]
     fn managed_state_builder_defaults_to_unavailable_secret_backend() {

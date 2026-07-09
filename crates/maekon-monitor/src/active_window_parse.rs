@@ -77,10 +77,12 @@ pub(crate) fn idle_secs_from_ticks(now: u32, last_input: u32) -> u64 {
 
 // -- macOS osascript active-window fallback (macos.rs) --
 
-/// A window parsed from the macOS `osascript` fallback's `|`-delimited stdout,
-/// *before* self-window filtering (own-app-name / own-pid), which the caller
-/// applies. Field extraction only — no environment or process access — so it is
-/// unit-testable on any OS with fabricated osascript output.
+pub(crate) const OSASCRIPT_FIELD_SEPARATOR: &str = "\u{1F}";
+
+/// A window parsed from the macOS `osascript` fallback's unit-separator-delimited
+/// stdout, *before* self-window filtering (own-app-name / own-pid), which the
+/// caller applies. Field extraction only — no environment or process access —
+/// so it is unit-testable on any OS with fabricated osascript output.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedOsascriptWindow {
     pub app_name: String,
@@ -90,8 +92,18 @@ pub(crate) struct ParsedOsascriptWindow {
     pub bounds: Option<WindowBounds>,
 }
 
+fn split_osascript_fields(result: &str) -> Vec<&str> {
+    if result.contains(OSASCRIPT_FIELD_SEPARATOR) {
+        result.split(OSASCRIPT_FIELD_SEPARATOR).collect()
+    } else {
+        result.split('|').collect()
+    }
+}
+
 /// Parse one osascript active-window line:
-/// `app | title | x | y | width | height | pid | bundle_id`.
+/// `app <US> title <US> x <US> y <US> width <US> height <US> pid <US> bundle_id`.
+///
+/// Older pipe-delimited output is still accepted as a compatibility fallback.
 ///
 /// Returns `None` for empty/whitespace-only output. (The inline path guarded
 /// with `parts.is_empty()`, which is dead — `str::split` never yields an empty
@@ -104,7 +116,7 @@ pub(crate) fn parse_osascript_active_window(stdout: &str) -> Option<ParsedOsascr
         return None;
     }
 
-    let parts: Vec<&str> = result.split('|').collect();
+    let parts = split_osascript_fields(result);
     // `result` is non-empty, so `split` yields at least one element.
     let app_name = parts[0].to_string();
     let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
@@ -243,6 +255,21 @@ mod tests {
             .expect("a full line parses");
         assert_eq!(w.app_name, "Safari");
         assert_eq!(w.title, "My Page");
+        assert_eq!(w.pid, 1234);
+        assert_eq!(w.bundle_id.as_deref(), Some("com.apple.Safari"));
+        let b = w.bounds.expect("full line has bounds");
+        assert_eq!((b.x, b.y, b.width, b.height), (10, 20, 800, 600));
+    }
+
+    #[test]
+    fn osascript_preserves_pipe_in_title_with_unit_separator_fields() {
+        let sep = '\u{1F}';
+        let line = format!(
+            "Safari{sep}Inbox (3) | Gmail{sep}10{sep}20{sep}800{sep}600{sep}1234{sep}com.apple.Safari"
+        );
+        let w = parse_osascript_active_window(&line).expect("unit-separator line parses");
+        assert_eq!(w.app_name, "Safari");
+        assert_eq!(w.title, "Inbox (3) | Gmail");
         assert_eq!(w.pid, 1234);
         assert_eq!(w.bundle_id.as_deref(), Some("com.apple.Safari"));
         let b = w.bounds.expect("full line has bounds");

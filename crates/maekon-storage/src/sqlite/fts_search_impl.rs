@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use tracing::{debug, warn};
 
 use super::cjk_shadow::{build_fts_match_query, build_fts_phrase_query, cjk_bigram_shadow};
-use super::{SqliteStorage, FTS_AVAILABLE, GUI_INTERACTIONS_AVAILABLE};
+use super::{SqliteStorage, FTS_AVAILABLE};
 use crate::error::StorageError;
 
 #[async_trait]
@@ -146,9 +146,15 @@ impl SqliteStorage {
     /// Index a segment with enriched content from multiple sources.
     ///
     /// In addition to the base `searchable_text` (llm_summary + dominant_category),
-    /// this method gathers window titles from `events`, `element_text` from
-    /// `gui_interactions`, and suggestion `content` from `suggestions` that fall
-    /// within the segment's time range and concatenates them into the FTS index.
+    /// this method gathers window titles from `events` and suggestion `content`
+    /// from `suggestions` that fall within the segment's time range and
+    /// concatenates them into the FTS index.
+    ///
+    /// #7678 D3: previously also gathered `element_text` from
+    /// `gui_interactions` keyed by `segment_id` — removed because the
+    /// production writer never populates `segment_id` (always `NULL`), so this
+    /// join could never match a row (dead-in-practice; the columns themselves
+    /// were dropped in V43).
     pub async fn sync_segment_enriched(
         &self,
         segment_id: &str,
@@ -167,12 +173,6 @@ impl SqliteStorage {
             let titles = Self::collect_window_titles(conn, &start_time, &end_time);
             if !titles.is_empty() {
                 parts.push(titles);
-            }
-
-            // Gather GUI interaction element_text from gui_interactions table
-            let gui_text = Self::collect_gui_element_text(conn, &segment_id);
-            if !gui_text.is_empty() {
-                parts.push(gui_text);
             }
 
             // Gather suggestion content from suggestions table
@@ -243,26 +243,6 @@ impl SqliteStorage {
             let rows = stmt.query_map(rusqlite::params![start_time, end_time], |row| {
                 row.get::<_, String>(0)
             })?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        })();
-
-        result.unwrap_or_default().join(" ")
-    }
-
-    /// Collect GUI interaction element_text for the given segment.
-    fn collect_gui_element_text(conn: &rusqlite::Connection, segment_id: &str) -> String {
-        if !GUI_INTERACTIONS_AVAILABLE.load(Ordering::Relaxed) {
-            return String::new();
-        }
-        let result: Result<Vec<String>, rusqlite::Error> = (|| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT DISTINCT element_text FROM gui_interactions
-                 WHERE segment_id = ?1
-                   AND element_text IS NOT NULL AND element_text != ''
-                 LIMIT 100",
-            )?;
-            let rows =
-                stmt.query_map(rusqlite::params![segment_id], |row| row.get::<_, String>(0))?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })();
 
@@ -460,37 +440,6 @@ mod tests {
         let results = storage.search_fts("debugging", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].segment_id, "seg-enriched-2");
-    }
-
-    #[tokio::test]
-    async fn enriched_sync_includes_gui_interactions() {
-        let storage = SqliteStorage::open_in_memory(30).unwrap();
-
-        // Insert a gui_interaction for the segment (V13 schema: event_id, segment_id,
-        // timestamp, element_text, element_type, interaction_type, app_name)
-        {
-            let conn = storage.conn.test_lock();
-            conn.execute(
-                "INSERT INTO gui_interactions (event_id, segment_id, timestamp, element_type, element_text, interaction_type, app_name)
-                 VALUES ('gui-evt-1', 'seg-enriched-3', '2026-03-01T10:00:00Z', 'button', 'Submit Pull Request', 'click', 'GitHub')",
-                [],
-            )
-            .unwrap();
-        }
-
-        storage
-            .sync_segment_enriched(
-                "seg-enriched-3",
-                "development work",
-                "2026-03-01T09:00:00Z",
-                "2026-03-01T11:00:00Z",
-            )
-            .await
-            .unwrap();
-
-        let results = storage.search_fts("Pull Request", 10).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].segment_id, "seg-enriched-3");
     }
 
     #[tokio::test]

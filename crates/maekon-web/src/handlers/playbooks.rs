@@ -51,20 +51,10 @@ pub async fn list_presets() -> Json<PresetSummaryListDto> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppState;
+    use crate::test_local_auth::loopback_app;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::broadcast;
     use tower::ServiceExt;
-
-    fn loopback_app() -> axum::Router {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
-        let state = AppState::with_core(storage, event_tx);
-        crate::test_local_auth::authed_loopback_router(state)
-    }
 
     #[tokio::test]
     async fn list_coaching_templates_returns_ok() {

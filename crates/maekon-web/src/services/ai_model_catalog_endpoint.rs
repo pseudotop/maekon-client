@@ -288,35 +288,13 @@ pub(crate) async fn reject_internal_discovery_endpoint(
 /// Whether the address is an internal one that must not be exposed externally — loopback /
 /// private / link-local / CGNAT / ULA / unspecified / multicast, etc. IPv4-mapped IPv6 is reduced
 /// to its inner v4 and checked.
+///
+/// #7723: this is `maekon_core::net_policy::InternalRangePolicy::strict_remote_discovery_guard()`
+/// — the stricter of the workspace's two SSRF blocklists (see that constructor's doc comment for
+/// the full range list and why this call site keeps the extra CGNAT/NAT64/multicast/etc. checks
+/// that the `feature_capabilities.rs` SSRF blocklist does not).
 fn is_internal_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                // 100.64.0.0/10 CGNAT (RFC 6598)
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 0x40)
-        }
-        std::net::IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_internal_ip(std::net::IpAddr::V4(mapped));
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // fc00::/7 unique local
-                || (v6.octets()[0] & 0xFE) == 0xFC
-                // fe80::/10 link-local
-                || (v6.octets()[0] == 0xFE && (v6.octets()[1] & 0xC0) == 0x80)
-                // 0064:ff9b::/96 IANA NAT64 well-known prefix (RFC 6146) — reaches
-                // internal IPv4 addresses through a NAT64 network. to_ipv4_mapped() has a
-                // different prefix (::ffff:0:0/96) and does not catch this, so block explicitly.
-                || v6.octets()[..4] == [0x00, 0x64, 0xFF, 0x9B]
-        }
-    }
+    maekon_core::net_policy::InternalRangePolicy::strict_remote_discovery_guard().is_internal(ip)
 }
 
 #[cfg(test)]

@@ -10,7 +10,12 @@ const FORCE_EXIT_GRACE_SECS: u64 = 3;
 
 pub struct LifecycleManager {
     shutdown_tx: watch::Sender<bool>,
-    #[allow(dead_code)] // used by subscribe()
+    // Only `shutdown_tx` is used internally (`shutdown()` sends on it, called
+    // from `wait_for_signal()`). This receiver backs `subscribe()` for a
+    // caller that wants to observe LifecycleManager's own OS-signal-driven
+    // shutdown; `runtime_bridges.rs`'s current integration instead re-signals
+    // the app-wide `AppState.shutdown_tx` directly, so neither is used today.
+    #[allow(dead_code)]
     shutdown_rx: watch::Receiver<bool>,
 }
 
@@ -23,7 +28,7 @@ impl LifecycleManager {
         }
     }
 
-    #[allow(dead_code)] // available for direct subscriber wiring
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> watch::Receiver<bool> {
         self.shutdown_rx.clone()
     }
@@ -48,10 +53,10 @@ impl LifecycleManager {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigint =
-                signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt())
+                .unwrap_or_else(|error| panic!("Failed to register SIGINT handler: {error}"));
+            let mut sigterm = signal(SignalKind::terminate())
+                .unwrap_or_else(|error| panic!("Failed to register SIGTERM handler: {error}"));
 
             tokio::select! {
                 _ = sigint.recv() => {
@@ -76,10 +81,10 @@ impl LifecycleManager {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigint =
-                signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt())
+                .unwrap_or_else(|error| panic!("Failed to register SIGINT handler: {error}"));
+            let mut sigterm = signal(SignalKind::terminate())
+                .unwrap_or_else(|error| panic!("Failed to register SIGTERM handler: {error}"));
 
             tokio::select! {
                 _ = sigint.recv() => {

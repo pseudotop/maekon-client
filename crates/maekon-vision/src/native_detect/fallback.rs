@@ -1,7 +1,10 @@
 use maekon_core::error::CoreError;
 use maekon_core::ports::rectangle_detector::{DetectedRectangle, RectangleDetector};
 
-#[allow(dead_code)] // used on non-macOS platforms only
+// Only constructed by `create_rectangle_detector()`'s
+// `#[cfg(not(target_os = "macos"))]` arm — dead on macOS builds, where the
+// native `macos::MacOsRectangleDetector` is used instead.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct OcrBboxFallback;
 
 impl RectangleDetector for OcrBboxFallback {

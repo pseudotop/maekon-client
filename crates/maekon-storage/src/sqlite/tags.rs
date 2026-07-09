@@ -460,7 +460,6 @@ impl SqliteStorage {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     //! Inline unit tests for `sqlite::tags`.
     //!

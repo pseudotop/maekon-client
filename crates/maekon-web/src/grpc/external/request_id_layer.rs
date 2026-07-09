@@ -20,12 +20,10 @@ pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Wrapper type for request-ID extension — gives strong static typing at read sites.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 6+ (AuthLayer Failed-path) and Phase 3 (AuditLayer header-first)
 pub(crate) struct RequestId(pub String);
 
 /// Tower Layer placing `RequestIdService` around the inner service.
 #[derive(Clone, Default)]
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 8 (serve_external layer order wiring)
 pub(crate) struct RequestIdLayer;
 
 impl<S: Clone> Layer<S> for RequestIdLayer {
@@ -36,7 +34,6 @@ impl<S: Clone> Layer<S> for RequestIdLayer {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)] // Phase 1 scaffold; consumed via RequestIdLayer application
 pub(crate) struct RequestIdService<S> {
     inner: S,
 }

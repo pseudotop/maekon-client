@@ -69,27 +69,44 @@ impl LocalSuggestionQueryPort for SqliteStorage {
 
 #[cfg(test)]
 mod tests {
-    #[allow(deprecated)]
-    use maekon_core::models::work_session::LocalSuggestion;
-
     use super::*;
 
+    /// #7733: fixture rows are inserted via raw SQL (the deprecated `LocalSuggestion`
+    /// enum writer `save_local_suggestion` was dead code and has been deleted); the
+    /// `local_suggestions` table + `LocalSuggestionQueryPort` read path stay live
+    /// (consumed by `LocalSuggestionIntegrationSource` in `src-tauri`).
     #[tokio::test]
-    #[allow(deprecated)]
     async fn list_local_suggestions_after_returns_ascending_rows() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
-        let first = storage
-            .save_local_suggestion(&LocalSuggestion::TakeBreak {
-                continuous_work_mins: 90,
-            })
+        let (first, second): (i64, i64) = {
+            let conn = storage.conn.test_lock();
+            conn.execute(
+                "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
+                rusqlite::params![
+                    "TakeBreak",
+                    serde_json::json!({ "continuous_work_mins": 90 }).to_string()
+                ],
+            )
             .unwrap();
-        let second = storage
-            .save_local_suggestion(&LocalSuggestion::NeedFocusTime {
-                communication_ratio: 0.6,
-                suggested_focus_mins: 45,
-            })
+            let first = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
+                rusqlite::params![
+                    "NeedFocusTime",
+                    serde_json::json!({
+                        "communication_ratio": 0.6,
+                        "suggested_focus_mins": 45,
+                    })
+                    .to_string()
+                ],
+            )
             .unwrap();
+            let second = conn.last_insert_rowid();
+
+            (first, second)
+        };
 
         let rows = storage
             .list_local_suggestions_after(Some(first), 10)

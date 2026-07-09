@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use futures::stream::StreamExt;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::warn;
 
 use maekon_api_contracts::provider_specs::{
@@ -50,6 +50,12 @@ pub struct HttpApiSession {
     credential: CredentialSource,
     provider_type: AiProviderType,
     history: Arc<RwLock<Vec<ChatMessage>>>,
+    /// #7574: per-session turn guard. Held from `send_message` (after the
+    /// D7 breaker fast-fail check) until the returned stream is fully
+    /// drained/dropped, so concurrent `send_message` calls on the same
+    /// session serialize instead of racing on `history` (mirrors
+    /// `GenericSubprocessSession::send_lock`).
+    send_lock: Arc<AsyncMutex<()>>,
     system_prompt: Option<String>,
     default_tools: Option<Vec<ToolDefinition>>,
     state: parking_lot::Mutex<SessionState>,
@@ -175,7 +181,9 @@ impl HttpApiSession {
         // redirect-following client.
         let http_client = crate::outbound::hardened_client_builder()
             .build()
-            .expect("하드닝 세션 HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+            .unwrap_or_else(|error| {
+                panic!("hardened session HTTP client build failed (TLS backend init): {error}")
+            });
         let mut initial_history = Vec::new();
 
         if let Some(ref prompt) = init.system_prompt {
@@ -199,6 +207,7 @@ impl HttpApiSession {
             credential: init.credential,
             provider_type: init.provider_type,
             history: Arc::new(RwLock::new(initial_history)),
+            send_lock: Arc::new(AsyncMutex::new(())),
             system_prompt: init.system_prompt,
             default_tools: init.default_tools,
             state: parking_lot::Mutex::new(SessionState::Active),
@@ -413,6 +422,13 @@ impl ConversationSession for HttpApiSession {
             });
         }
 
+        // #7574: acquire the turn guard after the fast-fail breaker check
+        // (which must never block on an in-flight turn) but before any
+        // history read/mutation, so a concurrent second `send_message` call
+        // blocks until this turn's stream is fully drained/dropped instead
+        // of racing on `history`.
+        let turn_guard = self.send_lock.clone().lock_owned().await;
+
         let shape = provider_specs::resolved_request_shape(
             self.provider_type,
             Some(&self.surface_id),
@@ -546,6 +562,11 @@ impl ConversationSession for HttpApiSession {
 
         // Build the ResponseStream using SSE parsing
         let stream: ResponseStream = Box::pin(try_stream! {
+            // #7574: keep the turn guard alive for the lifetime of this
+            // stream (dropped when the stream completes or is dropped early)
+            // so the next queued `send_message` cannot start until this turn
+            // releases it.
+            let _turn_guard = turn_guard;
             let mut accumulated = String::new();
             let mut tool_calls: Vec<PartialToolCall> = Vec::new();
             // Running total across accumulated assistant text + every tool-call's

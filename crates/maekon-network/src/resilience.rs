@@ -6,8 +6,16 @@ use tokio::time::Instant;
 
 use crate::error::NetworkError;
 
+// Re-exported so every caller in this crate (and `maekon-app`, where the
+// feature flags allow it) can reach both the deterministic and jittered
+// backoff curves from one place: `maekon_network::resilience::{exponential_delay,
+// jittered_backoff_delay}`. The pure math itself lives in `maekon-core` (see
+// that module's doc comment) because at least one caller (`SyncEngine` in the
+// `maekon-app` composition root) is compiled unconditionally, while
+// `maekon-network` is an optional dependency there.
+pub use maekon_core::backoff::exponential_delay;
+
 const DEFAULT_RETRY_AFTER_SECS: u64 = 60;
-const MAX_BACKOFF_EXPONENT: u32 = 10;
 
 /// Upper bound on a server-supplied `Retry-After` delay (seconds).
 ///
@@ -36,13 +44,22 @@ pub fn scale_duration(duration: Duration, factor: u32) -> Duration {
 }
 
 pub fn jittered_backoff_delay(attempt: u32, base: Duration, max: Duration) -> Duration {
-    let base_ms = base.as_millis().min(u64::MAX as u128) as u64;
-    let max_ms = max.as_millis().min(u64::MAX as u128) as u64;
-    if base_ms == 0 || max_ms == 0 {
+    // The deterministic curve already caps at `max`. Deriving the jitter span
+    // from the capped value (rather than the raw uncapped exponential) is
+    // behavior-equivalent: once the exponential meets or exceeds `max`, the
+    // final `.min(max_ms)` below forces the result to `max_ms` regardless of
+    // the jitter magnitude, so which value the span is derived from cannot
+    // change the observable result.
+    let capped = exponential_delay(attempt, base, max);
+    let exp_ms = capped.as_millis().min(u128::from(u64::MAX)) as u64;
+    if exp_ms == 0 {
+        // `exponential_delay` only returns zero for a degenerate `base == 0`
+        // or `max == 0` input (never for a legitimate attempt count), so this
+        // mirrors its own early-return contract.
         return Duration::from_millis(0);
     }
 
-    let exp_ms = base_ms.saturating_mul(2u64.saturating_pow(attempt.min(MAX_BACKOFF_EXPONENT)));
+    let max_ms = max.as_millis().min(u128::from(u64::MAX)) as u64;
     let jitter_max_ms = exp_ms / 4;
     let jitter_ms = if jitter_max_ms == 0 {
         0

@@ -1,11 +1,15 @@
-//! Tracking-schedule API contracts — shared between IPC commands and REST handlers.
+//! Tracking-schedule API contracts.
+//!
+//! #7600: the `get_tracking_schedule`/`set_tracking_schedule`/
+//! `get_tracking_schedule_status` Tauri IPC commands were removed as dead
+//! duplicates — the frontend drives tracking-schedule config exclusively via
+//! the embedded HTTP API. These types remain shared with the REST handlers.
 
 use serde::{Deserialize, Serialize};
 
 /// Snapshot of the current tracking-schedule state.
 ///
-/// Returned by the `get_tracking_schedule_status` IPC command and the
-/// `GET /config/tracking_schedule/status` REST endpoint.
+/// Returned by the `GET /tracking-schedule/status` REST endpoint.
 ///
 /// Timestamps are RFC 3339 strings so they survive JSON serialization losslessly
 /// and are unambiguous about UTC offset.

@@ -384,6 +384,8 @@ async fn cross_family_writers_concurrent_with_erase_leave_zero_residual() {
         "coaching_events",
         "regime_goals",
         "coaching_effectiveness",
+        "feedback_scorer_tallies",
+        "regime_reaction_stats",
         "ai_conversation_messages",
         "ai_sessions",
         "frame_annotations",

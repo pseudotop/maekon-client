@@ -9,7 +9,7 @@ use maekon_core::config::{AppConfig, SyncTransportKind};
 use maekon_core::error::CoreError;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 
-use crate::sync_engine::SyncEngine;
+use maekon_core::sync_engine::SyncEngine;
 
 /// Result of the sync engine setup.
 pub(super) struct SyncResult {

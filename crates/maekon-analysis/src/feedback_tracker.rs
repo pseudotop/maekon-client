@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use maekon_core::models::coaching::FeedbackSignal;
+use maekon_core::models::coaching::{CoachingEffectivenessRecord, FeedbackSignal};
 use std::collections::HashMap;
 
 use crate::coaching_engine::tunable_params::TunableParams;
@@ -102,7 +102,13 @@ impl FeedbackTracker {
 
     /// Record explicit feedback (thumbs-up or thumbs-down).
     /// Removes from pending and updates score with tunable weight.
-    pub fn record_explicit(&mut self, message_id: &str, positive: bool) {
+    ///
+    /// Returns `true` when a pending message with this id existed and was
+    /// resolved, `false` when the id was unknown (already resolved or never
+    /// registered). The caller uses this to decide whether to also train the
+    /// adaptive scorer (#7913) — an unknown id has no feature context to train
+    /// on and must not be trained.
+    pub fn record_explicit(&mut self, message_id: &str, positive: bool) -> bool {
         let weight = self.params.explicit_weight;
         if let Some(eval) = self.pending.remove(message_id) {
             let score = self
@@ -117,17 +123,28 @@ impl FeedbackTracker {
             }
 
             self.params.adjust_on_feedback(positive);
+            true
+        } else {
+            false
         }
     }
 
     /// Evaluate all pending messages whose 5-minute window has elapsed.
     /// Classifies behavior change and updates effectiveness scores.
+    ///
+    /// Returns the `(message_id, positive)` outcomes that carry a directional
+    /// training signal (#7913): `ImplicitPositive` → `(id, true)`,
+    /// `ImplicitNegative` → `(id, false)`. `ImplicitNeutral` is deliberately
+    /// omitted — a "no observable behavior change" outcome is not evidence
+    /// either way, so training the adaptive scorer on it (as 0.0 or 1.0) would
+    /// inject noise. The caller trains the adaptive scorer on each returned
+    /// outcome using the features cached for that specific message id.
     pub fn evaluate_implicit(
         &mut self,
         current_regime_id: Option<&str>,
         current_app: &str,
         now: DateTime<Utc>,
-    ) {
+    ) -> Vec<(String, bool)> {
         // Collect message IDs ready for evaluation
         let window = self.params.implicit_window_secs;
         let ready_ids: Vec<String> = self
@@ -137,6 +154,7 @@ impl FeedbackTracker {
             .map(|(id, _)| id.clone())
             .collect();
 
+        let mut training_signals = Vec::new();
         for id in ready_ids {
             if let Some(eval) = self.pending.remove(&id) {
                 let signal = Self::classify_behavior_change(&eval, current_regime_id, current_app);
@@ -149,9 +167,11 @@ impl FeedbackTracker {
                 match signal {
                     FeedbackSignal::ImplicitPositive => {
                         score.positive_signals += 1.0;
+                        training_signals.push((id, true));
                     }
                     FeedbackSignal::ImplicitNegative => {
                         score.negative_signals += 1.0;
+                        training_signals.push((id, false));
                     }
                     FeedbackSignal::ImplicitNeutral => {
                         score.neutral_count += 1;
@@ -161,6 +181,7 @@ impl FeedbackTracker {
                 }
             }
         }
+        training_signals
     }
 
     /// Determine whether a coaching message for this (profile, trigger) pair
@@ -236,6 +257,44 @@ impl FeedbackTracker {
     /// Number of messages pending implicit evaluation.
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Snapshot every `(profile, trigger)` effectiveness score as a persistable
+    /// record (#7913 T2.1b). `behavior_change_count` is always 0 — the tracker
+    /// folds behavior change into `positive_signals`/`neutral_count` rather than
+    /// counting it separately; the column exists in the V17 table for forward
+    /// compatibility and round-trips faithfully.
+    pub fn effectiveness_snapshot(&self) -> Vec<CoachingEffectivenessRecord> {
+        self.scores
+            .iter()
+            .map(|((profile, trigger), score)| CoachingEffectivenessRecord {
+                profile_name: profile.clone(),
+                trigger_type: trigger.clone(),
+                total_shown: score.total_shown,
+                positive_feedback: score.positive_signals,
+                negative_feedback: score.negative_signals,
+                neutral_count: score.neutral_count,
+                behavior_change_count: 0,
+            })
+            .collect()
+    }
+
+    /// Load persisted effectiveness records into the in-RAM scores on startup
+    /// (#7913 T2.1b). Records overwrite any existing key; the `pending` set is
+    /// intentionally left empty (in-flight 5-minute windows do not survive a
+    /// restart — a message shown before exit can no longer be observed after it).
+    pub fn hydrate_effectiveness(&mut self, records: Vec<CoachingEffectivenessRecord>) {
+        for r in records {
+            self.scores.insert(
+                (r.profile_name, r.trigger_type),
+                EffectivenessScore {
+                    total_shown: r.total_shown,
+                    positive_signals: r.positive_feedback,
+                    negative_signals: r.negative_feedback,
+                    neutral_count: r.neutral_count,
+                },
+            );
+        }
     }
 }
 
@@ -417,6 +476,32 @@ mod tests {
         assert!(
             tracker.should_show("AnyProfile", "AnyTrigger"),
             "should_show must return true with no prior data"
+        );
+    }
+
+    /// #7913 T2.1b — effectiveness snapshot round-trips faithfully through
+    /// hydrate, so a restart restores the learned score.
+    #[test]
+    fn effectiveness_snapshot_and_hydrate_roundtrip() {
+        let mut tracker = FeedbackTracker::new();
+        tracker.register_pending("m1", "FocusGuard", "RegimeTransition", None, "App");
+        tracker.record_explicit("m1", true);
+
+        let snap = tracker.effectiveness_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].profile_name, "FocusGuard");
+        assert_eq!(snap[0].total_shown, 1);
+
+        // A fresh tracker hydrates the persisted snapshot and reads the same score.
+        let mut fresh = FeedbackTracker::new();
+        fresh.hydrate_effectiveness(snap);
+        let restored = fresh
+            .get_effectiveness("FocusGuard", "RegimeTransition")
+            .expect("hydrated score must be present");
+        assert_eq!(restored.total_shown, 1);
+        assert_eq!(
+            restored.positive_signals,
+            TunableParams::default().explicit_weight
         );
     }
 }

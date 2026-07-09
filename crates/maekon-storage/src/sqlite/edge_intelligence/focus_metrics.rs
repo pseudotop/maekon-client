@@ -257,8 +257,10 @@ impl SqliteStorage {
         );
 
         let (period_start, period_end) = Self::date_to_period_range(date);
-        let period = maekon_core::types::TimeWindow::new(period_start, period_end)
-            .expect("date_to_period_range produces valid window");
+        let period =
+            maekon_core::types::TimeWindow::new(period_start, period_end).map_err(|e| {
+                StorageError::Internal(format!("date_to_period_range produced invalid window: {e}"))
+            })?;
 
         match result {
             Ok((
@@ -366,8 +368,12 @@ impl SqliteStorage {
             ) = row.map_err(|e| StorageError::Internal(format!("Failed to read row: {e}")))?;
 
             let (period_start, period_end) = Self::date_to_period_range(&date);
-            let period = maekon_core::types::TimeWindow::new(period_start, period_end)
-                .expect("date_to_period_range produces valid window");
+            let period =
+                maekon_core::types::TimeWindow::new(period_start, period_end).map_err(|e| {
+                    StorageError::Internal(format!(
+                        "date_to_period_range produced invalid window: {e}"
+                    ))
+                })?;
 
             results.push((
                 date,

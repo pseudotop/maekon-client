@@ -60,6 +60,69 @@ pub trait OcrProvider: Send + Sync {
     }
 }
 
+/// Canonical `OcrProvider` test double (#7729 ctd-W2 G2).
+///
+/// Deterministic, local-only stand-in that returns fixed `results` regardless
+/// of the image bytes, so pipeline tests don't depend on a real platform OCR
+/// engine (unavailable on headless CI / Linux). Consolidates two byte-for-byte
+/// identical hand-rolled `FakeOcrProvider` copies previously duplicated in
+/// `maekon-vision` (`processor.rs`, `privacy_gateway.rs`). Deliberately does
+/// NOT attempt to also cover the egress-boundary-security `Fake*OcrProvider`
+/// variants in `src-tauri/src/provider_adapters/tests.rs` — those exercise
+/// `is_external()` / `egress_endpoint_urls()` boundary semantics that are
+/// meaningfully different per test case, not incidental duplication.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone)]
+pub struct FakeOcrProvider {
+    results: Vec<OcrResult>,
+    provider_name: &'static str,
+    is_external: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl FakeOcrProvider {
+    /// Local (`is_external() == false`) fake returning `results` for every call.
+    pub fn new(results: Vec<OcrResult>) -> Self {
+        Self {
+            results,
+            provider_name: "fake-native-ocr",
+            is_external: false,
+        }
+    }
+
+    /// Override the default `provider_name()` (`"fake-native-ocr"`).
+    pub fn with_provider_name(mut self, name: &'static str) -> Self {
+        self.provider_name = name;
+        self
+    }
+
+    /// Mark this fake as an external provider (`is_external() == true`).
+    pub fn external(mut self) -> Self {
+        self.is_external = true;
+        self
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait]
+impl OcrProvider for FakeOcrProvider {
+    async fn extract_elements(
+        &self,
+        _image: &[u8],
+        _image_format: &str,
+    ) -> Result<Vec<OcrResult>, CoreError> {
+        Ok(self.results.clone())
+    }
+
+    fn provider_name(&self) -> &str {
+        self.provider_name
+    }
+
+    fn is_external(&self) -> bool {
+        self.is_external
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

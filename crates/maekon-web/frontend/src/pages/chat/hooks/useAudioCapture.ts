@@ -30,6 +30,19 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
     ;(async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
+        // #7600: COMPILE-capability gate checked FIRST. `maekon-audio` is
+        // compiled OUT of the shipped `grpc,windows-sandbox` release build, so
+        // `get_audio_status` alone is not a truthful signal — its
+        // `model_status.state` can never reach `ready` there (the model
+        // downloader is None), which previously left the mic button showing
+        // "Download model in Settings" — an actionable-looking hint that leads
+        // to a doomed download. Short-circuit with an honest tooltip instead.
+        const capabilities = await invoke<{ audio_compiled?: boolean }>('get_feature_capabilities')
+        if (capabilities?.audio_compiled !== true) {
+          setAudioAvailable(false)
+          setAudioTooltip(t('chat.audio_not_compiled', 'Audio is not available in this build'))
+          return
+        }
         const status = await invoke<{
           enabled: boolean
           model_status: { state: string }

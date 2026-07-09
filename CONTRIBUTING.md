@@ -426,7 +426,14 @@ Connect the implementation to its port in `src-tauri/src/main.rs`.
 // src-tauri/src/main.rs
 
 let my_service: Arc<dyn MyService> = Arc::new(MyServiceImpl::new());
-let scheduler = Scheduler::new(my_service, /* other dependencies */);
+// A new optional/conditional dependency is wired via a `with_*` builder
+// setter after `Scheduler::new(/* required constructor args */)` — NOT
+// appended to `new`'s positional list. (`Scheduler::new`'s own positional
+// args cover only the always-required, non-Option ports; the 8-field
+// VERIFIED-unconditional payload is a separate `SchedulerRequiredDeps`
+// struct chained via `.with_required_deps(...)`, #7737 C1 PR-2 — see
+// `scheduler/required_deps.rs`.)
+let scheduler = Scheduler::new(/* required constructor args */).with_my_service(my_service);
 ```
 
 ### Step 4: Write Tests

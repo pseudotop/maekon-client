@@ -1,11 +1,11 @@
 use anyhow::Result;
-use maekon_core::ports::coaching_storage::CoachingStoragePort;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tracing::info;
 
 mod audio_wiring;
 mod capture_wiring;
+mod coaching_wiring;
 mod cua_safe_mode;
 #[cfg(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external"))]
 mod external_grpc;
@@ -19,23 +19,25 @@ mod web_server_wiring;
 
 use self::audio_wiring::build_audio_runtime_state;
 use self::capture_wiring::build_capture_wiring;
+use self::coaching_wiring::build_coaching_wiring;
 pub(crate) use self::cua_safe_mode::cua_safe_mode_enabled;
-use self::launch_result::generate_local_auth_token;
 pub(crate) use self::launch_result::AppRuntimeLaunchResult;
+use self::launch_result::{ensure_installation_id, generate_local_auth_token};
 use self::regime_wiring::build_regime_wiring;
-use self::session_wiring::{build_session_manager, spawn_idle_reaper};
+use self::session_wiring::{build_session_manager, build_shared_policy_client, spawn_idle_reaper};
 use self::state_wiring::{build_managed_state_builder, ManagedStateWiringParts};
 #[cfg(feature = "local-suggestions")]
 use self::suggestion_wiring::build_suggestion_wiring;
 use self::web_server_wiring::build_web_automation_wiring;
-use crate::agent_runtime::AgentRuntimeBuilder;
+use crate::agent_runtime::AgentRuntimeBundle;
 use crate::bootstrap_runtime::BootstrapRuntimeBundle;
 use crate::launch_resources::LaunchCoreResourcesBuilder;
 use crate::magic_overlay::MagicOverlayHandle;
 use crate::runtime_bridges::RuntimeBridgeSpawner;
 use crate::runtime_state::{
     AiSessionRuntimeState, AnalysisHealthFlags, AutomationRuntimeState, ConfigRuntimeState,
-    DetectionRuntimeState, EmbeddingRuntimeState, SuggestionRuntimeState, SyncRuntimeState,
+    DetectionRuntimeState, EmbeddingRuntimeState, SceneFinderSlot, SuggestionRuntimeState,
+    SyncRuntimeState,
 };
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 #[cfg(feature = "server")]
@@ -84,17 +86,7 @@ impl AppRuntimeLaunchBuilder {
                 integration_runtime_status: _integration_runtime_status,
         } = self.bootstrap;
 
-        // Auto-generate installation ID for staged rollout bucketing.
-        if config.update.installation_id.is_none() {
-            let new_id = uuid::Uuid::new_v4().to_string();
-            if let Err(e) = config_manager.update_with(|c| {
-                c.update.installation_id = Some(new_id.clone());
-                Ok(())
-            }) {
-                tracing::warn!("Failed to persist installation_id: {e}");
-            }
-            config.update.installation_id = Some(new_id);
-        }
+        ensure_installation_id(&config_manager, &mut config);
 
         #[cfg(feature = "server")]
         let server_context = ServerLaunchContext::from_bootstrap(server);
@@ -165,32 +157,24 @@ impl AppRuntimeLaunchBuilder {
         // Focus mode state — transient, not persisted across restarts.
         let focus_mode = Arc::new(crate::focus_mode::FocusModeState::new());
 
-        // Keep coaching template interpolation behind the same PII sanitizer as other surfaces.
-        let coaching_engine = Arc::new(
-            maekon_analysis::CoachingEngine::new(config.coaching.clone()).with_pii_sanitizer(
-                Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
-                config.privacy.pii_filter_level,
-            ),
-        );
+        // #7913 T2.1b: PII-sanitized coaching engine + shared storage handle,
+        // built once here with learned effectiveness hydrated before the loops.
+        let (coaching_engine, coaching_storage) =
+            build_coaching_wiring(&config, &handle, sqlite_storage.clone());
         let (regime_manager_arc, regime_classifier_arc, regime_storage) =
             build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
-        // OSS builds keep on-device suggestions; `server` only adds network transport.
-        #[cfg(feature = "local-suggestions")]
-        let feedback_sink: Arc<
-            dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink,
-        > = Arc::new(crate::feedback_sink::CompositeFeedbackSink::new(
-            Some(coaching_engine.clone()),
-            Some(regime_classifier_arc.clone()),
-        ));
-
+        // OSS builds keep on-device suggestions; `server` only adds network
+        // transport. The composite feedback sink over the shared regime
+        // classifier is built inside build_suggestion_wiring (its sole
+        // consumer).
         #[cfg(feature = "local-suggestions")]
         let suggestion_wiring = build_suggestion_wiring(
             &self.app_handle,
             &handle,
             &config,
             sqlite_storage.clone(),
-            feedback_sink.clone(),
+            regime_classifier_arc.clone(),
         );
         #[cfg(feature = "local-suggestions")]
         let suggestion_manager = suggestion_wiring.manager.clone();
@@ -205,8 +189,6 @@ impl AppRuntimeLaunchBuilder {
 
         // Analysis health starts optimistic and flips on first primary failure.
         let analysis_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-
-        let coaching_storage: Arc<dyn CoachingStoragePort> = sqlite_storage.clone();
 
         // Create MagicOverlay handle (window created at startup in setup.rs)
         let magic_overlay =
@@ -230,9 +212,10 @@ impl AppRuntimeLaunchBuilder {
         let sync_runtime_state = SyncRuntimeState::default();
         // #6266: same shared-slot pattern for the reloadable embedding model.
         let embedding_runtime_state = EmbeddingRuntimeState::default();
+        let scene_finder_slot: SceneFinderSlot = Arc::new(std::sync::OnceLock::new());
 
         let agent_runtime = {
-            let mut builder = AgentRuntimeBuilder::new(
+            let mut builder = AgentRuntimeBundle::new(
                 sqlite_storage.clone(),
                 sqlite_storage.clone(),
                 sqlite_storage.clone(),
@@ -246,6 +229,7 @@ impl AppRuntimeLaunchBuilder {
             )
             .with_sync_runtime_slot(sync_runtime_state.slot())
             .with_embedding_runtime_slot(embedding_runtime_state.slot())
+            .with_scene_finder_slot(scene_finder_slot.clone())
             .with_vector_store(Arc::new(
                 maekon_storage::sqlite::vector_store_impl::SqliteVectorStore::new(
                     sqlite_storage.connection_arc(),
@@ -303,10 +287,16 @@ impl AppRuntimeLaunchBuilder {
             };
             #[cfg(feature = "analysis")] // C1: OAuth coordinator from provider context.
             let builder = provider.configure_agent_builder(builder);
-            builder.build()
+            builder
         };
         agent_runtime.spawn_on(&handle, core_resources.background_runtime.shutdown_rx());
         info!("Agent started");
+
+        // #7932 Part B: the ONE shared Arc<PolicyClient> injected into BOTH the
+        // Codex approval decider (via build_session_manager) AND the automation
+        // controller (via the web wiring below). See build_shared_policy_client
+        // for the Port Instance Sharing rationale.
+        let shared_policy_client = build_shared_policy_client(&data_dir_path);
 
         let (session_manager, codex_approval_registry) = build_session_manager(
             &self.app_handle,
@@ -317,6 +307,7 @@ impl AppRuntimeLaunchBuilder {
             shared_regime_state.clone(),
             capture_consent_manager.clone(),
             breaker_registry.clone(),
+            shared_policy_client.clone(),
         );
         spawn_idle_reaper(
             &handle,
@@ -354,6 +345,8 @@ impl AppRuntimeLaunchBuilder {
                 capture_consent_manager.clone(),
                 cli_health_flag.clone(),
                 breaker_registry.clone(),
+                // #7932 Part B: same shared Arc<PolicyClient> the Codex decider holds.
+                shared_policy_client.clone(),
                 #[cfg(feature = "analysis")]
                 &provider,
                 #[cfg(feature = "server")]
@@ -385,6 +378,13 @@ impl AppRuntimeLaunchBuilder {
         let automation_controller = web_automation_wiring
             .as_ref()
             .and_then(|wiring| wiring.automation_controller.clone());
+        // Populate the shared slot here because automation builds after scheduler startup.
+        if let Some(scene_finder) = automation_controller
+            .as_ref()
+            .and_then(|controller| controller.scene_finder().cloned())
+        {
+            let _ = scene_finder_slot.set(scene_finder);
+        }
 
         // Connection status is now driven by the health check loop —
         // no optimistic initialization. The loop reads adapter health flags
@@ -410,12 +410,11 @@ impl AppRuntimeLaunchBuilder {
         let config_runtime_state =
             ConfigRuntimeState::new(config_manager.clone(), web_port.clone());
         let suggestion_runtime_state =
-            SuggestionRuntimeState::new(suggestion_manager.clone(), Some(magic_overlay.clone()));
-        let detection_runtime_state = DetectionRuntimeState::new(
+            SuggestionRuntimeState::new(suggestion_manager.clone(), Some(magic_overlay.clone()))
+                .with_shared_regime(shared_regime_state.clone());
+        let detection_runtime_state = DetectionRuntimeState::with_scene_finder_slot(
             detection_active.clone(),
-            automation_controller
-                .as_ref()
-                .and_then(|controller| controller.scene_finder().cloned()),
+            scene_finder_slot.clone(),
             Some(magic_overlay.clone()),
         );
 

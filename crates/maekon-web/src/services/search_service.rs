@@ -53,6 +53,7 @@ impl SearchQueryService {
 
         let mut results = Vec::new();
         let mut total: u64 = 0;
+        let mut matching_frame_count = 0usize;
 
         if search_type == "all" || search_type == "frames" {
             let (count_sql, select_sql) =
@@ -66,6 +67,7 @@ impl SearchQueryService {
                 .await
                 .unwrap_or(0);
             total += frame_count;
+            matching_frame_count = usize::try_from(frame_count).unwrap_or(usize::MAX);
 
             let frame_rows = storage
                 .search_frames_with_sql(
@@ -110,14 +112,13 @@ impl SearchQueryService {
             let event_count = storage.count_search_events(&pattern).await.unwrap_or(0);
             total += event_count;
 
-            let remaining = limit.saturating_sub(results.len());
-            if remaining > 0 {
-                let event_offset = if search_type == "all" {
-                    offset.saturating_sub(results.len())
-                } else {
-                    offset
-                };
-
+            if let Some((remaining, event_offset)) = event_search_window(
+                search_type,
+                limit,
+                offset,
+                matching_frame_count,
+                results.len(),
+            ) {
                 let event_rows = storage
                     .search_events(&pattern, remaining, event_offset)
                     .await
@@ -211,6 +212,27 @@ pub(crate) fn build_frame_queries(
     (count_sql, select_sql)
 }
 
+fn event_search_window(
+    search_type: &str,
+    limit: usize,
+    offset: usize,
+    matching_frame_count: usize,
+    page_frame_count: usize,
+) -> Option<(usize, usize)> {
+    let remaining = limit.saturating_sub(page_frame_count);
+    if remaining == 0 {
+        return None;
+    }
+
+    let event_offset = if search_type == "all" {
+        offset.saturating_sub(matching_frame_count)
+    } else {
+        offset
+    };
+
+    Some((remaining, event_offset))
+}
+
 /// Collect the tags for a single frame via an in-memory join (#5097 N+1-removal
 /// helper).
 ///
@@ -293,5 +315,35 @@ mod tests {
         let tag_id_map: HashMap<i64, Vec<i64>> = HashMap::new();
         let lookup: HashMap<i64, TagInfo> = HashMap::new();
         assert!(collect_frame_tags(42, &tag_id_map, &lookup).is_empty());
+    }
+
+    #[test]
+    fn all_search_event_offset_uses_total_matching_frame_count() {
+        let window = event_search_window("all", 5, 5, 3, 0)
+            .expect("event window should exist when no frames fill the page");
+        assert_eq!(
+            window,
+            (5, 2),
+            "logical page 5..9 after 3 frames must start at event offset 2"
+        );
+    }
+
+    #[test]
+    fn all_search_event_offset_starts_at_zero_when_page_crosses_frame_boundary() {
+        let window = event_search_window("all", 5, 2, 3, 1)
+            .expect("event window should fill the page after the last frame");
+        assert_eq!(window, (4, 0));
+    }
+
+    #[test]
+    fn event_only_search_preserves_requested_offset() {
+        let window =
+            event_search_window("events", 5, 5, 3, 0).expect("event-only page should exist");
+        assert_eq!(window, (5, 5));
+    }
+
+    #[test]
+    fn event_search_window_absent_when_frames_fill_page() {
+        assert_eq!(event_search_window("all", 5, 0, 10, 5), None);
     }
 }

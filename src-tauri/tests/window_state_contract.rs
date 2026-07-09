@@ -37,7 +37,7 @@ fn crt_prv_win_004_main_window_state_persistence_is_wired() {
         "desktop startup must restore main window geometry before showing the window"
     );
 
-    let main_src = fs::read_to_string(src_dir().join("main.rs")).expect("main.rs must be readable");
+    let main_src = fs::read_to_string(src_dir().join("lib.rs")).expect("lib.rs must be readable");
     assert!(
         main_src.contains("persist_main_window_state"),
         "window events must persist main window geometry"

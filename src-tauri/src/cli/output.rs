@@ -42,18 +42,6 @@ pub(crate) fn debug_ax_tree_cli_output_path_from(
 }
 
 #[cfg(debug_assertions)]
-pub(crate) fn debug_power_cli_output_path_from(
-    env_value: Option<&str>,
-) -> Option<std::path::PathBuf> {
-    let value = env_value?.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(std::path::PathBuf::from(value))
-    }
-}
-
-#[cfg(debug_assertions)]
 pub(crate) fn debug_notification_cli_marker_output_path_from(
     env_value: Option<&str>,
 ) -> Option<std::path::PathBuf> {
@@ -230,40 +218,6 @@ pub(crate) fn emit_debug_notification_cli_json(payload: &str) -> i32 {
     if let Err(error) = std::fs::write(&output_path, format!("{payload}\n")) {
         eprintln!(
             "debug-notification output write failed at {}: {error}",
-            output_path.display()
-        );
-        return 1;
-    }
-
-    0
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn emit_debug_power_cli_json(payload: &str) -> i32 {
-    println!("{payload}");
-
-    let output_path = debug_power_cli_output_path_from(
-        std::env::var("MAEKON_DEBUG_POWER_CLI_OUTPUT")
-            .ok()
-            .as_deref(),
-    );
-    let Some(output_path) = output_path else {
-        return 0;
-    };
-
-    if let Some(parent) = output_path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "debug-power output directory create failed at {}: {error}",
-                output_path.display()
-            );
-            return 1;
-        }
-    }
-
-    if let Err(error) = std::fs::write(&output_path, format!("{payload}\n")) {
-        eprintln!(
-            "debug-power output write failed at {}: {error}",
             output_path.display()
         );
         return 1;

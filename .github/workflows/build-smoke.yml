@@ -24,7 +24,12 @@ env:
   CARGO_TERM_COLOR: always
   # `-W warnings`: smoke builds must EXECUTE, not lint — the vendored
   # `patches/` crates are uncapped path deps whose macOS impls fail a global
-  # `-D` (see ci.yml `check` job for the first-party deny gate).
+  # `-D` (see ci.yml `check` job for the ubuntu first-party deny gate, and its
+  # top-of-file `RUSTFLAGS` comment for the empirical mechanism writeup).
+  # `Cargo.toml`'s `[workspace.lints.rust]` first-party `unused`/`dead_code`
+  # deny (#7743, ctd-W3 A2) is baked into the manifest, not a CI-only flag, so
+  # it applies to this workflow's builds too without needing a RUSTFLAGS
+  # change here.
   RUSTFLAGS: -W warnings
 
 permissions:
