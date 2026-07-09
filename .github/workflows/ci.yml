@@ -689,35 +689,15 @@ jobs:
         run: |
           cargo test --locked -p maekon-app --lib --no-run
           $exe = (Get-ChildItem target\debug\deps\maekon_app-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
-          Write-Host "=== test exe: $exe"
-          pip install pefile --quiet
-          @'
-          import pefile, ctypes, sys
-          from ctypes import c_void_p, c_wchar_p, c_char_p, get_last_error
-          exe = sys.argv[1]
-          pe = pefile.PE(exe, fast_load=True)
-          pe.parse_data_directories([pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
-          k = ctypes.windll.kernel32
-          LoadLibraryW = k.LoadLibraryW; LoadLibraryW.restype=c_void_p; LoadLibraryW.argtypes=[c_wchar_p]
-          GetProcAddress = k.GetProcAddress; GetProcAddress.restype=c_void_p; GetProcAddress.argtypes=[c_void_p,c_char_p]
-          missing_total = 0
-          for entry in pe.DIRECTORY_ENTRY_IMPORT:
-              dll = entry.dll.decode()
-              h = LoadLibraryW(dll)
-              if not h:
-                  print(f"CANNOT-LOAD {dll} err={get_last_error()}"); continue
-              miss = []
-              for imp in entry.imports:
-                  if imp.name:
-                      nm = imp.name.decode()
-                      if not GetProcAddress(h, nm.encode()):
-                          miss.append(nm)
-              if miss:
-                  missing_total += len(miss)
-                  print(f"MISSING in {dll}: {miss[:12]}{' ...' if len(miss)>12 else ''} (total {len(miss)})")
-          print("=== missing entrypoints total:", missing_total)
-          '@ | Set-Content check_imports.py
-          python check_imports.py $exe
+          Write-Host "=== EXPERIMENT 5: fresh path + external manifest BEFORE first run ==="
+          New-Item -ItemType Directory -Force fresh5 | Out-Null
+          Copy-Item $exe fresh5\t5.exe
+          Copy-Item src-tauri\windows-test-manifest.xml fresh5\t5.exe.manifest
+          & fresh5\t5.exe --list *> exp5.txt; Write-Host "exp5 exit=$LASTEXITCODE"; Get-Content exp5.txt -Tail 3
+          Write-Host "=== EXPERIMENT 6: fresh path, NO manifest (control) ==="
+          New-Item -ItemType Directory -Force fresh6 | Out-Null
+          Copy-Item $exe fresh6\t6.exe
+          & fresh6\t6.exe --list *> exp6.txt; Write-Host "exp6 exit=$LASTEXITCODE"; Get-Content exp6.txt -Tail 3
           exit 0
 
       - name: Run tests (default workspace)
