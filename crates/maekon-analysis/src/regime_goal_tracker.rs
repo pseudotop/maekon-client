@@ -2,6 +2,8 @@ use chrono::{Local, NaiveDate};
 use maekon_core::models::coaching::GoalProgress;
 use std::collections::HashMap;
 
+const GOAL_THRESHOLDS: [u8; 4] = [25, 50, 75, 100];
+
 /// Tracks per-regime daily time goals and fires threshold triggers
 /// at 25/50/75/100% milestones.
 ///
@@ -43,38 +45,59 @@ impl RegimeGoalTracker {
         *current = current.saturating_add(additional_minutes);
     }
 
-    /// Returns a newly crossed threshold (25, 50, 75, 100) if one was just
-    /// reached, or `None` if no new threshold was crossed.
+    /// Returns a crossed threshold without marking it as notified.
     ///
-    /// Each threshold fires exactly once per day per regime.
-    pub fn check_threshold(&mut self, regime_label: &str) -> Option<u8> {
+    /// Detection must be non-consuming because coaching guards (profile
+    /// disabled, snooze, cooldown, and effectiveness) can suppress a message
+    /// after a milestone is detected. Call `mark_threshold_notified` only after
+    /// a message has passed those guards and is about to be emitted.
+    pub fn peek_threshold(&mut self, regime_label: &str) -> Option<u8> {
         // Apply any pending date rollover before reading, so a check that lands
         // after local midnight (but before the next `record_minutes`) does not
         // fire thresholds against stale prior-day minutes.
         self.ensure_date_rollover();
+        self.next_unnotified_threshold(regime_label)
+    }
 
-        let target = match self.goals.get(regime_label) {
-            Some(&t) if t > 0 => t,
-            _ => return None,
+    /// Mark a crossed threshold as notified.
+    ///
+    /// Returns `false` when the threshold is unsupported, no longer crossed, or
+    /// was already notified by another caller.
+    pub fn mark_threshold_notified(&mut self, regime_label: &str, threshold: u8) -> bool {
+        self.ensure_date_rollover();
+
+        if !GOAL_THRESHOLDS.contains(&threshold) {
+            return false;
+        }
+        let Some(percentage) = self.current_percentage(regime_label) else {
+            return false;
         };
+        if percentage < threshold as u16 {
+            return false;
+        }
 
-        let current = self.today_minutes.get(regime_label).copied().unwrap_or(0);
-        let percentage = ((current as f64 / target as f64) * 100.0).min(u16::MAX as f64) as u16;
-
-        let thresholds = [25u8, 50, 75, 100];
         let notified = self
             .notified_thresholds
             .entry(regime_label.to_string())
             .or_default();
-
-        for &threshold in &thresholds {
-            if percentage >= threshold as u16 && !notified.contains(&threshold) {
-                notified.push(threshold);
-                return Some(threshold);
-            }
+        if notified.contains(&threshold) {
+            return false;
         }
+        notified.push(threshold);
+        notified.sort_unstable();
+        true
+    }
 
-        None
+    /// Returns a newly crossed threshold (25, 50, 75, 100) if one was just
+    /// reached, or `None` if no new threshold was crossed. This is the legacy
+    /// consuming API: callers that need guard-safe behavior should use
+    /// `peek_threshold` and `mark_threshold_notified`.
+    ///
+    /// Each threshold fires exactly once per day per regime.
+    pub fn check_threshold(&mut self, regime_label: &str) -> Option<u8> {
+        let threshold = self.peek_threshold(regime_label)?;
+        self.mark_threshold_notified(regime_label, threshold)
+            .then_some(threshold)
     }
 
     /// Current progress snapshot for a single regime.
@@ -118,6 +141,25 @@ impl RegimeGoalTracker {
         Local::now().date_naive() != self.tracking_date
     }
 
+    fn current_percentage(&self, regime_label: &str) -> Option<u16> {
+        let target = *self.goals.get(regime_label)?;
+        if target == 0 {
+            return None;
+        }
+        let current = self.today_minutes.get(regime_label).copied().unwrap_or(0);
+        Some(((current as f64 / target as f64) * 100.0).min(u16::MAX as f64) as u16)
+    }
+
+    fn next_unnotified_threshold(&self, regime_label: &str) -> Option<u8> {
+        let percentage = self.current_percentage(regime_label)?;
+        let notified = self.notified_thresholds.get(regime_label);
+
+        GOAL_THRESHOLDS.into_iter().find(|threshold| {
+            percentage >= *threshold as u16
+                && !notified.is_some_and(|values| values.contains(threshold))
+        })
+    }
+
     /// Clears counters and notified thresholds if the date has changed.
     fn ensure_date_rollover(&mut self) {
         if self.is_tracking_date_stale() {
@@ -152,6 +194,42 @@ mod tests {
         // Record 25 minutes of 100 target = 25%
         tracker.record_minutes("Deep Work", 25);
         assert_eq!(tracker.check_threshold("Deep Work"), Some(25));
+    }
+
+    #[test]
+    fn peek_threshold_does_not_consume_milestone() {
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+        tracker.record_minutes("Deep Work", 25);
+
+        assert_eq!(tracker.peek_threshold("Deep Work"), Some(25));
+        assert_eq!(
+            tracker.peek_threshold("Deep Work"),
+            Some(25),
+            "peek must not mark the threshold as notified"
+        );
+        assert!(tracker.mark_threshold_notified("Deep Work", 25));
+        assert_eq!(tracker.peek_threshold("Deep Work"), None);
+    }
+
+    #[test]
+    fn mark_threshold_notified_requires_crossed_unnotified_threshold() {
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 25),
+            "uncrossed threshold must not be committed"
+        );
+
+        tracker.record_minutes("Deep Work", 25);
+        assert!(tracker.mark_threshold_notified("Deep Work", 25));
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 25),
+            "already-notified threshold must not be committed again"
+        );
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 33),
+            "unsupported threshold must not be committed"
+        );
     }
 
     #[test]

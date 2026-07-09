@@ -17,7 +17,6 @@ pub const FILE_SECRET_STORE_NAME: &str = "maekon-secrets.json";
 const KEYCHAIN_REGISTRY_FILE_NAME: &str = "maekon-keychain-registry.json";
 
 #[derive(Clone)]
-#[allow(dead_code)] // fields exposed for diagnostic logging in future
 pub struct ProviderSecretBackendResolution {
     pub secret_store: Option<Arc<dyn SecretStore>>,
     pub backend_kind: CredentialBackendKind,

@@ -275,6 +275,10 @@ impl SqliteStorage {
             "coaching_events",
             "regime_goals",
             "coaching_effectiveness",
+            // V44: feedback-learning state (#7913 T2.1c) — user-derived learning,
+            // erased with activity data like coaching_effectiveness.
+            "feedback_scorer_tallies",
+            "regime_reaction_stats",
             // V18-V31 user-data tables (#4478): close the pre-existing right-to-erasure
             // gap. Child before parent: ai_conversation_messages CASCADEs from ai_sessions.
             // NOTE: `audit_log` / `session_audit_log` are deliberately RETAINED (NOT
@@ -316,6 +320,9 @@ impl SqliteStorage {
             // anchor in `post_migration_setup`; within-session post-erase writes self-heal
             // the singleton via `HlcClock::next`'s UPSERT.
             "hlc_clock",
+            // V42: digest downstream processing markers are user-derived activity
+            // processing state, not retained system metadata.
+            "digest_processing_markers",
         ];
 
         let tx = conn

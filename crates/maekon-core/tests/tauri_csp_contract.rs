@@ -2,11 +2,14 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 fn maekon_client_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let Some(root) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
-        .expect("maekon-core crate must live under crates/")
-        .to_path_buf()
+        .map(std::path::Path::to_path_buf)
+    else {
+        panic!("maekon-core crate must live under crates/");
+    };
+    root
 }
 
 fn read_csp(file_name: &str) -> String {

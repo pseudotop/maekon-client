@@ -1,91 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderTransportSpec {
-    pub method: String,
-    pub url: String,
-    pub auth_scheme: String,
-    pub request_shape: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderModelCatalogTransportSpec {
-    pub method: String,
-    pub url: String,
-    pub auth_scheme: String,
-    pub response_shape: String,
-    #[serde(default = "default_true")]
-    pub llm_supported: bool,
-    #[serde(default = "default_true")]
-    pub ocr_supported: bool,
-    #[serde(default)]
-    pub ocr_notice: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderHealthTransportSpec {
-    pub method: String,
-    pub url: String,
-    pub auth_scheme: String,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderModelSupportStatus {
-    Supported,
-    Unsupported,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderModelCapabilityRules {
-    #[serde(default)]
-    pub llm: ProviderModelCapabilityProfile,
-    #[serde(default)]
-    pub ocr: ProviderModelCapabilityProfile,
-    #[serde(default)]
-    pub image_input: ProviderModelCapabilityProfile,
-    #[serde(default)]
-    pub structured_output: ProviderModelCapabilityProfile,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderModelCapabilityProfile {
-    #[serde(default)]
-    pub default_support: String,
-    #[serde(default)]
-    pub allow_patterns: Vec<String>,
-    #[serde(default)]
-    pub deny_patterns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderParameterSet {
-    pub llm: ProviderParameterProfile,
-    pub ocr: ProviderParameterProfile,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProviderParameterProfile {
-    #[serde(default)]
-    pub supported: Vec<String>,
-    #[serde(default)]
-    pub unsupported: Vec<String>,
-    #[serde(default)]
-    pub notes: Vec<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
+pub use maekon_core::provider_surface_catalog::{
+    ProviderHealthTransportSpec, ProviderModelCapabilityProfile, ProviderModelCapabilityRules,
+    ProviderModelCatalogTransportSpec, ProviderModelSupportStatus, ProviderParameterProfile,
+    ProviderParameterSet, ProviderTransportSpec,
+};
 
 // NOTE: Debug is hand-written (not derived) to mask `api_key` (#5639). This is
 // a BYOK secret; a derived Debug would emit it verbatim under any `{:?}`, so a

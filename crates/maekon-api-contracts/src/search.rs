@@ -61,6 +61,25 @@ pub struct SemanticSearchQuery {
     pub mode: Option<String>,
 }
 
+/// Capability snapshot for `GET /api/semantic-search/capabilities` (#7600).
+///
+/// Lets the frontend honestly label the "Semantic" search mode toggle BEFORE
+/// the user fires a search — `mode=semantic` degrades to nothing useful (the
+/// server returns HTTP 501 `service.not_implemented`, see
+/// `SearchExecutionError::SemanticNotConfigured`) when the vector/embedding
+/// pipeline is not wired up (e.g. `maekon-embedding` compiled out, or no
+/// `EmbeddingProvider`/`VectorStore`/`AdaptiveSearchPort` configured at
+/// runtime). `keyword` mode is always available (FTS-only, no dependency on
+/// embeddings).
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SemanticSearchCapabilities {
+    /// True when `mode=semantic` would actually run a vector search instead
+    /// of returning HTTP 501. Requires both an `EmbeddingProvider` and a
+    /// vector search backend (`AdaptiveSearchPort` or `VectorStore`).
+    pub semantic_available: bool,
+}
+
 /// A single semantic search result, enriched with segment metadata.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

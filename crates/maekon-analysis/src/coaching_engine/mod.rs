@@ -9,16 +9,31 @@ pub mod tunable_params;
 pub(super) use helpers::humanize_duration;
 
 use chrono::{DateTime, Timelike, Utc};
+use lru::LruCache;
 use maekon_core::config::{CoachingConfig, PiiFilterLevel};
 use maekon_core::models::coaching::{
     trigger_type_name, CoachingMessage, CoachingProfile, GoalProgressView, TriggerType,
 };
+use maekon_core::ports::coaching_effectiveness_store::CoachingEffectivenessStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// Bound on the number of in-flight coaching messages whose extracted features
+/// are cached for a later adaptive-scorer training update (#7913 T2.1a). Keyed
+/// by `message_id`, this REPLACES the old single shared `last_features` slot,
+/// which trained on whichever message was evaluated LAST rather than the one the
+/// feedback actually references — a feedback arriving after a newer message
+/// would have trained on the wrong features. Coaching messages are infrequent
+/// (per-profile cooldowns + the 5-minute implicit window), so a small bound
+/// comfortably covers every message still awaiting explicit/implicit feedback;
+/// the LRU simply drops the oldest un-resolved entry if that bound is somehow
+/// exceeded (bounded memory — house concurrency rule).
+const MESSAGE_FEATURE_CACHE_CAP: usize = 256;
 
 use crate::coaching_template::CoachingTemplateRegistry;
 use crate::feedback_tracker::FeedbackTracker;
@@ -32,13 +47,26 @@ pub use tunable_params::TunableParams;
 /// Evaluates triggers, matches profiles, applies guards (quiet hours,
 /// cooldown, effectiveness gating), and produces `CoachingMessage` instances.
 ///
-/// This is a **pure analysis component** — it does NOT take `Arc<dyn StorageService>`.
-/// Persistence is handled by the caller (scheduler loop).
+/// This is a **pure analysis component** — it does NOT take the broad
+/// `Arc<dyn StorageService>` god object; ephemeral/event persistence (coaching
+/// events) is handled by the caller (scheduler loop). It MAY, however, hold ONE
+/// optional NARROW secondary port — [`CoachingEffectivenessStore`] (#7913 T2.1b)
+/// — so its `(profile, trigger)` effectiveness LEARNING state survives restart
+/// (before #7913 it evaporated on exit while sibling queue/regime state already
+/// persisted). `None` keeps the engine purely in-memory; every unit test runs
+/// that way.
 pub struct CoachingEngine {
     config: RwLock<CoachingConfig>,
     templates: CoachingTemplateRegistry,
     pub(super) goal_tracker: RwLock<RegimeGoalTracker>,
     pub(super) feedback_tracker: RwLock<FeedbackTracker>,
+
+    /// Optional narrow persistence port for `feedback_tracker`'s effectiveness
+    /// scores (#7913 T2.1b). `None` ⇒ in-memory only (the pre-#7913 behavior,
+    /// and every unit test). Write-through happens after each feedback mutation;
+    /// load-on-start via [`hydrate_effectiveness_from_store`]. Advisory state — a
+    /// persist/load failure is logged, never fatal.
+    pub(super) effectiveness_store: Option<Arc<dyn CoachingEffectivenessStore>>,
 
     /// Profile display name -> last alert timestamp (cooldown enforcement).
     pub(super) last_alert: RwLock<HashMap<String, DateTime<Utc>>>,
@@ -51,8 +79,13 @@ pub struct CoachingEngine {
     /// When set, `evaluate()` skips triggers for this profile until the Instant passes.
     pub(super) snoozed_until: RwLock<Option<(String, Instant)>>,
 
-    /// Per-regime-label EMA of dwell duration in seconds.
-    /// Key: regime_label (not regime_id, since IDs are opaque).
+    /// Per-regime EMA of dwell duration in seconds.
+    /// Key: `regime_id` (the opaque positional id, e.g. "regime-3"), NOT
+    /// `regime_label` — see `on_regime_change` for the write path and
+    /// `avg_regime_duration_secs`/`build_variables` for readers. This
+    /// corrects a stale comment that previously claimed the key was
+    /// `regime_label`; that mismatch caused `build_variables`'s lookup to
+    /// always miss (#7480 follow-up).
     pub(super) regime_avg_duration: RwLock<HashMap<String, f64>>,
 
     /// Count of regime transitions today. Reset at midnight.
@@ -78,9 +111,14 @@ pub struct CoachingEngine {
     /// retained for a future feedback-wiring effort and does not currently influence
     /// coaching decisions.
     pub(super) adaptive_scorer: RwLock<AdaptiveScorer>,
-    /// Last extracted features — cached for the deferred adaptive-scorer feedback
-    /// update (see `adaptive_scorer`); written but not yet consumed in production.
-    pub(super) last_features: RwLock<Option<CoachingFeatures>>,
+    /// Per-`message_id` extracted features, cached at `evaluate()` time so a later
+    /// feedback event trains the adaptive scorer on the features of the SPECIFIC
+    /// message it references (#7913 T2.1a). Bounded LRU (`MESSAGE_FEATURE_CACHE_CAP`)
+    /// — see that constant for why the old single `last_features` slot was wrong.
+    /// Entries are `pop`ed when the message is resolved (explicit thumbs or the
+    /// implicit-window sweep), so the cache normally holds only messages still
+    /// awaiting feedback.
+    pub(super) message_features: RwLock<LruCache<String, CoachingFeatures>>,
     /// Count of coaching messages shown today (feeds the adaptive-scorer feature and
     /// anti-nag logic). Reset daily via `messages_shown_date` (review4 F16).
     pub(super) messages_shown_today: RwLock<u32>,
@@ -110,6 +148,7 @@ impl CoachingEngine {
             templates: CoachingTemplateRegistry::new(),
             goal_tracker: RwLock::new(goal_tracker),
             feedback_tracker: RwLock::new(FeedbackTracker::new()),
+            effectiveness_store: None,
             last_alert: RwLock::new(HashMap::new()),
             current_regime_id: RwLock::new(None),
             current_regime_entered: RwLock::new(None),
@@ -120,7 +159,12 @@ impl CoachingEngine {
             last_app_name: RwLock::new(String::new()),
             tunable_params: RwLock::new(TunableParams::default()),
             adaptive_scorer: RwLock::new(AdaptiveScorer::default()),
-            last_features: RwLock::new(None),
+            message_features: RwLock::new(LruCache::new(
+                // `unwrap_or_else(|| panic!(..))` rather than `.expect(..)` to match
+                // the crate's NonZeroUsize construction pattern (clippy expect_used).
+                NonZeroUsize::new(MESSAGE_FEATURE_CACHE_CAP)
+                    .unwrap_or_else(|| panic!("MESSAGE_FEATURE_CACHE_CAP must be non-zero")),
+            )),
             messages_shown_today: RwLock::new(0),
             messages_shown_date: RwLock::new(chrono::Local::now().date_naive()),
             current_regime_label: RwLock::new(None),
@@ -138,6 +182,51 @@ impl CoachingEngine {
         self.pii_sanitizer = Some(sanitizer);
         self.pii_level = level;
         self
+    }
+
+    /// Attach the narrow effectiveness persistence port (#7913 T2.1b) so learned
+    /// `(profile, trigger)` effectiveness survives restart. Call
+    /// [`hydrate_effectiveness_from_store`] once after construction to load prior
+    /// state.
+    pub fn with_effectiveness_store(mut self, store: Arc<dyn CoachingEffectivenessStore>) -> Self {
+        self.effectiveness_store = Some(store);
+        self
+    }
+
+    /// Write the current effectiveness scores through to the persistence port
+    /// (#7913 T2.1b). Full-snapshot, idempotent upsert — called after every
+    /// feedback mutation so a daily-restart user keeps learned effectiveness. A
+    /// `None` store or a write failure is a silent/logged no-op: this state is
+    /// advisory and must never block the coaching UX path (ADR-017).
+    async fn persist_effectiveness(&self) {
+        let Some(store) = self.effectiveness_store.as_ref() else {
+            return;
+        };
+        let records = self.feedback_tracker.read().await.effectiveness_snapshot();
+        if let Err(e) = store.upsert_coaching_effectiveness(&records) {
+            debug!(error = %e, "coaching effectiveness persist failed (advisory, ignored)");
+        }
+    }
+
+    /// Load persisted effectiveness scores into the feedback tracker on startup
+    /// (#7913 T2.1b). Fail-safe: a missing/corrupt store starts empty (today's
+    /// behavior) and only warns — it must never panic the scheduler.
+    pub async fn hydrate_effectiveness_from_store(&self) {
+        let Some(store) = self.effectiveness_store.as_ref() else {
+            return;
+        };
+        match store.load_coaching_effectiveness() {
+            Ok(records) if !records.is_empty() => {
+                let count = records.len();
+                self.feedback_tracker
+                    .write()
+                    .await
+                    .hydrate_effectiveness(records);
+                debug!(count, "coaching effectiveness hydrated from storage");
+            }
+            Ok(_) => debug!("coaching effectiveness: no persisted state, starting fresh"),
+            Err(e) => warn!(error = %e, "coaching effectiveness load failed; starting empty"),
+        }
     }
 
     /// Main entry point: evaluate whether a coaching message should be shown.
@@ -277,9 +366,6 @@ impl CoachingEngine {
             }
         }
 
-        // Cache features for feedback update
-        *self.last_features.write().await = Some(features);
-
         // 7. Build variables
         let variables = self
             .build_variables(regime_label, regime_duration_secs, app_name)
@@ -299,12 +385,25 @@ impl CoachingEngine {
             .map(|s| s.sanitize_text(&raw_template_text, self.pii_level))
             .unwrap_or(raw_template_text);
 
+        if !self.commit_trigger(&trigger).await {
+            debug!(trigger = ?trigger, "coaching suppressed: trigger already committed");
+            return None;
+        }
+
         // 9. Record alert timestamp + increment daily counter
         self.record_alert(&profile).await;
         *self.messages_shown_today.write().await += 1;
 
         // 10. Produce message
         let message_id = maekon_core::id_generation::generate_id("cch");
+        // #7913 (T2.1a): cache THIS message's features under its own id so a later
+        // feedback event (explicit thumbs or the implicit-window sweep) trains the
+        // adaptive scorer on the features of the message it references — not on
+        // whichever message happened to be evaluated most recently.
+        self.message_features
+            .write()
+            .await
+            .put(message_id.clone(), features);
         let explanation = Self::build_explanation(&trigger, &profile);
         Some(CoachingMessage {
             message_id,
@@ -380,23 +479,32 @@ impl CoachingEngine {
         *current = config;
     }
 
-    /// Train the adaptive scorer with feedback from the last coaching message.
+    /// Train the adaptive scorer on the feedback for a SPECIFIC coaching message
+    /// (#7913 T2.1a). Looks up (and removes) the features cached for `message_id`
+    /// at `evaluate()` time and applies one SGD step toward the observed label.
     ///
-    /// NOT WIRED (review4 F15): no production path currently calls this, so the
-    /// adaptive scorer never accumulates training samples and `is_ready()` stays
-    /// false — coaching gating always uses the rule-based effectiveness path.
-    /// Intended to be invoked from the explicit/implicit feedback paths in a future
-    /// effort; retained so the wiring is a one-line change when that happens.
-    pub async fn train_on_feedback(&self, positive: bool) {
-        let features = self.last_features.read().await.clone();
+    /// WIRED (#7913): called from both feedback paths —
+    /// [`record_explicit_feedback`] (thumbs up/down) and
+    /// [`evaluate_implicit_feedback`] (the 5-minute behaviour-window sweep). Each
+    /// call moves the adaptive scorer one training sample closer to `is_ready()`,
+    /// after which `evaluate()` prefers its learned prediction over the rule-based
+    /// effectiveness gate. A `message_id` with no cached features (already
+    /// resolved, evicted, or never produced by THIS engine instance) is a
+    /// no-op — the model simply does not learn from it.
+    pub async fn train_on_feedback(&self, message_id: &str, positive: bool) {
+        let features = self.message_features.write().await.pop(message_id);
         if let Some(features) = features {
             let label = if positive { 1.0 } else { 0.0 };
-            self.adaptive_scorer.write().await.update(&features, label);
-            debug!(
-                positive,
-                train_count = self.adaptive_scorer.read().await.train_count(),
-                "adaptive scorer trained"
-            );
+            // Update and read the count under a single guard, then drop it before
+            // logging — the tracing temporaries must not be held across an
+            // `.await`, or the future stops being `Send` (CoachingPort::record_feedback
+            // requires a `Send` future).
+            let train_count = {
+                let mut scorer = self.adaptive_scorer.write().await;
+                scorer.update(&features, label);
+                scorer.train_count()
+            };
+            debug!(message_id, positive, train_count, "adaptive scorer trained");
         }
     }
 
@@ -406,11 +514,15 @@ impl CoachingEngine {
         gt.record_minutes(regime_label, minutes);
     }
 
-    /// Get the EMA of dwell duration for a regime label, in seconds.
+    /// Get the EMA of dwell duration for a regime, in seconds.
+    /// `regime_id` must be the opaque `regime_id` (NOT `regime_label`) —
+    /// `regime_avg_duration` is keyed by id (see `on_regime_change`). The
+    /// parameter was previously misnamed `regime_label`, which mirrors the
+    /// #7480 lookup-key mismatch fixed in `build_variables`.
     /// Returns 1800 (30 min) as default when no history exists.
-    pub async fn avg_regime_duration_secs(&self, regime_label: &str) -> u64 {
+    pub async fn avg_regime_duration_secs(&self, regime_id: &str) -> u64 {
         let avgs = self.regime_avg_duration.read().await;
-        avgs.get(regime_label).copied().unwrap_or(1800.0) as u64
+        avgs.get(regime_id).copied().unwrap_or(1800.0) as u64
     }
 
     /// Register a coaching message for pending feedback evaluation.
@@ -422,14 +534,33 @@ impl CoachingEngine {
         regime_id: Option<&str>,
         app_name: &str,
     ) {
-        let mut ft = self.feedback_tracker.write().await;
-        ft.register_pending(message_id, profile, trigger, regime_id, app_name);
+        {
+            let mut ft = self.feedback_tracker.write().await;
+            ft.register_pending(message_id, profile, trigger, regime_id, app_name);
+        }
+        // total_shown changed → persist so the effectiveness gate's warm-up count
+        // survives restart (#7913 T2.1b).
+        self.persist_effectiveness().await;
     }
 
     /// Record explicit feedback (thumbs-up/down) for a coaching message.
+    ///
+    /// Updates the rule-based `(profile, trigger)` effectiveness AND (#7913 T2.1a)
+    /// trains the adaptive scorer on this message's features so the two gating
+    /// paths learn from the same explicit signal. Training is gated on the
+    /// tracker actually resolving a pending message: an unknown/duplicate id
+    /// (`record_explicit` → `false`) has no effectiveness update, so it must not
+    /// train the adaptive scorer either.
     pub async fn record_explicit_feedback(&self, message_id: &str, positive: bool) {
-        let mut ft = self.feedback_tracker.write().await;
-        ft.record_explicit(message_id, positive);
+        let resolved = {
+            let mut ft = self.feedback_tracker.write().await;
+            ft.record_explicit(message_id, positive)
+        };
+        if resolved {
+            self.train_on_feedback(message_id, positive).await;
+            // Effectiveness changed → persist (#7913 T2.1b).
+            self.persist_effectiveness().await;
+        }
     }
 
     /// Evaluate implicit feedback for messages past the 5-minute window.
@@ -454,8 +585,27 @@ impl CoachingEngine {
             app_to_use = current_app.to_string();
         }
 
-        let mut ft = self.feedback_tracker.write().await;
-        ft.evaluate_implicit(regime_id_to_use.as_deref(), &app_to_use, now);
+        // Resolve the pending 5-minute windows and learn what changed. The
+        // tracker returns each resolved `(message_id, positive)` that carries a
+        // DIRECTIONAL implicit outcome (neutral is omitted — an ambiguous "no
+        // observable change" is not evidence either way and must not bias the
+        // model), so the adaptive scorer trains on the SAME implicit outcome that
+        // moved the rule-based effectiveness score (#7913 T2.1a). A neutral
+        // message's cached features are simply left to age out of the bounded LRU.
+        let resolved = {
+            let mut ft = self.feedback_tracker.write().await;
+            ft.evaluate_implicit(regime_id_to_use.as_deref(), &app_to_use, now)
+        };
+        let resolved_any = !resolved.is_empty();
+        for (message_id, positive) in resolved {
+            self.train_on_feedback(&message_id, positive).await;
+        }
+        // The implicit sweep runs every coaching tick; only touch storage when it
+        // actually resolved a window (otherwise every idle tick would rewrite the
+        // same snapshot for no change) (#7913 T2.1b).
+        if resolved_any {
+            self.persist_effectiveness().await;
+        }
     }
 
     // ── Phase 2 methods ──────────────────────────────────────────────
@@ -503,24 +653,20 @@ impl CoachingEngine {
         tracker.update_goals(goals);
     }
 
-    /// Record a user reaction to a coaching message.
-    ///
-    /// Phase 3 stub — records no state beyond a trace log. The concrete
-    /// learning algorithm (bayesian update of trigger priors, per-profile
-    /// acceptance rate) lands in a follow-up phase. Called via
-    /// `FeedbackSignalSink` from the composition root.
-    ///
-    /// Must return within ~10 ms; see ADR-017 for the latency budget.
-    pub async fn record_user_reaction(
-        &self,
-        feedback: &maekon_core::models::suggestion::SuggestionFeedback,
-    ) {
-        tracing::debug!(
-            suggestion_id = %feedback.suggestion_id,
-            feedback_type = ?feedback.feedback_type,
-            "coaching_engine: user reaction recorded (no-op learning)"
-        );
-    }
+    // NOTE (#7600): `CoachingEngine` intentionally does NOT implement a
+    // `record_user_reaction(feedback: &SuggestionFeedback)` method. Its real
+    // feedback-learning primitive is `record_explicit_feedback`/
+    // `evaluate_implicit_feedback` (both above), which are keyed by
+    // `(profile_name, trigger_name)` — i.e. reactions to a *coaching
+    // message*. A `SuggestionFeedback.suggestion_id` (accept/reject/defer of
+    // a *suggestion* card) has no correlation to a coaching message id
+    // anywhere in the codebase, so a `record_user_reaction` stub here could
+    // only ever be a no-op or a fabricated mapping — both worse than not
+    // having the method. `CompositeFeedbackSink` (src-tauri) fans
+    // `SuggestionFeedback` out to `RegimeClassifier` only; see that type's
+    // module doc comment for the rationale. If suggestion-level feedback
+    // should someday influence coaching, add a real
+    // `suggestion_id -> (profile, trigger)` correlation first.
 }
 
 #[cfg(test)]

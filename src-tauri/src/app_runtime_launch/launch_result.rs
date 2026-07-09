@@ -1,3 +1,6 @@
+use maekon_core::config::AppConfig;
+use maekon_core::config_manager::ConfigManager;
+
 use crate::runtime_state::ManagedStateBuilder;
 
 pub(crate) struct AppRuntimeLaunchResult {
@@ -33,4 +36,19 @@ pub(super) fn generate_local_auth_token() -> std::sync::Arc<str> {
         let _ = write!(token, "{byte:02x}");
     }
     std::sync::Arc::from(token)
+}
+
+pub(super) fn ensure_installation_id(config_manager: &ConfigManager, config: &mut AppConfig) {
+    if config.update.installation_id.is_some() {
+        return;
+    }
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = config_manager.update_with(|c| {
+        c.update.installation_id = Some(new_id.clone());
+        Ok(())
+    }) {
+        tracing::warn!("Failed to persist installation_id: {e}");
+    }
+    config.update.installation_id = Some(new_id);
 }

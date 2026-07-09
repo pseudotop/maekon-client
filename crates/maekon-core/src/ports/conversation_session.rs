@@ -165,6 +165,9 @@ pub trait SessionManager: Send + Sync {
     /// Reset idle timer for a session (keeps it alive during active use).
     async fn touch_session(&self, session_id: &str);
 
+    /// Record a successful completed turn and reset transient retry budget.
+    async fn record_success(&self, session_id: &str);
+
     /// Report an adapter-level failure. Returns the resulting session state.
     async fn report_failure(&self, session_id: &str, error: &CoreError) -> SessionState;
 

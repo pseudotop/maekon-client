@@ -26,7 +26,7 @@ use maekon_web::update_control::UpdateControl;
 use maekon_web::{
     AiRuntimeStatus, AnalysisRuntimeBindings, AutomationRuntimeBindings, CoreRuntimeBindings,
     IntegrationRuntimeBindings, RealtimeEvent, SessionRuntimeBindings, WebServer,
-    WebServerRuntimeBindings,
+    WebServerRequiredDeps, WebServerRuntimeBindings,
 };
 use std::path::Path;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -65,7 +65,10 @@ pub(crate) struct WebServerLaunchResult {
     /// server build time. Consumed by DashboardServiceImpl for
     /// SubscribeEvents snapshot-on-subscribe emission (spec §A A2).
     /// Read in app_runtime_launch.rs within `#[cfg(feature = "grpc-dashboard")]`.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external")),
+        allow(dead_code)
+    )]
     pub(crate) ai_runtime_status: Option<AiRuntimeStatus>,
     /// JoinHandle for the external gRPC supervisor task.
     ///
@@ -174,6 +177,12 @@ pub(crate) struct WebServerSupportContext {
     /// to a fresh registry; the composition root overrides it via
     /// `with_breaker_registry`.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// #7932 Part B: the ONE shared `Arc<PolicyClient>` from the composition root
+    /// (Port Instance Sharing). Forwarded to the `AutomationControllerBuilder` in
+    /// `configure_automation_builder` so the automation controller shares the same
+    /// durable policy store instance as the Codex approval decider. `None` leaves
+    /// the controller to build its own client (standalone/legacy path).
+    policy_client: Option<Arc<maekon_automation::policy::PolicyClient>>,
     // C1: provider credential fields — analysis-gated so BYOK/OAuth adapter
     // injection works in default builds without 'server'. Must carry the same
     // triple (store / store-set / default backend kind) the server path injects,
@@ -211,6 +220,7 @@ impl WebServerSupportContext {
                 CredentialBackendKind::Unavailable,
             ),
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            policy_client: None,
             #[cfg(all(feature = "analysis", not(feature = "server")))]
             provider_secret_store: None,
             #[cfg(all(feature = "analysis", not(feature = "server")))]
@@ -259,6 +269,18 @@ impl WebServerSupportContext {
         self
     }
 
+    /// Inject the single shared `Arc<PolicyClient>` from the composition root
+    /// (#7932 Part B, Port Instance Sharing). Forwarded to the automation
+    /// controller builder so the controller and the Codex approval decider share
+    /// one durable policy store instance within a session.
+    pub(crate) fn with_policy_client(
+        mut self,
+        policy_client: Arc<maekon_automation::policy::PolicyClient>,
+    ) -> Self {
+        self.policy_client = Some(policy_client);
+        self
+    }
+
     pub(crate) fn with_cli_health_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.cli_health_flag = Some(flag);
         self
@@ -293,6 +315,14 @@ impl WebServerSupportContext {
         // resolved OCR/LLM adapters converge on the same breaker as the rest of
         // the workspace.
         let builder = builder.with_breaker_registry(self.breaker_registry.clone());
+        // #7932 Part B: forward the single shared Arc<PolicyClient> (Port Instance
+        // Sharing) so the automation controller and the Codex approval decider
+        // hold the SAME durable policy store instance within a session.
+        let builder = if let Some(ref policy_client) = self.policy_client {
+            builder.with_policy_client(policy_client.clone())
+        } else {
+            builder
+        };
         let builder = if let Some(ref flag) = self.cli_health_flag {
             builder.with_cli_health_flag(flag.clone())
         } else {
@@ -336,29 +366,27 @@ impl WebServerSupportContext {
         builder
     }
 
+    /// #7738 D-3: sparse OPTIONAL/CONDITIONAL bundle only. `frame_storage`
+    /// (`None` on `SharedCaptureServices::build()` failure) and
+    /// `ai_runtime_status` (tracks the automation build outcome — `None` when
+    /// `config.automation.enabled = false`) are the two fields this
+    /// support-context-scoped step can populate; `erasure_requested` +
+    /// `integration`/`secrets` are filled in by the caller / the cfg branches
+    /// below. The VERIFIED-unconditional fields this function used to carry
+    /// (`frames_dir`, `config_manager`, `update_control`, the storage-derived
+    /// ports, `audit_logger`) moved to `WebServerRequiredDeps`, assembled
+    /// separately in `build_and_spawn`.
     fn build_runtime_bindings(
         &self,
-        event_tx: broadcast::Sender<RealtimeEvent>,
-        data_dir: &Path,
         frame_storage: Option<Arc<dyn FrameStoragePort>>,
-        audit_logger: Arc<AuditLogAdapter>,
         ai_runtime_status: Option<AiRuntimeStatus>,
     ) -> WebServerRuntimeBindings {
         let runtime_bindings = WebServerRuntimeBindings {
             core: CoreRuntimeBindings {
-                event_tx: Some(event_tx),
-                frames_dir: Some(data_dir.to_path_buf()),
                 frame_storage,
-                config_manager: Some(self.config_manager.clone()),
-                update_control: Some(self.update_control.clone()),
-                // Both set by the builder's build_and_spawn (where the concrete
-                // SqliteStorage Arc + the erasure signal are available); the
-                // support context has neither.
-                memory_graph: None,
                 erasure_requested: None,
             },
             automation: AutomationRuntimeBindings {
-                audit_logger: Some(audit_logger),
                 ai_runtime_status,
                 ..Default::default()
             },
@@ -631,20 +659,11 @@ impl<'a> WebServerRuntimeBuilder<'a> {
         // can read the true last-call outcome after the build-time snapshot goes stale.
         let llm_call_health = automation_build.llm_call_health.clone();
         let gui_audit_logger = web_audit_logger.clone();
-        let mut runtime_bindings = self.support_context.build_runtime_bindings(
-            self.launch_context.event_tx.clone(),
-            self.data_dir,
-            self.frame_storage,
-            Arc::new(AuditLogAdapter::new(web_audit_logger)),
-            ai_runtime_status,
-        );
+        let mut runtime_bindings = self
+            .support_context
+            .build_runtime_bindings(self.frame_storage, ai_runtime_status);
         // Wire the live LLM health handle into the automation runtime bindings.
         runtime_bindings.automation.llm_call_health = llm_call_health;
-        // ADR-023: share the single SqliteStorage Arc as the MemoryGraphPort so the
-        // digest export endpoint can render accumulated claims (Port Instance Sharing).
-        runtime_bindings.core.memory_graph =
-            Some(self.storage.clone()
-                as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>);
         // #4478 G3: hand the erasure-propagation signal to the web layer so the
         // "Delete all data" endpoint can request a device-wide DeletionEvent.
         runtime_bindings.core.erasure_requested = self.erasure_requested;
@@ -653,15 +672,88 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             recluster_requested: self.recluster_requested,
             coaching_engine: self.coaching_engine,
             model_catalog_client: provider_model_catalog_client(),
-            // #6279: share the SqliteStorage Arc as the FTS TextSearchProvider so
-            // /api/semantic-search (keyword + hybrid-degraded) is functional instead
-            // of permanently service.unavailable (Port Instance Sharing).
-            text_search: Some(self.storage.clone()
-                as Arc<dyn maekon_core::ports::text_search::TextSearchProvider>),
         };
         runtime_bindings.session = SessionRuntimeBindings {
             session_manager: self.session_manager,
         };
+
+        // #7738 D-2: assemble the VERIFIED-unconditional dependency set as ONE
+        // struct literal — every field named, no `Default`/`..` escape. Each is
+        // either an unconditional storage-derived cast (Port Instance Sharing —
+        // the SAME SqliteStorage Arc/connection as `storage`, never a second
+        // store) or an unconditional concrete value built right here.
+        let required_deps = WebServerRequiredDeps {
+            // ADR-023: share the single SqliteStorage Arc as the MemoryGraphPort
+            // so the digest export endpoint can render accumulated claims.
+            memory_graph: self.storage.clone()
+                as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+            // #7600: share the same SqliteStorage Arc as the AuditChainVerifierPort
+            // so GET /audit/verify reaches the real ADR-072 hash-chain verification
+            // (Port Instance Sharing) — mirrors verify_audit_log (the desktop IPC
+            // command), which previously had no webview caller.
+            audit_chain_verifier: self.storage.clone()
+                as Arc<dyn maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort>,
+            // #7910: share the same SqliteStorage Arc as the read-only
+            // EgressLedgerReaderPort so GET /api/privacy/egress-ledger renders
+            // the egress transparency browser ("what left this device") from the
+            // erase-retained #4803 ledger (Port Instance Sharing — same store as
+            // the scheduler's EgressLedgerSink writer, read-only view).
+            egress_ledger_reader: self.storage.clone()
+                as Arc<dyn maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort>,
+            // #7678 D2: share the same underlying SQLite connection Arc as the
+            // RegimeStoragePort (via the same wrapper the composition root uses
+            // in `app_runtime_launch/regime_wiring.rs`) so the dashboard digest
+            // endpoint can resolve human-readable regime labels instead of
+            // leaking the opaque positional regime_id ("regime-N") into the
+            // timeline (Port Instance Sharing — same SqliteStorage-backed
+            // connection, not a second store).
+            regime_storage: Arc::new(
+                maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
+                    self.storage.connection_arc(),
+                ),
+            ) as Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort>,
+            // #6279: share the SqliteStorage Arc as the FTS TextSearchProvider so
+            // /api/semantic-search (keyword + hybrid-degraded) is functional
+            // instead of permanently service.unavailable (Port Instance Sharing).
+            text_search: self.storage.clone()
+                as Arc<dyn maekon_core::ports::text_search::TextSearchProvider>,
+            audit_logger: Arc::new(AuditLogAdapter::new(web_audit_logger)),
+            config_manager: self.support_context.config_manager.clone(),
+            update_control: self.support_context.update_control.clone(),
+            local_auth_token: self.launch_context.local_auth_token.clone(),
+            frames_dir: self.data_dir.to_path_buf(),
+            pii_sanitizer: Arc::new(maekon_vision::privacy::VisionPiiSanitizer)
+                as Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer>,
+            runtime_log_provider: Arc::new(TauriRuntimeLogProvider::new(
+                log_helpers::runtime_log_dir(),
+            )) as Arc<dyn RuntimeLogProvider>,
+            system_info_provider: Arc::new(SysInfoProvider::new())
+                as Arc<dyn SystemInfoProvider>,
+            provider_cli_diagnostics: Arc::new(ProviderCliDiagnosticsSnapshotProvider::new(
+                self.support_context.secret_backend_capabilities.clone(),
+            ))
+                as Arc<
+                    dyn maekon_web::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider,
+                >,
+        };
+
+        // D-5 (#7738): the type-level split (D-1/D-2/D-3 above) makes the 8
+        // `debug_assert!`s this block used to run structurally impossible to
+        // violate — those fields no longer exist as `Option` (they are plain
+        // fields on `WebServerRequiredDeps`, and the compiler enforces every
+        // one is provided in the literal above). What remains is the
+        // regression-tripwire LOG of the fields that stay legitimately
+        // runtime-conditional by design (automation toggle, capture-degrade)
+        // so a silent drift is still visible in Grafana/Loki, not just a
+        // missing compiler error.
+        info!(
+            automation_controller = automation_controller_for_state.is_some(),
+            ai_runtime_status = runtime_bindings.automation.ai_runtime_status.is_some(),
+            frame_storage = runtime_bindings.core.frame_storage.is_some(),
+            session_manager = runtime_bindings.session.session_manager.is_some(),
+            erasure_requested = runtime_bindings.core.erasure_requested.is_some(),
+            "WebServer wiring: conditional dependency map (None is correct when disabled/degraded)"
+        );
 
         // Spawn GUI audit forwarder if the automation controller has a GUI service.
         //
@@ -683,13 +775,7 @@ impl<'a> WebServerRuntimeBuilder<'a> {
         let web_storage = self.storage.clone();
         let web_config = self.config.web.clone();
         let web_port_state = self.launch_context.web_port_state.clone();
-        let local_auth_token = self.launch_context.local_auth_token.clone();
-        let provider_cli_diagnostics = Arc::new(ProviderCliDiagnosticsSnapshotProvider::new(
-            self.support_context.secret_backend_capabilities.clone(),
-        ))
-            as Arc<
-                dyn maekon_web::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider,
-            >;
+        let web_event_tx = self.launch_context.event_tx.clone();
         #[cfg(feature = "grpc-dashboard-external")]
         let ext_live_for_web = self.external_grpc_live.take();
         #[cfg(feature = "grpc-dashboard-external")]
@@ -698,20 +784,11 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             if let Some(controller) = automation_controller {
                 runtime_bindings.automation.automation_controller = Some(controller);
             }
-            let web_server = WebServer::new(web_storage, web_config)
+            let web_server = WebServer::new(web_storage, web_event_tx, web_config)
                 .with_bound_port_state(web_port_state)
-                .with_local_auth_token(local_auth_token)
                 .with_bound_port_notifier(bound_port_tx)
-                .with_runtime_bindings(runtime_bindings)
-                .with_pii_sanitizer(Arc::new(maekon_vision::privacy::VisionPiiSanitizer)
-                    as Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer>)
-                .with_runtime_log_provider(Arc::new(TauriRuntimeLogProvider::new(
-                    log_helpers::runtime_log_dir(),
-                )) as Arc<dyn RuntimeLogProvider>)
-                .with_system_info_provider(
-                    Arc::new(SysInfoProvider::new()) as Arc<dyn SystemInfoProvider>
-                )
-                .with_provider_cli_diagnostics_provider(provider_cli_diagnostics);
+                .with_required_deps(required_deps)
+                .with_runtime_bindings(runtime_bindings);
             // Task 7.1: wire LiveExternalConfig + ExternalMetrics into AppState so the
             // GET /api/external-grpc/live-config endpoint can serve live snapshots.
             #[cfg(feature = "grpc-dashboard-external")]
@@ -926,7 +1003,6 @@ mod gui_audit_forwarder_tests {
 mod web_server_server_support_tests {
     use super::*;
     use maekon_api_contracts::integration::IntegrationOutboundRuntimeStatus;
-    use std::sync::Arc;
 
     /// regression_risk #1 (compile path): verifies `WebServerServerSupport::new`
     /// accepts all 11 positional parameters in the order the `build_runtime_bindings`
@@ -977,14 +1053,8 @@ mod web_server_server_support_tests {
         // No server support injected — all integration bindings must stay None.
         let ctx = WebServerSupportContext::new(config_manager, update_control, status);
 
-        let (event_tx, _) = tokio::sync::broadcast::channel(1);
-        let data_dir = temp.path().to_path_buf();
-        let logger = Arc::new(tokio::sync::RwLock::new(
-            maekon_automation::audit::AuditLogger::new(32, 16),
-        ));
-        let audit_adapter = Arc::new(maekon_automation::audit::AuditLogAdapter::new(logger));
-
-        let bindings = ctx.build_runtime_bindings(event_tx, &data_dir, None, audit_adapter, None);
+        // #7738 D-3: build_runtime_bindings shrank to (frame_storage, ai_runtime_status).
+        let bindings = ctx.build_runtime_bindings(None, None);
 
         // Without server support all 7 integration slots must remain None.
         assert!(bindings.integration.integration_auth.is_none());
@@ -1047,14 +1117,8 @@ mod provider_secrets_binding_tests {
                 None,
             );
 
-        let (event_tx, _) = tokio::sync::broadcast::channel(1);
-        let data_dir = temp.path().to_path_buf();
-        let logger = Arc::new(tokio::sync::RwLock::new(
-            maekon_automation::audit::AuditLogger::new(32, 16),
-        ));
-        let audit_adapter = Arc::new(maekon_automation::audit::AuditLogAdapter::new(logger));
-
-        let bindings = ctx.build_runtime_bindings(event_tx, &data_dir, None, audit_adapter, None);
+        // #7738 D-3: build_runtime_bindings shrank to (frame_storage, ai_runtime_status).
+        let bindings = ctx.build_runtime_bindings(None, None);
 
         assert!(
             bindings.secrets.secret_store.is_some(),

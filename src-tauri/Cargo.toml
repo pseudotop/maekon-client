@@ -9,6 +9,20 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
+# #7734 (Wave-3 B2 of #7744): thin `[lib]` target so integration tests can
+# `use maekon_app::...` real types instead of parsing/duplicating source. Name
+# and path are Cargo defaults once `src/lib.rs` exists (package name
+# `maekon-app` -> lib name `maekon_app`), so only the non-default setting is
+# declared here. `doctest = false`: this is an internal app library with no
+# published-API contract, not a crate meant to carry runnable doc examples —
+# activating doctests over ~1,200 LOC of composition-root code would add a
+# brand-new failure surface orthogonal to this enabler.
+[lib]
+doctest = false
+
 [[bin]]
 name = "maekon"
 path = "src/main.rs"
@@ -48,7 +62,6 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
@@ -74,7 +87,6 @@ base64 = { workspace = true }
 thiserror = { workspace = true }
 keyring = { workspace = true }
 image = { workspace = true }
-lru = { workspace = true }
 raw-window-handle = "0.6"
 
 # D13-v2c: generate-external-cert subcommand (feature-gated, external-grpc-tools)
@@ -206,6 +218,12 @@ serde_json = { workspace = true }
 image = { workspace = true }
 base64 = { workspace = true }
 uuid = { workspace = true }
+# #7735 E-1: `SyncEngine::has_egress_sink` (moved to maekon-core) is gated
+# `cfg(any(test, feature = "test-support"))`. maekon-core is a [dependencies]
+# entry above (compiled without our `cfg(test)`), so the `agent_runtime::sync_setup`
+# regression test needs the dev-only `test-support` feature to see the method.
+# Dual-declaration idiom precedent: crates/maekon-analysis/Cargo.toml.
+maekon-core = { workspace = true, features = ["test-support"] }
 # #4928: cross-family erasure 통합 테스트의 GuardedConnection funnel 직접 INSERT 용
 # (rusqlite::Error 타입 명시). 이미 maekon-storage 를 통한 transitive 의존이다.
 rusqlite = { workspace = true }
@@ -218,3 +236,12 @@ serial_test = "3"
 # D13-v2c: generate-external-cert test helpers.
 x509-parser = { workspace = true }
 jsonwebtoken = { workspace = true }
+# #7735 E-2: `FocusAnalyzer::on_app_switch` (test-only convenience wrapper) is
+# gated `#[cfg(any(test, feature = "test-support"))]` in maekon-analysis and
+# used from this crate's own `#[cfg(test)]` tests (e.g.
+# scheduler/loops/helpers/mod.rs). Plain `#[cfg(test)]` on the maekon-analysis
+# side would not activate for a normal (non-test) dependency build, so the
+# feature must be enabled here via `[dev-dependencies]` only (#7729 house
+# pattern; never via `[dependencies]`, so it never reaches the shipped
+# binary).
+maekon-analysis = { workspace = true, features = ["test-support"] }

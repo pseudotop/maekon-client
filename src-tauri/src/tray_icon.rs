@@ -18,7 +18,6 @@ const BASE_2X: &[u8] = include_bytes!("../icons/tray_icon@2x.png");
 
 /// Tray icon state — determines which shape overlay is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Disabled variant used once tray.rs migrates to TrayIconState
 pub enum TrayIconState {
     /// Actively capturing — unmodified base logo.
     Active,
@@ -50,7 +49,8 @@ impl From<bool> for TrayIconState {
 pub fn status_icon(state: impl Into<TrayIconState>) -> (Vec<u8>, u32, u32) {
     let state = state.into();
     // Safe: BASE_2X is a compile-time embedded PNG via include_bytes!().
-    let base = ::image::load_from_memory(BASE_2X).expect("embedded tray icon must be valid PNG");
+    let base = ::image::load_from_memory(BASE_2X)
+        .unwrap_or_else(|error| panic!("embedded tray icon must be valid PNG: {error}"));
     let mut img = base.to_rgba8();
     let w = img.width();
     let h = img.height();

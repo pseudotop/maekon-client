@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import type { ProviderSurfaceSpec } from '../../../api/client'
-import { Badge, Button, Card, CardTitle, FieldHint, GuidancePanel, Select } from '../../../components/ui'
+import { Alert, Badge, Button, Card, CardTitle, FieldHint, GuidancePanel, Select } from '../../../components/ui'
 import {
   findFeatureCapability,
   maturityBadgeColor,
@@ -68,6 +68,12 @@ export default function AiAutomationTab() {
   const isCliAccessMode = formData.ai_provider.access_mode === 'ProviderSubscriptionCli'
   const isOAuthAccessMode = isProviderOAuthAccessMode(formData.ai_provider.access_mode)
   const showOcrRemoteSection = formData.ai_provider.ocr_provider === 'Remote'
+  // #7678: fail-closed while the capability snapshot query is still loading (`undefined`) or
+  // unavailable outside Tauri, mirroring the `audioCompiled` gate (#7600). Local OCR silently
+  // returns zero regions forever on a platform/build with no compiled OCR engine (e.g. every
+  // shipped Linux build today), so surface that instead of staying silent.
+  const ocrLocalUnavailable =
+    formData.ai_provider.ocr_provider === 'Local' && featureCapabilities?.ocr_available !== true
   const showLlmSurfaceSection = formData.ai_provider.llm_provider === 'Remote' || isCliAccessMode
   const currentLlmFeature = currentLlmSurface
     ? findFeatureCapability(featureCapabilities, currentLlmSurface.surface_id)
@@ -698,6 +704,11 @@ export default function AiAutomationTab() {
                 <option value="Remote">{t('settingsAutomation.providerRemote')}</option>
               </Select>
               <FieldHint>{t('settingsAutomation.ocrProviderHint')}</FieldHint>
+              {ocrLocalUnavailable && (
+                <Alert variant="warning" title={t('settingsAutomation.ocrLocalUnavailableTitle')} className="mt-2">
+                  {t('settingsAutomation.ocrLocalUnavailableDescription')}
+                </Alert>
+              )}
             </div>
             <div>
               <label htmlFor="settings-llm-provider" className={form.label}>

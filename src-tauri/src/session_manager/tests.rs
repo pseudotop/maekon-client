@@ -49,7 +49,12 @@ async fn list_sessions_empty() {
 /// `HttpApiSession`s created by this manager converge on the one shared breaker.
 #[test]
 fn with_breaker_registry_shares_the_exact_arc() {
-    let shared = maekon_network::CircuitBreakerRegistry::new();
+    // #7947: reference the crate-local alias, not `maekon_network` directly, so
+    // this test compiles in the `--no-default-features` cell too. Under
+    // `analysis` the alias IS `maekon_network::CircuitBreakerRegistry` (a
+    // re-export), so this is byte-for-byte identical there while also keeping
+    // the Arc-identity coverage alive when the network dep is absent.
+    let shared = crate::breaker_registry::CircuitBreakerRegistry::new();
     // Default-constructed manager gets its OWN fresh registry...
     let default_mgr = test_manager_without_guard();
     assert!(
@@ -791,6 +796,35 @@ async fn report_failure_transient_auto_recovers() {
 }
 
 #[tokio::test]
+async fn record_success_resets_retry_count() {
+    let mgr = test_manager_without_guard();
+    let id = "fake-success-session".to_string();
+
+    {
+        let mut sessions = mgr.sessions.write().await;
+        sessions.insert(
+            id.clone(),
+            ManagedSession {
+                session: Arc::new(FakeConvSession { external: false }),
+                state: SessionState::Active,
+                created_at: std::time::Instant::now(),
+                last_active: std::time::Instant::now(),
+                retry_count: 2,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+            },
+        );
+    }
+
+    mgr.record_success(&id).await;
+
+    let sessions = mgr.sessions.read().await;
+    let managed = sessions.get(&id).unwrap();
+    assert_eq!(managed.retry_count, 0);
+    assert_eq!(managed.state, SessionState::Active);
+}
+
+#[tokio::test]
 async fn report_failure_permanent_sets_failed() {
     let mgr = test_manager();
     let config = SessionConfig {
@@ -1203,7 +1237,13 @@ fn codex_exec_fallback_builds_session_from_exec_sibling() {
 // They PROVE the trust + `--version` probe + userAgent-version extraction all run
 // ON the spawn path (dead-writer ban), and pin the graceful-degrade invariant:
 // version drift / out-of-allowlist path WARN-AND-PROCEED, never gate (#4871).
-#[cfg(unix)]
+//
+// #7947: gated on `analysis` as well as `unix` — `connect_codex_app_server` (the
+// chokepoint these drive) is itself `#[cfg(feature = "analysis")]`, so without
+// this gate the whole module failed to compile in the `--no-default-features`
+// test cell (E0599). No default-cell coverage is lost: `analysis` is on for the
+// default, `server`, and `grpc` builds where this path exists.
+#[cfg(all(unix, feature = "analysis"))]
 mod codex_app_server_wired {
     use super::*;
     use crate::subprocess_provider::{

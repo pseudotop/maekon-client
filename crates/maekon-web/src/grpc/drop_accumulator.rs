@@ -125,10 +125,13 @@ impl Default for DropAccumulator {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)]
 impl DropAccumulator {
     /// Test-only: set last_emit_at to a past Instant to make the throttle
     /// interval test deterministic without sleeping.
+    // Its only caller lives in `#[cfg(test)] mod tests` below; a `--lib`
+    // check with only the `test-support` feature enabled (no `cfg(test)`)
+    // compiles this method without that caller, so it reads as dead there.
+    #[allow(dead_code)]
     pub(super) fn set_last_emit_at_for_test(&mut self, t: Instant) {
         self.last_emit_at = Some(t);
     }

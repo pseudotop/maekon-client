@@ -102,22 +102,18 @@ pub(crate) fn assemble_search_response(
 mod tests {
     use super::*;
     use maekon_core::models::storage_records::{SearchEventRow, SearchFrameRow};
+    use maekon_core::ports::pii_sanitizer::FakePiiSanitizer;
     use std::sync::Arc;
 
-    struct MockSanitizer;
-
-    impl PiiSanitizer for MockSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            text.replace("user@example.com", "[EMAIL]")
-                .replace("admin@company.org", "[EMAIL]")
-                .replace("admin@corp.io", "[EMAIL]")
-                .replace("홍길동@회사.com", "[EMAIL]")
-                .replace("010-1234-5678", "[PHONE]")
-        }
-    }
-
     fn sanitizer() -> Option<Arc<dyn PiiSanitizer>> {
-        Some(Arc::new(MockSanitizer))
+        Some(Arc::new(
+            FakePiiSanitizer::new()
+                .with_email("user@example.com")
+                .with_email("admin@company.org")
+                .with_email("admin@corp.io")
+                .with_email("홍길동@회사.com")
+                .with_phone("010-1234-5678"),
+        ))
     }
 
     fn make_event_row(window_title: Option<&str>, data: Option<&str>) -> SearchEventRow {

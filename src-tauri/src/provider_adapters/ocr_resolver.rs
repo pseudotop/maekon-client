@@ -12,7 +12,12 @@ use maekon_core::provider_surface::ProviderSurfaceTransport;
 #[cfg(feature = "analysis")]
 use maekon_network::ai_ocr_client::RemoteOcrProvider;
 use maekon_vision::local_ocr_provider::LocalOcrProvider;
-use tracing::{info, warn};
+// `info!` is only emitted from the `native-vision`-gated branch below
+// (`best_local_ocr_provider`'s native-OCR-found log); `warn!` is used
+// unconditionally, so only `info` needs the matching feature gate.
+#[cfg(feature = "native-vision")]
+use tracing::info;
+use tracing::warn;
 
 use maekon_api_contracts::provider_specs::SurfaceCapabilityKind;
 

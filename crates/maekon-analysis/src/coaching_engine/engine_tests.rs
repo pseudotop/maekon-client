@@ -153,6 +153,56 @@ async fn evaluate_fires_goal_threshold() {
 }
 
 #[tokio::test]
+async fn goal_threshold_suppressed_by_cooldown_is_not_consumed() {
+    let mut goals = HashMap::new();
+    goals.insert("Coding".to_string(), 100);
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "GoalTracker".to_string(),
+        ProfileConfig {
+            enabled: true,
+            min_interval_secs: 600,
+        },
+    );
+
+    let engine = CoachingEngine::new(CoachingConfig {
+        enabled: true,
+        profiles,
+        regime_goals: goals,
+        ..CoachingConfig::default()
+    });
+    engine.on_regime_change(Some("regime-a")).await;
+    engine.record_minutes("Coding", 25).await;
+
+    {
+        let mut last_alert = engine.last_alert.write().await;
+        last_alert.insert("GoalTracker".to_string(), Utc::now());
+    }
+
+    let suppressed = engine
+        .evaluate(Some("regime-a"), "Coding", 60, 1800, false, "VS Code")
+        .await;
+    assert!(
+        suppressed.is_none(),
+        "cooldown should suppress the first threshold attempt"
+    );
+
+    clear_cooldowns(&engine).await;
+    let retried = engine
+        .evaluate(Some("regime-a"), "Coding", 60, 1800, false, "VS Code")
+        .await
+        .expect("suppressed threshold should remain available after cooldown clears");
+
+    match retried.trigger {
+        TriggerType::GoalThreshold {
+            threshold_percent, ..
+        } => assert_eq!(threshold_percent, 25),
+        other => panic!("expected retained GoalThreshold, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn profile_matching_context_restore() {
     let engine = CoachingEngine::new(enabled_config());
 
@@ -711,5 +761,316 @@ fn generates_explanation_for_overstay() {
     assert!(
         explanation.contains("TimeAware"),
         "should contain profile name"
+    );
+}
+
+// ── #7913 T2.1a: AdaptiveScorer training wiring + per-message correlation ──
+
+use maekon_core::models::coaching::trigger_type_name;
+
+/// Drive one real coaching message through `evaluate()` (a RegimeTransition from
+/// `from` to `to`), register it for feedback exactly as the scheduler does, and
+/// return it. Clears cooldowns so it fires every time regardless of the previous
+/// tick's per-profile cooldown.
+async fn fire_and_register(
+    engine: &CoachingEngine,
+    from: &str,
+    to: &str,
+) -> maekon_core::models::coaching::CoachingMessage {
+    engine.on_regime_change(Some(from)).await;
+    clear_cooldowns(engine).await;
+    let msg = engine
+        .evaluate(Some(to), "Communication", 60, 1800, false, "Slack")
+        .await
+        .expect("a regime transition must fire a coaching message");
+    engine
+        .register_pending_feedback(
+            &msg.message_id,
+            &format!("{:?}", msg.profile),
+            &trigger_type_name(&msg.trigger),
+            Some(to),
+            "Slack",
+        )
+        .await;
+    msg
+}
+
+/// #7913 T2.1a — `train_on_feedback` now has a LIVE production call path
+/// (`record_explicit_feedback`), so `is_ready()` is finally reachable: 50 real
+/// explicit feedbacks flip it from false to true. Before this change nothing
+/// ever called `AdaptiveScorer::update`, so `is_ready()` was permanently false
+/// and the adaptive gate was dead code.
+#[tokio::test]
+async fn explicit_feedback_makes_adaptive_scorer_ready() {
+    let engine = CoachingEngine::new(enabled_config());
+    assert!(
+        !engine.adaptive_scorer.read().await.is_ready(),
+        "a fresh adaptive scorer must not be ready"
+    );
+
+    // MIN_TRAINING_SAMPLES (adaptive_scorer.rs) is 50. Each iteration produces a
+    // fresh transition trigger by alternating the regime pair.
+    for i in 0..50u32 {
+        let (from, to) = if i % 2 == 0 {
+            ("regime-a", "regime-b")
+        } else {
+            ("regime-b", "regime-a")
+        };
+        let msg = fire_and_register(&engine, from, to).await;
+        engine.record_explicit_feedback(&msg.message_id, true).await;
+    }
+
+    let scorer = engine.adaptive_scorer.read().await;
+    assert!(
+        scorer.is_ready(),
+        "50 explicit feedbacks through the live path must flip is_ready() (train_count={})",
+        scorer.train_count()
+    );
+    assert_eq!(
+        scorer.train_count(),
+        50,
+        "each resolved explicit feedback must train exactly once"
+    );
+}
+
+/// #7913 T2.1a — per-message feature correlation. The OLD shared `last_features`
+/// slot trained on whichever message was evaluated LAST, so feedback arriving
+/// after a newer message trained on the WRONG features. Now features are keyed
+/// by `message_id`: feedback for an EARLIER message resolves THAT message's
+/// cached features even after a newer, differently-featured message was produced.
+#[tokio::test]
+async fn explicit_feedback_trains_referenced_message_not_the_latest() {
+    let engine = CoachingEngine::new(enabled_config());
+
+    // Message A — context 1.
+    let msg_a = fire_and_register(&engine, "regime-a", "regime-b").await;
+
+    // Message B — DIFFERENT context, produced AFTER A and NOT yet fed back. Under
+    // the old shared-slot design this would have overwritten A's features.
+    engine.on_regime_change(Some("regime-b")).await;
+    clear_cooldowns(&engine).await;
+    let msg_b = engine
+        .evaluate(Some("regime-c"), "Deep Work", 7200, 1800, true, "VS Code")
+        .await
+        .expect("B fires");
+    engine
+        .register_pending_feedback(
+            &msg_b.message_id,
+            &format!("{:?}", msg_b.profile),
+            &trigger_type_name(&msg_b.trigger),
+            Some("regime-c"),
+            "VS Code",
+        )
+        .await;
+
+    // Both messages' features are cached under their own ids.
+    assert_ne!(msg_a.message_id, msg_b.message_id);
+    assert!(
+        engine
+            .message_features
+            .read()
+            .await
+            .peek(&msg_a.message_id)
+            .is_some(),
+        "A's features must be cached"
+    );
+    assert!(
+        engine
+            .message_features
+            .read()
+            .await
+            .peek(&msg_b.message_id)
+            .is_some(),
+        "B's features must be cached"
+    );
+
+    // Feed back on A (the EARLIER message).
+    engine
+        .record_explicit_feedback(&msg_a.message_id, true)
+        .await;
+
+    // A's features were consumed (popped); B's remain untouched — the training
+    // step used the referenced message's features, not the latest message's.
+    assert!(
+        engine
+            .message_features
+            .read()
+            .await
+            .peek(&msg_a.message_id)
+            .is_none(),
+        "A's feedback must consume A's features"
+    );
+    assert!(
+        engine
+            .message_features
+            .read()
+            .await
+            .peek(&msg_b.message_id)
+            .is_some(),
+        "A's feedback must NOT touch B's features (per-message correlation)"
+    );
+    assert_eq!(
+        engine.adaptive_scorer.read().await.train_count(),
+        1,
+        "exactly one training step from A's feedback"
+    );
+}
+
+/// #7913 T2.1a — feedback for a message that was never registered (unknown id)
+/// must NOT train the adaptive scorer: `record_explicit` returns `false`, so
+/// there is neither an effectiveness update nor a training step.
+#[tokio::test]
+async fn explicit_feedback_for_unknown_message_does_not_train() {
+    let engine = CoachingEngine::new(enabled_config());
+    engine
+        .record_explicit_feedback("cch_never_shown", true)
+        .await;
+    assert_eq!(
+        engine.adaptive_scorer.read().await.train_count(),
+        0,
+        "feedback for an unregistered message must not train the adaptive scorer"
+    );
+}
+
+/// #7913 T2.1a — the implicit-window sweep also trains the adaptive scorer on
+/// each resolved directional outcome. A message whose regime changed within the
+/// window resolves ImplicitPositive → one training step.
+#[tokio::test]
+async fn implicit_feedback_trains_adaptive_scorer() {
+    let engine = CoachingEngine::new(enabled_config());
+    let msg = fire_and_register(&engine, "regime-a", "regime-b").await;
+
+    // Sweep 5+ minutes later with a CHANGED regime → ImplicitPositive.
+    let later = Utc::now() + chrono::Duration::seconds(301);
+    engine
+        .evaluate_implicit_feedback(Some("regime-z"), "VS Code", later)
+        .await;
+
+    assert_eq!(
+        engine.adaptive_scorer.read().await.train_count(),
+        1,
+        "an implicit-positive resolution must train the adaptive scorer once"
+    );
+    assert!(
+        engine
+            .message_features
+            .read()
+            .await
+            .peek(&msg.message_id)
+            .is_none(),
+        "the resolved message's features must be consumed"
+    );
+}
+
+// ── #7913 T2.1b: coaching effectiveness persistence (write-through + hydrate) ──
+
+use maekon_core::error::CoreError;
+use maekon_core::models::coaching::CoachingEffectivenessRecord;
+use maekon_core::ports::coaching_effectiveness_store::CoachingEffectivenessStore;
+use std::sync::Arc;
+
+/// In-memory `CoachingEffectivenessStore` double that upserts per
+/// `(profile, trigger)` key — mirrors the SQLite adapter's convergence without a
+/// database, so the round-trip can be exercised as pure domain logic.
+#[derive(Default)]
+struct FakeEffectivenessStore {
+    rows: std::sync::Mutex<Vec<CoachingEffectivenessRecord>>,
+}
+
+impl CoachingEffectivenessStore for FakeEffectivenessStore {
+    fn upsert_coaching_effectiveness(
+        &self,
+        records: &[CoachingEffectivenessRecord],
+    ) -> Result<(), CoreError> {
+        let mut rows = self.rows.lock().unwrap();
+        for r in records {
+            if let Some(existing) = rows
+                .iter_mut()
+                .find(|e| e.profile_name == r.profile_name && e.trigger_type == r.trigger_type)
+            {
+                *existing = r.clone();
+            } else {
+                rows.push(r.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn load_coaching_effectiveness(&self) -> Result<Vec<CoachingEffectivenessRecord>, CoreError> {
+        Ok(self.rows.lock().unwrap().clone())
+    }
+}
+
+/// #7913 T2.1b — learned `(profile, trigger)` effectiveness survives a restart:
+/// session 1 records explicit feedback (write-through), a FRESH session 2 with
+/// the same store hydrates it back. Before #7913 this state was RAM-only and
+/// evaporated on every restart.
+#[tokio::test]
+async fn coaching_effectiveness_survives_restart_via_store() {
+    let store = Arc::new(FakeEffectivenessStore::default());
+
+    // Session 1 — record explicit NEGATIVE feedback on a shown message.
+    {
+        let engine = CoachingEngine::new(enabled_config()).with_effectiveness_store(store.clone());
+        let msg = fire_and_register(&engine, "regime-a", "regime-b").await;
+        engine
+            .record_explicit_feedback(&msg.message_id, false)
+            .await;
+    }
+
+    // The write-through persisted the row.
+    let persisted = store.load_coaching_effectiveness().unwrap();
+    assert_eq!(
+        persisted.len(),
+        1,
+        "explicit feedback must be written through"
+    );
+    assert!(
+        persisted[0].negative_feedback > 0.0,
+        "negative feedback must be recorded"
+    );
+
+    // Session 2 — a FRESH engine hydrates the prior effectiveness.
+    {
+        let engine = CoachingEngine::new(enabled_config()).with_effectiveness_store(store.clone());
+        engine.hydrate_effectiveness_from_store().await;
+
+        let hydrated = engine
+            .feedback_tracker
+            .read()
+            .await
+            .effectiveness_snapshot();
+        assert_eq!(
+            hydrated.len(),
+            1,
+            "prior effectiveness must be loaded on start"
+        );
+        assert_eq!(hydrated[0].profile_name, persisted[0].profile_name);
+        assert!(
+            (hydrated[0].negative_feedback - persisted[0].negative_feedback).abs() < f32::EPSILON,
+            "hydrated negative feedback must match what was persisted"
+        );
+    }
+}
+
+/// #7913 T2.1b — with NO store the engine stays purely in-memory (the pre-#7913
+/// behavior, and every other unit test): feedback records, nothing persists,
+/// nothing panics.
+#[tokio::test]
+async fn coaching_engine_without_store_is_pure_in_memory() {
+    let engine = CoachingEngine::new(enabled_config());
+    let msg = fire_and_register(&engine, "regime-a", "regime-b").await;
+    engine.record_explicit_feedback(&msg.message_id, true).await;
+    // hydrate is a no-op with no store — must not panic.
+    engine.hydrate_effectiveness_from_store().await;
+    assert_eq!(
+        engine
+            .feedback_tracker
+            .read()
+            .await
+            .effectiveness_snapshot()
+            .len(),
+        1,
+        "in-memory effectiveness still works without a store"
     );
 }

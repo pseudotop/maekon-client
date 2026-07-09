@@ -6,7 +6,7 @@
 use super::types::{
     DebugAutostartCliCommand, DebugAxTreeCliCommand, DebugNotificationBackend,
     DebugNotificationCliCommand, DebugPermissionsCliCommand, DebugPermissionsRuntimeCliCommand,
-    DebugPointerCaptureCliCommand, DebugPointerCaptureRuntimeCliCommand, DebugPowerCliCommand,
+    DebugPointerCaptureCliCommand, DebugPointerCaptureRuntimeCliCommand,
 };
 
 #[cfg(debug_assertions)]
@@ -241,30 +241,6 @@ where
         Some("status") => Some(DebugNotificationCliCommand::Status),
         Some("request") => Some(DebugNotificationCliCommand::Request),
         Some("send") => Some(DebugNotificationCliCommand::Send),
-        _ => None,
-    }
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn debug_power_cli_command_from<I, S>(
-    args: I,
-    env_value: Option<&str>,
-) -> Option<DebugPowerCliCommand>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    if !gate_enabled(env_value) {
-        return None;
-    }
-
-    let mut args = args.into_iter();
-    if args.next().as_ref().map(AsRef::as_ref) != Some("debug-power") {
-        return None;
-    }
-
-    match args.next().as_ref().map(AsRef::as_ref) {
-        Some("capture-burst-audit") => Some(DebugPowerCliCommand::CaptureBurstAudit),
         _ => None,
     }
 }

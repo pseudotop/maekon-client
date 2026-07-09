@@ -28,6 +28,30 @@ pub struct FeedbackRetryQueue {
 }
 
 /// Retry delays: 5s, 15s, 45s, 2m, 5m (3x multiplier, capped at 5m)
+///
+/// #7725 evaluation: intentionally KEPT as a fixed schedule rather than
+/// adopted onto `maekon_network::resilience::jittered_backoff_delay`. Three
+/// reasons the semantics do not map cleanly:
+/// (1) growth rate — this schedule grows ~3x per step (5/15/45/120/300s),
+///     while the shared helper's curve is a strict `base * 2^attempt`
+///     doubling; there is no `(base, max)` pair that reproduces this exact
+///     5-step table via doubling.
+/// (2) determinism — `next_retry_at` is PERSISTED to SQLite and re-read
+///     across a restart (`#6095`'s rescheduled-record contract), and this
+///     module's tests (`retry_delay_schedule`, `enqueue_sets_retry_delay`,
+///     `retry_failed_returns_rescheduled_record_for_persistence`) pin EXACT
+///     delay values. `jittered_backoff_delay` always injects randomness with
+///     no way to disable it, which would make those exact-value assertions
+///     flaky.
+/// (3) `maekon-network` (where the shared helpers live) is not a dependency
+///     of this crate (`maekon-suggestion`), and this module has no other
+///     reason to take that dependency on.
+/// `maekon_core::backoff::exponential_delay` (the deterministic, no-jitter
+/// building block `jittered_backoff_delay` is layered on top of) was also
+/// considered — but it is a pure `base * 2^attempt` doubling curve too, so
+/// point (1) still applies; it cannot express this table without becoming a
+/// second special-cased lookup wrapping it, which would not reduce
+/// duplication over the explicit `match` below.
 fn retry_delay(attempt: u32) -> Duration {
     let secs = match attempt {
         0 => 5,

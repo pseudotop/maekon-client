@@ -5,6 +5,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::context::WindowBounds;
 use maekon_core::models::focused_element::{AccessibilityElement, ElementRect};
 use maekon_core::models::frame::ImagePayload;
+use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_core::ports::vision::CaptureRequest;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -181,6 +182,7 @@ enum ManualCaptureGateError {
     CaptureDisabled,
     ScreenCaptureConsentMissing,
     CapturePaused,
+    ExcludedApp,
     PrivacyGateBlocked,
 }
 
@@ -195,6 +197,9 @@ impl ManualCaptureGateError {
                 "Manual capture blocked because screen capture consent is missing"
             }
             Self::CapturePaused => "Manual capture blocked because capture is paused",
+            Self::ExcludedApp => {
+                "Manual capture blocked because the active app is excluded by privacy settings"
+            }
             Self::PrivacyGateBlocked => {
                 "Manual capture blocked by active-hours, tracking-schedule, or power privacy gate"
             }
@@ -209,15 +214,9 @@ impl From<ManualCaptureGateError> for IpcError {
 }
 
 fn manual_capture_permissions(state: &AppState) -> ConsentPermissions {
-    // effective_permissions() only returns permissions when the status is Valid —
-    // Expired/UpdateRequired return all-false, so a stale consent record is also
-    // handled fail-closed (Task 3).
-    state
-        .capture
-        .consent_manager
-        .as_ref()
-        .map(|manager| manager.effective_permissions())
-        .unwrap_or_default()
+    // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+    // consent record AND on a missing ConsentManager (#7728).
+    ConsentGate::from_ref(state.capture.consent_manager.as_ref()).permissions_snapshot()
 }
 
 /// Own-field gate (#4802): gates the OCR text of a manual capture on the
@@ -257,6 +256,8 @@ fn manual_capture_privacy_gate(
     permissions: &ConsentPermissions,
     capture_paused: bool,
     window_bounds: Option<&WindowBounds>,
+    app_name: &str,
+    window_title: &str,
 ) -> Result<(), ManualCaptureGateError> {
     if window_bounds.is_none() {
         return Err(ManualCaptureGateError::WindowBoundsRequired);
@@ -269,6 +270,12 @@ fn manual_capture_privacy_gate(
     }
     if capture_paused {
         return Err(ManualCaptureGateError::CapturePaused);
+    }
+    // #7909 (T1.1): the exclusion policy applies at capture time, and the manual
+    // IPC surfaces (manual capture / scene analysis / AX tree) are capture
+    // surfaces — user-initiated does not override "excluded from capture".
+    if maekon_vision::privacy::should_exclude_by_policy(&config.privacy, app_name, window_title) {
+        return Err(ManualCaptureGateError::ExcludedApp);
     }
 
     if crate::scheduler::capture_permitted_now(config, permissions, capture_paused) {
@@ -318,6 +325,8 @@ pub async fn trigger_manual_capture(
         &permissions,
         state.capture_paused.load(Ordering::Relaxed),
         window_bounds.as_ref(),
+        &app_name,
+        &window_title,
     )?;
 
     let request = CaptureRequest {
@@ -487,6 +496,8 @@ pub async fn extract_ax_tree(
         &permissions,
         state.capture_paused.load(Ordering::Relaxed),
         active_window_bounds.as_ref(),
+        &active_app_name,
+        &active_window_title,
     ) {
         return Ok(AccessibilityTreeSnapshotResponse {
             ok: false,
@@ -760,17 +771,15 @@ pub async fn analyze_current_scene(
         &permissions,
         state.capture_paused.load(Ordering::Relaxed),
         window_bounds.as_ref(),
+        &app_name,
+        &window_title,
     )?;
 
     // 2. Accessibility extraction (optional)
     let accessibility = if let Some(ref extractor) = state.capture.accessibility_extractor {
         let pii_level = state.config.privacy.pii_filter_level;
-        let has_consent = state
-            .capture
-            .consent_manager
-            .as_ref()
-            .map(|cm| cm.effective_permissions().full_text_extraction)
-            .unwrap_or(false);
+        let has_consent =
+            ConsentGate::from_ref(state.capture.consent_manager.as_ref()).may_extract_full_text();
         match extractor
             .extract_focused_element(pii_level, has_consent)
             .await
@@ -913,8 +922,14 @@ mod tests {
         let mut config = AppConfig::default_config();
         config.vision.capture_enabled = false;
 
-        let result =
-            manual_capture_privacy_gate(&config, &allowed_permissions(), false, Some(&bounds()));
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            false,
+            Some(&bounds()),
+            "TextEdit",
+            "Untitled",
+        );
 
         assert_eq!(result, Err(ManualCaptureGateError::CaptureDisabled));
     }
@@ -929,6 +944,8 @@ mod tests {
             &ConsentPermissions::default(),
             false,
             Some(&bounds()),
+            "TextEdit",
+            "Untitled",
         );
 
         assert_eq!(
@@ -942,8 +959,14 @@ mod tests {
         let mut config = AppConfig::default_config();
         config.vision.capture_enabled = true;
 
-        let result =
-            manual_capture_privacy_gate(&config, &allowed_permissions(), true, Some(&bounds()));
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            true,
+            Some(&bounds()),
+            "TextEdit",
+            "Untitled",
+        );
 
         assert_eq!(result, Err(ManualCaptureGateError::CapturePaused));
     }
@@ -953,7 +976,14 @@ mod tests {
         let mut config = AppConfig::default_config();
         config.vision.capture_enabled = true;
 
-        let result = manual_capture_privacy_gate(&config, &allowed_permissions(), false, None);
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            false,
+            None,
+            "TextEdit",
+            "Untitled",
+        );
 
         assert_eq!(result, Err(ManualCaptureGateError::WindowBoundsRequired));
     }
@@ -963,10 +993,56 @@ mod tests {
         let mut config = AppConfig::default_config();
         config.vision.capture_enabled = true;
 
-        let result =
-            manual_capture_privacy_gate(&config, &allowed_permissions(), false, Some(&bounds()));
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            false,
+            Some(&bounds()),
+            "TextEdit",
+            "Untitled",
+        );
 
         assert_eq!(result, Ok(()));
+    }
+
+    /// #7909 (T1.1): the exclusion policy applies at capture time — a manual,
+    /// user-initiated capture of an app on the excluded list must be blocked.
+    #[test]
+    fn manual_capture_gate_blocks_excluded_app() {
+        let mut config = AppConfig::default_config();
+        config.vision.capture_enabled = true;
+        config.privacy.excluded_apps = vec!["Slack".to_string()];
+
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            false,
+            Some(&bounds()),
+            "Slack",
+            "General",
+        );
+
+        assert_eq!(result, Err(ManualCaptureGateError::ExcludedApp));
+    }
+
+    /// #7909 (T1.1): `auto_exclude_sensitive` defaults on, so sensitive apps
+    /// (password managers, banking) are blocked from manual capture without
+    /// any explicit list entry.
+    #[test]
+    fn manual_capture_gate_auto_blocks_sensitive_app() {
+        let mut config = AppConfig::default_config();
+        config.vision.capture_enabled = true;
+
+        let result = manual_capture_privacy_gate(
+            &config,
+            &allowed_permissions(),
+            false,
+            Some(&bounds()),
+            "1Password",
+            "Unlock",
+        );
+
+        assert_eq!(result, Err(ManualCaptureGateError::ExcludedApp));
     }
 
     /// Own-field gate (#4802): when only screen_capture is granted

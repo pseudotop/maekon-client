@@ -26,6 +26,9 @@ struct OidcDeviceAuthorizationResponse {
 #[derive(Debug, Deserialize)]
 struct OidcTokenSuccessResponse {
     access_token: String,
+    // Part of the RFC 6749 token response wire shape (typically "Bearer");
+    // not read back today (the OIDC device-flow port only forwards
+    // `access_token`), kept so the DTO documents the full response.
     #[allow(dead_code)]
     token_type: String,
     #[serde(default)]

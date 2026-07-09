@@ -64,7 +64,12 @@ pub struct CredentialBinding {
 
 // ── ExternalApiEndpoint ────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// NOTE: Debug is hand-written (not derived) to mask `api_key` (#7600, mirroring
+// the ProviderModelsRequest #5639 / AudioSettings #7066 mitigation). This is
+// the SOURCE config struct backing the already-hardened DTO twins; a derived
+// Debug would emit the cleartext BYOK secret verbatim under any `{:?}`, so a
+// single error-path `?config` could leak it to a file/OTel log sink.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExternalApiEndpoint {
     pub endpoint: String,
     #[serde(default)]
@@ -78,6 +83,20 @@ pub struct ExternalApiEndpoint {
     pub surface_id: Option<String>,
     #[serde(default)]
     pub credential: Option<CredentialBinding>,
+}
+
+impl std::fmt::Debug for ExternalApiEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalApiEndpoint")
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("provider_type", &self.provider_type)
+            .field("surface_id", &self.surface_id)
+            .field("credential", &self.credential)
+            .finish()
+    }
 }
 
 // ── OcrValidationConfig ────────────────────────────────────────────
@@ -433,5 +452,29 @@ mod tests {
             "managed_oauth"
         );
         assert_eq!(CredentialAuthMode::CliBridge.to_string(), "cli_bridge");
+    }
+
+    #[test]
+    fn external_api_endpoint_debug_redacts_api_key() {
+        let endpoint = ExternalApiEndpoint {
+            endpoint: "https://api.example.com".to_string(),
+            api_key: "sk-secret-byok-key-value".to_string(),
+            model: Some("gpt-5".to_string()),
+            timeout_secs: 30,
+            provider_type: AiProviderType::OpenAi,
+            surface_id: None,
+            credential: None,
+        };
+        let rendered = format!("{endpoint:?}");
+        assert!(
+            !rendered.contains("sk-secret-byok-key-value"),
+            "Debug must not leak the api_key: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "api_key must render as [REDACTED]: {rendered}"
+        );
+        // Non-secret fields must still be visible for diagnostics.
+        assert!(rendered.contains("https://api.example.com"));
     }
 }

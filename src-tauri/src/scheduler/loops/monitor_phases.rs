@@ -1,9 +1,39 @@
 use chrono::Utc;
+use maekon_core::config::{AppConfig, PrivacyConfig};
 use maekon_core::models::context::{UserContext, WindowBounds};
 use maekon_core::models::focused_element::{AccessibilityElement, FocusedElementInfo};
 use maekon_core::ports::vision::FrameProcessor;
 use maekon_vision::ring_buffer::{CaptureRingBuffer, RingFrame};
 use std::time::{Duration, Instant};
+
+/// Capture-time exclusion decision for one monitor tick (#7909, T1.1).
+///
+/// The UI promises excluded/sensitive apps are excluded *from capture*, not
+/// merely from egress, so the monitor loop gates every content-capture surface
+/// of a tick (AX text extraction, ring thumbnail, trigger capture, post-event
+/// forced capture, detection re-analysis) on this flag. Metadata context/window
+/// events still flow (regime tracking depends on them) — they are PII-sanitized
+/// at source and the egress boundary applies the same policy before upload.
+///
+/// A missing config snapshot falls back to `PrivacyConfig::default()`, whose
+/// `auto_exclude_sensitive = true` keeps the sensitive-app auto-detection
+/// fail-safe rather than fail-open.
+pub(super) fn tick_capture_excluded(
+    config: Option<&AppConfig>,
+    app_name: &str,
+    window_title: &str,
+) -> bool {
+    match config {
+        Some(cfg) => {
+            maekon_vision::privacy::should_exclude_by_policy(&cfg.privacy, app_name, window_title)
+        }
+        None => maekon_vision::privacy::should_exclude_by_policy(
+            &PrivacyConfig::default(),
+            app_name,
+            window_title,
+        ),
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ActiveWindowSnapshot {
@@ -92,7 +122,6 @@ mod tests {
             timestamp: Utc::now(),
             active_window: None,
             processes: vec![],
-            mouse_position: None,
         };
 
         let snapshot = ActiveWindowSnapshot::from_context(&ctx);
@@ -120,7 +149,6 @@ mod tests {
                 bounds: Some(bounds),
             }),
             processes: vec![],
-            mouse_position: None,
         };
 
         let snapshot = ActiveWindowSnapshot::from_context(&ctx);
@@ -145,5 +173,42 @@ mod tests {
         assert!(!cadence.should_capture(start + Duration::from_secs(1), throttle));
         assert!(!cadence.should_capture(start + Duration::from_secs(4), throttle));
         assert!(cadence.should_capture(start + Duration::from_secs(5), throttle));
+    }
+
+    #[test]
+    fn tick_capture_excluded_matches_configured_excluded_app() {
+        let mut cfg = AppConfig::default_config();
+        cfg.privacy = PrivacyConfig {
+            excluded_apps: vec!["Slack".to_string()],
+            ..Default::default()
+        };
+
+        assert!(tick_capture_excluded(Some(&cfg), "Slack", "General"));
+        assert!(!tick_capture_excluded(Some(&cfg), "Chrome", "Google"));
+    }
+
+    #[test]
+    fn tick_capture_excluded_auto_excludes_sensitive_app_by_default() {
+        let cfg = AppConfig::default_config();
+        assert!(tick_capture_excluded(Some(&cfg), "1Password", "Unlock"));
+    }
+
+    #[test]
+    fn tick_capture_excluded_without_config_stays_fail_safe_for_sensitive_apps() {
+        // No config snapshot → PrivacyConfig::default() (auto_exclude_sensitive
+        // = true) must still auto-exclude sensitive apps.
+        assert!(tick_capture_excluded(None, "1Password", "Unlock"));
+        assert!(!tick_capture_excluded(None, "Chrome", "Google"));
+    }
+
+    #[test]
+    fn tick_capture_excluded_respects_auto_exclude_opt_out() {
+        let mut cfg = AppConfig::default_config();
+        cfg.privacy = PrivacyConfig {
+            auto_exclude_sensitive: false,
+            ..Default::default()
+        };
+
+        assert!(!tick_capture_excluded(Some(&cfg), "1Password", "Unlock"));
     }
 }

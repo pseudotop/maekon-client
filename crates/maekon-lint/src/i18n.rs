@@ -126,8 +126,33 @@ pub(crate) fn scan_i18n(repo_root: &Path, ignore_paths: &[String]) -> Vec<Findin
         // missing-key / template-literal validation still applies.
         let allow_hardcoded = content.contains("lint:allow-hardcoded-ui");
 
+        // MLINT-C1: cross-line block-comment state, threaded across the whole file
+        // (one bool per file, advanced one line at a time). Without this, a
+        // continuation line inside a multi-line `/* ... */` or `/** ... */` block
+        // that does not itself start with a comment marker (`//`, `*`, `/*`) is
+        // parsed as LIVE code by every per-line scanner below — see
+        // `scan_block_comment_line` for the state machine.
+        let mut in_block_comment = false;
+
         for (line_idx, line) in content.lines().enumerate() {
-            for key in extract_translation_keys(line) {
+            // MLINT-C2 (PR #7577 re-review follow-up): scan the MASKED line —
+            // every block-comment byte span (delimiters included) replaced with
+            // equal-byte-width spaces — instead of whole-line-skipping every
+            // line that STARTED inside a block comment. MLINT-C1's original
+            // `if advance_block_comment_state(...) { continue; }` over-corrected:
+            // a line that CLOSES a multi-line block comment mid-line and then
+            // carries LIVE code after `*/` (e.g. `*/ const label =
+            // t('missing.key');`) was discarded in its ENTIRETY, so a genuinely
+            // missing i18n key or a hardcoded UI literal after the close
+            // silently escaped the gate. Masking preserves `line`'s original
+            // byte length (so `column` stays accurate) while only blanking the
+            // parts that are actually inside `/* ... */`; a line fully inside a
+            // block comment naturally masks to all spaces and therefore still
+            // yields zero findings, so MLINT-C1's "fully skip" behavior for
+            // that case is preserved without a special-cased early `continue`.
+            let (_, masked_line) = scan_block_comment_line(line, &mut in_block_comment);
+
+            for key in extract_translation_keys(&masked_line) {
                 if !has_translation_key(&en_keys, &key) {
                     findings.push(Finding::new(
                         Severity::Error,
@@ -143,7 +168,7 @@ pub(crate) fn scan_i18n(repo_root: &Path, ignore_paths: &[String]) -> Vec<Findin
 
             // Fix #15: emit Warning-severity notices for template-literal t()
             // call sites so they are visible rather than silently skipped.
-            for (column, prefix, full_call) in extract_template_literal_t_calls(line) {
+            for (column, prefix, full_call) in extract_template_literal_t_calls(&masked_line) {
                 findings.push(Finding::new(
                     Severity::Warning,
                     "template-literal-i18n-key",
@@ -162,7 +187,7 @@ pub(crate) fn scan_i18n(repo_root: &Path, ignore_paths: &[String]) -> Vec<Findin
                 && !is_hardcoded_ui_copy_fixture(&file)
                 && !allow_hardcoded
             {
-                for (column, message) in detect_hardcoded_ui_literals(line) {
+                for (column, message) in detect_hardcoded_ui_literals(&masked_line) {
                     findings.push(Finding::new(
                         Severity::Warning,
                         "hardcoded-ui-copy",
@@ -178,6 +203,127 @@ pub(crate) fn scan_i18n(repo_root: &Path, ignore_paths: &[String]) -> Vec<Findin
     }
 
     findings
+}
+
+/// Advances the per-file `in_block_comment` cross-line state past `line` and
+/// returns `(entering, masked_line)`.
+///
+/// `entering` is the ENTERING state (whether `line` started already inside a
+/// block comment). A block comment is entered when a line opens `/*` (or
+/// `/**`) without a matching `*/` later on the SAME line, and the state
+/// remains "inside" through every subsequent line up to and including the
+/// line bearing the closing `*/`.
+///
+/// `masked_line` is `line` with every block-comment byte span — the `/*`/`*/`
+/// delimiters themselves plus everything between them — replaced by ASCII
+/// spaces of the SAME byte width as the character(s) they replace. This makes
+/// `masked_line` byte-length-IDENTICAL to `line`, so any column/byte offset a
+/// scanner (`extract_translation_keys`, `extract_template_literal_t_calls`,
+/// `detect_hardcoded_ui_literals`) computes against `masked_line` is directly
+/// comparable to the equivalent offset against `line`. Live code — including
+/// live code BEFORE an opening `/*` on the same line, and live code AFTER a
+/// closing `*/` on the same line — is copied through unmasked.
+///
+/// MLINT-C2 (PR #7577 re-review follow-up): this replaces the previous
+/// whole-line skip that `scan_i18n` applied whenever `entering == true`. That
+/// approach over-corrected — a line CLOSING a multi-line block comment
+/// mid-line and then carrying LIVE code after `*/` was discarded in its
+/// ENTIRETY, so a genuinely missing i18n key or hardcoded UI literal after the
+/// close silently escaped validation (a false negative that defeated the
+/// gate's purpose). A line fully inside a block comment naturally masks to
+/// all spaces, which still yields zero findings from every scanner, so the
+/// original MLINT-C1 "fully skip" behavior is preserved for that case without
+/// a special-cased early `continue`.
+///
+/// A `//` line comment masks nothing past its `//` marker — the remainder is
+/// copied through verbatim — because `extract_translation_keys` and
+/// `extract_template_literal_t_calls` each independently stop scanning at
+/// `//` via their own per-line logic (matching pre-existing, out-of-scope
+/// behavior for line comments; only block-comment masking is this function's
+/// job).
+///
+/// String/template-literal delimiters (`"`, `'`, `` ` ``) are tracked while
+/// NOT inside a block comment so a `/*` embedded in a runtime string is never
+/// mistaken for a comment opener. Quote state does not itself persist across
+/// lines (TS/TSX single/double-quoted strings cannot span lines; a multi-line
+/// template literal is a pre-existing, out-of-scope approximation shared with
+/// `extract_translation_keys`'s own single-line quote tracking).
+///
+/// Mirrors the sibling cross-line state machine in
+/// `non_english::first_non_english_in_comment_with_state` (MLINT-C1: the i18n
+/// scanners lacked the equivalent cross-line comment-state extension that
+/// `non_english.rs` already has).
+fn scan_block_comment_line(line: &str, in_block_comment: &mut bool) -> (bool, String) {
+    let entering_in_block_comment = *in_block_comment;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut masked = String::with_capacity(line.len());
+    let mut i = 0usize;
+    let mut string_delim: Option<char> = None;
+    let mut escaped = false;
+
+    while i < chars.len() {
+        let (_, ch) = chars[i];
+
+        if *in_block_comment {
+            masked.push_str(&" ".repeat(ch.len_utf8()));
+            if ch == '*' && chars.get(i + 1).is_some_and(|(_, next)| *next == '/') {
+                masked.push(' '); // the closing '/' is always 1-byte ASCII
+                *in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if let Some(delim) = string_delim {
+            masked.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delim {
+                string_delim = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Line comment: the rest of the line is a comment — nothing further to
+        // track (no block-comment opener can meaningfully follow on this line).
+        // Copied through unmasked: `extract_translation_keys` /
+        // `extract_template_literal_t_calls` independently stop at `//`.
+        if ch == '/' && chars.get(i + 1).is_some_and(|(_, next)| *next == '/') {
+            let (byte_pos, _) = chars[i];
+            masked.push_str(&line[byte_pos..]);
+            break;
+        }
+        if ch == '/' && chars.get(i + 1).is_some_and(|(_, next)| *next == '*') {
+            *in_block_comment = true;
+            masked.push_str("  "); // '/' and '*' are both 1-byte ASCII
+            i += 2;
+            continue;
+        }
+        if matches!(ch, '"' | '\'' | '`') {
+            string_delim = Some(ch);
+            escaped = false;
+            masked.push(ch);
+            i += 1;
+            continue;
+        }
+
+        masked.push(ch);
+        i += 1;
+    }
+
+    (entering_in_block_comment, masked)
+}
+
+/// Thin backward-compatible wrapper preserving the pre-MLINT-C2 signature
+/// (bare ENTERING boolean, no masked line) for direct unit-test callers.
+#[cfg(test)]
+fn advance_block_comment_state(line: &str, in_block_comment: &mut bool) -> bool {
+    scan_block_comment_line(line, in_block_comment).0
 }
 
 fn is_hardcoded_ui_copy_fixture(path: &Path) -> bool {
@@ -313,67 +459,99 @@ pub(crate) fn flatten_json_keys(prefix: &str, value: &Value, keys: &mut BTreeSet
 /// visible to the validator rather than silently ignored.
 pub(crate) fn extract_translation_keys(line: &str) -> Vec<String> {
     let mut keys = Vec::new();
-    let mut search_from = 0usize;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut i = 0usize;
+    let mut string_delim: Option<char> = None;
+    let mut escaped = false;
+    let mut block_comment = false;
 
-    while search_from < line.len() {
-        let Some(rel_pos) = line[search_from..].find("t(") else {
-            break;
-        };
-        let pos = search_from + rel_pos;
+    while i < chars.len() {
+        let ch = chars[i].1;
 
-        if pos > 0 {
-            let prev = line[..pos].chars().next_back().unwrap_or(' ');
-            if prev.is_ascii_alphanumeric() || prev == '_' {
-                search_from = pos + 2;
-                continue;
-            }
-        }
-
-        let mut idx = pos + 2;
-        while idx < line.len() {
-            let ch = line[idx..].chars().next().unwrap_or(' ');
-            if ch.is_whitespace() {
-                idx += ch.len_utf8();
+        if block_comment {
+            if ch == '*' && chars.get(i + 1).is_some_and(|(_, next)| *next == '/') {
+                block_comment = false;
+                i += 2;
             } else {
-                break;
+                i += 1;
             }
-        }
-
-        if idx >= line.len() {
-            break;
-        }
-
-        let quote = line[idx..].chars().next().unwrap_or(' ');
-        if quote != '"' && quote != '\'' {
-            search_from = pos + 2;
             continue;
         }
 
-        idx += quote.len_utf8();
-        let start = idx;
-        let mut escaped = false;
-
-        while idx < line.len() {
-            let ch = line[idx..].chars().next().unwrap_or(' ');
+        if let Some(delim) = string_delim {
             if escaped {
                 escaped = false;
-                idx += ch.len_utf8();
-                continue;
-            }
-            if ch == '\\' {
+            } else if ch == '\\' {
                 escaped = true;
-                idx += ch.len_utf8();
-                continue;
+            } else if ch == delim {
+                string_delim = None;
             }
-            if ch == quote {
-                keys.push(line[start..idx].to_string());
-                idx += ch.len_utf8();
-                break;
-            }
-            idx += ch.len_utf8();
+            i += 1;
+            continue;
         }
 
-        search_from = idx;
+        if ch == '/' && chars.get(i + 1).is_some_and(|(_, next)| *next == '/') {
+            break;
+        }
+        if ch == '/' && chars.get(i + 1).is_some_and(|(_, next)| *next == '*') {
+            block_comment = true;
+            i += 2;
+            continue;
+        }
+        if matches!(ch, '"' | '\'' | '`') {
+            string_delim = Some(ch);
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if ch == 't' && chars.get(i + 1).is_some_and(|(_, next)| *next == '(') {
+            if i > 0 {
+                let prev = chars[i - 1].1;
+                if prev.is_ascii_alphanumeric() || prev == '_' {
+                    i += 1;
+                    continue;
+                }
+            }
+
+            let mut j = i + 2;
+            while j < chars.len() && chars[j].1.is_whitespace() {
+                j += 1;
+            }
+            let Some((quote_byte, quote)) = chars.get(j).copied() else {
+                break;
+            };
+            if quote != '"' && quote != '\'' {
+                i += 1;
+                continue;
+            }
+
+            let start = quote_byte + quote.len_utf8();
+            j += 1;
+            let mut key_escaped = false;
+            while j < chars.len() {
+                let (byte, current) = chars[j];
+                if key_escaped {
+                    key_escaped = false;
+                    j += 1;
+                    continue;
+                }
+                if current == '\\' {
+                    key_escaped = true;
+                    j += 1;
+                    continue;
+                }
+                if current == quote {
+                    keys.push(line[start..byte].to_string());
+                    break;
+                }
+                j += 1;
+            }
+            i = j.saturating_add(1);
+            continue;
+        }
+
+        i += 1;
     }
 
     keys
@@ -679,4 +857,87 @@ pub(crate) fn contains_human_text(text: &str) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{advance_block_comment_state, extract_translation_keys};
+
+    #[test]
+    fn extract_translation_keys_ignores_comments_and_string_literals() {
+        assert!(extract_translation_keys("// t('missing.key')").is_empty());
+        assert!(extract_translation_keys("const sample = \"t('missing.key')\";").is_empty());
+        assert_eq!(
+            extract_translation_keys("const label = t('real.key');"),
+            vec!["real.key".to_string()]
+        );
+    }
+
+    // ── MLINT-C1: cross-line block-comment state ─────────────────────────────
+
+    /// A line that opens `/*` without closing it on the same line must report
+    /// "not currently inside a comment" (nothing before it was skipped) while
+    /// leaving `in_block_comment` set to `true` for the NEXT line.
+    #[test]
+    fn advance_block_comment_state_opens_unterminated_block() {
+        let mut in_block_comment = false;
+        let entering = advance_block_comment_state("/**", &mut in_block_comment);
+        assert!(!entering, "line opening the comment is itself live code");
+        assert!(
+            in_block_comment,
+            "state must carry over as 'inside' for the next line"
+        );
+    }
+
+    /// A continuation line with NO comment-marker prefix (the exact MLINT-C1
+    /// gap) is reported as "entering already inside a comment" so callers skip
+    /// it, and state remains `true` because it does not close the block.
+    #[test]
+    fn advance_block_comment_state_continuation_line_without_prefix_stays_inside() {
+        let mut in_block_comment = true;
+        let entering =
+            advance_block_comment_state("   <div title=\"Hello\">", &mut in_block_comment);
+        assert!(entering, "continuation line must be reported as in-comment");
+        assert!(in_block_comment, "block comment is still open");
+    }
+
+    /// The line bearing the closing `*/` is ALSO reported as "entering inside a
+    /// comment" (so it is excluded like every other continuation line), and
+    /// state flips to `false` for the line AFTER it.
+    #[test]
+    fn advance_block_comment_state_closing_line_still_skipped_then_exits() {
+        let mut in_block_comment = true;
+        let entering = advance_block_comment_state(" */", &mut in_block_comment);
+        assert!(entering, "the closing line itself is still comment content");
+        assert!(!in_block_comment, "state clears for subsequent lines");
+    }
+
+    /// A `/*` embedded inside a runtime string literal must NOT be mistaken
+    /// for a comment opener (string-literal awareness, mirrors the existing
+    /// quote tracking already used by `extract_translation_keys`).
+    #[test]
+    fn advance_block_comment_state_ignores_slash_star_inside_string() {
+        let mut in_block_comment = false;
+        let entering = advance_block_comment_state(
+            "const pattern = \"a /* not a comment */ b\";",
+            &mut in_block_comment,
+        );
+        assert!(!entering);
+        assert!(
+            !in_block_comment,
+            "the /* and */ inside the string cancel out; the trailing `;` is live code, \
+             so the line must not leave the scanner stuck inside a comment"
+        );
+    }
+
+    /// A normal live line with no comment markers at all leaves state
+    /// untouched (`false` in, `false` out).
+    #[test]
+    fn advance_block_comment_state_live_line_untouched() {
+        let mut in_block_comment = false;
+        let entering =
+            advance_block_comment_state("const label = t('real.key');", &mut in_block_comment);
+        assert!(!entering);
+        assert!(!in_block_comment);
+    }
 }

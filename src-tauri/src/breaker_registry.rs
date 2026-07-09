@@ -30,16 +30,24 @@ pub(crate) use maekon_network::CircuitBreakerRegistry;
 /// (`--no-default-features`). It is never passed to any network adapter — every
 /// real consumer is gated behind `analysis`/`server` — so it carries no state
 /// and does nothing.
+///
+/// `pub`, not `pub(crate)`: several pass-through signatures that carry this
+/// type (`resolve_ai_provider_adapters`, `build_automation_runtime`,
+/// `SessionManagerImpl::with_breaker_registry`) are themselves `pub` — a
+/// `pub(crate)` type reachable from a `pub` fn trips rustc's
+/// `private_interfaces` lint under `--no-default-features` (the `analysis`-on
+/// build does not hit this because the alias above resolves to the real,
+/// already-`pub` upstream type). #7743 ctd-W3 A2b follow-up.
 #[cfg(not(feature = "analysis"))]
 #[derive(Debug, Default)]
-pub(crate) struct CircuitBreakerRegistry;
+pub struct CircuitBreakerRegistry;
 
 #[cfg(not(feature = "analysis"))]
 impl CircuitBreakerRegistry {
     /// Mirror the upstream `CircuitBreakerRegistry::new()` constructor signature
     /// (returns `Arc<Self>`) so the existing pass-through call sites compile
     /// unchanged.
-    pub(crate) fn new() -> std::sync::Arc<Self> {
+    pub fn new() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self)
     }
 }

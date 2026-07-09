@@ -110,6 +110,15 @@ impl IntegrationInboxTransportClient for HttpsIntegrationInboxTransportClient {
         timeout: Duration,
     ) -> Result<bool, CoreError> {
         let Some(binding) = self.session_bindings.get(session_id).await else {
+            // #7617 (MED finding #3 / RL-01 sibling): park instead of
+            // returning instantly. The upstream inbox_coordinator readiness
+            // check normally prevents reaching this branch with a genuinely
+            // unready session, but a transient binding-map race (e.g. a
+            // concurrent reconnect evicting this session's binding) could
+            // still hit it -- an instant `Ok(false)` here would reproduce the
+            // same busy-spin as the coordinator-level bug this call is meant
+            // to guard against.
+            tokio::time::sleep(timeout).await;
             return Ok(false);
         };
 

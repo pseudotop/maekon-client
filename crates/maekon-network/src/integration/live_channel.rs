@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,6 +61,12 @@ pub struct WebSocketIntegrationSessionChannel {
     prompt_notify: Arc<Notify>,
     /// Notified on drop/close to unblock the read_loop task (F-RR-29).
     cancel_notify: Arc<Notify>,
+    /// #7617 (HIGH finding #1): set by `read_loop` on any UNEXPECTED exit
+    /// (peer Close frame, stream EOF, or a read error) so callers can fail
+    /// fast instead of writing to / waiting on a socket that is already dead.
+    /// Deliberately NOT set on the `cancel_notify` exit path (explicit
+    /// `close()` or `Drop`), which already tears the channel down on purpose.
+    disconnected: Arc<AtomicBool>,
 }
 
 impl WebSocketIntegrationSessionChannel {
@@ -90,6 +97,8 @@ impl WebSocketIntegrationSessionChannel {
         // F-RR-29: cancel_notify signals read_loop to exit when the channel is
         // dropped or explicitly closed, preventing a leaked detached task.
         let cancel_notify = Arc::new(Notify::new());
+        // #7617: liveness flag flipped by read_loop on any unexpected exit.
+        let disconnected = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(Self::read_loop(
             reader,
@@ -97,6 +106,7 @@ impl WebSocketIntegrationSessionChannel {
             ack_notify.clone(),
             prompt_notify.clone(),
             cancel_notify.clone(),
+            disconnected.clone(),
         ));
 
         Ok(Self {
@@ -105,7 +115,32 @@ impl WebSocketIntegrationSessionChannel {
             ack_notify,
             prompt_notify,
             cancel_notify,
+            disconnected,
         })
+    }
+
+    /// #7617 (HIGH finding #1): mark the channel disconnected and wake any
+    /// task blocked in `wait_for_outbound_ack` / `wait_for_prompt_signal` so
+    /// they observe the drop immediately instead of spinning out their full
+    /// timeout. Called only from `read_loop`'s UNEXPECTED exit paths (peer
+    /// Close frame, stream EOF, or a read error) — never from the deliberate
+    /// `cancel_notify` path, which already has its own teardown semantics.
+    fn signal_unexpected_disconnect(
+        disconnected: &AtomicBool,
+        ack_notify: &Notify,
+        prompt_notify: &Notify,
+    ) {
+        disconnected.store(true, Ordering::SeqCst);
+        ack_notify.notify_waiters();
+        prompt_notify.notify_waiters();
+    }
+
+    /// Returns `true` once `read_loop` has observed an unexpected disconnect
+    /// (peer close, stream EOF, or a read error). Never resets: the owning
+    /// `WebSocketIntegrationSessionChannel` is single-use — a fresh `connect()`
+    /// call always produces a brand-new channel/flag (#6204 reconnect path).
+    pub fn is_disconnected(&self) -> bool {
+        self.disconnected.load(Ordering::SeqCst)
     }
 
     async fn read_loop(
@@ -114,6 +149,7 @@ impl WebSocketIntegrationSessionChannel {
         ack_notify: Arc<Notify>,
         prompt_notify: Arc<Notify>,
         cancel_notify: Arc<Notify>,
+        disconnected: Arc<AtomicBool>,
     ) {
         // F-RR-29: select! on cancel_notify so the task exits cleanly when
         // WebSocketIntegrationSessionChannel is dropped or close() is called.
@@ -127,7 +163,18 @@ impl WebSocketIntegrationSessionChannel {
                 msg = reader.next() => {
                     match msg {
                         Some(m) => m,
-                        None => break,
+                        None => {
+                            // #7617: stream ended without a cancel signal (peer
+                            // dropped the TCP connection without a WS close
+                            // handshake) — this is an UNEXPECTED disconnect.
+                            debug!("integration websocket read_loop: stream ended unexpectedly");
+                            Self::signal_unexpected_disconnect(
+                                &disconnected,
+                                &ack_notify,
+                                &prompt_notify,
+                            );
+                            break;
+                        }
                     }
                 }
             };
@@ -203,11 +250,22 @@ impl WebSocketIntegrationSessionChannel {
                         prompt_notify.notify_waiters();
                     }
                 }
-                Ok(Message::Close(_)) => break,
+                Ok(Message::Close(_)) => {
+                    // #7617: a peer-initiated Close frame that races ahead of
+                    // (or arrives without) our own `cancel_notify` signal is
+                    // an UNEXPECTED disconnect from this channel's point of
+                    // view — the biased `cancel_notify` branch above already
+                    // wins the ordinary deliberate-close race, so reaching
+                    // here means the server closed on its own.
+                    debug!("integration websocket read_loop: received close frame");
+                    Self::signal_unexpected_disconnect(&disconnected, &ack_notify, &prompt_notify);
+                    break;
+                }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
                 Ok(Message::Binary(_)) | Ok(Message::Frame(_)) => {}
                 Err(err) => {
                     warn!("integration websocket read failed: {err}");
+                    Self::signal_unexpected_disconnect(&disconnected, &ack_notify, &prompt_notify);
                     break;
                 }
             }
@@ -216,6 +274,18 @@ impl WebSocketIntegrationSessionChannel {
     }
 
     pub async fn send_json<T: serde::Serialize>(&self, payload: &T) -> Result<(), CoreError> {
+        // #7617 (HIGH finding #1): fail fast instead of writing to a socket
+        // read_loop already knows is dead. Relying solely on the write side
+        // to eventually error is unreliable — a half-closed TCP connection
+        // can silently accept writes into the OS send buffer for a while
+        // before an RST/FIN error surfaces.
+        if self.disconnected.load(Ordering::SeqCst) {
+            return Err(CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: "integration websocket is disconnected".to_string(),
+            });
+        }
+
         let text = serde_json::to_string(payload).map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
             message: format!("integration websocket serialization failed: {err}"),
@@ -269,6 +339,18 @@ impl WebSocketIntegrationSessionChannel {
                 return Ok(IntegrationEgressTransportResponse {
                     acknowledged_queue_ids: acknowledged.into_iter().collect(),
                     ack_cursor,
+                });
+            }
+
+            // #7617 (HIGH finding #1): read_loop notifies ack_notify on an
+            // unexpected disconnect, which wakes the `notified()` await below
+            // — but without this check the loop would just fall through and
+            // wait out the REMAINING deadline again (no further ack is ever
+            // coming). Fail immediately instead of silently timing out.
+            if self.disconnected.load(Ordering::SeqCst) {
+                return Err(CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: "integration websocket disconnected while waiting for ack".to_string(),
                 });
             }
 
@@ -548,6 +630,128 @@ mod tests {
             cfg.max_frame_size,
             Some(MAX_WS_MESSAGE_BYTES),
             "max_frame_size must be capped at the app limit, not the 16 MiB default"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #7617 (HIGH finding #1): unexpected-disconnect regression tests.
+    //
+    // These spin up a minimal local WebSocket server (tokio_tungstenite
+    // server-side accept) so the read_loop's UNEXPECTED exit paths (peer
+    // Close frame / abrupt socket drop) can be exercised deterministically,
+    // without the full HTTPS bootstrap flow.
+    // ------------------------------------------------------------------
+
+    /// An unexpected server-initiated Close frame must (a) wake a task
+    /// already blocked in `wait_for_outbound_ack` well before its timeout
+    /// elapses, (b) surface a `CoreError::Network` (not a silent timeout),
+    /// and (c) leave `is_disconnected()` true afterwards.
+    #[tokio::test]
+    async fn unexpected_server_close_wakes_ack_waiter_and_marks_disconnected() {
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local test listener");
+        let addr = listener.local_addr().expect("read local test addr");
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept tcp connection");
+            let mut ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("accept websocket handshake");
+            // Give the client time to start blocking on wait_for_outbound_ack
+            // before the server closes — this proves the ack_notify wakeup
+            // (not just an already-failed connect) unblocks the waiter.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            ws.send(WsMessage::Close(None))
+                .await
+                .expect("send server-initiated close frame");
+        });
+
+        let channel =
+            WebSocketIntegrationSessionChannel::connect(&format!("ws://{addr}"), HeaderMap::new())
+                .await
+                .expect("connect to local test websocket server");
+
+        assert!(
+            !channel.is_disconnected(),
+            "a freshly connected channel must not report disconnected"
+        );
+
+        let long_timeout = Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let result = channel
+            .wait_for_outbound_ack(&["queue-never-acked".to_string()], long_timeout)
+            .await;
+        let elapsed = start.elapsed();
+
+        let err = result
+            .expect_err("an unexpected server close must fail the ack wait, not silently time out");
+        assert!(
+            matches!(err, CoreError::Network { .. }),
+            "expected CoreError::Network after an unexpected disconnect, got: {err:?}"
+        );
+        assert!(
+            elapsed < long_timeout / 2,
+            "ack wait must wake promptly on disconnect instead of spinning out the \
+             full timeout (elapsed={elapsed:?}, timeout={long_timeout:?})"
+        );
+        assert!(
+            channel.is_disconnected(),
+            "channel must report disconnected after an unexpected server close"
+        );
+
+        server.await.expect("fake server task must not panic");
+    }
+
+    /// An abrupt socket drop (no WS Close handshake — e.g. an upstream RST)
+    /// must still flip `is_disconnected()`, and a subsequent `send_json` must
+    /// fail fast rather than attempting a write to the dead socket.
+    #[tokio::test]
+    async fn abrupt_socket_drop_marks_disconnected_and_fails_fast_send() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local test listener");
+        let addr = listener.local_addr().expect("read local test addr");
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept tcp connection");
+            let ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("accept websocket handshake");
+            // Abruptly drop the connection without a WS Close frame or
+            // graceful TCP shutdown — simulates a hard network drop.
+            drop(ws);
+        });
+
+        let channel =
+            WebSocketIntegrationSessionChannel::connect(&format!("ws://{addr}"), HeaderMap::new())
+                .await
+                .expect("connect to local test websocket server");
+
+        server.await.expect("fake server task must not panic");
+
+        // Poll for the background read_loop to observe the drop.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !channel.is_disconnected() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            channel.is_disconnected(),
+            "an abrupt socket drop (no WS Close frame) must still mark the channel disconnected"
+        );
+
+        let err = channel
+            .send_json(&serde_json::json!({"ping": true}))
+            .await
+            .expect_err("send_json after an unexpected disconnect must fail fast");
+        assert!(
+            matches!(err, CoreError::Network { .. }),
+            "expected CoreError::Network from the disconnected fast-path, got: {err:?}"
         );
     }
 }

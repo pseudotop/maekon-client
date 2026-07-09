@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use maekon_api_contracts::settings::AppSettings;
 use maekon_core::config::{
-    AiAccessMode, AiProviderType, CredentialAuthMode, CredentialBackendKind, ExternalDataPolicy,
-    LlmProviderType, MicInputMode, OcrProviderType, PiiFilterLevel, SandboxProfile, SttLanguage,
-    SttProviderKind, Weekday, WhisperModelSize,
+    AiAccessMode, AiProviderType, AnalysisConfig, CredentialAuthMode, CredentialBackendKind,
+    ExternalDataPolicy, LlmProviderType, MicInputMode, NotificationConfig, OcrProviderType,
+    PiiFilterLevel, SandboxProfile, StorageConfig, SttLanguage, SttProviderKind, WebConfig,
+    Weekday, WhisperModelSize,
 };
 use maekon_core::ports::secret_store::validate_secret_segment;
 use maekon_core::provider_surface::provider_type_from_vendor_id;
@@ -12,21 +13,57 @@ use std::collections::HashSet;
 use crate::error::ApiError;
 
 pub(crate) fn validate_settings_input(settings: &AppSettings) -> Result<(), ApiError> {
-    if settings.retention_days == 0 || settings.retention_days > 365 {
-        return Err(ApiError::BadRequest(
-            "Retention period must be between 1 and 365 days.".to_string(),
-        ));
+    // #7726 (ctd-W2 E4): delegate storage bounds (retention_days/max_storage_mb) to
+    // the core `StorageConfig` SSOT (`crates/maekon-core/src/config/sections/storage.rs`)
+    // rather than re-declaring floor/cap literals here. This function previously
+    // hardcoded its own `retention_days <= 365` cap that core never enforced (core
+    // only ever enforced the floor) — a live divergence: a hand-edited config.json
+    // with `retention_days: 1000` loaded fine, but the same value was rejected here.
+    // Core deliberately leaves `retention_days` uncapped (see the doc comment on
+    // `StorageConfig::validate_bounds`), so that value is now accepted here too.
+    // `max_storage_mb`'s floor is also raised (100, was 10 in core) to match what
+    // this function has enforced since the original migration.
+    StorageConfig {
+        db_path: None,
+        retention_days: settings.retention_days,
+        max_storage_mb: u64::from(settings.max_storage_mb),
     }
-    if settings.max_storage_mb < 100 || settings.max_storage_mb > 10000 {
-        return Err(ApiError::BadRequest(
-            "Maximum storage size must be between 100 MB and 10 GB.".to_string(),
-        ));
+    .validate_bounds()
+    .map_err(ApiError::BadRequest)?;
+
+    // #7726: delegate to the core `WebConfig` SSOT for the port bound (the desktop
+    // WebView CSP allowlist range) instead of the looser, non-matching `>= 1024`
+    // sanity check this function previously used on its own — any port outside the
+    // CSP-allowed range would have passed this check but still been rejected by
+    // `ConfigManager::update`'s internal `AppConfig::validate_bounds()` call later,
+    // just with a less specific error. `allow_external`/`integration_auth_token` are
+    // intentionally left at their (falsy) `WebConfig::default()` values here — this
+    // call validates only the port bound, not the external-access token policy.
+    WebConfig {
+        port: settings.web_port,
+        ..WebConfig::default()
     }
-    if settings.web_port < 1024 {
-        return Err(ApiError::BadRequest(
-            "web_port must be 1024 or higher.".to_string(),
-        ));
+    .validate_bounds()
+    .map_err(ApiError::BadRequest)?;
+
+    // #7726: delegate `analysis.max_suggestions` to the core `AnalysisConfig` SSOT.
+    // Other fields are left at their defaults so only max_suggestions is checked.
+    AnalysisConfig {
+        max_suggestions: settings.analysis.max_suggestions as usize,
+        ..AnalysisConfig::default()
     }
+    .validate_bounds()
+    .map_err(ApiError::BadRequest)?;
+
+    // #7726: delegate `notification.idle_notification_mins` to the core
+    // `NotificationConfig` SSOT.
+    NotificationConfig {
+        idle_notification_mins: settings.notification.idle_notification_mins,
+        ..NotificationConfig::default()
+    }
+    .validate_bounds()
+    .map_err(ApiError::BadRequest)?;
+
     if !settings
         .ai_provider
         .ocr_validation
@@ -504,19 +541,27 @@ mod tests {
         );
     }
 
+    /// #7726 (ctd-W2 E4): regression coverage for the pre-fix boundary
+    /// divergence. Before this change, `retention_days = 1000` was accepted by
+    /// core (which never enforced a cap — see `StorageConfig::validate_bounds`)
+    /// but rejected here (this function's now-removed 365-day cap) — a value
+    /// that loaded fine from a hand-edited `config.json` was inexplicably
+    /// un-settable through the web dashboard UI. Both boundaries must now agree
+    /// that large retention windows are accepted.
     #[test]
-    fn validate_rejects_retention_days_above_365() {
+    fn validate_accepts_retention_days_above_former_365_cap() {
         let mut s = valid_settings();
-        s.retention_days = 366;
-        let err = validate_settings_input(&s).unwrap_err();
-        assert!(
-            matches!(err, ApiError::BadRequest(_)),
-            "expected ApiError::BadRequest, got: {err:?}"
+        s.retention_days = 1000;
+        validate_settings_input(&s).expect(
+            "retention_days=1000 must now be accepted — core deliberately leaves this field uncapped",
         );
     }
 
     #[test]
     fn validate_accepts_retention_days_boundary() {
+        // #7726: the upper end of this range is no longer a rejection boundary
+        // (core deliberately leaves retention_days uncapped) — 365 remains a
+        // representative "large but plausible" value, not the true ceiling.
         for days in [1u32, 365] {
             let mut s = valid_settings();
             s.retention_days = days;
@@ -579,15 +624,38 @@ mod tests {
         );
     }
 
+    /// #7726 (ctd-W2 E4): regression coverage for the pre-fix boundary
+    /// divergence. Before this change, `web_port = 1024` was accepted by this
+    /// function's own `>= 1024` sanity check, but any port outside
+    /// `DEFAULT_WEB_PORT..=DEFAULT_WEB_PORT_END` (the desktop WebView CSP
+    /// allowlist enforced by core's `WebConfig::validate_bounds`) would still
+    /// have been rejected downstream by `ConfigManager::update`. Both
+    /// boundaries must now agree that a port outside the CSP range is rejected
+    /// here directly, with an accurate error message.
     #[test]
-    fn validate_accepts_web_port_1024() {
+    fn validate_rejects_web_port_1024_outside_csp_range() {
         let mut s = valid_settings();
         s.web_port = 1024;
-        // Pin the exact boundary port: 1024 is the minimum valid unprivileged port.
+        let err = validate_settings_input(&s)
+            .expect_err("web_port=1024 is outside the CSP-allowed range and must be rejected");
+        assert!(
+            matches!(err, ApiError::BadRequest(_)),
+            "expected ApiError::BadRequest, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_web_port_default_csp_range() {
+        let mut s = valid_settings();
+        s.web_port = maekon_core::config::DEFAULT_WEB_PORT;
+        // Pin the exact boundary port: DEFAULT_WEB_PORT is the minimum valid
+        // port within the desktop WebView CSP allowlist range.
         // validate_settings_input must accept it and the field must equal what was set (#5594).
-        validate_settings_input(&s).expect("web_port=1024 (minimum valid port) must be accepted");
+        validate_settings_input(&s)
+            .expect("web_port=DEFAULT_WEB_PORT (minimum valid CSP-range port) must be accepted");
         assert_eq!(
-            s.web_port, 1024u16,
+            s.web_port,
+            maekon_core::config::DEFAULT_WEB_PORT,
             "struct field must equal tested boundary"
         );
     }
@@ -811,6 +879,60 @@ mod tests {
             ApiError::BadRequest(message) => {
                 assert!(
                     message.contains("focus_auto.trigger_schedules[].start"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    // ── #7726 (ctd-W2 E4): analysis.max_suggestions / notification.idle_notification_mins ──
+
+    #[test]
+    fn validate_rejects_zero_max_suggestions() {
+        let mut s = valid_settings();
+        s.analysis.max_suggestions = 0;
+        let err = validate_settings_input(&s).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("max_suggestions"), "message: {message}");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_max_suggestions_above_200() {
+        let mut s = valid_settings();
+        s.analysis.max_suggestions = 201;
+        let err = validate_settings_input(&s).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("max_suggestions"), "message: {message}");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_max_suggestions_boundary() {
+        for val in [1u32, 200] {
+            let mut s = valid_settings();
+            s.analysis.max_suggestions = val;
+            validate_settings_input(&s)
+                .unwrap_or_else(|e| panic!("max_suggestions={val} must be accepted; got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_idle_notification_mins() {
+        let mut s = valid_settings();
+        s.notification.idle_notification_mins = 0;
+        let err = validate_settings_input(&s).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(
+                    message.contains("idle_notification_mins"),
                     "message: {message}"
                 );
             }

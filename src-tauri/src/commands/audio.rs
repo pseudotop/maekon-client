@@ -6,7 +6,7 @@ use tauri::{command, Emitter};
 use tokio::sync::mpsc;
 
 use maekon_core::models::audio::TranscriptionResult;
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 
 use crate::ipc_error::IpcError;
 use crate::runtime_state::AudioRuntimeState;
@@ -97,12 +97,9 @@ pub(crate) fn on_capture_pause_toggled<R: tauri::Runtime>(
 /// CONS-PI13; NOT `get()` (deep-clone of 37 sections).
 fn ensure_capture_permitted(state: &AudioRuntimeState) -> Result<(), IpcError> {
     use std::sync::atomic::Ordering;
-    // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
-    // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
-    let consent = state
-        .consent_manager()
-        .map(|cm| cm.effective_permissions())
-        .unwrap_or_default();
+    // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+    // consent record AND on a missing ConsentManager (#7728).
+    let consent = ConsentGate::from_ref(state.consent_manager()).permissions_snapshot();
     let paused = state.capture_paused().load(Ordering::Relaxed);
     let permitted = crate::scheduler::audio_capture_permitted_now(
         &state.config_manager().snapshot(),
@@ -404,12 +401,9 @@ async fn run_vad_receiver(
     let gate_open = |cfg_mgr: &maekon_core::config_manager::ConfigManager,
                      consent_mgr: &Option<Arc<dyn ConsentManagerPort>>,
                      paused: &std::sync::atomic::AtomicBool| {
-        // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
-        // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
-        let consent = consent_mgr
-            .as_ref()
-            .map(|cm| cm.effective_permissions())
-            .unwrap_or_default();
+        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+        // consent record AND on a missing ConsentManager (#7728).
+        let consent = ConsentGate::from_ref(consent_mgr.as_ref()).permissions_snapshot();
         crate::scheduler::audio_capture_permitted_now(
             &cfg_mgr.snapshot(),
             &consent,

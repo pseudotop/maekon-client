@@ -132,6 +132,19 @@ impl PollBackoff {
     }
 }
 
+/// #7617 (LOW finding #7): outcome of a single `run_heartbeat_cycle` attempt.
+/// Distinguishes "a heartbeat was actually transmitted" from "there was no
+/// ready session to heartbeat" so the caller does not record a false success
+/// on the Heartbeat telemetry lane while the integration is actually down
+/// (e.g. session `Failed` after a connect failure, or not yet connected).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeartbeatOutcome {
+    /// A heartbeat was sent to a Connected/Degraded session.
+    Sent,
+    /// No ready session existed; no heartbeat was transmitted.
+    Skipped,
+}
+
 #[derive(Clone)]
 pub struct IntegrationRuntimeLoop {
     session: Arc<dyn IntegrationSessionPort>,
@@ -168,10 +181,23 @@ impl IntegrationRuntimeLoop {
         session: &IntegrationSessionState,
         requested_scopes: &[IntegrationCapabilityScope],
     ) -> bool {
-        matches!(
-            session.status,
-            IntegrationSessionStatus::Connected | IntegrationSessionStatus::Degraded
-        ) && !session.session_id.is_empty()
+        // #7617 (MED finding #2): `Degraded` is EXCLUDED from readiness on
+        // purpose. `IntegrationSessionCoordinator::heartbeat` only ever moves
+        // a session to `Degraded` after a heartbeat transport failure (see
+        // session_coordinator.rs), so a Degraded session is by definition
+        // "last known bad" — treating it as ready here permanently skips the
+        // coordinator's own Degraded-revalidation/reconnect path (#6204),
+        // since `ensure_session_ready` never calls `connect()` again. Letting
+        // `ensure_session_ready` fall through to `connect()` on ANY Degraded
+        // session is cheap and safe: `IntegrationSessionCoordinator::connect`
+        // already reuses the session with a single revalidation heartbeat
+        // when it succeeds, and only pays for a full reconnect (with prior
+        // binding eviction) when that heartbeat also fails. This is also the
+        // recovery path for finding #1: an unexpectedly dropped live_channel
+        // fails the next heartbeat, which flips the session to Degraded here,
+        // which this check now escalates into an actual reconnect attempt.
+        matches!(session.status, IntegrationSessionStatus::Connected)
+            && !session.session_id.is_empty()
             && requested_scopes
                 .iter()
                 .all(|scope| session.granted_scopes.contains(scope))
@@ -226,9 +252,9 @@ impl IntegrationRuntimeLoop {
         }
     }
 
-    async fn run_heartbeat_cycle(&self) -> Result<(), CoreError> {
+    async fn run_heartbeat_cycle(&self) -> Result<HeartbeatOutcome, CoreError> {
         let Some(current) = self.session.current_session().await? else {
-            return Ok(());
+            return Ok(HeartbeatOutcome::Skipped);
         };
 
         if matches!(
@@ -237,9 +263,10 @@ impl IntegrationRuntimeLoop {
         ) && !current.session_id.is_empty()
         {
             self.session.heartbeat(&current.session_id).await?;
+            return Ok(HeartbeatOutcome::Sent);
         }
 
-        Ok(())
+        Ok(HeartbeatOutcome::Skipped)
     }
 
     async fn record_cycle_success(&self, lane: IntegrationRuntimeLane) {
@@ -314,13 +341,26 @@ impl IntegrationRuntimeLoop {
                     if !heartbeat_gate.is_ready(now) {
                         continue;
                     }
-                    if let Err(error) = self.run_heartbeat_cycle().await {
-                        let delay = heartbeat_gate.on_failure(now, &core_to_network_error(&error));
-                        self.record_cycle_failure(IntegrationRuntimeLane::Heartbeat, &error, delay).await;
-                        warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime heartbeat cycle failed");
-                    } else {
-                        heartbeat_gate.on_success();
-                        self.record_cycle_success(IntegrationRuntimeLane::Heartbeat).await;
+                    match self.run_heartbeat_cycle().await {
+                        Ok(HeartbeatOutcome::Sent) => {
+                            heartbeat_gate.on_success();
+                            self.record_cycle_success(IntegrationRuntimeLane::Heartbeat).await;
+                        }
+                        Ok(HeartbeatOutcome::Skipped) => {
+                            // #7617 (LOW finding #7): no ready session existed, so no
+                            // heartbeat was actually transmitted. Deliberately do NOT
+                            // call on_success()/record_cycle_success — that would make
+                            // the Heartbeat telemetry lane look healthy while the
+                            // integration is actually down (e.g. Failed after a connect
+                            // failure). Leave the gate/telemetry state untouched rather
+                            // than recording a failure either — there was no session to
+                            // even attempt a heartbeat against.
+                        }
+                        Err(error) => {
+                            let delay = heartbeat_gate.on_failure(now, &core_to_network_error(&error));
+                            self.record_cycle_failure(IntegrationRuntimeLane::Heartbeat, &error, delay).await;
+                            warn!(error = %error, retry_in_ms = delay.as_millis() as u64, "integration runtime heartbeat cycle failed");
+                        }
                     }
                 }
                 _ = egress_interval.tick() => {
@@ -429,76 +469,11 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
 
     use super::*;
+    use crate::integration::test_support::FakeIntegrationSessionPort;
     use maekon_core::models::integration::{
         IntegrationAckCursor, IntegrationAuthScheme, IntegrationSessionStatus,
         IntegrationTransportKind,
     };
-
-    #[derive(Default)]
-    struct MockSessionPort {
-        current: Arc<Mutex<Option<IntegrationSessionState>>>,
-        connect_calls: Arc<Mutex<usize>>,
-        heartbeat_calls: Arc<Mutex<usize>>,
-    }
-
-    #[async_trait]
-    impl IntegrationSessionPort for MockSessionPort {
-        async fn connect(
-            &self,
-            requested_scopes: Vec<IntegrationCapabilityScope>,
-        ) -> Result<IntegrationSessionState, CoreError> {
-            *self.connect_calls.lock().await += 1;
-            let session = IntegrationSessionState {
-                session_id: "session-runtime".to_string(),
-                device_id: "device-1".to_string(),
-                status: IntegrationSessionStatus::Connected,
-                transport_kind: IntegrationTransportKind::WebSocket,
-                auth_scheme: IntegrationAuthScheme::BearerToken,
-                connected_at: Some(Utc::now()),
-                last_heartbeat_at: None,
-                requested_scopes: requested_scopes.clone(),
-                granted_scopes: requested_scopes,
-                ack_cursors: Vec::new(),
-            };
-            *self.current.lock().await = Some(session.clone());
-            Ok(session)
-        }
-
-        async fn current_session(&self) -> Result<Option<IntegrationSessionState>, CoreError> {
-            Ok(self.current.lock().await.clone())
-        }
-
-        async fn heartbeat(&self, _session_id: &str) -> Result<IntegrationSessionState, CoreError> {
-            *self.heartbeat_calls.lock().await += 1;
-            let session =
-                self.current
-                    .lock()
-                    .await
-                    .clone()
-                    .ok_or_else(|| CoreError::ServiceUnavailable {
-                        code: maekon_core::error_codes::ServiceCode::Unavailable,
-                        message: "integration session missing".to_string(),
-                    })?;
-            Ok(session)
-        }
-
-        async fn store_ack_cursor(
-            &self,
-            _session_id: &str,
-            _cursor: IntegrationAckCursor,
-        ) -> Result<IntegrationSessionState, CoreError> {
-            self.current_session()
-                .await?
-                .ok_or_else(|| CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "integration session missing".to_string(),
-                })
-        }
-
-        async fn disconnect(&self, _session_id: &str) -> Result<(), CoreError> {
-            Ok(())
-        }
-    }
 
     #[derive(Default)]
     struct MockEgressPort {
@@ -563,7 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn egress_cycle_connects_before_flushing() {
-        let session = Arc::new(MockSessionPort::default());
+        let session = Arc::new(FakeIntegrationSessionPort::new());
         let egress = Arc::new(MockEgressPort::default());
         let inbox = Arc::new(MockInboxPort::default());
         let runtime = IntegrationRuntimeLoop::new(
@@ -584,12 +559,9 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_cycle_uses_existing_session() {
-        let session = Arc::new(MockSessionPort::default());
+        let session = Arc::new(FakeIntegrationSessionPort::new());
         session
-            .current
-            .lock()
-            .await
-            .replace(IntegrationSessionState {
+            .set_session(IntegrationSessionState {
                 session_id: "session-runtime".to_string(),
                 device_id: "device-1".to_string(),
                 status: IntegrationSessionStatus::Connected,
@@ -600,7 +572,8 @@ mod tests {
                 requested_scopes: vec![IntegrationCapabilityScope::SessionManage],
                 granted_scopes: vec![IntegrationCapabilityScope::SessionManage],
                 ack_cursors: Vec::new(),
-            });
+            })
+            .await;
         let runtime = IntegrationRuntimeLoop::new(
             session.clone(),
             Arc::new(MockEgressPort::default()),
@@ -611,10 +584,143 @@ mod tests {
             IntegrationRuntimeLoopProfile::default(),
         );
 
-        runtime.run_heartbeat_cycle().await.unwrap();
+        let outcome = runtime.run_heartbeat_cycle().await.unwrap();
 
+        assert_eq!(outcome, HeartbeatOutcome::Sent);
         assert_eq!(*session.connect_calls.lock().await, 0);
         assert_eq!(*session.heartbeat_calls.lock().await, 1);
+    }
+
+    /// #7617 (LOW finding #7): with no current session at all, the cycle
+    /// must report `Skipped` (and must NOT attempt a heartbeat call), so the
+    /// caller in `run()` does not record a false telemetry success.
+    #[tokio::test]
+    async fn heartbeat_cycle_skips_without_session() {
+        let session = Arc::new(FakeIntegrationSessionPort::new());
+        let runtime = IntegrationRuntimeLoop::new(
+            session.clone(),
+            Arc::new(MockEgressPort::default()),
+            Arc::new(MockInboxPort::default()),
+            None,
+            None,
+            None,
+            IntegrationRuntimeLoopProfile::default(),
+        );
+
+        let outcome = runtime.run_heartbeat_cycle().await.unwrap();
+
+        assert_eq!(outcome, HeartbeatOutcome::Skipped);
+        assert_eq!(*session.heartbeat_calls.lock().await, 0);
+    }
+
+    /// #7617 (LOW finding #7): a session that exists but is `Failed` (e.g.
+    /// after a connect failure) must also report `Skipped` rather than
+    /// silently succeeding.
+    #[tokio::test]
+    async fn heartbeat_cycle_skips_for_failed_session() {
+        let session = Arc::new(FakeIntegrationSessionPort::new());
+        session
+            .set_session(IntegrationSessionState {
+                session_id: String::new(),
+                device_id: "device-1".to_string(),
+                status: IntegrationSessionStatus::Failed,
+                transport_kind: IntegrationTransportKind::WebSocket,
+                auth_scheme: IntegrationAuthScheme::BearerToken,
+                connected_at: None,
+                last_heartbeat_at: None,
+                requested_scopes: vec![IntegrationCapabilityScope::SessionManage],
+                granted_scopes: Vec::new(),
+                ack_cursors: Vec::new(),
+            })
+            .await;
+        let runtime = IntegrationRuntimeLoop::new(
+            session.clone(),
+            Arc::new(MockEgressPort::default()),
+            Arc::new(MockInboxPort::default()),
+            None,
+            None,
+            None,
+            IntegrationRuntimeLoopProfile::default(),
+        );
+
+        let outcome = runtime.run_heartbeat_cycle().await.unwrap();
+
+        assert_eq!(outcome, HeartbeatOutcome::Skipped);
+        assert_eq!(*session.heartbeat_calls.lock().await, 0);
+    }
+
+    /// #7617 (MED finding #2): `session_satisfies_scopes` must exclude
+    /// `Degraded` — a Degraded session is by definition "last heartbeat
+    /// failed" (see `IntegrationSessionCoordinator::heartbeat`), so treating
+    /// it as ready here would permanently skip the coordinator's own
+    /// Degraded-revalidation/reconnect path (#6204).
+    #[test]
+    fn session_satisfies_scopes_excludes_degraded() {
+        let scopes = vec![IntegrationCapabilityScope::SessionManage];
+        let mut state = IntegrationSessionState {
+            session_id: "session-1".to_string(),
+            device_id: "device-1".to_string(),
+            status: IntegrationSessionStatus::Connected,
+            transport_kind: IntegrationTransportKind::WebSocket,
+            auth_scheme: IntegrationAuthScheme::BearerToken,
+            connected_at: Some(Utc::now()),
+            last_heartbeat_at: None,
+            requested_scopes: scopes.clone(),
+            granted_scopes: scopes.clone(),
+            ack_cursors: Vec::new(),
+        };
+        assert!(
+            IntegrationRuntimeLoop::session_satisfies_scopes(&state, &scopes),
+            "a Connected session with all requested scopes granted must satisfy readiness"
+        );
+
+        state.status = IntegrationSessionStatus::Degraded;
+        assert!(
+            !IntegrationRuntimeLoop::session_satisfies_scopes(&state, &scopes),
+            "a Degraded session must NOT satisfy readiness -- it must force \
+             ensure_session_ready to call connect() again"
+        );
+    }
+
+    /// #7617 (MED finding #2): `ensure_session_ready` must call `connect()`
+    /// again when the current session is Degraded, instead of treating a
+    /// stale Degraded session as "ready" forever. This is the wiring half of
+    /// the fix; `IntegrationSessionCoordinator`'s own Degraded-revalidation
+    /// behaviour (single heartbeat retry, then a full reconnect on repeated
+    /// failure) is covered separately by
+    /// `session_coordinator.rs::connect_revalidates_degraded_session_with_heartbeat`
+    /// and `::connect_reconnects_when_degraded_heartbeat_fails` -- together
+    /// these prove the full composed recovery path with finding #1 (an
+    /// unexpectedly dropped live_channel fails the next heartbeat, flipping
+    /// the session to Degraded, which this check now escalates into a
+    /// reconnect attempt).
+    #[tokio::test]
+    async fn ensure_session_ready_reconnects_when_session_is_degraded() {
+        let session = Arc::new(FakeIntegrationSessionPort::new());
+        session
+            .connect(vec![IntegrationCapabilityScope::SessionManage])
+            .await
+            .unwrap();
+        session.set_status(IntegrationSessionStatus::Degraded).await;
+
+        let runtime = IntegrationRuntimeLoop::new(
+            session.clone(),
+            Arc::new(MockEgressPort::default()),
+            Arc::new(MockInboxPort::default()),
+            None,
+            None,
+            None,
+            IntegrationRuntimeLoopProfile::default(),
+        );
+
+        runtime.ensure_session_ready().await.unwrap();
+
+        assert_eq!(
+            *session.connect_calls.lock().await,
+            2,
+            "a Degraded session must trigger a second connect() call from \
+             ensure_session_ready (1 initial + 1 reconnect triggered by this fix)"
+        );
     }
 
     #[derive(Default)]
@@ -652,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn egress_signal_triggers_flush_between_interval_ticks() {
-        let session = Arc::new(MockSessionPort::default());
+        let session = Arc::new(FakeIntegrationSessionPort::new());
         session.connect(Vec::new()).await.unwrap();
         let egress = Arc::new(MockEgressPort::default());
         let inbox = Arc::new(MockInboxPort::default());
@@ -687,12 +793,9 @@ mod tests {
 
     #[tokio::test]
     async fn inbox_signal_triggers_refresh_between_interval_ticks() {
-        let session = Arc::new(MockSessionPort::default());
+        let session = Arc::new(FakeIntegrationSessionPort::new());
         session
-            .current
-            .lock()
-            .await
-            .replace(IntegrationSessionState {
+            .set_session(IntegrationSessionState {
                 session_id: "session-runtime".to_string(),
                 device_id: "device-1".to_string(),
                 status: IntegrationSessionStatus::Connected,
@@ -703,7 +806,8 @@ mod tests {
                 requested_scopes: vec![IntegrationCapabilityScope::PromptRead],
                 granted_scopes: vec![IntegrationCapabilityScope::PromptRead],
                 ack_cursors: Vec::new(),
-            });
+            })
+            .await;
         let egress = Arc::new(MockEgressPort::default());
         let inbox = Arc::new(MockInboxPort::default());
         let inbox_signal = Arc::new(MockInboxSignalPort::default());

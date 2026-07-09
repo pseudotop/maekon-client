@@ -32,7 +32,6 @@ pub async fn get_frame_image(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppState;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
@@ -40,20 +39,10 @@ mod tests {
     use maekon_storage::encryption::EncryptionKey;
     use maekon_storage::frame_storage::FrameFileStorage;
 
-    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
-    use tokio::sync::broadcast;
     use tower::ServiceExt;
 
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
-
-    fn loopback_app(state: AppState) -> axum::Router {
-        crate::test_local_auth::authed_loopback_router(state)
-    }
+    use crate::test_local_auth::{authed_loopback_router as loopback_app, test_app_state};
 
     #[test]
     fn frame_response_serializes() {
@@ -112,7 +101,8 @@ mod tests {
             .await
             .expect("save encrypted frame");
 
-        let sqlite = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let (mut state, sqlite) = crate::test_local_auth::test_app_state_with_storage();
         let frame_id = sqlite
             .save_frame_metadata(
                 &FrameMetadata {
@@ -130,8 +120,6 @@ mod tests {
             )
             .expect("frame metadata");
 
-        let (event_tx, _) = broadcast::channel(16);
-        let mut state = AppState::with_core(sqlite, event_tx);
         state.core.frames_dir = Some(data_dir.path().to_path_buf());
         state.core.frame_storage = Some(frame_storage);
         let app = loopback_app(state);

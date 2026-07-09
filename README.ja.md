@@ -9,6 +9,10 @@
 <p align="center">
   <a href="./README.md">English</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.es.md">Español</a>
 </p>
+<p align="center">
+  <a href="https://maekon.dev">ウェブサイト</a> · <a href="https://docs.maekon.dev">ドキュメント</a> · <a href="https://github.com/pseudotop/maekon-client/releases">リリース</a>
+</p>
+
 
 # Maekon
 
@@ -24,6 +28,17 @@ MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデ
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
@@ -73,6 +88,23 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - 最初の5分ガイド: [docs/guides/first-5-minutes.md](./docs/guides/first-5-minutes.md)
 - 自動化イベントコントラクト: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AIプロバイダーコントラクト: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
+
+### ソースで直接検証する
+
+上記のプライバシーに関する主張はマーケティング文言ではありません — 各主張は、このリポジトリで直接読み、ビルドし、テストできるコードに対応しています。READMEとソースは同一の検証済みツリーから一緒にexportされるため、この表は常にすぐ隣にあるコードを説明しています。
+
+| 主張 | 検証場所 |
+|---|---|
+| 除外/機密アプリはアップロード時ではなく**キャプチャ時点で**除外されます | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)、キャプチャゲート配線: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| デバイスを離れるすべての送信はローカルegress台帳に記録され、アプリ内で閲覧できます (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + リーダールート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| メモリグラフが蓄積したユーザーに関する信念(claims)は閲覧・ワンクリック撤回が可能です (Privacy → Claims) | claimsルート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 同意はfail-closedです: 有効な同意がなければキャプチャしません | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| PIIフィルタリングは保存前およびすべてのegress前に実行されます | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| 自動化はポリシー・サンドボックス・監査ログを迂回できません | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### ソース同期ポリシー
+
+このリポジトリはMaekon内部ソースの**検証済みスナップショットexport**です。スナップショットはリリース単位で検証後にexportされ — リリースタグが検証済み状態を示し、リポジトリは内部のすべてのコミットではなくリリースを追跡します。READMEとコードは常に同じツリーから生成されるため、上記の主張とコードのリンクは今読んでいるチェックアウトを正確に指しています。
 
 ## 機能
 

@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "grpc-dashboard-external")]
 use crate::grpc::external::live_config::LiveExternalConfig;
 use crate::grpc::load_policy::LoadPolicy;
 
 #[derive(Clone)]
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 5 (DashboardServiceImpl.streaming_source)
 pub(crate) enum StreamingSource {
     /// Boot-time captured values. Loopback server uses this variant.
     Fixed {
@@ -19,16 +19,17 @@ pub(crate) enum StreamingSource {
         load_policy: Arc<LoadPolicy>,
     },
     /// Live-reloadable via ConfigReloadTask. External server uses this variant.
+    #[cfg(feature = "grpc-dashboard-external")]
     Live(Arc<LiveExternalConfig>),
 }
 
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 5
 impl StreamingSource {
     pub fn streaming_enabled(&self) -> bool {
         match self {
             Self::Fixed {
                 streaming_enabled, ..
             } => *streaming_enabled,
+            #[cfg(feature = "grpc-dashboard-external")]
             Self::Live(live) => live.snapshot().streaming_enabled,
         }
     }
@@ -36,12 +37,13 @@ impl StreamingSource {
     pub fn load_policy(&self) -> Arc<LoadPolicy> {
         match self {
             Self::Fixed { load_policy, .. } => load_policy.clone(),
+            #[cfg(feature = "grpc-dashboard-external")]
             Self::Live(live) => live.snapshot().load_policy.clone(),
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "grpc-dashboard-external"))]
 mod tests {
     use super::*;
     use crate::grpc::external::live_config::LiveSnapshot;

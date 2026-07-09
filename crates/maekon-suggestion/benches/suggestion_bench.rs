@@ -1,3 +1,7 @@
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
 use maekon_suggestion::queue::SuggestionQueue;

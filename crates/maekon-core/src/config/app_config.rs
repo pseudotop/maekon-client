@@ -212,6 +212,11 @@ impl AppConfig {
         // #6177: the analysis loop builds a tokio interval from analysis.interval_secs;
         // a zero period panics the loop, so the same interval floors must be validated.
         self.analysis.validate_bounds()?;
+        // #7726 (ctd-W2 E4): idle_notification_mins == 0 is meaningless (a
+        // notification that fires continuously). Was previously enforced only by
+        // src-tauri's WebView-boundary `validate_config_bounds`; now part of the
+        // core SSOT so every write chokepoint (file-load, HTTP API, WebView) agrees.
+        self.notification.validate_bounds()?;
         // #6617: the desktop WebView CSP only allows the local dashboard fallback
         // range. Reject configured base ports outside that range at write/reload
         // chokepoints so the UI never boots against a blocked loopback API origin.
@@ -243,6 +248,9 @@ impl AppConfig {
         clamped.extend(self.vision.clamp_bounds());
         clamped.extend(self.monitor.clamp_bounds());
         clamped.extend(self.analysis.clamp_bounds());
+        // #7726: mirror the validate_bounds() addition above for the fail-open
+        // INITIAL-LOAD path.
+        clamped.extend(self.notification.clamp_bounds());
         // #6883: fail-close web.allow_external + clamp web.port on load. validate_bounds
         // (write chokepoints) already covers web; the load path must too, or a weak-token
         // config binds the integration API to 0.0.0.0 unvalidated.
@@ -1053,16 +1061,17 @@ mod tests {
         let config = StorageConfig {
             db_path: None,
             retention_days: 1,
-            max_storage_mb: 10,
+            max_storage_mb: 100,
         };
-        // Contract: retention_days >= 1 AND max_storage_mb >= 10 are the minimum valid bounds;
+        // Contract: retention_days >= 1 AND max_storage_mb >= 100 (#7726: raised
+        // from 10 to match the maekon-web boundary) are the minimum valid bounds;
         // both floor values must pass validation unchanged.
         config
             .validate_bounds()
-            .expect("retention_days=1 and max_storage_mb=10 are the minimum valid bounds");
+            .expect("retention_days=1 and max_storage_mb=100 are the minimum valid bounds");
         // Pin the actual field values to guard against silent default drift.
         assert_eq!(config.retention_days, 1);
-        assert_eq!(config.max_storage_mb, 10);
+        assert_eq!(config.max_storage_mb, 100);
     }
 
     #[test]
@@ -1100,21 +1109,45 @@ mod tests {
     fn vision_validate_bounds_accepts_min_throttle() {
         let config = VisionConfig {
             capture_enabled: true,
-            capture_throttle_ms: 100,
+            capture_throttle_ms: 1_000,
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
             privacy_mode: false,
         };
-        // Contract: capture_throttle_ms == 100 is the exact minimum allowed value;
-        // validation must not reject the floor itself.
+        // Contract: capture_throttle_ms == 1000 is the exact minimum allowed value
+        // (#7726: raised from 100 to resolve the core-vs-WebView 3-boundary
+        // disagreement); validation must not reject the floor itself.
         config.validate_bounds().expect(
-            "capture_throttle_ms=100 is the minimum valid throttle and must pass bounds check",
+            "capture_throttle_ms=1000 is the minimum valid throttle and must pass bounds check",
         );
         assert_eq!(
-            config.capture_throttle_ms, 100,
+            config.capture_throttle_ms, 1_000,
             "floor value must be preserved"
         );
+    }
+
+    /// #7726 (ctd-W2 E4): regression coverage for the pre-fix boundary
+    /// divergence. Before this change, `capture_throttle_ms = 500` was
+    /// accepted by this core validator (floor was 100) but rejected by the
+    /// Tauri WebView `update_setting` boundary (`src-tauri/src/commands/
+    /// settings.rs`, hardcoded floor 1000). `src-tauri`'s own test module
+    /// pins the WebView side of this same value so both boundaries are
+    /// pinned to agree.
+    #[test]
+    fn vision_validate_bounds_rejects_capture_throttle_500_matches_webview_boundary() {
+        let config = VisionConfig {
+            capture_enabled: true,
+            capture_throttle_ms: 500,
+            thumbnail_width: 480,
+            thumbnail_height: 270,
+            ocr_enabled: false,
+            privacy_mode: false,
+        };
+        let err = config.validate_bounds().expect_err(
+            "capture_throttle_ms=500 must now be rejected by the core SSOT (floor raised to 1000 in #7726 to agree with the WebView boundary)",
+        );
+        assert!(err.contains("capture_throttle_ms"), "got: {err}");
     }
 
     #[test]

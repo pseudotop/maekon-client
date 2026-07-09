@@ -693,3 +693,340 @@ fn scan_i18n_excludes_storybook_and_test_fixture_hardcoded_copy() {
     assert_eq!(hardcoded.len(), 1);
     assert_eq!(hardcoded[0].path, product_path);
 }
+
+// ── MLINT-C1: cross-line block-comment state (i18n.rs partial from #7493) ────
+//
+// `extract_translation_keys` / `detect_hardcoded_ui_literals` only had a
+// PER-LINE comment-prefix skip (trimmed start is `//`, `*`, or `/*`), with no
+// cross-line block-comment state. A continuation line inside a multi-line
+// `/* ... */` block that does not itself start with a comment marker was
+// parsed as LIVE code. `scan_i18n` now threads an `in_block_comment` boolean
+// across lines via `advance_block_comment_state` so both consumers skip every
+// line inside an open block comment.
+
+/// (a) A `t('...')` call written on a continuation line of a multi-line
+/// `/* ... */` block — with NO leading comment marker on that line — must NOT
+/// be extracted as a live translation key, so an absent key inside the
+/// comment does not HARD-FAIL the build with `missing-i18n-key`.
+///
+/// Fails before the fix: `extract_translation_keys` resets its own
+/// `block_comment` local to `false` on every call (one call per line), so the
+/// continuation line `" * t('doc.example.key')"` is scanned fresh and its
+/// `t(` call site is found — `doc.example.key` (absent from en.json) then
+/// produces a `missing-i18n-key` Error, verified via the verify-first scratch
+/// repro against this branch's base commit before this fix was implemented.
+#[test]
+fn scan_i18n_skips_translation_key_inside_multiline_block_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/DocBlock.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(product, "/*").unwrap();
+    writeln!(product, " * Example usage:").unwrap();
+    writeln!(product, " * t('doc.example.key')").unwrap();
+    writeln!(product, " */").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "a t() call inside a multi-line block comment must not be extracted: {missing:?}"
+    );
+}
+
+/// (b) A `title="..."` UI attribute (and its enclosing text) written on a
+/// continuation line of a multi-line `/** ... */` JSDoc block — with no
+/// leading `*` gutter on that specific line — must NOT be flagged as
+/// hardcoded UI copy.
+///
+/// Fails before the fix: `detect_hardcoded_ui_literals`'s comment guard is a
+/// PER-LINE `trimmed.starts_with("//" | '*' | "/*")` check with no cross-line
+/// state, so a continuation line lacking any of those markers (a realistic
+/// shape for pasted example markup inside a `@example` doc block) slips past
+/// the guard and is scanned as live JSX, flagging `title="Hello"`.
+#[test]
+fn scan_i18n_skips_hardcoded_ui_literal_inside_multiline_block_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/DocBlockAttr.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(product, "/**").unwrap();
+    writeln!(product, " * Renders:").unwrap();
+    writeln!(product, "   <div title=\"Hello\">").unwrap();
+    writeln!(product, "     Some prose text").unwrap();
+    writeln!(product, "   </div>").unwrap();
+    writeln!(product, " */").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let hardcoded: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "hardcoded-ui-copy")
+        .collect();
+
+    assert!(
+        hardcoded.is_empty(),
+        "UI markup inside a multi-line JSDoc block comment must not be flagged: {hardcoded:?}"
+    );
+}
+
+/// (c) A LIVE `t('...')` call OUTSIDE any comment — in the same file as a
+/// suppressed comment-embedded example — must still be extracted and
+/// validated normally (no false-negative regression from the new cross-line
+/// skip).
+#[test]
+fn scan_i18n_still_detects_live_translation_key_outside_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/LiveKey.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(product, "/*").unwrap();
+    writeln!(product, " * t('doc.example.key')").unwrap();
+    writeln!(product, " */").unwrap();
+    writeln!(product, "const label = t('doc.live.key');").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert_eq!(
+        missing.len(),
+        1,
+        "the live t() call outside the comment must still be extracted and validated: {missing:?}"
+    );
+    assert!(missing[0].message.contains("doc.live.key"));
+    assert_eq!(missing[0].line, 4);
+}
+
+// ── MLINT-C2: residual live-code scan on a block-comment CLOSING line ───────
+//
+// MLINT-C1's whole-line skip (`if advance_block_comment_state(...) { continue;
+// }`) over-corrected: it excluded the ENTIRE line whenever the line STARTED
+// inside a block comment ("entering" state), including a line that CLOSES the
+// comment mid-line and then carries LIVE code after `*/`. `scan_i18n` now
+// scans a MASKED line (block-comment spans blanked, live code — including
+// live code after a same-line closing `*/` — left intact) via
+// `scan_block_comment_line` instead.
+
+/// (a) A line CLOSING a multi-line `/* ... */` block comment mid-line, with a
+/// LIVE `t('missing.key')` call after the `*/`, must still emit
+/// `missing-i18n-key`.
+///
+/// Fails before this fix: `scan_i18n`'s whole-line skip only looks at the
+/// ENTERING state (`true` for this line, because the comment opened on line 1
+/// and is still open when line 3 begins) and discards the line in its
+/// ENTIRETY via `continue` — never reaching `extract_translation_keys` for
+/// the `t('missing.key')` call that follows `*/` on that same line. Verified
+/// directly against this branch's base commit (`d9b0b174ea`, MLINT-C1, before
+/// the MLINT-C2 fix below existed): `missing.is_empty()` — the finding never
+/// fires and the missing key silently escapes the gate.
+#[test]
+fn scan_i18n_detects_missing_key_after_block_comment_closes_mid_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/ClosingLineLiveCode.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(product, "/* old usage").unwrap();
+    writeln!(product, " * see the example above").unwrap();
+    writeln!(product, " */ const label = t('missing.key');").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert_eq!(
+        missing.len(),
+        1,
+        "the live t() call after the closing */ on line 3 must still be \
+         extracted and validated: {missing:?}"
+    );
+    assert!(missing[0].message.contains("missing.key"));
+    assert_eq!(missing[0].line, 3);
+}
+
+/// (b) A `t('x')` call on a line FULLY inside a multi-line block comment (no
+/// closing `*/` on that line) must still NOT emit `missing-i18n-key` — the
+/// MLINT-C1 whole-line-skip guarantee must be preserved by MLINT-C2's masking
+/// approach (a fully-masked line yields zero findings from every scanner).
+#[test]
+fn scan_i18n_still_skips_key_fully_inside_multiline_block_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/FullyInsideComment.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(product, "/*").unwrap();
+    writeln!(product, " * example: t('doc.fully.inside.key')").unwrap();
+    writeln!(product, " */").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "a t() call on a line fully inside a block comment must not be extracted: {missing:?}"
+    );
+}
+
+/// (c) A line with LIVE code, then a comment that both OPENS and CLOSES on
+/// the SAME line (`const l = t('x'); /* trailing */`), must still have the
+/// live `t('x')` call detected — no false-negative regression from the new
+/// masked-line scan.
+///
+/// This shape already worked correctly before MLINT-C2 for a different
+/// reason: `entering` is `false` here (no PRECEDING line left the comment
+/// open), so MLINT-C1's whole-line skip never triggered, and
+/// `extract_translation_keys` has its own independent per-line
+/// block-comment/quote tracking that already stops at `/*` correctly. This
+/// test guards the MLINT-C2 refactor — which now ALWAYS routes through
+/// `scan_block_comment_line`'s masked output rather than the raw line — from
+/// silently breaking that already-working case.
+#[test]
+fn scan_i18n_still_detects_live_key_before_inline_trailing_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/LiveThenTrailingComment.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(
+        product,
+        "const l = t('missing.trailing.key'); /* trailing */"
+    )
+    .unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert_eq!(
+        missing.len(),
+        1,
+        "the live t() call before the trailing inline comment must still be detected: {missing:?}"
+    );
+    assert!(missing[0].message.contains("missing.trailing.key"));
+}
+
+/// (d) A `/*` embedded inside a runtime string literal, on a line that ALSO
+/// carries a real `t()` call after the string, must NOT be treated as a
+/// comment opener — the live `t()` call after the string must still be
+/// detected, and the file-level `in_block_comment` state must NOT get stuck
+/// "inside a comment" for subsequent lines.
+#[test]
+fn scan_i18n_ignores_slash_star_inside_string_literal() {
+    let dir = tempfile::tempdir().unwrap();
+    let locale_dir = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/i18n/locales");
+    std::fs::create_dir_all(&locale_dir).unwrap();
+    for locale in ["en", "ko", "ja", "zh-CN", "es"] {
+        let mut file = std::fs::File::create(locale_dir.join(format!("{locale}.json"))).unwrap();
+        write!(file, "{{}}").unwrap();
+    }
+
+    let product_path = dir
+        .path()
+        .join("crates/maekon-web/frontend/src/pages/example/SlashStarInString.tsx");
+    std::fs::create_dir_all(product_path.parent().unwrap()).unwrap();
+    let mut product = std::fs::File::create(&product_path).unwrap();
+    writeln!(
+        product,
+        r#"const pattern = "a /* not a comment */ b"; const l = t('missing.after.string.key');"#
+    )
+    .unwrap();
+    writeln!(product, "const l2 = t('missing.next.line.key');").unwrap();
+
+    let findings = scan_i18n(dir.path(), &[]);
+    let missing: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category == "missing-i18n-key")
+        .collect();
+
+    assert_eq!(
+        missing.len(),
+        2,
+        "both t() calls must be detected — the /* inside the string must not \
+         open a comment, and state must not leak into the next line: {missing:?}"
+    );
+    assert!(missing
+        .iter()
+        .any(|f| f.message.contains("missing.after.string.key")));
+    assert!(missing
+        .iter()
+        .any(|f| f.message.contains("missing.next.line.key")));
+}

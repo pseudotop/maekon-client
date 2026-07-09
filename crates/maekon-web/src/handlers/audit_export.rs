@@ -52,9 +52,7 @@ mod tests {
     use maekon_core::models::ai_session::SessionAuditEntry;
     use maekon_core::models::audit::{AuditLevel, AuditStats, AuditStatus};
     use maekon_core::ports::audit_log::AuditLogPort;
-    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::{Arc, Mutex};
-    use tokio::sync::broadcast;
 
     /// Test-only `AuditLogPort` implementation — supports `recent_entries` and
     /// `entries_by_command_id` queries over seeded entries.
@@ -166,9 +164,7 @@ mod tests {
 
     /// Helper that builds a default `AppState` (automation.audit_logger = None).
     fn fixture_state_no_logger() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
+        crate::test_local_auth::test_app_state()
     }
 
     /// Helper that builds an `AppState` with the audit_logger configured.

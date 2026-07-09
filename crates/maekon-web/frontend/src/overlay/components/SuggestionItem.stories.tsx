@@ -27,7 +27,6 @@ const baseSuggestion: SuggestionViewDto = {
   source: 'ai-coach',
   confidence_score: 0.85,
   created_at: '2026-03-27T10:30:00Z',
-  is_read: false,
   reasoning: null,
 }
 

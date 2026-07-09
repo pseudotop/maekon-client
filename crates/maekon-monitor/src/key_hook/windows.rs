@@ -33,13 +33,17 @@ use windows_sys::Win32::UI::Input::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    PostThreadMessageW, RegisterClassW, HWND_MESSAGE, MSG, WM_INPUT, WM_USER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, RegisterClassW,
+    HWND_MESSAGE, MSG, WM_INPUT, WNDCLASSW,
 };
 
-/// Custom message ID used to signal the message loop to exit.
+// The stop-message id (`WM_STOP_HOOK`) this message pump listens for is
+// defined once in `crate::hook_lifecycle` -- shared with `mouse_hook::windows`'s
+// separate message-only window/thread and with the `PostThreadMessageW` poster
+// in `HookLifecycle::stop()` (#7727), so the pump and the poster can never
+// drift out of sync on the numeric value.
 #[cfg(target_os = "windows")]
-const WM_STOP_HOOK: u32 = WM_USER + 1;
+use crate::hook_lifecycle::WM_STOP_HOOK;
 
 // Module-scope thread-locals shared between `run_raw_input_hook` (populates)
 // and `raw_input_wnd_proc` (reads). Must be at module scope so both functions
@@ -61,8 +65,9 @@ thread_local! {
 /// Each key-down event is classified via `classify_keycode()` and forwarded
 /// to `InputActivityCollector::record_categorized_keystroke()`.
 ///
-/// `hook_thread_id` is published with this thread's id so `KeyHook::stop()`
-/// can `PostThreadMessageW(WM_STOP_HOOK)` to wake the loop blocked in
+/// `hook_thread_id` is published with this thread's id so
+/// `HookLifecycle::stop()` (`crate::hook_lifecycle`) can
+/// `PostThreadMessageW(WM_STOP_HOOK)` to wake the loop blocked in
 /// `GetMessageW()` on idle sessions where no input message arrives. The id is
 /// published ONLY after the full setup sequence (RegisterClassW +
 /// CreateWindowExW + RegisterRawInputDevices) succeeds, immediately before
@@ -323,30 +328,6 @@ unsafe extern "system" fn raw_input_wnd_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-/// Wake the hook thread's `GetMessageW` by posting `WM_STOP_HOOK` to its queue.
-///
-/// Called from `KeyHook::stop()` after the `running` flag is cleared. A
-/// posted thread message is the only thing that unblocks `GetMessageW()` on an
-/// idle machine where no input arrives, so without this the join in stop()
-/// hangs indefinitely. A `thread_id` of `0` means the hook thread has not
-/// published its id yet (or has already exited); we skip in that case.
-#[cfg(target_os = "windows")]
-pub fn wake_hook_thread(thread_id: u32) {
-    if thread_id == 0 {
-        return;
-    }
-    // SAFETY: PostThreadMessageW is thread-safe and takes a plain thread id with
-    // no pointer arguments (wparam/lparam are 0). It returns FALSE if the target
-    // thread has no message queue or already exited, which we treat as benign.
-    let posted = unsafe { PostThreadMessageW(thread_id, WM_STOP_HOOK, 0, 0) };
-    if posted == 0 {
-        debug!(
-            "PostThreadMessageW(WM_STOP_HOOK) failed (error={}); hook thread may have already exited",
-            unsafe { GetLastError() }
-        );
-    }
-}
-
 /// Stub fallback for non-Windows platforms. Only compiled when the module is
 /// included on a non-Windows target (should not normally happen due to
 /// `#[cfg(target_os = "windows")]` gating in `mod.rs`, but kept for safety).
@@ -358,12 +339,6 @@ pub fn run_raw_input_hook(
 ) {
     let _ = (collector, running, hook_thread_id);
     warn!("Windows Raw Input key hook not yet implemented -- platform hook not active");
-}
-
-/// Stub fallback for non-Windows platforms; mirrors `wake_hook_thread`.
-#[cfg(not(target_os = "windows"))]
-pub fn wake_hook_thread(thread_id: u32) {
-    let _ = thread_id;
 }
 
 #[cfg(test)]
@@ -381,8 +356,8 @@ mod tests {
 
     /// Regression guard for `win-keyhook-threadid`: after `run_raw_input_hook`
     /// returns, the published thread id must always be `0`, so a concurrent or
-    /// late `KeyHook::stop()` never posts `WM_STOP_HOOK` to a dead/recycled
-    /// thread id.
+    /// late `HookLifecycle::stop()` never posts `WM_STOP_HOOK` to a
+    /// dead/recycled thread id.
     ///
     /// On non-Windows hosts (CI on macOS/Linux) this exercises the stub, which
     /// never publishes an id. On Windows, `running` starts `false`, so the hook
@@ -402,15 +377,10 @@ mod tests {
         );
     }
 
-    /// `wake_hook_thread(0)` must be a no-op. This is the cross-platform safety
-    /// net the ordering fix relies on: while the hook thread is still setting up
-    /// (before it publishes its id) the stored value is `0`, and stop() must not
-    /// post to thread id `0`.
-    #[test]
-    fn wake_hook_thread_zero_is_noop() {
-        // Must not panic and must not attempt any thread-message post.
-        wake_hook_thread(0);
-    }
+    // `wake_hook_thread(0)` no-op coverage moved to
+    // `crate::hook_lifecycle::tests::stop_is_a_noop_wake_when_waker_thread_id_is_still_zero`
+    // now that the wake step lives in `HookLifecycle::stop()` rather than a
+    // per-hook helper function (#7727).
 
     /// Verifies that the aligned-buffer sizing arithmetic is correct: the
     /// allocated Vec<u64> always covers at least `size` bytes, and its base

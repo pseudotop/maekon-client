@@ -1,65 +1,35 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use maekon_core::error::CoreError;
-use maekon_core::models::context::{MousePosition, UserContext};
+use maekon_core::models::context::UserContext;
 use maekon_core::ports::monitor::{ActivityMonitor, ProcessMonitor};
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
-use std::time::Duration;
 use tracing::debug;
 
 pub struct ActivityTracker {
     process_monitor: Arc<dyn ProcessMonitor>,
-    #[cfg(test)]
-    mouse_position_for_test: Option<Option<MousePosition>>,
 }
 
 impl ActivityTracker {
     pub fn new(process_monitor: Arc<dyn ProcessMonitor>) -> Self {
-        Self {
-            process_monitor,
-            #[cfg(test)]
-            mouse_position_for_test: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_with_mouse_position_for_test(
-        process_monitor: Arc<dyn ProcessMonitor>,
-        mouse_position: Option<MousePosition>,
-    ) -> Self {
-        Self {
-            process_monitor,
-            mouse_position_for_test: Some(mouse_position),
-        }
-    }
-
-    async fn collect_mouse_position(&self) -> Option<MousePosition> {
-        #[cfg(test)]
-        if let Some(mouse_position) = self.mouse_position_for_test {
-            return mouse_position;
-        }
-
-        get_mouse_position().await
+        Self { process_monitor }
     }
 }
 
 #[async_trait]
 impl ActivityMonitor for ActivityTracker {
     async fn collect_context(&self) -> Result<UserContext, CoreError> {
-        // #6441 (F16): collect the three independent sources concurrently so a tick
-        // waits on the slowest, not the sum.
-        let (active_window, processes, mouse_position) = tokio::join!(
+        // #6441 (F16): collect the two independent sources concurrently so a
+        // tick waits on the slower, not the sum.
+        let (active_window, processes) = tokio::join!(
             self.process_monitor.get_active_window(),
             self.process_monitor.get_top_processes(10),
-            self.collect_mouse_position(),
         );
 
         let context = UserContext {
             timestamp: Utc::now(),
             active_window: active_window?,
             processes: processes?,
-            mouse_position,
         };
 
         debug!(
@@ -75,64 +45,31 @@ impl ActivityMonitor for ActivityTracker {
     }
 
     async fn collect_active_context(&self) -> Result<UserContext, CoreError> {
-        // #6441 (F13): the 1 Hz monitor loop needs only the active window + mouse; it
-        // never reads `processes`. Skip the top-process enumeration entirely (the full
-        // table walk + clone + sort that `collect_top_sync` performs on every call) and
-        // run the two remaining collectors concurrently (F16).
-        let (active_window, mouse_position) = tokio::join!(
-            self.process_monitor.get_active_window(),
-            self.collect_mouse_position(),
-        );
+        // #6441 (F13): the 1 Hz monitor loop needs only the active window; it
+        // never reads `processes`. Skip the top-process enumeration entirely
+        // (the full table walk + clone + sort that `collect_top_sync`
+        // performs on every call).
+        //
+        // #7652 (HIGH-1): this used to ALSO collect the OS cursor position
+        // into `UserContext.mouse_position` every tick (a real per-OS
+        // syscall/subprocess -- `CGEventGetLocation` on macOS, `GetCursorPos`
+        // on Windows, an `xdotool getmouselocation` FORK on Linux). No
+        // consumer ever read that field (verified: `ctx.mouse_position` had
+        // zero call sites outside this file's own tests), so it was pure
+        // per-tick waste -- worst on Linux, where it forked a subprocess once
+        // a second forever. `mouse_hook` now supplies real, continuously
+        // event-driven mouse activity (clicks/scroll/move/position) directly
+        // into `InputActivityCollector`, which is a strictly better signal
+        // than a 1 Hz poll would have been, so the poll was removed rather
+        // than wired to a consumer (routing it would have double-counted
+        // move distance against the event-driven observer).
+        let active_window = self.process_monitor.get_active_window().await?;
 
         Ok(UserContext {
             timestamp: Utc::now(),
-            active_window: active_window?,
+            active_window,
             processes: Vec::new(),
-            mouse_position,
         })
-    }
-}
-
-/// - macOS: Core Graphics API
-/// - Windows: Win32 GetCursorPos
-/// - Linux: xdotool getmouselocation (X11/XWayland)
-#[allow(clippy::unused_async)] // async required on linux (xdotool spawns process)
-async fn get_mouse_position() -> Option<MousePosition> {
-    #[cfg(target_os = "macos")]
-    {
-        const MOUSE_POSITION_TIMEOUT: Duration = Duration::from_millis(500);
-
-        match tokio::time::timeout(
-            MOUSE_POSITION_TIMEOUT,
-            tokio::task::spawn_blocking(crate::macos::get_mouse_position_macos),
-        )
-        .await
-        {
-            Ok(Ok(mouse_position)) => mouse_position,
-            Ok(Err(error)) => {
-                debug!(?error, "mouse position worker failed");
-                None
-            }
-            Err(_) => {
-                debug!("mouse position lookup timed out");
-                None
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        crate::windows::get_mouse_position_windows()
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        crate::linux::get_mouse_position_linux().await
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        None
     }
 }
 
@@ -185,33 +122,21 @@ mod tests {
 
     #[tokio::test]
     async fn collect_context() {
-        let tracker = ActivityTracker::new_with_mouse_position_for_test(
-            Arc::new(MockProcessMonitor),
-            Some(MousePosition { x: 120, y: 80 }),
-        );
+        let tracker = ActivityTracker::new(Arc::new(MockProcessMonitor));
         let ctx = tracker.collect_context().await.unwrap();
         assert!(ctx.active_window.is_some());
         assert_eq!(ctx.active_window.unwrap().app_name, "Code");
         assert_eq!(ctx.processes.len(), 1);
-        let mouse_position = ctx.mouse_position.unwrap();
-        assert_eq!(mouse_position.x, 120);
-        assert_eq!(mouse_position.y, 80);
     }
 
     #[tokio::test]
     async fn collect_active_context_skips_processes() {
-        let tracker = ActivityTracker::new_with_mouse_position_for_test(
-            Arc::new(MockProcessMonitor),
-            Some(MousePosition { x: 120, y: 80 }),
-        );
+        let tracker = ActivityTracker::new(Arc::new(MockProcessMonitor));
         let ctx = tracker.collect_active_context().await.unwrap();
-        // #6441 (F13): active window + mouse are collected, but processes are NOT
+        // #6441 (F13): active window is collected, but processes are NOT
         // enumerated (the monitor hot-path never reads them).
         assert!(ctx.active_window.is_some());
         assert_eq!(ctx.active_window.unwrap().app_name, "Code");
         assert!(ctx.processes.is_empty());
-        let mouse_position = ctx.mouse_position.unwrap();
-        assert_eq!(mouse_position.x, 120);
-        assert_eq!(mouse_position.y, 80);
     }
 }

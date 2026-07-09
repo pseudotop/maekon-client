@@ -76,7 +76,16 @@ fn first_non_english_in_comment(line: &str) -> Option<(usize, char)> {
 /// strings are ALSO treated as string literals, so a `//` inside a JS/TS string
 /// (e.g. `'http://...'`) is not mistaken for a comment start. Disabled for Rust,
 /// where `'` denotes char literals / lifetimes (`'static`) rather than strings.
+#[cfg(test)]
 fn first_non_english_in_comment_impl(line: &str, js_like: bool) -> Option<(usize, char)> {
+    first_non_english_in_comment_with_state(line, js_like, &mut false)
+}
+
+fn first_non_english_in_comment_with_state(
+    line: &str,
+    js_like: bool,
+    in_block_comment: &mut bool,
+) -> Option<(usize, char)> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0usize;
     // The active string delimiter (`"`, or `'`/`` ` `` in js_like mode), or None.
@@ -84,6 +93,18 @@ fn first_non_english_in_comment_impl(line: &str, js_like: bool) -> Option<(usize
     let mut escaped = false;
     while i < chars.len() {
         let ch = chars[i];
+        if *in_block_comment {
+            if ch == '*' && chars.get(i + 1) == Some(&'/') {
+                *in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            if ch.is_alphabetic() && !is_english_compatible_letter(ch) {
+                return Some((i + 1, ch));
+            }
+            i += 1;
+            continue;
+        }
         if let Some(delim) = string_delim {
             if escaped {
                 escaped = false;
@@ -122,8 +143,10 @@ fn first_non_english_in_comment_impl(line: &str, js_like: bool) -> Option<(usize
                 j += 1;
             }
             i = if j + 1 < chars.len() {
+                *in_block_comment = false;
                 j + 2
             } else {
+                *in_block_comment = true;
                 chars.len()
             };
             continue;
@@ -177,8 +200,11 @@ pub(crate) fn scan_non_english_text(
             Some("ts" | "tsx" | "js" | "jsx")
         );
 
+        let mut in_block_comment = false;
         for (line_idx, line) in content.lines().enumerate() {
-            if let Some((col, ch)) = first_non_english_in_comment_impl(line, js_like) {
+            if let Some((col, ch)) =
+                first_non_english_in_comment_with_state(line, js_like, &mut in_block_comment)
+            {
                 findings.push(Finding::new(
                     Severity::Error,
                     "non-english-comment",
@@ -237,6 +263,24 @@ mod tests {
     #[test]
     fn flags_non_english_in_block_comment() {
         assert!(first_non_english_in_comment("let y = 2; /* \u{D55C} */ let z = 3;").is_some());
+    }
+
+    #[test]
+    fn flags_non_english_in_multiline_block_comment() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("crates/pkg/src")).expect("mkdir");
+        fs::write(
+            root.join("crates/pkg/src/a.rs"),
+            "/*\n * \u{D55C} comment\n */\nfn a() {}\n",
+        )
+        .expect("write file");
+
+        let findings = super::scan_non_english_text(root, &[], &[]);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].category, "non-english-comment");
+        assert_eq!(findings[0].line, 2);
     }
 
     #[test]

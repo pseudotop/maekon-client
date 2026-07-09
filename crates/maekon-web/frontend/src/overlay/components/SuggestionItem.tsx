@@ -1,14 +1,18 @@
-import { Lock } from 'lucide-react'
+import { Lock, Play, ShieldCheck } from 'lucide-react'
 import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { SuggestionViewDto } from '../types'
 import { SnoozePopover } from './SnoozePopover'
+import { showToast } from './Toast'
 
 interface SuggestionItemProps {
   item: SuggestionViewDto
   onAction: (id: string, action: 'accept' | 'reject' | 'defer' | 'explain', snoozeMinutes?: number) => void
+  /** Called after a successful one-click run so the parent can refresh the list. */
+  onRan?: () => void | Promise<void>
 }
 
 const priorityClasses: Record<string, string> = {
@@ -18,11 +22,34 @@ const priorityClasses: Record<string, string> = {
   low: 'bg-content-secondary/20 text-content-secondary',
 }
 
-export const SuggestionItem = memo(function SuggestionItem({ item, onAction }: SuggestionItemProps) {
-  const { t } = useTranslation()
+export const SuggestionItem = memo(function SuggestionItem({ item, onAction, onRan }: SuggestionItemProps) {
+  const { t, i18n } = useTranslation()
   const [showSnooze, setShowSnooze] = useState(false)
+  const [running, setRunning] = useState(false)
   const badgeClass = priorityClasses[item.priority] ?? priorityClasses.low
   const requiresClarification = item.category === 'clarification-required'
+  // #7917: present only on bound, live pending items (never on history/unbound).
+  const action = item.action ?? null
+  // Mirror SuggestionsPanel's wire-error localization (ADR-019 Follow-up #3).
+  const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
+
+  async function handleRun() {
+    if (running || !action) return
+    setRunning(true)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      // The command re-derives the preset server-side from the suggestion id —
+      // the client never supplies a preset id (ADR-027).
+      await invoke('run_suggestion_action', { suggestionId: item.id })
+      showToast(t('suggestions.toastActionRan', 'Action ran'), 'success')
+      await Promise.resolve(onRan?.())
+    } catch (e) {
+      // Distinguishes policy-denied / disabled / error via the localized wire code.
+      showToast(`${t('suggestions.actionFailed', 'Could not run action:')} ${translateError(e, errorLocale)}`, 'error')
+    } finally {
+      setRunning(false)
+    }
+  }
 
   return (
     <li
@@ -42,11 +69,40 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction }: S
         </span>
       </div>
       <p className="mt-1 line-clamp-2 text-content-secondary text-xs">{item.body}</p>
-      <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-content-inverse/5 px-2 py-0.5 text-[10px] text-content-tertiary">
-        <Lock className={iconSize.xs} />
-        <span>{t('suggestions.noAutoAction', 'No auto action')}</span>
-      </div>
+      {action ? (
+        // Bound item: policy-neutral gate copy — never promises a prompt, since
+        // the user's confirmation policy (Auto/Confirm/Block) governs the run.
+        <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] text-brand">
+          <ShieldCheck className={iconSize.xs} />
+          <span>
+            {t('suggestions.gateNotice', 'Runs through the automation gate — your confirmation settings apply.')}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-content-inverse/5 px-2 py-0.5 text-[10px] text-content-tertiary">
+          <Lock className={iconSize.xs} />
+          <span>{t('suggestions.noAutoAction', 'No auto action')}</span>
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-1.5">
+        {action && (
+          <button
+            type="button"
+            data-testid="run-suggestion-action"
+            disabled={running}
+            aria-busy={running}
+            onClick={handleRun}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md bg-brand/15 px-2 py-1 text-brand text-xs hover:bg-brand/25 disabled:cursor-not-allowed disabled:opacity-60',
+              motion.colors,
+            )}
+          >
+            <Play className={iconSize.xs} />
+            {running
+              ? t('suggestions.runActionPending', 'Running…')
+              : t('suggestions.runAction', 'Run {{label}}', { label: action.label })}
+          </button>
+        )}
         {!requiresClarification && (
           <button
             type="button"

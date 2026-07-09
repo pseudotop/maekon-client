@@ -3,7 +3,6 @@
 
 use std::process::Command;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -14,6 +13,7 @@ use core_foundation_sys::string::CFStringRef;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
+use maekon_core::circuit_breaker::CircuitBreaker;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
 use maekon_core::error_codes::NotFoundCode;
@@ -24,11 +24,23 @@ use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArra
 
 use crate::accessibility::ffi_macos::ax::*;
 
-/// Circuit breaker: skip AX calls after consecutive failures.
-static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+// ── Circuit breaker ─────────────────────────────────────────────────────────
+//
+// Delegates to the shared `maekon_core::circuit_breaker::CircuitBreaker`
+// (#7720 E6 consolidation). This module previously hand-rolled its own
+// `AtomicU32` state machine, which had drifted to a version *missing* the
+// `compare_exchange` retry-slot claim (#6007 finding 17) that the shared
+// struct carries — without it, two concurrent callers that both observe the
+// counter at the same retry-interval boundary would both pass the gate and
+// both issue an AX call.
+
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 /// Retry every 10 ticks (~30s at 3s poll) after circuit opens.
 const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 10;
+
+/// Circuit breaker: skip AX calls after consecutive failures.
+static BREAKER: CircuitBreaker =
+    CircuitBreaker::new(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_RETRY_INTERVAL);
 
 /// Per-element messaging timeout (seconds) applied to every freshly-created AX
 /// element before issuing any synchronous attribute query.
@@ -193,27 +205,16 @@ impl MacOsNativeAccessibility {
 
     /// Circuit breaker: check if calls are allowed.
     fn circuit_allows() -> bool {
-        let failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed);
-        if failures >= CIRCUIT_BREAKER_THRESHOLD {
-            if !failures.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
-                CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-                return false;
-            }
-            warn!(
-                "MacOsNativeAccessibility: circuit breaker retry after {} skipped",
-                failures - CIRCUIT_BREAKER_THRESHOLD
-            );
-        }
-        true
+        BREAKER.should_proceed()
     }
 
     fn record_success() {
-        CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+        BREAKER.record_success();
     }
 
     fn record_failure() {
-        let prev = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
+        BREAKER.record_failure();
+        if BREAKER.failure_count() == CIRCUIT_BREAKER_THRESHOLD {
             warn!(
                 "MacOsNativeAccessibility: circuit breaker tripped after {CIRCUIT_BREAKER_THRESHOLD} consecutive failures"
             );

@@ -13,6 +13,14 @@ use tracing::{debug, info, warn};
 
 use crate::error::StorageError;
 use crate::sqlite::GuardedConnection;
+use crate::sync_table_descriptor::{
+    self as table_descriptor, extract_hlc, json_i64_or_default, json_u64, BoundValue, MergeMode,
+    PrimaryKey, StatusTiebreak, TableDescriptor,
+};
+// Re-exported only for the test module below (`super::*`) — not used by the generic
+// merge routine itself, which reaches these via `ColumnSpec::extract`.
+#[cfg(test)]
+use crate::sync_table_descriptor::{decode_vector, extract_hlc_counter};
 use maekon_core::error::CoreError;
 use maekon_core::models::sync::{ChangeSet, ChangeSetKind, SyncResult, Tombstone};
 
@@ -39,20 +47,6 @@ impl SqliteSyncMerger {
         }
     }
 
-    /// Compute suggestion status ordinal from timestamp fields.
-    /// acted (3) > dismissed (2) > shown (1) > null (0)
-    fn suggestion_status_ordinal(row: &serde_json::Value) -> u8 {
-        if row.get("acted_at").and_then(|v| v.as_str()).is_some() {
-            3
-        } else if row.get("dismissed_at").and_then(|v| v.as_str()).is_some() {
-            2
-        } else if row.get("shown_at").and_then(|v| v.as_str()).is_some() {
-            1
-        } else {
-            0
-        }
-    }
-
     /// Apply a device-wide GDPR Art.17 `DeletionEvent` from `origin_device_id`.
     ///
     /// `bound` is the erasure HLC carried in the DeletionEvent watermark (#5181). When
@@ -66,14 +60,9 @@ impl SqliteSyncMerger {
         origin_device_id: &str,
         bound: Option<(u64, u32)>,
     ) -> Result<usize, StorageError> {
-        let tables = [
-            "activity_segments",
-            "regimes",
-            "regime_overrides",
-            "embedding_vectors",
-            "suggestions",
-            "trigger_params_snapshots",
-        ];
+        // Single source of truth for the 6 synced tables — see
+        // `table_descriptor::ALL_TABLE_NAMES` (#7742).
+        let tables = table_descriptor::ALL_TABLE_NAMES;
         let mut total_deleted = 0usize;
         for table in &tables {
             let deleted = match bound {
@@ -200,19 +189,24 @@ impl ChangeMerger for SqliteSyncMerger {
                     if hlc_drift_rejected(row, "segments") {
                         continue;
                     }
-                    merge_segment(&tx, row, &mut result)?;
+                    merge_row(&tx, &table_descriptor::ACTIVITY_SEGMENTS, row, &mut result)?;
                 }
                 for row in &changes.overrides {
                     if hlc_drift_rejected(row, "overrides") {
                         continue;
                     }
-                    merge_override(&tx, row, &mut result)?;
+                    merge_row(&tx, &table_descriptor::REGIME_OVERRIDES, row, &mut result)?;
                 }
                 for row in &changes.param_snapshots {
                     if hlc_drift_rejected(row, "param_snapshots") {
                         continue;
                     }
-                    merge_param_snapshot(&tx, row, &mut result)?;
+                    merge_row(
+                        &tx,
+                        &table_descriptor::TRIGGER_PARAMS_SNAPSHOTS,
+                        row,
+                        &mut result,
+                    )?;
                 }
 
                 // --- LWW tables ---
@@ -220,13 +214,13 @@ impl ChangeMerger for SqliteSyncMerger {
                     if hlc_drift_rejected(row, "regimes") {
                         continue;
                     }
-                    merge_regime(&tx, row, &mut result)?;
+                    merge_row(&tx, &table_descriptor::REGIMES, row, &mut result)?;
                 }
                 for row in &changes.embeddings {
                     if hlc_drift_rejected(row, "embeddings") {
                         continue;
                     }
-                    merge_embedding(&tx, row, &mut result)?;
+                    merge_row(&tx, &table_descriptor::EMBEDDING_VECTORS, row, &mut result)?;
                 }
 
                 // --- Monotonic status merge (suggestions) ---
@@ -234,7 +228,7 @@ impl ChangeMerger for SqliteSyncMerger {
                     if hlc_drift_rejected(row, "suggestions") {
                         continue;
                     }
-                    merge_suggestion(&tx, row, &mut result)?;
+                    merge_row(&tx, &table_descriptor::SUGGESTIONS, row, &mut result)?;
                 }
 
                 // Update sync_peers watermark
@@ -287,18 +281,6 @@ impl ChangeMerger for SqliteSyncMerger {
 
 // ── Row-level erasure tombstone application + suppression (#5174 S3) ──
 
-/// Map a synced `table_name` to its primary-key column (for the hard-DELETE). Returns
-/// `None` for an unknown table — never format an unvalidated wire-supplied name into SQL.
-/// (`embedding_vectors` is handled separately by its composite key, not via this.)
-fn tombstone_pk_col(table_name: &str) -> Option<&'static str> {
-    match table_name {
-        "activity_segments" | "regimes" | "trigger_params_snapshots" => Some("id"),
-        "regime_overrides" => Some("override_id"),
-        "suggestions" => Some("suggestion_id"),
-        _ => None,
-    }
-}
-
 /// Apply one incoming tombstone: hard-DELETE the row (content gone on this peer, GDPR-
 /// complete) and record it into the local `sync_tombstones` suppression set (keep-higher-HLC).
 /// Origin-scoped so it only erases the erasing device's rows.
@@ -329,7 +311,7 @@ fn apply_tombstone(
         )
         .map_err(|e| StorageError::Internal(format!("tombstone delete embedding: {e}")))?
     } else {
-        let Some(pk) = tombstone_pk_col(&t.table_name) else {
+        let Some(pk) = table_descriptor::tombstone_pk_col(&t.table_name) else {
             warn!(table = %t.table_name, "ignoring tombstone for unknown table");
             return Ok(());
         };
@@ -410,269 +392,57 @@ fn tombstone_suppresses(
     }
 }
 
-// ── Per-table merge functions (called inside transaction) ──
+// ── Generic merge routine (table-descriptor-driven, #7742) ──
+//
+// Replaces the former 6 hand-rolled `merge_{segment,regime,override,embedding,
+// suggestion,param_snapshot}` functions — see `sync_table_descriptor.rs` for
+// the per-table DATA each call site now supplies instead of its own copy of
+// this control flow. Every past table-specific sweep fix is preserved:
+// * #5202 (a wire default for a NOT NULL column with no SQL-side default)
+//   lives in `ColumnKind::TextDefault` (`sync_table_descriptor.rs`).
+// * #6174 (reject, don't truncate, an out-of-range HLC counter) and #5174 S3
+//   (anti-resurrection tombstone suppression before every insert/update) are
+//   table-shape-independent, so they run directly in `merge_row` below.
+// * #35/#6081 (reject, don't zero-fill, a corrupt hex embedding vector) lives
+//   in `ColumnSpec::extract`'s `HexBlob` arm.
 
-fn merge_segment(
-    conn: &Connection,
-    row: &serde_json::Value,
-    result: &mut SyncResult,
-) -> Result<(), StorageError> {
-    let id = json_str(row, "id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
-        result.skipped_dup += 1;
-        return Ok(());
-    };
-    // #5174 S3: suppress if a tombstone with HLC >= this row exists (anti-resurrection).
-    if tombstone_suppresses(
-        conn,
-        "activity_segments",
-        id,
-        json_u64(row, "hlc_wall_ms")?,
-        hlc_counter,
-    )? {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM activity_segments WHERE id = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .map_err(|e| StorageError::Internal(format!("check segment: {e}")))?;
-
-    if exists {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-
-    conn.execute(
-        "INSERT INTO activity_segments \
-         (id, start_time, end_time, duration_secs, trigger_reason, regime_id, \
-          dominant_category, app_breakdown, llm_summary, content_activities_json, \
-          hlc_wall_ms, hlc_counter, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-        rusqlite::params![
-            id,
-            json_str(row, "start_time")?,
-            json_str(row, "end_time")?,
-            json_i64(row, "duration_secs")?,
-            // #5202: trigger_reason is `TEXT NOT NULL` (no default). The extractor now
-            // emits it; default for a pre-#5202 peer's changeset (which omits it) so the
-            // insert never hits the NOT NULL constraint and silently rolls back the merge.
-            json_str_or_default(row, "trigger_reason", "sync"),
-            json_str_opt(row, "regime_id"),
-            json_str(row, "dominant_category")?,
-            json_str_or_default(row, "app_breakdown", "{}"),
-            json_str_opt(row, "llm_summary"),
-            json_str_or_default(row, "content_activities_json", "[]"),
-            json_u64(row, "hlc_wall_ms")?,
-            hlc_counter,
-            json_str(row, "origin_device_id")?,
-        ],
-    )
-    .map_err(|e| StorageError::Internal(format!("insert segment: {e}")))?;
-
-    result.applied += 1;
-    Ok(())
+/// Local row snapshot used to decide an LWW conflict.
+struct LocalMatch {
+    hlc: Hlc,
+    /// `embedding_vectors`' internal autoincrement surrogate — `Some` only
+    /// for a `PrimaryKey::CompositeWithSurrogate` table; it becomes the
+    /// UPDATE `WHERE` key (the natural-key columns can't be reused there —
+    /// see `PrimaryKey::CompositeWithSurrogate`'s doc comment).
+    surrogate: Option<i64>,
+    /// The local row's monotonic status ordinal — `Some` only under
+    /// `MergeMode::LastWriteWinsWithTiebreak`.
+    tiebreak_ordinal: Option<u8>,
 }
 
-fn merge_regime(
+/// Dispatches one wire row to the merge mode its table descriptor declares.
+fn merge_row(
     conn: &Connection,
+    desc: &TableDescriptor,
     row: &serde_json::Value,
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
-    let id = json_str(row, "id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let Some(remote_hlc) = extract_hlc(row, id)? else {
+    let pk_values = desc.pk_values(row)?;
+    let row_label = desc.merge_row_label(&pk_values);
+
+    // #6174: reject just this row if the wire HLC counter overflows u32.
+    let Some(remote_hlc) = extract_hlc(row, &row_label)? else {
         result.skipped_dup += 1;
         return Ok(());
     };
-    // #5174 S3: anti-resurrection suppression (gates BOTH the insert and the LWW update).
-    if tombstone_suppresses(conn, "regimes", id, remote_hlc.wall_ms, remote_hlc.counter)? {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
 
-    let local: Option<(u64, u32, String)> = conn
-        .query_row(
-            "SELECT hlc_wall_ms, hlc_counter, origin_device_id FROM regimes WHERE id = ?1",
-            rusqlite::params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(|e| StorageError::Internal(format!("lookup regime {id}: {e}")))?;
-
-    match local {
-        None => {
-            conn.execute(
-                "INSERT INTO regimes \
-                 (id, label, detected_at, last_seen_at, occurrence_count, \
-                  avg_density, avg_importance, dominant_category, params_snapshot_id, \
-                  is_active, is_deleted, deleted_at, \
-                  hlc_wall_ms, hlc_counter, origin_device_id) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-                rusqlite::params![
-                    id,
-                    json_str(row, "label")?,
-                    json_str(row, "detected_at")?,
-                    json_str(row, "last_seen_at")?,
-                    json_i64(row, "occurrence_count")?,
-                    json_f64(row, "avg_density")?,
-                    json_f64(row, "avg_importance")?,
-                    json_str(row, "dominant_category")?,
-                    json_str_opt(row, "params_snapshot_id"),
-                    json_i64(row, "is_active")?,
-                    json_i64_or_default(row, "is_deleted", 0),
-                    json_str_opt(row, "deleted_at"),
-                    remote_hlc.wall_ms,
-                    remote_hlc.counter,
-                    json_str(row, "origin_device_id")?,
-                ],
-            )
-            .map_err(|e| StorageError::Internal(format!("insert regime: {e}")))?;
-            result.applied += 1;
-        }
-        Some((lw, lc, ld)) => {
-            let local_hlc = Hlc {
-                wall_ms: lw,
-                counter: lc,
-                device_id: ld,
-            };
-            if remote_hlc.is_after(&local_hlc) {
-                warn!(
-                    regime_id = %id,
-                    local_device = %local_hlc.device_id,
-                    remote_device = %remote_hlc.device_id,
-                    local_hlc_ms = local_hlc.wall_ms,
-                    remote_hlc_ms = remote_hlc.wall_ms,
-                    "sync conflict: regime overwritten by remote (LWW)"
-                );
-                conn.execute(
-                    "UPDATE regimes SET label=?2, detected_at=?3, last_seen_at=?4, \
-                     occurrence_count=?5, avg_density=?6, avg_importance=?7, \
-                     dominant_category=?8, params_snapshot_id=?9, is_active=?10, \
-                     is_deleted=?11, deleted_at=?12, \
-                     hlc_wall_ms=?13, hlc_counter=?14, origin_device_id=?15 \
-                     WHERE id = ?1",
-                    rusqlite::params![
-                        id,
-                        json_str(row, "label")?,
-                        json_str(row, "detected_at")?,
-                        json_str(row, "last_seen_at")?,
-                        json_i64(row, "occurrence_count")?,
-                        json_f64(row, "avg_density")?,
-                        json_f64(row, "avg_importance")?,
-                        json_str(row, "dominant_category")?,
-                        json_str_opt(row, "params_snapshot_id"),
-                        json_i64(row, "is_active")?,
-                        json_i64_or_default(row, "is_deleted", 0),
-                        json_str_opt(row, "deleted_at"),
-                        remote_hlc.wall_ms,
-                        remote_hlc.counter,
-                        json_str(row, "origin_device_id")?,
-                    ],
-                )
-                .map_err(|e| StorageError::Internal(format!("update regime: {e}")))?;
-
-                let is_tombstone = json_i64_or_default(row, "is_deleted", 0) == 1;
-                if is_tombstone {
-                    result.tombstoned += 1;
-                } else {
-                    result.applied += 1;
-                }
-            } else {
-                debug!(
-                    regime_id = %id,
-                    local_device = %local_hlc.device_id,
-                    remote_device = %remote_hlc.device_id,
-                    "sync conflict: remote regime discarded (local wins LWW)"
-                );
-                result.skipped_lww += 1;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn merge_override(
-    conn: &Connection,
-    row: &serde_json::Value,
-    result: &mut SyncResult,
-) -> Result<(), StorageError> {
-    let id = json_str(row, "override_id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
-        result.skipped_dup += 1;
-        return Ok(());
-    };
-    // #5174 S3: anti-resurrection suppression.
+    // #5174 S3: anti-resurrection suppression — gates every insert AND update,
+    // for every table (a hard delete already applied via a tombstone with
+    // HLC >= this row must never be resurrected by a re-synced copy).
+    let suppression_key = desc.tombstone_key(&pk_values, EMB_KEY_SEP);
     if tombstone_suppresses(
         conn,
-        "regime_overrides",
-        id,
-        json_u64(row, "hlc_wall_ms")?,
-        hlc_counter,
-    )? {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM regime_overrides WHERE override_id = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .map_err(|e| StorageError::Internal(format!("check override: {e}")))?;
-
-    if exists {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-
-    conn.execute(
-        "INSERT INTO regime_overrides \
-         (override_id, segment_id, original_regime_id, action_type, action_data, \
-          created_at, hlc_wall_ms, hlc_counter, origin_device_id) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![
-            id,
-            json_str(row, "segment_id")?,
-            json_str_opt(row, "original_regime_id"),
-            json_str(row, "action_type")?,
-            json_str_opt(row, "action_data"),
-            json_str(row, "created_at")?,
-            json_u64(row, "hlc_wall_ms")?,
-            hlc_counter,
-            json_str(row, "origin_device_id")?,
-        ],
-    )
-    .map_err(|e| StorageError::Internal(format!("insert override: {e}")))?;
-    result.applied += 1;
-    Ok(())
-}
-
-fn merge_embedding(
-    conn: &Connection,
-    row: &serde_json::Value,
-    result: &mut SyncResult,
-) -> Result<(), StorageError> {
-    let segment_id = json_str(row, "segment_id")?;
-    let model_id = json_str(row, "model_id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let emb_label = format!("{segment_id}/{model_id}");
-    let Some(remote_hlc) = extract_hlc(row, &emb_label)? else {
-        result.skipped_dup += 1;
-        return Ok(());
-    };
-    // #5174 S3: anti-resurrection suppression by the cross-device-stable composite key
-    // (`id` is a per-device autoincrement; the tombstone keys on segment_id+model_id).
-    let emb_key = format!("{segment_id}{EMB_KEY_SEP}{model_id}");
-    if tombstone_suppresses(
-        conn,
-        "embedding_vectors",
-        &emb_key,
+        desc.data_table,
+        &suppression_key,
         remote_hlc.wall_ms,
         remote_hlc.counter,
     )? {
@@ -680,368 +450,327 @@ fn merge_embedding(
         return Ok(());
     }
 
-    let local: Option<(i64, u64, u32, String)> = conn
-        .query_row(
-            "SELECT id, hlc_wall_ms, hlc_counter, origin_device_id \
-             FROM embedding_vectors WHERE segment_id = ?1 AND model_id = ?2",
-            rusqlite::params![segment_id, model_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()
-        .map_err(|e| {
-            StorageError::Internal(format!("lookup embedding {segment_id}/{model_id}: {e}"))
-        })?;
-
-    match local {
-        None => {
-            // Decode hex-encoded vector back to BLOB. A decode failure (truncated /
-            // odd-length / non-hex from a corrupt or hostile peer) must NOT collapse to
-            // an empty blob — that would silently store a zero-length vector. Reject just
-            // this row (counted as skipped, warning already logged naming the row) and
-            // keep merging the rest of the changeset (#35).
-            let vector_hex = json_str(row, "vector")?;
-            let Some(vector_bytes) = decode_vector(vector_hex, segment_id, model_id) else {
-                result.skipped_dup += 1;
-                return Ok(());
-            };
-
-            conn.execute(
-                "INSERT INTO embedding_vectors \
-                 (segment_id, content_type, content_label, original_text, \
-                  vector, model_id, timestamp, is_stale, \
-                  is_deleted, deleted_at, \
-                  hlc_wall_ms, hlc_counter, origin_device_id) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                rusqlite::params![
-                    segment_id,
-                    json_str(row, "content_type")?,
-                    json_str_opt(row, "content_label"),
-                    json_str_opt(row, "original_text"),
-                    vector_bytes,
-                    model_id,
-                    json_str(row, "timestamp")?,
-                    json_i64_or_default(row, "is_stale", 0),
-                    json_i64_or_default(row, "is_deleted", 0),
-                    json_str_opt(row, "deleted_at"),
-                    remote_hlc.wall_ms,
-                    remote_hlc.counter,
-                    json_str(row, "origin_device_id")?,
-                ],
-            )
-            .map_err(|e| StorageError::Internal(format!("insert embedding: {e}")))?;
-            result.applied += 1;
+    match &desc.mode {
+        MergeMode::AppendOnly => {
+            merge_append_only(conn, desc, &pk_values, row, &remote_hlc, result)
         }
-        Some((local_id, lw, lc, ld)) => {
-            let local_hlc = Hlc {
-                wall_ms: lw,
-                counter: lc,
-                device_id: ld,
-            };
-            if remote_hlc.is_after(&local_hlc) {
-                // Decode BEFORE clobbering: a corrupt remote vector must never overwrite
-                // a valid local vector with an empty blob. Reject just this row (counted
-                // as skipped, warning already logged naming the row) and leave the local
-                // vector untouched (#35).
-                let vector_hex = json_str(row, "vector")?;
-                let Some(vector_bytes) = decode_vector(vector_hex, segment_id, model_id) else {
-                    result.skipped_dup += 1;
-                    return Ok(());
-                };
-                warn!(
-                    segment_id = %segment_id,
-                    model_id = %model_id,
-                    local_device = %local_hlc.device_id,
-                    remote_device = %remote_hlc.device_id,
-                    "sync conflict: embedding overwritten by remote (LWW)"
-                );
-
-                conn.execute(
-                    "UPDATE embedding_vectors SET \
-                     content_type=?2, content_label=?3, original_text=?4, \
-                     vector=?5, model_id=?6, timestamp=?7, is_stale=?8, \
-                     is_deleted=?9, deleted_at=?10, \
-                     hlc_wall_ms=?11, hlc_counter=?12, origin_device_id=?13 \
-                     WHERE id = ?1",
-                    rusqlite::params![
-                        local_id,
-                        json_str(row, "content_type")?,
-                        json_str_opt(row, "content_label"),
-                        json_str_opt(row, "original_text"),
-                        vector_bytes,
-                        json_str(row, "model_id")?,
-                        json_str(row, "timestamp")?,
-                        json_i64_or_default(row, "is_stale", 0),
-                        json_i64_or_default(row, "is_deleted", 0),
-                        json_str_opt(row, "deleted_at"),
-                        remote_hlc.wall_ms,
-                        remote_hlc.counter,
-                        json_str(row, "origin_device_id")?,
-                    ],
-                )
-                .map_err(|e| StorageError::Internal(format!("update embedding: {e}")))?;
-
-                let is_tombstone = json_i64_or_default(row, "is_deleted", 0) == 1;
-                if is_tombstone {
-                    result.tombstoned += 1;
-                } else {
-                    result.applied += 1;
-                }
-            } else {
-                result.skipped_lww += 1;
-            }
+        MergeMode::LastWriteWins => {
+            merge_last_write_wins(conn, desc, &pk_values, row, &remote_hlc, None, result)
         }
+        MergeMode::LastWriteWinsWithTiebreak(tiebreak) => merge_last_write_wins(
+            conn,
+            desc,
+            &pk_values,
+            row,
+            &remote_hlc,
+            Some(tiebreak),
+            result,
+        ),
     }
-    Ok(())
 }
 
-#[allow(clippy::type_complexity)]
-fn merge_suggestion(
+/// `MergeMode::AppendOnly`: INSERT only if the PK does not already exist —
+/// a re-send of an existing PK is a duplicate, never an update.
+fn merge_append_only(
     conn: &Connection,
+    desc: &TableDescriptor,
+    pk_values: &[&str],
     row: &serde_json::Value,
+    remote_hlc: &Hlc,
     result: &mut SyncResult,
 ) -> Result<(), StorageError> {
-    let suggestion_id = json_str(row, "suggestion_id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let Some(remote_hlc) = extract_hlc(row, suggestion_id)? else {
+    let PrimaryKey::Simple(pk_col) = &desc.pk else {
+        // No append-only table uses a composite key today (the one
+        // composite-key table, `embedding_vectors`, is LWW) — see the
+        // registry in `sync_table_descriptor.rs`.
+        return Err(StorageError::Internal(format!(
+            "append-only merge requires a Simple primary key: {}",
+            desc.data_table
+        )));
+    };
+    let exists: bool = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) > 0 FROM {} WHERE {pk_col} = ?1",
+                desc.data_table
+            ),
+            rusqlite::params![pk_values[0]],
+            |r| r.get(0),
+        )
+        .map_err(|e| StorageError::Internal(format!("check {}: {e}", desc.data_table)))?;
+    if exists {
+        result.skipped_dup += 1;
+        return Ok(());
+    }
+    let Some(values) = desc.bind_all_columns(row, pk_values)? else {
         result.skipped_dup += 1;
         return Ok(());
     };
-    // #5174 S3 (the IMPORTANT-2 fix): run the suppression gate BEFORE the status-monotonic
-    // merge below. A tombstone is a hard delete already applied; once one exists with HLC >=
-    // this row, we return here so a re-synced lower-HLC `acted` row can NEVER resurrect an
-    // erased suggestion by winning on status ordinal. Only a strictly-higher-HLC (post-
-    // re-grant) suggestion passes, and for that the status-monotonic logic stays correct.
-    if tombstone_suppresses(
-        conn,
-        "suggestions",
-        suggestion_id,
-        remote_hlc.wall_ms,
-        remote_hlc.counter,
-    )? {
-        result.skipped_dup += 1;
+    insert_row(conn, desc, &values, remote_hlc)?;
+    result.applied += 1;
+    Ok(())
+}
+
+/// `MergeMode::LastWriteWins` / `LastWriteWinsWithTiebreak`: an existing row
+/// is replaced wholesale when the incoming row wins the conflict compare;
+/// otherwise it is discarded. `tiebreak` is `Some` only for the
+/// monotonic-status mode (`suggestions`).
+fn merge_last_write_wins(
+    conn: &Connection,
+    desc: &TableDescriptor,
+    pk_values: &[&str],
+    row: &serde_json::Value,
+    remote_hlc: &Hlc,
+    tiebreak: Option<&StatusTiebreak>,
+    result: &mut SyncResult,
+) -> Result<(), StorageError> {
+    let Some(local) = select_local_match(conn, desc, pk_values, tiebreak)? else {
+        let Some(values) = desc.bind_all_columns(row, pk_values)? else {
+            result.skipped_dup += 1;
+            return Ok(());
+        };
+        insert_row(conn, desc, &values, remote_hlc)?;
+        result.applied += 1;
+        return Ok(());
+    };
+
+    let remote_wins = match tiebreak {
+        Some(tb) => {
+            let remote_ordinal = tb.ordinal(row);
+            let local_ordinal = local.tiebreak_ordinal.unwrap_or(0);
+            if remote_ordinal != local_ordinal {
+                // Monotonic merge: a higher status ordinal always wins, even
+                // over a higher local HLC (#5174 "IMPORTANT-2").
+                remote_ordinal > local_ordinal
+            } else {
+                // Same status ordinal — fall back to HLC LWW.
+                remote_hlc.is_after(&local.hlc)
+            }
+        }
+        None => remote_hlc.is_after(&local.hlc),
+    };
+
+    if !remote_wins {
+        result.skipped_lww += 1;
         return Ok(());
     }
-    let remote_status = SqliteSyncMerger::suggestion_status_ordinal(row);
 
-    let local: Option<(
-        u64,
-        u32,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn
-        .query_row(
-            "SELECT hlc_wall_ms, hlc_counter, origin_device_id, \
-             shown_at, dismissed_at, acted_at \
-             FROM suggestions WHERE suggestion_id = ?1",
-            rusqlite::params![suggestion_id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
+    if tiebreak.is_none() {
+        // Plain LWW tables warn on every conflict overwrite (regimes,
+        // embeddings); the monotonic-status table (suggestions) does not —
+        // matches the pre-refactor per-function behavior.
+        warn!(
+            row = %desc.merge_row_label(pk_values),
+            table = %desc.data_table,
+            local_device = %local.hlc.device_id,
+            remote_device = %remote_hlc.device_id,
+            local_hlc_ms = local.hlc.wall_ms,
+            remote_hlc_ms = remote_hlc.wall_ms,
+            "sync conflict: row overwritten by remote (LWW)"
+        );
+    }
+
+    let Some(values) = desc.bind_all_columns(row, pk_values)? else {
+        result.skipped_dup += 1;
+        return Ok(());
+    };
+
+    let (where_col, where_value): (&str, Box<dyn rusqlite::ToSql>) = match &desc.pk {
+        PrimaryKey::Simple(pk_col) => (*pk_col, Box::new(pk_values[0].to_string())),
+        PrimaryKey::CompositeWithSurrogate { surrogate, .. } => (
+            *surrogate,
+            Box::new(local.surrogate.ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "CompositeWithSurrogate lookup missed surrogate id: {}",
+                    desc.data_table
                 ))
-            },
-        )
-        .optional()
-        .map_err(|e| StorageError::Internal(format!("lookup suggestion {suggestion_id}: {e}")))?;
+            })?),
+        ),
+    };
+    update_row(
+        conn,
+        desc,
+        &values,
+        remote_hlc,
+        where_col,
+        where_value.as_ref(),
+    )?;
 
-    match local {
-        None => {
-            conn.execute(
-                "INSERT INTO suggestions \
-                 (suggestion_id, suggestion_type, source, content, priority, \
-                  confidence_score, relevance_score, is_actionable, reasoning, \
-                  context_app, context_window, context_target_id, \
-                  shown_at, dismissed_at, acted_at, created_at, expires_at, \
-                  is_deleted, deleted_at, \
-                  hlc_wall_ms, hlc_counter, origin_device_id) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
-                rusqlite::params![
-                    suggestion_id,
-                    json_str(row, "suggestion_type")?,
-                    json_str(row, "source")?,
-                    json_str(row, "content")?,
-                    json_str(row, "priority")?,
-                    json_f64(row, "confidence_score")?,
-                    json_f64(row, "relevance_score")?,
-                    json_i64(row, "is_actionable")?,
-                    json_str_opt(row, "reasoning"),
-                    json_str_opt(row, "context_app"),
-                    json_str_opt(row, "context_window"),
-                    json_str_opt(row, "context_target_id"),
-                    json_str_opt(row, "shown_at"),
-                    json_str_opt(row, "dismissed_at"),
-                    json_str_opt(row, "acted_at"),
-                    json_str(row, "created_at")?,
-                    json_str_opt(row, "expires_at"),
-                    json_i64_or_default(row, "is_deleted", 0),
-                    json_str_opt(row, "deleted_at"),
-                    remote_hlc.wall_ms,
-                    remote_hlc.counter,
-                    json_str(row, "origin_device_id")?,
-                ],
-            )
-            .map_err(|e| StorageError::Internal(format!("insert suggestion: {e}")))?;
-            result.applied += 1;
-        }
-        Some((lw, lc, ld, shown, dismissed, acted)) => {
-            // Compute local status ordinal
-            let local_status = if acted.is_some() {
-                3
-            } else if dismissed.is_some() {
-                2
-            } else if shown.is_some() {
-                1
-            } else {
-                0
-            };
+    // #5174: a winning update carrying `is_deleted = 1` is a soft-delete
+    // propagated via LWW (distinct from the hard-delete tombstone path
+    // above) — counted as tombstoned, not applied.
+    let is_tombstone = json_i64_or_default(row, "is_deleted", 0) == 1;
+    if is_tombstone {
+        result.tombstoned += 1;
+    } else {
+        result.applied += 1;
+    }
+    Ok(())
+}
 
-            // Monotonic merge: higher status always wins
-            let remote_wins = if remote_status != local_status {
-                remote_status > local_status
+/// Looks up the local row (if any) for an LWW conflict compare. `tiebreak`
+/// selects which extra presence-columns to fetch alongside the HLC.
+fn select_local_match(
+    conn: &Connection,
+    desc: &TableDescriptor,
+    pk_values: &[&str],
+    tiebreak: Option<&StatusTiebreak>,
+) -> Result<Option<LocalMatch>, StorageError> {
+    match &desc.pk {
+        PrimaryKey::Simple(pk_col) => {
+            if let Some(tb) = tiebreak {
+                let extra_cols = tb.presence_rank.join(", ");
+                let sql = format!(
+                    "SELECT hlc_wall_ms, hlc_counter, origin_device_id, {extra_cols} \
+                     FROM {} WHERE {pk_col} = ?1",
+                    desc.data_table
+                );
+                conn.query_row(&sql, rusqlite::params![pk_values[0]], |r| {
+                    let wall: u64 = r.get(0)?;
+                    let counter: u32 = r.get(1)?;
+                    let origin: String = r.get(2)?;
+                    let mut ordinal = 0u8;
+                    for (i, _) in tb.presence_rank.iter().enumerate() {
+                        let present: Option<String> = r.get(3 + i)?;
+                        if present.is_some() {
+                            ordinal = (tb.presence_rank.len() - i) as u8;
+                            break;
+                        }
+                    }
+                    Ok(LocalMatch {
+                        hlc: Hlc {
+                            wall_ms: wall,
+                            counter,
+                            device_id: origin,
+                        },
+                        surrogate: None,
+                        tiebreak_ordinal: Some(ordinal),
+                    })
+                })
+                .optional()
+                .map_err(|e| StorageError::Internal(format!("lookup {}: {e}", desc.data_table)))
             } else {
-                // Same status -- fall back to HLC LWW
-                let local_hlc = Hlc {
-                    wall_ms: lw,
-                    counter: lc,
-                    device_id: ld,
-                };
-                remote_hlc.is_after(&local_hlc)
-            };
-
-            if remote_wins {
-                conn.execute(
-                    "UPDATE suggestions SET \
-                     suggestion_type=?2, source=?3, content=?4, priority=?5, \
-                     confidence_score=?6, relevance_score=?7, is_actionable=?8, \
-                     reasoning=?9, context_app=?10, context_window=?11, \
-                     context_target_id=?12, shown_at=?13, dismissed_at=?14, acted_at=?15, \
-                     expires_at=?16, is_deleted=?17, deleted_at=?18, \
-                     hlc_wall_ms=?19, hlc_counter=?20, origin_device_id=?21 \
-                     WHERE suggestion_id = ?1",
-                    rusqlite::params![
-                        suggestion_id,
-                        json_str(row, "suggestion_type")?,
-                        json_str(row, "source")?,
-                        json_str(row, "content")?,
-                        json_str(row, "priority")?,
-                        json_f64(row, "confidence_score")?,
-                        json_f64(row, "relevance_score")?,
-                        json_i64(row, "is_actionable")?,
-                        json_str_opt(row, "reasoning"),
-                        json_str_opt(row, "context_app"),
-                        json_str_opt(row, "context_window"),
-                        json_str_opt(row, "context_target_id"),
-                        json_str_opt(row, "shown_at"),
-                        json_str_opt(row, "dismissed_at"),
-                        json_str_opt(row, "acted_at"),
-                        json_str_opt(row, "expires_at"),
-                        json_i64_or_default(row, "is_deleted", 0),
-                        json_str_opt(row, "deleted_at"),
-                        remote_hlc.wall_ms,
-                        remote_hlc.counter,
-                        json_str(row, "origin_device_id")?,
-                    ],
-                )
-                .map_err(|e| StorageError::Internal(format!("update suggestion: {e}")))?;
-                result.applied += 1;
-            } else {
-                result.skipped_lww += 1;
+                let sql = format!(
+                    "SELECT hlc_wall_ms, hlc_counter, origin_device_id \
+                     FROM {} WHERE {pk_col} = ?1",
+                    desc.data_table
+                );
+                conn.query_row(&sql, rusqlite::params![pk_values[0]], |r| {
+                    Ok(LocalMatch {
+                        hlc: Hlc {
+                            wall_ms: r.get(0)?,
+                            counter: r.get(1)?,
+                            device_id: r.get(2)?,
+                        },
+                        surrogate: None,
+                        tiebreak_ordinal: None,
+                    })
+                })
+                .optional()
+                .map_err(|e| StorageError::Internal(format!("lookup {}: {e}", desc.data_table)))
             }
         }
+        PrimaryKey::CompositeWithSurrogate {
+            parts: (a, b),
+            surrogate,
+        } => {
+            let sql = format!(
+                "SELECT {surrogate}, hlc_wall_ms, hlc_counter, origin_device_id \
+                 FROM {} WHERE {a} = ?1 AND {b} = ?2",
+                desc.data_table
+            );
+            conn.query_row(&sql, rusqlite::params![pk_values[0], pk_values[1]], |r| {
+                Ok(LocalMatch {
+                    surrogate: Some(r.get(0)?),
+                    hlc: Hlc {
+                        wall_ms: r.get(1)?,
+                        counter: r.get(2)?,
+                        device_id: r.get(3)?,
+                    },
+                    tiebreak_ordinal: None,
+                })
+            })
+            .optional()
+            .map_err(|e| StorageError::Internal(format!("lookup {}: {e}", desc.data_table)))
+        }
     }
-    Ok(())
 }
 
-fn merge_param_snapshot(
+/// Builds and executes the generic INSERT for a new row. Column order
+/// matches `values` (`TableDescriptor::columns` order), followed by the
+/// `hlc_wall_ms`/`hlc_counter`/`origin_device_id` trailer every table
+/// carries.
+fn insert_row(
     conn: &Connection,
-    row: &serde_json::Value,
-    result: &mut SyncResult,
+    desc: &TableDescriptor,
+    values: &[(&'static str, BoundValue)],
+    remote_hlc: &Hlc,
 ) -> Result<(), StorageError> {
-    let id = json_str(row, "id")?;
-    // #6174: reject just this row if the wire HLC counter overflows u32 (no silent truncation).
-    let Some(hlc_counter) = extract_hlc_counter(row, id)? else {
-        result.skipped_dup += 1;
-        return Ok(());
-    };
-    // #5174 S3: anti-resurrection suppression.
-    if tombstone_suppresses(
-        conn,
-        "trigger_params_snapshots",
-        id,
-        json_u64(row, "hlc_wall_ms")?,
-        hlc_counter,
-    )? {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM trigger_params_snapshots WHERE id = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .map_err(|e| StorageError::Internal(format!("check param_snapshot: {e}")))?;
-
-    if exists {
-        result.skipped_dup += 1;
-        return Ok(());
-    }
-
-    conn.execute(
-        "INSERT INTO trigger_params_snapshots \
-         (id, created_at, preset, params_json, hlc_wall_ms, hlc_counter, origin_device_id) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        rusqlite::params![
-            id,
-            json_str(row, "created_at")?,
-            json_str(row, "preset")?,
-            json_str(row, "params_json")?,
-            json_u64(row, "hlc_wall_ms")?,
-            hlc_counter,
-            json_str(row, "origin_device_id")?,
-        ],
-    )
-    .map_err(|e| StorageError::Internal(format!("insert param_snapshot: {e}")))?;
-    result.applied += 1;
+    let mut col_names: Vec<&str> = values.iter().map(|(name, _)| *name).collect();
+    col_names.push("hlc_wall_ms");
+    col_names.push("hlc_counter");
+    col_names.push("origin_device_id");
+    let placeholders: Vec<String> = (1..=col_names.len()).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        desc.data_table,
+        col_names.join(", "),
+        placeholders.join(",")
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = values
+        .iter()
+        .map(|(_, v)| v as &dyn rusqlite::ToSql)
+        .collect();
+    params.push(&remote_hlc.wall_ms);
+    params.push(&remote_hlc.counter);
+    params.push(&remote_hlc.device_id);
+    conn.execute(&sql, params.as_slice())
+        .map_err(|e| StorageError::Internal(format!("insert {}: {e}", desc.data_table)))?;
     Ok(())
 }
 
-// ── JSON extraction helpers ──
+/// Builds and executes the generic UPDATE for a winning LWW conflict.
+/// Excludes any column `TableDescriptor::excluded_from_update` flags (the
+/// `Simple` primary key itself, and any `immutable_on_update` column, e.g.
+/// `suggestions.created_at`) from the SET list.
+fn update_row(
+    conn: &Connection,
+    desc: &TableDescriptor,
+    values: &[(&'static str, BoundValue)],
+    remote_hlc: &Hlc,
+    where_col: &str,
+    where_value: &dyn rusqlite::ToSql,
+) -> Result<(), StorageError> {
+    let mut set_parts: Vec<String> = Vec::with_capacity(values.len() + 3);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(values.len() + 4);
+    let mut idx = 2; // ?1 is reserved for the WHERE value.
+    for (name, value) in values {
+        if desc.excluded_from_update(name) {
+            continue;
+        }
+        set_parts.push(format!("{name}=?{idx}"));
+        params.push(value as &dyn rusqlite::ToSql);
+        idx += 1;
+    }
+    set_parts.push(format!("hlc_wall_ms=?{idx}"));
+    params.push(&remote_hlc.wall_ms);
+    idx += 1;
+    set_parts.push(format!("hlc_counter=?{idx}"));
+    params.push(&remote_hlc.counter);
+    idx += 1;
+    set_parts.push(format!("origin_device_id=?{idx}"));
+    params.push(&remote_hlc.device_id);
 
-fn json_str<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str, StorageError> {
-    v.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| StorageError::Internal(format!("missing string field: {key}")))
-}
-
-fn json_str_opt(v: &serde_json::Value, key: &str) -> Option<String> {
-    v.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
-}
-
-fn json_str_or_default<'a>(v: &'a serde_json::Value, key: &str, default: &'a str) -> &'a str {
-    v.get(key).and_then(|v| v.as_str()).unwrap_or(default)
-}
-
-fn json_i64(v: &serde_json::Value, key: &str) -> Result<i64, StorageError> {
-    v.get(key)
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| StorageError::Internal(format!("missing i64 field: {key}")))
-}
-
-fn json_i64_or_default(v: &serde_json::Value, key: &str, default: i64) -> i64 {
-    v.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
-}
-
-fn json_u64(v: &serde_json::Value, key: &str) -> Result<u64, StorageError> {
-    v.get(key)
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| StorageError::Internal(format!("missing u64 field: {key}")))
+    let sql = format!(
+        "UPDATE {} SET {} WHERE {where_col} = ?1",
+        desc.data_table,
+        set_parts.join(", ")
+    );
+    let mut full_params: Vec<&dyn rusqlite::ToSql> = vec![where_value];
+    full_params.extend(params);
+    conn.execute(&sql, full_params.as_slice())
+        .map_err(|e| StorageError::Internal(format!("update {}: {e}", desc.data_table)))?;
+    Ok(())
 }
 
 /// Far-future poison guard for cross-device sync ingestion.
@@ -1066,75 +795,6 @@ fn hlc_drift_rejected(row: &serde_json::Value, table: &str) -> bool {
         _ => false,
     }
 }
-
-fn json_f64(v: &serde_json::Value, key: &str) -> Result<f64, StorageError> {
-    v.get(key)
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| StorageError::Internal(format!("missing f64 field: {key}")))
-}
-
-/// Extract a wire-supplied HLC counter, rejecting just the offending row on overflow.
-///
-/// #6174: the `hlc_counter` field is part of every synced row's HLC. A missing field is a
-/// structurally malformed changeset and stays a hard error (same as every other required
-/// field below). But a *present* counter that exceeds `u32::MAX` (corrupt/buggy/hostile
-/// peer) must NEVER be silently truncated — that would corrupt causal ordering on merge.
-/// Mirroring [`decode_vector`], an out-of-range counter logs a warning naming the row and
-/// returns `None` so the caller REJECTS just that row and keeps merging the rest of the
-/// changeset, instead of aborting the whole transaction (and stalling sync, since the
-/// watermark would never advance) over one bad peer row.
-fn extract_hlc_counter(
-    row: &serde_json::Value,
-    row_label: &str,
-) -> Result<Option<u32>, StorageError> {
-    let raw = json_u64(row, "hlc_counter")?;
-    match u32::try_from(raw) {
-        Ok(counter) => Ok(Some(counter)),
-        Err(_) => {
-            warn!(
-                row = %row_label,
-                "rejected remote row with out-of-range HLC counter (would corrupt causal ordering): {raw}"
-            );
-            Ok(None)
-        }
-    }
-}
-
-/// Extract a full HLC from a wire row. Returns `None` (caller skips just this row) when the
-/// counter is out of `u32` range — see [`extract_hlc_counter`] (#6174).
-fn extract_hlc(row: &serde_json::Value, row_label: &str) -> Result<Option<Hlc>, StorageError> {
-    let Some(counter) = extract_hlc_counter(row, row_label)? else {
-        return Ok(None);
-    };
-    Ok(Some(Hlc {
-        wall_ms: json_u64(row, "hlc_wall_ms")?,
-        counter,
-        device_id: json_str(row, "origin_device_id")?.to_string(),
-    }))
-}
-
-/// Decode a wire-supplied hex embedding vector back to its BLOB bytes.
-///
-/// #35 / #6081: a malformed hex string (truncated, odd-length, or non-hex char from a
-/// corrupt/buggy/hostile peer) must NEVER silently collapse to an empty `Vec<u8>` that
-/// would overwrite a valid local vector with a zero-length blob under last-write-wins.
-/// Returns `None` on a decode failure (logging a warning that names the offending row)
-/// so the caller REJECTS just that row and keeps merging the rest of the changeset,
-/// instead of aborting the whole transaction over one bad peer row.
-fn decode_vector(vector_hex: &str, segment_id: &str, model_id: &str) -> Option<Vec<u8>> {
-    match hex::decode(vector_hex) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            warn!(
-                segment_id = %segment_id,
-                model_id = %model_id,
-                "rejected corrupt remote embedding vector (malformed hex): {e}"
-            );
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1978,6 +1638,302 @@ mod tests {
             ),
             0,
             "overflow row skipped",
+        );
+    }
+
+    // ── #7742 behavior-pinning: table-descriptor refactor must not change any of
+    // these observable merge semantics. Added BEFORE the descriptor-driven
+    // `merge_row` refactor to close pre-existing gaps in per-table coverage
+    // (regimes' LWW path, plain append-only dedup, suggestions' created_at
+    // immutability) that the prior hand-rolled functions had no direct test for. ──
+
+    fn regime_json(
+        id: &str,
+        wall: u64,
+        counter: u32,
+        origin: &str,
+        is_deleted: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "label": "Deep Work", "detected_at": "2026-01-01T00:00:00",
+            "last_seen_at": "2026-01-01T00:00:00", "occurrence_count": 1,
+            "avg_density": 0.5, "avg_importance": 0.5, "dominant_category": "Dev",
+            "params_snapshot_id": null, "is_active": 1, "is_deleted": is_deleted,
+            "deleted_at": null, "hlc_wall_ms": wall, "hlc_counter": counter,
+            "origin_device_id": origin
+        })
+    }
+
+    #[tokio::test]
+    async fn merge_regime_inserts_new_row() {
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            regimes: vec![regime_json("reg-1", 100, 0, "remote-dev", 0)],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.applied, 1, "new regime inserts");
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM regimes WHERE id='reg-1'"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_regime_lww_remote_wins_updates_row() {
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO regimes (id, label, detected_at, last_seen_at, \
+                     occurrence_count, avg_density, avg_importance, dominant_category, \
+                     is_active, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('reg-lww', 'Old Label', '2026-01-01', '2026-01-01', 1, \
+                     0.5, 0.5, 'Dev', 1, 100, 0, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        // Remote regime at a HIGHER HLC (200,0) — must win and replace the row.
+        let mut remote = regime_json("reg-lww", 200, 0, "remote-dev", 0);
+        remote["label"] = serde_json::json!("New Label");
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            regimes: vec![remote],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.applied, 1, "higher-HLC remote regime wins and updates");
+        let label: String = count_str(&storage, "SELECT label FROM regimes WHERE id='reg-lww'");
+        assert_eq!(
+            label, "New Label",
+            "remote content replaces local content on an LWW win"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_regime_lww_local_wins_discards_remote() {
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO regimes (id, label, detected_at, last_seen_at, \
+                     occurrence_count, avg_density, avg_importance, dominant_category, \
+                     is_active, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('reg-local-wins', 'Keep Me', '2026-01-01', '2026-01-01', 1, \
+                     0.5, 0.5, 'Dev', 1, 300, 0, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        // Remote at a LOWER HLC (100,0) must lose — local content is untouched.
+        let mut remote = regime_json("reg-local-wins", 100, 0, "remote-dev", 0);
+        remote["label"] = serde_json::json!("Should Not Apply");
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            regimes: vec![remote],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(
+            r.skipped_lww, 1,
+            "lower-HLC remote row loses the LWW compare"
+        );
+        let label: String = count_str(
+            &storage,
+            "SELECT label FROM regimes WHERE id='reg-local-wins'",
+        );
+        assert_eq!(label, "Keep Me", "local content stays untouched");
+    }
+
+    #[tokio::test]
+    async fn merge_regime_winning_update_with_is_deleted_counts_as_tombstoned() {
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO regimes (id, label, detected_at, last_seen_at, \
+                     occurrence_count, avg_density, avg_importance, dominant_category, \
+                     is_active, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('reg-soft-del', 'Label', '2026-01-01', '2026-01-01', 1, \
+                     0.5, 0.5, 'Dev', 1, 100, 0, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let remote = regime_json("reg-soft-del", 200, 0, "remote-dev", 1);
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            regimes: vec![remote],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(
+            r.tombstoned, 1,
+            "a winning update carrying is_deleted=1 counts as tombstoned, not applied"
+        );
+        assert_eq!(r.applied, 0);
+    }
+
+    #[tokio::test]
+    async fn merge_param_snapshot_inserts_and_dedups() {
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let snap = serde_json::json!({
+            "id": "snap-1", "created_at": "2026-01-01", "preset": "focus",
+            "params_json": "{}", "hlc_wall_ms": 100, "hlc_counter": 0,
+            "origin_device_id": "remote-dev"
+        });
+        let cs1 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            param_snapshots: vec![snap.clone()],
+            ..Default::default()
+        };
+        let r1 = merger.apply_changes(cs1).await.unwrap();
+        assert_eq!(r1.applied, 1, "new param snapshot inserts");
+
+        let cs2 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            param_snapshots: vec![snap],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(
+            r2.skipped_dup, 1,
+            "a re-sent snapshot with the same pk is a duplicate"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM trigger_params_snapshots WHERE id='snap-1'"
+            ),
+            1,
+            "no second row inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_override_dedup_on_resend() {
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let ov = serde_json::json!({
+            "override_id": "ov-dup", "segment_id": "seg-1", "action_type": "reassign",
+            "created_at": "2026-01-01", "hlc_wall_ms": 100, "hlc_counter": 0,
+            "origin_device_id": "remote-dev"
+        });
+        let cs1 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            overrides: vec![ov.clone()],
+            ..Default::default()
+        };
+        let r1 = merger.apply_changes(cs1).await.unwrap();
+        assert_eq!(r1.applied, 1);
+
+        let cs2 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            overrides: vec![ov],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(
+            r2.skipped_dup, 1,
+            "append-only table: a re-sent PK is a dup, never an update"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM regime_overrides WHERE override_id='ov-dup'"
+            ),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_segment_dedup_on_resend() {
+        let (storage, local_id) = setup();
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        let row = seg_json("seg-dup", 100, 0, "remote-dev");
+        let cs1 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![row.clone()],
+            ..Default::default()
+        };
+        assert_eq!(merger.apply_changes(cs1).await.unwrap().applied, 1);
+
+        let cs2 = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            segments: vec![row],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(cs2).await.unwrap();
+        assert_eq!(
+            r2.skipped_dup, 1,
+            "a re-sent segment with the same id is a duplicate, never an update"
+        );
+    }
+
+    #[tokio::test]
+    async fn suggestion_created_at_is_immutable_on_winning_update() {
+        // Pins: `merge_suggestion`'s UPDATE deliberately excludes `created_at` from
+        // its SET list — a peer must never overwrite an existing suggestion's
+        // original creation timestamp, even on a winning LWW/status update.
+        let (storage, local_id) = setup();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO suggestions \
+                     (suggestion_id, suggestion_type, source, content, priority, \
+                      confidence_score, relevance_score, is_actionable, created_at, \
+                      hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('sug-immut', 'focus', 'RULE_BASED', 'c', 'MEDIUM', 0.5, 0.5, \
+                     1, '2026-01-01T00:00:00', 100, 0, ?1)",
+                    rusqlite::params![local_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        // Remote wins on HLC AND carries a different created_at.
+        let remote = serde_json::json!({
+            "suggestion_id": "sug-immut", "suggestion_type": "focus", "source": "RULE_BASED",
+            "content": "c2", "priority": "MEDIUM", "confidence_score": 0.6,
+            "relevance_score": 0.6, "is_actionable": 1, "created_at": "2099-01-01T00:00:00",
+            "hlc_wall_ms": 200, "hlc_counter": 0, "origin_device_id": "remote-dev"
+        });
+        let cs = ChangeSet {
+            origin_device_id: "remote-dev".to_string(),
+            suggestions: vec![remote],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(cs).await.unwrap();
+        assert_eq!(r.applied, 1, "remote wins on HLC");
+        let created_at: String = count_str(
+            &storage,
+            "SELECT created_at FROM suggestions WHERE suggestion_id='sug-immut'",
+        );
+        assert_eq!(
+            created_at, "2026-01-01T00:00:00",
+            "created_at survives a winning update unchanged"
+        );
+        let content: String = count_str(
+            &storage,
+            "SELECT content FROM suggestions WHERE suggestion_id='sug-immut'",
+        );
+        assert_eq!(
+            content, "c2",
+            "other columns DO get overwritten by the winning update"
         );
     }
 }

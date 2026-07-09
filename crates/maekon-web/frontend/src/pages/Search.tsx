@@ -3,11 +3,17 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { Brain, Clock, FileText, Search as SearchIcon } from 'lucide-react'
+import { Brain, Clock, FileText, ListOrdered, Search as SearchIcon } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { fetchSemanticSearch, fetchTags, type SearchResult, search } from '../api/client'
+import {
+  fetchSemanticSearch,
+  fetchSemanticSearchCapabilities,
+  fetchTags,
+  type SearchResult,
+  search,
+} from '../api/client'
 import type { SemanticSearchResult } from '../api/contracts'
 import { TagBadge } from '../components/TagBadge'
 import { Badge, Button, Card, EmptyState, Input, Spinner } from '../components/ui'
@@ -38,7 +44,7 @@ function highlightText(text: string, query: string): JSX.Element {
 }
 
 type SearchType = 'all' | 'frames' | 'events'
-type SearchMode = 'text' | 'semantic'
+type SearchMode = 'text' | 'keyword' | 'semantic'
 
 export default function Search() {
   const { t } = useTranslation()
@@ -59,6 +65,19 @@ export default function Search() {
     queryKey: ['tags'],
     queryFn: fetchTags,
   })
+
+  // #7600: capability check so the "Semantic" toggle is honest BEFORE the user
+  // searches — the shipped release build compiles the embedding pipeline out,
+  // so `mode=semantic` would return HTTP 501 and `mode=hybrid` would silently
+  // degrade to keyword-only results labeled "semantic". Fail-closed (treat
+  // loading/error as unavailable) rather than optimistically enabling it.
+  const { data: searchCapabilities } = useQuery({
+    queryKey: ['semantic-search-capabilities'],
+    queryFn: fetchSemanticSearchCapabilities,
+    staleTime: 300_000,
+    retry: 1,
+  })
+  const semanticAvailable = searchCapabilities?.semantic_available === true
 
   const hasSearchCriteria =
     searchMode === 'text' ? searchQuery.length > 0 || selectedTagIds.length > 0 : searchQuery.length > 0
@@ -86,12 +105,35 @@ export default function Search() {
     error: semanticError,
   } = useQuery({
     queryKey: ['semantic-search', searchQuery],
-    queryFn: () => fetchSemanticSearch(searchQuery, pageSize),
-    enabled: hasSearchCriteria && searchMode === 'semantic' && searchQuery.length > 0,
+    // #7600: explicitly request mode=semantic (was previously omitted, which
+    // silently sent the server default mode=hybrid — so pressing "Semantic"
+    // never actually ran a true vector search, it quietly returned
+    // hybrid/keyword-degraded results mislabeled as semantic). Also gated on
+    // `semanticAvailable` below so this never fires against a build that can
+    // only return HTTP 501 for this mode.
+    queryFn: () => fetchSemanticSearch(searchQuery, pageSize, 'semantic'),
+    enabled: hasSearchCriteria && searchMode === 'semantic' && searchQuery.length > 0 && semanticAvailable,
   })
 
-  const isLoading = searchMode === 'text' ? isTextLoading : isSemanticLoading
-  const error = searchMode === 'text' ? textError : semanticError
+  // #7912 T3.3-Tier1: FTS keyword/relevance mode. Hits the storage `text_search`
+  // path (SQLite FTS5 CJK-bigram + BM25) over enriched activity segments via
+  // `mode=keyword`. Unlike "semantic" it never touches the embedding pipeline,
+  // so it needs no capability gate — `text_search` is a required web dependency
+  // and is therefore always wired. This is a distinct scope from text mode
+  // (frame/event LIKE): keyword ranks activity *segments* by BM25 relevance.
+  const {
+    data: keywordResults,
+    isLoading: isKeywordLoading,
+    error: keywordError,
+  } = useQuery({
+    queryKey: ['keyword-search', searchQuery],
+    queryFn: () => fetchSemanticSearch(searchQuery, pageSize, 'keyword'),
+    enabled: hasSearchCriteria && searchMode === 'keyword' && searchQuery.length > 0,
+  })
+
+  const isLoading =
+    searchMode === 'text' ? isTextLoading : searchMode === 'keyword' ? isKeywordLoading : isSemanticLoading
+  const error = searchMode === 'text' ? textError : searchMode === 'keyword' ? keywordError : semanticError
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -127,7 +169,7 @@ export default function Search() {
       <h1 className={cn(typography.h1, colors.text.pageTitle)}>{t('search.title')}</h1>
 
       {/* Search mode toggle + search form */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-2">
         <div className="flex rounded-lg border border-DEFAULT bg-surface-muted p-0.5">
           <button
             type="button"
@@ -147,6 +189,24 @@ export default function Search() {
           </button>
           <button
             type="button"
+            data-testid="mode-keyword"
+            className={cn(
+              'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm',
+              motion.colors,
+              searchMode === 'keyword'
+                ? 'bg-surface text-content shadow-sm'
+                : 'text-content-secondary hover:text-content',
+            )}
+            onClick={() => {
+              setSearchMode('keyword')
+              setPage(0)
+            }}
+          >
+            <ListOrdered className="h-3.5 w-3.5" />
+            {t('search.keyword')}
+          </button>
+          <button
+            type="button"
             data-testid="mode-semantic"
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm',
@@ -154,16 +214,37 @@ export default function Search() {
               searchMode === 'semantic'
                 ? 'bg-surface text-content shadow-sm'
                 : 'text-content-secondary hover:text-content',
+              !semanticAvailable && 'cursor-not-allowed opacity-50',
             )}
+            disabled={!semanticAvailable}
+            title={
+              semanticAvailable
+                ? undefined
+                : t(
+                    'search.semanticUnavailableHint',
+                    'Keyword search only — semantic search requires embedding setup in this build.',
+                  )
+            }
             onClick={() => {
+              // #7600: defense-in-depth — `disabled` already blocks pointer/keyboard
+              // activation, but guard the handler too so a programmatic click can
+              // never select a mode that only returns HTTP 501 or silently-degraded
+              // keyword results mislabeled as semantic.
+              if (!semanticAvailable) return
               setSearchMode('semantic')
               setPage(0)
             }}
           >
             <Brain className="h-3.5 w-3.5" />
-            {t('search.semantic')}
+            {semanticAvailable ? t('search.semantic') : t('search.semanticUnavailable', 'Semantic (unavailable)')}
           </button>
         </div>
+        {/* Scope hint: text and keyword modes search different indexes. */}
+        {(searchMode === 'text' || searchMode === 'keyword') && (
+          <p className="text-content-tertiary text-xs">
+            {searchMode === 'keyword' ? t('search.keywordScopeHint') : t('search.textScopeHint')}
+          </p>
+        )}
       </div>
 
       <form id="section-recent" onSubmit={handleSearch} className="flex gap-2">
@@ -172,7 +253,13 @@ export default function Search() {
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder={searchMode === 'semantic' ? t('search.semanticPlaceholder') : t('search.placeholder')}
+          placeholder={
+            searchMode === 'semantic'
+              ? t('search.semanticPlaceholder')
+              : searchMode === 'keyword'
+                ? t('search.keywordPlaceholder')
+                : t('search.placeholder')
+          }
           className="flex-1"
         />
         <Button type="submit" variant="primary" size="lg">
@@ -323,6 +410,31 @@ export default function Search() {
           ) : (
             <EmptyState
               icon={<Brain className="h-8 w-8" aria-hidden="true" />}
+              title={t('search.noResults')}
+              description={t('search.searchHint')}
+            />
+          )}
+        </>
+      )}
+
+      {/* Keyword (FTS/BM25) search results */}
+      {searchMode === 'keyword' && keywordResults && (
+        <>
+          <div className="text-content-secondary">
+            "<span className="text-content">{searchQuery}</span>" {t('search.results')}:{' '}
+            <span className="text-brand-text">{keywordResults.length}</span>
+            {t('search.resultCount')}
+          </div>
+
+          {keywordResults.length > 0 ? (
+            <div className="space-y-3">
+              {keywordResults.map((result, index) => (
+                <KeywordResultCard key={result.segment_id} result={result} rank={index + 1} query={searchQuery} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              icon={<ListOrdered className="h-8 w-8" aria-hidden="true" />}
               title={t('search.noResults')}
               description={t('search.searchHint')}
             />
@@ -494,6 +606,59 @@ function SemanticResultCard({ result }: SemanticResultCardProps) {
             {t('search.timeDecay')}: {result.time_decay.toFixed(2)}
           </span>
         </div>
+      </div>
+    </Card>
+  )
+}
+
+// ── Keyword (FTS/BM25) search result card ──────────────────────
+//
+// Keyword results are already ordered by BM25 relevance server-side
+// (`ORDER BY rank`). The raw `score` field carries the FTS5 bm25() value (a
+// negative float where more-negative = more relevant), NOT a 0..1 similarity —
+// so it must NOT be rendered as a percentage the way SemanticResultCard does.
+// Instead we surface the honest signal: the 1-based relevance position.
+
+interface KeywordResultCardProps {
+  result: SemanticSearchResult
+  rank: number
+  query: string
+}
+
+function KeywordResultCard({ result, rank, query }: KeywordResultCardProps) {
+  const { t } = useTranslation()
+  const body = result.llm_summary || result.original_text
+
+  return (
+    <Card padding="md" className="flex gap-4">
+      {/* Relevance rank ordinal */}
+      <div className="flex flex-shrink-0 flex-col items-center justify-center gap-1">
+        <span className={cn('text-xl', typography.weight.bold, 'text-brand-text')}>#{rank}</span>
+        <span className="text-content-tertiary text-xs">{t('search.relevance')}</span>
+      </div>
+
+      {/* Content */}
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <Badge color="primary" size="sm">
+            {result.dominant_category || result.content_type}
+          </Badge>
+          {result.duration_secs != null && result.duration_secs > 0 && (
+            <span className="flex items-center gap-1 text-content-tertiary text-xs">
+              <Clock className={iconSize.xs} />
+              {formatDuration(result.duration_secs)}
+            </span>
+          )}
+          {result.timestamp && (
+            <span className="text-content-secondary text-sm">{formatDateTime(result.timestamp)}</span>
+          )}
+        </div>
+
+        {result.content_label && (
+          <div className={cn('truncate text-content', typography.weight.medium)}>{result.content_label}</div>
+        )}
+
+        {body && <div className="mt-1 line-clamp-3 text-content-secondary text-sm">{highlightText(body, query)}</div>}
       </div>
     </Card>
   )

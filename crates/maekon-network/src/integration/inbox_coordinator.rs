@@ -167,9 +167,21 @@ impl IntegrationInboxCoordinator {
 impl IntegrationInboxSignalPort for IntegrationInboxCoordinator {
     async fn wait_for_remote_prompt_signal(&self, timeout: Duration) -> Result<bool, CoreError> {
         let Some(session) = self.session_port.current_session().await? else {
+            // #7617 (MED finding #3 / RL-01): park for the full interval
+            // instead of returning instantly. An instant `Ok(false)` makes the
+            // runtime loop's `select!` inbox arm immediately ready again on
+            // every iteration, busy-spinning a full CPU core for as long as
+            // the session stays unset. Mirrors the sibling egress arm
+            // (`IntegrationEgressCoordinator::wait_for_pending_egress`), which
+            // always blocks on a Notify+timeout regardless of readiness.
+            tokio::time::sleep(timeout).await;
             return Ok(false);
         };
         if Self::session_ready_for_inbox(&session).is_err() {
+            // #7617 (MED finding #3 / RL-01): same busy-spin guard as above,
+            // for a session that exists but is not yet ready (wrong status,
+            // empty session id, or missing the PromptRead scope).
+            tokio::time::sleep(timeout).await;
             return Ok(false);
         }
 
@@ -250,11 +262,12 @@ mod tests {
     use maekon_core::ports::integration::{
         IntegrationAuditPort, IntegrationEgressDecision, IntegrationEgressPolicyPort,
     };
-    use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+    use maekon_core::ports::pii_sanitizer::FakePiiSanitizer;
     use tokio::sync::Mutex;
 
     use super::*;
     use crate::integration::policy_egress::PolicyAwareIntegrationEgressCoordinator;
+    use crate::integration::test_support::FakeIntegrationSessionPort;
     use crate::integration::transport::IntegrationInboxTransportResponse;
 
     /// In-memory egress capturing every enqueued (envelope, payload). Used both
@@ -280,77 +293,6 @@ mod tests {
 
         async fn last_ack_cursor(&self) -> Result<Option<IntegrationAckCursor>, CoreError> {
             Ok(None)
-        }
-    }
-
-    struct MockSessionPort {
-        state: Arc<Mutex<Option<IntegrationSessionState>>>,
-    }
-
-    #[async_trait]
-    impl IntegrationSessionPort for MockSessionPort {
-        async fn connect(
-            &self,
-            _requested_scopes: Vec<IntegrationCapabilityScope>,
-        ) -> Result<IntegrationSessionState, CoreError> {
-            self.state
-                .lock()
-                .await
-                .clone()
-                .ok_or_else(|| CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "no session".to_string(),
-                })
-        }
-
-        async fn current_session(&self) -> Result<Option<IntegrationSessionState>, CoreError> {
-            Ok(self.state.lock().await.clone())
-        }
-
-        async fn heartbeat(&self, _session_id: &str) -> Result<IntegrationSessionState, CoreError> {
-            self.state
-                .lock()
-                .await
-                .clone()
-                .ok_or_else(|| CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "no session".to_string(),
-                })
-        }
-
-        async fn store_ack_cursor(
-            &self,
-            session_id: &str,
-            cursor: IntegrationAckCursor,
-        ) -> Result<IntegrationSessionState, CoreError> {
-            let mut guard = self.state.lock().await;
-            let state = guard
-                .as_mut()
-                .ok_or_else(|| CoreError::ServiceUnavailable {
-                    code: maekon_core::error_codes::ServiceCode::Unavailable,
-                    message: "no session".to_string(),
-                })?;
-            if state.session_id != session_id {
-                return Err(CoreError::NotFound {
-                    code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
-                    resource_type: "integration_session".to_string(),
-                    id: session_id.to_string(),
-                });
-            }
-            if let Some(existing) = state
-                .ack_cursors
-                .iter_mut()
-                .find(|existing| existing.stream_id == cursor.stream_id)
-            {
-                *existing = cursor;
-            } else {
-                state.ack_cursors.push(cursor);
-            }
-            Ok(state.clone())
-        }
-
-        async fn disconnect(&self, _session_id: &str) -> Result<(), CoreError> {
-            Ok(())
         }
     }
 
@@ -526,17 +468,6 @@ mod tests {
         }
     }
 
-    /// Replaces every occurrence of `secret@example.com` with `[EMAIL]` so the
-    /// regression tests can assert that the dismiss reason was sanitized on the
-    /// egress path rather than queued verbatim.
-    struct MockSanitizer;
-
-    impl PiiSanitizer for MockSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            text.replace("secret@example.com", "[EMAIL]")
-        }
-    }
-
     struct MockInboxTransport {
         prompts: Vec<ProactivePrompt>,
         ack_cursor: Option<IntegrationAckCursor>,
@@ -591,9 +522,9 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_pulls_prompts_and_updates_cursor() {
-        let session_port = Arc::new(MockSessionPort {
-            state: Arc::new(Mutex::new(Some(prompt_read_session()))),
-        });
+        let session_port = Arc::new(FakeIntegrationSessionPort::with_session(
+            prompt_read_session(),
+        ));
         let store = Arc::new(MockInboxStore {
             prompts: Arc::new(Mutex::new(BTreeMap::new())),
             last_cursor: Arc::new(Mutex::new(None)),
@@ -640,8 +571,8 @@ mod tests {
     async fn refresh_requires_prompt_read_scope() {
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
-            Arc::new(MockSessionPort {
-                state: Arc::new(Mutex::new(Some(IntegrationSessionState {
+            Arc::new(FakeIntegrationSessionPort::with_session(
+                IntegrationSessionState {
                     session_id: "session-1".to_string(),
                     device_id: "device-1".to_string(),
                     status: IntegrationSessionStatus::Connected,
@@ -654,8 +585,8 @@ mod tests {
                     requested_scopes: vec![IntegrationCapabilityScope::InsightWrite],
                     granted_scopes: vec![IntegrationCapabilityScope::InsightWrite],
                     ack_cursors: Vec::new(),
-                }))),
-            }),
+                },
+            )),
             Arc::new(MockInboxStore {
                 prompts: Arc::new(Mutex::new(BTreeMap::new())),
                 last_cursor: Arc::new(Mutex::new(None)),
@@ -710,9 +641,9 @@ mod tests {
         let enqueued = Arc::new(Mutex::new(Vec::new()));
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
-            Arc::new(MockSessionPort {
-                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
-            }),
+            Arc::new(FakeIntegrationSessionPort::with_session(
+                prompt_read_session(),
+            )),
             store.clone(),
             Arc::new(MockEgress {
                 enqueued: enqueued.clone(),
@@ -780,9 +711,9 @@ mod tests {
         });
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
-            Arc::new(MockSessionPort {
-                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
-            }),
+            Arc::new(FakeIntegrationSessionPort::with_session(
+                prompt_read_session(),
+            )),
             store.clone(),
             Arc::new(MockEgress {
                 enqueued: Arc::new(Mutex::new(Vec::new())),
@@ -840,13 +771,20 @@ mod tests {
                 }),
                 Arc::new(MockAudit),
             )
-            .with_pii_sanitizer(Arc::new(MockSanitizer), PiiFilterLevel::Strict),
+            .with_pii_sanitizer(
+                // #7729: canonical fake — replaces every occurrence of
+                // `secret@example.com` with `[EMAIL]` so this regression test
+                // can assert the dismiss reason was sanitized on the egress
+                // path rather than queued verbatim.
+                Arc::new(FakePiiSanitizer::new().with_email("secret@example.com")),
+                PiiFilterLevel::Strict,
+            ),
         ) as Arc<dyn IntegrationEgressPort>;
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
-            Arc::new(MockSessionPort {
-                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
-            }),
+            Arc::new(FakeIntegrationSessionPort::with_session(
+                prompt_read_session(),
+            )),
             store.clone(),
             policy_egress,
             Arc::new(MockInboxTransport {
@@ -917,9 +855,9 @@ mod tests {
         )) as Arc<dyn IntegrationEgressPort>;
         let coordinator = IntegrationInboxCoordinator::new(
             "device-1",
-            Arc::new(MockSessionPort {
-                state: Arc::new(Mutex::new(Some(prompt_read_session()))),
-            }),
+            Arc::new(FakeIntegrationSessionPort::with_session(
+                prompt_read_session(),
+            )),
             store.clone(),
             policy_egress,
             Arc::new(MockInboxTransport {
@@ -941,6 +879,137 @@ mod tests {
         assert_eq!(
             prompts.get("prompt-1").unwrap().status,
             IntegrationInboxItemStatus::Pending
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #7617 (MED finding #3 / RL-01): busy-spin regression tests.
+    //
+    // Both tests use a paused tokio clock: `wait_for_remote_prompt_signal`
+    // must actually await a `tokio::time::sleep(timeout)` on the not-ready
+    // branches, so `Instant::now()` measured before/after the call reports a
+    // full `timeout` elapsed under the paused clock's auto-advance. Before
+    // the fix, the not-ready branches returned `Ok(false)` synchronously with
+    // no `.await` on a timer at all, so elapsed stayed at `Duration::ZERO`
+    // (the paused clock never advances without a timer to trigger it) --
+    // proving these tests fail-before.
+    // ------------------------------------------------------------------
+
+    fn empty_inbox_coordinator(
+        session_port: Arc<dyn IntegrationSessionPort>,
+    ) -> IntegrationInboxCoordinator {
+        IntegrationInboxCoordinator::new(
+            "device-1",
+            session_port,
+            Arc::new(MockInboxStore {
+                prompts: Arc::new(Mutex::new(BTreeMap::new())),
+                last_cursor: Arc::new(Mutex::new(None)),
+            }),
+            Arc::new(MockEgress {
+                enqueued: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Arc::new(MockInboxTransport {
+                prompts: Vec::new(),
+                ack_cursor: None,
+            }),
+            10,
+        )
+    }
+
+    /// No session at all (e.g. before the first successful connect): the
+    /// wait must park for the full timeout instead of resolving instantly.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_remote_prompt_signal_parks_when_session_is_none() {
+        let coordinator = empty_inbox_coordinator(Arc::new(FakeIntegrationSessionPort::new()));
+
+        let timeout = std::time::Duration::from_secs(15);
+        let start = tokio::time::Instant::now();
+        let result = coordinator
+            .wait_for_remote_prompt_signal(timeout)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(!result, "no session must report no signal");
+        assert!(
+            elapsed >= timeout,
+            "wait_for_remote_prompt_signal must park for the full timeout instead of \
+             busy-spinning (elapsed={elapsed:?}, timeout={timeout:?})"
+        );
+    }
+
+    /// A session that exists but is `Failed` (status not Connected/Degraded,
+    /// mirroring a connect failure) must also park for the full timeout.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_remote_prompt_signal_parks_for_failed_session() {
+        let coordinator = empty_inbox_coordinator(Arc::new(
+            FakeIntegrationSessionPort::with_session(IntegrationSessionState {
+                session_id: String::new(),
+                device_id: "device-1".to_string(),
+                status: IntegrationSessionStatus::Failed,
+                transport_kind:
+                    maekon_core::models::integration::IntegrationTransportKind::WebSocket,
+                auth_scheme: maekon_core::models::integration::IntegrationAuthScheme::BearerToken,
+                connected_at: None,
+                last_heartbeat_at: None,
+                requested_scopes: vec![IntegrationCapabilityScope::PromptRead],
+                granted_scopes: Vec::new(),
+                ack_cursors: Vec::new(),
+            }),
+        ));
+
+        let timeout = std::time::Duration::from_secs(15);
+        let start = tokio::time::Instant::now();
+        let result = coordinator
+            .wait_for_remote_prompt_signal(timeout)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(!result, "a Failed/empty-id session must report no signal");
+        assert!(
+            elapsed >= timeout,
+            "wait_for_remote_prompt_signal must park for the full timeout instead of \
+             busy-spinning (elapsed={elapsed:?}, timeout={timeout:?})"
+        );
+    }
+
+    /// A `Connected` session missing the `PromptRead` scope must also park
+    /// (the readiness check fails on the scope, not the status).
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_remote_prompt_signal_parks_when_scope_missing() {
+        let coordinator = empty_inbox_coordinator(Arc::new(
+            FakeIntegrationSessionPort::with_session(IntegrationSessionState {
+                session_id: "session-1".to_string(),
+                device_id: "device-1".to_string(),
+                status: IntegrationSessionStatus::Connected,
+                transport_kind:
+                    maekon_core::models::integration::IntegrationTransportKind::WebSocket,
+                auth_scheme: maekon_core::models::integration::IntegrationAuthScheme::BearerToken,
+                connected_at: Some(Utc::now()),
+                last_heartbeat_at: Some(Utc::now()),
+                requested_scopes: vec![IntegrationCapabilityScope::InsightWrite],
+                granted_scopes: vec![IntegrationCapabilityScope::InsightWrite],
+                ack_cursors: Vec::new(),
+            }),
+        ));
+
+        let timeout = std::time::Duration::from_secs(15);
+        let start = tokio::time::Instant::now();
+        let result = coordinator
+            .wait_for_remote_prompt_signal(timeout)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            !result,
+            "a session missing PromptRead must report no signal"
+        );
+        assert!(
+            elapsed >= timeout,
+            "wait_for_remote_prompt_signal must park for the full timeout instead of \
+             busy-spinning (elapsed={elapsed:?}, timeout={timeout:?})"
         );
     }
 }

@@ -94,15 +94,7 @@ pub(crate) fn assemble_frame_export_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct MockSanitizer;
-
-    impl PiiSanitizer for MockSanitizer {
-        fn sanitize_text(&self, text: &str, _level: PiiFilterLevel) -> String {
-            text.replace("alice@example.com", "[EMAIL]")
-                .replace("010-1234-5678", "[PHONE]")
-        }
-    }
+    use maekon_core::ports::pii_sanitizer::FakePiiSanitizer;
 
     fn event_row() -> EventExportRow {
         EventExportRow {
@@ -129,7 +121,11 @@ mod tests {
 
     #[test]
     fn event_export_sanitizes_user_text_fields() {
-        let sanitizer: Arc<dyn PiiSanitizer> = Arc::new(MockSanitizer);
+        let sanitizer: Arc<dyn PiiSanitizer> = Arc::new(
+            FakePiiSanitizer::new()
+                .with_email("alice@example.com")
+                .with_phone("010-1234-5678"),
+        );
         let record = assemble_event_export_record(event_row(), &Some(sanitizer)).unwrap();
 
         assert_eq!(record.app_name.as_deref(), Some("Mail [EMAIL]"));

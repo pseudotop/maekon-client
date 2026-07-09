@@ -1,7 +1,7 @@
 {
   "schema_version": "http.interface.manifest.v1",
-  "document_version": 6,
-  "updated_at": "2026-06-04",
+  "document_version": 9,
+  "updated_at": "2026-07-08",
   "source": {
     "routes_file": "crates/maekon-web/src/routes.rs",
     "contracts_crate": "crates/maekon-api-contracts"
@@ -667,6 +667,11 @@
           "path": "/api/semantic-search",
           "response_type": "SemanticSearchResult",
           "response_is_array": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/semantic-search/capabilities",
+          "response_type": "SemanticSearchCapabilities"
         }
       ]
     },
@@ -833,6 +838,40 @@
         {
           "method": "GET",
           "path": "/api/audit/export"
+        }
+      ]
+    },
+    {
+      "module": "audit_verify",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/audit/verify"
+        }
+      ]
+    },
+    {
+      "module": "egress_ledger",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/privacy/egress-ledger",
+          "response_type": "EgressLedgerResponse"
+        }
+      ]
+    },
+    {
+      "module": "memory_claims",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/memory/claims",
+          "response_type": "ClaimListResponse"
+        },
+        {
+          "method": "POST",
+          "path": "/api/memory/claims/{id}/retract",
+          "response_type": "RetractClaimResponse"
         }
       ]
     }

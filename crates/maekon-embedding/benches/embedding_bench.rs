@@ -5,6 +5,10 @@
 //! maekon-core (scalar quantization + cosine similarity) that are used
 //! internally by the embedding pipeline.
 
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use maekon_core::quantization::ScalarQuantizer;
 use std::hint::black_box;

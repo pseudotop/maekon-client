@@ -9,6 +9,9 @@ homepage.workspace = true
 authors.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "language-check"
 path = "src/main.rs"

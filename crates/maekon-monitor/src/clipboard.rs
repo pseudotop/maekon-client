@@ -205,11 +205,20 @@ impl ClipboardMonitor {
 
 /// Read clipboard text from the system clipboard using platform commands.
 ///
-/// Returns `None` if the command fails or produces no output.
+/// Every helper below is spawned via [`crate::trusted_binary::resolve_trusted_binary`]
+/// (SEC-MON-01) rather than by bare name — a bare `Command::new("pbpaste")`
+/// is PATH-resolved, so a same-named binary planted ahead of the trusted
+/// system dirs on `$PATH` would hijack the spawn under this agent's
+/// privilege. A resolution miss fails closed to `None`, the same outcome as
+/// a command execution failure.
+///
+/// Returns `None` if the command fails, is not found under the trusted
+/// allowlist, or produces no output.
 fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let mut command = std::process::Command::new("pbpaste");
+        let pbpaste_path = crate::trusted_binary::resolve_trusted_binary("pbpaste")?;
+        let mut command = std::process::Command::new(pbpaste_path);
         let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
             .ok()
             .flatten()?;
@@ -223,20 +232,24 @@ fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         // Try xclip first, fall back to xsel
-        let mut xclip = std::process::Command::new("xclip");
-        xclip.args(["-selection", "clipboard", "-o"]);
-        let output = command_output_with_timeout(&mut xclip, CLIPBOARD_COMMAND_TIMEOUT)
-            .ok()
-            .flatten()
-            .filter(|output| output.status.success())
-            .or_else(|| {
-                let mut xsel = std::process::Command::new("xsel");
-                xsel.args(["--clipboard", "--output"]);
-                command_output_with_timeout(&mut xsel, CLIPBOARD_COMMAND_TIMEOUT)
+        let xclip_output =
+            crate::trusted_binary::resolve_trusted_binary("xclip").and_then(|xclip_path| {
+                let mut xclip = std::process::Command::new(xclip_path);
+                xclip.args(["-selection", "clipboard", "-o"]);
+                command_output_with_timeout(&mut xclip, CLIPBOARD_COMMAND_TIMEOUT)
                     .ok()
                     .flatten()
                     .filter(|output| output.status.success())
-            })?;
+            });
+        let output = xclip_output.or_else(|| {
+            let xsel_path = crate::trusted_binary::resolve_trusted_binary("xsel")?;
+            let mut xsel = std::process::Command::new(xsel_path);
+            xsel.args(["--clipboard", "--output"]);
+            command_output_with_timeout(&mut xsel, CLIPBOARD_COMMAND_TIMEOUT)
+                .ok()
+                .flatten()
+                .filter(|output| output.status.success())
+        })?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -246,7 +259,8 @@ fn read_system_clipboard() -> Option<String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut command = std::process::Command::new("powershell");
+        let powershell_path = crate::trusted_binary::resolve_trusted_binary("powershell")?;
+        let mut command = std::process::Command::new(powershell_path);
         command.args(["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"]);
         let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
             .ok()
@@ -325,7 +339,7 @@ fn hash_string(s: &str) -> u64 {
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
         let mut result: String = s.chars().take(max_len).collect();
@@ -689,6 +703,16 @@ mod tests {
             redact_secrets(input),
             input,
             "ordinary prose must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn truncate_counts_unicode_scalars_not_utf8_bytes() {
+        let two_chars = "\u{D55C}\u{AE00}";
+        assert_eq!(truncate(two_chars, 2), two_chars);
+        assert_eq!(
+            truncate("\u{D55C}\u{AE00}\u{D55C}", 2),
+            format!("{two_chars}...")
         );
     }
 

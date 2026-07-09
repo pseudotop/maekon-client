@@ -264,7 +264,7 @@ pub fn sample_local_dashboard_workflow() -> TemplateDraft {
                 confidence: 1.0,
             }],
         )
-        .expect("built-in dashboard sample must be valid")
+        .unwrap_or_else(|error| panic!("built-in dashboard sample must be valid: {error}"))
 }
 
 pub fn sample_os_neutral_preset_workflow() -> TemplateDraft {
@@ -282,7 +282,7 @@ pub fn sample_os_neutral_preset_workflow() -> TemplateDraft {
                 confidence: 1.0,
             }],
         )
-        .expect("built-in OS-neutral sample must be valid")
+        .unwrap_or_else(|error| panic!("built-in OS-neutral sample must be valid: {error}"))
 }
 
 fn execution_mode_for(workflow_kind: TemplateWorkflowKind) -> TemplateExecutionModeClass {

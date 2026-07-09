@@ -1,9 +1,11 @@
 use std::path::Path;
 
 use chrono::Utc;
-use maekon_api_contracts::support::RuntimeLogSnapshotDto;
+use maekon_api_contracts::support::{ResourceUsageSnapshotDto, RuntimeLogSnapshotDto};
 use maekon_core::config::PiiFilterLevel;
+use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use maekon_core::resource_budget;
 use tauri::command;
 
 use crate::feature_capabilities::{
@@ -12,9 +14,10 @@ use crate::feature_capabilities::{
     FeatureCapabilitySnapshot, FeatureCapabilityState, ProviderEndpointProbeResult,
 };
 use crate::ipc_error::IpcError;
-use crate::runtime_state::{ConfigRuntimeState, SecretBackendCapabilities, SecretBackendState};
+use crate::runtime_state::{
+    AppState, ConfigRuntimeState, SecretBackendCapabilities, SecretBackendState,
+};
 use crate::services::log_helpers;
-use crate::updater::{UpdatePreview, Updater};
 
 const DEFAULT_LOG_LINE_LIMIT: usize = 200;
 const MAX_LOG_LINE_LIMIT: usize = 500;
@@ -206,18 +209,31 @@ pub async fn get_feature_capabilities(
 }
 
 /// Probe the currently configured provider endpoint for a direct/self-hosted surface.
+///
+/// #7698 S2: `allow_external_egress` is a WebView-supplied UI toggle and is
+/// NEVER, by itself, sufficient authority for this backend-issued outbound
+/// network probe. The actual security decision is resolved SERVER-SIDE here
+/// from the live `ConsentManager` snapshot and passed down to
+/// `probe_provider_surface_endpoint_impl`, which treats the caller flag as at
+/// most an additional opt-in on top of it (see
+/// `evaluate_provider_endpoint_probe_policy`).
 #[command]
 pub async fn probe_provider_surface_endpoint(
+    state: tauri::State<'_, AppState>,
     surface_id: String,
     endpoint_kind: String,
     endpoint: String,
     allow_external_egress: Option<bool>,
 ) -> Result<ProviderEndpointProbeResult, IpcError> {
+    let consent =
+        ConsentGate::from_ref(state.capture.consent_manager.as_ref()).permissions_snapshot();
+
     Ok(probe_provider_surface_endpoint_impl(
         &surface_id,
         &endpoint_kind,
         &endpoint,
         allow_external_egress.unwrap_or(false),
+        &consent,
     )
     .await)
 }
@@ -236,6 +252,58 @@ pub async fn get_runtime_log_snapshot(
         Some(&sanitizer),
     )
     .map_err(|msg| IpcError::new("internal.generic", msg))
+}
+
+/// #7918: local diagnostics snapshot of the desktop agent's OWN process
+/// RSS + CPU, plus whether each is within the provisional resource budget
+/// (the "<2% CPU, you won't notice it running" claim made measurable).
+///
+/// LOCAL ONLY: this samples the current process via sysinfo and returns the
+/// numbers to the local dashboard / bug-report surface. Nothing here egresses
+/// (ADR-016) — it is the resource-usage sibling of `get_runtime_log_snapshot`,
+/// and it reads the same budget SSOT (`maekon_core::resource_budget`) the
+/// nightly budget test and the scheduler health loop enforce against.
+#[command]
+pub async fn get_resource_usage_snapshot() -> Result<ResourceUsageSnapshotDto, IpcError> {
+    // sysinfo CPU sampling needs two refreshes separated by a short interval,
+    // so `sample_self_resource_usage` BLOCKS for that window — run it off the
+    // async executor so it never stalls a tokio worker.
+    let sample = tokio::task::spawn_blocking(crate::memory_profiler::sample_self_resource_usage)
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                "internal.generic",
+                format!("resource sample task failed: {e}"),
+            )
+        })?;
+
+    let generated_at = Utc::now().to_rfc3339();
+    let snapshot = match sample {
+        Some(sample) => ResourceUsageSnapshotDto {
+            generated_at,
+            rss_bytes: sample.rss_bytes,
+            cpu_percent: sample.cpu_percent,
+            rss_budget_bytes: resource_budget::RSS_BUDGET_BYTES,
+            cpu_budget_percent: resource_budget::CPU_BUDGET_PERCENT,
+            rss_within_budget: resource_budget::rss_within_budget(sample.rss_bytes),
+            cpu_within_budget: resource_budget::cpu_within_budget(sample.cpu_percent),
+            measured: true,
+        },
+        // Unsupported platform / restricted process visibility: report the
+        // budget but mark it unmeasured, and do NOT signal a false breach.
+        None => ResourceUsageSnapshotDto {
+            generated_at,
+            rss_bytes: 0,
+            cpu_percent: 0.0,
+            rss_budget_bytes: resource_budget::RSS_BUDGET_BYTES,
+            cpu_budget_percent: resource_budget::CPU_BUDGET_PERCENT,
+            rss_within_budget: true,
+            cpu_within_budget: true,
+            measured: false,
+        },
+    };
+
+    Ok(snapshot)
 }
 
 #[command]
@@ -289,18 +357,10 @@ pub async fn record_frontend_log(
     Ok(())
 }
 
-/// Preview available update info without downloading.
-#[command]
-pub async fn preview_update(
-    state: tauri::State<'_, ConfigRuntimeState>,
-) -> Result<UpdatePreview, IpcError> {
-    let update_config = state.config_manager().get().update.clone();
-    let updater = Updater::new(update_config);
-    updater
-        .preview_update_availability()
-        .await
-        .map_err(|e| IpcError::new("internal.generic", e.to_string()))
-}
+// #7683 F2: preview_update was removed as a residual dead IPC duplicate — the
+// UpdatePanel.tsx frontend component drives update status/actions through the
+// embedded HTTP API (fetchUpdateStatus/postUpdateAction in api/client.ts)
+// instead. Zero callers of this IPC anywhere in crates/maekon-web/frontend/src.
 
 #[cfg(test)]
 mod tests {

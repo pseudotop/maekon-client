@@ -57,6 +57,11 @@ impl LocalLlmSession {
 #[async_trait]
 impl ConversationSession for LocalLlmSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
+        // #7574: acquire the turn guard before any history mutation so a
+        // concurrent second `send_message` call blocks until this turn's
+        // stream is fully drained/dropped, instead of racing on `history`.
+        let turn_guard = self.send_lock.clone().lock_owned().await;
+
         // Convert SessionMessage to ChatMessage and append to history.
         let rendered_user_message = render_local_message_content(message);
         let content_blocks = local_content_blocks(&rendered_user_message, &message.attachments);
@@ -172,6 +177,11 @@ impl ConversationSession for LocalLlmSession {
         let session_id = self.session_id.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
+            // #7574: keep the turn guard alive for the lifetime of this
+            // stream (dropped when the stream completes or is dropped early)
+            // so the next queued `send_message` cannot start until this turn
+            // releases it.
+            let _turn_guard = turn_guard;
             let mut accumulated = String::new();
             let mut line_buffer = String::new();
 

@@ -186,7 +186,9 @@ impl AnalysisClient {
         let http_client = crate::outbound::hardened_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
-            .expect("하드닝 analysis HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+            .unwrap_or_else(|error| {
+                panic!("hardened analysis HTTP client build failed (TLS backend init): {error}")
+            });
 
         // D7: resolve per-endpoint breaker.
         let breaker_key = endpoint_authority(&resolved_endpoint)

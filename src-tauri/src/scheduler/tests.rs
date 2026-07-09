@@ -2,10 +2,33 @@
 //! Extracted from mod.rs (ADR-013 split).
 
 use super::*;
-use crate::scheduler::config::{PlatformEgressPolicy, REDACTED_WINDOW_TITLE};
+use crate::scheduler::egress_policy::{PlatformEgressPolicy, REDACTED_WINDOW_TITLE};
 use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel, PrivacyConfig};
+use maekon_core::consent::{ConsentManager, ConsentPermissions};
 use maekon_core::models::event::{ContextEvent, Event};
+use maekon_core::ports::consent_manager::ConsentManagerPort;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// A `ConsentManager` with `telemetry` granted (`Valid` status). #7728 made
+/// `PlatformEgressPolicy::is_enabled()` fail-closed on telemetry when no
+/// ConsentManager is injected — every test below that exercises upload-path
+/// behavior (title redaction, PII filtering, the egress ledger write-hook)
+/// needs a granted manager so it isolates ITS OWN dimension rather than
+/// tripping the (now fail-closed) telemetry gate.
+fn granted_telemetry_consent_manager() -> Arc<dyn ConsentManagerPort> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cm = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+    cm.grant_consent(
+        ConsentPermissions {
+            telemetry: true,
+            ..Default::default()
+        },
+        30,
+    )
+    .expect("grant_consent");
+    cm
+}
 
 #[test]
 fn scheduler_config_default() {
@@ -13,6 +36,11 @@ fn scheduler_config_default() {
     assert_eq!(config.poll_interval, Duration::from_secs(1));
     assert_eq!(config.metrics_interval, Duration::from_secs(5));
     assert_eq!(config.idle_threshold_secs, 300);
+}
+
+#[test]
+fn health_check_interval_contract_matches_spawn_cadence() {
+    assert_eq!(super::config::HEALTH_CHECK_INTERVAL_SECS, 5);
 }
 
 #[test]
@@ -32,7 +60,8 @@ fn strict_policy_redacts_window_title() {
         external_data_policy: ExternalDataPolicy::PiiFilterStrict,
         ..SchedulerConfig::default()
     };
-    let policy = PlatformEgressPolicy::new(&config);
+    let policy = PlatformEgressPolicy::new(&config)
+        .with_consent_manager(Some(granted_telemetry_consent_manager()));
     let event = Event::Context(ContextEvent {
         app_name: "Chrome".to_string(),
         window_title: "Inbox user@example.com".to_string(),
@@ -60,7 +89,8 @@ fn allow_filtered_policy_uses_pii_filter() {
         privacy_config: privacy,
         ..SchedulerConfig::default()
     };
-    let policy = PlatformEgressPolicy::new(&config);
+    let policy = PlatformEgressPolicy::new(&config)
+        .with_consent_manager(Some(granted_telemetry_consent_manager()));
     let event = Event::Context(ContextEvent {
         app_name: "Chrome".to_string(),
         window_title: "Inbox user@example.com".to_string(),
@@ -105,10 +135,11 @@ fn sensitive_apps_are_skipped_from_upload() {
 // stubbing out 30 methods — it proves the trait wiring + the real SQLite write +
 // the UNIQUE constraint end-to-end.
 mod egress_hook_tests {
-    use crate::scheduler::config::{
+    use crate::scheduler::config::SchedulerConfig;
+    use crate::scheduler::egress_policy::{
         egress_byte_count, egress_event_type, record_event_egress, PlatformEgressPolicy,
-        SchedulerConfig, SchedulerStorage,
     };
+    use crate::scheduler::SchedulerStorage;
     use maekon_core::consent::{ConsentManager, ConsentPermissions};
     use maekon_core::models::event::{ClipboardContentType, ClipboardEvent, ContextEvent, Event};
     use maekon_core::models::storage_records::EgressLedgerRecord;
@@ -169,7 +200,10 @@ mod egress_hook_tests {
             upload_enabled: true,
             ..Default::default()
         };
+        // #7728: is_enabled() now fail-closes telemetry when no ConsentManager
+        // is injected, so this "enabled" fixture must grant it explicitly.
         PlatformEgressPolicy::new(&config)
+            .with_consent_manager(Some(super::granted_telemetry_consent_manager()))
     }
 
     fn rows(concrete: &Arc<SqliteStorage>) -> Vec<EgressLedgerRecord> {

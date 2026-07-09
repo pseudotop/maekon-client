@@ -183,6 +183,16 @@ impl SqliteStorage {
                 .unwrap_or(0) as u64;
             total += n;
 
+            // digest_processing_markers: same retention window as daily digests.
+            let n = conn
+                .execute(
+                    "DELETE FROM digest_processing_markers
+                     WHERE period_key < date('now', '-365 days')",
+                    [],
+                )
+                .unwrap_or(0) as u64;
+            total += n;
+
             // regime_overrides: 180 days
             let n = conn
                 .execute(

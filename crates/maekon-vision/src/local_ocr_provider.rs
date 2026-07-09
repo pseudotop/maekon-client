@@ -60,7 +60,10 @@ impl OcrProvider for LocalOcrProvider {
         #[cfg(not(feature = "ocr"))]
         {
             let _ = image;
-            Ok(vec![])
+            Err(CoreError::OcrError {
+                code: maekon_core::error_codes::ProviderCode::OcrFailed,
+                message: "Local OCR feature is unavailable".to_string(),
+            })
         }
     }
 
@@ -90,13 +93,10 @@ mod tests {
         let result = provider.extract_elements(b"fake-image", "png").await;
         #[cfg(not(feature = "ocr"))]
         {
-            // Without the "ocr" feature the provider is a no-op stub: contract is Ok(empty vec).
-            let elements =
-                result.expect("stub LocalOcrProvider must return Ok even for invalid image bytes");
+            let err = result.unwrap_err();
             assert!(
-                elements.is_empty(),
-                "stub LocalOcrProvider must return an empty element list (got {})",
-                elements.len()
+                matches!(err, CoreError::OcrError { .. }),
+                "missing OCR runtime must be explicit, got: {err:?}"
             );
         }
         #[cfg(feature = "ocr")]

@@ -69,6 +69,23 @@ pub(crate) const ALLOWED_KEYS: &[&str] = &[
     "tracking_schedule",
 ];
 
+/// D-2 (#7740 write-guard slice): explicit, auditable exceptions to the
+/// `ALLOWED_KEYS` <= AppConfig-paths guard (`allowed_keys_are_appconfig_paths_or_explicit_non_config_exceptions`
+/// below) — WebView-writable top-level keys that are deliberately NOT
+/// `AppConfig` fields. Adding a key here is a conscious, visible opt-out, not a
+/// silent gap: the guard test fails for any `ALLOWED_KEYS` entry that is
+/// neither a real `AppConfig` top-level path (after the same "capture"/
+/// "monitoring" alias normalization `update_setting` applies) nor listed here.
+#[cfg(test)]
+const NON_CONFIG_ALLOWED_KEYS: &[&str] = &[
+    // UI-local: language/theme selection is persisted by the WebView itself
+    // (frontend local storage), not by AppConfig. `update_setting` still
+    // accepts these top-level keys for a uniform settings-form save flow, but
+    // there is no `AppConfig::language` / `AppConfig::theme` field to route
+    // them to.
+    "language", "theme",
+];
+
 #[cfg(test)]
 fn redact_sensitive_fields(config: &mut serde_json::Value) {
     let redacted = serde_json::Value::String("[REDACTED]".to_string());
@@ -183,47 +200,23 @@ pub async fn update_setting(
 
 /// Validate numeric config bounds to prevent tight loops or resource exhaustion
 /// from WebView-supplied values.
+///
+/// #7726 (ctd-W2 E4): delegates entirely to the core `AppConfig::validate_bounds()`
+/// SSOT (`crates/maekon-core/src/config/app_config.rs`) rather than re-declaring
+/// floor/cap literals here. This file previously hardcoded its own duplicate
+/// constants (`poll_interval_ms`/`sync_interval_ms`/`heartbeat_interval_ms`/
+/// `capture_throttle_ms`/`max_suggestions`/`throttle_secs`/
+/// `idle_notification_mins`) that had drifted out of sync with core (most
+/// notably `capture_throttle_ms`: this file required >= 1000 while core only
+/// required >= 100 — see the core-side doc comment on
+/// `VISION_CAPTURE_THROTTLE_MS_FLOOR` for the resolution). `ConfigManager::update`
+/// already runs `AppConfig::validate_bounds()` internally on every write
+/// chokepoint; this early call exists only to surface the
+/// `validation.invalid_arguments` wire code (via `validation_error` below)
+/// before the managed-violations check runs, instead of whatever code
+/// `ConfigManager::update`'s internal `map_bounds_error` would produce.
 fn validate_config_bounds(config: &maekon_core::config::AppConfig) -> Result<(), String> {
-    if config.monitor.poll_interval_ms < 1000 {
-        return Err(format!(
-            "monitor.poll_interval_ms must be >= 1000 (got {})",
-            config.monitor.poll_interval_ms
-        ));
-    }
-    if config.monitor.sync_interval_ms < 1000 {
-        return Err(format!(
-            "monitor.sync_interval_ms must be >= 1000 (got {})",
-            config.monitor.sync_interval_ms
-        ));
-    }
-    if config.monitor.heartbeat_interval_ms < 5000 {
-        return Err(format!(
-            "monitor.heartbeat_interval_ms must be >= 5000 (got {})",
-            config.monitor.heartbeat_interval_ms
-        ));
-    }
-    if config.vision.capture_throttle_ms < 1000 {
-        return Err(format!(
-            "vision.capture_throttle_ms must be >= 1000 (got {})",
-            config.vision.capture_throttle_ms
-        ));
-    }
-    if config.analysis.max_suggestions > 200 {
-        return Err(format!(
-            "analysis.max_suggestions must be <= 200 (got {})",
-            config.analysis.max_suggestions
-        ));
-    }
-    if config.analysis.throttle_secs < 10 {
-        return Err(format!(
-            "analysis.throttle_secs must be >= 10 (got {})",
-            config.analysis.throttle_secs
-        ));
-    }
-    if config.notification.idle_notification_mins == 0 {
-        return Err("notification.idle_notification_mins must be >= 1 (got 0)".to_string());
-    }
-    Ok(())
+    config.validate_bounds()
 }
 
 /// Checks the patch object's top-level keys against the ALLOWED_KEYS whitelist.
@@ -569,6 +562,63 @@ mod tests {
         }
     }
 
+    /// D-2 (#7740 write-guard slice): the 2nd write path (`update_setting` IPC +
+    /// `ALLOWED_KEYS`) must not silently diverge from the `AppConfig` write-guard
+    /// covered by the D-1 destructure guard in `maekon-web`
+    /// (`settings_config_mutation.rs`). This asserts `ALLOWED_KEYS` is a SUBSET
+    /// of (the real `AppConfig` top-level JSON paths UNION the explicit,
+    /// auditable `NON_CONFIG_ALLOWED_KEYS` exception set) — set-containment, not
+    /// equality, because a couple of `ALLOWED_KEYS` entries (`language`,
+    /// `theme`) are UI-local values persisted outside `AppConfig` and never map
+    /// onto a config field.
+    ///
+    /// The "real AppConfig top-level JSON paths" side comes from serializing an
+    /// actual `AppConfig::default_config()` — not a hand-maintained literal
+    /// list — so this test cannot silently drift from the struct it guards. A
+    /// new `ALLOWED_KEYS` entry must therefore be either:
+    ///   1. a real `AppConfig` field name (optionally aliased via
+    ///      `normalize_webview_config_patch`, e.g. `"capture"` -> `"vision"`), or
+    ///   2. added to `NON_CONFIG_ALLOWED_KEYS` with a comment explaining where
+    ///      it is actually persisted.
+    #[test]
+    fn allowed_keys_are_appconfig_paths_or_explicit_non_config_exceptions() {
+        let config_value = serde_json::to_value(maekon_core::config::AppConfig::default_config())
+            .expect("AppConfig must serialize to JSON");
+        let config_top_level_keys: std::collections::BTreeSet<&str> = config_value
+            .as_object()
+            .expect("AppConfig serializes to a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        for &allowed_key in ALLOWED_KEYS {
+            // Route the key through the SAME alias normalization `update_setting`
+            // applies before merging into AppConfig (e.g. "capture" -> "vision",
+            // "monitoring" -> "monitor"). A non-object placeholder value is fine
+            // here — the key rename does not depend on the value shape.
+            let normalized =
+                normalize_webview_config_patch(json!({ allowed_key: serde_json::Value::Null }));
+            let normalized_obj = normalized
+                .as_object()
+                .expect("normalize_webview_config_patch returns an object for an object input");
+            let mapped_key = normalized_obj
+                .keys()
+                .next()
+                .expect("a single-key input patch normalizes to a single-key output");
+
+            let is_real_config_path = config_top_level_keys.contains(mapped_key.as_str());
+            let is_declared_exception = NON_CONFIG_ALLOWED_KEYS.contains(&allowed_key);
+
+            assert!(
+                is_real_config_path || is_declared_exception,
+                "ALLOWED_KEYS entry '{allowed_key}' (normalized: '{mapped_key}') is neither an \
+                 AppConfig top-level field nor a declared NON_CONFIG_ALLOWED_KEYS exception — a \
+                 WebView-writable key that silently does not persist anywhere. Either wire it to \
+                 an AppConfig field or add it to NON_CONFIG_ALLOWED_KEYS with a comment."
+            );
+        }
+    }
+
     // ── REDACTED_PATHS contract ───────────────────────────────
 
     #[test]
@@ -601,12 +651,55 @@ mod tests {
     #[test]
     fn validate_config_bounds_accepts_defaults() {
         // AppConfig::default_config() must produce values that satisfy every
-        // bound in validate_config_bounds (poll>=1000, sync>=1000,
-        // heartbeat>=5000, capture_throttle>=1000, max_suggestions<=200,
-        // throttle_secs>=10, idle_notification_mins>=1).
+        // bound in the core AppConfig::validate_bounds() SSOT this function now
+        // delegates to (poll>=1000, sync>=1000, heartbeat>=5000,
+        // capture_throttle>=1000, 1<=max_suggestions<=200, throttle_secs>=10,
+        // idle_notification_mins>=1, plus storage/web/ai_provider bounds).
         let config = maekon_core::config::AppConfig::default_config();
         validate_config_bounds(&config)
             .expect("default AppConfig must pass all validate_config_bounds checks");
+    }
+
+    // ── #7726 (ctd-W2 E4): boundary-agreement regression tests ──────────
+    //
+    // Pre-fix, these values were accepted by the core `AppConfig::validate_bounds()`
+    // SSOT (looser floor) but rejected by this file's now-deleted hardcoded
+    // duplicate constants (stricter floor) — a live 3-boundary disagreement.
+    // Now that this file delegates to core, both the core-side test (in
+    // `crates/maekon-core/src/config/{app_config,sections/analysis}.rs`) and this
+    // WebView-boundary test must agree on the same outcome for the same value.
+
+    #[test]
+    fn validate_config_bounds_rejects_capture_throttle_500() {
+        // Pre-fix: core's VISION_CAPTURE_THROTTLE_MS_FLOOR was 100 (accepted 500),
+        // this file's hardcoded floor was 1000 (rejected 500) — divergent.
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.vision.capture_throttle_ms = 500;
+        let err = validate_config_bounds(&config).expect_err(
+            "capture_throttle_ms=500 must be rejected — both boundaries now agree on floor=1000",
+        );
+        assert!(err.contains("capture_throttle_ms"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_config_bounds_rejects_analysis_throttle_secs_five() {
+        // Pre-fix: core's ANALYSIS_THROTTLE_SECS_FLOOR was 1 (accepted 5), this
+        // file's hardcoded floor was 10 (rejected 5) — divergent.
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.analysis.throttle_secs = 5;
+        let err = validate_config_bounds(&config).expect_err(
+            "analysis.throttle_secs=5 must be rejected — both boundaries now agree on floor=10",
+        );
+        assert!(err.contains("throttle_secs"), "err: {err}");
+    }
+
+    #[test]
+    fn validate_config_bounds_accepts_capture_throttle_at_new_shared_floor() {
+        // The harmonized floor (1000ms) itself must still be accepted (inclusive boundary).
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.vision.capture_throttle_ms = 1_000;
+        validate_config_bounds(&config)
+            .expect("capture_throttle_ms=1000 (the harmonized floor) must be accepted");
     }
 
     #[test]

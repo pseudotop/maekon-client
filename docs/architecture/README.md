@@ -53,8 +53,9 @@ client workspace.
 | [024](./ADR-024-conversation-content-guard-port.md) | Conversation Content Guard Port | Accepted | `provider_adapters/guarded_conversation.rs`, `session_manager/factory.rs`, `ConversationSession` port |
 | [025](./ADR-025-codex-chatgpt-subscription-tos-gate.md) | OpenAI Codex / ChatGPT Subscription ToS Gate (App-Server Path) | Accepted | `provider-surface-catalog.json`, `session_manager/factory.rs`, `provider_adapters/llm_resolver.rs` |
 | [026](./ADR-026-async-storage-convergence-consent-port.md) | Async Storage Convergence + Object-Safe ConsentManagerPort | Accepted | `maekon-core` storage ports + `consent.rs`, `maekon-storage/src/sqlite`, `maekon-web`, `focus_analyzer` |
+| [027](./ADR-027-suggestion-action-binding.md) | Suggestion Action Binding (Derived, Gate-Preserving) | Accepted | `maekon-core` `intent/workflow.rs` derivation helper, `src-tauri/commands/suggestions/`, overlay Run affordance |
 
-**Next available ID**: `ADR-027`.
+**Next available ID**: `ADR-028`.
 
 ## Conventions Summary
 

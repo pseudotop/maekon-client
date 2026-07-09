@@ -1,14 +1,18 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 875
+use tauri::{Emitter, Manager, Runtime};
+// `tauri::tray`/`menu` builder types and `image::Image` are only touched by the
+// tray-builder path (`setup_tray`/`sync_tray_state`/`build_tray_menu`/
+// `build_connection_items`). That path needs `tauri/tray-icon`, which is forced
+// on macOS/Windows by the platform dep tables but optional on Linux via the
+// `app-tray` feature (the no-gtk Linux build drops it). Gate these imports on
+// the SAME predicate as the functions that use them so the no-tray Linux build
+// (`--no-default-features`, `app-tray` off) has no unused imports.
+#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    Emitter, Manager, Runtime,
+    tray::TrayIconBuilder,
 };
-// `tauri::tray` exists only with `tauri/tray-icon`: forced on macOS/Windows by
-// the platform dep tables, optional on Linux via the `app-tray` feature (the
-// no-gtk Linux build drops it) — gate every touch point on that predicate.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
-use tauri::tray::TrayIconBuilder;
 use tracing::{debug, info, warn};
 
 use serde::Serialize;
@@ -111,6 +115,11 @@ fn resolve_icon_state(paused: bool, any_disconnected: bool) -> TrayIconState {
 }
 
 /// Build the connection status menu items (disabled / info-only).
+///
+/// Tray-builder-only: gated on the same predicate as `setup_tray`/
+/// `sync_tray_state` (its only callers via `build_tray_menu`) so the no-tray
+/// Linux build does not flag it as dead code.
+#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
 #[allow(clippy::type_complexity)]
 fn build_connection_items<R: Runtime>(
     app: &impl Manager<R>,
@@ -306,6 +315,12 @@ fn debug_menu_items_snapshot(
 }
 
 /// Build the full tray menu with connection status items.
+///
+/// Tray-builder-only: gated on the same predicate as `setup_tray`/
+/// `sync_tray_state` (its only callers) so the no-tray Linux build does not
+/// flag it — or the `Menu`/`MenuItem`/`PredefinedMenuItem` imports it uses — as
+/// dead.
+#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
 fn build_tray_menu<R: Runtime>(
     app: &impl Manager<R>,
     paused: bool,

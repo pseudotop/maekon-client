@@ -36,6 +36,8 @@ pub(super) fn ensure_instance_id(data_dir: &Path) -> anyhow::Result<String> {
 /// Wired by a dedicated Tauri command in Phase 3 UX work (see spec §9 and
 /// §3.7 Row 6). Exposed to tests via the same visibility so T-X2-9 can
 /// exercise the state-table row today.
+// #7719: verified still accurate — no Tauri command wraps this yet
+// (grep-checked commands/).
 #[allow(dead_code)]
 pub(super) fn reset_instance_id(data_dir: &Path) -> anyhow::Result<()> {
     let path = data_dir.join(FILE_NAME);

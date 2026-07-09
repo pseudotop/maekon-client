@@ -4,7 +4,7 @@
 //! classification, vector RAG retrieval, and proactive coaching engine.
 
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 // Cast safety: statistical values, scores, durations — precision loss acceptable.
 #![allow(
     clippy::cast_precision_loss,
@@ -49,6 +49,7 @@ pub mod daily_insight_generator;
 pub mod digest_exporter;
 pub mod document_heading;
 pub mod embedding_pipeline;
+pub mod focus_analyzer;
 pub mod focus_shared;
 pub mod gmm_detector;
 pub mod gui_aggregator;
@@ -75,6 +76,7 @@ mod title_bar_parser;
 pub mod vector_retriever;
 pub mod weekly_digest_generator;
 mod work_type_classifier;
+pub mod workflow_intelligence;
 
 pub mod coaching_engine;
 pub mod coaching_template;
@@ -82,9 +84,7 @@ pub mod feedback_tracker;
 pub mod few_shot_selector;
 pub mod regime_goal_tracker;
 
-pub use adaptive_trigger::{
-    AdaptiveCaptureCadence, AdaptiveTrigger, CaptureRateRegime, TriggerDecision,
-};
+pub use adaptive_trigger::{AdaptiveTrigger, TriggerDecision};
 pub use analyzer::ContextAnalyzer;
 pub use assembler::{
     humanize_time_ago, AnalysisContext, ContentSummaryEntry, ContextAssembler, CurrentActivity,
@@ -101,7 +101,7 @@ pub use regime_detector::RegimeDetector;
 pub use regime_manager::RegimeManager;
 pub use segment_buffer::SegmentBuffer;
 pub use segment_summarizer::{to_content_summary_entries, SegmentSummarizer};
-pub use suggestion_filter::filter_by_regime;
+pub use suggestion_filter::{apply_regime_acceptance_gate, filter_by_regime};
 pub use title_bar_parser::{ParsedContent, TitleBarParser};
 pub use work_type_classifier::WorkTypeClassifier;
 

@@ -20,6 +20,93 @@ members = [
 ]
 resolver = "2"
 
+# H1 (#7719): workspace-wide lint policy, replacing the per-crate `#![deny(...)]`
+# headers that had drifted (some crates declared a lint, others didn't, with no
+# single source of truth). This table is the UNION of every crate-root
+# `#![deny(...)]` found in the pre-#7719 survey:
+#   - `derive_partial_eq_without_eq`: 6/14 crates denied it explicitly.
+#   - `significant_drop_tightening`: 6/14 crates denied it (with
+#     `#[cfg_attr(test, allow(...))]`); 4/14 crates instead carried a
+#     crate-wide `#![allow(...)]` with a documented false-positive rationale
+#     (analysis, automation, network, storage) — those source-level allows
+#     are kept as-is and still override this workspace `deny` for that one
+#     crate (source attributes take precedence over Cargo.toml-configured
+#     levels), so behavior for those 4 crates is unchanged.
+# `unwrap_used`/`expect_used` are new additions (were not declared by any
+# crate before #7719): measured at 58 non-test/non-bench production call
+# sites workspace-wide (3 `unwrap_used` + 55 `expect_used`, out of ~8,100
+# total occurrences that are overwhelmingly `#[cfg(test)]`-scoped) — above
+# the ~30-site fix-in-place threshold, so landed at `warn` (not `deny`) per
+# #7719 scope decision; see the PR body for the full count breakdown. Tests
+# are exempted via `clippy.toml`'s `allow-unwrap-in-tests`/
+# `allow-expect-in-tests`; benches carry a per-file `#![allow(...)]` (bench
+# harnesses are dev tooling, not shipped code). NOTE: CI's `-D warnings`
+# invocation promotes ANY configured-`warn` lint to a hard error (verified
+# empirically), so `ci.yml`'s clippy steps additionally pass
+# `-A clippy::unwrap_used -A clippy::expect_used` alongside the existing
+# `-A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity`
+# — the same bridge pattern already used for those three lints.
+# A2 (#7743, Wave-3 of #7744): restore a real deny gate for first-party rustc
+# warnings (unused_imports/dead_code/unused_variables/etc.) on EVERY platform,
+# without touching the vendored `patches/` fork stack.
+#
+# Mechanism (verified empirically against this workspace's toolchain, not
+# assumed): `patches/*` crates are `[patch.crates-io]` PATH dependencies, not
+# `[workspace]` members (see the `members = [...]` list above — none of the 8
+# `patches/<crate>` dirs are listed). Cargo does NOT apply `--cap-lints allow`
+# to path dependencies the way it does for plain registry/git deps, so a
+# workspace-wide `-D warnings` also lints their vendored GTK4/WebKitGTK6 source
+# (macOS objc2 deprecated-static warnings etc.) — that is the actual reason
+# `ci.yml`/`build-smoke.yml` carry a global `RUSTFLAGS: -W warnings` instead of
+# `-D`.
+#
+# `RUSTFLAGS: -W warnings` is a single flag naming the `warnings` GROUP. Cargo
+# appends RUSTFLAGS-derived flags AFTER the `[lints]`-derived flags on the
+# final rustc invocation (confirmed via `cargo build -v`), so when `[lints]`
+# ALSO configures the `warnings` group (e.g. a hypothetical
+# `warnings = "deny"` — a real, valid rustc lint group name, contrary to the
+# initial review assumption that it wasn't expressible), the later
+# RUSTFLAGS `-W warnings` wins and silently downgrades it back to warn. BUT:
+# when `[lints]` instead names a lint/group MORE SPECIFIC than the bare
+# `warnings` super-group (a named sub-group like `unused`, or an individual
+# lint like `dead_code`), that specific `--deny=...` flag is NOT overridden by
+# a later, less-specific `-W warnings` — rustc keeps the more specific level.
+# This was confirmed with a throwaway crate: `[lints.rust] unused = "deny"`
+# plus `dead_code = "deny"` still hard-errored on an unused import/variable and
+# a dead function even under `RUSTFLAGS="-W warnings"`, while a
+# `warnings = "deny"` control case was neutralized under the same RUSTFLAGS.
+#
+# Design: deny the SPECIFIC lint groups that regressed silently before (the
+# `check` job's pre-existing-bug comment cites an `unused_imports` case that
+# only a macOS-only compile path exposed) via `[workspace.lints.rust]`
+# instead of trying to flip the blanket `warnings` group or remove the
+# workspace-global RUSTFLAGS outright. This is intentionally conservative:
+# - `unused` (covers `unused_imports`, `unused_variables`, `unused_mut`,
+#   `unused_assignments`, etc.) and `dead_code` are the two classes the CTD
+#   review + prior ci.yml comments explicitly named.
+# - Every OTHER default-warn rustc lint (`deprecated`, `unreachable_patterns`,
+#   etc.) remains governed by the workflow's `RUSTFLAGS: -W warnings` as
+#   before — not silently promoted to deny by this change.
+# - `[lints]` only applies to packages that opt in via `lints.workspace = true`
+#   (every first-party crate does, per #7719); the 8 `patches/*` manifests
+#   have no such table and are untouched, so this cannot newly break the
+#   vendored fork.
+# - Because `[lints]`-derived flags are baked into the rustc invocation
+#   itself (not a CI-only flag), this closes the actual gap A2 identified:
+#   macOS/Windows `#[cfg(target_os = "...")]` first-party code that is only
+#   ever COMPILED on those runners (`test-platform`/`build` jobs, which never
+#   run a Linux-only `clippy -D warnings` step) is now deny-linted for these
+#   two classes on every platform, every job, not just the ubuntu `check` job.
+[workspace.lints.rust]
+unused = "deny"
+dead_code = "deny"
+
+[workspace.lints.clippy]
+derive_partial_eq_without_eq = "deny"
+significant_drop_tightening = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+
 [workspace.package]
 edition = "2021"
 version = "0.0.1-rc.6"

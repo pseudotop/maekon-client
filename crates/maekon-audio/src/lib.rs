@@ -15,8 +15,7 @@
 )]
 // P2 PR-A nursery-hardening: mutex guards must not be held across I/O or
 // long-running work unless intentionally kept (use function-level #[allow]
-// with reason).
-#![deny(clippy::significant_drop_tightening)]
+// with reason). (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 #![cfg_attr(test, allow(clippy::significant_drop_tightening))]
 
 mod capture;

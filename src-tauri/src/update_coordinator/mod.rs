@@ -45,10 +45,9 @@ pub async fn run_update_coordinator(
     let check_interval_hours = config.check_interval_hours;
 
     // D10 spawn-order guard (Phase 4): the update-check coordinator must not
-    // start until app_runtime_launch.rs:66-74 has persisted installation_id.
-    // This is guaranteed by current launch order (config + UUID are
-    // synchronously committed before any update task spawns), but a future
-    // regression would silently hide the device from rollout via D10's
+    // start until app runtime launch has persisted installation_id. Current
+    // launch order commits config + UUID before any update task spawns, but a
+    // future regression would silently hide the device from rollout via D10's
     // defensive None handling in updater/mod.rs:check_for_updates_from.
     // Surface the invariant loudly in both debug and release builds.
     if config.installation_id.is_none() {

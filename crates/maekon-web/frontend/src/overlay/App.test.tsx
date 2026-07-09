@@ -279,7 +279,6 @@ function suggestionFixture(id: string, title: string): SuggestionViewDto {
     source: 'local',
     confidence_score: 0.91,
     created_at: '2026-05-16T00:00:00Z',
-    is_read: false,
     reasoning: 'A GUI click should reach native suggestion IPC.',
   }
 }

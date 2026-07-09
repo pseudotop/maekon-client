@@ -31,6 +31,9 @@ pub struct RemoteLlmProvider {
     model: String,
     provider_type: AiProviderType,
     surface_id: Option<String>,
+    // Cached from config; the actual timeout enforcement is baked into
+    // `http_client` at construction (`.timeout(...)` below), so this is not
+    // read back today — kept for a future diagnostics/status surface.
     #[allow(dead_code)]
     timeout_secs: u64,
     /// Token budget for the `max_output_tokens` field of Responses API bodies.

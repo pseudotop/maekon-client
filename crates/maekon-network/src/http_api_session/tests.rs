@@ -1359,6 +1359,8 @@ mod http_status_mapping {
 // orchestrator arms (not just the per-event parsers).
 #[cfg(test)]
 mod streaming_history {
+    use std::time::Duration;
+
     use super::*;
     use maekon_core::models::ai_session::{MessageRole, SessionMessage};
     use maekon_core::ports::conversation_session::ConversationSession;
@@ -1658,5 +1660,57 @@ mod streaming_history {
             "an over-cap turn must not be saved as an assistant message: {:?}",
             history.iter().map(|m| m.role).collect::<Vec<_>>()
         );
+    }
+
+    /// #7574 regression: concurrent `send_message` calls on the same
+    /// `HttpApiSession` must serialize — the second turn blocks while the
+    /// first turn's stream is still alive, and proceeds once that stream is
+    /// dropped. Before the turn-guard fix, both calls would race directly on
+    /// `history` (interleaved read-snapshot/push of the shared
+    /// `Vec<ChatMessage>`), so this test fails before the fix (the second
+    /// call returns almost immediately instead of timing out).
+    #[tokio::test]
+    async fn http_api_send_message_serializes_until_stream_drops() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+            .create_async()
+            .await;
+
+        let session = Arc::new(streaming_session(
+            server.url(),
+            AiProviderType::Anthropic,
+            "provider_surface.anthropic.direct_api",
+        ));
+
+        let first_stream = session
+            .send_message(&test_user_message())
+            .await
+            .expect("first turn should start");
+
+        let mut second = {
+            let session = session.clone();
+            tokio::spawn(async move { session.send_message(&test_user_message()).await })
+        };
+
+        // `ResponseStream` (the Ok type) is not `Debug`, so `.expect_err()` cannot be used
+        // here (it would need to format the Ok value); extract the concrete `Elapsed` via
+        // `.err()` instead — this still asserts the timeout actually fired, not merely a
+        // boolean `is_err()`.
+        tokio::time::timeout(Duration::from_millis(100), &mut second)
+            .await
+            .err()
+            .expect("second turn must wait while the first turn stream is still alive");
+
+        drop(first_stream);
+
+        let second_stream = tokio::time::timeout(Duration::from_millis(500), second)
+            .await
+            .expect("second turn should start once the first stream drops")
+            .expect("second task should not panic")
+            .expect("second send_message should succeed");
+        drop(second_stream);
     }
 }

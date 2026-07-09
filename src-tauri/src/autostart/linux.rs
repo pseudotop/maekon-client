@@ -1,7 +1,8 @@
 //! Linux autostart implementation.
 //!
 //! Primary path: systemd user service unit at
-//! `~/.config/systemd/user/maekon.service` (requires `systemctl` on PATH).
+//! `~/.config/systemd/user/maekon.service` (requires `systemctl` resolvable
+//! under the SEC-MON-01 trusted-directory allowlist, not a bare PATH lookup).
 //! Fallback: XDG autostart desktop file at
 //! `~/.config/autostart/maekon.desktop`.
 
@@ -72,9 +73,21 @@ pub fn generate_desktop_file(program_path: &str) -> String {
     )
 }
 
-/// Check whether `systemctl` is available on the system.
+/// SEC-MON-01: resolve `systemctl` against the shared trusted-directory
+/// allowlist (maekon-monitor) instead of a bare-name PATH lookup — fail
+/// closed (`None`) when the binary is not found under any trusted system
+/// directory.
+fn systemctl_path() -> Option<PathBuf> {
+    maekon_monitor::resolve_trusted_binary("systemctl")
+}
+
+/// Check whether `systemctl` is available on the system (trusted-dir
+/// resolved AND functional).
 pub fn has_systemctl() -> bool {
-    Command::new("systemctl")
+    let Some(path) = systemctl_path() else {
+        return false;
+    };
+    Command::new(path)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -83,8 +96,10 @@ pub fn has_systemctl() -> bool {
 
 pub fn enable() -> Result<(), String> {
     let bin = binary_path()?;
+    // Resolve once; only used when the functional check below also passes.
+    let systemctl = systemctl_path().filter(|_| has_systemctl());
 
-    if has_systemctl() {
+    if let Some(systemctl) = systemctl {
         // Primary: systemd user service
         let path = service_path()?;
         let content = generate_service_file(&bin);
@@ -97,11 +112,11 @@ pub fn enable() -> Result<(), String> {
         fs::write(&path, content).map_err(|e| format!("Failed to write service file: {e}"))?;
 
         // Reload systemd daemon to pick up the new unit
-        let _ = Command::new("systemctl")
+        let _ = Command::new(&systemctl)
             .args(["--user", "daemon-reload"])
             .output();
 
-        let output = Command::new("systemctl")
+        let output = Command::new(&systemctl)
             .args(["--user", "enable", "maekon.service"])
             .output()
             .map_err(|e| format!("systemctl enable failed: {e}"))?;
@@ -134,11 +149,11 @@ pub fn disable() -> Result<(), String> {
     // Disable systemd service if it exists
     let svc_path = service_path()?;
     if svc_path.exists() {
-        if has_systemctl() {
-            let _ = Command::new("systemctl")
+        if let Some(systemctl) = systemctl_path().filter(|_| has_systemctl()) {
+            let _ = Command::new(&systemctl)
                 .args(["--user", "disable", "maekon.service"])
                 .output();
-            let _ = Command::new("systemctl")
+            let _ = Command::new(&systemctl)
                 .args(["--user", "daemon-reload"])
                 .output();
         }

@@ -8,11 +8,9 @@ use maekon_api_contracts::settings::{
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::error::CoreError;
 use maekon_core::ports::secret_store::SecretStore;
-use maekon_storage::sqlite::SqliteStorage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tokio::sync::broadcast;
 
 pub(super) struct TestSecretStore {
     values: Mutex<HashMap<(String, String), String>>,
@@ -62,19 +60,16 @@ impl SecretStore for TestSecretStore {
     }
 }
 
+// #7738 D-4: funnel through the canonical test-state helper.
 pub(super) fn test_state_without_config_manager() -> AppState {
-    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-    let (event_tx, _) = broadcast::channel(8);
-    AppState::with_core(storage, event_tx)
+    crate::test_local_auth::test_app_state_with_event_capacity(8)
 }
 
 pub(super) fn test_state_with_config_manager(
     config_manager: ConfigManager,
     secret_store: Option<Arc<dyn SecretStore>>,
 ) -> AppState {
-    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-    let (event_tx, _) = broadcast::channel(8);
-    let mut state = AppState::with_core(storage, event_tx);
+    let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
     state.core.config_manager = Some(config_manager);
     state.secrets.default_backend_kind = maekon_core::config::CredentialBackendKind::OsSecretStore;
     state.secrets.store = secret_store;

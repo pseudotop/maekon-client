@@ -459,7 +459,7 @@ export function SuggestionsPanel({
             {filteredSuggestions.length > 0 ? (
               <ul className="list-none">
                 {filteredSuggestions.map((s) => (
-                  <SuggestionItem key={s.id} item={s} onAction={handleAction} />
+                  <SuggestionItem key={s.id} item={s} onAction={handleAction} onRan={refreshSuggestions} />
                 ))}
               </ul>
             ) : (

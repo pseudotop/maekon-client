@@ -5,6 +5,8 @@
 //! assignment) and the LLM-gated D1/D2 edge inference are separate consumer
 //! slices that build on this port.
 
+use std::collections::HashMap;
+
 use crate::error::CoreError;
 use crate::models::memory_graph::{ClaimStatus, EdgeType, MemoryClaim, MemoryEdge};
 
@@ -29,7 +31,13 @@ pub trait MemoryGraphPort: Send + Sync {
     ) -> Result<Vec<MemoryClaim>, CoreError>;
 
     /// Update a claim's lifecycle status and bump `updated_at` (epoch seconds).
-    /// No-op (Ok) if the claim does not exist.
+    ///
+    /// # Errors
+    /// `CoreError::NotFound` (wire: `not_found.resource_missing`) when no claim
+    /// with `claim_id` exists (the UPDATE matched 0 rows) — an affected-rows
+    /// check so a caller can never silently no-op against a wrong id.
+    /// `CoreError::Storage` for SQLite failures. A consent-erase in progress is
+    /// still a silent `Ok(())` (the write is skipped, not a missing claim).
     async fn set_claim_status(
         &self,
         claim_id: &str,
@@ -46,6 +54,19 @@ pub trait MemoryGraphPort: Send + Sync {
         src_id: &str,
         edge_type: Option<EdgeType>,
     ) -> Result<Vec<MemoryEdge>, CoreError>;
+
+    /// Batched variant of [`Self::edges_from`]: all edges whose `src_id` is in
+    /// `src_ids`, fetched in ONE query and grouped by `src_id`. Avoids the N+1
+    /// of calling `edges_from` once per claim when enriching a claims page.
+    ///
+    /// Within each group edges keep the `created_at ASC` order of `edges_from`,
+    /// so `edges_from_many(&[id]).remove(id)` equals `edges_from(id, None)`. An
+    /// id absent from the store simply has no map entry; an empty `src_ids`
+    /// yields an empty map without touching the DB.
+    async fn edges_from_many(
+        &self,
+        src_ids: &[String],
+    ) -> Result<HashMap<String, Vec<MemoryEdge>>, CoreError>;
 
     /// Delete claims whose `created_at` (epoch seconds) is strictly older than
     /// `cutoff_epoch_secs`, plus the edges originating from them. Bounds the

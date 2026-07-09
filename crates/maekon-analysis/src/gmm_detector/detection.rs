@@ -162,11 +162,13 @@ impl ClusteringStrategy for GmmDetector {
 
         for point in &data {
             let posteriors = Self::posterior(&model, point);
-            let (best_j, &best_p) = posteriors
+            let Some((best_j, &best_p)) = posteriors
                 .iter()
                 .enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .expect("posteriors is non-empty");
+            else {
+                panic!("posteriors is non-empty");
+            };
             labels.push(best_j as i32);
             probabilities.push(best_p as f32);
         }

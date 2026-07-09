@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -26,8 +27,57 @@ Respond with JSON only:
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
     app_name: String,
-    window_title: String,
+    content_bucket: String,
     baseline: WorkType,
+}
+
+impl CacheKey {
+    fn new(app_name: &str, window_title: &str, baseline: WorkType) -> Self {
+        Self {
+            app_name: app_name.to_string(),
+            content_bucket: coarse_content_bucket(window_title),
+            baseline,
+        }
+    }
+}
+
+fn coarse_content_bucket(window_title: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_space = false;
+
+    for ch in window_title.chars() {
+        let mapped = if ch.is_ascii_digit() {
+            '#'
+        } else if ch.is_ascii_alphabetic() {
+            ch.to_ascii_lowercase()
+        } else if ch.is_ascii_alphanumeric() {
+            ch
+        } else {
+            ' '
+        };
+
+        if mapped.is_whitespace() {
+            if !last_was_space {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            normalized.push(mapped);
+            last_was_space = false;
+        }
+    }
+
+    let bucket = normalized
+        .split_whitespace()
+        .take(6)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bucket.is_empty() {
+        "untitled".to_string()
+    } else {
+        bucket
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,19 +109,22 @@ pub struct LlmWorkTypeRefiner {
     /// configured sanitizer fall back to raw Display.
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     pii_level: PiiFilterLevel,
-    /// F-RR-C28-03: handle to the background LLM prefetch task.
-    /// Calling abort() on Drop prevents orphaned tasks (cycle 26 #3733/#3749 pattern).
-    prefetch_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// F-RR-C28-03/#7485: handles to background LLM prefetch tasks keyed by a
+    /// stable context bucket. Calling abort() on Drop prevents orphaned tasks.
+    prefetch_handles: Arc<Mutex<HashMap<CacheKey, Option<JoinHandle<()>>>>>,
 }
 
-/// F-RR-C28-03: cancels the in-flight prefetch task on Drop.
+/// F-RR-C28-03: cancels in-flight prefetch tasks on Drop.
 /// abort() is a no-op on an already-completed task, so this is also safe during
 /// clean shutdown.
 impl Drop for LlmWorkTypeRefiner {
     fn drop(&mut self) {
         // Use try_lock on the Mutex in a sync context (Drop is a sync context)
-        if let Ok(mut guard) = self.prefetch_handle.try_lock() {
-            if let Some(handle) = guard.take() {
+        if let Ok(mut guard) = self.prefetch_handles.try_lock() {
+            for (_key, handle) in guard.drain() {
+                let Some(handle) = handle else {
+                    continue;
+                };
                 handle.abort();
             }
         }
@@ -83,11 +136,11 @@ impl LlmWorkTypeRefiner {
         Self {
             provider,
             cache: Arc::new(Mutex::new(LruCache::new(
-                std::num::NonZeroUsize::new(CACHE_CAPACITY).expect("nonzero"),
+                std::num::NonZeroUsize::new(CACHE_CAPACITY).unwrap_or_else(|| panic!("nonzero")),
             ))),
             pii_sanitizer: None,
             pii_level: PiiFilterLevel::Standard,
-            prefetch_handle: Arc::new(Mutex::new(None)),
+            prefetch_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,11 +168,7 @@ impl LlmWorkTypeRefiner {
         ocr_sample: Option<&str>,
         keystrokes_per_min: f32,
     ) -> Option<WorkType> {
-        let key = CacheKey {
-            app_name: app_name.to_string(),
-            window_title: window_title.to_string(),
-            baseline,
-        };
+        let key = CacheKey::new(app_name, window_title, baseline);
 
         // Check cache first
         {
@@ -140,10 +189,21 @@ impl LlmWorkTypeRefiner {
             }
         }
 
-        // Cache miss — spawn background prefetch
+        // Cache miss — spawn one background prefetch per stable key. A second
+        // tick for the same key keeps the first task alive so it can warm cache.
+        {
+            let mut handles = self.prefetch_handles.lock().await;
+            if handles.contains_key(&key) {
+                return None;
+            }
+            handles.insert(key.clone(), None);
+        }
+
         let provider = self.provider.clone();
         let cache = self.cache.clone();
         let key_clone = key.clone();
+        let cleanup_key = key.clone();
+        let prefetch_handles = self.prefetch_handles.clone();
         let pii_sanitizer = self.pii_sanitizer.clone();
         let pii_level = self.pii_level;
         let context = build_context(
@@ -155,8 +215,6 @@ impl LlmWorkTypeRefiner {
             baseline,
         );
 
-        // F-RR-C28-03: store the JoinHandle in prefetch_handle to guarantee abort
-        // on Drop.
         let handle = tokio::spawn(async move {
             match provider.summarize_text(&context, SYSTEM_PROMPT).await {
                 Ok(response) => {
@@ -194,20 +252,15 @@ impl LlmWorkTypeRefiner {
                     }
                 }
             }
+            let mut handles = prefetch_handles.lock().await;
+            handles.remove(&cleanup_key);
         });
-        // F-PF-C29-02/F-RR-C29-01: try_lock().expect() panics under concurrent
-        // refine() calls. Graceful match: if another refine() holds the lock,
-        // abort this duplicate prefetch to avoid leaking the handle.
-        match self.prefetch_handle.try_lock() {
-            Ok(mut guard) => {
-                if let Some(prev_handle) = guard.take() {
-                    prev_handle.abort();
-                }
-                *guard = Some(handle);
-            }
-            Err(_) => {
-                handle.abort();
-            }
+
+        let mut handles = self.prefetch_handles.lock().await;
+        if let Some(slot) = handles.get_mut(&key) {
+            *slot = Some(handle);
+        } else {
+            handle.abort();
         }
 
         None
@@ -301,16 +354,15 @@ mod tests {
 
     #[test]
     fn cache_key_equality() {
-        let k1 = CacheKey {
-            app_name: "VSCode".into(),
-            window_title: "main.rs".into(),
-            baseline: WorkType::ActiveCoding,
-        };
-        let k2 = CacheKey {
-            app_name: "VSCode".into(),
-            window_title: "main.rs".into(),
-            baseline: WorkType::ActiveCoding,
-        };
+        let k1 = CacheKey::new("VSCode", "main.rs", WorkType::ActiveCoding);
+        let k2 = CacheKey::new("VSCode", "main.rs", WorkType::ActiveCoding);
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn cache_key_ignores_volatile_title_counts() {
+        let k1 = CacheKey::new("Gmail", "Inbox (3) | Gmail", WorkType::Browsing);
+        let k2 = CacheKey::new("Gmail", "Inbox (4) | Gmail", WorkType::Browsing);
         assert_eq!(k1, k2);
     }
 
@@ -357,16 +409,12 @@ mod tests {
     fn with_pii_sanitizer_sets_fields() {
         use crate::fallback_analysis_provider::NoOpAnalysisProvider;
         use maekon_core::config::PiiFilterLevel;
+        use maekon_core::ports::pii_sanitizer::FakePiiSanitizer;
 
-        struct MockSanitizer;
-        impl PiiSanitizer for MockSanitizer {
-            fn sanitize_text(&self, text: &str, _: PiiFilterLevel) -> String {
-                text.to_string()
-            }
-        }
-
+        // This test only asserts builder wiring, not sanitize_text output —
+        // no replacements are registered (identity passthrough).
         let refiner = LlmWorkTypeRefiner::new(Arc::new(NoOpAnalysisProvider))
-            .with_pii_sanitizer(Arc::new(MockSanitizer), PiiFilterLevel::Strict);
+            .with_pii_sanitizer(Arc::new(FakePiiSanitizer::new()), PiiFilterLevel::Strict);
         assert!(refiner.pii_sanitizer.is_some());
         assert_eq!(refiner.pii_level, PiiFilterLevel::Strict);
     }
@@ -379,11 +427,93 @@ mod tests {
         assert_eq!(refiner.pii_level, PiiFilterLevel::Standard);
     }
 
-    /// F-RR-C28-03/F-QA-C29-01: verify that prefetch_handle is aborted on Drop.
+    #[tokio::test]
+    async fn refine_deduplicates_in_flight_stable_key() {
+        use async_trait::async_trait;
+        use maekon_core::error::CoreError;
+        use maekon_core::models::suggestion::Suggestion;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        struct BlockingProvider {
+            calls: AtomicUsize,
+            release: Notify,
+        }
+
+        #[async_trait]
+        impl AnalysisProvider for BlockingProvider {
+            async fn analyze(
+                &self,
+                _context_json: &str,
+                _system_prompt: &str,
+            ) -> Result<Vec<Suggestion>, CoreError> {
+                Ok(Vec::new())
+            }
+
+            async fn summarize_text(
+                &self,
+                _context_json: &str,
+                _system_prompt: &str,
+            ) -> Result<String, CoreError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.release.notified().await;
+                Ok(r#"{"work_type": "WRITING", "confidence": 0.91}"#.into())
+            }
+
+            fn provider_name(&self) -> &str {
+                "blocking"
+            }
+        }
+
+        let provider = Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        });
+        let refiner = LlmWorkTypeRefiner::new(provider.clone());
+
+        assert!(refiner
+            .refine(
+                WorkType::Browsing,
+                "Gmail",
+                "Inbox (3) | Gmail",
+                None,
+                None,
+                0.0,
+            )
+            .await
+            .is_none());
+        while provider.calls.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(refiner
+            .refine(
+                WorkType::Browsing,
+                "Gmail",
+                "Inbox (4) | Gmail",
+                None,
+                None,
+                0.0,
+            )
+            .await
+            .is_none());
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "same stable key must keep one in-flight LLM prefetch"
+        );
+        provider.release.notify_waiters();
+    }
+
+    /// F-RR-C28-03/F-QA-C29-01: verify that tracked prefetch handles are aborted on Drop.
     /// Capture `abort_handle()` up front, then assert `is_finished()` after the
     /// abort propagates.
     #[tokio::test]
-    async fn drop_aborts_prefetch_handle() {
+    async fn drop_aborts_prefetch_handles() {
         use crate::fallback_analysis_provider::NoOpAnalysisProvider;
         use tokio::sync::oneshot;
 
@@ -395,11 +525,18 @@ mod tests {
             let _ = rx.await;
         });
         // Capture the abort_handle up front (the JoinHandle is moved into
-        // prefetch_handle)
+        // prefetch_handles)
         let abort_handle = long_task.abort_handle();
 
-        // Inject the JoinHandle into prefetch_handle
-        *refiner.prefetch_handle.try_lock().expect("lock available") = Some(long_task);
+        // Inject the JoinHandle into prefetch_handles
+        refiner
+            .prefetch_handles
+            .try_lock()
+            .expect("lock available")
+            .insert(
+                CacheKey::new("VSCode", "main.rs", WorkType::ActiveCoding),
+                Some(long_task),
+            );
 
         // On Drop, the Drop impl try_locks and then calls handle.abort()
         drop(refiner);
@@ -415,49 +552,22 @@ mod tests {
         );
     }
 
-    /// F-PF-C29-02/F-RR-C29-01/F-QA-C30-03: verify that try_lock contention during
-    /// concurrent refine() calls is handled by the graceful abort-new policy
-    /// rather than a panic.
-    /// (If `try_lock().expect()` were still present, this test would fail with a
-    /// panic.)
-    ///
-    /// F-QA-C30-03: verify the spawned handle in the Err arm is actually aborted.
-    /// After releasing lock_guard, confirm prefetch_handle is None (the abort path
-    /// does not store the handle in prefetch_handle, so it must be None once the
-    /// guard is acquired).
+    /// #7485: verify that an already in-flight key is treated as a cache-warming
+    /// prefetch instead of spawning and aborting a duplicate LLM request.
     #[tokio::test]
-    async fn concurrent_try_lock_does_not_panic() {
+    async fn duplicate_in_flight_key_returns_without_new_handle() {
         use crate::fallback_analysis_provider::NoOpAnalysisProvider;
 
         let refiner = Arc::new(LlmWorkTypeRefiner::new(Arc::new(NoOpAnalysisProvider)));
+        let key = CacheKey::new("VSCode", "main.rs", WorkType::Unknown);
+        refiner.prefetch_handles.lock().await.insert(key, None);
 
-        // Hold the prefetch_handle Mutex externally so try_lock always returns
-        // WouldBlock
-        let lock_guard = refiner.prefetch_handle.clone().lock_owned().await;
-
-        // Call refine() in this state — the internal try_lock returns WouldBlock,
-        // but it must abort the handle and return None without panicking
+        // Call refine() with the same key. It must observe the in-flight marker
+        // and return without inserting a duplicate handle.
         let result = refiner
             .refine(WorkType::Unknown, "VSCode", "main.rs", None, None, 0.0)
             .await;
-        // Cache miss, so it returns None (existing contract)
         assert!(result.is_none());
-
-        // F-QA-C30-03: release lock_guard to return the prefetch_handle Mutex.
-        // The Err arm calls handle.abort() and does not store the handle in
-        // prefetch_handle, so the inner value must be None once the guard is
-        // acquired (verifies the abort path).
-        drop(lock_guard);
-
-        // Wait for the abort to propagate
-        tokio::task::yield_now().await;
-
-        // Verify the Err arm did not store a handle in prefetch_handle
-        // (the Ok arm stores Some(handle), so the Err/Ok paths are distinguishable)
-        let guard = refiner.prefetch_handle.lock().await;
-        assert!(
-            guard.is_none(),
-            "F-QA-C30-03: Err arm must NOT store handle in prefetch_handle              — it aborts immediately without storing. If Some, abort path was bypassed."
-        );
+        assert_eq!(refiner.prefetch_handles.lock().await.len(), 1);
     }
 }

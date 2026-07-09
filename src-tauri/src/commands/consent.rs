@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use maekon_core::consent::{ConsentPermissions, ConsentStatus};
 use maekon_core::models::audit::{AuditEntry, AuditStatus};
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_storage::sqlite::SqliteStorage;
 use serde::{Deserialize, Serialize};
@@ -560,10 +560,8 @@ pub async fn take_microphone_upgrade_notice(
 
     tokio::task::spawn_blocking(move || {
         let already_shown = storage.get_meta(MIC_UPGRADE_NOTICE_FLAG).is_some();
-        let microphone_granted = consent_manager
-            .as_ref()
-            .map(|cm| cm.effective_permissions().microphone)
-            .unwrap_or(false);
+        let microphone_granted =
+            ConsentGate::from_ref(consent_manager.as_ref()).may_capture_microphone();
         let show =
             should_show_microphone_upgrade_notice(audio_enabled, microphone_granted, already_shown);
         if show {

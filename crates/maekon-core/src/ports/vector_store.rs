@@ -74,12 +74,13 @@ pub trait VectorStore: Send + Sync {
     async fn mark_stale(&self, old_model_id: &str) -> Result<u64, CoreError>;
 
     /// Update a re-embedded vector: replace the BLOB, model_id, and clear stale flag.
+    /// Returns the number of rows affected.
     async fn update_vector(
         &self,
         id: i64,
         vector: Vec<f32>,
         model_id: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<u64, CoreError>;
 
     // --- Quantized (Phase A) ---
 

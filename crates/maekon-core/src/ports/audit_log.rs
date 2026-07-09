@@ -127,6 +127,8 @@ mod port_contract_tests {
 
     /// Compile-time assertion — validates the trait method signature.
     /// Uses a trait object to avoid the E0401 nested-generic restriction.
+    // Never called: existing (and type-checking) IS the assertion — a
+    // signature change to `entries_by_command_id` fails this file to compile.
     #[allow(dead_code)]
     fn assert_port_has_entries_by_command_id(
         p: &dyn AuditLogPort,

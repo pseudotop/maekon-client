@@ -1,8 +1,10 @@
 use anyhow::Result;
+use maekon_analysis::focus_analyzer::FocusAnalyzer;
 use maekon_core::config::AppConfig;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::accessibility::AccessibilityExtractor;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::focus_storage::FocusStorage;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::monitor::{ActivityMonitor, ProcessMonitor};
 #[cfg(feature = "server")]
@@ -13,7 +15,10 @@ use maekon_network::batch_uploader::BatchUploader;
 use maekon_network::grpc::{GrpcApiAdapter, GrpcConfig, GrpcSseAdapter, UnifiedClient};
 #[cfg(feature = "server")]
 use maekon_network::http_client::HttpApiClient;
-#[cfg(all(feature = "server", not(feature = "grpc")))]
+// #7668: needed in both the grpc and non-grpc `feature = "server"` builds — the
+// grpc-feature branch of `build_server_transports` now falls back to the REST
+// SSE client when `use_grpc_context` is disabled (the shipped default).
+#[cfg(feature = "server")]
 use maekon_network::sse_client::SseStreamClient;
 use maekon_storage::frame_storage::FrameFileStorage;
 use maekon_vision::processor::EdgeFrameProcessor;
@@ -22,16 +27,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "analysis")]
+use std::future::Future;
+#[cfg(feature = "analysis")]
+use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 
 use crate::capture_services::SharedCaptureServices;
-use crate::focus_analyzer::{FocusAnalyzer, FocusStorage};
 use crate::notification_manager::NotificationManager;
 #[cfg(feature = "analysis")]
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use crate::scheduler::SchedulerConfig;
 
-#[allow(dead_code)] // suggestion_receiver is read only with feature = "server"
 pub(crate) struct AgentSupportContext {
     pub(crate) frame_storage: Arc<dyn FrameStoragePort>,
     pub(crate) system_monitor: Arc<maekon_monitor::system::SysInfoMonitor>,
@@ -46,11 +53,63 @@ pub(crate) struct AgentSupportContext {
     /// Dedicated REST sink for the #5069 feature-performance emitter (None in
     /// non-`server` builds — nothing to flush to). Shares the same `TokenManager`
     /// as the main api client so it reuses the bearer JWT.
+    ///
+    /// Populated unconditionally by `server_transport_ports_for_mode` (both the
+    /// `server` and `not(server)` arms return the 3/4-tuple that includes this
+    /// slot), but only READ by `agent_runtime::AgentRuntimeBundle::run`'s
+    /// `#[cfg(feature = "analysis")]` feature-perf-uploader wiring — under
+    /// `--no-default-features` (analysis off) nothing reads it (#7743 ctd-W3
+    /// A2b follow-up).
+    #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
     pub(crate) feature_perf_sink_opt: Option<FeaturePerfSinkPort>,
     pub(crate) notification_manager: Arc<NotificationManager>,
     pub(crate) focus_analyzer: Arc<FocusAnalyzer>,
     pub(crate) context_analyzer: Option<Arc<maekon_analysis::ContextAnalyzer>>,
+    /// #7652: reusable factory that (re)builds a `ContextAnalyzer` from the
+    /// CURRENT (live) config on demand. Always `Some` in `analysis` builds
+    /// regardless of the startup-time `analysis.enabled`/provider state, so
+    /// the scheduler's analysis loop can honor a runtime enable (or a BYOK
+    /// key saved after boot) WITHOUT an app restart. `None` (field absent) in
+    /// non-`analysis` builds — nothing to rebuild there.
+    #[cfg(feature = "analysis")]
+    pub(crate) context_analyzer_factory: Option<ContextAnalyzerFactory>,
+    // Only read in `agent_runtime/mod.rs`'s `#[cfg(feature = "server")]`
+    // suggestion-reception wiring — always `None` and unread without that
+    // feature.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub(crate) suggestion_receiver: Option<Arc<maekon_suggestion::receiver::SuggestionReceiver>>,
+}
+
+/// #7652: signature for the runtime analyzer-rebuild factory. Takes a live
+/// `AppConfig` snapshot (so a freshly-saved BYOK `ai_provider.llm_api` key is
+/// honored) and resolves to `Some(analyzer)` when `analysis.enabled` is true
+/// AND a usable LLM provider is configured, `None` otherwise (still disabled,
+/// or no provider yet — the caller should retry on a later tick).
+#[cfg(feature = "analysis")]
+pub(crate) type ContextAnalyzerFactory = Arc<
+    dyn Fn(
+            Arc<AppConfig>,
+        )
+            -> Pin<Box<dyn Future<Output = Option<Arc<maekon_analysis::ContextAnalyzer>>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// #7652: dependencies needed to (re)construct a `ContextAnalyzer`, captured
+/// once (cheap `Arc` clones) so the runtime factory closure can rebuild the
+/// analyzer on demand without holding a borrow of the (by-then consumed)
+/// `AgentSupportContextBuilder`.
+#[cfg(feature = "analysis")]
+#[derive(Clone)]
+struct ContextAnalyzerDeps {
+    storage: Option<Arc<dyn maekon_core::ports::storage::StorageService>>,
+    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    process_monitor: Arc<dyn ProcessMonitor>,
+    provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
+    analysis_health_flag: Option<Arc<AtomicBool>>,
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    few_shot_storage: Option<Arc<dyn maekon_core::ports::few_shot_storage::FewShotStorage>>,
+    data_dir: PathBuf,
 }
 
 type BatchSinkPort = Arc<dyn maekon_core::ports::batch_sink::BatchSink>;
@@ -95,6 +154,10 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// Shared consent authority from capture wiring. External AI guards must use
     /// this instance instead of reloading consent from disk.
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    /// When true, do not construct server-backed transports. The GUI still boots
+    /// with local capture/analysis wiring, but upload, REST, SSE, and feature
+    /// performance egress stay disconnected.
+    offline_mode: bool,
     /// D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     /// registry from the composition root, used by the `ContextAnalyzer` analysis
     /// provider. Defaults to a fresh registry for standalone use; the composition
@@ -127,6 +190,7 @@ impl<'a> AgentSupportContextBuilder<'a> {
             analysis_health_flag: None,
             config_manager: None,
             consent_manager: None,
+            offline_mode: false,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
             #[cfg(feature = "analysis")]
             provider_secret_stores: None,
@@ -207,6 +271,11 @@ impl<'a> AgentSupportContextBuilder<'a> {
         self
     }
 
+    pub(crate) fn with_offline_mode(mut self, offline_mode: bool) -> Self {
+        self.offline_mode = offline_mode;
+        self
+    }
+
     /// Wire the provider secret stores from `ProviderRuntimeContext` so the
     /// `ContextAnalyzer` LLM provider resolves OS-keychain-backed BYOK keys at
     /// request time.  No-op in non-`analysis` builds.
@@ -224,64 +293,48 @@ impl<'a> AgentSupportContextBuilder<'a> {
         &self,
         process_monitor: Arc<dyn ProcessMonitor>,
     ) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
-        if !self.config.analysis.enabled {
-            return None;
+        let deps = self.context_analyzer_deps(process_monitor);
+        build_context_analyzer_sync(self.config, &deps)
+    }
+
+    /// #7652: capture the dependencies `build_context_analyzer` needs as cheap
+    /// `Arc` clones, independent of the (short-lived) builder borrow. Shared by
+    /// both the startup path (`build_context_analyzer`) and the runtime-rebuild
+    /// factory (`context_analyzer_factory`) so there is exactly one place that
+    /// knows how to assemble a `ContextAnalyzer`.
+    #[cfg(feature = "analysis")]
+    fn context_analyzer_deps(
+        &self,
+        process_monitor: Arc<dyn ProcessMonitor>,
+    ) -> ContextAnalyzerDeps {
+        ContextAnalyzerDeps {
+            storage: self.storage.clone(),
+            consent_manager: self.consent_manager.clone(),
+            process_monitor,
+            provider_secret_stores: self.provider_secret_stores.clone(),
+            analysis_health_flag: self.analysis_health_flag.clone(),
+            breaker_registry: self.breaker_registry.clone(),
+            few_shot_storage: self.few_shot_storage.clone(),
+            data_dir: self.data_dir.to_path_buf(),
         }
+    }
 
-        let storage = match self.storage.as_ref() {
-            Some(s) => s.clone(),
-            None => {
-                tracing::warn!("analysis enabled but no storage available");
-                return None;
-            }
-        };
-
-        let analysis_provider: Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider> =
-            if let Some((provider, _health)) =
-                crate::agent_runtime::analysis_helpers::build_analysis_provider_with_flag(
-                    &self.config.ai_provider,
-                    self.config.privacy.pii_filter_level,
-                    Some(ExternalOcrPrivacyGuard::new(
-                        self.consent_manager.clone().unwrap_or_else(|| {
-                            Arc::new(maekon_core::consent::ConsentManager::new(
-                                self.data_dir.join("consent.json"),
-                            ))
-                        }),
-                        self.config.privacy.pii_filter_level,
-                        self.config.ai_provider.external_data_policy,
-                        self.config.privacy.clone(),
-                        process_monitor,
-                        None,
-                    )),
-                    self.provider_secret_stores.as_ref(),
-                    self.analysis_health_flag.clone(),
-                    self.breaker_registry.clone(),
-                )
-            {
-                provider
-            } else {
-                tracing::warn!("analysis enabled but no LLM provider configured");
-                return None;
-            };
-
-        let pattern_miner = maekon_analysis::PatternMiner::new();
-        let pii_level = self.config.privacy.pii_filter_level;
-        let context_assembler = maekon_analysis::ContextAssembler::new(Box::new(move |text| {
-            maekon_vision::privacy::sanitize_title_with_level(text, pii_level)
-        }));
-        let few_shot_pii_filter: Box<dyn Fn(&str) -> String + Send + Sync> =
-            Box::new(move |text| {
-                maekon_vision::privacy::sanitize_title_with_level(text, pii_level)
-            });
-
-        Some(Arc::new(maekon_analysis::ContextAnalyzer::with_pii_filter(
-            storage,
-            analysis_provider,
-            pattern_miner,
-            context_assembler,
-            self.config.analysis.clone(),
-            few_shot_pii_filter,
-        )))
+    /// #7652: build a factory closure that (re)constructs the `ContextAnalyzer`
+    /// from a LIVE `AppConfig` snapshot on demand. Installed into the Scheduler
+    /// unconditionally (in `analysis` builds) so the analysis loop can honor a
+    /// runtime `analysis.enabled` flip (or a BYOK `ai_provider.llm_api` key
+    /// saved after boot) without an app restart, even when the startup-time
+    /// analyzer was `None`.
+    #[cfg(feature = "analysis")]
+    fn context_analyzer_factory(
+        &self,
+        process_monitor: Arc<dyn ProcessMonitor>,
+    ) -> ContextAnalyzerFactory {
+        let deps = self.context_analyzer_deps(process_monitor);
+        Arc::new(move |config: Arc<AppConfig>| {
+            let deps = deps.clone();
+            Box::pin(async move { build_context_analyzer_async(&config, &deps).await })
+        })
     }
 
     #[cfg(not(feature = "analysis"))]
@@ -349,10 +402,20 @@ impl<'a> AgentSupportContextBuilder<'a> {
         let config_manager = self.config_manager.take();
         #[cfg(feature = "server")]
         let (batch_sink_opt, api_client_opt, sse_client_opt, feature_perf_sink_opt) =
-            build_server_transports(self.config, &session_id, config_manager)?;
+            server_transport_ports_for_mode(
+                self.offline_mode,
+                self.config,
+                &session_id,
+                config_manager,
+            )?;
         #[cfg(not(feature = "server"))]
         let (batch_sink_opt, api_client_opt, feature_perf_sink_opt) =
-            build_server_transports(self.config, &session_id, config_manager)?;
+            server_transport_ports_for_mode(
+                self.offline_mode,
+                self.config,
+                &session_id,
+                config_manager,
+            )?;
 
         let notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
             if let Some(handle) = self.app_handle.clone() {
@@ -377,6 +440,13 @@ impl<'a> AgentSupportContextBuilder<'a> {
         {
             analyzer.set_few_shot_storage(fs_storage.clone()).await;
         }
+
+        // #7652: install the runtime-rebuild factory REGARDLESS of the
+        // startup-time analyzer state — this is what lets the scheduler's
+        // analysis loop honor a later `analysis.enabled` flip (or a BYOK
+        // `ai_provider.llm_api` key saved after boot) without an app restart.
+        #[cfg(feature = "analysis")]
+        let context_analyzer_factory = Some(self.context_analyzer_factory(process_monitor.clone()));
 
         // Build SuggestionReceiver when SSE client is available and suggestions enabled.
         // When a shared_suggestion_queue is provided (from SuggestionManager), the receiver
@@ -461,8 +531,157 @@ impl<'a> AgentSupportContextBuilder<'a> {
             notification_manager,
             focus_analyzer,
             context_analyzer,
+            #[cfg(feature = "analysis")]
+            context_analyzer_factory,
             suggestion_receiver,
         })
+    }
+}
+
+/// #7652: the actual analyzer-construction rules, shared by both the startup
+/// path (`AgentSupportContextBuilder::build_context_analyzer`) and the
+/// runtime-rebuild factory (`context_analyzer_factory`). Takes `config`
+/// explicitly (instead of reading `self.config`) so it can be called with
+/// either the startup snapshot OR a later LIVE `ConfigManager` snapshot.
+#[cfg(feature = "analysis")]
+fn build_context_analyzer_sync(
+    config: &AppConfig,
+    deps: &ContextAnalyzerDeps,
+) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
+    if !config.analysis.enabled {
+        return None;
+    }
+
+    let storage = match deps.storage.as_ref() {
+        Some(s) => s.clone(),
+        None => {
+            tracing::warn!("analysis enabled but no storage available");
+            return None;
+        }
+    };
+
+    let analysis_provider: Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider> =
+        if let Some((provider, _health)) =
+            crate::agent_runtime::analysis_helpers::build_analysis_provider_with_flag(
+                &config.ai_provider,
+                config.privacy.pii_filter_level,
+                Some(ExternalOcrPrivacyGuard::new(
+                    deps.consent_manager.clone().unwrap_or_else(|| {
+                        Arc::new(maekon_core::consent::ConsentManager::new(
+                            deps.data_dir.join("consent.json"),
+                        ))
+                    }),
+                    config.privacy.pii_filter_level,
+                    config.ai_provider.external_data_policy,
+                    config.privacy.clone(),
+                    deps.process_monitor.clone(),
+                    None,
+                )),
+                deps.provider_secret_stores.as_ref(),
+                deps.analysis_health_flag.clone(),
+                deps.breaker_registry.clone(),
+            )
+        {
+            provider
+        } else {
+            tracing::warn!("analysis enabled but no LLM provider configured");
+            return None;
+        };
+
+    let pattern_miner = maekon_analysis::PatternMiner::new();
+    let pii_level = config.privacy.pii_filter_level;
+    let context_assembler = maekon_analysis::ContextAssembler::new(Box::new(move |text| {
+        maekon_vision::privacy::sanitize_title_with_level(text, pii_level)
+    }));
+    let few_shot_pii_filter: Box<dyn Fn(&str) -> String + Send + Sync> =
+        Box::new(move |text| maekon_vision::privacy::sanitize_title_with_level(text, pii_level));
+
+    Some(Arc::new(maekon_analysis::ContextAnalyzer::with_pii_filter(
+        storage,
+        analysis_provider,
+        pattern_miner,
+        context_assembler,
+        config.analysis.clone(),
+        few_shot_pii_filter,
+    )))
+}
+
+/// #7652: async wrapper around `build_context_analyzer_sync` that also wires
+/// few-shot storage (mirrors the two-step startup sequence in `build()`, but
+/// self-contained since the runtime factory has no separate follow-up step).
+#[cfg(feature = "analysis")]
+async fn build_context_analyzer_async(
+    config: &AppConfig,
+    deps: &ContextAnalyzerDeps,
+) -> Option<Arc<maekon_analysis::ContextAnalyzer>> {
+    let analyzer = build_context_analyzer_sync(config, deps)?;
+    if let Some(fs_storage) = deps.few_shot_storage.as_ref() {
+        analyzer.set_few_shot_storage(fs_storage.clone()).await;
+    }
+    Some(analyzer)
+}
+
+#[cfg(feature = "server")]
+fn server_transport_ports_for_mode(
+    offline_mode: bool,
+    config: &AppConfig,
+    session_id: &str,
+    config_manager: Option<ConfigManager>,
+) -> Result<ServerTransportPorts> {
+    if offline_mode {
+        return Ok((None, None, None, None));
+    }
+
+    build_server_transports(config, session_id, config_manager)
+}
+
+#[cfg(not(feature = "server"))]
+fn server_transport_ports_for_mode(
+    _offline_mode: bool,
+    config: &AppConfig,
+    session_id: &str,
+    config_manager: Option<ConfigManager>,
+) -> Result<ServerTransportPorts> {
+    build_server_transports(config, session_id, config_manager)
+}
+
+/// #7668: select the SSE transport for the suggestion stream based on the
+/// resolved gRPC context mode.
+///
+/// `GrpcSseAdapter::connect` calls `UnifiedClient::subscribe_suggestions`,
+/// which hard-errors immediately when `use_grpc_context` is false — the
+/// shipped default (`GrpcConfig::default` in
+/// maekon-core::config::sections::network). Before this fix, the `--features
+/// grpc` build (the shipped build) always constructed `GrpcSseAdapter`
+/// regardless of `use_grpc_context`, so with the default config the
+/// suggestion SSE loop's escalating backoff / give-up / respawn cycle
+/// (scheduler/loops/suggestions.rs) spun forever without ever delivering a
+/// suggestion: the only SSE client ever constructed required gRPC context
+/// that is never enabled. This function selects the REST `SseStreamClient`
+/// fallback when gRPC context is disabled, using the same
+/// TokenManager/TLS/retry config as the REST `ApiClient` path (non-grpc
+/// branch below), so auth is identical.
+///
+/// Extracted as a standalone function (rather than inlined in
+/// `build_server_transports`) so the selection itself is unit-testable
+/// without needing the full server-transport wiring — see
+/// `tests::grpc_disabled_selects_rest_sse_client_and_delivers_suggestion`.
+#[cfg(feature = "grpc")]
+fn select_sse_client(
+    use_grpc_context: bool,
+    unified: &Arc<UnifiedClient>,
+    server_base_url: &str,
+    token_manager: Arc<TokenManager>,
+    sse_max_retry_secs: u64,
+    tls: &maekon_core::config::TlsConfig,
+) -> Result<SseClientPort> {
+    if use_grpc_context {
+        Ok(Arc::new(GrpcSseAdapter::new(unified.clone())) as SseClientPort)
+    } else {
+        let sse_stream =
+            SseStreamClient::new_with_tls(server_base_url, token_manager, sse_max_retry_secs, tls)
+                .map_err(|e| anyhow::anyhow!("failed to build SSE client: {e}"))?;
+        Ok(Arc::new(sse_stream) as SseClientPort)
     }
 }
 
@@ -497,9 +716,19 @@ fn build_server_transports(
             config.request_timeout(),
             &config.tls,
         )?;
+
+        let sse_client = select_sse_client(
+            config.grpc.use_grpc_context,
+            &unified,
+            &config.server.base_url,
+            token_manager.clone(),
+            config.server.sse_max_retry_secs,
+            &config.tls,
+        )?;
+
         (
-            Arc::new(GrpcApiAdapter::new(unified.clone(), http_fallback)),
-            Arc::new(GrpcSseAdapter::new(unified)) as SseClientPort,
+            Arc::new(GrpcApiAdapter::new(unified, http_fallback)),
+            sse_client,
         )
     };
 
@@ -685,5 +914,131 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<TauriNotifier>();
         assert_send_sync::<LogOnlyNotifier>();
+    }
+
+    #[test]
+    fn offline_mode_disables_server_transport_wiring() {
+        let config = AppConfig::default_config();
+        let ports =
+            server_transport_ports_for_mode(true, &config, "sess_test_offline", None).unwrap();
+
+        assert!(ports.0.is_none());
+        assert!(ports.1.is_none());
+        assert!(ports.2.is_none());
+        #[cfg(feature = "server")]
+        assert!(ports.3.is_none());
+    }
+
+    /// #7668 regression: with `use_grpc_context=false` (the shipped default),
+    /// `select_sse_client` must pick the REST `SseStreamClient`, not the
+    /// gRPC-only `GrpcSseAdapter`. Proven end-to-end: log in against a stub
+    /// REST server, then confirm the *selected* client's `connect()` actually
+    /// delivers a suggestion pushed over the REST SSE endpoint.
+    ///
+    /// Before the fix, `GrpcSseAdapter` was selected unconditionally in the
+    /// `--features grpc` build. Its `connect()` calls
+    /// `UnifiedClient::subscribe_suggestions`, which returns
+    /// `Err(CoreError::Network { .. "Suggestion streaming is available only
+    /// in gRPC mode. Set use_grpc_context=true." .. })` immediately — no
+    /// request would ever reach the stub server below, so this test would
+    /// time out waiting on `rx.recv()` and fail (fails-before evidence).
+    #[cfg(feature = "grpc")]
+    #[tokio::test]
+    async fn grpc_disabled_selects_rest_sse_client_and_delivers_suggestion() {
+        use maekon_core::config::TlsConfig;
+        use maekon_core::ports::api_client::SseEvent;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+
+        // Stub server: 1) respond to the login POST with a valid token, 2)
+        // respond to the SSE GET with a single `suggestion` event. Mirrors the
+        // stub-server pattern in maekon-network::sse_client::tests.
+        let server_task = tokio::spawn(async move {
+            // login (POST /api/v1/auth/tokens)
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"{"access_token":"tok","refresh_token":"ref","expires_in":3600}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+            // SSE stream (GET /user_context/sessions/stream) → one suggestion event
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let suggestion_json = r#"{"suggestion_id":"sug_7668","suggestion_type":"WORK_GUIDANCE","content":"REST-SSE fallback delivered","priority":"HIGH","confidence_score":0.9,"relevance_score":0.9,"is_actionable":true,"created_at":"2026-01-28T10:00:00Z"}"#;
+                let sse_body = format!("event: suggestion\ndata: {suggestion_json}\n\n");
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse_body}"
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let tls = TlsConfig {
+            enabled: false,
+            allow_self_signed: false,
+        };
+        let token_manager = Arc::new(
+            TokenManager::new_with_tls(&base, &tls, None)
+                .expect("TokenManager must build for a loopback http base_url"),
+        );
+        // Runtime-built password fixture — a string literal at the `login()`
+        // call site trips CodeQL `rust/hard-coded-cryptographic-value`;
+        // mirrors `maekon_network::sse_client::tests::primary_password`.
+        let password = String::from_utf8(vec![b'x'; 16]).expect("password fixture must be UTF-8");
+        token_manager
+            .login("user@example.com", &password)
+            .await
+            .expect("login against the stub REST server must succeed");
+
+        // A minimal UnifiedClient — required by `select_sse_client`'s signature
+        // even though the REST branch never touches it. Construction performs
+        // no network I/O.
+        let unified = Arc::new(
+            UnifiedClient::new(GrpcConfig::default(), token_manager.clone())
+                .expect("UnifiedClient must build without network I/O"),
+        );
+
+        let sse_client = select_sse_client(
+            false, // use_grpc_context — the shipped default
+            &unified,
+            &base,
+            token_manager.clone(),
+            30,
+            &tls,
+        )
+        .expect("select_sse_client must build the REST fallback when use_grpc_context is false");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(8);
+        let connect_task = tokio::spawn(async move {
+            let _ = sse_client.connect("sess_7668_fallback", tx).await;
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect(
+                "REST SSE fallback must deliver an event before the timeout — the pre-fix \
+                 GrpcSseAdapter selection would fail immediately with 'Suggestion streaming is \
+                 available only in gRPC mode' instead of ever reaching this stub server",
+            )
+            .expect("event channel must not close before the suggestion arrives");
+
+        assert!(
+            matches!(event, SseEvent::Suggestion(ref s) if s.suggestion_id == "sug_7668"),
+            "expected a Suggestion event delivered via the REST SseStreamClient fallback, got: {event:?}"
+        );
+
+        connect_task.abort();
+        server_task.abort();
     }
 }

@@ -28,9 +28,9 @@ use maekon_core::models::dashboard_streaming::{
 use maekon_core::models::event::Event;
 use maekon_core::models::storage_records::{
     DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord, FocusWorkSessionRecord,
-    FrameExportRecord, FrameRecord, FrameTagLinkRecord, GuiInteractionRecord, HourlyMetricsRecord,
-    LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow,
-    SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
+    FrameExportRecord, FrameRecord, FrameTagLinkRecord, HourlyMetricsRecord, LocalSuggestionRecord,
+    MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow, SegmentSummaryRecord,
+    StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
 };
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::models::system::SystemMetrics;
@@ -91,10 +91,6 @@ impl StorageService for FailingStorage {
 
     async fn mark_as_sent(&self, event_ids: &[String]) -> Result<(), CoreError> {
         self.inner.mark_as_sent(event_ids).await
-    }
-
-    async fn mark_unsent_as_sent_before(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
-        self.inner.mark_unsent_as_sent_before(before).await
     }
 
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
@@ -737,13 +733,6 @@ impl BackupStorage for FailingStorage {
 impl GuiInteractionStorage for FailingStorage {
     async fn save_gui_interaction(&self, input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
         GuiInteractionStorage::save_gui_interaction(&*self.inner, input).await
-    }
-
-    async fn list_gui_interactions_for_segment(
-        &self,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        GuiInteractionStorage::list_gui_interactions_for_segment(&*self.inner, segment_id).await
     }
 
     async fn query_gui_interaction_density(

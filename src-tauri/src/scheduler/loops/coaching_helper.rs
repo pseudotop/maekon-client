@@ -70,10 +70,19 @@ pub(super) struct CoachingEvalContext<'a> {
     pub(super) notifier: &'a Option<Arc<crate::notification_manager::NotificationManager>>,
     pub(super) coaching_storage: &'a Option<Arc<dyn CoachingStoragePort>>,
     /// Habit-streak persistence seam (#5669) — the scheduler's SQLite handle.
-    pub(super) scheduler_storage: &'a Arc<dyn crate::scheduler::config::SchedulerStorage>,
+    pub(super) scheduler_storage: &'a Arc<dyn crate::scheduler::SchedulerStorage>,
     pub(super) analysis_provider:
         &'a Option<Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider>>,
     pub(super) regime_id: Option<&'a str>,
+    /// Human-readable regime label (`name` > `auto_label`, e.g.
+    /// "Deep Focus (VSCode)") resolved upstream from the active `Regime`.
+    /// Distinct from `regime_id`, which is an opaque positional id ("regime-N").
+    /// Downstream coaching that keys on a human label — profile substring
+    /// matching, goal + habit tracking, `check_threshold`, and the LLM
+    /// personalization prompt — must use THIS, not the id (#7480). `regime_id`
+    /// is retained only for transition detection and the engine's EMA
+    /// avg-duration map key.
+    pub(super) regime_label: Option<&'a str>,
     pub(super) prev_app: Option<&'a str>,
     pub(super) drift_detected: bool,
     pub(super) poll_secs: u64,
@@ -97,10 +106,20 @@ pub(super) async fn evaluate_and_deliver(
     ctx: &CoachingEvalContext<'_>,
     tick_state: &mut CoachingTickState,
 ) {
-    let regime_label = ctx.regime_id.unwrap_or("Unknown");
+    // #7480: coaching keys on the HUMAN regime label for profile matching, goal
+    // + habit tracking, `check_threshold`, and the LLM personalization prompt.
+    // The opaque positional id ("regime-N") is retained only for transition
+    // detection and the engine's EMA avg-duration map key — that map is keyed by
+    // the id via `CoachingEngine::on_regime_change`, so the read below must use
+    // the id too (using the label there would always miss and yield the 30-min
+    // default). Feeding the id where the label belongs left the
+    // DeepWork/ContextRestore profiles unreachable, goal progress stuck at 0%,
+    // habit streaks unpersisted, and messages showing "regime-3" to the user.
+    let regime_label = ctx.regime_label.unwrap_or("Unknown");
+    let regime_id_key = ctx.regime_id.unwrap_or("Unknown");
     let avg_regime_duration_secs = ctx
         .coaching_engine
-        .avg_regime_duration_secs(regime_label)
+        .avg_regime_duration_secs(regime_id_key)
         .await;
 
     // Track real regime dwell time: reset timer on regime change
@@ -330,5 +349,90 @@ mod tests {
             "5+130=135s → 2 min"
         );
         assert_eq!(carry, 15);
+    }
+
+    /// #7480 regression: the coaching goal tracker + habit-streak persistence
+    /// must key on the HUMAN regime label, not the opaque positional
+    /// `regime_id`. A user configures a goal under the label they see
+    /// ("Deep Focus (VSCode)"); the active regime carries that label but an
+    /// opaque id ("regime-3"). One whole minute must accrue to the human-label
+    /// goal and land a habit-streak row under that same label.
+    ///
+    /// Pre-fix `evaluate_and_deliver` fed `regime_id` as the label, so
+    /// `record_minutes("regime-3", 1)` left the "Deep Focus (VSCode)" goal at 0
+    /// (widget stuck at 0%) and the goal lookup never matched, so no habit-streak
+    /// row was written — both assertions below fail on pre-fix code.
+    #[tokio::test]
+    async fn coaching_goal_and_habit_keyed_by_human_label_not_opaque_id() {
+        use super::{evaluate_and_deliver, CoachingEvalContext, CoachingTickState};
+        use maekon_analysis::CoachingEngine;
+        use maekon_core::config::{CoachingConfig, PiiFilterLevel};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        const HUMAN_LABEL: &str = "Deep Focus (VSCode)";
+        const OPAQUE_ID: &str = "regime-3";
+
+        // A user goal is configured under the HUMAN label they see in the UI.
+        let engine = Arc::new(CoachingEngine::new(CoachingConfig::default()));
+        let mut goals = HashMap::new();
+        goals.insert(HUMAN_LABEL.to_string(), 60u32);
+        engine.update_regime_goals(&goals).await;
+
+        // Real scheduler-storage seam so the habit-streak write path is exercised
+        // end-to-end (the widget's local producer).
+        let storage_concrete = Arc::new(
+            maekon_storage::sqlite::SqliteStorage::open_in_memory(30).expect("in-memory sqlite"),
+        );
+        let storage: Arc<dyn crate::scheduler::SchedulerStorage> = storage_concrete.clone();
+
+        let mut tick_state = CoachingTickState::new();
+        let ctx = CoachingEvalContext {
+            coaching_engine: &engine,
+            overlay: &None,
+            notifier: &None,
+            coaching_storage: &None,
+            scheduler_storage: &storage,
+            analysis_provider: &None,
+            // Opaque positional id — the value that WAS wrongly used as the label.
+            regime_id: Some(OPAQUE_ID),
+            // Human label (name > auto_label) resolved upstream — the correct key.
+            regime_label: Some(HUMAN_LABEL),
+            prev_app: Some("VSCode"),
+            drift_detected: false,
+            // 60s flushes exactly one whole minute into `record_minutes`.
+            poll_secs: 60,
+            pii_sanitizer: &None,
+            pii_level: PiiFilterLevel::Standard,
+        };
+
+        evaluate_and_deliver(&ctx, &mut tick_state).await;
+
+        // The elapsed minute must accrue to the human-label goal (widget reads
+        // this) — not the opaque id.
+        let progress = engine.all_goal_progress().await;
+        let deep = progress
+            .iter()
+            .find(|g| g.regime_label == HUMAN_LABEL)
+            .expect("the configured human-label goal must be present");
+        assert_eq!(
+            deep.current_minutes, 1,
+            "the elapsed minute must accrue to the human-label goal, not the opaque regime id"
+        );
+
+        // The habit-streak row must persist under the human label (pre-fix the
+        // goal lookup used the id, never matched, and skipped the write).
+        let streaks = storage_concrete
+            .query_habit_streaks(7)
+            .expect("query_habit_streaks");
+        let row = streaks
+            .iter()
+            .find(|r| r.regime_label == HUMAN_LABEL)
+            .expect("a habit-streak row must persist under the human label");
+        assert_eq!(row.minutes_logged, 1);
+        assert!(
+            streaks.iter().all(|r| r.regime_label != OPAQUE_ID),
+            "the opaque regime id must never become a habit-streak key"
+        );
     }
 }

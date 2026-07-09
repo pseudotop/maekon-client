@@ -100,7 +100,6 @@ fn notification_suppression_log_fields(
     }
 }
 
-#[allow(dead_code)] // API surface wired in scheduler notification loop
 impl NotificationManager {
     pub fn new(config: NotificationConfig, notifier: Arc<dyn DesktopNotifier>) -> Self {
         Self {
@@ -114,12 +113,20 @@ impl NotificationManager {
         }
     }
 
+    // #7719: no settings-update IPC command calls this today — live config
+    // changes currently rebuild `NotificationManager` rather than hot-reload
+    // it. Kept as the intended hot-reload entry point.
+    #[allow(dead_code)]
     pub async fn update_config(&self, config: NotificationConfig) {
         let mut current = self.config.write().await;
         *current = config;
         info!("notification settings updated");
     }
 
+    // #7719: `state.last_activity` is currently only updated by
+    // `reset_session()` at session boundaries, not by an explicit external
+    // "activity happened" signal — no caller invokes this today.
+    #[allow(dead_code)]
     pub async fn record_activity(&self) {
         let mut state = self.state.write().await;
         state.last_activity = Some(Utc::now());
@@ -330,6 +337,38 @@ impl NotificationManager {
         if let Err(e) = self.notifier.show_notification("Maekon Coach", body).await {
             debug!("coaching notification failure: {e}");
         }
+    }
+
+    /// Desktop toast for a freshly generated daily digest (#7678 D4: wires the
+    /// previously-inert `daily_summary_notification` config flag). The aggregation
+    /// loop only builds a missing digest once per day, so — unlike idle/long-session/
+    /// high-usage — no separate cooldown state is needed here.
+    pub async fn notify_daily_summary(&self, date_str: &str) {
+        let config = self.config.read().await;
+        if !config.enabled || !config.daily_summary_notification {
+            return;
+        }
+        drop(config);
+
+        let title = "📊 daily summary ready";
+        let body = format!("Your activity digest for {date_str} is ready to view.");
+        if let Err(e) = self.notifier.show_notification(title, &body).await {
+            debug!("daily summary notification failure: {e}");
+        }
+    }
+}
+
+// ── TsNotifier impl (#7735 E-3) ───────────────────────────────────────────────
+//
+// `TsNotifier` (`maekon_core::capture_gate::TsNotifier`) is the narrow port the
+// tracking-schedule gate uses to emit enter/exit notifications. This impl used
+// to live next to the trait definition when both were in `src-tauri`; now that
+// the trait has moved into the tauri-free `maekon-core` crate, the impl stays
+// behind here (orphan-rule legal: foreign trait + local type).
+#[async_trait::async_trait]
+impl maekon_core::capture_gate::TsNotifier for NotificationManager {
+    async fn notify_ts(&self, title: &str, body: &str) {
+        self.notify(title, body).await;
     }
 }
 
@@ -567,6 +606,48 @@ mod tests {
         manager
             .notify_coaching("Deep work for 2h. Take a break.")
             .await;
+        assert_eq!(notifier.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn notify_daily_summary_sends_when_flag_enabled() {
+        let config = NotificationConfig {
+            enabled: true,
+            daily_summary_notification: true,
+            ..Default::default()
+        };
+        let notifier = Arc::new(MockNotifier::new());
+        let manager = NotificationManager::new(config, notifier.clone());
+
+        manager.notify_daily_summary("2026-07-01").await;
+        assert_eq!(notifier.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn notify_daily_summary_skips_when_flag_disabled() {
+        let config = NotificationConfig {
+            enabled: true,
+            daily_summary_notification: false,
+            ..Default::default()
+        };
+        let notifier = Arc::new(MockNotifier::new());
+        let manager = NotificationManager::new(config, notifier.clone());
+
+        manager.notify_daily_summary("2026-07-01").await;
+        assert_eq!(notifier.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn notify_daily_summary_skips_when_master_switch_disabled() {
+        let config = NotificationConfig {
+            enabled: false,
+            daily_summary_notification: true,
+            ..Default::default()
+        };
+        let notifier = Arc::new(MockNotifier::new());
+        let manager = NotificationManager::new(config, notifier.clone());
+
+        manager.notify_daily_summary("2026-07-01").await;
         assert_eq!(notifier.calls(), 0);
     }
 

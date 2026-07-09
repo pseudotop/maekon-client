@@ -42,6 +42,57 @@ fn disabled_updater_returns_error() {
     assert!(matches!(result, Err(UpdateError::Disabled)));
 }
 
+// --- #7724: updater HTTP client timeout / redirect-policy regression guards ---
+
+/// Fails-before regression guard: `Updater::new()` previously built a bare
+/// `reqwest::Client::builder().build()` client with NO timeouts at all — a
+/// mid-stream stall on the GitHub CDN (slow-loris, a dead TCP connection that
+/// never RSTs) could hang the updater, and every subsequent update
+/// check/download reusing the same client, forever. This is the identical
+/// stall-bug class `maekon_audio::model_downloader::build_download_client`
+/// already closed (#6205).
+///
+/// `reqwest::Client` exposes no public getter for its configured timeouts, but
+/// its `Debug` output is populated straight from the internal `read_timeout`
+/// field that is actually enforced per-request (see reqwest's
+/// `ClientRef::fmt_fields`), so this pins the fix without a real network
+/// round-trip. Revert `build_updater_http_client` to a bare `.build()` (no
+/// `.connect_timeout()`/`.read_timeout()`) and this assertion fails.
+#[test]
+fn updater_http_client_configures_read_timeout() {
+    let updater = Updater::new(test_config());
+    let debug_repr = format!("{:?}", updater.http_client);
+    assert!(
+        debug_repr.contains("read_timeout"),
+        "updater HTTP client must configure a read_timeout so a stalled GitHub \
+         CDN connection cannot hang forever; got Debug: {debug_repr}"
+    );
+}
+
+/// `redirect` is now an explicit `build_updater_http_client` parameter instead
+/// of an implicit reliance on reqwest's own default — `Updater::new()` passes
+/// `Policy::default()`, which must still equal reqwest's actual default
+/// (`limited(10)`) so GitHub's release/asset 30x chain
+/// (github.com/api.github.com -> objects.githubusercontent.com) keeps working
+/// exactly as it did before this change.
+///
+/// reqwest's `Client` Debug output omits the `redirect_policy` field entirely
+/// when the configured policy `is_default()` (see `redirect_policy_desc` in
+/// reqwest's client construction) — so the field's absence here IS the
+/// assertion that `Policy::default()` was not swapped for a restrictive policy
+/// like the hardened credential-bearing builder's `Policy::none()` (#6892),
+/// which would break every GitHub CDN redirect.
+#[test]
+fn build_updater_http_client_preserves_default_redirect_policy() {
+    let client = build_updater_http_client(reqwest::redirect::Policy::default());
+    let debug_repr = format!("{:?}", client);
+    assert!(
+        !debug_repr.contains("redirect_policy"),
+        "Policy::default() must remain reqwest's own default (limited(10)), \
+         not a custom/restrictive policy; got Debug: {debug_repr}"
+    );
+}
+
 #[test]
 fn version_comparison_works() {
     let v1 = semver::Version::parse("0.1.0").unwrap();

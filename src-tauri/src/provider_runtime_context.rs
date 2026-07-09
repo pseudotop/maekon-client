@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "analysis")]
-use crate::agent_runtime::AgentRuntimeBuilder;
+use crate::agent_runtime::AgentRuntimeBundle;
 #[cfg(feature = "analysis")]
 use crate::oauth_provider_registry::{
     configured_oauth_provider_configs, configured_oauth_provider_ids,
@@ -97,10 +97,10 @@ impl ProviderRuntimeContext {
     }
 
     /// Wire provider credentials and OAuth state into the agent runtime builder.
-    pub(crate) fn configure_agent_builder<'a>(
+    pub(crate) fn configure_agent_builder(
         &self,
-        builder: AgentRuntimeBuilder<'a>,
-    ) -> AgentRuntimeBuilder<'a> {
+        builder: AgentRuntimeBundle,
+    ) -> AgentRuntimeBundle {
         builder
             .with_oauth_coordinator(self.oauth_coordinator.clone())
             .with_provider_secret_stores(self.provider_secret_stores.clone())

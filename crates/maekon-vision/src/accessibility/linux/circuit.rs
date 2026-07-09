@@ -1,22 +1,31 @@
 //! Circuit breaker for AT-SPI2 connection failures.
 //!
-//! Mirrors the same pattern used by macOS and Windows extractors.
+//! Mirrors the same pattern used by the macOS and Windows extractors, and
+//! delegates to the shared `maekon_core::circuit_breaker::CircuitBreaker`
+//! (#7720 E6 consolidation). This module previously hand-rolled its own
+//! `AtomicU32` state machine, which had drifted to a version *missing* the
+//! `compare_exchange` retry-slot claim (#6007 finding 17) that the shared
+//! struct carries — without it, two concurrent callers that both observe the
+//! counter at the same retry-interval boundary would both pass the gate and
+//! both issue an AT-SPI2 call.
+//!
 //! After `CIRCUIT_BREAKER_THRESHOLD` consecutive failures the circuit opens,
 //! and retries are attempted every `CIRCUIT_BREAKER_RETRY_INTERVAL` ticks.
 
 #[cfg(feature = "linux-atspi")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use maekon_core::circuit_breaker::CircuitBreaker;
 #[cfg(feature = "linux-atspi")]
 use tracing::warn;
 
-#[cfg(feature = "linux-atspi")]
-/// Consecutive AT-SPI2 failures before the circuit breaker opens.
-pub(super) static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "linux-atspi")]
 pub(super) const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 #[cfg(feature = "linux-atspi")]
 /// Retry every 10 ticks (~30 s at 3 s poll) after circuit opens.
 pub(super) const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 10;
+
+#[cfg(feature = "linux-atspi")]
+static BREAKER: CircuitBreaker =
+    CircuitBreaker::new(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_RETRY_INTERVAL);
 
 /// Returns `true` if the circuit allows an AT-SPI2 call to proceed.
 ///
@@ -25,29 +34,18 @@ pub(super) const CIRCUIT_BREAKER_RETRY_INTERVAL: u32 = 10;
 /// allowed every `CIRCUIT_BREAKER_RETRY_INTERVAL` ticks.
 #[cfg(feature = "linux-atspi")]
 pub(super) fn circuit_allows() -> bool {
-    let failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed);
-    if failures >= CIRCUIT_BREAKER_THRESHOLD {
-        if !failures.is_multiple_of(CIRCUIT_BREAKER_RETRY_INTERVAL) {
-            CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        warn!(
-            "LinuxAccessibility: circuit breaker retry after {} skipped",
-            failures - CIRCUIT_BREAKER_THRESHOLD
-        );
-    }
-    true
+    BREAKER.should_proceed()
 }
 
 #[cfg(feature = "linux-atspi")]
 pub(super) fn record_success() {
-    CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+    BREAKER.record_success();
 }
 
 #[cfg(feature = "linux-atspi")]
 pub(super) fn record_failure() {
-    let prev = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-    if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
+    BREAKER.record_failure();
+    if BREAKER.failure_count() == CIRCUIT_BREAKER_THRESHOLD {
         warn!(
             "LinuxAccessibility: circuit breaker tripped after {CIRCUIT_BREAKER_THRESHOLD} consecutive failures"
         );

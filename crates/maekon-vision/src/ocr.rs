@@ -175,7 +175,6 @@ impl OcrExtractor {
 
     /// Extract text from a region-of-interest (center crop) of the image.
     /// Public API for consumers that need sub-region OCR; currently exercised by tests.
-    #[allow(dead_code)]
     pub async fn extract_roi_async(
         &self,
         image: &image::DynamicImage,

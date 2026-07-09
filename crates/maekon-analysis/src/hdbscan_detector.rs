@@ -33,7 +33,6 @@ pub struct HdbscanDetector {
     /// back to the real cluster label.
     centroid_labels: Mutex<Vec<i32>>,
     /// Stored labels from the last `detect()` call.
-    #[allow(dead_code)]
     cluster_labels: Mutex<Vec<i32>>,
 }
 

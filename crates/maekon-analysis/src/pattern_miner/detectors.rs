@@ -140,6 +140,26 @@ pub(super) fn detect_deep_work_blocks(
         }
     }
 
+    let last_idx = app_switches.len() - 1;
+    let duration_secs = (app_switches[last_idx].0 - app_switches[block_start].0).num_seconds();
+    if duration_secs >= 1800 && is_coding_app(&app_switches[block_start].1.to_lowercase()) {
+        patterns.push(ActivityPattern {
+            pattern_type: PatternType::DeepWorkBlock,
+            description: format!(
+                "Deep work in {} for {} min",
+                app_switches[block_start].1,
+                duration_secs / 60
+            ),
+            frequency: (last_idx - block_start + 1) as u32,
+            confidence: 0.8,
+            time_range: TimeRange {
+                start: app_switches[block_start].0,
+                end: app_switches[last_idx].0,
+            },
+            involved_apps: vec![app_switches[block_start].1.clone()],
+        });
+    }
+
     patterns
 }
 
@@ -356,5 +376,25 @@ mod tests {
             patterns.is_empty(),
             "should not detect burst for < 5 min comm usage"
         );
+    }
+
+    #[test]
+    fn deep_work_detects_trailing_coding_block() {
+        let base = Utc::now() - Duration::minutes(45);
+        let switches: Vec<_> = (0..=31)
+            .map(|minute| {
+                (
+                    base + Duration::minutes(minute),
+                    "Visual Studio Code".to_string(),
+                )
+            })
+            .collect();
+
+        let patterns = detect_deep_work_blocks(&switches);
+
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].pattern_type, PatternType::DeepWorkBlock);
+        assert_eq!(patterns[0].time_range.start, base);
+        assert_eq!(patterns[0].time_range.end, base + Duration::minutes(31));
     }
 }

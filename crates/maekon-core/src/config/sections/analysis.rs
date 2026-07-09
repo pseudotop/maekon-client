@@ -67,14 +67,35 @@ impl Default for AnalysisConfig {
     }
 }
 
-/// Floor for `analysis.interval_secs` (#6177). Mirrors the IPC validator
-/// (`commands::analysis::validate_analysis_config`, `interval_secs >= 10`) so a
-/// hand-edited / downgrade config cannot drive a sub-10s analysis loop.
+/// Floor for `analysis.interval_secs` (#6177). Originally mirrored the now-deleted
+/// `commands::analysis::validate_analysis_config` IPC validator (`interval_secs`
+/// floor of 10, removed as a dead duplicate in #7637) so a hand-edited / downgrade
+/// config cannot drive a sub-10s analysis loop.
 pub(crate) const ANALYSIS_INTERVAL_SECS_FLOOR: u64 = 10;
 
-/// Floor for `analysis.throttle_secs` (#6177). Mirrors the IPC validator
-/// (`throttle_secs >= 1`).
-pub(crate) const ANALYSIS_THROTTLE_SECS_FLOOR: u64 = 1;
+/// Floor for `analysis.throttle_secs` (#6177, raised #7726).
+///
+/// #6177 originally set this to 1, citing the now-deleted
+/// `commands::analysis::validate_analysis_config` (`throttle_secs >= 1`,
+/// removed in #7637 for having zero frontend callers). That validator was
+/// never the live gate for the actual Settings-UI write path — the WebView
+/// `update_setting` command (`src-tauri/src/commands/settings.rs`) has
+/// independently required `throttle_secs >= 10` since the original client
+/// migration, and every analysis-throttle change made through the primary
+/// desktop UI has gone through that path. Raised to 10 (#7726 ctd-W2 E4) to
+/// match the actually-enforced value and resolve the 3-boundary disagreement.
+pub(crate) const ANALYSIS_THROTTLE_SECS_FLOOR: u64 = 10;
+
+/// Floor for `analysis.max_suggestions` (#7726 ctd-W2 E4). Mirrors the floor
+/// from the now-deleted `commands::analysis::validate_analysis_config`
+/// (`max_suggestions >= 1`, removed in #7637) — zero suggestions is a
+/// meaningless configuration.
+pub(crate) const ANALYSIS_MAX_SUGGESTIONS_FLOOR: usize = 1;
+/// Cap for `analysis.max_suggestions` (#7726 ctd-W2 E4). Adopted from
+/// `src-tauri/src/commands/settings.rs`'s WebView-only `validate_config_bounds`
+/// hardcode, which was the only boundary bounding this field's ceiling; core
+/// had none.
+pub(crate) const ANALYSIS_MAX_SUGGESTIONS_CAP: usize = 200;
 
 impl AnalysisConfig {
     /// Validate that analysis interval values are within acceptable bounds (#6177).
@@ -98,6 +119,16 @@ impl AnalysisConfig {
         if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
             return Err(format!(
                 "analysis.throttle_secs must be >= {ANALYSIS_THROTTLE_SECS_FLOOR}"
+            ));
+        }
+        if self.max_suggestions < ANALYSIS_MAX_SUGGESTIONS_FLOOR {
+            return Err(format!(
+                "analysis.max_suggestions must be >= {ANALYSIS_MAX_SUGGESTIONS_FLOOR}"
+            ));
+        }
+        if self.max_suggestions > ANALYSIS_MAX_SUGGESTIONS_CAP {
+            return Err(format!(
+                "analysis.max_suggestions must be <= {ANALYSIS_MAX_SUGGESTIONS_CAP}"
             ));
         }
         Ok(())
@@ -124,6 +155,13 @@ impl AnalysisConfig {
         if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
             self.throttle_secs = ANALYSIS_THROTTLE_SECS_FLOOR;
             clamped.push("analysis.throttle_secs");
+        }
+        if self.max_suggestions < ANALYSIS_MAX_SUGGESTIONS_FLOOR {
+            self.max_suggestions = ANALYSIS_MAX_SUGGESTIONS_FLOOR;
+            clamped.push("analysis.max_suggestions");
+        } else if self.max_suggestions > ANALYSIS_MAX_SUGGESTIONS_CAP {
+            self.max_suggestions = ANALYSIS_MAX_SUGGESTIONS_CAP;
+            clamped.push("analysis.max_suggestions");
         }
         clamped
     }
@@ -173,10 +211,6 @@ pub struct AutoTuningConfig {
     /// Drift detection threshold in sigma units.
     #[serde(default = "default_drift_threshold")]
     pub drift_threshold: f32,
-
-    /// Adjusted Rand Index threshold below which re-clustering is triggered.
-    #[serde(default = "default_reclustering_ari_threshold")]
-    pub reclustering_ari_threshold: f32,
 }
 
 impl Default for AutoTuningConfig {
@@ -185,7 +219,6 @@ impl Default for AutoTuningConfig {
             enabled: default_auto_tuning_enabled(),
             ema_alpha: default_ema_alpha(),
             drift_threshold: default_drift_threshold(),
-            reclustering_ari_threshold: default_reclustering_ari_threshold(),
         }
     }
 }
@@ -198,9 +231,6 @@ fn default_ema_alpha() -> f32 {
 }
 fn default_drift_threshold() -> f32 {
     2.0
-}
-fn default_reclustering_ari_threshold() -> f32 {
-    0.7
 }
 
 /// Configuration for the Adaptive Tiered Memory subsystem.
@@ -804,5 +834,85 @@ mod tests {
                 .map(|r| r.namespace.as_str()),
             Some("provider/openai/embedding")
         );
+    }
+
+    // ── #7726 (ctd-W2 E4): max_suggestions floor/cap ────────────────────
+
+    #[test]
+    fn analysis_validate_bounds_rejects_zero_max_suggestions() {
+        let cfg = AnalysisConfig {
+            max_suggestions: 0,
+            ..Default::default()
+        };
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(err.contains("max_suggestions"), "got: {err}");
+    }
+
+    #[test]
+    fn analysis_validate_bounds_rejects_max_suggestions_above_cap() {
+        let cfg = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 1,
+            ..Default::default()
+        };
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(err.contains("max_suggestions"), "got: {err}");
+    }
+
+    #[test]
+    fn analysis_validate_bounds_accepts_max_suggestions_boundary() {
+        for val in [ANALYSIS_MAX_SUGGESTIONS_FLOOR, ANALYSIS_MAX_SUGGESTIONS_CAP] {
+            let cfg = AnalysisConfig {
+                max_suggestions: val,
+                ..Default::default()
+            };
+            cfg.validate_bounds()
+                .unwrap_or_else(|e| panic!("max_suggestions={val} must be accepted; got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_raises_zero_max_suggestions_to_floor() {
+        let mut cfg = AnalysisConfig {
+            max_suggestions: 0,
+            ..Default::default()
+        };
+        let clamped = cfg.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(cfg.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_FLOOR);
+        cfg.validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_lowers_over_cap_max_suggestions() {
+        let mut cfg = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 50,
+            ..Default::default()
+        };
+        let clamped = cfg.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(cfg.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_CAP);
+        cfg.validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
+    }
+
+    // ── #7726: capture_throttle / throttle_secs boundary-agreement regression ──
+    //
+    // Pre-fix (before #7726), `analysis.throttle_secs = 5` was accepted by this
+    // core validator (floor was 1) but rejected by the WebView `update_setting`
+    // boundary (`src-tauri/src/commands/settings.rs`, hardcoded floor 10) — a
+    // live 3-boundary disagreement. Both boundaries must now agree: this test
+    // pins the core side; `src-tauri/src/commands/settings.rs`'s test module
+    // pins the WebView side against the same value.
+    #[test]
+    fn analysis_validate_bounds_rejects_throttle_secs_five_matches_webview_boundary() {
+        let cfg = AnalysisConfig {
+            throttle_secs: 5,
+            ..Default::default()
+        };
+        let err = cfg
+            .validate_bounds()
+            .expect_err("throttle_secs=5 must now be rejected by the core SSOT (floor raised to 10 in #7726 to agree with the WebView boundary)");
+        assert!(err.contains("throttle_secs"), "got: {err}");
     }
 }

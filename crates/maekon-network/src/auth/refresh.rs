@@ -6,6 +6,18 @@ use maekon_core::error::CoreError;
 use tracing::warn;
 
 use super::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
+use crate::resilience::jittered_backoff_delay;
+
+/// Retry ceiling for [`TokenManager::refresh`]. Hoisted to module scope
+/// (rather than a `fn`-local `const`) so tests can pin the backoff envelope
+/// against the exact tuning `refresh()` uses.
+pub(super) const REFRESH_MAX_RETRIES: u32 = 3;
+
+/// Base backoff delay fed to [`jittered_backoff_delay`] by [`TokenManager::refresh`].
+pub(super) const REFRESH_INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Cap on the refresh backoff delay.
+pub(super) const REFRESH_MAX_BACKOFF_MS: u64 = 8_000;
 
 /// Parse a `Retry-After` header value (integer seconds only).
 ///
@@ -31,9 +43,9 @@ impl TokenManager {
     /// `docs/guides/http-status-error-mapping.md` so that telemetry can
     /// distinguish "auth provider is down" from "credentials rejected".
     pub async fn refresh(&self) -> Result<(), CoreError> {
-        const MAX_RETRIES: u32 = 3;
-        const INITIAL_BACKOFF_MS: u64 = 500;
-        const MAX_BACKOFF_MS: u64 = 8_000;
+        const MAX_RETRIES: u32 = REFRESH_MAX_RETRIES;
+        const INITIAL_BACKOFF_MS: u64 = REFRESH_INITIAL_BACKOFF_MS;
+        const MAX_BACKOFF_MS: u64 = REFRESH_MAX_BACKOFF_MS;
 
         let current = {
             let state = self.state.read().await;
@@ -185,14 +197,23 @@ impl TokenManager {
             }
 
             if attempt < MAX_RETRIES {
-                let backoff_ms = (INITIAL_BACKOFF_MS * 2u64.pow(attempt)).min(MAX_BACKOFF_MS);
+                // #7725: adopted `resilience::jittered_backoff_delay` in place of
+                // the hand-rolled `(INITIAL_BACKOFF_MS * 2u64.pow(attempt)).min(MAX_BACKOFF_MS)`
+                // doubling (found during the #7725 fix-class completeness sweep,
+                // beyond the originally-flagged sites — same crate as the shared
+                // helper, so the adoption is mechanical).
+                let delay = jittered_backoff_delay(
+                    attempt,
+                    StdDuration::from_millis(INITIAL_BACKOFF_MS),
+                    StdDuration::from_millis(MAX_BACKOFF_MS),
+                );
                 warn!(
                     attempt = attempt + 1,
                     max = MAX_RETRIES,
-                    backoff_ms,
+                    backoff_ms = delay.as_millis() as u64,
                     "token refresh failed, retrying"
                 );
-                tokio::time::sleep(StdDuration::from_millis(backoff_ms)).await;
+                tokio::time::sleep(delay).await;
             }
         }
 

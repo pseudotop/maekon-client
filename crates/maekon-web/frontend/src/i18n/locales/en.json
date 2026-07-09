@@ -599,6 +599,7 @@
     "pauseOnLockDesc": "Stop collection when screen is locked",
     "pauseOnBattery": "Pause on Battery Saver",
     "pauseOnBatteryDesc": "Stop collection in battery saver mode",
+    "pauseOnBatteryUnavailable": "Not available on this platform — battery/power status is only detected on macOS today. This toggle cannot be enabled here.",
     "telemetryTitle": "Telemetry",
     "telemetryDesc": "Control remote telemetry data sent to the server.",
     "telemetryEnabled": "Enable Telemetry",
@@ -783,7 +784,9 @@
       "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
       "endpoint": "Endpoint URL",
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
-      "cloud_timeout": "Timeout (sec)"
+      "cloud_timeout": "Timeout (sec)",
+      "notCompiledTitle": "Not available in this build",
+      "notCompiledDescription": "This build was compiled without audio/speech-to-text support. Enabling this toggle and downloading a model would not work."
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -797,6 +800,102 @@
     }
   },
   "privacy": {
+    "claims": {
+      "title": "Memory claims",
+      "description": "A read-only view of the durable beliefs the agent has formed about you from your activity — the local second-brain memory. Retracting a claim hides it from your digests and future suggestions while preserving the record for transparency.",
+      "kindLabel": "Kind",
+      "statusLabel": "Status",
+      "rangeLabel": "Formed",
+      "kind": {
+        "all": "All kinds",
+        "semantic": "Semantic",
+        "episodic": "Episodic",
+        "procedural": "Procedural",
+        "reflective": "Reflective"
+      },
+      "status": {
+        "active_superseded": "Active & superseded",
+        "active": "Active",
+        "superseded": "Superseded",
+        "retracted": "Retracted",
+        "all": "All statuses"
+      },
+      "range": {
+        "24h": "Last 24 hours",
+        "7d": "Last 7 days",
+        "30d": "Last 30 days",
+        "all": "All time"
+      },
+      "col": {
+        "time": "Formed",
+        "kind": "Kind",
+        "statement": "Belief",
+        "source": "Source",
+        "confidence": "Confidence",
+        "evidence": "Evidence",
+        "status": "Status",
+        "actions": "Actions"
+      },
+      "count": "Showing {{shown}} of {{total}} claims",
+      "retractedLabel": "retracted",
+      "loadError": "Failed to load memory claims",
+      "empty": {
+        "noneTitle": "No claims yet",
+        "noneDesc": "A claim is a durable belief the agent forms about your work patterns — for example, \"deep-work blocks cluster in the morning\". None have accumulated yet; they build up as daily digests are generated.",
+        "filteredTitle": "No claims match these filters",
+        "filteredDesc": "No claims match the selected kind, status, and time range. Retracted claims are hidden unless you choose a status that includes them."
+      },
+      "retract": {
+        "button": "Retract",
+        "confirmTitle": "Retract this claim?",
+        "confirmMessage": "Retract this belief:\n\n\"{{text}}\"",
+        "confirmNote": "Retracting hides this claim from your digests and future suggestions. The record is preserved (not deleted), so the change stays auditable.",
+        "confirmButton": "Retract claim",
+        "success": "Claim retracted",
+        "alreadyRetracted": "Claim was already retracted"
+      }
+    },
+    "egress": {
+      "title": "Egress transparency",
+      "description": "A read-only record of what has left this device. Backed by the tamper-evident egress ledger, which is retained as compliance evidence even after you erase your data.",
+      "rangeLabel": "Time range",
+      "dispositionLabel": "Disposition",
+      "range": {
+        "24h": "Last 24 hours",
+        "7d": "Last 7 days",
+        "30d": "Last 30 days",
+        "all": "All time"
+      },
+      "disposition": {
+        "all": "All",
+        "uploaded": "Uploaded",
+        "blocked": "Blocked",
+        "capture_blocked": "Capture blocked"
+      },
+      "badge": {
+        "uploaded": "uploaded",
+        "blocked": "blocked",
+        "capture_blocked": "capture blocked (excluded app)"
+      },
+      "col": {
+        "time": "Time",
+        "eventType": "Event",
+        "destination": "Destination",
+        "disposition": "Disposition",
+        "bytes": "Size",
+        "recipients": "Recipients",
+        "consent": "Consent"
+      },
+      "captureBlockedBytesHint": "A frame that was deliberately not captured — nothing was sent.",
+      "entryCount": "{{count}} entries",
+      "empty": {
+        "ledgerTitle": "Nothing has left this device yet",
+        "ledgerDesc": "The egress ledger is empty. When data is uploaded, synced, or a capture is blocked, an audit entry will appear here.",
+        "rangeTitle": "No entries in range",
+        "rangeDesc": "No egress entries match the selected time range and disposition filter."
+      },
+      "loadError": "Failed to load the egress ledger"
+    },
     "title": "Privacy Management",
     "storageStats": "Storage Statistics",
     "totalFrames": "Total Frames",
@@ -974,7 +1073,13 @@
     "similarity": "Similarity",
     "timeDecay": "Time decay",
     "type": "Type",
-    "summary": "Summary"
+    "summary": "Summary",
+    "semanticUnavailable": "Semantic (unavailable)",
+    "semanticUnavailableHint": "Keyword search only — semantic search requires embedding setup in this build.",
+    "keyword": "Keyword",
+    "keywordPlaceholder": "Search your activity by keyword...",
+    "keywordScopeHint": "Ranks your activity summaries by keyword relevance (BM25).",
+    "textScopeHint": "Searches screenshots, window titles, OCR text, and events."
   },
   "shortcuts": {
     "title": "Keyboard Shortcuts",
@@ -1214,6 +1319,32 @@
     "intentHintViewHistory": "View in execution history",
     "intentHintErrorCheckHistory": "The request may still have executed — check execution history."
   },
+  "guiPicker": {
+    "title": "Point-and-Confirm Actions",
+    "description": "Scan the focused window, highlight actionable targets, then confirm one to run it through the sandboxed automation gates.",
+    "appNameLabel": "App name (optional)",
+    "appNamePlaceholder": "Leave blank to scan the focused window",
+    "scanButton": "Scan targets",
+    "disabledHint": "Enable automation in settings to use point-and-confirm.",
+    "candidatesTitle": "Highlighted targets",
+    "noCandidates": "No actionable targets were found in the focused window.",
+    "selectCandidate": "Select a highlighted target first.",
+    "actionLabel": "Action",
+    "actionClick": "Click",
+    "actionTypeText": "Type text",
+    "typeTextLabel": "Text to type",
+    "typeTextPlaceholder": "Text to enter into the target",
+    "confirmButton": "Confirm target",
+    "reset": "Start over",
+    "ticketMinted": "Execution ticket minted",
+    "ticketExpires": "Expires at {{expiresAt}}",
+    "executeButton": "Run action",
+    "executionSucceeded": "Action completed",
+    "executionFailed": "Action did not complete",
+    "resultSteps": "{{completed}} of {{total}} steps completed",
+    "viewHistory": "View in history",
+    "error": "Something went wrong."
+  },
   "settingsAutomation": {
     "title": "Automation",
     "enabled": "Enable Automation",
@@ -1268,6 +1399,8 @@
     "ocrProvider": "OCR Provider",
     "llmProvider": "LLM Provider",
     "ocrProviderHint": "Keep OCR local unless remote OCR quality or a multimodal LLM surface is required.",
+    "ocrLocalUnavailableTitle": "Not available in this build",
+    "ocrLocalUnavailableDescription": "This build has no local OCR engine on this platform (native OCR is macOS/Windows-only, and the bundled Tesseract fallback is not compiled in). Local OCR would silently return zero results — switch to Remote OCR instead.",
     "llmProviderHint": "Remote LLMs can improve capability, but they also use the selected access path and external data policy.",
     "providerLocal": "Local",
     "providerRemote": "Remote",
@@ -1579,7 +1712,17 @@
   "auditLog": {
     "title": "Audit Log",
     "entries": "Audit Entries",
-    "details": "Details"
+    "details": "Details",
+    "chainIntegrity": "Audit chain integrity",
+    "chainIntegrityHint": "Verifies the tamper-evident SHA-256 hash chain of the durable audit log.",
+    "verifyIntegrity": "Verify integrity",
+    "verifyFailed": "Verification failed",
+    "chainIntact": "Chain intact",
+    "chainVerifiedCount": "{{count}} entries verified.",
+    "chainLegacyCount": "{{count}} legacy (pre-hash-chain) entries excluded.",
+    "chainBroken": "Integrity break detected",
+    "chainBrokenDetail": "First broken entry at seq {{seq}}: {{reason}}",
+    "chainBrokenUnknown": "Chain verification failed for an unknown reason."
   },
   "widgets": {
     "title": "Widgets",
@@ -1775,6 +1918,8 @@
     "personalTime": "Personal time"
   },
   "sidebar": {
+    "claimsBrowser": "Memory claims",
+    "egressLedger": "Egress ledger",
     "overview": "Overview",
     "systemMetrics": "System Metrics",
     "activeProcesses": "Active Processes",
@@ -2040,7 +2185,8 @@
     "read_only_notice": "This session has ended. History is read-only.",
     "stt_error": "Transcription failed",
     "mic_privacy_stopped": "Microphone stopped — privacy gate active",
-    "searchMessagesPlaceholder": "Search messages..."
+    "searchMessagesPlaceholder": "Search messages...",
+    "audio_not_compiled": "Audio is not available in this build"
   },
   "policies": {
     "title": "Execution Policies",
@@ -2094,6 +2240,11 @@
     "targetBadgeLabel": "new suggestions for {{target}}",
     "currentTarget": "Current target",
     "noAutoAction": "No auto action",
+    "runAction": "Run {{label}}",
+    "runActionPending": "Running…",
+    "gateNotice": "Runs through the automation gate — your confirmation settings apply.",
+    "toastActionRan": "Action ran",
+    "actionFailed": "Could not run action:",
     "replayTargetLocked": "Target locked",
     "replayProposalShown": "Proposal shown",
     "replayConsentGate": "Consent gate",
@@ -2422,7 +2573,7 @@
     "maxSuggestions": "Max suggestions",
     "regimeDetectionIntervalHours": "Regime detection interval (hours)",
     "embedding": "Embedding",
-    "embeddingDescription": "Enable vector embedding for semantic search",
+    "embeddingDescription": "Enable vector embedding for AI analysis context retrieval — does not power the Search page's Semantic mode",
     "guiIntelligence": "GUI intelligence",
     "guiIntelligenceDescription": "Detect and aggregate GUI interaction patterns",
     "textIntelligence": "Text intelligence",

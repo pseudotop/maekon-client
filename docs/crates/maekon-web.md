@@ -62,14 +62,26 @@ pub struct AppState {
 
 ### WebServer Builder
 
+`event_tx` is a required constructor argument (#7738 D-1) — the composition
+root's shared broadcast bus, not a throwaway channel `new` creates internally.
+Dependencies split into two payloads (#7738 D-2/D-3):
+`WebServerRequiredDeps` (~13 fields VERIFIED-unconditional on every
+deployment shape — `memory_graph`, `audit_chain_verifier`, `regime_storage`,
+`text_search`, `audit_logger`, `config_manager`, `update_control`,
+`local_auth_token`, `frames_dir`, `pii_sanitizer`, `runtime_log_provider`,
+`system_info_provider`, `provider_cli_diagnostics`; no `Default` impl, so a
+field missing from the literal is a compile error) consumed via
+`with_required_deps`, and `WebServerRuntimeBindings` (the genuinely
+optional/conditional fields — `automation_controller`/`ai_runtime_status`
+are `None` when automation is disabled, `frame_storage` is `None` on capture
+init failure, etc.) consumed via `with_runtime_bindings`.
+
 ```rust
-let server = WebServer::new(storage, web_config)
-    .with_config_manager(config_manager)
-    .with_audit_logger(audit_logger)
-    .with_automation_controller(automation_controller)
-    .with_update_control(update_control)
-    .with_event_tx(event_tx)
-    .with_frames_dir(frames_dir);
+let server = WebServer::new(storage, event_tx, web_config)
+    .with_bound_port_state(bound_port_state)
+    .with_bound_port_notifier(bound_port_notifier)
+    .with_required_deps(required_deps)
+    .with_runtime_bindings(runtime_bindings);
 
 server.run(shutdown_rx).await?;
 ```
@@ -330,12 +342,13 @@ Korean/English translation keys:
 ```rust
 use maekon_web::WebServer;
 
-let server = WebServer::new(storage, web_config)
-    .with_config_manager(config_manager)
-    .with_audit_logger(audit_logger)
-    .with_automation_controller(automation_controller)
-    .with_update_control(update_control)
-    .with_event_tx(event_tx);
+// #7738: event_tx is a required constructor arg; required_deps carries the
+// ~13 VERIFIED-unconditional fields (config_manager, audit_logger,
+// update_control, ... — see "WebServer Builder" above), runtime_bindings
+// carries the genuinely optional/conditional ones (automation_controller, ...).
+let server = WebServer::new(storage, event_tx, web_config)
+    .with_required_deps(required_deps)
+    .with_runtime_bindings(runtime_bindings);
 
 server.run(shutdown_rx).await?;
 ```

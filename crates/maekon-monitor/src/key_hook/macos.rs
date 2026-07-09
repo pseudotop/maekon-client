@@ -167,11 +167,11 @@ pub fn run_event_tap(
 
     // Publish the tap so the callback can re-enable it on TapDisabled events.
     *tap_cell.borrow_mut() = Some(tap);
-    tap_cell
-        .borrow()
-        .as_ref()
-        .expect("tap was just stored")
-        .enable();
+    let tap_borrow = tap_cell.borrow();
+    let Some(tap) = tap_borrow.as_ref() else {
+        panic!("tap was just stored");
+    };
+    tap.enable();
 
     info!("CGEventTap active -- passive key observer running");
 

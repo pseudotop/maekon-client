@@ -7,7 +7,18 @@ use super::types::AccessibilityNode;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(super) fn query_linux_accessibility_nodes() -> Result<Vec<AccessibilityNode>, CoreError> {
-    let mut active_window = Command::new("xdotool");
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) once and reuse the resolved absolute path for every
+    // xdotool spawn below — fail closed (no PATH fallback) when the binary
+    // is not found under any trusted system directory.
+    let xdotool_path = maekon_monitor::resolve_trusted_binary("xdotool").ok_or_else(|| {
+        CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "xdotool not found under the trusted directory allowlist".to_string(),
+        }
+    })?;
+
+    let mut active_window = Command::new(&xdotool_path);
     active_window.arg("getactivewindow");
     let window_id = successful_output(&mut active_window)
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -18,13 +29,13 @@ pub(super) fn query_linux_accessibility_nodes() -> Result<Vec<AccessibilityNode>
                 .to_string(),
         })?;
 
-    let mut window_name = Command::new("xdotool");
+    let mut window_name = Command::new(&xdotool_path);
     window_name.args(["getwindowname", &window_id]);
     let title = successful_output(&mut window_name)
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .unwrap_or_else(|| "active-window".to_string());
 
-    let mut window_pid = Command::new("xdotool");
+    let mut window_pid = Command::new(&xdotool_path);
     window_pid.args(["getwindowpid", &window_id]);
     let pid = successful_output(&mut window_pid).and_then(|output| {
         String::from_utf8_lossy(&output.stdout)
@@ -37,7 +48,7 @@ pub(super) fn query_linux_accessibility_nodes() -> Result<Vec<AccessibilityNode>
         .and_then(read_proc_name)
         .unwrap_or_else(|| "unknown".to_string());
 
-    let mut window_geometry = Command::new("xdotool");
+    let mut window_geometry = Command::new(&xdotool_path);
     window_geometry.args(["getwindowgeometry", "--shell", &window_id]);
     let geometry = successful_output(&mut window_geometry)
         .map(|output| String::from_utf8_lossy(&output.stdout).to_string())

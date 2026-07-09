@@ -37,6 +37,17 @@
 //!   switches tokenizer from `porter unicode61` to `unicode61` and adds an FTS-indexed
 //!   `shadow` column containing CJK bigram expansions. Improves ja R@3 0→0.611,
 //!   ko 0.286→0.611 (Option F, #5758).
+//! - `v42_digest_processing_markers.rs` — digest downstream processing markers
+//!   for idempotent ADR-023 claim promotion / belief revision catch-up (#7486).
+//! - `v43_gui_interactions_drop_unused_columns.rs` — drops the never-populated
+//!   `segment_id`/`element_text`/`element_type`/`bbox_json` columns from
+//!   `gui_interactions`; the production writer only ever wrote `interaction_type`
+//!   + `app_name` (#7678 D3).
+//! - `v44_learning_persistence.rs` — restart-surviving feedback-learning tables:
+//!   `feedback_scorer_tallies` (FeedbackScorer per-(type, source) counts, with a
+//!   wall-clock `last_updated` decay anchor) and `regime_reaction_stats`
+//!   (RegimeClassifier per-regime + aggregate reaction counts). Both erased with
+//!   activity data like `coaching_effectiveness` (#7913 T2.1c).
 
 #[cfg(test)]
 mod tests;
@@ -62,11 +73,14 @@ mod v38_sync_tombstones;
 mod v39_hlc_clock;
 mod v40_egress_recipient_count;
 mod v41_cjk_bigram_shadow;
+mod v42_digest_processing_markers;
+mod v43_gui_interactions_drop_unused_columns;
+mod v44_learning_persistence;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub(crate) const CURRENT_VERSION: u32 = 41;
+pub(crate) const CURRENT_VERSION: u32 = 44;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -343,6 +357,19 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     if current < 41 {
         run_migration_step(conn, 41, v41_cjk_bigram_shadow::migrate_v41)?;
+    }
+    if current < 42 {
+        run_migration_step(conn, 42, v42_digest_processing_markers::migrate_v42)?;
+    }
+    if current < 43 {
+        run_migration_step(
+            conn,
+            43,
+            v43_gui_interactions_drop_unused_columns::migrate_v43,
+        )?;
+    }
+    if current < 44 {
+        run_migration_step(conn, 44, v44_learning_persistence::migrate_v44)?;
     }
 
     Ok(())

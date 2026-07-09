@@ -1,4 +1,5 @@
 use chrono::Utc;
+use maekon_core::ports::consent_manager::ConsentGate;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +21,14 @@ impl Scheduler {
         shared_regime: Arc<SharedRegimeState>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
-        let analyzer = self.context_analyzer.clone();
+        // #7652: shared runtime slot (Arc<RwLock<Option<Arc<ContextAnalyzer>>>>).
+        // This loop is the SOLE writer — it installs the analyzer on a runtime
+        // enable transition and tears it down on a runtime disable transition
+        // (see `reconcile_analyzer_slot` below), so a Settings flip (or a BYOK
+        // key saved after boot) takes effect WITHOUT an app restart.
+        let analyzer_slot = self.context_analyzer.clone();
+        #[cfg(feature = "analysis")]
+        let context_analyzer_factory = self.context_analyzer_factory.clone();
         let storage_ref = self.storage.clone();
         let sqlite_ref = self.sqlite_storage.clone();
         let config_manager = self.config_manager.clone();
@@ -46,6 +54,13 @@ impl Scheduler {
         // previously they were only persisted to SQLite and never reached the queue.
         #[cfg(feature = "local-suggestions")]
         let suggestion_queue = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        // #7914: shared FeedbackScorer handle (SAME Arc the feedback command
+        // records into). Plumbed so the periodic-LLM producer applies the SAME
+        // learned relevance gate as the server SSE path — previously the scorer
+        // was write-only off the SSE stream. #7913 (T2.1) will back it with
+        // persisted state; this handle stays the injection point.
+        #[cfg(feature = "local-suggestions")]
+        let scorer_a = self.suggestion_manager.as_ref().map(|m| m.scorer().clone());
         // E20-26 (#4818): keep the shared regime handle alive in the spawned task only
         // when the local-suggestion filter actually consumes it.
         #[cfg(feature = "local-suggestions")]
@@ -63,19 +78,28 @@ impl Scheduler {
         let _ = &shared_regime;
 
         tokio::spawn(async move {
-            let analyzer = match analyzer {
-                Some(a) => a,
-                None => {
-                    let _ = shutdown_rx.changed().await;
-                    return;
-                }
-            };
+            // #7652: builds WITHOUT the `analysis` feature never populate the
+            // shared slot (`build_context_analyzer` is a `None`-returning stub
+            // in that build) and have no rebuild factory either, so an empty
+            // slot here can never change — park exactly like the pre-#7652
+            // code did. `analysis` builds always carry a rebuild factory
+            // (installed by the composition root regardless of the
+            // startup-time enabled/provider state — see
+            // `AgentSupportContextBuilder::build`), so this loop keeps
+            // ticking below and reconciles the slot against the LIVE config
+            // every interval instead of exiting early.
+            #[cfg(not(feature = "analysis"))]
+            if analyzer_slot.read().is_none() {
+                let _ = shutdown_rx.changed().await;
+                return;
+            }
 
             // Use initial config for interval timing (changes require restart).
             // Other settings (enabled, min_confidence, max_suggestions, throttle_secs)
             // are read dynamically from ConfigManager on each tick so that
-            // changes via the Tauri `update_analysis_config` command propagate
-            // immediately without an agent restart.
+            // changes made via the embedded HTTP `PUT /settings` endpoint
+            // (#7600: the Tauri `update_analysis_config` IPC duplicate was
+            // removed) propagate immediately without an agent restart.
             //
             // #6177: defense-in-depth — `tokio::time::interval` panics on a zero
             // period. ConfigManager already clamps `interval_secs` to its floor at
@@ -92,11 +116,9 @@ impl Scheduler {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
-                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
-                        let consent = consent_mgr_a.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent_mgr_a.as_ref()).permissions_snapshot();
                         let paused = capture_paused_a.load(Ordering::Relaxed);
                         let permitted = config_manager.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -107,16 +129,40 @@ impl Scheduler {
                         }
 
                         // Read current config from ConfigManager (the single source
-                        // of truth also written to by update_analysis_config).
+                        // of truth also written to by the HTTP `PUT /settings` endpoint).
                         let current_config = config_manager
                             .as_ref()
                             .map(|cm| cm.get().analysis)
                             .unwrap_or_else(|| config.clone());
 
+                        // #7652: reconcile the shared analyzer slot against the LIVE
+                        // `enabled` flag before deciding whether to skip this tick —
+                        // this is the runtime-enable/runtime-disable mechanism itself.
+                        // Before this fix, a `None` slot at spawn time made this whole
+                        // task exit permanently (see the `#[cfg(not(feature = "analysis"))]`
+                        // guard above for the equivalent-behavior fast path this
+                        // superseded), so a later `analysis.enabled = true` Settings
+                        // save was never observed without an app restart.
+                        #[cfg(feature = "analysis")]
+                        reconcile_analyzer_slot(
+                            &analyzer_slot,
+                            current_config.enabled,
+                            context_analyzer_factory.as_ref(),
+                            config_manager.as_ref().map(|cm| cm.snapshot()),
+                        ).await;
+
                         if !current_config.enabled {
                             debug!("analysis loop: disabled via runtime config, skipping tick");
                             continue;
                         }
+
+                        let analyzer = match analyzer_slot.read().clone() {
+                            Some(a) => a,
+                            None => {
+                                debug!("analysis loop: enabled via runtime config but no analyzer is available yet (no BYOK provider configured) — waiting");
+                                continue;
+                            }
+                        };
 
                         // Server coexistence: skip local LLM analysis when
                         // the server has recently sent suggestions via SSE.
@@ -199,15 +245,21 @@ impl Scheduler {
                                 // queue fingerprint; push returns false on duplicate).
                                 #[cfg(feature = "local-suggestions")]
                                 if let Some(ref q) = suggestion_queue {
-                                    // E20-26 (#4818): regime/context-aware gating. In a
-                                    // focused regime (e.g. "Deep Focus") low/medium-priority
-                                    // suggestions are dropped BEFORE they reach the queue so
-                                    // the user is not interrupted. `regime: None` => pass-through.
-                                    let mut to_enqueue = suggestions.clone();
+                                    // #7914: regime Deep-Focus filter + learned per-regime
+                                    // acceptance + FeedbackScorer now ALL apply inside
+                                    // `enqueue_and_surface` (the ONE seam every LOCAL
+                                    // producer shares). The periodic-LLM path previously
+                                    // applied only the static regime filter; it now runs
+                                    // the SAME decision function. The learned acceptance
+                                    // rate lives on `adaptive_trigger_state`, owned by the
+                                    // monitor loop and not reachable here, so that gate
+                                    // stays pass-through (`None`) on this path — the
+                                    // scorer (the headline signal) applies fully.
                                     let regime = shared_regime_for_filter.snapshot().regime;
-                                    maekon_analysis::filter_by_regime(
-                                        &mut to_enqueue,
+                                    let gates = super::helpers::relevance_gates(
+                                        scorer_a.as_ref(),
                                         regime.as_ref(),
+                                        None,
                                     );
                                     // #5694: shared surfacing funnel — enqueue (dedup) +
                                     // overlay auto-refresh + High+ toast (focus-gated).
@@ -221,7 +273,8 @@ impl Scheduler {
                                             .map(|f| f as &(dyn Fn(usize) + Send + Sync));
                                     super::helpers::enqueue_and_surface(
                                         q,
-                                        to_enqueue,
+                                        suggestions.clone(),
+                                        gates,
                                         on_changed_ref,
                                         notif_a.as_ref(),
                                         focus_a.is_active(),
@@ -267,6 +320,12 @@ impl Scheduler {
         // one-shot OS notification; a funnel toast would double-notify.
         #[cfg(feature = "local-suggestions")]
         let focus_queue = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        // #7914: shared FeedbackScorer handle so the rule producer (FocusAnalyzer
+        // periodic playbook flushes) applies the SAME learned gate as every other
+        // producer — this is the exact "reject a rule nudge 10× → it goes quiet"
+        // path the issue calls out.
+        #[cfg(feature = "local-suggestions")]
+        let scorer_f = self.suggestion_manager.as_ref().map(|m| m.scorer().clone());
         #[cfg(feature = "local-suggestions")]
         let sqlite_f = self.sqlite_storage.clone();
         #[cfg(feature = "local-suggestions")]
@@ -289,11 +348,9 @@ impl Scheduler {
                 tokio::select! {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
-                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
-                        let consent = consent_mgr_f.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent_mgr_f.as_ref()).permissions_snapshot();
                         let paused = capture_paused_f.load(Ordering::Relaxed);
                         let permitted = config_mgr_f.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -335,11 +392,18 @@ impl Scheduler {
                                 })
                                 .unwrap_or(false);
                                 if !coexist {
-                                    let mut to_enqueue = rule_suggestions;
+                                    // #7914: the rule producer now runs the SAME gate
+                                    // seam as every other LOCAL producer — regime
+                                    // Deep-Focus filter + FeedbackScorer inside
+                                    // `enqueue_and_surface`. Learned acceptance rate is
+                                    // pass-through here (classifier owned by the monitor
+                                    // loop); the scorer applies, so repeated rejection of
+                                    // a rule nudge now suppresses it.
                                     let regime = shared_regime_f.snapshot().regime;
-                                    maekon_analysis::filter_by_regime(
-                                        &mut to_enqueue,
+                                    let gates = super::helpers::relevance_gates(
+                                        scorer_f.as_ref(),
                                         regime.as_ref(),
+                                        None,
                                     );
                                     let on_changed = overlay_f.as_ref().map(|o| {
                                         let o = o.clone();
@@ -351,7 +415,8 @@ impl Scheduler {
                                             .map(|f| f as &(dyn Fn(usize) + Send + Sync));
                                     super::helpers::enqueue_and_surface(
                                         q,
-                                        to_enqueue,
+                                        rule_suggestions,
+                                        gates,
                                         on_changed_ref,
                                         None, // rules already sent their own toast
                                         false,
@@ -406,11 +471,9 @@ impl Scheduler {
                     _ = interval.tick() => {
                         // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
                         // Coaching during an opt-out window is invasive (R3.I4).
-                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
-                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
-                        let consent = consent_mgr_c.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent_mgr_c.as_ref()).permissions_snapshot();
                         let paused = capture_paused_c.load(Ordering::Relaxed);
                         let permitted = config_mgr_c.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -434,6 +497,64 @@ impl Scheduler {
                 }
             }
         })
+    }
+}
+
+/// #7652: reconcile the shared analyzer slot against the LIVE `enabled` flag —
+/// the sole mechanism that lets a Settings → `analysis.enabled` flip (or a
+/// BYOK `ai_provider.llm_api` key saved after boot) take effect WITHOUT an
+/// app restart. Only `spawn_analysis_loop` calls this (single writer to the
+/// slot; `spawn_monitor_loop` only reads it).
+///
+/// - `enabled=true` + slot empty  → attempt a build via `factory`, using the
+///   CURRENT `live_config` snapshot (so a freshly-saved BYOK key is honored).
+///   On success the built analyzer is installed; on failure (still no usable
+///   provider) the slot stays empty and the next tick retries.
+/// - `enabled=false` + slot occupied → tear down (drop the analyzer) so a
+///   later re-enable rebuilds fresh instead of resurrecting stale state.
+/// - `enabled=true` + slot already occupied → no-op. Hot-swapping BYOK
+///   settings WHILE already enabled (as opposed to on the disable→enable
+///   transition) is intentionally out of scope for #7652 — flip
+///   `analysis.enabled` off/on (or restart) to pick up a provider change
+///   made while analysis was already live.
+/// - `enabled=false` + slot empty → no-op.
+#[cfg(feature = "analysis")]
+async fn reconcile_analyzer_slot(
+    analyzer_slot: &Arc<parking_lot::RwLock<Option<Arc<maekon_analysis::ContextAnalyzer>>>>,
+    enabled: bool,
+    factory: Option<&crate::agent_runtime_support::ContextAnalyzerFactory>,
+    live_config: Option<Arc<maekon_core::config::AppConfig>>,
+) {
+    let has_analyzer = analyzer_slot.read().is_some();
+
+    if !enabled {
+        if has_analyzer {
+            *analyzer_slot.write() = None;
+            info!(
+                "analysis loop: disabled via runtime config — analyzer torn down (no restart needed)"
+            );
+        }
+        return;
+    }
+
+    if has_analyzer {
+        return;
+    }
+
+    let (Some(factory), Some(live_config)) = (factory, live_config) else {
+        return;
+    };
+
+    match factory(live_config).await {
+        Some(built) => {
+            *analyzer_slot.write() = Some(built);
+            info!("analysis loop: runtime-enabled — analyzer built without restart");
+        }
+        None => {
+            debug!(
+                "analysis loop: enabled via runtime config but no LLM provider is configured yet — waiting"
+            );
+        }
     }
 }
 
@@ -490,6 +611,165 @@ mod coexistence_offload_tests {
         assert!(
             coexist,
             "a successful true coexistence read must be preserved (skip local analysis)"
+        );
+    }
+}
+
+/// #7652: regression tests for the runtime analysis-enable trap.
+///
+/// BEFORE this fix, `spawn_analysis_loop` matched the injected analyzer ONCE,
+/// before ever entering its `tokio::select!` loop:
+/// ```ignore
+/// let analyzer = match analyzer {
+///     Some(a) => a,
+///     None => { let _ = shutdown_rx.changed().await; return; }
+/// };
+/// ```
+/// If `Scheduler.context_analyzer` was `None` at spawn time (analysis
+/// disabled at startup, or no BYOK provider configured yet), the spawned task
+/// exited BEFORE the loop body ever ran — so no later Settings save
+/// (`analysis.enabled = true`, or a freshly-configured `ai_provider.llm_api`
+/// key) could ever be observed by that task; the only way to activate
+/// analysis was an app restart. `reconcile_analyzer_slot` is the per-tick
+/// decision function that replaces that one-shot match; these tests exercise
+/// the ACTUAL production function directly (not a reimplementation), only
+/// substituting the factory/analyzer instances — the intentional DI seam.
+#[cfg(feature = "analysis")]
+#[cfg(test)]
+mod analyzer_slot_reconcile_tests {
+    use super::*;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::suggestion::Suggestion;
+    use maekon_core::ports::analysis_provider::AnalysisProvider;
+    use maekon_core::ports::storage::StorageService;
+
+    /// Minimal manual mock (no mockall, per project convention) — only the
+    /// two non-defaulted trait methods.
+    struct NoopAnalysisProvider;
+
+    #[async_trait::async_trait]
+    impl AnalysisProvider for NoopAnalysisProvider {
+        async fn analyze(
+            &self,
+            _context_json: &str,
+            _system_prompt: &str,
+        ) -> Result<Vec<Suggestion>, CoreError> {
+            Ok(vec![])
+        }
+
+        fn provider_name(&self) -> &str {
+            "noop-test-provider"
+        }
+    }
+
+    fn test_analyzer() -> Arc<maekon_analysis::ContextAnalyzer> {
+        let storage: Arc<dyn StorageService> = Arc::new(
+            maekon_storage::sqlite::SqliteStorage::open_in_memory(30)
+                .expect("in-memory sqlite storage"),
+        );
+        let provider: Arc<dyn AnalysisProvider> = Arc::new(NoopAnalysisProvider);
+        Arc::new(maekon_analysis::ContextAnalyzer::new(
+            storage,
+            provider,
+            maekon_analysis::PatternMiner::new(),
+            maekon_analysis::ContextAssembler::new(Box::new(|text: &str| text.to_string())),
+            maekon_core::config::AnalysisConfig::default(),
+        ))
+    }
+
+    fn empty_slot() -> Arc<parking_lot::RwLock<Option<Arc<maekon_analysis::ContextAnalyzer>>>> {
+        Arc::new(parking_lot::RwLock::new(None))
+    }
+
+    /// `enabled=false` + empty slot was the ORIGINAL trap's steady state: the
+    /// old code never re-entered its tick loop at all here, so this is the
+    /// baseline the fix must preserve (still nothing to do while disabled).
+    #[tokio::test]
+    async fn disabled_with_empty_slot_stays_empty() {
+        let slot = empty_slot();
+        reconcile_analyzer_slot(&slot, false, None, None).await;
+        assert!(slot.read().is_none());
+    }
+
+    /// THE regression case: a runtime false→true flip (a Settings save) with
+    /// a provider now configured must install an analyzer WITHOUT an app
+    /// restart. Before #7652 this transition was unreachable — the task had
+    /// already permanently exited at spawn time whenever the slot started
+    /// empty, so no per-tick code (this function included) ever ran again.
+    #[tokio::test]
+    async fn enable_transition_with_provider_builds_analyzer_without_restart() {
+        let slot = empty_slot();
+        let factory: crate::agent_runtime_support::ContextAnalyzerFactory =
+            Arc::new(|_config: Arc<maekon_core::config::AppConfig>| {
+                Box::pin(async { Some(test_analyzer()) })
+            });
+        let live_config = Arc::new(maekon_core::config::AppConfig::default_config());
+
+        reconcile_analyzer_slot(&slot, true, Some(&factory), Some(live_config)).await;
+
+        assert!(
+            slot.read().is_some(),
+            "a runtime enable with a configured provider must install an analyzer \
+             into the shared slot without an app restart"
+        );
+    }
+
+    /// A runtime enable with NO usable provider yet (factory returns `None`,
+    /// e.g. BYOK not configured) must leave the slot empty and must not
+    /// panic — the next tick simply retries.
+    #[tokio::test]
+    async fn enable_transition_without_provider_stays_empty() {
+        let slot = empty_slot();
+        let factory: crate::agent_runtime_support::ContextAnalyzerFactory =
+            Arc::new(|_config: Arc<maekon_core::config::AppConfig>| Box::pin(async { None }));
+        let live_config = Arc::new(maekon_core::config::AppConfig::default_config());
+
+        reconcile_analyzer_slot(&slot, true, Some(&factory), Some(live_config)).await;
+
+        assert!(slot.read().is_none());
+    }
+
+    /// Teardown on disable: a live analyzer must be dropped from the slot the
+    /// moment `analysis.enabled` flips to `false`, so a later re-enable
+    /// rebuilds fresh instead of resurrecting stale provider/session state.
+    #[tokio::test]
+    async fn disable_transition_tears_down_live_analyzer() {
+        let slot = empty_slot();
+        *slot.write() = Some(test_analyzer());
+        assert!(slot.read().is_some(), "precondition: slot starts occupied");
+
+        reconcile_analyzer_slot(&slot, false, None, None).await;
+
+        assert!(
+            slot.read().is_none(),
+            "a runtime disable must tear down the live analyzer without an app restart"
+        );
+    }
+
+    /// Already-enabled + already-occupied must be a no-op — reconcile must
+    /// NOT rebuild while the analyzer is already live (avoid double-spawn /
+    /// discarding in-flight state). Verified via `Arc::ptr_eq` on the
+    /// installed instance: the factory below would hand back a DIFFERENT
+    /// instance if (incorrectly) invoked.
+    #[tokio::test]
+    async fn already_enabled_with_analyzer_is_a_noop() {
+        let slot = empty_slot();
+        let original = test_analyzer();
+        *slot.write() = Some(original.clone());
+
+        let factory: crate::agent_runtime_support::ContextAnalyzerFactory =
+            Arc::new(|_config: Arc<maekon_core::config::AppConfig>| {
+                Box::pin(async { Some(test_analyzer()) })
+            });
+        let live_config = Arc::new(maekon_core::config::AppConfig::default_config());
+
+        reconcile_analyzer_slot(&slot, true, Some(&factory), Some(live_config)).await;
+
+        let current = slot.read().clone().expect("still occupied");
+        assert!(
+            Arc::ptr_eq(&original, &current),
+            "an already-live analyzer must not be rebuilt while still enabled \
+             (no double-spawn/leak)"
         );
     }
 }

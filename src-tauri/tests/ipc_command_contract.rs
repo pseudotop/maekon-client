@@ -1,8 +1,14 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..031.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..035.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
 //! SURFACE tests; runtime behavior of each command lives in its own tests.
+//!
+//! `crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage`
+//! (#7718 G1) is a set-equality guard between `src/commands/`'s module list
+//! and `COVERED_COMMAND_MODULES` below — it fails whenever a new command
+//! module ships without a matching per-module test, closing the drift class
+//! that let `audit`/`consent`/`tray` go uncovered.
 //!
 //! Run via:
 //!   cargo test -p maekon-app --test ipc_command_contract
@@ -38,7 +44,7 @@ fn extract_invoke_handler_commands(src: &str) -> BTreeSet<String> {
         .split(".invoke_handler(tauri::generate_handler![")
         .nth(1)
         .and_then(|tail| tail.split("])").next())
-        .expect("main.rs must register commands through tauri::generate_handler![...]");
+        .expect("lib.rs must register commands through tauri::generate_handler![...]");
 
     command_block
         .lines()
@@ -158,6 +164,7 @@ const OVERLAY_APP_COMMANDS: &[&str] = &[
     "get_suggestion_stats",
     "get_suggestion_daily_stats",
     "confirm_automation_command",
+    "run_suggestion_action",
     "respond_codex_approval",
 ];
 
@@ -182,6 +189,46 @@ const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
 /// is a JSON parser invoked by suggestion handler). For these the contract is
 /// "file exists + declares at least one public function".
 const HELPER_MODULES: &[&str] = &["generate_external_cert", "suggestion_parser"];
+
+/// Every module (file or directory) under `src/commands/` that the
+/// `crt_prv_ipc_0NN_*` tests below cover. This is the manifest that
+/// `crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage`
+/// diffs against a live `read_dir` of `src/commands/` — see #7718 (G1): the
+/// hand-maintained per-module test list drifted (`audit`, `consent`, `tray`
+/// were live+registered command modules with no contract test coverage) with
+/// no automated signal, until this enumeration test.
+///
+/// Adding a new module under `src/commands/`? Add both a `crt_prv_ipc_0NN_*`
+/// test above AND its module name here, or this enumeration test fails.
+const COVERED_COMMAND_MODULES: &[&str] = &[
+    "ai_session",
+    "analysis",
+    "audio",
+    "audit",
+    "auth",
+    "automation",
+    "autostart",
+    "bug_report",
+    "build_info",
+    "capture",
+    "capture_status",
+    "coaching",
+    "consent",
+    "detection",
+    "error_report",
+    "focus",
+    "generate_external_cert",
+    "integration",
+    "notification",
+    "onboarding",
+    "permissions",
+    "settings",
+    "suggestion_parser",
+    "suggestions",
+    "sync",
+    "system",
+    "tray",
+];
 
 fn assert_command_module(name: &str) {
     let file_path = commands_dir().join(format!("{name}.rs"));
@@ -282,10 +329,9 @@ fn crt_prv_ipc_011_coaching() {
     assert_command_module("coaching");
 }
 
-#[test]
-fn crt_prv_ipc_012_dashboard() {
-    assert_command_module("dashboard");
-}
+// crt_prv_ipc_012_dashboard removed (#7637): the `dashboard` command module was
+// deleted as a dead IPC duplicate (delivered via the embedded HTTP API), so the
+// module-existence contract no longer applies.
 
 #[test]
 fn crt_prv_ipc_013_detection() {
@@ -347,16 +393,15 @@ fn crt_prv_ipc_024_system() {
     assert_command_module("system");
 }
 
-#[test]
-fn crt_prv_ipc_025_tracking_schedule() {
-    assert_command_module("tracking_schedule");
-}
+// crt_prv_ipc_025_tracking_schedule removed (#7637): the `tracking_schedule`
+// command module was deleted as a dead IPC duplicate (delivered via the embedded
+// HTTP API), so the module-existence contract no longer applies.
 
 #[test]
 fn crt_prv_ipc_028_notification() {
     assert_command_module("notification");
 
-    let main_path = src_dir().join("main.rs");
+    let main_path = src_dir().join("lib.rs");
     let main_src = fs::read_to_string(&main_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", main_path.display(), e));
     assert!(
@@ -380,7 +425,7 @@ fn crt_prv_ipc_027_detection_activation_waits_for_visible_scene() {
         "detection command must not make the full-screen overlay interactive before scene analysis yields visible elements"
     );
 
-    let shortcuts_path = src_dir().join("setup_shortcuts.rs");
+    let shortcuts_path = src_dir().join("setup").join("shortcuts.rs");
     let shortcuts_src = fs::read_to_string(&shortcuts_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", shortcuts_path.display(), e));
     let shortcut_active_branch = shortcuts_src
@@ -406,7 +451,7 @@ fn crt_prv_ipc_027_detection_activation_waits_for_visible_scene() {
 
 #[test]
 fn crt_prv_ipc_029_build_manifest_matches_invoke_handler() {
-    let main_path = src_dir().join("main.rs");
+    let main_path = src_dir().join("lib.rs");
     let main_src = fs::read_to_string(&main_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", main_path.display(), e));
     let build_path = manifest_dir().join("build.rs");
@@ -475,6 +520,74 @@ fn crt_prv_ipc_030_main_capability_scopes_all_app_commands() {
         declared_app_command_permissions(&tracking_panel),
         app_command_permission_set(TRACKING_PANEL_APP_COMMANDS),
         "tracking-panel capability must allow exactly the app commands used by tracking-panel.html"
+    );
+}
+
+#[test]
+fn crt_prv_ipc_032_audit() {
+    assert_command_module("audit");
+}
+
+#[test]
+fn crt_prv_ipc_033_consent() {
+    assert_command_module("consent");
+}
+
+#[test]
+fn crt_prv_ipc_034_tray() {
+    assert_command_module("tray");
+}
+
+/// G1 (#7718) enumeration guard: the module set under `src/commands/` must
+/// exactly match `COVERED_COMMAND_MODULES`. This catches the drift class that
+/// let `audit`/`consent`/`tray` sit uncovered for multiple modules' worth of
+/// history — a future `commands/<new>.rs` addition now fails this test
+/// immediately instead of silently expanding the uncovered set.
+#[test]
+fn crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage() {
+    let dir = commands_dir();
+    let entries =
+        fs::read_dir(&dir).unwrap_or_else(|e| panic!("Failed to read {}: {}", dir.display(), e));
+
+    let mut discovered: BTreeSet<String> = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("Failed to read dir entry: {e}"));
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("command directory module must have a valid UTF-8 name");
+            discovered.insert(name.to_owned());
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("command file module must have a valid UTF-8 stem");
+            // `mod.rs` is the directory-module wiring file for `commands/`
+            // itself (not a command module in its own right).
+            if stem == "mod" {
+                continue;
+            }
+            discovered.insert(stem.to_owned());
+        }
+    }
+
+    let covered: BTreeSet<String> = COVERED_COMMAND_MODULES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+
+    let missing_coverage: Vec<&String> = discovered.difference(&covered).collect();
+    let stale_coverage: Vec<&String> = covered.difference(&discovered).collect();
+
+    assert!(
+        missing_coverage.is_empty() && stale_coverage.is_empty(),
+        "src/commands/ module set drifted from COVERED_COMMAND_MODULES — \
+         modules on disk but uncovered (add a crt_prv_ipc_0NN_* test + list entry): {missing_coverage:?}; \
+         modules listed but no longer on disk (remove the list entry, and the test if orphaned): {stale_coverage:?}"
     );
 }
 

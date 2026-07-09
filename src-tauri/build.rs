@@ -8,19 +8,14 @@ const APP_COMMANDS: &[&str] = &[
     "get_secret_backend_capabilities",
     "get_feature_capabilities",
     "get_runtime_log_snapshot",
+    "get_resource_usage_snapshot",
     "record_frontend_log",
     "get_desktop_permission_status",
     "request_desktop_notification_permission",
     "request_desktop_screen_capture_permission",
     "open_desktop_permission_settings",
     "probe_provider_surface_endpoint",
-    "preview_update",
     "get_allowed_setting_keys",
-    "integration_auth_status",
-    "integration_start_device_authorization",
-    "integration_poll_device_authorization",
-    "integration_cancel_device_authorization",
-    "integration_reset_auth_state",
     "oauth_start_flow",
     "oauth_flow_status",
     "oauth_cancel_flow",
@@ -40,33 +35,16 @@ const APP_COMMANDS: &[&str] = &[
     "interrupt_session_turn",
     "steer_session_turn",
     "respond_codex_approval",
-    "get_analysis_config",
-    "update_analysis_config",
-    "get_analysis_status",
     "get_analysis_health",
     "reload_embedding_model",
-    "semantic_search",
-    "get_weekly_digest",
-    "get_dashboard_day",
-    "get_daily_digest",
-    "create_override",
-    "delete_override",
-    "list_overrides",
-    "trigger_recluster",
     "dismiss_coaching_message",
     "submit_coaching_feedback",
-    "set_overlay_mode",
-    "toggle_overlay_mode",
-    "get_overlay_state",
-    "toggle_overlay_interactive",
-    "get_overlay_fullscreen_policy_state",
     "toggle_suggestions_panel",
     "toggle_automation_confirm",
     "get_coaching_history",
     "get_goal_progress",
     "update_regime_goals",
     "get_habit_streaks",
-    "get_global_shortcut_status",
     "get_capture_status",
     "toggle_capture_pause",
     "set_indicator_visible",
@@ -99,22 +77,13 @@ const APP_COMMANDS: &[&str] = &[
     "record_suggestion_replay_event",
     "request_chat_suggestions",
     "explain_suggestion_in_chat",
-    "save_suggestion_state",
     "get_suggestion_stats",
-    "get_deferred_suggestions",
     "get_suggestion_daily_stats",
     "get_sync_status",
     "trigger_sync_cycle",
     "discover_sync_peers",
-    "set_sync_enabled",
-    "forget_peer",
-    "check_automation_available",
-    "list_automation_presets",
-    "run_automation_preset",
-    "execute_automation_hint",
-    "analyze_automation_scene",
-    "get_pending_confirmations",
     "confirm_automation_command",
+    "run_suggestion_action",
     "toggle_detection_overlay",
     "refresh_detection_overlay",
     "start_audio_capture",
@@ -133,12 +102,8 @@ const APP_COMMANDS: &[&str] = &[
     "is_autostart_enabled",
     "mark_autostart_prompt_state",
     "export_bug_report",
-    "export_audit_log",
     "verify_audit_log",
     "report_frontend_error",
-    "get_tracking_schedule",
-    "set_tracking_schedule",
-    "get_tracking_schedule_status",
     "get_tray_state",
     "get_tray_geometry",
     "simulate_tray_action",
@@ -148,7 +113,7 @@ const APP_COMMANDS: &[&str] = &[
     "take_microphone_upgrade_notice",
 ];
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     println!("cargo:rustc-env=BUILD_DATE={build_date}");
 
@@ -165,8 +130,36 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
     println!("cargo:rerun-if-changed=src/main.rs");
+    // #7734: the command surface + generate_handler! moved into the `[lib]`
+    // target (src/lib.rs) — track it too so ACL/APP_COMMANDS regen picks up
+    // command-set changes made there, not just in the thin bin shim.
+    println!("cargo:rerun-if-changed=src/lib.rs");
+
+    // Embed the Common-Controls v6 manifest into EVERY linked binary of this
+    // package on windows-msvc (tauri PR #4383): without it the loader binds
+    // comctl32 v5, TaskDialogIndirect is missing, and any exe linking tauri
+    // dies at startup with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139). This must
+    // be a plain `rustc-link-arg` (all link units): the `-tests` variant only
+    // reaches integration-test targets, NOT the lib unittest harness — the
+    // exact binary that crashes under `cargo test`. To keep the real app
+    // binary from ending up with two manifests, tauri_build's own winres
+    // manifest is disabled below (`new_without_app_manifest`) and this linker
+    // manifest — content-identical to tauri-build's default — serves bin and
+    // test binaries alike.
+    let windows_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if windows_msvc {
+        let manifest = std::env::current_dir()?.join("windows-app-manifest.xml");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    }
 
     let attrs = tauri_build::Attributes::new()
-        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
-    tauri_build::try_build(attrs).expect("failed to run Tauri build script");
+        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS))
+        // The linker-embedded manifest above replaces the winres one; leaving
+        // both in place would fail the bin link with a duplicate RT_MANIFEST.
+        .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+    tauri_build::try_build(attrs)?;
+    Ok(())
 }

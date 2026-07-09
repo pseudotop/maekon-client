@@ -38,8 +38,6 @@ use crate::proto::dashboard::v1::{
 use super::auth_gate::{honor_opt_out, validate_authority};
 use super::drop_accumulator::DropAccumulator;
 use super::hint_emitter::HintEmitter;
-#[cfg(not(feature = "grpc-dashboard-external"))]
-use super::load_policy::LoadPolicy;
 use super::rate_limiter::EventRateLimiter;
 use super::stream_counter::StreamCounterGuard;
 use super::to_proto_ts;
@@ -57,18 +55,12 @@ pub async fn subscribe_events(
     system_monitor: Arc<dyn maekon_core::ports::monitor::SystemMonitor>,
     event_tx: tokio::sync::broadcast::Sender<RealtimeEvent>,
     integration_auth_token: Option<String>,
-    #[cfg(feature = "grpc-dashboard-external")]
     streaming_source: crate::grpc::streaming_source::StreamingSource,
-    #[cfg(not(feature = "grpc-dashboard-external"))] load_policy: Arc<LoadPolicy>,
-    #[cfg(not(feature = "grpc-dashboard-external"))] streaming_enabled: bool,
     active_streams: Arc<AtomicUsize>,
     max_concurrent_streams: usize,
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     ai_runtime_status_snapshot: Option<maekon_api_contracts::stream::AiRuntimeStatus>,
 ) -> Result<Response<SubscribeEventsStream>, Status> {
-    // D24 / Task 5.2: under external feature, derive the pair from an atomic
-    // snapshot of streaming_source at call entry (spec D21).
-    #[cfg(feature = "grpc-dashboard-external")]
     let (load_policy, streaming_enabled) = (
         streaming_source.load_policy(),
         streaming_source.streaming_enabled(),

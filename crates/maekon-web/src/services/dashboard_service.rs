@@ -10,7 +10,7 @@ use maekon_core::models::daily_digest::{
     self, ContentBrief, DailyDigest, DailyStatistics, DayComparison, TimelineEntry,
 };
 use maekon_core::models::storage_records::SegmentSummaryRecord;
-use maekon_core::models::tiered_memory::WorkType;
+use maekon_core::models::tiered_memory::{resolve_regime_label, Regime, WorkType};
 
 use crate::AppState;
 
@@ -63,12 +63,24 @@ async fn build_daily_digest(
     date: NaiveDate,
     state: &AppState,
 ) -> DailyDigest {
+    // #7678 D2: resolve human regime labels (name > auto_label) instead of
+    // leaking the opaque positional `regime_id` ("regime-N") into the
+    // timeline — mirrors the #7480 coaching-path fix. Best-effort: an absent
+    // `regime_storage` binding or a load failure falls back to per-segment
+    // `dominant_category` (same as an unresolved id) rather than failing the
+    // whole digest.
+    let regimes: Vec<Regime> = match state.core.regime_storage {
+        Some(ref rs) => rs.load_all().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+
     let timeline: Vec<TimelineEntry> = records
         .iter()
         .map(|r| {
             let regime_label = r
                 .regime_id
-                .clone()
+                .as_deref()
+                .and_then(|id| resolve_regime_label(&regimes, id))
                 .unwrap_or_else(|| r.dominant_category.clone());
             let regime_color = daily_digest::regime_color(&regime_label).to_string();
             let content_summary = parse_content_briefs(&r.content_activities_json);
@@ -88,7 +100,7 @@ async fn build_daily_digest(
         })
         .collect();
 
-    let statistics = compute_statistics(records, state, &date).await;
+    let statistics = compute_statistics(records, &regimes, state, &date).await;
 
     DailyDigest {
         date,
@@ -101,6 +113,7 @@ async fn build_daily_digest(
 
 async fn compute_statistics(
     records: &[SegmentSummaryRecord],
+    regimes: &[Regime],
     state: &AppState,
     date: &NaiveDate,
 ) -> DailyStatistics {
@@ -135,13 +148,19 @@ async fn compute_statistics(
         .max_by_key(|(mins, _)| *mins)
         .unwrap_or((0, String::new()));
 
+    // #7683 (sibling of the #7678 D2 timeline fix): key the distribution map
+    // by the resolved human regime label (name > auto_label), not the opaque
+    // positional `regime_id` ("regime-N") — that id was leaked straight into
+    // the `StatisticsPanel` chart labels. Falls back to `dominant_category`
+    // when the id is absent or unresolved, mirroring the timeline's fallback.
     let total_secs: u64 = records.iter().map(|r| r.duration_secs).sum();
     let regime_distribution = if total_secs > 0 {
         let mut dur_by_regime: HashMap<String, u64> = HashMap::new();
         for r in records {
             let label = r
                 .regime_id
-                .clone()
+                .as_deref()
+                .and_then(|id| resolve_regime_label(regimes, id))
                 .unwrap_or_else(|| r.dominant_category.clone());
             *dur_by_regime.entry(label).or_default() += r.duration_secs;
         }
@@ -281,5 +300,159 @@ mod tests {
     fn parse_content_briefs_empty_json() {
         let briefs = parse_content_briefs("");
         assert!(briefs.is_empty());
+    }
+
+    // #7678 D2: `build_daily_digest` must render the HUMAN regime label, not
+    // the opaque positional `regime_id` ("regime-N") that production actually
+    // assigns — mirrors the #7480 coaching-path fix + the maekon-analysis
+    // digest test of the same name.
+    mod regime_label_resolution {
+        use super::*;
+        use async_trait::async_trait;
+        use maekon_core::error::CoreError;
+        use maekon_core::models::tiered_memory::{
+            Regime, RegimeFeatures, RegimeStatus, TriggerParams,
+        };
+        use maekon_core::ports::regime_storage::RegimeStoragePort;
+        use std::sync::Arc;
+
+        /// Manual mock (project convention: no mockall) returning a fixed regime set.
+        struct FixedRegimeStorage(Vec<Regime>);
+
+        #[async_trait]
+        impl RegimeStoragePort for FixedRegimeStorage {
+            async fn load_all(&self) -> Result<Vec<Regime>, CoreError> {
+                Ok(self.0.clone())
+            }
+            async fn save_all(&self, _regimes: &[Regime]) -> Result<(), CoreError> {
+                Ok(())
+            }
+        }
+
+        fn make_regime(id: &str, name: Option<&str>, auto_label: &str) -> Regime {
+            Regime {
+                regime_id: id.to_string(),
+                name: name.map(String::from),
+                auto_label: auto_label.to_string(),
+                centroid: RegimeFeatures::default(),
+                optimal_params: TriggerParams::default(),
+                sample_count: 1,
+                first_seen: Utc::now(),
+                last_seen: Utc::now(),
+                status: RegimeStatus::Active,
+            }
+        }
+
+        fn make_record(regime_id: Option<&str>, dominant_category: &str) -> SegmentSummaryRecord {
+            SegmentSummaryRecord {
+                segment_id: "seg-1".to_string(),
+                start_time: Utc::now().to_rfc3339(),
+                end_time: Utc::now().to_rfc3339(),
+                duration_secs: 1800,
+                dominant_category: dominant_category.to_string(),
+                regime_id: regime_id.map(String::from),
+                app_breakdown: "{}".to_string(),
+                content_activities_json: "[]".to_string(),
+                context_switch_count: 0,
+                llm_summary: None,
+            }
+        }
+
+        // #7738 D-4: funnel through the canonical test-state helper.
+        fn test_state_with_regimes(regimes: Vec<Regime>) -> AppState {
+            let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
+            state.core.regime_storage = Some(Arc::new(FixedRegimeStorage(regimes)));
+            state
+        }
+
+        #[tokio::test]
+        async fn resolves_human_name_not_opaque_regime_id() {
+            let state = test_state_with_regimes(vec![make_regime(
+                "regime-0",
+                Some("Deep Focus"),
+                "auto-deep-focus",
+            )]);
+            let records = vec![make_record(Some("regime-0"), "Development")];
+
+            let digest = build_daily_digest(&records, Utc::now().date_naive(), &state).await;
+
+            assert_eq!(digest.timeline[0].regime_label, "Deep Focus");
+            assert_ne!(digest.timeline[0].regime_label, "regime-0");
+        }
+
+        #[tokio::test]
+        async fn falls_back_to_dominant_category_when_regime_storage_absent() {
+            // #7738 D-4: funnel through the canonical test-state helper.
+            let state = crate::test_local_auth::test_app_state_with_event_capacity(8); // regime_storage: None
+            let records = vec![make_record(Some("regime-0"), "Development")];
+
+            let digest = build_daily_digest(&records, Utc::now().date_naive(), &state).await;
+
+            assert_eq!(digest.timeline[0].regime_label, "Development");
+            assert_ne!(digest.timeline[0].regime_label, "regime-0");
+        }
+
+        #[tokio::test]
+        async fn falls_back_to_dominant_category_when_regime_unresolved() {
+            // regime_id present but absent from the loaded regime set (e.g.
+            // archived/evicted) — must not leak the opaque id downstream.
+            let state = test_state_with_regimes(vec![]);
+            let records = vec![make_record(Some("regime-unknown"), "Communication")];
+
+            let digest = build_daily_digest(&records, Utc::now().date_naive(), &state).await;
+
+            assert_eq!(digest.timeline[0].regime_label, "Communication");
+            assert_ne!(digest.timeline[0].regime_label, "regime-unknown");
+        }
+
+        // #7683 (sibling of #7678 D2): `statistics.regime_distribution` — the
+        // map that feeds the `StatisticsPanel` chart labels — must be keyed
+        // by the resolved HUMAN regime label, not the opaque positional
+        // `regime_id` production actually assigns. Before this fix,
+        // `compute_statistics` built the key directly from
+        // `r.regime_id.unwrap_or(dominant_category)`, so this test would
+        // have asserted `contains_key("deep-focus-1")` (the raw id) and
+        // failed the `contains_key("Deep Focus")` / `!contains_key(id)`
+        // assertions below.
+        #[tokio::test]
+        async fn regime_distribution_keyed_by_human_label_not_opaque_regime_id() {
+            let state = test_state_with_regimes(vec![make_regime(
+                "deep-focus-1",
+                Some("Deep Focus"),
+                "auto-deep-focus",
+            )]);
+            let records = vec![make_record(Some("deep-focus-1"), "Development")];
+
+            let digest = build_daily_digest(&records, Utc::now().date_naive(), &state).await;
+
+            assert!(digest
+                .statistics
+                .regime_distribution
+                .contains_key("Deep Focus"));
+            assert!(!digest
+                .statistics
+                .regime_distribution
+                .contains_key("deep-focus-1"));
+        }
+
+        // Companion case: an id absent from the loaded regime set must fall
+        // back to `dominant_category` in the distribution map too (mirrors
+        // the timeline fallback), never leaking the opaque id.
+        #[tokio::test]
+        async fn regime_distribution_falls_back_to_dominant_category_when_regime_unresolved() {
+            let state = test_state_with_regimes(vec![]);
+            let records = vec![make_record(Some("regime-unknown"), "Communication")];
+
+            let digest = build_daily_digest(&records, Utc::now().date_naive(), &state).await;
+
+            assert!(digest
+                .statistics
+                .regime_distribution
+                .contains_key("Communication"));
+            assert!(!digest
+                .statistics
+                .regime_distribution
+                .contains_key("regime-unknown"));
+        }
     }
 }

@@ -35,6 +35,7 @@ pub struct SyncStatusDto {
     pub unavailable_reason: Option<String>,
     pub device_id: String,
     pub device_name: String,
+    pub last_health_state: String,
     pub last_sync_at: Option<String>,
     pub last_error: Option<String>,
     /// Known peers discovered during the last discovery scan.
@@ -88,6 +89,7 @@ pub async fn get_sync_status(
                 unavailable_reason: None,
                 device_id: engine.device_id().to_string(),
                 device_name: engine.device_name().to_string(),
+                last_health_state: engine.health_state().to_string(),
                 last_sync_at: sync_at,
                 last_error: error,
                 peers,
@@ -102,6 +104,7 @@ pub async fn get_sync_status(
             }),
             device_id: String::new(),
             device_name: String::new(),
+            last_health_state: "unavailable".to_string(),
             last_sync_at: None,
             last_error: None,
             peers: Vec::new(),
@@ -144,40 +147,12 @@ pub async fn discover_sync_peers(
         .collect())
 }
 
-/// Enable or disable cross-device sync.
-///
-/// Persists the change to the config file. The engine itself is started/stopped
-/// at the next app launch — a live toggle of the background loop is not yet
-/// supported and is handled by the scheduler on startup.
-#[command]
-pub fn set_sync_enabled(
-    enabled: bool,
-    config_state: tauri::State<'_, ConfigRuntimeState>,
-) -> Result<(), IpcError> {
-    config_state
-        .config_manager()
-        .update_with(|config| {
-            config.sync.enabled = enabled;
-            Ok(())
-        })
-        .map_err(IpcError::from)?;
-    tracing::info!(enabled, "sync enabled flag updated");
-    Ok(())
-}
-
-/// Remove a peer from the known-peers list.
-///
-/// Delegates to the sync engine's transport to evict the peer from the
-/// active peer registry (LAN verified-peers map, remote REST endpoint,
-/// or file-transport changeset files).
-#[command]
-pub async fn forget_peer(
-    device_id: String,
-    state: tauri::State<'_, SyncRuntimeState>,
-) -> Result<(), IpcError> {
-    let engine = state.engine().ok_or_else(sync_not_enabled)?;
-    engine.forget_peer(&device_id).await.map_err(IpcError::from)
-}
+// #7683 F2: set_sync_enabled and forget_peer were removed as residual dead
+// IPCs. SyncTab.tsx only ever calls get_sync_status / discover_sync_peers /
+// trigger_sync_cycle — there is no "forget device" button, and enabling sync
+// is documented as a manual `sync.enabled = true` config-file edit (the
+// "not enabled" guidance panel), never a UI toggle. Zero callers anywhere in
+// crates/maekon-web/frontend/src for either command.
 
 #[cfg(test)]
 mod tests {

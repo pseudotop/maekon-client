@@ -9,6 +9,7 @@ use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
 use maekon_core::ports::coaching_storage::CoachingStoragePort;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::focus_storage::FocusStorage;
 use maekon_core::ports::storage::StorageService;
 #[cfg(feature = "analysis")]
 use maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator;
@@ -22,7 +23,7 @@ use tracing::{error, info};
 
 use crate::agent_runtime_support::AgentSupportContextBuilder;
 use crate::capture_services::SharedCaptureServices;
-use crate::focus_analyzer::FocusStorage;
+use crate::runtime_state::SceneFinderSlot;
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::scheduler::{Scheduler, SchedulerStorage};
 
@@ -50,7 +51,7 @@ pub(crate) struct AgentRuntimeBundle {
     /// #6264: shared write-once slot the runtime populates with the built
     /// `SyncEngine` so the 4 cross-device-sync IPC commands gain a live engine.
     /// `None` when no SyncRuntimeState was wired (e.g. tests).
-    sync_runtime_slot: Option<Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>>,
+    sync_runtime_slot: Option<Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>>>,
     /// #6266: shared write-once slot the runtime populates with the local
     /// embedding provider's `ReloadableModel` facet so `reload_embedding_model`
     /// IPC gains a live target. `None` when no EmbeddingRuntimeState was wired.
@@ -77,6 +78,7 @@ pub(crate) struct AgentRuntimeBundle {
     overlay_driver: Option<Arc<dyn maekon_core::ports::overlay_driver::OverlayDriver>>,
     capture_paused: Option<Arc<std::sync::atomic::AtomicBool>>,
     detection_active: Option<Arc<std::sync::atomic::AtomicBool>>,
+    scene_finder_slot: Option<SceneFinderSlot>,
     server_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     llm_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -160,6 +162,7 @@ impl AgentRuntimeBundle {
         builder = builder.with_breaker_registry(self.breaker_registry.clone());
         // Clone before the move into Scheduler::with_config_manager below.
         builder = builder.with_config_manager(self.config_manager.clone());
+        builder = builder.with_offline_mode(self.offline_mode);
         if let Some(ref cm) = self.consent_manager {
             builder = builder.with_consent_manager(cm.clone());
         }
@@ -184,6 +187,68 @@ impl AgentRuntimeBundle {
             None,
         );
 
+        // #7737 C1 PR-2: assemble the VERIFIED-unconditional dependency set as
+        // ONE struct literal — every field named, no `Default`/`..` escape
+        // (mirrors #7738 D-2's `WebServerRequiredDeps`). Each is either an
+        // unconditional Port Instance Sharing cast off `sqlite_storage_concrete`
+        // or an unconditional concrete value built right here — see
+        // `scheduler::required_deps` for the per-field verified-unconditional
+        // source citations.
+        let scheduler_deps = crate::scheduler::SchedulerRequiredDeps {
+            frame_storage: support.frame_storage,
+            notification_manager: support.notification_manager,
+            focus_analyzer: support.focus_analyzer,
+            config_manager: self.config_manager,
+            // ADR-023: share the single SqliteStorage Arc as the MemoryGraphPort
+            // so the aggregation loop can promote daily-digest content into
+            // durable claims + evidence edges (Port Instance Sharing guardrail —
+            // no second handle).
+            memory_graph: Arc::clone(&self.sqlite_storage_concrete)
+                as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+            // #7678 D4: share the single SqliteStorage Arc as the
+            // CalibrationReader so the aggregation loop's housekeeping block can
+            // bound calibration_log growth via the configured retention
+            // window/row-cap (previously parsed+persisted but never enforced —
+            // Port Instance Sharing guardrail).
+            calibration_reader: Arc::clone(&self.sqlite_storage_concrete)
+                as Arc<dyn maekon_core::ports::calibration_store::CalibrationReader>,
+            // ADR-023 Phase-2: belief revision. The enrichment provider is
+            // LOCAL-LLM-gated by construction (non-loopback endpoints → NoOp); a
+            // per-claim PII masker is applied at the enrichment boundary
+            // (MG-PII-03). The aggregation loop additionally gates each run on
+            // memory_graph_enrichment consent + the belief_revision_enabled flag.
+            belief_revision: {
+                let enrichment_provider =
+                    crate::agent_runtime::analysis_helpers::build_enrichment_provider(
+                        &self.config.ai_provider,
+                        self.config.privacy.pii_filter_level,
+                        self.breaker_registry.clone(),
+                    );
+                let mask_level = self.config.privacy.pii_filter_level;
+                let belief_pii_filter: maekon_analysis::BeliefPiiFilter =
+                    Arc::new(move |text: &str| {
+                        maekon_vision::privacy::sanitize_title_with_level(text, mask_level)
+                    });
+                Arc::new(maekon_analysis::BeliefRevision::new(
+                    enrichment_provider,
+                    Arc::clone(&self.sqlite_storage_concrete)
+                        as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+                    belief_pii_filter,
+                    self.config.analysis.supersede_confidence_threshold,
+                    self.config.analysis.belief_revision_enabled,
+                ))
+            },
+            // #5810: same store as the shutdown path (built from the shared
+            // sqlite_storage_concrete connection) — periodic crash-durability
+            // checkpoint target for the aggregation loop.
+            regime_storage: Arc::new(
+                maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
+                    self.sqlite_storage_concrete.connection_arc(),
+                ),
+            )
+                as Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort>,
+        };
+
         let mut scheduler = Scheduler::new(
             support.scheduler_config,
             support.system_monitor,
@@ -193,50 +258,21 @@ impl AgentRuntimeBundle {
             support.frame_processor,
             self.storage,
             self.scheduler_storage,
-            Some(support.frame_storage),
             support.batch_sink_opt,
             support.api_client_opt,
         )
-        .with_config_manager(self.config_manager)
-        .with_notification_manager(support.notification_manager)
-        .with_focus_analyzer(support.focus_analyzer);
-
-        // ADR-023: share the single SqliteStorage Arc as the MemoryGraphPort so the
-        // aggregation loop can promote daily-digest content into durable claims +
-        // evidence edges (Port Instance Sharing guardrail — no second handle).
-        scheduler = scheduler.with_memory_graph(Arc::clone(&self.sqlite_storage_concrete)
-            as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>);
-
-        // ADR-023 Phase-2: belief revision. The enrichment provider is LOCAL-LLM-
-        // gated by construction (non-loopback endpoints → NoOp); a per-claim PII
-        // masker is applied at the enrichment boundary (MG-PII-03). The aggregation
-        // loop additionally gates each run on memory_graph_enrichment consent + the
-        // belief_revision_enabled flag.
-        {
-            let enrichment_provider =
-                crate::agent_runtime::analysis_helpers::build_enrichment_provider(
-                    &self.config.ai_provider,
-                    self.config.privacy.pii_filter_level,
-                    self.breaker_registry.clone(),
-                );
-            let mask_level = self.config.privacy.pii_filter_level;
-            let belief_pii_filter: maekon_analysis::BeliefPiiFilter =
-                Arc::new(move |text: &str| {
-                    maekon_vision::privacy::sanitize_title_with_level(text, mask_level)
-                });
-            let belief_revision = maekon_analysis::BeliefRevision::new(
-                enrichment_provider,
-                Arc::clone(&self.sqlite_storage_concrete)
-                    as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
-                belief_pii_filter,
-                self.config.analysis.supersede_confidence_threshold,
-                self.config.analysis.belief_revision_enabled,
-            );
-            scheduler = scheduler.with_belief_revision(Arc::new(belief_revision));
-        }
+        .with_required_deps(scheduler_deps);
 
         if let Some(ref analyzer) = support.context_analyzer {
             scheduler = scheduler.with_context_analyzer(analyzer.clone());
+        }
+        // #7652: wire the runtime-rebuild factory REGARDLESS of the startup-time
+        // analyzer state — it is what lets the analysis loop honor a later
+        // `analysis.enabled` flip (or a BYOK key saved after boot) without a
+        // restart, even when `support.context_analyzer` above was `None`.
+        #[cfg(feature = "analysis")]
+        if let Some(factory) = support.context_analyzer_factory {
+            scheduler = scheduler.with_context_analyzer_factory(factory);
         }
 
         #[cfg(feature = "analysis")]
@@ -327,6 +363,10 @@ impl AgentRuntimeBundle {
                         None
                     }
                 },
+                // #7479: when quantization is disabled the coordinator must route
+                // to the f32 search path — the INT8 tiers read `vector_int8`,
+                // which is NULL for every row in that mode.
+                quantization_enabled: embedding_config.quantization_enabled,
             };
             Some(Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
                 vs.clone(),
@@ -467,6 +507,9 @@ impl AgentRuntimeBundle {
         if let Some(detection_active) = self.detection_active {
             scheduler = scheduler.with_detection_active(detection_active);
         }
+        if let Some(scene_finder_slot) = self.scene_finder_slot {
+            scheduler = scheduler.with_scene_finder_slot(scene_finder_slot);
+        }
 
         // --- Focus mode state for coaching/notification suppression (A4) ---
         if let Some(focus_mode) = self.focus_mode {
@@ -478,18 +521,11 @@ impl AgentRuntimeBundle {
             scheduler = scheduler.with_shared_regime(shared_regime);
         }
 
-        // #5810: wire regime crash-durability checkpoint — same store as the
-        // shutdown path (built from the shared sqlite_storage_concrete connection)
-        // and the same regime_manager Arc (injected by the composition root).
-        {
-            let regime_store: Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort> =
-                Arc::new(
-                    maekon_storage::regime_manager_state_store::SqliteRegimeManagerStateStore::new(
-                        self.sqlite_storage_concrete.connection_arc(),
-                    ),
-                );
-            scheduler = scheduler.with_regime_storage(regime_store);
-        }
+        // #5810 / #7737 C1 PR-2: the regime crash-durability checkpoint STORE is
+        // now assembled above in `scheduler_deps.regime_storage` (same
+        // sqlite_storage_concrete-backed wrapper). Only the live regime manager
+        // Arc — genuinely conditional (injected only when the composition root
+        // pre-constructed one) — is wired here.
         if let Some(rm) = self.regime_manager.clone() {
             scheduler = scheduler.with_regime_manager_arc(rm);
         }
@@ -588,88 +624,15 @@ impl AgentRuntimeBundle {
     }
 }
 
-pub(crate) struct AgentRuntimeBuilder<'a> {
-    storage: Arc<dyn StorageService>,
-    scheduler_storage: Arc<dyn SchedulerStorage>,
-    focus_storage: Arc<dyn FocusStorage>,
-    calibration_writer: Option<Arc<dyn CalibrationWriter>>,
-    calibration_reader: Option<Arc<dyn CalibrationReader>>,
-    override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
-    recluster_requested: Arc<std::sync::atomic::AtomicBool>,
-    erasure_requested: Arc<std::sync::atomic::AtomicBool>,
-    vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
-    data_dir: &'a Path,
-    config: &'a AppConfig,
-    config_manager: ConfigManager,
-    consent_manager: Option<Arc<dyn ConsentManagerPort>>,
-    /// Concrete SQLite storage for sync engine wiring.
-    sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
-    /// #6264: shared write-once slot for the built `SyncEngine` — see the
-    /// matching field on `AgentRuntimeBundle`.
-    sync_runtime_slot: Option<Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>>,
-    /// #6266: shared write-once slot for the reloadable embedding model — see the
-    /// matching field on `AgentRuntimeBundle`.
-    embedding_runtime_slot: Option<
-        Arc<std::sync::OnceLock<Arc<dyn maekon_core::ports::embedding_provider::ReloadableModel>>>,
-    >,
-    offline_mode: bool,
-    event_tx: Option<broadcast::Sender<RealtimeEvent>>,
-    #[cfg(feature = "analysis")]
-    oauth_coordinator: Option<Arc<TokenRefreshCoordinator>>,
-    /// Provider secret stores — see matching field on `AgentRuntimeBundle`.
-    #[cfg(feature = "analysis")]
-    provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
-    app_handle: AppHandle,
-    coaching_engine: Option<Arc<maekon_analysis::CoachingEngine>>,
-    coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
-    magic_overlay: Option<crate::magic_overlay::MagicOverlayHandle>,
-    overlay_driver: Option<Arc<dyn maekon_core::ports::overlay_driver::OverlayDriver>>,
-    capture_paused: Option<Arc<std::sync::atomic::AtomicBool>>,
-    detection_active: Option<Arc<std::sync::atomic::AtomicBool>>,
-    server_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    llm_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    server_connected: Option<Arc<std::sync::atomic::AtomicBool>>,
-    llm_connected: Option<Arc<std::sync::atomic::AtomicBool>>,
-    cli_connected: Option<Arc<std::sync::atomic::AtomicBool>>,
-    tray_app_handle: Option<tauri::AppHandle>,
-    #[cfg(feature = "server")]
-    suggestion_receiver: Option<Arc<maekon_suggestion::receiver::SuggestionReceiver>>,
-    #[cfg(feature = "local-suggestions")]
-    suggestion_manager: Option<Arc<crate::suggestion_manager::SuggestionManager>>,
-    suggestions_enabled: bool,
-    focus_mode: Option<Arc<crate::focus_mode::FocusModeState>>,
-    shared_capture_services: Option<Arc<SharedCaptureServices>>,
-    /// Shared suggestion queue — passed through to AgentSupportContextBuilder
-    /// so the SuggestionReceiver uses the same queue as SuggestionManager.
-    shared_suggestion_queue:
-        Option<Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>>,
-    shared_scorer: Option<Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>>,
-    /// SharedRegimeState — passed through to the Scheduler so it shares the same
-    /// instance as the SessionManager's context assembler.
-    shared_regime: Option<Arc<SharedRegimeState>>,
-    /// Pre-created health flag for the primary analysis provider, shared with AppState.
-    analysis_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Pre-constructed RegimeManager + RegimeClassifier handles — see
-    /// matching fields on `AgentRuntimeBundle` for the rationale.
-    regime_manager: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
-    regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
-    /// D7 (#4812 / E20-20): shared workspace-wide circuit-breaker registry from
-    /// the composition root. Defaults to a fresh registry so this builder works
-    /// standalone (e.g. in tests); the composition root overrides it with the
-    /// single shared Arc via `with_breaker_registry`.
-    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
-}
-
-impl<'a> AgentRuntimeBuilder<'a> {
+impl AgentRuntimeBundle {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         storage: Arc<dyn StorageService>,
         scheduler_storage: Arc<dyn SchedulerStorage>,
         focus_storage: Arc<dyn FocusStorage>,
         sqlite_storage_concrete: Arc<maekon_storage::sqlite::SqliteStorage>,
-        data_dir: &'a Path,
-        config: &'a AppConfig,
+        data_dir: &Path,
+        config: &AppConfig,
         config_manager: ConfigManager,
         recluster_requested: Arc<std::sync::atomic::AtomicBool>,
         erasure_requested: Arc<std::sync::atomic::AtomicBool>,
@@ -688,8 +651,8 @@ impl<'a> AgentRuntimeBuilder<'a> {
             sqlite_storage_concrete,
             sync_runtime_slot: None,
             embedding_runtime_slot: None,
-            data_dir,
-            config,
+            data_dir: data_dir.to_path_buf(),
+            config: config.clone(),
             config_manager,
             consent_manager: None,
             offline_mode: false,
@@ -705,6 +668,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
             overlay_driver: None,
             capture_paused: None,
             detection_active: None,
+            scene_finder_slot: None,
             server_health_flag: None,
             llm_health_flag: None,
             cli_health_flag: None,
@@ -871,7 +835,7 @@ impl<'a> AgentRuntimeBuilder<'a> {
     /// `SyncRuntimeState`.
     pub(crate) fn with_sync_runtime_slot(
         mut self,
-        slot: Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>,
+        slot: Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>>,
     ) -> Self {
         self.sync_runtime_slot = Some(slot);
         self
@@ -904,6 +868,13 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
+    /// #7817: passes a shared scene_finder slot to the scheduler. The real
+    /// finder is populated exactly once after the automation controller builds.
+    pub(crate) fn with_scene_finder_slot(mut self, slot: SceneFinderSlot) -> Self {
+        self.scene_finder_slot = Some(slot);
+        self
+    }
+
     pub(crate) fn with_health_flags(
         mut self,
         server: Arc<std::sync::atomic::AtomicBool>,
@@ -933,8 +904,13 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
+    // #7719: no call site sets this builder's `suggestion_receiver` via this
+    // setter — it stays `None` and is forwarded as such (line ~1053). The
+    // receiver actually used by the scheduler comes from a different setter
+    // of the same name on the scheduler's own builder (`scheduler/mod.rs`).
+    // Kept in case this builder's copy is wired up later.
     #[cfg(feature = "server")]
-    #[allow(dead_code)] // retained for external injection; support context is the primary path
+    #[allow(dead_code)]
     pub(crate) fn with_suggestion_receiver(
         mut self,
         receiver: Arc<maekon_suggestion::receiver::SuggestionReceiver>,
@@ -957,11 +933,15 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    // E20-24 (#4816): invoked under `local-suggestions` (default-on); the shared
-    // queue/scorer it sets are consumed only by the server SSE receiver
-    // (agent_runtime_support.rs, cfg server), so the value terminates unused in
-    // OSS builds — `allow(dead_code)` keeps --no-default-features quiet.
-    #[allow(dead_code)]
+    // E20-24 (#4816): the ONLY call site is
+    // `app_runtime_launch/mod.rs`'s `#[cfg(feature = "local-suggestions")]`
+    // wiring block. `local-suggestions` is default-on, so this compiles in
+    // normal builds, but under `--no-default-features` that call site
+    // disappears and the setter itself becomes dead code — gate it to match
+    // (#7743 ctd-W3 A2b follow-up; a prior `allow(dead_code)` comment here
+    // predated the actual attribute and had drifted, misattributing the gate
+    // to `server` instead of `local-suggestions`).
+    #[cfg(feature = "local-suggestions")]
     pub(crate) fn with_shared_suggestion_queue(
         mut self,
         queue: Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
@@ -970,9 +950,9 @@ impl<'a> AgentRuntimeBuilder<'a> {
         self
     }
 
-    // E20-24 (#4816): see with_shared_suggestion_queue — set under local-suggestions,
-    // read only by the server SSE receiver, so unused in OSS builds.
-    #[allow(dead_code)]
+    // E20-24 (#4816): see with_shared_suggestion_queue — same single call site,
+    // same `local-suggestions` gate.
+    #[cfg(feature = "local-suggestions")]
     pub(crate) fn with_shared_scorer(
         mut self,
         scorer: Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>,
@@ -992,60 +972,5 @@ impl<'a> AgentRuntimeBuilder<'a> {
     ) -> Self {
         self.analysis_health_flag = Some(flag);
         self
-    }
-
-    pub(crate) fn build(self) -> AgentRuntimeBundle {
-        AgentRuntimeBundle {
-            storage: self.storage,
-            scheduler_storage: self.scheduler_storage,
-            focus_storage: self.focus_storage,
-            calibration_writer: self.calibration_writer,
-            calibration_reader: self.calibration_reader,
-            override_store: self.override_store,
-            recluster_requested: self.recluster_requested,
-            erasure_requested: self.erasure_requested,
-            vector_store: self.vector_store,
-            data_dir: self.data_dir.to_path_buf(),
-            config: self.config.clone(),
-            config_manager: self.config_manager,
-            consent_manager: self.consent_manager,
-            sqlite_storage_concrete: self.sqlite_storage_concrete,
-            sync_runtime_slot: self.sync_runtime_slot,
-            embedding_runtime_slot: self.embedding_runtime_slot,
-            offline_mode: self.offline_mode,
-            event_tx: self.event_tx,
-            #[cfg(feature = "analysis")]
-            oauth_coordinator: self.oauth_coordinator,
-            #[cfg(feature = "analysis")]
-            provider_secret_stores: self.provider_secret_stores,
-            app_handle: self.app_handle,
-            coaching_engine: self.coaching_engine,
-            coaching_storage: self.coaching_storage,
-            magic_overlay: self.magic_overlay,
-            overlay_driver: self.overlay_driver,
-            capture_paused: self.capture_paused,
-            detection_active: self.detection_active,
-            server_health_flag: self.server_health_flag,
-            llm_health_flag: self.llm_health_flag,
-            cli_health_flag: self.cli_health_flag,
-            server_connected: self.server_connected,
-            llm_connected: self.llm_connected,
-            cli_connected: self.cli_connected,
-            tray_app_handle: self.tray_app_handle,
-            #[cfg(feature = "server")]
-            suggestion_receiver: self.suggestion_receiver,
-            #[cfg(feature = "local-suggestions")]
-            suggestion_manager: self.suggestion_manager,
-            suggestions_enabled: self.suggestions_enabled,
-            focus_mode: self.focus_mode,
-            shared_capture_services: self.shared_capture_services,
-            shared_suggestion_queue: self.shared_suggestion_queue,
-            shared_scorer: self.shared_scorer,
-            shared_regime: self.shared_regime,
-            analysis_health_flag: self.analysis_health_flag,
-            regime_manager: self.regime_manager,
-            regime_classifier: self.regime_classifier,
-            breaker_registry: self.breaker_registry,
-        }
     }
 }

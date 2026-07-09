@@ -1,8 +1,10 @@
-use chrono::{Datelike, Duration as ChronoDuration, Timelike, Utc};
+use chrono::{Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, TimeZone, Utc};
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::error::CoreError;
 use maekon_core::models::activity::{ProcessSnapshot, ProcessSnapshotEntry};
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
+use maekon_core::ports::embedding_provider::EmbeddingProvider;
+use maekon_core::ports::vector_store::VectorStore;
 use maekon_web::{MetricsUpdate, RealtimeEvent};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -30,9 +32,7 @@ pub(super) fn collection_permitted(
     let Some(cm) = config_manager else {
         return false;
     };
-    let consent = consent_manager
-        .map(|c| c.effective_permissions())
-        .unwrap_or_default();
+    let consent = ConsentGate::from_ref(consent_manager).permissions_snapshot();
     crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused)
 }
 
@@ -47,9 +47,7 @@ pub(super) fn embedding_reembedding_permitted(
     paused: bool,
 ) -> bool {
     collection_permitted(config_manager, consent_manager, paused)
-        && consent_manager
-            .map(|c| c.effective_permissions().activity_pattern_learning)
-            .unwrap_or(false)
+        && ConsentGate::from_ref(consent_manager).may_learn_activity_pattern()
 }
 
 /// Pure helper for the consent-gate decision specific to the metrics collection
@@ -71,9 +69,226 @@ pub(super) fn embedding_reembedding_permitted(
 pub(super) fn metrics_collection_permitted(
     consent_manager: Option<&Arc<dyn ConsentManagerPort>>,
 ) -> bool {
-    consent_manager
-        .map(|c| c.effective_permissions().telemetry)
-        .unwrap_or(false)
+    ConsentGate::from_ref(consent_manager).may_upload_telemetry()
+}
+
+const DAILY_CLAIM_PROMOTION_MARKER_KIND: &str = "daily_claim_promotion";
+const DAILY_BELIEF_REVISION_MARKER_KIND: &str = "daily_belief_revision";
+const STALE_VECTOR_REEMBED_BATCH_SIZE: usize = 100;
+const STALE_VECTOR_REEMBED_MAX_BATCHES: usize = 100;
+const WEEKLY_DIGEST_RETENTION_WEEKS: u32 = 52;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StaleVectorReembedStats {
+    batches: usize,
+    fetched: u64,
+    updated: u64,
+    missing_or_deleted: u64,
+    failed: u64,
+    hit_batch_cap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WeeklyCatchupWindow {
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+}
+
+async fn reembed_stale_vectors(
+    vector_store: &dyn VectorStore,
+    embedding_provider: &dyn EmbeddingProvider,
+    batch_size: usize,
+    max_batches: usize,
+) -> StaleVectorReembedStats {
+    let batch_size = batch_size.max(1);
+    let max_batches = max_batches.max(1);
+    let mut stats = StaleVectorReembedStats::default();
+
+    for batch_index in 0..max_batches {
+        match vector_store.get_stale_vectors(batch_size).await {
+            Ok(batch) if !batch.is_empty() => {
+                stats.batches += 1;
+                stats.fetched += batch.len() as u64;
+
+                let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+                match embedding_provider.embed_batch(&texts).await {
+                    Ok(vectors) => {
+                        if vectors.len() != batch.len() {
+                            warn!(
+                                stale_count = batch.len(),
+                                vector_count = vectors.len(),
+                                "re-embed batch returned a mismatched vector count"
+                            );
+                        }
+
+                        let model_id = embedding_provider.model_id();
+                        let mut batch_updated = 0u64;
+                        let mut batch_missing_or_deleted = 0u64;
+                        let mut batch_failed = 0u64;
+
+                        for ((id, _), vector) in batch.into_iter().zip(vectors) {
+                            match vector_store.update_vector(id, vector, model_id).await {
+                                Ok(rows) if rows > 0 => {
+                                    batch_updated += rows;
+                                    stats.updated += rows;
+                                }
+                                Ok(_) => {
+                                    batch_missing_or_deleted += 1;
+                                    stats.missing_or_deleted += 1;
+                                }
+                                Err(e) => {
+                                    batch_failed += 1;
+                                    stats.failed += 1;
+                                    warn!("re-embed update failure: {e}");
+                                }
+                            }
+                        }
+
+                        debug!(
+                            updated = batch_updated,
+                            missing_or_deleted = batch_missing_or_deleted,
+                            failed = batch_failed,
+                            "re-embedded stale vector batch"
+                        );
+
+                        if batch_updated + batch_missing_or_deleted == 0 {
+                            warn!(
+                                failed = batch_failed,
+                                "stale vector re-embed made no progress; stopping sweep"
+                            );
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("re-embed batch failure: {e}");
+                        break;
+                    }
+                }
+            }
+            Ok(_) => break,
+            Err(e) => {
+                warn!("get stale vectors failure: {e}");
+                break;
+            }
+        }
+
+        if batch_index + 1 == max_batches {
+            stats.hit_batch_cap = true;
+            warn!(
+                max_batches,
+                fetched = stats.fetched,
+                updated = stats.updated,
+                missing_or_deleted = stats.missing_or_deleted,
+                failed = stats.failed,
+                "stale vector re-embed hit batch cap; remaining stale vectors will be retried later"
+            );
+        }
+    }
+
+    stats
+}
+
+fn daily_catchup_dates(
+    local_today: NaiveDate,
+    latest_digest_date: Option<NaiveDate>,
+    retention_days: u32,
+) -> Vec<NaiveDate> {
+    let yesterday = local_today.pred_opt().unwrap_or(local_today);
+    let retention_days = retention_days.max(1);
+    let oldest_allowed = yesterday
+        .checked_sub_signed(ChronoDuration::days((retention_days - 1) as i64))
+        .unwrap_or(yesterday);
+    let mut start = latest_digest_date
+        .map(|date| date.max(oldest_allowed))
+        .unwrap_or(yesterday);
+    if start > yesterday {
+        start = yesterday;
+    }
+
+    inclusive_date_range(start, yesterday, 1)
+}
+
+fn weekly_catchup_window_dates(
+    local_today: NaiveDate,
+    digest_day: maekon_core::config::Weekday,
+    latest_week_start_date: Option<NaiveDate>,
+    retention_weeks: u32,
+) -> Vec<WeeklyCatchupWindow> {
+    let days_since_digest_day = (local_today.weekday().num_days_from_sunday() as i64
+        - digest_day.num_days_from_sunday() as i64)
+        .rem_euclid(7);
+    let target_end = local_today
+        .checked_sub_signed(ChronoDuration::days(days_since_digest_day))
+        .unwrap_or(local_today);
+    let target_start = target_end
+        .checked_sub_signed(ChronoDuration::days(7))
+        .unwrap_or(target_end);
+
+    let retention_weeks = retention_weeks.max(1);
+    let oldest_start = target_start
+        .checked_sub_signed(ChronoDuration::days(((retention_weeks - 1) * 7) as i64))
+        .unwrap_or(target_start);
+    let start = latest_week_start_date
+        .and_then(|date| date.checked_add_signed(ChronoDuration::days(7)))
+        .map(|date| date.max(oldest_start))
+        .unwrap_or(target_start);
+
+    if start > target_start {
+        return Vec::new();
+    }
+
+    inclusive_date_range(start, target_start, 7)
+        .into_iter()
+        .map(|start_date| WeeklyCatchupWindow {
+            start_date,
+            end_date: start_date
+                .checked_add_signed(ChronoDuration::days(7))
+                .unwrap_or(start_date),
+        })
+        .collect()
+}
+
+fn inclusive_date_range(start: NaiveDate, end: NaiveDate, step_days: i64) -> Vec<NaiveDate> {
+    let mut out = Vec::new();
+    let mut cursor = start;
+    let step_days = step_days.max(1);
+    while cursor <= end {
+        out.push(cursor);
+        let Some(next) = cursor.checked_add_signed(ChronoDuration::days(step_days)) else {
+            break;
+        };
+        cursor = next;
+    }
+    out
+}
+
+fn local_midnight_utc(date: NaiveDate) -> Option<chrono::DateTime<Utc>> {
+    let local_midnight = date.and_hms_opt(0, 0, 0)?;
+    match chrono::Local.from_local_datetime(&local_midnight) {
+        LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        LocalResult::Ambiguous(first, second) => {
+            let first = first.with_timezone(&Utc);
+            let second = second.with_timezone(&Utc);
+            Some(first.min(second))
+        }
+        LocalResult::None => {
+            for hour in 1..4 {
+                let Some(candidate) = date.and_hms_opt(hour, 0, 0) else {
+                    continue;
+                };
+                match chrono::Local.from_local_datetime(&candidate) {
+                    LocalResult::Single(dt) => return Some(dt.with_timezone(&Utc)),
+                    LocalResult::Ambiguous(first, second) => {
+                        let first = first.with_timezone(&Utc);
+                        let second = second.with_timezone(&Utc);
+                        return Some(first.min(second));
+                    }
+                    LocalResult::None => {}
+                }
+            }
+            None
+        }
+    }
 }
 
 impl Scheduler {
@@ -278,6 +493,14 @@ impl Scheduler {
         // #5810: regime crash-durability checkpoint — same Arcs as shutdown path.
         let regime_storage = self.regime_storage.clone();
         let regime_manager_arc = self.regime_manager_arc.clone();
+        // #7678 D4: daily-summary desktop toast (previously-inert
+        // `daily_summary_notification` config flag) — same Arc as every other
+        // loop's notification_manager (Port Instance Sharing guardrail).
+        let notification_manager = self.notification_manager.clone();
+        // #7678 D4: calibration-log retention (previously-inert
+        // `calibration_retention_days`/`calibration_max_rows` config fields) —
+        // same underlying SqliteStorage instance as calibration_writer/reader.
+        let calibration_reader = self.calibration_reader.clone();
 
         // Resolve log directory once for periodic log retention cleanup.
         let log_dir = maekon_core::config_manager::ConfigManager::data_dir()
@@ -300,8 +523,17 @@ impl Scheduler {
             let mut last_log_cleanup: Option<chrono::DateTime<Utc>> = None;
             let mut last_sqlite_maintenance: Option<chrono::DateTime<Utc>> = None;
             let mut last_fts_optimize: Option<chrono::DateTime<Utc>> = None;
-            // #5810: regime crash-durability checkpoint state.
-            let mut last_regime_checkpoint: Option<chrono::DateTime<Utc>> = None;
+            // #5810/#7574: regime crash-durability checkpoint runs on its own
+            // sub-tick timer, independent of `aggregation_interval` (default
+            // 60 min) — see `regime_checkpoint_interval` below. Previously this
+            // fired only inside the `interval.tick()` (aggregation) branch, so
+            // the ">= REGIME_CHECKPOINT_INTERVAL_MINS" gate could only ever be
+            // evaluated once per hour and the documented "at most 30 min lost on
+            // unclean exit" bound was actually ~60 min.
+            let mut regime_checkpoint_interval =
+                super::intervals::coalescing_interval(Duration::from_secs(
+                    super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS as u64 * 60,
+                ));
 
             loop {
                 tokio::select! {
@@ -414,36 +646,22 @@ impl Scheduler {
                                         _ => {}
                                     }
 
-                                    // Process stale vectors in batches of 100
-                                    loop {
-                                        match vs.get_stale_vectors(100).await {
-                                            Ok(batch) if !batch.is_empty() => {
-                                                let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
-                                                match ep.embed_batch(&texts).await {
-                                                    Ok(vectors) => {
-                                                        let model_id = ep.model_id();
-                                                        let mut updated = 0u64;
-                                                        for ((id, _), vec) in batch.into_iter().zip(vectors) {
-                                                            if let Err(e) = vs.update_vector(id, vec, model_id).await {
-                                                                warn!("re-embed update failure: {e}");
-                                                            } else {
-                                                                updated += 1;
-                                                            }
-                                                        }
-                                                        debug!("re-embedded {updated} stale vectors");
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("re-embed batch failure: {e}");
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            Ok(_) => break, // no more stale vectors
-                                            Err(e) => {
-                                                warn!("get stale vectors failure: {e}");
-                                                break;
-                                            }
-                                        }
+                                    let stats = reembed_stale_vectors(
+                                        vs.as_ref(),
+                                        ep.as_ref(),
+                                        STALE_VECTOR_REEMBED_BATCH_SIZE,
+                                        STALE_VECTOR_REEMBED_MAX_BATCHES,
+                                    )
+                                    .await;
+                                    if stats.fetched > 0 {
+                                        debug!(
+                                            fetched = stats.fetched,
+                                            updated = stats.updated,
+                                            missing_or_deleted = stats.missing_or_deleted,
+                                            failed = stats.failed,
+                                            hit_batch_cap = stats.hit_batch_cap,
+                                            "stale vector re-embed sweep finished"
+                                        );
                                     }
                                 }
 
@@ -540,6 +758,31 @@ impl Scheduler {
                                 .await;
                             }
 
+                            // #7678 D4: calibration_log retention — previously the
+                            // configured `calibration_retention_days`/`calibration_max_rows`
+                            // were parsed+persisted but never enforced, so the table grew
+                            // unbounded. `CalibrationReader::enforce_retention` is already
+                            // async (ADR-026 convergence), so no `offload_storage` wrapper
+                            // is needed here (mirrors the VectorStore retention call above).
+                            if let Some(ref cr) = calibration_reader {
+                                let (max_days, max_rows) = config_manager
+                                    .as_ref()
+                                    .map(|cm| {
+                                        let tm = &cm.get().analysis.tiered_memory;
+                                        (tm.calibration_retention_days, tm.calibration_max_rows)
+                                    })
+                                    .unwrap_or((14, 500_000));
+                                match cr.enforce_retention(max_days, max_rows).await {
+                                    Ok(n) if n > 0 => {
+                                        debug!("calibration_log: pruned {n} row(s)")
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        warn!(err.code = %e.code(), "calibration_log retention failure: {e}")
+                                    }
+                                }
+                            }
+
                             // ADR-023: bound the memory-graph (same retention window as
                             // segments) + GC evidence edges orphaned by segment deletion.
                             if let Some(ref mg) = memory_graph {
@@ -568,68 +811,73 @@ impl Scheduler {
                         // [COLLECT] Weekly digest auto-generation — derive a digest from
                         // the segments and persist it via save_weekly_digest. Protected
                         // by the consent gate.
-                        // --- Weekly digest auto-generation ---
+                        // --- Weekly digest catch-up generation ---
                         if collect_ok {
                             let digest_day = config_manager
                                 .as_ref()
                                 .map(|cm| cm.get().analysis.embedding.digest_day)
                                 .unwrap_or(maekon_core::config::Weekday::Sun);
+                            let local_today = chrono::Local::now().date_naive();
 
-                            let local_now = chrono::Local::now();
-                            let is_digest_day =
-                                local_now.weekday().num_days_from_sunday() == digest_day.num_days_from_sunday();
-                            let is_midnight_hour = local_now.hour() == 0;
+                            // #5097: offload sync SchedulerStorage digest calls to
+                            // spawn_blocking (offload_storage) — avoid blocking the
+                            // async worker thread.
+                            let mut previous_digest = {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("weekly digest lookup", move || {
+                                    sqlite6.list_weekly_digests(1)
+                                })
+                                .await
+                            }
+                            .and_then(|d| d.into_iter().next());
 
-                            if is_digest_day && is_midnight_hour {
-                                // Calculate week boundaries (Monday-based ISO week aligned to digest_day)
-                                let week_end = now;
-                                let week_start = now - ChronoDuration::days(7);
+                            let latest_week_start_date = previous_digest
+                                .as_ref()
+                                .map(|digest| digest.week_start.with_timezone(&chrono::Local).date_naive());
+                            let windows = weekly_catchup_window_dates(
+                                local_today,
+                                digest_day,
+                                latest_week_start_date,
+                                WEEKLY_DIGEST_RETENTION_WEEKS,
+                            );
 
-                                // Check if digest already exists for this week.
-                                // #5097: offload the sync SchedulerStorage digest call to
-                                // spawn_blocking (offload_storage) — avoid blocking the
-                                // async worker thread.
-                                let existing = {
+                            for window in windows {
+                                let Some(week_start) = local_midnight_utc(window.start_date) else {
+                                    warn!("weekly digest catch-up skipped: invalid local start date {}", window.start_date);
+                                    continue;
+                                };
+                                let Some(week_end) = local_midnight_utc(window.end_date) else {
+                                    warn!("weekly digest catch-up skipped: invalid local end date {}", window.end_date);
+                                    continue;
+                                };
+
+                                // Load actual segments for this week from storage.
+                                let week_segments = {
                                     let sqlite6 = sqlite6.clone();
-                                    offload_storage("weekly digest lookup", move || {
-                                        sqlite6.list_weekly_digests(1)
+                                    offload_storage("weekly segments load", move || {
+                                        sqlite6.list_segments_between(week_start, week_end)
                                     })
                                     .await
                                 }
-                                .and_then(|d| d.into_iter().next());
+                                .unwrap_or_default();
+                                let digest = maekon_analysis::WeeklyDigestGenerator::generate(
+                                    &week_segments,
+                                    week_start,
+                                    week_end,
+                                    previous_digest.as_ref(),
+                                );
 
-                                let already_generated = existing
-                                    .as_ref()
-                                    .map(|d| (now - d.week_end).num_hours() < 24)
-                                    .unwrap_or(false);
-
-                                if !already_generated {
-                                    // Load actual segments for this week from storage
-                                    let week_segments = {
-                                        let sqlite6 = sqlite6.clone();
-                                        offload_storage("weekly segments load", move || {
-                                            sqlite6.list_segments_between(week_start, week_end)
-                                        })
-                                        .await
-                                    }
-                                    .unwrap_or_default();
-                                    let digest = maekon_analysis::WeeklyDigestGenerator::generate(
-                                        &week_segments,
-                                        week_start,
-                                        week_end,
-                                        existing.as_ref(),
-                                    );
-
-                                    let saved = {
-                                        let sqlite6 = sqlite6.clone();
-                                        offload_storage("weekly digest save", move || {
-                                            sqlite6.save_weekly_digest(&digest)
-                                        })
-                                        .await
-                                    };
-                                    if saved.is_some() {
-                                        info!("Weekly digest generated for week ending {}", week_end);
-                                    }
+                                let saved = {
+                                    let sqlite6 = sqlite6.clone();
+                                    let digest = digest.clone();
+                                    offload_storage("weekly digest save", move || {
+                                        sqlite6.save_weekly_digest(&digest)
+                                    })
+                                    .await
+                                };
+                                if saved.is_some() {
+                                    info!("Weekly digest generated for week ending {}", week_end);
+                                    previous_digest = Some(digest);
                                 }
                             }
                         }
@@ -641,15 +889,29 @@ impl Scheduler {
                         // protected by the consent gate. (Belief revision is additionally
                         // gated internally on the memory_graph_enrichment own-field
                         // consent — defense-in-depth.)
-                        // --- Daily digest auto-generation (midnight) ---
+                        // --- Daily digest catch-up generation ---
                         if collect_ok {
-                            let local_now = chrono::Local::now();
-                            if local_now.hour() == 0 {
-                                // Generate digest for yesterday
-                                let yesterday = local_now.date_naive()
-                                    .pred_opt()
-                                    .unwrap_or(local_now.date_naive());
-                                let date_str = yesterday.format("%Y-%m-%d").to_string();
+                            let local_today = chrono::Local::now().date_naive();
+                            let segment_retention_days = config_manager
+                                .as_ref()
+                                .map(|cm| cm.get().analysis.embedding.retention_days)
+                                .unwrap_or(90);
+                            let latest_digest_date = {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("daily digest list", move || {
+                                    sqlite6.list_daily_digests(1)
+                                })
+                                .await
+                            }
+                            .and_then(|digests| digests.into_iter().next())
+                            .map(|digest| digest.date);
+
+                            for digest_date in daily_catchup_dates(
+                                local_today,
+                                latest_digest_date,
+                                segment_retention_days,
+                            ) {
+                                let date_str = digest_date.format("%Y-%m-%d").to_string();
 
                                 // Check if daily digest already exists (#5097: spawn_blocking offload).
                                 let existing = {
@@ -662,8 +924,10 @@ impl Scheduler {
                                 }
                                 .flatten();
 
-                                if existing.is_none() {
-                                    // Load segments for yesterday
+                                let digest = if let Some(digest) = existing {
+                                    Some(digest)
+                                } else {
+                                    // Load segments for the completed local day.
                                     let segment_records = {
                                         let sqlite6 = sqlite6.clone();
                                         let date_str = date_str.clone();
@@ -683,9 +947,9 @@ impl Scheduler {
                                                 .collect();
 
                                         // Load previous day for comparison
-                                        let prev_date = yesterday
+                                        let prev_date = digest_date
                                             .pred_opt()
-                                            .unwrap_or(yesterday)
+                                            .unwrap_or(digest_date)
                                             .format("%Y-%m-%d")
                                             .to_string();
                                         let prev_digest = {
@@ -697,10 +961,24 @@ impl Scheduler {
                                         }
                                         .flatten();
 
+                                        // #7678 D2: resolve human regime labels (name >
+                                        // auto_label) from the current regime manager
+                                        // snapshot so the digest timeline never leaks
+                                        // the opaque `regime_id` ("regime-N") — mirrors
+                                        // the #7480 coaching-path fix. Best-effort: a
+                                        // regime evicted/archived since the segment was
+                                        // recorded simply falls back to
+                                        // `dominant_category` inside the generator.
+                                        let regimes: Vec<maekon_core::models::tiered_memory::Regime> =
+                                            regime_manager_arc
+                                                .as_ref()
+                                                .map(|m| m.lock().all_regimes().to_vec())
+                                                .unwrap_or_default();
                                         let mut digest = maekon_analysis::DailyDigestGenerator::generate(
                                             &segments,
-                                            yesterday,
+                                            digest_date,
                                             prev_digest.as_ref(),
+                                            &regimes,
                                         );
 
                                         // Generate LLM narrative insight if provider is available.
@@ -738,19 +1016,68 @@ impl Scheduler {
                                         };
                                         if saved.is_some() {
                                             info!("Daily digest generated for {}", date_str);
+                                            // #7678 D4: fire the (previously-inert)
+                                            // daily_summary_notification desktop toast
+                                            // for a freshly generated digest only —
+                                            // never for a cache hit (the `existing`
+                                            // branch above never reaches this block).
+                                            if let Some(ref nm) = notification_manager {
+                                                nm.notify_daily_summary(&date_str).await;
+                                            }
+                                            Some(digest)
+                                        } else {
+                                            None
                                         }
+                                    } else {
+                                        None
+                                    }
+                                };
 
+                                if let Some(digest) = digest {
                                         // ADR-023 (D3/D5): promote the digest into
                                         // durable memory-graph claims + evidence edges.
                                         // Offline-capable — runs on the timeline content
                                         // even when no LLM insight was generated.
                                         if let Some(ref mg) = memory_graph {
-                                            persist_digest_memory_graph(
-                                                mg.as_ref(),
-                                                &digest,
-                                                Utc::now().timestamp(),
-                                            )
-                                            .await;
+                                            let marker_exists = {
+                                                let sqlite6 = sqlite6.clone();
+                                                let date_str = date_str.clone();
+                                                offload_storage("daily claim marker lookup", move || {
+                                                    sqlite6.has_digest_processing_marker(
+                                                        DAILY_CLAIM_PROMOTION_MARKER_KIND,
+                                                        &date_str,
+                                                    )
+                                                })
+                                                .await
+                                            }
+                                            .unwrap_or(false);
+
+                                            if !marker_exists {
+                                                let promoted = persist_digest_memory_graph(
+                                                    mg.as_ref(),
+                                                    &digest,
+                                                    Utc::now().timestamp(),
+                                                )
+                                                .await;
+                                                if !promoted {
+                                                    continue;
+                                                }
+                                                let saved_marker = {
+                                                    let sqlite6 = sqlite6.clone();
+                                                    let date_str = date_str.clone();
+                                                    offload_storage("daily claim marker save", move || {
+                                                        sqlite6.save_digest_processing_marker(
+                                                            DAILY_CLAIM_PROMOTION_MARKER_KIND,
+                                                            &date_str,
+                                                            Utc::now(),
+                                                        )
+                                                    })
+                                                    .await
+                                                };
+                                                if saved_marker.is_some() {
+                                                    debug!("ADR-023: daily claim promotion marked for {}", date_str);
+                                                }
+                                            }
                                         }
 
                                         // ADR-023 Phase-2: LLM belief revision (D1/D2)
@@ -761,22 +1088,52 @@ impl Scheduler {
                                         // + the belief_revision_enabled flag. With no LLM
                                         // it degrades to a no-op.
                                         if let Some(ref br) = belief_revision {
-                                            let consent_ok = consent_manager.as_ref().is_some_and(
-                                                |c| c.effective_permissions().memory_graph_enrichment,
-                                            );
+                                            let consent_ok =
+                                                ConsentGate::from_ref(consent_manager.as_ref())
+                                                    .may_enrich_memory_graph();
                                             let flag_on = config_manager
                                                 .as_ref()
                                                 .map(|cm| cm.get().analysis.belief_revision_enabled)
                                                 .unwrap_or(false);
                                             if consent_ok && flag_on {
-                                                if let Err(e) =
-                                                    br.run_pass(Utc::now().timestamp()).await
-                                                {
-                                                    warn!(err.code = %e.code(), "belief revision pass failed: {e}");
+                                                let marker_exists = {
+                                                    let sqlite6 = sqlite6.clone();
+                                                    let date_str = date_str.clone();
+                                                    offload_storage("daily belief marker lookup", move || {
+                                                        sqlite6.has_digest_processing_marker(
+                                                            DAILY_BELIEF_REVISION_MARKER_KIND,
+                                                            &date_str,
+                                                        )
+                                                    })
+                                                    .await
+                                                }
+                                                .unwrap_or(false);
+
+                                                if !marker_exists {
+                                                    if let Err(e) =
+                                                        br.run_pass(Utc::now().timestamp()).await
+                                                    {
+                                                        warn!(err.code = %e.code(), "belief revision pass failed: {e}");
+                                                    } else {
+                                                        let saved_marker = {
+                                                            let sqlite6 = sqlite6.clone();
+                                                            let date_str = date_str.clone();
+                                                            offload_storage("daily belief marker save", move || {
+                                                                sqlite6.save_digest_processing_marker(
+                                                                    DAILY_BELIEF_REVISION_MARKER_KIND,
+                                                                    &date_str,
+                                                                    Utc::now(),
+                                                                )
+                                                            })
+                                                            .await
+                                                        };
+                                                        if saved_marker.is_some() {
+                                                            debug!("ADR-023: daily belief revision marked for {}", date_str);
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
                                 }
                             }
                         }
@@ -934,52 +1291,45 @@ impl Scheduler {
                             }
                         }
 
-                        // --- Regime state periodic crash-durability checkpoint (#5810) ---
-                        // The shutdown path (main.rs RunEvent::Exit) is the authoritative
-                        // save; this block is a supplement that limits session loss on
-                        // unclean exit to at most REGIME_CHECKPOINT_INTERVAL_MINS minutes.
-                        //
-                        // save_all calls conn.write_lock().run() synchronously (parking_lot
-                        // mutex). The lock is held only for the duration of the SQLite
-                        // execute calls (a few ms at most), so direct .await in this async
-                        // context is acceptable — the blocking is bounded and infrequent
-                        // (every 30 min). No spawn_blocking wrapper is added to keep the
-                        // call site simple; this matches the main.rs shutdown pattern which
-                        // also calls save_all directly inside a blocking runtime.
-                        if let (Some(ref rs), Some(ref rm)) =
-                            (&regime_storage, &regime_manager_arc)
-                        {
-                            let should_checkpoint = last_regime_checkpoint
-                                .map(|last| {
-                                    (now - last).num_minutes()
-                                        >= super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS
-                                })
-                                .unwrap_or(true);
-
-                            if should_checkpoint {
-                                last_regime_checkpoint = Some(now);
-                                // Snapshot under the lock and release immediately — same
-                                // pattern as main.rs:1017–1020.
-                                let regimes = {
-                                    let guard = rm.lock();
-                                    guard.all_regimes().to_vec()
-                                };
-                                if !regimes.is_empty() {
-                                    if let Err(e) = rs.save_all(&regimes).await {
-                                        warn!("regime checkpoint failure: {e}");
-                                    } else {
-                                        debug!(count = regimes.len(), "regime checkpoint saved");
-                                    }
-                                }
-                            }
-                        }
-
                         // --- Config file change detection ---
                         if let Some(ref cm) = config_manager {
                             check_config_file_changed(cm, &config_mtime).await;
                         }
 
                         debug!("completed");
+                    }
+                    // --- Regime state periodic crash-durability checkpoint (#5810/#7574) ---
+                    // The shutdown path (main.rs RunEvent::Exit) is the authoritative save;
+                    // this branch is a supplement that limits session loss on unclean exit
+                    // to at most REGIME_CHECKPOINT_INTERVAL_MINS minutes. It runs on its own
+                    // `regime_checkpoint_interval` timer (constructed above from the same
+                    // constant) so the bound holds regardless of `aggregation_interval`.
+                    //
+                    // save_all calls conn.write_lock().run() synchronously (parking_lot
+                    // mutex). The lock is held only for the duration of the SQLite execute
+                    // calls (a few ms at most), so direct .await in this async context is
+                    // acceptable — the blocking is bounded and infrequent (every 30 min). No
+                    // spawn_blocking wrapper is added to keep the call site simple; this
+                    // matches the main.rs shutdown pattern which also calls save_all
+                    // directly inside a blocking runtime.
+                    _ = regime_checkpoint_interval.tick() => {
+                        if let (Some(ref rs), Some(ref rm)) =
+                            (&regime_storage, &regime_manager_arc)
+                        {
+                            // Snapshot under the lock and release immediately — same
+                            // pattern as main.rs:1017–1020.
+                            let regimes = {
+                                let guard = rm.lock();
+                                guard.all_regimes().to_vec()
+                            };
+                            if !regimes.is_empty() {
+                                if let Err(e) = rs.save_all(&regimes).await {
+                                    warn!("regime checkpoint failure: {e}");
+                                } else {
+                                    debug!(count = regimes.len(), "regime checkpoint saved");
+                                }
+                            }
+                        }
                     }
                     _ = shutdown_rx.changed() => {
                         info!("ended");
@@ -1030,23 +1380,30 @@ async fn check_config_file_changed(
 ///
 /// Best-effort: a failed claim/edge write is logged (with the wire code) and
 /// skipped — digest persistence already succeeded and a partial graph is
-/// acceptable. Pure value construction lives in `maekon_analysis::claim_promoter`.
+/// acceptable. Returns `true` only when all generated claim/edge writes completed,
+/// so the caller can persist the per-date completion marker without hiding a
+/// storage failure. Pure value construction lives in `maekon_analysis::claim_promoter`.
 async fn persist_digest_memory_graph(
     memory_graph: &dyn maekon_core::ports::memory_graph_port::MemoryGraphPort,
     digest: &maekon_core::models::daily_digest::DailyDigest,
     now_secs: i64,
-) {
+) -> bool {
     let mut claim_count = 0_usize;
-    for (claim, edges) in
-        maekon_analysis::claim_promoter::build_claims_from_digest(digest, now_secs)
-    {
+    let mut failed = false;
+    let pairs = maekon_analysis::claim_promoter::build_claims_from_digest(digest, now_secs);
+    if pairs.is_empty() {
+        return true;
+    }
+    for (claim, edges) in pairs {
         if let Err(e) = memory_graph.save_claim(&claim).await {
+            failed = true;
             warn!(err.code = %e.code(), "memory-graph claim save failed: {e}");
             continue;
         }
         claim_count += 1;
         for edge in edges {
             if let Err(e) = memory_graph.add_edge(&edge).await {
+                failed = true;
                 warn!(err.code = %e.code(), "memory-graph evidence edge failed: {e}");
             }
         }
@@ -1054,6 +1411,7 @@ async fn persist_digest_memory_graph(
     if claim_count > 0 {
         debug!("ADR-023: promoted {claim_count} digest claim(s) to the memory graph");
     }
+    !failed
 }
 
 /// Offloads the scheduler's sync `SchedulerStorage` digest/segment calls to the
@@ -1090,6 +1448,62 @@ where
     }
 }
 
+#[cfg(test)]
+mod digest_catchup_tests {
+    use super::{daily_catchup_dates, weekly_catchup_window_dates};
+    use chrono::NaiveDate;
+    use maekon_core::config::Weekday;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("valid test date")
+    }
+
+    #[test]
+    fn daily_catchup_runs_after_missed_midnight() {
+        let dates = daily_catchup_dates(date(2026, 7, 1), Some(date(2026, 6, 29)), 90);
+
+        assert_eq!(
+            dates,
+            vec![date(2026, 6, 29), date(2026, 6, 30)],
+            "catch-up must not depend on still being in the local midnight hour"
+        );
+    }
+
+    #[test]
+    fn daily_catchup_includes_latest_digest_for_marker_repair() {
+        let dates = daily_catchup_dates(date(2026, 7, 1), Some(date(2026, 6, 30)), 90);
+
+        assert_eq!(
+            dates,
+            vec![date(2026, 6, 30)],
+            "an existing digest still needs marker-gated claim/belief repair"
+        );
+    }
+
+    #[test]
+    fn weekly_catchup_finds_missed_digest_day_after_sleep() {
+        let windows = weekly_catchup_window_dates(date(2026, 7, 6), Weekday::Sun, None, 52);
+
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].start_date, date(2026, 6, 28));
+        assert_eq!(windows[0].end_date, date(2026, 7, 5));
+    }
+
+    #[test]
+    fn weekly_catchup_advances_from_latest_week_start() {
+        let windows = weekly_catchup_window_dates(
+            date(2026, 7, 6),
+            Weekday::Sun,
+            Some(date(2026, 6, 21)),
+            52,
+        );
+
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].start_date, date(2026, 6, 28));
+        assert_eq!(windows[0].end_date, date(2026, 7, 5));
+    }
+}
+
 /// Unit tests for the `collection_permitted` helper.
 ///
 /// Verifies only the gate decision logic without constructing the full Scheduler.
@@ -1109,15 +1523,23 @@ mod collection_permitted_tests {
     use std::sync::Arc;
 
     /// Returns a unique temporary file path for tests.
-    /// Building the path from `std::env::temp_dir()` + a random value (instead of
-    /// `TempDir`) lets us write to the OS temp directory without deprecated-API
-    /// warnings.
+    /// Building the path from `std::env::temp_dir()` + a per-process monotonic
+    /// counter (instead of `TempDir`) lets us write to the OS temp directory
+    /// without deprecated-API warnings, while guaranteeing no collision between
+    /// concurrently-running tests. A bare `subsec_nanos()` nonce collided under
+    /// heavy parallel `--workspace` load — two tests picking the same temp name
+    /// produced `ConfigManager::with_path` "File exists"/vanished-`.tmp` rename
+    /// failures. The `process::id()` prefix keeps names unique across the several
+    /// test binaries that share the OS temp dir; the atomic counter keeps them
+    /// unique across threads within this binary.
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
-        // nonce: a process-ID + thread-ID combination minimizes collision likelihood.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nonce = format!(
+            "{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         std::env::temp_dir().join(format!("maekon_test_{nonce}_{suffix}"))
     }
 
@@ -1308,12 +1730,16 @@ mod metrics_collection_permitted_tests {
     use maekon_core::ports::consent_manager::ConsentManagerPort;
     use std::sync::Arc;
 
-    /// Unique temporary file path for tests.
+    /// Unique temporary file path for tests (per-process monotonic counter — see
+    /// the collision note on `tmp_path` in `collection_permitted_tests`).
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nonce = format!(
+            "{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         std::env::temp_dir().join(format!("maekon_metrics_test_{nonce}_{suffix}"))
     }
 
@@ -1537,11 +1963,16 @@ mod aggregation_gate_tests {
     use maekon_core::ports::consent_manager::ConsentManagerPort;
     use std::sync::Arc;
 
+    /// Unique temporary file path for tests (per-process monotonic counter — see
+    /// the collision note on `tmp_path` in `collection_permitted_tests`).
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nonce = format!(
+            "{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         std::env::temp_dir().join(format!("maekon_agg_test_{nonce}_{suffix}"))
     }
 
@@ -1608,6 +2039,213 @@ mod aggregation_gate_tests {
     }
 }
 
+#[cfg(test)]
+mod stale_vector_reembed_tests {
+    use super::reembed_stale_vectors;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
+    use maekon_core::error_codes::InternalCode;
+    use maekon_core::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
+    use maekon_core::ports::embedding_provider::EmbeddingProvider;
+    use maekon_core::ports::vector_store::VectorStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FixedEmbeddingProvider;
+
+    #[async_trait]
+    impl EmbeddingProvider for FixedEmbeddingProvider {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, CoreError> {
+            Ok(vec![1.0])
+        }
+
+        async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, CoreError> {
+            Ok(texts.iter().map(|_| vec![1.0]).collect())
+        }
+
+        fn dimensions(&self) -> usize {
+            1
+        }
+
+        fn model_id(&self) -> &str {
+            "test-model"
+        }
+    }
+
+    struct WriteFaultVectorStore {
+        get_calls: AtomicUsize,
+        update_calls: AtomicUsize,
+    }
+
+    impl WriteFaultVectorStore {
+        fn new() -> Self {
+            Self {
+                get_calls: AtomicUsize::new(0),
+                update_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    struct ZeroRowVectorStore {
+        get_calls: AtomicUsize,
+        update_calls: AtomicUsize,
+    }
+
+    impl ZeroRowVectorStore {
+        fn new() -> Self {
+            Self {
+                get_calls: AtomicUsize::new(0),
+                update_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl VectorStore for WriteFaultVectorStore {
+        async fn store(
+            &self,
+            _vector: Vec<f32>,
+            _metadata: EmbeddingMetadata,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn search_filtered(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+            _filters: &SearchFilters,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn enforce_retention(&self, _max_days: u32) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn mark_stale(&self, _old_model_id: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn update_vector(
+            &self,
+            _id: i64,
+            _vector: Vec<f32>,
+            _model_id: &str,
+        ) -> Result<u64, CoreError> {
+            self.update_calls.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::Internal {
+                code: InternalCode::Generic,
+                message: "synthetic write fault".to_string(),
+            })
+        }
+
+        async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+            Ok(Some("old-model".to_string()))
+        }
+
+        async fn get_stale_vectors(&self, _limit: usize) -> Result<Vec<(i64, String)>, CoreError> {
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![(1, "alpha".to_string()), (2, "beta".to_string())])
+        }
+    }
+
+    #[async_trait]
+    impl VectorStore for ZeroRowVectorStore {
+        async fn store(
+            &self,
+            _vector: Vec<f32>,
+            _metadata: EmbeddingMetadata,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn search_filtered(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+            _filters: &SearchFilters,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn enforce_retention(&self, _max_days: u32) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn mark_stale(&self, _old_model_id: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn update_vector(
+            &self,
+            _id: i64,
+            _vector: Vec<f32>,
+            _model_id: &str,
+        ) -> Result<u64, CoreError> {
+            self.update_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+
+        async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+            Ok(Some("old-model".to_string()))
+        }
+
+        async fn get_stale_vectors(&self, _limit: usize) -> Result<Vec<(i64, String)>, CoreError> {
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![(1, "alpha".to_string()), (2, "beta".to_string())])
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_vector_reembed_breaks_when_batch_makes_no_progress() {
+        let store = WriteFaultVectorStore::new();
+        let provider = FixedEmbeddingProvider;
+
+        let stats = reembed_stale_vectors(&store, &provider, 2, 10).await;
+
+        assert_eq!(store.get_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.update_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(stats.batches, 1);
+        assert_eq!(stats.updated, 0);
+        assert_eq!(stats.failed, 2);
+        assert!(!stats.hit_batch_cap);
+    }
+
+    #[tokio::test]
+    async fn stale_vector_reembed_stops_at_batch_cap_when_zero_row_updates_repeat() {
+        let store = ZeroRowVectorStore::new();
+        let provider = FixedEmbeddingProvider;
+
+        let stats = reembed_stale_vectors(&store, &provider, 2, 3).await;
+
+        assert_eq!(store.get_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(store.update_calls.load(Ordering::SeqCst), 6);
+        assert_eq!(stats.batches, 3);
+        assert_eq!(stats.missing_or_deleted, 6);
+        assert!(stats.hit_batch_cap);
+    }
+}
+
 /// #5809: spawn_blocking JoinError visibility contract tests.
 ///
 /// The three maintenance blocks (SQLite maintenance, FTS optimize, log retention)
@@ -1646,15 +2284,31 @@ mod spawn_blocking_join_error_tests {
     }
 }
 
-/// #5810: regime checkpoint interval gate contract tests.
+/// #5810/#7582: regime checkpoint interval sanity test.
 ///
-/// The gate logic mirrors the `last_index_maintenance` / `last_sqlite_maintenance`
-/// pattern: `num_minutes() >= REGIME_CHECKPOINT_INTERVAL_MINS` fires the first
-/// time (last=None → unwrap_or(true)) and then only after the interval elapses.
+/// Before #7582, the crash-durability checkpoint was gated by an inline
+/// `last_regime_checkpoint.map(|last| (now - last).num_minutes() >=
+/// REGIME_CHECKPOINT_INTERVAL_MINS).unwrap_or(true)` check nested inside the
+/// aggregation-interval tick, and this module mirrored that same expression
+/// (without calling into production code) to pin three cases: first-call,
+/// within-window, and after-window.
+///
+/// #7582 moved the checkpoint onto its own independent `regime_checkpoint_interval`
+/// sub-tick timer (see `spawn_aggregation_loop` above) — there is no more
+/// `last`/`num_minutes()` gate expression to mirror, so the three gate-shaped
+/// cases were tautological (a copy of a deleted computation, not a call into
+/// production code) and have been removed. The real fire-cadence behavior —
+/// the first tick checkpoints immediately, and a later checkpoint fires
+/// independent of a long aggregation interval — is covered end-to-end (via the
+/// real `spawn_aggregation_loop`) by
+/// `network::tests::regime_checkpoint_fires_independent_of_long_aggregation_interval`.
+///
+/// This module keeps the one check with independent regression value: the
+/// interval constant itself must stay positive. A `<= 0` value would otherwise
+/// surface only as a `tokio::time::interval` panic ("period must be non-zero")
+/// buried inside that async, paused-clock test.
 #[cfg(test)]
-mod regime_checkpoint_gate_tests {
-    use chrono::{Duration as ChronoDuration, Utc};
-
+mod regime_checkpoint_interval_tests {
     /// Interval constant must exist and be positive (compile-time existence check
     /// + runtime sanity guard — value is not hard-coded in production code).
     #[test]
@@ -1663,50 +2317,6 @@ mod regime_checkpoint_gate_tests {
         assert!(
             mins > 0,
             "REGIME_CHECKPOINT_INTERVAL_MINS must be > 0, got {mins}"
-        );
-    }
-
-    /// Gate fires on first call (last = None → unwrap_or(true)).
-    #[test]
-    fn gate_fires_on_first_call_when_last_is_none() {
-        let last: Option<chrono::DateTime<Utc>> = None;
-        let now = Utc::now();
-        let interval = super::super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS;
-        let should = last
-            .map(|l| (now - l).num_minutes() >= interval)
-            .unwrap_or(true);
-        assert!(should, "gate must fire when last_regime_checkpoint is None");
-    }
-
-    /// Gate does not fire when the interval has not elapsed.
-    #[test]
-    fn gate_skips_when_interval_not_elapsed() {
-        let interval = super::super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS;
-        // last checkpoint was (interval - 1) minutes ago.
-        let last = Some(Utc::now() - ChronoDuration::minutes(interval - 1));
-        let now = Utc::now();
-        let should = last
-            .map(|l| (now - l).num_minutes() >= interval)
-            .unwrap_or(true);
-        assert!(
-            !should,
-            "gate must not fire within the interval window ({interval} min)"
-        );
-    }
-
-    /// Gate fires once the interval has elapsed.
-    #[test]
-    fn gate_fires_after_interval_elapsed() {
-        let interval = super::super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS;
-        // last checkpoint was (interval + 1) minutes ago.
-        let last = Some(Utc::now() - ChronoDuration::minutes(interval + 1));
-        let now = Utc::now();
-        let should = last
-            .map(|l| (now - l).num_minutes() >= interval)
-            .unwrap_or(true);
-        assert!(
-            should,
-            "gate must fire after the interval has elapsed ({interval} min)"
         );
     }
 }

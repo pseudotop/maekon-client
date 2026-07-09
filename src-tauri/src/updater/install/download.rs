@@ -20,9 +20,9 @@ const MAX_UPDATE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// 8 MiB is enormously generous while still bounding abuse.
 pub(crate) const MAX_AUX_UPDATE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// #6941: 응답 본문을 하드 캡으로 읽는다. content_length 는 먼저 거부하고,
-/// 청크 스트림은 cap 을 넘는 즉시 중단해서 Content-Length 누락/위조로 cap 을
-/// 우회할 수 없게 한다.
+/// #6941: Read the response body with a hard cap. content_length is rejected
+/// first, and the chunk stream aborts as soon as it exceeds the cap, so a
+/// missing/forged Content-Length cannot bypass the cap.
 pub(crate) async fn read_body_capped_update(
     mut response: reqwest::Response,
     cap: u64,
@@ -54,6 +54,9 @@ impl Updater {
     /// Apply a delta patch: read current binary, apply bsdiff patch, verify checksum.
     ///
     /// Returns the path to the patched binary (written to a temp file).
+    // #6266: no production caller — `update_coordinator/check.rs` explicitly
+    // refuses `DeltaPatch` assets until delta apply is wired end-to-end.
+    #[allow(dead_code)]
     pub async fn apply_delta_update(
         &self,
         patch_path: &Path,

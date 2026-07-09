@@ -477,6 +477,53 @@ impl SqliteStorage {
         Ok(digests)
     }
 
+    /// Return whether downstream digest processing has completed for a period.
+    pub fn has_digest_processing_marker(
+        &self,
+        kind: &str,
+        period_key: &str,
+    ) -> Result<bool, CoreError> {
+        let read = self.conn.read_lock();
+        read.conn()
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM digest_processing_markers
+                    WHERE kind = ?1 AND period_key = ?2
+                 )",
+                rusqlite::params![kind, period_key],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|e| {
+                StorageError::Internal(format!("Failed to read digest processing marker: {e}"))
+            })
+            .map_err(Into::into)
+    }
+
+    /// Mark downstream digest processing complete for a period.
+    pub fn save_digest_processing_marker(
+        &self,
+        kind: &str,
+        period_key: &str,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), CoreError> {
+        self.conn
+            .write_lock()
+            .run((), |conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO digest_processing_markers
+                     (kind, period_key, completed_at)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![kind, period_key, completed_at.to_rfc3339()],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to save digest processing marker: {e}"))
+                })?;
+                Ok::<(), StorageError>(())
+            })
+            .map_err(Into::into)
+    }
+
     // ---- segment summaries ------------------------------------------------
 
     /// Get activity segment summaries for a given date (YYYY-MM-DD).

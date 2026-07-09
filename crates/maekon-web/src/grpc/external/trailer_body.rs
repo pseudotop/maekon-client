@@ -15,7 +15,6 @@ use pin_project_lite::pin_project;
 use tokio::sync::oneshot;
 
 pin_project! {
-    #[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 3 (AuditLayer header-first)
     pub(crate) struct TrailerCapturingBody<B> {
         #[pin]
         inner: B,
@@ -35,7 +34,6 @@ pin_project! {
     }
 }
 
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 3 (AuditLayer header-first)
 impl<B> TrailerCapturingBody<B> {
     pub fn new(inner: B, signal: oneshot::Sender<Option<tonic::Code>>) -> Self {
         Self {
@@ -106,7 +104,6 @@ impl<B: Body> Body for TrailerCapturingBody<B> {
     }
 }
 
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 3
 pub(crate) fn parse_grpc_status(trailers: &HeaderMap) -> Option<tonic::Code> {
     trailers
         .get("grpc-status")
@@ -116,7 +113,6 @@ pub(crate) fn parse_grpc_status(trailers: &HeaderMap) -> Option<tonic::Code> {
 }
 
 /// Decision D7 mapping: `None` (no trailer observed) → `Completed` (conservative).
-#[allow(dead_code)] // Phase 1 scaffold; consumed in Phase 3
 pub(crate) fn map_code_to_audit_status(
     code: Option<tonic::Code>,
 ) -> maekon_core::models::audit::AuditStatus {

@@ -443,7 +443,7 @@ impl VectorStore for SqliteVectorStore {
         id: i64,
         vector: Vec<f32>,
         model_id: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<u64, CoreError> {
         let blob = f32_vec_to_bytes(&vector);
         let model_id = model_id.to_string();
         let clock = self.clock.clone();
@@ -455,13 +455,14 @@ impl VectorStore for SqliteVectorStore {
             let hlc = clock
                 .next(conn)
                 .map_err(|e| StorageError::Internal(format!("hlc stamp (update_vector): {e}")))?;
-            conn.execute(
-                "UPDATE embedding_vectors SET vector = ?1, model_id = ?2, is_stale = 0, \
+            let updated = conn
+                .execute(
+                    "UPDATE embedding_vectors SET vector = ?1, model_id = ?2, is_stale = 0, \
                  hlc_wall_ms = ?4, hlc_counter = ?5 WHERE id = ?3",
-                params![blob, model_id, id, hlc.wall_ms, hlc.counter],
-            )
-            .map_err(|e| StorageError::Internal(format!("Failed to update vector: {e}")))?;
-            Ok(())
+                    params![blob, model_id, id, hlc.wall_ms, hlc.counter],
+                )
+                .map_err(|e| StorageError::Internal(format!("Failed to update vector: {e}")))?;
+            Ok(updated as u64)
         })
         .await
         .map_err(Into::into)

@@ -504,7 +504,7 @@ fn migration_all_versions() {
     assert_eq!(count, 1);
 
     // V34 - memory_claims + memory_edges (ADR-023 substrate)
-    for table in ["memory_claims", "memory_edges"] {
+    for table in ["memory_claims", "memory_edges", "digest_processing_markers"] {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",

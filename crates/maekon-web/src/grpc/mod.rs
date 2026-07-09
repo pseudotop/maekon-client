@@ -22,7 +22,6 @@ mod privacy;
 mod rate_limiter;
 mod spawn_config;
 mod stream_counter;
-#[cfg(feature = "grpc-dashboard-external")]
 pub(crate) mod streaming_source;
 mod subscribe_events;
 mod subscribe_metrics;
@@ -34,7 +33,6 @@ pub use rate_limiter::{EventRateLimiter, BURST_CAPACITY, DEFAULT_TOKENS_PER_SEC}
 pub use spawn_config::GrpcSpawnConfig;
 pub use stream_counter::StreamCounterGuard;
 
-#[cfg(feature = "grpc-dashboard-external")]
 use crate::grpc::streaming_source::StreamingSource;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -95,15 +93,7 @@ pub struct DashboardServiceImpl {
     system_monitor: Arc<dyn SystemMonitor>,
     event_tx: broadcast::Sender<RealtimeEvent>,
     integration_auth_token: Option<String>,
-    // D24 / Task 5.1: dual-mode streaming config.
-    // Under grpc-dashboard-external both raw fields are replaced by StreamingSource.
-    // Under plain grpc-dashboard the raw fields are retained for loopback-only builds.
-    #[cfg(feature = "grpc-dashboard-external")]
     streaming_source: StreamingSource,
-    #[cfg(not(feature = "grpc-dashboard-external"))]
-    load_policy: Arc<LoadPolicy>,
-    #[cfg(not(feature = "grpc-dashboard-external"))]
-    streaming_enabled: bool,
     active_streams: Arc<AtomicUsize>,
     max_concurrent_streams: usize,
     // v2b B3-0 additions (used by B3-6 SubscribeEvents handler):
@@ -121,15 +111,10 @@ impl DashboardServiceImpl {
             system_monitor: cfg.system_monitor.clone(),
             event_tx: cfg.event_tx.clone(),
             integration_auth_token: cfg.integration_auth_token.clone(),
-            #[cfg(feature = "grpc-dashboard-external")]
             streaming_source: StreamingSource::Fixed {
                 streaming_enabled: cfg.streaming_enabled,
                 load_policy: cfg.load_policy.clone(),
             },
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            load_policy: cfg.load_policy.clone(),
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            streaming_enabled: cfg.streaming_enabled,
             active_streams: Arc::new(AtomicUsize::new(0)),
             max_concurrent_streams: cfg.max_concurrent_streams,
             pii_sanitizer: cfg.pii_sanitizer.clone(),
@@ -182,18 +167,7 @@ impl std::fmt::Debug for DashboardServiceImpl {
         f.debug_struct("DashboardServiceImpl")
             .field(
                 "streaming_enabled",
-                // D24 / Task 5.1: read through streaming_source under external feature;
-                // fall back to the raw field for plain grpc-dashboard builds.
-                &{
-                    #[cfg(feature = "grpc-dashboard-external")]
-                    {
-                        self.streaming_source.streaming_enabled()
-                    }
-                    #[cfg(not(feature = "grpc-dashboard-external"))]
-                    {
-                        self.streaming_enabled
-                    }
-                },
+                &self.streaming_source.streaming_enabled(),
             )
             .field("max_concurrent_streams", &self.max_concurrent_streams)
             .field("pii_sanitizer_present", &self.pii_sanitizer.is_some())
@@ -265,14 +239,7 @@ impl DashboardService for DashboardServiceImpl {
             self.system_monitor.clone(),
             self.event_tx.clone(),
             self.integration_auth_token.clone(),
-            // D24 / Task 5.2: external feature passes StreamingSource for
-            // atomic per-call snapshot reads (D21). Loopback keeps pair.
-            #[cfg(feature = "grpc-dashboard-external")]
             self.streaming_source.clone(),
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            self.load_policy.clone(),
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            self.streaming_enabled,
             self.active_streams.clone(),
             self.max_concurrent_streams,
         )
@@ -288,14 +255,7 @@ impl DashboardService for DashboardServiceImpl {
             self.system_monitor.clone(),
             self.event_tx.clone(),
             self.integration_auth_token.clone(),
-            // D24 / Task 5.2: external feature passes StreamingSource for
-            // atomic per-call snapshot reads (D21). Loopback keeps pair.
-            #[cfg(feature = "grpc-dashboard-external")]
             self.streaming_source.clone(),
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            self.load_policy.clone(),
-            #[cfg(not(feature = "grpc-dashboard-external"))]
-            self.streaming_enabled,
             self.active_streams.clone(),
             self.max_concurrent_streams,
             self.pii_sanitizer.clone(),
@@ -483,6 +443,44 @@ mod tests {
     // real `SqliteStorage::open_in_memory` — mocking the 10+ WebStorage
     // sub-traits for a unit test adds more surface than it saves. The
     // aggregation math in `get_session_stats` is exercised end-to-end there.
+
+    #[cfg(all(feature = "test-support", not(feature = "grpc-dashboard-external")))]
+    mod loopback_constructor {
+        use super::*;
+        use crate::grpc::streaming_source::StreamingSource;
+        use crate::grpc::test_support::mock_system_monitor::MockSystemMonitor;
+        use maekon_core::config::LoadThresholds;
+        use maekon_storage::sqlite::SqliteStorage;
+        use std::sync::Arc;
+        use tokio::sync::broadcast;
+
+        #[test]
+        fn from_spawn_config_uses_streaming_source_in_loopback_build() {
+            let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("sqlite"))
+                as Arc<dyn crate::storage_port::WebStorage>;
+            let (event_tx, _) = broadcast::channel(16);
+            let cfg = GrpcSpawnConfig {
+                port: 10080,
+                storage,
+                system_monitor: MockSystemMonitor::new(30.0, 4096, 16384),
+                event_tx,
+                integration_auth_token: None,
+                local_auth_token: None,
+                pii_sanitizer: None,
+                ai_runtime_status_snapshot: None,
+                load_policy: Arc::new(LoadPolicy::new(LoadThresholds::default())),
+                streaming_enabled: true,
+                max_concurrent_streams: 10,
+            };
+
+            let svc = DashboardServiceImpl::from_spawn_config(&cfg);
+
+            assert!(matches!(
+                svc.streaming_source,
+                StreamingSource::Fixed { .. }
+            ));
+        }
+    }
 
     #[cfg(all(feature = "grpc-dashboard-external", feature = "test-support"))]
     mod external_constructor {
