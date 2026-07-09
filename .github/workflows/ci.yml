@@ -683,6 +683,30 @@ jobs:
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
 
+      - name: DIAGNOSE Windows loader failure (do not merge)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cargo test --locked -p maekon-app --lib --no-run
+          $exe = (Get-ChildItem target\debug\deps\maekon_app-*.exe | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+          Write-Host "=== test exe: $exe"
+          pip install pefile --quiet
+          python -c "import pefile,sys; pe=pefile.PE(sys.argv[1], fast_load=True); pe.parse_data_directories(); print('--- imports ---'); [print(e.dll.decode()) for e in pe.DIRECTORY_ENTRY_IMPORT]; import pefile as _; rt=[d for d in (pe.DIRECTORY_ENTRY_RESOURCE.entries if hasattr(pe,'DIRECTORY_ENTRY_RESOURCE') else []) if d.id==24]; print('--- has RT_MANIFEST:', bool(rt))" $exe
+          Write-Host '=== DLL resolution on PATH ==='
+          foreach ($dll in @('libcrypto-3-x64.dll','libssl-3-x64.dll','WebView2Loader.dll','onnxruntime.dll','vcruntime140.dll')) {
+            Write-Host "--- $dll"; where.exe $dll 2>$null
+          }
+          Write-Host '=== EXPERIMENT 1: bare run ==='
+          & $exe --list *> exp1.txt; Write-Host "exit=$LASTEXITCODE"; Get-Content exp1.txt -Tail 3
+          Write-Host '=== EXPERIMENT 2: external SxS manifest ==='
+          Copy-Item src-tauri\windows-test-manifest.xml "$exe.manifest"
+          & $exe --list *> exp2.txt; Write-Host "exit=$LASTEXITCODE"; Get-Content exp2.txt -Tail 3
+          Remove-Item "$exe.manifest"
+          Write-Host '=== EXPERIMENT 3: OpenSSL bin first on PATH ==='
+          $env:PATH = "C:\Program Files\OpenSSL\bin;$env:PATH"
+          & $exe --list *> exp3.txt; Write-Host "exit=$LASTEXITCODE"; Get-Content exp3.txt -Tail 3
+          exit 0
+
       - name: Run tests (default workspace)
         if: env.RUN_HEAVY_TESTS == 'true'
         # Exclude maekon-lint from the REQUIRED run: its tests are house-style
