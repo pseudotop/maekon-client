@@ -179,11 +179,15 @@ impl HttpApiSession {
         // fails on TLS backend initialization failure (the original reqwest::Client::new() also
         // panics under the same condition); we panic explicitly so we never fall back to a
         // redirect-following client.
-        let http_client = crate::outbound::hardened_client_builder()
-            .build()
-            .unwrap_or_else(|error| {
-                panic!("hardened session HTTP client build failed (TLS backend init): {error}")
-            });
+        // #8045 C3: https_only backstop derived from the session endpoint (loopback
+        // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = crate::outbound::hardened_client_builder(
+            crate::outbound::TransportPolicy::for_endpoint(&init.endpoint),
+        )
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened session HTTP client build failed (TLS backend init): {error}")
+        });
         let mut initial_history = Vec::new();
 
         if let Some(ref prompt) = init.system_prompt {

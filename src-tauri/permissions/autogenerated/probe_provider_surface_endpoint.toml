@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-probe-provider-surface-endpoint"
+description = "Enables the probe_provider_surface_endpoint command without any pre-configured scope."
+commands.allow = ["probe_provider_surface_endpoint"]
+
+[[permission]]
+identifier = "deny-probe-provider-surface-endpoint"
+description = "Denies the probe_provider_surface_endpoint command without any pre-configured scope."
+commands.deny = ["probe_provider_surface_endpoint"]

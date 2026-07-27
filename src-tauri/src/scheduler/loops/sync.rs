@@ -4,7 +4,7 @@ use maekon_monitor::input_activity::InputActivityCollector;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use super::super::egress_policy::PlatformEgressPolicy;
 use super::super::shared_regime_state::SharedRegimeState;
@@ -255,7 +255,7 @@ impl Scheduler {
     #[allow(unused_variables)]
     pub(in crate::scheduler) async fn run_scheduler_loops(
         &self,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
         app_handle: Option<tauri::AppHandle>,
     ) {
         let poll = self.config.poll_interval;
@@ -391,198 +391,154 @@ impl Scheduler {
             .clone()
             .unwrap_or_else(|| Arc::new(SharedRegimeState::new()));
 
-        // ── Spawn monitoring loops under one supervisor ───────────────────────
-        // Every long-lived loop's JoinHandle is wrapped in `supervisor_set` so the
-        // supervisor task (spawned below) can:
-        //   • log error! immediately if any loop exits during normal runtime
-        //     (#5989 — mandatory loops; #38 — the previously-unwatched optional
-        //     oauth_refresh / health_check / suggestion loops), and
-        //   • on clean shutdown, give every loop a BOUNDED window to run its own
-        //     graceful-drain arm (event/sync flush, push drain) before aborting
-        //     the stragglers (#10 — no more hard-abort racing the drain).
+        // ── Supervised loop set (crash-respawn with capped backoff, #8045) ────
+        // Every long-lived loop is registered as a (name, factory) pair. The
+        // supervisor (`loops/supervisor.rs`) owns each loop: it respawns a loop
+        // that exits UNEXPECTEDLY during runtime with a capped exponential
+        // backoff (logging the loop name + attempt count), and on shutdown gives
+        // each loop a bounded drain window before aborting it. Each factory
+        // re-invokes the same `self.spawn_*` method so a crashed loop — most
+        // importantly the monitor loop, which OWNS screen capture — recovers
+        // without a full scheduler restart. Before this, a silent monitor-loop
+        // death stopped capture for the whole session with only an error! log.
         //
-        // Aborting is owned entirely by the supervisor via `supervisor_set`: the
-        // JoinSet's `abort_all()` cancels any loop still running past the drain
-        // window, so no separate AbortHandles need to be retained out here.
+        // Optional loops (oauth_refresh / feature_perf_flush / health_check /
+        // suggestion_sse / suggestion_maintenance) are registered only when their
+        // backing resource is wired; an unlikely `None` on a respawn maps to a
+        // parked task (`park_task`) so the supervisor never hot-loops a `None`.
+        let mut factories: Vec<(&'static str, super::supervisor::LoopFactory<'_>)> = Vec::new();
 
-        // Maximum time the supervisor waits for loops to drain their final
-        // flush/push on shutdown before force-aborting the stragglers (#10).
-        const GRACEFUL_DRAIN: Duration = Duration::from_secs(5);
-
-        // #6266: collect each inner loop's AbortHandle. Aborting the supervisor
-        // JoinSet only cancels the WRAPPER tasks; the wrapper's `h.await` future,
-        // when dropped, DETACHES the inner loop (a dropped JoinHandle does not
-        // abort its task) instead of cancelling it. To make the documented
-        // "force-abort the stragglers" real, we abort these inner handles too.
-        let mut inner_aborts: Vec<tokio::task::AbortHandle> = Vec::new();
-
-        // Helper macro: moves a JoinHandle<()> into the supervisor JoinSet. The
-        // wrapper task returns (&'static str, inner_result) so the supervisor can
-        // log the loop name on unexpected exit. The inner loop's AbortHandle is
-        // recorded in `inner_aborts` so the shutdown path can truly cancel it.
-        macro_rules! supervise {
-            ($set:expr, $name:literal, $handle:expr) => {{
-                let h = $handle;
-                inner_aborts.push(h.abort_handle());
-                $set.spawn(async move { ($name, h.await) });
-            }};
+        macro_rules! reg {
+            ($name:literal, $factory:expr) => {
+                factories.push((
+                    $name,
+                    Box::new($factory) as super::supervisor::LoopFactory<'_>,
+                ));
+            };
         }
 
-        // Variant for optional loops returning Option<JoinHandle<()>>. When the
-        // loop is wired (`Some`) it is supervised exactly like a mandatory loop so
-        // an unexpected exit logs error!(loop_name) (#38); a `None` (loop not
-        // configured for this build/runtime) is simply skipped.
-        macro_rules! supervise_opt {
-            ($set:expr, $name:literal, $handle:expr) => {{
-                if let Some(h) = $handle {
-                    inner_aborts.push(h.abort_handle());
-                    $set.spawn(async move { ($name, h.await) });
-                }
-            }};
-        }
+        // The monitor loop consumes the non-Clone adaptive-trigger state, so the
+        // factory `take()`s it on the first spawn; a respawn runs with `None`
+        // (screen capture continues on its regular cadence — only adaptive
+        // triggering is degraded until the next clean restart), which is far
+        // better than the whole capture subsystem dying silently.
+        let mut monitor_adaptive_state = adaptive_trigger_state;
+        reg!("monitor", {
+            let egress = egress_policy.clone();
+            let input = shared_input_collector.clone();
+            let regime = shared_regime.clone();
+            let session = session_id.clone();
+            let app = app_handle.clone();
+            move |rx| {
+                self.spawn_monitor_loop(
+                    poll,
+                    idle_threshold,
+                    session.clone(),
+                    egress.clone(),
+                    input.clone(),
+                    monitor_adaptive_state.take(),
+                    regime.clone(),
+                    self.focus_mode.clone(),
+                    rx,
+                    app.clone(),
+                )
+            }
+        });
 
-        // JoinSet<(&'static str, Result<(), JoinError>)> — one wrapper per loop.
-        let mut supervisor_set: tokio::task::JoinSet<(
-            &'static str,
-            Result<(), tokio::task::JoinError>,
-        )> = tokio::task::JoinSet::new();
+        reg!("metrics", move |rx| self
+            .spawn_metrics_loop(metrics_interval, rx));
 
-        supervise!(
-            supervisor_set,
-            "monitor",
-            self.spawn_monitor_loop(
-                poll,
-                idle_threshold,
-                session_id.clone(),
-                egress_policy.clone(),
-                shared_input_collector.clone(),
-                adaptive_trigger_state,
-                shared_regime.clone(),
-                self.focus_mode.clone(),
-                shutdown_rx.clone(),
-                app_handle.clone(),
-            )
-        );
+        reg!("process", move |rx| self
+            .spawn_process_loop(process_interval, rx));
 
-        supervise!(
-            supervisor_set,
-            "metrics",
-            self.spawn_metrics_loop(metrics_interval, shutdown_rx.clone())
-        );
+        reg!("sync", {
+            let egress = egress_policy.clone();
+            move |rx| self.spawn_sync_loop(sync, egress.clone(), rx)
+        });
 
-        supervise!(
-            supervisor_set,
-            "process",
-            self.spawn_process_loop(process_interval, shutdown_rx.clone())
-        );
+        reg!("heartbeat", {
+            let egress = egress_policy.clone();
+            let session = session_id.clone();
+            move |rx| self.spawn_heartbeat_loop(heartbeat, session.clone(), egress.clone(), rx)
+        });
 
-        supervise!(
-            supervisor_set,
-            "sync",
-            self.spawn_sync_loop(sync, egress_policy.clone(), shutdown_rx.clone())
-        );
+        reg!("aggregation", move |rx| self.spawn_aggregation_loop(
+            aggregation,
+            llm_summarizer_for_digest.clone(),
+            rx
+        ));
 
-        supervise!(
-            supervisor_set,
-            "heartbeat",
-            self.spawn_heartbeat_loop(
-                heartbeat,
-                session_id.clone(),
-                egress_policy.clone(),
-                shutdown_rx.clone(),
-            )
-        );
+        reg!("notification", move |rx| self
+            .spawn_notification_loop(self.focus_mode.clone(), rx));
 
-        supervise!(
-            supervisor_set,
-            "aggregation",
-            self.spawn_aggregation_loop(
-                aggregation,
-                llm_summarizer_for_digest,
-                shutdown_rx.clone()
-            )
-        );
+        reg!("focus", {
+            let regime = shared_regime.clone();
+            move |rx| self.spawn_focus_loop(regime.clone(), rx)
+        });
 
-        supervise!(
-            supervisor_set,
-            "notification",
-            self.spawn_notification_loop(self.focus_mode.clone(), shutdown_rx.clone())
-        );
+        reg!("event_snapshot", {
+            let egress = egress_policy.clone();
+            let input = shared_input_collector.clone();
+            move |rx| {
+                self.spawn_event_snapshot_loop(
+                    detailed_process_interval,
+                    input_activity_interval,
+                    egress.clone(),
+                    input.clone(),
+                    rx,
+                )
+            }
+        });
 
-        supervise!(
-            supervisor_set,
-            "focus",
-            self.spawn_focus_loop(shared_regime.clone(), shutdown_rx.clone())
-        );
-
-        supervise!(
-            supervisor_set,
-            "event_snapshot",
-            self.spawn_event_snapshot_loop(
-                detailed_process_interval,
-                input_activity_interval,
-                egress_policy.clone(),
-                shared_input_collector.clone(),
-                shutdown_rx.clone(),
-            )
-        );
-
-        // 10. OAuth token refresh (conditional — returns None if no coordinator).
-        //     #38: supervised so an unexpected exit no longer dies silently.
+        // 10. OAuth token refresh (optional — only when a coordinator is wired).
         #[cfg(feature = "analysis")]
-        supervise_opt!(
-            supervisor_set,
-            "oauth_refresh",
-            self.spawn_oauth_refresh_loop(shutdown_rx.clone(), app_handle)
-        );
+        if self.oauth_coordinator.is_some() {
+            let app = app_handle.clone();
+            reg!("oauth_refresh", move |rx| self
+                .spawn_oauth_refresh_loop(rx, app.clone())
+                .unwrap_or_else(super::supervisor::park_task));
+        }
 
-        // 11. LLM analysis loop (periodic + change-detection)
+        // 11. LLM analysis loop (periodic + change-detection). E20-26 (#4818):
+        //     shared regime state keeps the local-suggestion enqueue path aware.
         let analysis_config = self.config.analysis_config.clone();
-        // E20-26 (#4818): thread shared regime state so the local-suggestion
-        // enqueue path inside the analysis loop is regime/context-aware.
-        supervise!(
-            supervisor_set,
-            "analysis",
-            self.spawn_analysis_loop(analysis_config, shared_regime.clone(), shutdown_rx.clone())
-        );
+        reg!("analysis", {
+            let regime = shared_regime.clone();
+            move |rx| self.spawn_analysis_loop(analysis_config.clone(), regime.clone(), rx)
+        });
 
-        // #5069: feature-performance flush loop (Option — None unless the emitter
-        // is wired in an analysis build). 5-min cadence matches cross-device sync.
+        // #5069: feature-performance flush loop (optional — only in analysis
+        //     builds with a wired emitter). 5-min cadence matches cross-device sync.
         #[cfg(feature = "analysis")]
-        supervise_opt!(
-            supervisor_set,
-            "feature_perf_flush",
-            self.spawn_feature_perf_flush_loop(Duration::from_secs(300), shutdown_rx.clone())
-        );
+        if self.feature_perf.is_some() {
+            reg!("feature_perf_flush", move |rx| self
+                .spawn_feature_perf_flush_loop(Duration::from_secs(300), rx)
+                .unwrap_or_else(super::supervisor::park_task));
+        }
 
-        // 12. Cross-device sync loop (P3 Phase 3a-2)
-        supervise!(
-            supervisor_set,
-            "cross_device_sync",
-            self.spawn_cross_device_sync_loop(
+        // 12. Cross-device sync loop (P3 Phase 3a-2).
+        reg!("cross_device_sync", move |rx| self
+            .spawn_cross_device_sync_loop(
                 self.config.cross_device_sync_interval,
-                shutdown_rx.clone(),
-            )
-        );
+                rx
+            ));
 
-        // 13. Coaching feedback evaluation loop
-        supervise!(
-            supervisor_set,
-            "coaching",
-            self.spawn_coaching_loop(shared_regime.clone(), shutdown_rx.clone())
-        );
+        // 13. Coaching feedback evaluation loop.
+        reg!("coaching", {
+            let regime = shared_regime.clone();
+            move |rx| self.spawn_coaching_loop(regime.clone(), rx)
+        });
 
-        // 14. Health check loop — reads adapter health flags and updates connection
-        //     flags. #38: previously spawned untracked; now supervised so an
-        //     unexpected exit logs error!(loop_name) like the mandatory loops.
-        let health_task = if let (
+        // 14. Health check loop — optional; only when the adapter/connection
+        //     flags and the tray handle are all wired.
+        if let (
             Some(s_flag),
             Some(l_flag),
             Some(c_flag),
             Some(s_conn),
             Some(l_conn),
             Some(c_conn),
-            Some(handle),
+            Some(tray),
         ) = (
             self.server_health_flag.clone(),
             self.llm_health_flag.clone(),
@@ -592,70 +548,69 @@ impl Scheduler {
             self.cli_connected.clone(),
             self.tray_app_handle.clone(),
         ) {
-            Some(super::health::spawn_health_check_loop(
-                std::time::Duration::from_secs(super::super::config::HEALTH_CHECK_INTERVAL_SECS),
-                super::health::AdapterHealthFlags {
-                    server_ok: s_flag,
-                    llm_ok: l_flag,
-                    cli_ok: c_flag,
-                },
-                super::health::ConnectionFlags {
-                    server: s_conn,
-                    llm: l_conn,
-                    cli: c_conn,
-                },
-                handle,
-                shutdown_rx.clone(),
-            ))
-        } else {
-            None
-        };
-        supervise_opt!(supervisor_set, "health_check", health_task);
-
-        // 14b. Self-resource-budget sampling (#7918/#7927) as an always-on loop
-        //      (#7947). Unlike the health-check loop above — spawned only when the
-        //      server/llm/cli health flags AND the tray handle are all present —
-        //      this runs in EVERY configuration (including minimal / OSS builds),
-        //      so the periodic RSS/CPU budget + leak logging is never silently
-        //      dropped in a config without the health-probe wiring. Local
-        //      diagnostics only, never egressed (ADR-016).
-        supervise!(
-            supervisor_set,
-            "resource_health",
-            super::resource_health::spawn_resource_health_loop(
-                std::time::Duration::from_secs(super::super::config::HEALTH_CHECK_INTERVAL_SECS),
-                shutdown_rx.clone(),
-            )
-        );
-
-        // 15. Suggestion SSE + maintenance loops (server feature only). #38: both
-        //     are now supervised so an unexpected exit no longer dies silently.
-        //     #7099: the SSE stream runs under a dedicated supervisor that
-        //     respawns the consumer after a permanent outage (or on server
-        //     reconnect) instead of leaving the session suggestion-less until a
-        //     full scheduler restart. The supervisor itself only returns on
-        //     shutdown, so the generic JoinSet wrapper still catches any panic.
-        #[cfg(feature = "server")]
-        {
-            let suggestion_sse_task = if self.suggestions_enabled {
-                self.suggestion_receiver.as_ref().map(|receiver| {
-                    super::suggestions::spawn_suggestion_sse_supervisor(
-                        receiver.clone(),
-                        session_id.clone(),
-                        self.server_connected.clone(),
-                        shutdown_rx.clone(),
-                    )
-                })
-            } else {
-                None
-            };
-            supervise_opt!(supervisor_set, "suggestion_sse", suggestion_sse_task);
+            reg!("health_check", move |rx| {
+                super::health::spawn_health_check_loop(
+                    std::time::Duration::from_secs(
+                        super::super::config::HEALTH_CHECK_INTERVAL_SECS,
+                    ),
+                    super::health::AdapterHealthFlags {
+                        server_ok: s_flag.clone(),
+                        llm_ok: l_flag.clone(),
+                        cli_ok: c_flag.clone(),
+                    },
+                    super::health::ConnectionFlags {
+                        server: s_conn.clone(),
+                        llm: l_conn.clone(),
+                        cli: c_conn.clone(),
+                    },
+                    tray.clone(),
+                    rx,
+                )
+            });
         }
 
+        // 14b. Self-resource-budget sampling (#7918/#7927) as an always-on loop
+        //      (#7947). Runs in EVERY configuration (including minimal / OSS
+        //      builds), so the periodic RSS/CPU budget + leak logging is never
+        //      silently dropped in a config without the health-probe wiring.
+        //      Local diagnostics only, never egressed (ADR-016).
+        reg!("resource_health", move |rx| {
+            super::resource_health::spawn_resource_health_loop(
+                std::time::Duration::from_secs(super::super::config::HEALTH_CHECK_INTERVAL_SECS),
+                rx,
+            )
+        });
+
+        // 15. Suggestion SSE consumer (server feature only). #7099: it runs its
+        //     own inner respawn supervisor for SSE reconnect / permanent outage;
+        //     this outer supervisor additionally recovers the whole task if it
+        //     ever crashes. Registered only when a receiver is wired.
+        #[cfg(feature = "server")]
+        if self.suggestions_enabled {
+            if let Some(receiver) = self.suggestion_receiver.as_ref() {
+                let receiver = receiver.clone();
+                let server_connected = self.server_connected.clone();
+                let session = session_id.clone();
+                reg!("suggestion_sse", move |rx| {
+                    super::suggestions::spawn_suggestion_sse_supervisor(
+                        receiver.clone(),
+                        session.clone(),
+                        server_connected.clone(),
+                        rx,
+                    )
+                });
+            }
+        }
+
+        // Suggestion maintenance loop (local-suggestions builds). Only spawns
+        // when config.suggestions.enabled is true (default false) — inert under
+        // stock config; wired so the surface is correct the moment the flag flips.
         #[cfg(feature = "local-suggestions")]
-        {
-            let suggestion_maintenance_task = if self.suggestions_enabled {
-                self.suggestion_manager.as_ref().map(|mgr| {
+        if self.suggestions_enabled {
+            if let Some(mgr) = self.suggestion_manager.as_ref() {
+                let mgr = mgr.clone();
+                let overlay = self.magic_overlay.clone();
+                reg!("suggestion_maintenance", move |rx| {
                     super::suggestions::spawn_suggestion_maintenance_loop(
                         mgr.queue().clone(),
                         mgr.deferred().clone(),
@@ -663,127 +618,47 @@ impl Scheduler {
                         mgr.feedback().clone(),
                         mgr.storage().clone(),
                         // #5694: resurfaced (deferred) suggestions refresh the overlay.
-                        // NOTE: this loop only spawns when config.suggestions.enabled is
-                        // true (default false) — inert under stock config; wired so the
-                        // surface is correct the moment the flag is enabled.
-                        self.magic_overlay.as_ref().map(|o| {
+                        overlay.as_ref().map(|o| {
                             let o = o.clone();
                             std::sync::Arc::new(move |count: usize| {
                                 o.emit_suggestions_changed(count)
                             })
                                 as std::sync::Arc<dyn Fn(usize) + Send + Sync>
                         }),
-                        shutdown_rx.clone(),
+                        rx,
                     )
-                })
-            } else {
-                None
-            };
-            supervise_opt!(
-                supervisor_set,
-                "suggestion_maintenance",
-                suggestion_maintenance_task
-            );
+                });
+            }
         }
 
-        // ── Live supervisor ───────────────────────────────────────────────────
-        // Owns every long-lived loop via the JoinSet wrapper tasks (mandatory +
-        // optional). Two responsibilities:
-        //
-        //   • Runtime: if any loop exits unexpectedly before shutdown, log error!
-        //     with the loop name so the failure is visible in Loki/OTel rather
-        //     than silently dying until the next restart (#5989, #38).
-        //
-        //   • Shutdown (#10): when shutdown_rx fires, give the loops a BOUNDED
-        //     window (GRACEFUL_DRAIN) to run their own graceful-drain arms — each
-        //     loop holds its own shutdown_rx.clone() and flushes/pushes on
-        //     shutdown_rx.changed() — by continuing to drain join_next(). Only the
-        //     loops still running past the timeout are force-aborted via
-        //     abort_all(). This replaces the previous hard-abort that could cut an
-        //     in-flight event/sync flush short.
-        let mut supervisor_shutdown_rx = shutdown_rx.clone();
-        let supervisor = tokio::spawn(async move {
-            // Phase 1: normal runtime — watch for unexpected exits until shutdown.
-            loop {
-                tokio::select! {
-                    biased; // check shutdown first to avoid processing stale entries
-                    _ = supervisor_shutdown_rx.changed() => break,
-                    Some(outcome) = supervisor_set.join_next() => {
-                        match outcome {
-                            // Wrapper task itself panicked (should never happen).
-                            Err(join_err) => {
-                                error!("supervisor wrapper task panicked: {join_err}");
-                            }
-                            // Inner loop returned Ok(()) — unexpectedly exited during
-                            // runtime. All loops are designed to run until shutdown.
-                            Ok((name, Ok(()))) => {
-                                error!(
-                                    loop_name = name,
-                                    "scheduler loop exited unexpectedly during runtime"
-                                );
-                            }
-                            // Inner loop panicked.
-                            Ok((name, Err(ref e))) if !e.is_cancelled() => {
-                                error!(
-                                    loop_name = name,
-                                    "scheduler loop panicked during runtime: {e}"
-                                );
-                            }
-                            // Cancelled — expected when abort_all() fires on shutdown.
-                            // A genuine panic that races with the shutdown abort is also
-                            // surfaced as Cancelled here and is intentionally not reported
-                            // separately: the process is already tearing down, so a loop
-                            // dying at the exact shutdown boundary needs no runtime recovery.
-                            // Runtime panics BEFORE shutdown are caught by the
-                            // `!e.is_cancelled()` arm above and logged with the loop name.
-                            Ok((_, Err(_))) => {}
-                        }
-                        // If all wrapper tasks have been consumed, the supervisor
-                        // has nothing left to watch — exit so the outer loop does
-                        // not spin on join_next() returning Poll::Ready(None).
-                        if supervisor_set.is_empty() {
-                            return;
-                        }
-                    }
-                }
-            }
-
-            // Phase 2: bounded graceful drain (#10). The loops have all observed
-            // shutdown_rx and are running their flush/push arms; wait for them to
-            // finish on their own, up to GRACEFUL_DRAIN.
-            let drain = async { while supervisor_set.join_next().await.is_some() {} };
-            if tokio::time::timeout(GRACEFUL_DRAIN, drain).await.is_err() {
-                // Stragglers still running past the deadline — force-abort them.
-                warn!(
-                    timeout_secs = GRACEFUL_DRAIN.as_secs(),
-                    "scheduler loops did not drain within graceful window — aborting stragglers"
-                );
-                // #6266: abort the INNER loop tasks first — aborting only the
-                // supervisor JoinSet detaches them (a dropped JoinHandle does not
-                // cancel its task), leaving the loops running past shutdown.
-                for inner in &inner_aborts {
-                    inner.abort();
-                }
-                supervisor_set.abort_all();
-                while supervisor_set.join_next().await.is_some() {}
-            }
-        });
-
-        let _ = shutdown_rx.changed().await;
-        info!("ended received");
+        // ── Drive the supervised set ──────────────────────────────────────────
+        // Each supervisor future returns only when the global shutdown fires
+        // (after its loop drains its own flush/push arm). They are driven INLINE
+        // (borrowing `&self`, so the factories can re-invoke `self.spawn_*` on
+        // respawn) via FuturesUnordered rather than a spawned JoinSet — a spawned
+        // 'static task could not borrow `self` to respawn. The session-end record
+        // is written concurrently the moment shutdown is observed.
+        use futures::StreamExt;
+        let mut supervisors: futures::stream::FuturesUnordered<_> = factories
+            .into_iter()
+            .map(|(name, factory)| {
+                super::supervisor::supervise_loop(name, factory, shutdown_rx.clone())
+            })
+            .collect();
 
         let sqlite_end = self.sqlite_storage.clone();
-        if let Err(e) = sqlite_end.end_session(&session_id, Utc::now()).await {
-            warn!("session ended record failure: {e}");
-        }
-
-        // The supervisor owns the graceful-drain-then-abort lifecycle for all
-        // loops; just wait for it to finish.
-        if let Err(e) = supervisor.await {
-            if !e.is_cancelled() {
-                error!("supervisor task panicked during shutdown: {e}");
-            }
-        }
+        let end_session_id = session_id.clone();
+        let mut end_shutdown_rx = shutdown_rx.clone();
+        tokio::join!(
+            async { while supervisors.next().await.is_some() {} },
+            async move {
+                let _ = end_shutdown_rx.changed().await;
+                info!("ended received");
+                if let Err(e) = sqlite_end.end_session(&end_session_id, Utc::now()).await {
+                    warn!("session ended record failure: {e}");
+                }
+            },
+        );
     }
 }
 
@@ -811,117 +686,8 @@ mod tests {
         assert!(shutdown_seen);
     }
 
-    /// Verify that the supervisor pattern detects a loop that exits unexpectedly
-    /// during runtime (before shutdown_rx fires).
-    ///
-    /// We build a minimal JoinSet with one wrapper task whose inner JoinHandle
-    /// returns immediately (simulating a loop that exits without panicking), and
-    /// one wrapper that stays alive. The test confirms:
-    ///   1. The supervisor's join_next() resolves with Ok("early_exit").
-    ///   2. The supervisor does NOT resolve for the long-lived loop before shutdown.
-    ///   3. After the shutdown signal fires the supervisor terminates cleanly.
-    #[tokio::test]
-    async fn supervisor_detects_early_exit() {
-        let (shutdown_tx, mut supervisor_shutdown_rx) = watch::channel(false);
-
-        let mut supervisor_set: tokio::task::JoinSet<(
-            &'static str,
-            Result<(), tokio::task::JoinError>,
-        )> = tokio::task::JoinSet::new();
-
-        // Loop that exits immediately — simulates a subsystem silently dying.
-        let early_handle = tokio::spawn(async move {
-            // returns right away
-        });
-        supervisor_set.spawn(async move { ("early_exit", early_handle.await) });
-
-        // Loop that stays alive until explicitly aborted.
-        let long_handle = tokio::spawn(async move {
-            futures::future::pending::<()>().await;
-        });
-        let long_abort = long_handle.abort_handle();
-        supervisor_set.spawn(async move { ("long_lived", long_handle.await) });
-
-        // Run the supervisor inline (mirroring the production logic).
-        let mut detected: Vec<&'static str> = Vec::new();
-        loop {
-            tokio::select! {
-                biased;
-                _ = supervisor_shutdown_rx.changed() => {
-                    supervisor_set.abort_all();
-                    break;
-                }
-                Some(outcome) = supervisor_set.join_next() => {
-                    match outcome {
-                        Ok((name, Ok(()))) => {
-                            // Unexpected early exit — this is what we are testing.
-                            detected.push(name);
-                            // Signal shutdown so the test terminates.
-                            let _ = shutdown_tx.send(true);
-                        }
-                        Ok((_, Err(ref e))) if e.is_cancelled() => {}
-                        Ok((name, Err(ref e))) => {
-                            panic!("unexpected panic from {name}: {e}");
-                        }
-                        Err(e) => panic!("wrapper panicked: {e}"),
-                    }
-                }
-            }
-        }
-
-        // Cleanup: ensure the long-lived handle is also aborted.
-        long_abort.abort();
-
-        assert_eq!(
-            detected,
-            vec!["early_exit"],
-            "supervisor must detect the early-exit loop"
-        );
-    }
-
-    /// Verify that a clean shutdown (shutdown_rx fires before any loop exits)
-    /// does not produce spurious detections.
-    #[tokio::test]
-    async fn supervisor_clean_shutdown_no_spurious_detection() {
-        let (shutdown_tx, mut supervisor_shutdown_rx) = watch::channel(false);
-
-        let mut supervisor_set: tokio::task::JoinSet<(
-            &'static str,
-            Result<(), tokio::task::JoinError>,
-        )> = tokio::task::JoinSet::new();
-
-        for name in ["loop_a", "loop_b", "loop_c"] {
-            let handle = tokio::spawn(async move {
-                futures::future::pending::<()>().await;
-            });
-            supervisor_set.spawn(async move { (name, handle.await) });
-        }
-
-        // Trigger shutdown immediately.
-        let _ = shutdown_tx.send(true);
-
-        let mut unexpected_exits: Vec<&str> = Vec::new();
-        loop {
-            tokio::select! {
-                biased;
-                _ = supervisor_shutdown_rx.changed() => {
-                    supervisor_set.abort_all();
-                    break;
-                }
-                Some(outcome) = supervisor_set.join_next() => {
-                    match outcome {
-                        Ok((name, Ok(()))) => unexpected_exits.push(name),
-                        Ok((_, Err(ref e))) if e.is_cancelled() => {}
-                        Ok((name, Err(ref e))) => panic!("unexpected panic from {name}: {e}"),
-                        Err(e) => panic!("wrapper panicked: {e}"),
-                    }
-                }
-            }
-        }
-
-        assert!(
-            unexpected_exits.is_empty(),
-            "clean shutdown must not produce spurious detections; got: {unexpected_exits:?}"
-        );
-    }
+    // The runtime respawn/backoff and clean-shutdown-drain behaviour of the loop
+    // supervisor is now owned by `loops/supervisor.rs` (`supervise_loop`) and is
+    // unit-tested there against the real production code path, replacing the two
+    // former tests here that re-implemented the old JoinSet supervisor inline.
 }

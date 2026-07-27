@@ -13,14 +13,17 @@ import { useTranslation } from 'react-i18next'
 import StatCard from '../../components/StatCard'
 import TodaySummary from '../../components/TodaySummary'
 import { Badge, Card, EmptyState } from '../../components/ui'
+import { useCaptureStatus } from '../../hooks/useCaptureStatus'
 import { useTypedOutletContext } from '../../routes'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatDuration } from '../../utils/formatters'
 import type { DashboardContext } from './DashboardLayout'
+import { resolveDashboardEmptyState } from './dashboardEmptyState'
 
 export default function OverviewSection() {
   const { t } = useTranslation()
+  const captureStatus = useCaptureStatus()
   const { latestMetrics, idleState, metricsHistory, summary, isWidgetVisible } =
     useTypedOutletContext<DashboardContext>('Dashboard')
 
@@ -28,11 +31,12 @@ export default function OverviewSection() {
     !latestMetrics && !summary?.events_logged && !summary?.frames_captured && (summary?.total_active_secs ?? 0) === 0
 
   if (isEmpty) {
+    const captureState = resolveDashboardEmptyState(captureStatus)
     return (
       <EmptyState
         icon={<Monitor className="h-8 w-8" />}
-        title={t('emptyState.dashboard.title')}
-        description={t('emptyState.dashboard.description')}
+        title={t(`emptyState.dashboard.${captureState}.title`)}
+        description={t(`emptyState.dashboard.${captureState}.description`)}
       />
     )
   }
@@ -93,32 +97,42 @@ export default function OverviewSection() {
       )}
 
       {isWidgetVisible('overview.stat-cards') && (
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <StatCard
-            data-testid="metric-card-active-time"
-            title={t('dashboard.activeTime')}
-            value={formatDuration(summary?.total_active_secs ?? 0)}
-            icon={<Clock className={`${iconSize.md}`} />}
-          />
-          <StatCard
-            data-testid="metric-card-idle-time"
-            title={t('dashboard.idleTime')}
-            value={formatDuration(summary?.total_idle_secs ?? 0)}
-            icon={<Moon className={`${iconSize.md}`} />}
-          />
-          <StatCard
-            data-testid="metric-card-captures"
-            title={t('dashboard.captures')}
-            value={summary?.frames_captured?.toLocaleString() ?? '0'}
-            icon={<Camera className={`${iconSize.md}`} />}
-          />
-          <StatCard
-            data-testid="metric-card-events"
-            title={t('dashboard.events')}
-            value={summary?.events_logged?.toLocaleString() ?? '0'}
-            icon={<BarChart3 className={`${iconSize.md}`} />}
-          />
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <StatCard
+              data-testid="metric-card-active-time"
+              title={t('dashboard.activeTime')}
+              value={formatDuration(summary?.total_active_secs ?? 0)}
+              icon={<Clock className={`${iconSize.md}`} />}
+            />
+            <StatCard
+              data-testid="metric-card-idle-time"
+              title={t('dashboard.idleTime')}
+              value={formatDuration(summary?.total_idle_secs ?? 0)}
+              icon={<Moon className={`${iconSize.md}`} />}
+            />
+            <StatCard
+              data-testid="metric-card-captures"
+              title={t('dashboard.captures')}
+              value={summary?.frames_captured?.toLocaleString() ?? '0'}
+              icon={<Camera className={`${iconSize.md}`} />}
+            />
+            <StatCard
+              data-testid="metric-card-events"
+              title={t('dashboard.events')}
+              value={summary?.events_logged?.toLocaleString() ?? '0'}
+              icon={<BarChart3 className={`${iconSize.md}`} />}
+            />
+          </div>
+          {/* #8077-B: make the count scope explicit — these are today's totals,
+              distinct from the Storage tab's all-time totals. */}
+          <p className="text-content-tertiary text-xs">
+            {t(
+              'dashboard.countScopeNote',
+              "Captures and events reflect today's activity. See Settings > Storage for all-time totals.",
+            )}
+          </p>
+        </>
       )}
     </>
   )

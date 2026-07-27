@@ -20,6 +20,7 @@
     "allow-analyze-current-scene",
     "allow-get-focus-mode-status",
     "allow-toggle-focus-mode",
+    "allow-get-pending-suggestion-count",
     "allow-toggle-suggestions-panel",
     "allow-show-main-window",
     "allow-simulate-tray-action",

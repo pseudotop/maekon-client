@@ -60,6 +60,7 @@ pub mod stats;
 pub mod stream;
 pub mod suggestions;
 pub mod support;
+pub mod sync_setup;
 pub mod tags;
 pub mod timeline;
 pub mod tracking_schedule;

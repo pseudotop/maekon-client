@@ -94,8 +94,47 @@ async fn handle_segment_close(
         // timetable, regime distribution and Recalibration, all of which were
         // empty on standalone (no local producer existed). with_conn offloads to
         // spawn_blocking so this does not block the scheduler hot path.
-        if let Err(e) = storage.save_activity_segment(&summary).await {
-            warn!("activity segment persist failure: {e}");
+        let persisted = match storage.save_activity_segment(&summary).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!("activity segment persist failure: {e}");
+                false
+            }
+        };
+
+        // Phase 0b (#8051): index the segment's base content into the FTS5
+        // `search_fts` table so the dashboard "keyword"/"hybrid" search modes
+        // return data. Before this wiring the only content writers were
+        // test-only (dead-writer), so keyword search always returned empty.
+        //
+        // Indexed here — synchronously in the close path, but off the async
+        // runtime via `with_conn` → `spawn_blocking` — so the segment becomes
+        // searchable immediately even when LLM summarization is disabled or
+        // still pending (Phase 2 below re-indexes with the summary once it
+        // exists). Only after a successful persist: an FTS row for a segment
+        // absent from `activity_segments` would surface a dangling hit.
+        //
+        // Non-fatal: a failure never blocks segment persistence; it is logged
+        // clearly (not silently swallowed) and the next startup backfill
+        // re-indexes the segment.
+        if persisted {
+            if let Some(text_search) = ts.text_search.as_ref() {
+                let fts_text = summary.searchable_content();
+                if !fts_text.trim().is_empty() {
+                    let start_iso = summary.start_time.to_rfc3339();
+                    let end_iso = summary.end_time.to_rfc3339();
+                    if let Err(e) = text_search
+                        .sync_segment_enriched(&summary.segment_id, &fts_text, &start_iso, &end_iso)
+                        .await
+                    {
+                        warn!(
+                            segment_id = %summary.segment_id,
+                            "FTS content indexing failed (non-fatal; keyword search will \
+                             miss this segment until the next startup backfill): {e}"
+                        );
+                    }
+                }
+            }
         }
 
         // Phase 1: Embed content activities immediately
@@ -118,9 +157,10 @@ async fn handle_segment_close(
                     let summarizer = summarizer.clone();
                     let storage_clone = storage.clone();
                     let pipeline = ts.embedding_pipeline.clone();
+                    let text_search = ts.text_search.clone();
                     let segment_id = summary.segment_id.clone();
                     let end_time = summary.end_time;
-                    let summary_clone = summary.clone();
+                    let mut summary_clone = summary.clone();
 
                     tokio::spawn(async move {
                         // Permit is held for the duration of the task and
@@ -132,6 +172,31 @@ async fn handle_segment_close(
                                 .await
                             {
                                 warn!("LLM summary storage failure: {e}");
+                            }
+                            // #8051: re-index with the LLM summary now available
+                            // so the richest signal (the natural-language
+                            // summary) is keyword-searchable. Idempotent upsert
+                            // (DELETE+INSERT by segment_id) over the Phase-0b
+                            // base index.
+                            if let Some(text_search) = text_search {
+                                summary_clone.llm_summary = Some(text.clone());
+                                let fts_text = summary_clone.searchable_content();
+                                let start_iso = summary_clone.start_time.to_rfc3339();
+                                let end_iso = summary_clone.end_time.to_rfc3339();
+                                if let Err(e) = text_search
+                                    .sync_segment_enriched(
+                                        &segment_id,
+                                        &fts_text,
+                                        &start_iso,
+                                        &end_iso,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        segment_id = %segment_id,
+                                        "FTS re-index with LLM summary failed (non-fatal): {e}"
+                                    );
+                                }
                             }
                             if let Some(pipeline) = pipeline {
                                 if let Err(e) = pipeline

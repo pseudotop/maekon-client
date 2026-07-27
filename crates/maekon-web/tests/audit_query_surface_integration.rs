@@ -18,6 +18,7 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use chrono::Utc;
+use maekon_api_contracts::audit_export::AuditExportEntryDto;
 use maekon_api_contracts::automation::AuditEntryDto;
 use maekon_automation::audit::{AuditLogAdapter, AuditLogger, AuditQuery};
 use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStatus};
@@ -198,8 +199,8 @@ async fn audit_export_rest_endpoint_filters_by_command_id() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");
-    let entries: Vec<AuditEntry> =
-        serde_json::from_slice(&body_bytes).expect("response body must be Vec<AuditEntry> JSON");
+    let entries: Vec<AuditExportEntryDto> = serde_json::from_slice(&body_bytes)
+        .expect("response body must be Vec<AuditExportEntryDto> JSON");
 
     // Exactly 2 rows match the target command_id.
     assert_eq!(
@@ -353,15 +354,15 @@ async fn settings_and_automation_audit_endpoints_survive_native_action_window_pr
 
 // ── Test 4: Storage fall-through ─────────────────────────────────────────────
 
-/// Task 0.3.1 — `entries_by_command_id` falls through to SqliteStorage
-/// when the in-memory buffer doesn't contain matching rows.
+/// Recent and command-scoped queries fall through to SqliteStorage when the
+/// in-memory buffer doesn't contain matching rows.
 ///
 /// Mirrors the production wiring in `src-tauri::audit_query::SqliteAuditQuery`:
 /// builds an `AuditLogger` whose `with_query` handle delegates directly to
 /// `SqliteStorage::entries_by_command_id`. Seeds 3 audit entries directly into
 /// SQLite (bypassing the in-memory buffer entirely) and verifies the
-/// `AuditLogPort::entries_by_command_id` adapter returns all 3 in
-/// timestamp-DESC order.
+/// both `AuditLogPort::recent_entries` and `entries_by_command_id` return all
+/// 3 in timestamp-DESC order.
 ///
 /// This exercises the production fall-through path end-to-end: the adapter
 /// reaches into `AuditLogger::entries_by_command_id`, finds an empty buffer,
@@ -376,6 +377,14 @@ async fn audit_entries_by_command_id_falls_through_to_storage_when_buffer_empty(
         storage: Arc<SqliteStorage>,
     }
     impl AuditQuery for StorageQuery {
+        fn stats(&self) -> maekon_core::models::audit::AuditStats {
+            self.storage.audit_stats()
+        }
+
+        fn recent_entries(&self, limit: usize) -> Vec<AuditEntry> {
+            self.storage.recent_audit_entries(limit)
+        }
+
         fn entries_by_command_id(&self, command_id: &str, limit: usize) -> Vec<AuditEntry> {
             self.storage.entries_by_command_id(command_id, limit)
         }
@@ -407,6 +416,20 @@ async fn audit_entries_by_command_id_falls_through_to_storage_when_buffer_empty(
     });
     let logger = AuditLogger::new(100, 10).with_query(query);
     let adapter = AuditLogAdapter::new(Arc::new(RwLock::new(logger)));
+
+    let recent = adapter.recent_entries(10).await;
+    assert_eq!(
+        recent.len(),
+        3,
+        "unfiltered audit views must include storage-only privacy rows"
+    );
+    assert_eq!(recent[0].entry_id, "storage-only-0");
+    assert_eq!(recent[1].entry_id, "storage-only-1");
+    assert_eq!(recent[2].entry_id, "storage-only-2");
+
+    let stats = adapter.stats().await;
+    assert_eq!(stats.total, 3);
+    assert_eq!(stats.completed, 3);
 
     // Query through the adapter — exercises the full AuditLogPort surface.
     let results = adapter

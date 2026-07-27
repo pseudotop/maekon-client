@@ -19,6 +19,8 @@ use super::types::{
 // Pending suggestions
 // ---------------------------------------------------------------------------
 
+const PENDING_SUGGESTION_FALLBACK_LIMIT: usize = 50;
+
 pub(super) async fn pending_suggestions_snapshot(
     state: &SuggestionRuntimeState,
     storage: &SqliteStorage,
@@ -28,7 +30,7 @@ pub(super) async fn pending_suggestions_snapshot(
         // Storage fallback (no manager). Enrich each PENDING row with its derived
         // action BEFORE `storage_record_to_view` consumes it (T4.1 #7917).
         return storage
-            .list_suggestions(50)
+            .list_suggestions(PENDING_SUGGESTION_FALLBACK_LIMIT)
             .map_err(IpcError::from)
             .map(|rows| {
                 rows.into_iter()
@@ -96,12 +98,38 @@ pub(super) async fn pending_suggestions_snapshot(
     Ok(results)
 }
 
+/// Return only the authoritative pending count without constructing or
+/// exposing suggestion content to the caller.
+pub(super) async fn pending_suggestion_count_snapshot(
+    state: &SuggestionRuntimeState,
+    storage: &SqliteStorage,
+) -> Result<u32, IpcError> {
+    let count = if let Some(mgr) = state.manager() {
+        mgr.queue().lock().await.len()
+    } else {
+        storage
+            .list_suggestions(PENDING_SUGGESTION_FALLBACK_LIMIT)
+            .map_err(IpcError::from)?
+            .len()
+    };
+
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
 #[command]
 pub async fn get_pending_suggestions(
     state: tauri::State<'_, SuggestionRuntimeState>,
     app_state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SuggestionViewDto>, IpcError> {
     pending_suggestions_snapshot(&state, &app_state.storage, &app_state.config.automation).await
+}
+
+#[command]
+pub async fn get_pending_suggestion_count(
+    state: tauri::State<'_, SuggestionRuntimeState>,
+    app_state: tauri::State<'_, AppState>,
+) -> Result<u32, IpcError> {
+    pending_suggestion_count_snapshot(&state, &app_state.storage).await
 }
 
 // ---------------------------------------------------------------------------

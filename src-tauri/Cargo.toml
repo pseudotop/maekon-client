@@ -37,7 +37,8 @@ tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 tauri-plugin-single-instance = "2"
-tauri-plugin-webdriver = { workspace = true, optional = true }
+tauri-plugin-wdio = { workspace = true, optional = true }
+tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
 
 # 내부 크레이트
 maekon-core = { workspace = true }
@@ -70,6 +71,9 @@ sha2 = { workspace = true }
 uuid = { workspace = true }
 # E20-41 (#4833): OS-CSPRNG source for the per-session local-API auth token.
 rand = { workspace = true }
+# #8044: Argon2id PIN hashing for the capture-history re-auth fallback (offline
+# brute-force resistant verifier stored in app_meta; never a plaintext PIN).
+argon2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 directories = { workspace = true }
 parking_lot = { workspace = true }
@@ -159,7 +163,7 @@ native-input = ["maekon-automation/enigo"]
 hnsw = ["maekon-analysis/hnsw"]
 linux-atspi = ["maekon-vision/linux-atspi"]
 lan-sync = ["maekon-network/lan-sync"]
-webdriver = ["dep:tauri-plugin-webdriver"]
+webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 ml-detect = ["maekon-vision/ml-detect"]
 linux-sandbox = ["maekon-automation/linux-sandbox"]
 windows-sandbox = ["maekon-automation/windows-sandbox"]

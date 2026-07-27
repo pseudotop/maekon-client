@@ -27,13 +27,23 @@ use crate::memory_profiler::{MemoryAnalysis, MemorySnapshot, MemoryTracker};
 /// The blocking `sysinfo` refresh is isolated via
 /// `MemoryTracker::record_snapshot_async` (`spawn_blocking`), so this never
 /// stalls a tokio worker.
-pub(crate) async fn sample_and_log_resource_budget(tracker: Arc<MemoryTracker>) {
+async fn sample_and_log_resource_budget(
+    tracker: Arc<MemoryTracker>,
+    signal_state: &mut ResourceSignalState,
+) {
     let Some(snapshot) = MemoryTracker::record_snapshot_async(Arc::clone(&tracker)).await else {
         // Unsupported platform or a failed measurement — nothing to assert.
         return;
     };
     let analysis = tracker.analyze();
-    log_resource_signals(&snapshot, &analysis);
+    log_resource_signals(&snapshot, &analysis, signal_state);
+}
+
+#[derive(Debug, Default)]
+struct ResourceSignalState {
+    rss_over_budget: bool,
+    cpu_over_budget: bool,
+    leak_suspected: bool,
 }
 
 /// #7947: spawn the periodic self-resource-budget sampling as its OWN loop.
@@ -58,10 +68,11 @@ pub(crate) fn spawn_resource_health_loop(
         // Owned by this task — the diagnostics IPC samples independently, so no
         // cross-task state is threaded through AppState.
         let tracker = Arc::new(MemoryTracker::new());
+        let mut signal_state = ResourceSignalState::default();
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    sample_and_log_resource_budget(Arc::clone(&tracker)).await;
+                    sample_and_log_resource_budget(Arc::clone(&tracker), &mut signal_state).await;
                 }
                 _ = shutdown_rx.changed() => {
                     info!("resource health loop shutdown");
@@ -74,33 +85,60 @@ pub(crate) fn spawn_resource_health_loop(
 
 /// Pure logging policy over an already-taken snapshot + analysis. Separated
 /// from the sampling so it can be unit-tested without touching sysinfo.
-fn log_resource_signals(snapshot: &MemorySnapshot, analysis: &MemoryAnalysis) {
+fn log_resource_signals(
+    snapshot: &MemorySnapshot,
+    analysis: &MemoryAnalysis,
+    signal_state: &mut ResourceSignalState,
+) {
     let rss_mb = snapshot.rss_bytes as f64 / 1024.0 / 1024.0;
+    let rss_over_budget = !resource_budget::rss_within_budget(snapshot.rss_bytes);
 
-    if !resource_budget::rss_within_budget(snapshot.rss_bytes) {
+    if rss_over_budget && !signal_state.rss_over_budget {
         warn!(
             rss_mb,
             budget_mb = resource_budget::RSS_BUDGET_BYTES as f64 / 1024.0 / 1024.0,
             "self RSS exceeds the provisional resource budget"
         );
+    } else if !rss_over_budget && signal_state.rss_over_budget {
+        info!(
+            rss_mb,
+            "self RSS returned within the provisional resource budget"
+        );
     }
+    signal_state.rss_over_budget = rss_over_budget;
 
     // A 0.0 CPU reading means "no baseline yet" (first tick) or an idle
     // process — never treat it as an over-budget breach.
-    if snapshot.cpu_percent > 0.0 && !resource_budget::cpu_within_budget(snapshot.cpu_percent) {
+    let cpu_over_budget =
+        snapshot.cpu_percent > 0.0 && !resource_budget::cpu_within_budget(snapshot.cpu_percent);
+    if cpu_over_budget && !signal_state.cpu_over_budget {
         warn!(
             cpu_percent = snapshot.cpu_percent,
             budget_percent = resource_budget::CPU_BUDGET_PERCENT,
             "self CPU exceeds the provisional resource budget"
         );
+    } else if !cpu_over_budget && signal_state.cpu_over_budget {
+        info!(
+            cpu_percent = snapshot.cpu_percent,
+            "self CPU returned within the provisional resource budget"
+        );
     }
+    signal_state.cpu_over_budget = cpu_over_budget;
 
-    if analysis.leak_suspected {
+    if analysis.leak_suspected && !signal_state.leak_suspected {
         warn!(
             growth_kb_s = analysis.growth_rate_bytes_per_sec / 1024.0,
             "self RSS growth trend suggests a possible leak"
         );
-    } else {
+    } else if !analysis.leak_suspected && signal_state.leak_suspected {
+        info!(
+            growth_kb_s = analysis.growth_rate_bytes_per_sec / 1024.0,
+            "self RSS growth trend returned below the leak threshold"
+        );
+    }
+    signal_state.leak_suspected = analysis.leak_suspected;
+
+    if !rss_over_budget && !cpu_over_budget && !analysis.leak_suspected {
         // Healthy path stays at debug — a per-tick info line would be noisy.
         debug!(
             rss_mb,
@@ -145,7 +183,12 @@ mod tests {
     fn over_rss_snapshot_is_classified_over_budget() {
         let over = snapshot(resource_budget::RSS_BUDGET_BYTES + 1, 10.0);
         assert!(!resource_budget::rss_within_budget(over.rss_bytes));
-        log_resource_signals(&over, &analysis(0.0, false));
+        let mut state = ResourceSignalState::default();
+        log_resource_signals(&over, &analysis(0.0, false), &mut state);
+        assert!(state.rss_over_budget);
+
+        log_resource_signals(&snapshot(1024, 10.0), &analysis(0.0, false), &mut state);
+        assert!(!state.rss_over_budget);
     }
 
     #[test]
@@ -155,20 +198,37 @@ mod tests {
         // no-baseline first tick.
         let baseline = snapshot(1024, 0.0);
         assert!(resource_budget::cpu_within_budget(baseline.cpu_percent));
-        log_resource_signals(&baseline, &analysis(0.0, false));
+        let mut state = ResourceSignalState::default();
+        log_resource_signals(&baseline, &analysis(0.0, false), &mut state);
+        assert!(!state.cpu_over_budget);
     }
 
     #[test]
     fn over_cpu_snapshot_is_classified_over_budget() {
         let over = snapshot(1024, resource_budget::CPU_BUDGET_PERCENT + 1.0);
         assert!(!resource_budget::cpu_within_budget(over.cpu_percent));
-        log_resource_signals(&over, &analysis(0.0, false));
+        let mut state = ResourceSignalState::default();
+        log_resource_signals(&over, &analysis(0.0, false), &mut state);
+        assert!(state.cpu_over_budget);
+
+        log_resource_signals(&snapshot(1024, 1.0), &analysis(0.0, false), &mut state);
+        assert!(!state.cpu_over_budget);
     }
 
     #[test]
     fn leak_suspected_analysis_takes_the_warn_branch() {
         let healthy_rss = snapshot(1024, 1.0);
-        log_resource_signals(&healthy_rss, &analysis(50_000.0, true));
+        let mut state = ResourceSignalState::default();
+        log_resource_signals(&healthy_rss, &analysis(50_000.0, true), &mut state);
+        assert!(state.leak_suspected);
+
+        // A persistent breach stays active and is not treated as a new warning
+        // transition on every five-second sample.
+        log_resource_signals(&healthy_rss, &analysis(50_000.0, true), &mut state);
+        assert!(state.leak_suspected);
+
+        log_resource_signals(&healthy_rss, &analysis(0.0, false), &mut state);
+        assert!(!state.leak_suspected);
     }
 
     #[test]
@@ -176,6 +236,10 @@ mod tests {
         let healthy = snapshot(1024, 1.0);
         assert!(resource_budget::rss_within_budget(healthy.rss_bytes));
         assert!(resource_budget::cpu_within_budget(healthy.cpu_percent));
-        log_resource_signals(&healthy, &analysis(0.0, false));
+        let mut state = ResourceSignalState::default();
+        log_resource_signals(&healthy, &analysis(0.0, false), &mut state);
+        assert!(!state.rss_over_budget);
+        assert!(!state.cpu_over_budget);
+        assert!(!state.leak_suspected);
     }
 }

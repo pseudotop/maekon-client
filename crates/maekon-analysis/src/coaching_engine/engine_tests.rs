@@ -1074,3 +1074,95 @@ async fn coaching_engine_without_store_is_pure_in_memory() {
         "in-memory effectiveness still works without a store"
     );
 }
+
+// ── #8058 P2-1: adaptive-scorer weight persistence (write-through + hydrate) ──
+
+use maekon_core::models::coaching::AdaptiveScorerState;
+use maekon_core::ports::adaptive_scorer_store::AdaptiveScorerStore;
+
+/// In-memory `AdaptiveScorerStore` double — the singleton state overwrites on
+/// each write, mirroring the SQLite adapter's `id = 0` upsert without a database.
+#[derive(Default)]
+struct FakeAdaptiveScorerStore {
+    state: std::sync::Mutex<Option<AdaptiveScorerState>>,
+}
+
+impl AdaptiveScorerStore for FakeAdaptiveScorerStore {
+    fn save_adaptive_scorer_state(&self, state: &AdaptiveScorerState) -> Result<(), CoreError> {
+        *self.state.lock().unwrap() = Some(state.clone());
+        Ok(())
+    }
+
+    fn load_adaptive_scorer_state(&self) -> Result<Option<AdaptiveScorerState>, CoreError> {
+        Ok(self.state.lock().unwrap().clone())
+    }
+}
+
+/// #8058 P2-1 — the adaptive-scorer weights survive a restart. Session 1 trains
+/// the scorer past `MIN_TRAINING_SAMPLES` (write-through on each update); a FRESH
+/// session 2 with the same store hydrates it and is immediately `is_ready()`.
+/// Before #8058 this was the ONLY learning component that reset on every restart.
+#[tokio::test]
+async fn adaptive_scorer_survives_restart_via_store() {
+    let store = Arc::new(FakeAdaptiveScorerStore::default());
+
+    // Session 1 — 50 explicit feedbacks flip is_ready() and write through.
+    {
+        let engine =
+            CoachingEngine::new(enabled_config()).with_adaptive_scorer_store(store.clone());
+        for i in 0..50u32 {
+            let (from, to) = if i % 2 == 0 {
+                ("regime-a", "regime-b")
+            } else {
+                ("regime-b", "regime-a")
+            };
+            let msg = fire_and_register(&engine, from, to).await;
+            engine.record_explicit_feedback(&msg.message_id, true).await;
+        }
+        assert!(
+            engine.adaptive_scorer.read().await.is_ready(),
+            "session 1 must warm up the scorer"
+        );
+    }
+
+    // The write-through persisted a warmed-up model.
+    let persisted = store.load_adaptive_scorer_state().unwrap().unwrap();
+    assert_eq!(
+        persisted.train_count, 50,
+        "each resolved explicit feedback must persist one training step"
+    );
+
+    // Session 2 — a FRESH engine hydrates the prior model and is ready at once.
+    {
+        let engine =
+            CoachingEngine::new(enabled_config()).with_adaptive_scorer_store(store.clone());
+        assert!(
+            !engine.adaptive_scorer.read().await.is_ready(),
+            "a fresh engine starts un-ready before hydrate"
+        );
+        engine.hydrate_adaptive_scorer_from_store().await;
+        let scorer = engine.adaptive_scorer.read().await;
+        assert!(
+            scorer.is_ready(),
+            "hydrated scorer keeps its warm-up (train_count={})",
+            scorer.train_count()
+        );
+        assert_eq!(scorer.train_count(), 50);
+    }
+}
+
+/// #8058 P2-1 — with NO adaptive-scorer store the engine stays purely in-memory:
+/// training works, nothing persists, hydrate is a no-op, nothing panics.
+#[tokio::test]
+async fn adaptive_scorer_without_store_is_pure_in_memory() {
+    let engine = CoachingEngine::new(enabled_config());
+    let msg = fire_and_register(&engine, "regime-a", "regime-b").await;
+    engine.record_explicit_feedback(&msg.message_id, true).await;
+    // hydrate is a no-op with no store — must not panic.
+    engine.hydrate_adaptive_scorer_from_store().await;
+    assert_eq!(
+        engine.adaptive_scorer.read().await.train_count(),
+        1,
+        "in-memory training still works without a store"
+    );
+}

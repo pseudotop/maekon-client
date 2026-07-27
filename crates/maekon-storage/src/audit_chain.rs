@@ -35,6 +35,21 @@ pub const GENESIS_PREV_HASH: &str =
 /// (#4834 out-of-scope).
 pub const HASH_VERSION: u8 = 1;
 
+/// `app_meta` key holding the `entry_hash` of the last row removed by the
+/// audit-log compliance-window retention prune (#8056 P3).
+///
+/// `audit_log` is a legally-retained SHA-256 hash chain (ADR-072 client
+/// mirror), so it cannot simply drop its oldest rows: the verifier requires the
+/// first retained row's `prev_hash` to equal [`GENESIS_PREV_HASH`]. When the
+/// retention prune removes the oldest contiguous prefix it records the pruned
+/// prefix's final `entry_hash` here — the exact value the new first row's
+/// `prev_hash` already carries. The verifier then accepts that anchor as the
+/// pruned chain root, so a compliance-window prune keeps the retained chain
+/// tamper-evident (each retained row still links to an immutable recorded root)
+/// while bounding unbounded growth. `app_meta` is retained across GDPR erasure,
+/// so the anchor survives alongside the retained chain.
+pub const AUDIT_CHAIN_PRUNED_ROOT_META_KEY: &str = "audit.chain.pruned_root_prev_hash";
+
 /// Immutable view of an audit record used for hash-chain computation.
 ///
 /// Borrows only the immutable fields of

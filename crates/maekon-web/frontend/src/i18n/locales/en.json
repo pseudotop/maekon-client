@@ -1,5 +1,7 @@
 {
   "common": {
+    "refresh": "Refresh",
+    "retry": "Retry",
     "loading": "Loading...",
     "error": "Error",
     "save": "Save",
@@ -27,7 +29,54 @@
     "navigate": "Navigate",
     "previous": "Previous"
   },
+  "support": {
+    "pageTitle": "Support & Diagnostics",
+    "pageDescription": "Get help, run diagnostics, and report a problem. Diagnostic and bug-report artifacts are created only when you ask, and nothing leaves your device without your action.",
+    "reportProblem": "Report a problem"
+  },
+  "integrations": {
+    "title": "Integrations",
+    "description": "Connect Maekon to your organization's systems to receive prompts and sync context. Every outbound action passes privacy and consent checks first.",
+    "loading": "Loading integration status...",
+    "statusError": "Could not load integration status.",
+    "disabledTitle": "Integrations are turned off",
+    "disabledDescription": "The outbound integration runtime is disabled. Enable Integration in Settings → Advanced or apply an approved managed integration profile.",
+    "auth": {
+      "title": "Device authorization",
+      "description": "Authorize this device to connect to your integration.",
+      "loading": "Checking authorization status...",
+      "error": "Authorization check failed.",
+      "expired": "The authorization request expired. Please start again.",
+      "startError": "Could not start authorization.",
+      "nonInteractive": "This integration uses a non-interactive credential and cannot be authorized from here.",
+      "notConnected": "This device is not connected.",
+      "connect": "Connect",
+      "awaiting": "Waiting for you to authorize this device.",
+      "instructions": "Open the verification page and enter this code:",
+      "codeLabel": "Your code",
+      "openVerification": "Open verification page",
+      "expiresAt": "Expires",
+      "cancel": "Cancel",
+      "connected": "Connected",
+      "disconnectHint": "Disconnecting clears this device's authorization and any pending sign-in. It does not revoke credentials at the identity provider.",
+      "disconnect": "Disconnect"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "description": "Prompts and requests received from connected systems.",
+      "refresh": "Refresh",
+      "error": "Could not load the inbox.",
+      "actionError": "Action failed. Please try again.",
+      "loading": "Loading inbox...",
+      "empty": "No prompts yet. Requests from connected systems will appear here.",
+      "source": "Source",
+      "received": "Received",
+      "ack": "Acknowledge",
+      "dismiss": "Dismiss"
+    }
+  },
   "nav": {
+    "support": "Support",
     "dashboard": "Dashboard",
     "timeline": "Timeline",
     "reports": "Reports",
@@ -50,9 +99,13 @@
     "groupMonitor": "Monitor",
     "groupInsights": "Insights",
     "groupManage": "Manage",
-    "groupSystem": "System"
+    "groupSystem": "System",
+    "tasks": "Tasks"
   },
   "dashboard": {
+    "metricsError": "Failed to load system metrics",
+    "processesError": "Failed to load processes",
+    "countScopeNote": "Captures and events reflect today's activity. See Settings › Storage for all-time totals.",
     "title": "Activity Summary",
     "realtime": "Realtime",
     "connecting": "Connecting...",
@@ -66,6 +119,10 @@
     "idleTime": "Idle Time",
     "captures": "Captures",
     "events": "Events",
+    "capturePending": {
+      "title": "Captured activity is awaiting analysis",
+      "description": "Live capture totals are available now. Timeline categories and focus breakdowns will appear after analysis."
+    },
     "cpuMemory24h": "CPU / Memory Usage (24h)",
     "appUsageTime": "App Usage Time",
     "recentProcesses": "Recent Processes (Top 5)",
@@ -111,11 +168,15 @@
     "readyToInstall": "Ready to Install",
     "error": "Error",
     "statusUnavailable": "Unable to fetch update status",
+    "statusCheckFailed": "Update information could not be retrieved. Check your network or server status, then try again.",
+    "actionFailed": "The update action could not be completed. Try again.",
+    "technicalDetails": "Technical details",
     "lastUpdateUnknown": "Last update signal: unknown",
     "lastUpdateAge": "Last update signal: {{seconds}}s ago",
     "staleActionBlocked": "Update approval is temporarily blocked because status is stale. Click Check now to refresh.",
     "streamIssue": "Live update stream has temporary issues. Falling back to polling.",
     "reconnecting": "Reconnecting to live update stream (attempt {{count}})...",
+    "streamRecovered": "The live update stream connection was restored. Status updates continue without repeating actions or notifications.",
     "currentVersion": "Current",
     "latestVersion": "Latest",
     "openRelease": "Open release notes",
@@ -134,6 +195,9 @@
     "policySignature": "Ed25519 signature verification is required for release artifacts.",
     "policyRollback": "Failed restarts trigger automatic rollback to the previous binary.",
     "versionInfo": "Version Information",
+    "aboutTitle": "About",
+    "aboutBuildDate": "Build date",
+    "aboutCommit": "Commit",
     "releaseName": "Release",
     "downloadInProgress": "Downloading update...",
     "channelTitle": "Update Channel",
@@ -168,7 +232,22 @@
     "readyToInstallMsg": "Download complete. Ready to install.",
     "installNow": "Install Now"
   },
+  "frameImage": {
+    "reauth": "Re-authentication is required to view this screenshot.",
+    "reauthAction": "Re-authenticate",
+    "deleted": "This screenshot was removed by the retention policy.",
+    "missing": "No screenshot was captured for this frame.",
+    "unavailable": "Screenshot is temporarily unavailable.",
+    "retry": "Retry",
+    "short": "Unavailable"
+  },
   "timeline": {
+    "annotations": "Notes",
+    "addAnnotation": "Add a note...",
+    "addAnnotationSubmit": "Add",
+    "deleteAnnotation": "Delete note",
+    "annotationUpdateFailed": "Failed to update the note.",
+    "tagUpdateFailed": "Failed to update tags.",
     "title": "Timeline",
     "captures": " captures",
     "showing": " showing",
@@ -220,8 +299,10 @@
     "noActivity": "No activity recorded for this day"
   },
   "settings": {
+    "storageScopeNote": "Cumulative totals across all stored data (all-time).",
     "title": "Settings",
     "tabs": {
+      "integrations": "Integrations",
       "general": "General",
       "privacy": "Telemetry",
       "monitoring": "Monitoring",
@@ -344,6 +425,10 @@
         "input": {
           "title": "Pick an input mode",
           "description": "Push-to-talk is predictable; voice activity needs sensitivity tuning for your room."
+        },
+        "bystander": {
+          "title": "Inform people before recording",
+          "description": "Tell nearby participants what will be captured and obtain consent where required before enabling audio."
         }
       },
       "advanced": {
@@ -419,6 +504,8 @@
     "exportFrames": "Export Frames",
     "exporting": "Exporting...",
     "language": "Language",
+    "appearanceTitle": "Appearance",
+    "appearanceDarkModeDesc": "Use a dark color theme across the dashboard. First launch follows your OS preference.",
     "korean": "한국어",
     "english": "English",
     "viewSetupGuide": "View Setup Guide",
@@ -583,6 +670,7 @@
     "piiStrict": "Strict - + API keys, IPs, Paths",
     "piiDesc": "Mask personal information in collected data",
     "excludedApps": "Excluded Apps (comma separated)",
+    "excludedAppsRetroactiveNote": "Adding an app here also deletes any history already recorded for it — screenshots, events, and derived AI summaries and embeddings — not just future captures.",
     "excludedAppsPlaceholder": "1Password, Discord, Slack",
     "excludedAppPatterns": "Excluded App Patterns (comma separated)",
     "excludedAppPatternsPlaceholder": "*bank*, *wallet*, *crypto*",
@@ -667,7 +755,7 @@
     "bugReportPiiStandard": "Standard - Masks emails, phone numbers, credit cards",
     "bugReportPiiStrict": "Strict - Also masks API keys, IPs, file paths",
     "bugReportIncludeLogs": "Include runtime logs",
-    "bugReportIncludeLogsDesc": "Attach recent native runtime logs to the report.",
+    "bugReportIncludeLogsDesc": "Optional: include recent native runtime logs after reviewing them. Logs are excluded by default and are never uploaded automatically.",
     "bugReportGenerate": "Generate Report",
     "bugReportGenerateFailedTitle": "Report generation failed",
     "bugReportGenerateFailed": "Could not generate the bug report.",
@@ -702,7 +790,7 @@
     "bugReportNoEntries": "No entries",
     "bugReportBack": "Back",
     "bugReportNext": "Next",
-    "bugReportShareDesc": "Choose how to share your bug report. The Bug ID helps correlate your report across channels.",
+    "bugReportShareDesc": "Review the bundle before sharing it. Do not send raw screen/OCR/window content, prompts, secrets, customer data, or full local paths. Nothing is uploaded automatically.",
     "bugReportOpenGitHub": "Open GitHub Issue",
     "bugReportOpenGitHubDesc": "Pre-filled issue template with environment details.",
     "bugReportOpenFailed": "Could not open the GitHub issue page.",
@@ -717,11 +805,15 @@
     "bugReportExported": "Bug report exported successfully.",
     "bugReportExportFailed": "Failed to export the bug report.",
     "bugReportEmailSupport": "Email Support",
-    "bugReportEmailSupportDesc": "Open a pre-filled email to the support team.",
+    "bugReportEmailSupportDesc": "Open a local email draft; attach the reviewed bundle only if you explicitly choose to.",
     "saving": "Saving...",
     "saveSettings": "Save Settings",
     "savedFull": "Settings saved. Some settings require app restart.",
     "exportDone": "Data exported.",
+    "exportFailed": "Export did not complete",
+    "exportStorageRecovery": "Free disk space or close the program holding Maekon's local storage, then retry. This export was not marked complete.",
+    "exportGenericRecovery": "Review the error and retry. This export was not marked complete.",
+    "exportRetry": "Retry export",
     "days": {
       "Mon": "Mon",
       "Tue": "Tue",
@@ -769,6 +861,11 @@
       "reload": "Reload Engine",
       "delete": "Delete",
       "delete_confirm": "Delete the downloaded model? You can re-download it later.",
+      "actionErrorTitle": "Model action failed",
+      "downloadFailed": "Could not start the model download: {{error}}",
+      "cancelFailed": "Could not cancel the download: {{error}}",
+      "deleteFailed": "Could not delete the model: {{error}}",
+      "reloadFailed": "Could not reload the speech-to-text engine: {{error}}",
       "language": "STT Language",
       "input_mode": "Input Mode",
       "ptt": "Push-to-Talk",
@@ -797,7 +894,14 @@
       "coaching": "Coaching",
       "integration": "Integration",
       "sync": "Cross-Device Sync"
-    }
+    },
+    "permissionAutomationSandboxLabel": "Automation Sandbox",
+    "permissionAutomationSandboxDescAvailable": "Automation actions run inside the out-of-process platform sandbox on this device.",
+    "permissionAutomationSandboxDescUnavailable": "No platform sandbox is available on this device or build. Automation fails closed: actions are refused rather than run uncontained.",
+    "permissionLinuxSessionLabel": "Graphical Session",
+    "permissionLinuxSessionDescWayland": "Wayland session detected. Active-window detection and the tracking panel are not available under Wayland; capture continues with reduced context. Log into an X11 session for the full feature set.",
+    "permissionLinuxSessionDescX11": "X11 session detected. Active-window detection and the tracking panel are supported.",
+    "permissionLinuxSessionDescUnknown": "The graphical session type could not be determined. Active-window detection may be unreliable."
   },
   "privacy": {
     "claims": {
@@ -918,6 +1022,8 @@
     "resumeCapture": "Resume capture",
     "capturePaused": "Capture paused",
     "captureRunning": "Capture running",
+    "captureConsentRequired": "Consent required",
+    "captureBlocked": "Capture is blocked by current privacy or schedule settings.",
     "capturePauseUnavailable": "Capture pause is available in the desktop app.",
     "currentData": "Currently Stored Data",
     "eventsLabel": "Events",
@@ -926,7 +1032,7 @@
     "storageSizeLabel": "Storage Size",
     "dataRangeLabel": "Data Range",
     "deleteByRangeTitle": "Delete by Date Range",
-    "deleteByRangeDesc": "Selectively delete data for a specific period",
+    "deleteByRangeDesc": "Selectively delete data for a specific period. This also removes anything derived from that period — AI activity summaries, embeddings, and local suggestions — so nothing about it is left behind.",
     "startDate": "Start Date",
     "endDate": "End Date",
     "dataTypesHint": "Data types to delete (all if none selected)",
@@ -1026,6 +1132,28 @@
           "dismiss": "Dismiss"
         }
       },
+      "fullText": {
+        "label": "AI text processing and external providers",
+        "description": "Allow Maekon to process full text for AI features. When you choose an external AI provider, minimized and redacted text may leave this device.",
+        "collectedTitle": "When on, Maekon may process:",
+        "collected": {
+          "chatText": "Text you explicitly submit in an AI chat",
+          "activeContext": "Minimized and redacted active-app context included with an AI request",
+          "providerResult": "The provider result returned to your Maekon session"
+        },
+        "disclosure": "Off by default. Turn this on only if you consent to full-text AI processing and, when an external provider is configured, off-device transfer of minimized and redacted text. Provider configuration and privacy filtering still apply; this never authorizes raw screenshots, credentials, or excluded-app content."
+      },
+      "ocrProcessing": {
+        "label": "OCR text processing",
+        "description": "Allow Maekon to extract text from screen captures you already consented to. Processing stays on this device unless you separately configure an external OCR provider.",
+        "collectedTitle": "When on, this processes and may retain locally:",
+        "collected": {
+          "screenPixels": "Pixels from captures already allowed by screen-capture consent",
+          "extractedText": "Extracted text and text-region coordinates used in local capture and scene context",
+          "retention": "OCR text stored with local capture records for your configured retention period"
+        },
+        "disclosure": "This consent does not by itself allow raw screenshots to leave your device. External OCR also requires provider configuration; sending an unredacted screenshot requires the separate highest-sensitivity consent below. Turning this off blocks new OCR text in capture, scene-analysis, and provider paths. Use Withdraw consent or data deletion to erase previously retained records."
+      },
       "unredactedExternalOcr": {
         "label": "Unredacted external OCR",
         "description": "Highest-sensitivity, off by default. Turn this on only if you intentionally allow raw screenshots to be sent to an external OCR provider.",
@@ -1038,17 +1166,56 @@
         "disclosure": "This consent is required in addition to OCR processing consent and the AI setting that allows unredacted external OCR. Without this explicit consent, raw off-device OCR is blocked even if the setting is enabled."
       },
       "withdraw": {
-        "label": "Withdraw consent",
-        "description": "Withdrawing stops all collection and requests erasure of data already collected. This is stronger than simply turning monitoring off.",
-        "button": "Withdraw consent",
-        "confirmTitle": "Withdraw consent?",
-        "confirmMessage": "This stops all collection and requests erasure of the data already collected.",
+        "label": "Withdraw consent and delete data",
+        "description": "Withdrawing stops all collection and deletes data Maekon manages on this device. This is stronger than simply turning monitoring off.",
+        "button": "Withdraw consent and delete data",
+        "confirmTitle": "Withdraw consent and delete data?",
+        "confirmMessage": "All collection stops and Maekon deletes the data it manages on this device.",
         "confirmNote": "Files you've already exported or backed up to disk are saved outside the app and are not removed by this action.",
-        "confirmButton": "Withdraw and erase"
+        "confirmButton": "Withdraw and delete data"
+      },
+      "patternLearning": {
+        "label": "Pattern Learning & Coaching",
+        "description": "Lets Maekon learn recurring work patterns locally to power focus playbooks and proactive coaching. Turning this off stops pattern learning; already-derived stats age out with normal retention.",
+        "collectedTitle": "What this enables",
+        "collected": {
+          "habitStats": "Local habit and focus-pattern statistics",
+          "playbookSignals": "Focus playbook signals derived from your activity",
+          "coachingTriggers": "Proactive coaching trigger evaluation"
+        }
+      },
+      "crossDeviceSync": {
+        "label": "Cross-Device Sync",
+        "description": "Allows syncing your Maekon data with your own paired devices over the local network. Turning this off stops new sync sessions; paired devices keep their existing copies.",
+        "collectedTitle": "What this enables",
+        "collected": {
+          "syncPayloads": "Encrypted sync payloads to your paired devices",
+          "deviceIdentity": "Device identity used for pairing and transport auth"
+        }
+      },
+      "memoryGraphEnrichment": {
+        "label": "Memory Graph Enrichment",
+        "description": "Lets Maekon derive connections between your activities into a local memory graph that improves context recall. Turning this off stops new enrichment; existing edges age out with normal retention.",
+        "collectedTitle": "What this enables",
+        "collected": {
+          "memoryEdges": "Derived links between activities, topics, and sessions",
+          "derivedEntities": "Locally extracted entities that anchor those links"
+        }
       }
     }
   },
   "search": {
+    "getHelp": "Get help",
+    "clarificationTitle": "Several histories match",
+    "clarificationDescription": "No single result is assumed to be correct. Choose an app to narrow the complete result set.",
+    "clarificationIncompleteDescription": "No single result is assumed to be correct. Narrow by source or refine the query before choosing a result.",
+    "clarificationAllApps": "All apps",
+    "clarificationAppLabel": "Narrow results by app",
+    "clarificationSourceLabel": "Narrow results by source",
+    "semanticEnableHint": "Semantic search is off — turn it on in Settings → Advanced (takes effect after restart).",
+    "enableAiFeatures": "Enable AI features",
+    "noResultsTryKeyword": "No matches in text search. Try Keyword mode to rank your activity summaries by relevance.",
+    "tryKeyword": "Try keyword search",
     "title": "Search",
     "placeholder": "Enter search term...",
     "semanticPlaceholder": "Describe what you're looking for...",
@@ -1112,6 +1279,24 @@
     "to": "To"
   },
   "reports": {
+    "exportTitle": "Export report data",
+    "exportDescription": "Download your activity data for the selected range. Choose the scope and format before generating.",
+    "exportFrom": "From",
+    "exportTo": "To",
+    "exportFormat": "Format",
+    "exportSummary": "Report summary",
+    "exportSummaryDesc": "A JSON snapshot of the charts on this page: daily and hourly activity, app usage, productivity, and totals.",
+    "exportSummaryButton": "Download JSON",
+    "exportMetrics": "System metrics",
+    "exportMetricsDesc": "CPU, memory, disk, and network samples over the selected range.",
+    "exportEvents": "Activity events",
+    "exportEventsDesc": "Window and app-switch events with timestamps and titles.",
+    "exportFrames": "Captures",
+    "exportFramesDesc": "Capture metadata and OCR-extracted text — never the screenshot images themselves.",
+    "exportDownload": "Download",
+    "exporting": "Exporting…",
+    "exportRedactionNote": "Exports contain activity metadata (app names, window titles, and OCR-extracted text from captures) and system metrics for the selected range. Screenshot images are never included. Files are saved to your browser downloads.",
+    "exportFailed": "Export failed",
     "title": "Activity Reports",
     "week": "Weekly",
     "month": "Monthly",
@@ -1152,7 +1337,7 @@
     "capture": "Capture",
     "noFrames": "No frames at this time",
     "capturedOcr": "Captured OCR",
-    "imageUnavailable": "Unable to load screenshot image. Check retention policy or frame file path health.",
+    "imageUnavailable": "Unable to load the screenshot. It may have been removed by the retention policy, or re-authentication may be required.",
     "sceneElements": "{{count}} detected elements",
     "sceneUnavailable": "Scene analysis unavailable for this frame.",
     "showOverlay": "Show Scene Overlay",
@@ -1214,7 +1399,12 @@
     "eventsRestored": "{{count}} events restored",
     "framesRestored": "{{count}} frames restored",
     "errors": "Errors",
-    "moreErrors": "and {{count}} more errors"
+    "moreErrors": "and {{count}} more errors",
+    "fullExportTitle": "Export all my data (GDPR Art. 20)",
+    "fullExportDescription": "Download a machine-readable JSON archive of every personal-data table this device holds — activity segments and summaries, suggestions, coaching, habit streaks, the memory graph, frame annotations, AI chats, focus metrics, work sessions and digests. Free-text content is masked.",
+    "exporting": "Preparing export…",
+    "fullExportButton": "Download full data export",
+    "fullExportFailed": "Export failed"
   },
   "automation": {
     "title": "Automation",
@@ -1710,6 +1900,10 @@
     }
   },
   "auditLog": {
+    "exportTitle": "Export audit trail",
+    "exportHint": "Download the most recent audit entries (up to 1000) as a JSON file. Only evidence metadata is included; use the integrity verification above to validate the stored chain.",
+    "exportButton": "Export audit entries",
+    "exportFailed": "Export failed",
     "title": "Audit Log",
     "entries": "Audit Entries",
     "details": "Details",
@@ -1722,7 +1916,9 @@
     "chainLegacyCount": "{{count}} legacy (pre-hash-chain) entries excluded.",
     "chainBroken": "Integrity break detected",
     "chainBrokenDetail": "First broken entry at seq {{seq}}: {{reason}}",
-    "chainBrokenUnknown": "Chain verification failed for an unknown reason."
+    "chainBrokenUnknown": "Chain verification failed for an unknown reason.",
+    "durableSourceNote": "Backed by the durable, integrity-verifiable audit log — includes consent and privacy transitions.",
+    "bufferSourceNote": "Summary cards reflect this session's in-memory automation runtime buffer, not the durable audit log below."
   },
   "widgets": {
     "title": "Widgets",
@@ -1777,8 +1973,22 @@
   },
   "emptyState": {
     "dashboard": {
-      "title": "Warming Up",
-      "description": "Maekon is collecting activity data in the background. Open any app and keep working — your first metrics usually appear within a minute."
+      "active": {
+        "title": "Warming Up",
+        "description": "Maekon is collecting activity data in the background. Open any app and keep working — your first metrics usually appear within a minute, and your first recovery card surfaces in the tracking panel at the top of your screen within about 15 minutes."
+      },
+      "paused": {
+        "title": "Activity Capture Is Paused",
+        "description": "Maekon is not collecting activity data. Resume capture when you are ready to start building your dashboard."
+      },
+      "consentRequired": {
+        "title": "Capture Consent Required",
+        "description": "Maekon is not collecting activity data. Review and grant capture consent before starting collection."
+      },
+      "unavailable": {
+        "title": "Activity Status Unavailable",
+        "description": "Maekon cannot confirm whether activity capture is running. Check the desktop app before relying on this dashboard."
+      }
     },
     "timeline": {
       "title": "Screenshot Capture Is Off",
@@ -1915,7 +2125,12 @@
     "noOverrides": "No overrides in this range",
     "noSegments": "No segments found for this date range",
     "overridden": "Overridden",
-    "personalTime": "Personal time"
+    "personalTime": "Personal time",
+    "untilRemoved": "Until removed (no automatic expiry)",
+    "effectMarkAsNoise": "Excluded from future recalibration and reclustering results.",
+    "effectReassignRegime": "Future reclustering uses the selected regime for this segment.",
+    "effectPersonalTime": "This range is treated as personal time in downstream analysis.",
+    "effectUnknown": "Applied to downstream recalibration."
   },
   "sidebar": {
     "claimsBrowser": "Memory claims",
@@ -1944,7 +2159,7 @@
     "commands": "Commands",
     "executionHistory": "Execution History",
     "currentStatus": "Current Status",
-    "updateHistory": "Update History",
+    "updateChannel": "Update Channel",
     "general": "General",
     "notifications": "Notifications",
     "privacy": "Privacy",
@@ -1977,6 +2192,7 @@
     "goalsUpdated": "Goals updated",
     "settingsTitle": "Coaching Goals",
     "regimeLabel": "Regime Label",
+    "regimeLabelRequired": "Enter a regime label.",
     "targetMinutes": "Target (min)",
     "addGoal": "Add Goal",
     "remove": "Remove",
@@ -2055,6 +2271,15 @@
     "regimeLabelPlaceholder": "e.g. Deep Coding"
   },
   "onboarding": {
+    "step3Search": "Search everything you've seen",
+    "aiFeatures": {
+      "optInHint": "Optional: turn on local embedding, AI semantic search, and the AI daily-digest narrative. Everything runs on-device and takes effect after you restart Maekon.",
+      "enableButton": "Enable AI features",
+      "enabling": "Enabling…",
+      "enabled": "AI features enabled",
+      "enabledNote": "Local embedding, semantic search, and the AI daily-digest narrative will be active after you restart Maekon.",
+      "error": "Could not enable AI features: {{error}}"
+    },
     "step1Title": "Welcome to Maekon",
     "step1Desc": "Maekon monitors your desktop activity and provides intelligent suggestions to boost productivity.",
     "step2Title": "Permissions",
@@ -2129,7 +2354,16 @@
       "monitoringMissingWarning": "Monitoring consent is not yet granted. Grant it in the previous step for coaching to work.",
       "error": "Could not enable coaching: {{error}}"
     },
-    "stepIndicatorLabel": "Step indicator"
+    "audio": {
+      "title": "Audio is off by default",
+      "description": "Defer microphone capture during setup. You can review audio and speech-to-text options later in Settings.",
+      "statusTitle": "Audio deferred",
+      "statusDescription": "Microphone capture and speech-to-text remain disabled. No audio device, model, or provider is contacted.",
+      "localNote": "Local speech-to-text stays off until you explicitly enable audio and install a model.",
+      "egressNote": "Cloud speech-to-text stays off until you choose a provider and configure credentials in Settings."
+    },
+    "stepIndicatorLabel": "Step indicator",
+    "step4RecoveryCardHint": "As you work, Maekon watches for a good moment to help. Your first recovery card — a suggested next step backed by what was on screen — usually appears in the small tracking panel at the top of your screen within about 15 minutes."
   },
   "chat": {
     "title": "AI Sessions",
@@ -2138,10 +2372,12 @@
     "create_session": "Create a session to start chatting",
     "create_failed_title": "Could not create a session",
     "create_failed": "Failed to create an AI session.",
+    "provider_not_configured": "{{provider}} is not configured. Add its credential in Settings → AI & Automation, then try again.",
     "load_failed_title": "Could not load sessions",
     "load_failed": "Failed to load AI sessions.",
     "refresh_failed": "Failed to refresh AI sessions.",
     "send_failed": "Failed to send the message.",
+    "full_text_consent_required": "Enable AI text processing and external providers in Privacy → Consent, then try again.",
     "retry_failed": "Failed to retry the session.",
     "delete_failed": "Failed to delete the session.",
     "input_placeholder": "Type a message...",
@@ -2177,6 +2413,12 @@
     "exported": "Conversation exported",
     "history": "History",
     "mic_error": "Microphone not available",
+    "mic_consent_required": "Enable microphone consent in Privacy",
+    "mic_permission_hint": "If microphone access was blocked, enable it in:",
+    "mic_permission_path_macos": "System Settings › Privacy & Security › Microphone",
+    "mic_permission_path_windows": "Settings › Privacy & security › Microphone",
+    "mic_permission_path_linux": "your desktop privacy settings (varies by distribution / portal)",
+    "mic_permission_path_generic": "your system privacy settings",
     "mic_tooltip": "Hold to speak",
     "mic_vad_stop": "Click to stop listening",
     "mic_vad_tooltip": "Click to toggle listening",
@@ -2320,6 +2562,7 @@
     "suggestionsUnavailable": "Suggestions unavailable",
     "paused": "Paused",
     "capturing": "Capturing",
+    "consentRequired": "Consent required",
     "resume": "Resume",
     "pause": "Pause",
     "collapse": "Collapse",
@@ -2345,8 +2588,8 @@
     "screenContextPaused": "Screen context paused",
     "localMode": "Local mode",
     "captureServicesReady": "Capture services ready",
-    "extractTasks": "Extract tasks from current app",
-    "extractTasksMeta": "Use visible GUI context for suggestions",
+    "extractTasks": "Review suggestions",
+    "extractTasksMeta": "Open pending suggestions without capturing the current screen",
     "captureCurrentContextMeta": "Save the current screen context",
     "reviewCurrentWindow": "Review current window",
     "reviewCurrentWindowMeta": "Analyze GUI, OCR, and accessibility context",
@@ -2359,7 +2602,9 @@
     "quitMaekon": "Quit Maekon",
     "chatOpened": "Chat opened",
     "quitRequested": "Quit requested",
-    "quitUnavailable": "Quit unavailable"
+    "quitUnavailable": "Quit unavailable",
+    "findNextStep": "Find my next step",
+    "findNextStepMeta": "Read the current screen and propose a reviewable next step"
   },
   "trayDashboard": {
     "regionLabel": "Tray dashboard",
@@ -2426,7 +2671,37 @@
     "discoveredPeers": "Discovered Peers",
     "noPeers": "No peers discovered yet. Ensure other devices are on the same network with sync enabled.",
     "lastSync": "Last",
-    "neverSynced": "Never synced"
+    "neverSynced": "Never synced",
+    "enableIntro": "Choose a passphrase and enable sync. It is stored in your OS keychain (never in the config file) and is used to derive the end-to-end encryption key. All devices you sync must use the same passphrase.",
+    "passphraseLabel": "Sync passphrase",
+    "passphrasePlaceholder": "At least 12 characters",
+    "passphraseTooShort": "Passphrase must be at least {{count}} characters.",
+    "transportLabel": "Transport",
+    "transportLan": "LAN — same Wi-Fi/network",
+    "transportFile": "Shared folder — Dropbox, iCloud, NAS",
+    "transportRemote": "Remote sync server",
+    "enableButton": "Enable sync",
+    "enableDone": "Saved. Restart the app to activate sync.",
+    "envHint": "Power users can instead set the MAEKON_SYNC_PASSPHRASE environment variable before launch.",
+    "deliveryNoPeers": "Your changes could not reach any peer (all offline or unreachable). They will retry on the next sync.",
+    "deliveredToPeers": "Delivered to {{count}} peer(s).",
+    "forgetPeer": "Disconnect",
+    "forgetPeerConfirm": "Disconnect {{peerName}}? Its trust record will be removed and it must be paired again to sync.",
+    "forgetPeerConfirmAction": "Disconnect peer",
+    "forgetPeerCancel": "Cancel",
+    "forgetPeerSuccess": "{{peerName}} was disconnected.",
+    "forgetPeerError": "The peer could not be disconnected. Try again.",
+    "uploadRecoveryTitle": "Upload recovery check",
+    "uploadRecoveryDescription": "Synthetic, local-only verification that interrupted uploads remain unsent until a confirmed retry succeeds.",
+    "uploadRecoveryInterrupted": "Upload interrupted. {{count}} synthetic items remain local and unsent.",
+    "uploadRecoveryRetry": "Retry safely",
+    "uploadRecoveryRecovered": "Upload recovered after {{attempts}} attempts and {{reprimes}} re-primes. The sent marker was written only after success.",
+    "uploadRecoveryPending": "Pending",
+    "uploadRecoverySentMarkers": "Sent markers",
+    "uploadRecoveryStorageId": "Storage ID",
+    "uploadRecoveryPreserved": "Preserved",
+    "uploadRecoveryMismatch": "Mismatch",
+    "uploadRecoveryError": "The synthetic recovery step could not be completed."
   },
   "overlay": {
     "focusMode": "Focus Mode",
@@ -2553,6 +2828,10 @@
     "result": "Result"
   },
   "advancedTab": {
+    "aiFeaturesMaster": "Enable AI features",
+    "aiFeaturesMasterDescription": "Turns on local embedding, AI semantic search, and the AI daily-digest narrative in one step — all processed on-device. Takes effect after you restart Maekon.",
+    "llmSummary": "AI daily-digest narrative",
+    "llmSummaryDescription": "Use the on-device LLM to write a natural-language summary of your day (requires embedding). Takes effect after restart.",
     "maxConcurrentSessions": "Max concurrent sessions",
     "idleTimeoutSeconds": "Idle timeout (seconds)",
     "sessionTimeoutSeconds": "Session timeout (seconds)",
@@ -2615,6 +2894,8 @@
     "columnSegment": "Segment",
     "columnOriginal": "Original",
     "columnAction": "Action",
+    "columnLifecycle": "Lifecycle",
+    "columnEffect": "Downstream effect",
     "columnCreated": "Created"
   },
   "presets": {
@@ -2680,7 +2961,204 @@
     }
   },
   "metrics": {
+    "notMeasured": "n/a",
+    "withinBudget": "Within budget",
+    "overBudget": "Over budget",
+    "selfUsageTitle": "Agent resource usage",
+    "selfUsageHint": "The desktop agent's own memory and CPU against its provisional budget.",
+    "selfUsageDesktopOnly": "Available in the desktop app.",
+    "snapshotError": "Failed to sample resource usage",
+    "selfRss": "Memory (RSS)",
+    "selfCpu": "CPU",
+    "notMeasuredHint": "Resource usage could not be measured on this platform.",
     "cpuPercent": "CPU %",
     "memoryGb": "Memory (GB)"
+  },
+  "reauth": {
+    "title": "Verify it's you",
+    "description": "Re-authenticate to view your capture history.",
+    "reason": "View your capture history",
+    "useBiometric": "Unlock with {{kind}}",
+    "biometricGeneric": "biometrics",
+    "usePinInstead": "Use PIN instead",
+    "useBiometricInstead": "Use biometrics instead",
+    "pinLabel": "PIN",
+    "pinPlaceholder": "Enter your PIN",
+    "unlock": "Unlock",
+    "noMethodTitle": "No re-authentication method",
+    "noMethodBody": "Set up a PIN in Privacy settings to view capture history, or turn off the re-authentication requirement.",
+    "goToSettings": "Open settings",
+    "cancel": "Cancel",
+    "errors": {
+      "cancelled": "Authentication was cancelled.",
+      "biometricUnavailable": "Biometric authentication is unavailable. Enter your PIN instead.",
+      "failed": "Authentication failed. Please try again."
+    },
+    "settings": {
+      "sectionTitle": "Capture history re-authentication",
+      "sectionDescription": "Require biometric or PIN re-authentication before viewing your capture history (screenshots).",
+      "saveFailed": "Failed to save settings.",
+      "enableLabel": "Require re-authentication",
+      "enableHint": "Protects your capture history from someone with physical access to your unlocked device.",
+      "idleLabel": "Re-ask after inactivity (minutes)",
+      "pinSectionTitle": "App PIN (fallback)",
+      "pinRegistered": "A PIN is registered.",
+      "pinNotRegistered": "No PIN registered.",
+      "registerPin": "Set PIN",
+      "changePin": "Change PIN",
+      "removePin": "Remove PIN",
+      "pinNewLabel": "New PIN",
+      "pinConfirmLabel": "Confirm PIN",
+      "pinMismatch": "PINs do not match.",
+      "pinTooShort": "PIN must be at least 4 characters.",
+      "pinSaved": "PIN saved.",
+      "pinRemoved": "PIN removed.",
+      "save": "Save",
+      "cancel": "Cancel",
+      "biometricAvailable": "{{kind}} is available on this device.",
+      "biometricUnavailable": "Biometric authentication is not available on this device; use a PIN."
+    }
+  },
+  "durableTasks": {
+    "loading": "Loading tasks…",
+    "loadError": "Could not load tasks: {{error}}",
+    "suggestedHeading": "Suggested tasks",
+    "noSuggestions": "No task suggestions to review.",
+    "noTitle": "(no title)",
+    "confirm": "Confirm",
+    "dismiss": "Dismiss",
+    "todosHeading": "To-dos",
+    "noTodos": "No confirmed to-dos yet.",
+    "state": {
+      "confirmed": "Confirmed",
+      "inProgress": "In progress",
+      "waiting": "Waiting",
+      "done": "Done",
+      "cancelled": "Cancelled"
+    }
+  },
+  "extensions": {
+    "loading": "Loading extensions…",
+    "loadError": "Could not load extensions: {{error}}",
+    "heading": "Extensions",
+    "empty": "No extensions are registered.",
+    "summaryUnavailable": "In transition — see details",
+    "unavailableReason": "Unavailable: {{reason}}",
+    "install": "Install",
+    "enable": "Enable",
+    "disable": "Disable",
+    "rollback": "Roll back to {{version}}",
+    "axis": {
+      "installation": "Installation",
+      "enablement": "Enablement",
+      "authentication": "Account",
+      "grant": "Capability grant",
+      "update": "Update",
+      "health": "Health"
+    },
+    "axisValue": {
+      "not_installed": "Not installed",
+      "installing": "Installing",
+      "installed": "Installed",
+      "install_failed": "Install failed",
+      "uninstalling": "Uninstalling",
+      "uninstalled": "Uninstalled",
+      "disabled": "Disabled",
+      "enabled": "Enabled",
+      "not_required": "Not required",
+      "unauthenticated": "Not connected",
+      "authenticating": "Connecting",
+      "authenticated": "Connected",
+      "revoked": "Revoked",
+      "auth_error": "Sign-in error",
+      "not_requested": "Not requested",
+      "pending": "Pending",
+      "granted": "Granted",
+      "denied": "Denied",
+      "expired": "Expired",
+      "current": "Current",
+      "update_available": "Update available",
+      "staged": "Staged",
+      "activating": "Activating",
+      "update_failed": "Update failed",
+      "rollback_available": "Rollback available",
+      "unknown": "Unknown",
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "unhealthy": "Unhealthy"
+    },
+    "summary": {
+      "discovered": "Discovered",
+      "installed": "Installed",
+      "enabled": "Enabled",
+      "authorizing": "Authorizing",
+      "ready": "Ready",
+      "syncing": "Syncing",
+      "degraded": "Degraded",
+      "stale": "Stale",
+      "revoked": "Revoked",
+      "incompatible": "Incompatible"
+    }
+  },
+  "recovery": {
+    "title": "Find my next step",
+    "back": "Back",
+    "retry": "Try again",
+    "loading": "Reading your current screen…",
+    "confirmedNotice": "Added to your to-dos",
+    "conflictNotice": "That item just changed — refreshed for you",
+    "confirmFailedNotice": "Couldn't confirm this step",
+    "dismissedNotice": "Dismissed",
+    "missingPermission": "Needs: {{permission}}",
+    "todosHeading": "Your confirmed to-dos",
+    "noTodos": "No confirmed to-dos yet.",
+    "source": {
+      "localScene": "Current screen"
+    },
+    "lifecycle": {
+      "active": "Live",
+      "deleted": "Source deleted",
+      "revoked": "Access revoked",
+      "expired": "Retention expired"
+    },
+    "card": {
+      "sourceLabel": "Source",
+      "captured": "Captured {{when}}",
+      "nextStepLabel": "Suggested next step",
+      "editTitle": "Edit next step",
+      "editBody": "Edit details",
+      "untitled": "(untitled step)",
+      "confirm": "Add to to-dos",
+      "editing": "Editing",
+      "edit": "Edit",
+      "dismiss": "Dismiss"
+    },
+    "outcome": {
+      "errorTitle": "Something went wrong",
+      "errorDetail": "The request could not be completed.",
+      "consentTitle": "Screen access needed",
+      "consentDetail": "Grant the listed permissions so the current screen can be read.",
+      "throttledTitle": "One at a time",
+      "throttledDetail": "A request is already running, or today's budget is used up.",
+      "noCandidateTitle": "No next step found",
+      "noCandidateDetail": "Your screen was reviewed but no action was proposed.",
+      "providerOfflineTitle": "Assistant offline",
+      "providerOfflineDetail": "The suggestion provider is unavailable right now.",
+      "noContextTitle": "Not enough on screen",
+      "noContextDetail": "There wasn't enough current context to suggest a step."
+    }
+  },
+  "tasks": {
+    "heading": "Tasks & recovery",
+    "subtitle": "Review suggested next steps and manage your confirmed to-dos."
+  },
+  "capturePermission": {
+    "bannerTitle": "Screen capture stopped — permission revoked",
+    "bannerBody": "Screen Recording permission was turned off while Maekon was running, so capture stopped immediately. Your consent settings are unchanged; re-enable the permission to resume.",
+    "openSettings": "Open System Settings",
+    "recheck": "Re-check permission",
+    "rechecking": "Checking…",
+    "revokedToast": "Screen Recording permission was revoked — capture stopped.",
+    "restoredToast": "Screen Recording permission restored — capture resumed."
   }
 }

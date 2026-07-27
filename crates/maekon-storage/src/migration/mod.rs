@@ -48,6 +48,24 @@
 //!   wall-clock `last_updated` decay anchor) and `regime_reaction_stats`
 //!   (RegimeClassifier per-regime + aggregate reaction counts). Both erased with
 //!   activity data like `coaching_effectiveness` (#7913 T2.1c).
+//! - `v47_transcripts.rs` — `transcripts` table persisting PII-masked speech-to-
+//!   text output (#8059). Indexed into `search_fts` for keyword search; swept by
+//!   the range-delete / full-wipe / age-retention erasure paths. LOCAL-ONLY (no
+//!   HLC/sync columns — deliberately off the cross-device sync surface).
+//! - `v45_drop_search_trigram.rs` — drops the dead `search_trigram` FTS5 table
+//!   (created by V18, never read/written in production; superseded by the V41
+//!   `search_fts` CJK bigram shadow). Removes it from the GDPR erase loop too
+//!   (retention.rs), so a post-drop `DELETE FROM search_trigram` can no longer
+//!   error the erase transaction (#8056 P3).
+//! - `v52_skill_pack_activation.rs` — `skill_pack_catalog`,
+//!   `skill_pack_activation` (singleton), and `skill_pack_activation_audit` for
+//!   ADR-029 trusted Skill Pack activation. v51 is reserved for the
+//!   MK-CONTEXT work-context ledger (#8587/#8589), landing concurrently
+//!   (#8588).
+//! - `v46_adaptive_scorer_state.rs` — singleton `adaptive_scorer_state` holding
+//!   the coaching `AdaptiveScorer`'s online-logistic-regression weights (the LAST
+//!   feedback-learning component that reset on restart). Erased with activity
+//!   data like the sibling learning tables (#8058 P2-1).
 
 #[cfg(test)]
 mod tests;
@@ -76,11 +94,19 @@ mod v41_cjk_bigram_shadow;
 mod v42_digest_processing_markers;
 mod v43_gui_interactions_drop_unused_columns;
 mod v44_learning_persistence;
+mod v45_drop_search_trigram;
+mod v46_adaptive_scorer_state;
+mod v47_transcripts;
+mod v48_pomodoro_state;
+mod v49_durable_tasks;
+mod v50_extension_registry;
+pub(crate) mod v51_work_context;
+mod v52_skill_pack_activation;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub(crate) const CURRENT_VERSION: u32 = 44;
+pub const CURRENT_VERSION: u32 = 52;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -131,8 +157,12 @@ fn prune_old_backups(db_path: &std::path::Path) {
 }
 
 /// Back up the database file before running schema migrations.
-fn backup_if_needed(conn: &Connection, current_version: u32) -> Option<std::path::PathBuf> {
-    if current_version >= CURRENT_VERSION {
+fn backup_if_needed(
+    conn: &Connection,
+    current_version: u32,
+    target_version: u32,
+) -> Option<std::path::PathBuf> {
+    if current_version >= target_version {
         return None;
     }
 
@@ -161,7 +191,7 @@ fn backup_if_needed(conn: &Connection, current_version: u32) -> Option<std::path
     match std::fs::copy(&db_path, &backup_path) {
         Ok(bytes) => {
             info!(
-                "DB backup created before migration v{current_version}→v{CURRENT_VERSION}: {} ({bytes} bytes)",
+                "DB backup created before migration v{current_version}→v{target_version}: {} ({bytes} bytes)",
                 backup_path.display()
             );
             // #6830: bound accumulated backups (the just-created one is newest → retained).
@@ -211,6 +241,19 @@ fn future_schema_error(current_version: u32) -> rusqlite::Error {
 }
 
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
+    run_migrations_to(conn, CURRENT_VERSION)
+}
+
+/// Run migrations only up to `target` (inclusive). Production always uses
+/// [`run_migrations`] (target = [`CURRENT_VERSION`]); the bounded form exists
+/// for the QC legacy-migration fixture (#9083), which needs a REAL
+/// older-schema database instead of forging one by deleting newer-version
+/// artifacts — a seal that silently broke every time `CURRENT_VERSION`
+/// advanced (V49–V52).
+pub fn run_migrations_to(conn: &Connection, target: u32) -> Result<(), rusqlite::Error> {
+    if target > CURRENT_VERSION {
+        return Err(future_schema_error(target));
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
@@ -219,157 +262,181 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
 
     let current = get_version(conn)?;
-    info!("current schema version: {current}, target: {CURRENT_VERSION}");
+    info!("current schema version: {current}, target: {target}");
 
-    if current > CURRENT_VERSION {
+    if current > target {
         error!(
             current_schema_version = current,
-            supported_schema_version = CURRENT_VERSION,
-            "database schema version is newer than this client supports"
+            supported_schema_version = target,
+            "database schema version is newer than the requested migration target"
         );
         return Err(future_schema_error(current));
     }
 
-    if current < CURRENT_VERSION && backup_if_needed(conn, current).is_none() {
+    if current < target && backup_if_needed(conn, current, target).is_none() {
         warn!("proceeding with migration without backup");
     }
 
-    if current < 1 {
+    if target >= 1 && current < 1 {
         run_migration_step(conn, 1, v01_v08::migrate_v1)?;
     }
-    if current < 2 {
+    if target >= 2 && current < 2 {
         run_migration_step(conn, 2, v01_v08::migrate_v2)?;
     }
-    if current < 3 {
+    if target >= 3 && current < 3 {
         run_migration_step(conn, 3, v01_v08::migrate_v3)?;
     }
-    if current < 4 {
+    if target >= 4 && current < 4 {
         run_migration_step(conn, 4, v01_v08::migrate_v4)?;
     }
-    if current < 5 {
+    if target >= 5 && current < 5 {
         run_migration_step(conn, 5, v01_v08::migrate_v5)?;
     }
-    if current < 6 {
+    if target >= 6 && current < 6 {
         run_migration_step(conn, 6, v01_v08::migrate_v6)?;
     }
-    if current < 7 {
+    if target >= 7 && current < 7 {
         run_migration_step(conn, 7, v01_v08::migrate_v7)?;
     }
-    if current < 8 {
+    if target >= 8 && current < 8 {
         run_migration_step(conn, 8, v01_v08::migrate_v8)?;
     }
-    if current < 9 {
+    if target >= 9 && current < 9 {
         run_migration_step(conn, 9, v09_v18::migrate_v9)?;
     }
-    if current < 10 {
+    if target >= 10 && current < 10 {
         run_migration_step(conn, 10, v09_v18::migrate_v10)?;
     }
-    if current < 11 {
+    if target >= 11 && current < 11 {
         run_migration_step(conn, 11, v09_v18::migrate_v11)?;
     }
-    if current < 12 {
+    if target >= 12 && current < 12 {
         run_migration_step(conn, 12, v09_v18::migrate_v12)?;
     }
-    if current < 13 {
+    if target >= 13 && current < 13 {
         run_migration_step(conn, 13, v09_v18::migrate_v13)?;
     }
-    if current < 14 {
+    if target >= 14 && current < 14 {
         run_migration_step(conn, 14, v09_v18::migrate_v14)?;
     }
     // V15 is reserved for Sync 3b (lan_peer_pins)
-    if current < 15 {
+    if target >= 15 && current < 15 {
         run_migration_step(conn, 15, v09_v18::migrate_v15)?;
     }
-    if current < 16 {
+    if target >= 16 && current < 16 {
         run_migration_step(conn, 16, v09_v18::migrate_v16)?;
     }
-    if current < 17 {
+    if target >= 17 && current < 17 {
         run_migration_step(conn, 17, v09_v18::migrate_v17)?;
     }
-    if current < 18 {
+    if target >= 18 && current < 18 {
         run_migration_step(conn, 18, v09_v18::migrate_v18)?;
     }
-    if current < 19 {
+    if target >= 19 && current < 19 {
         run_migration_step(conn, 19, v09_v18::migrate_v19)?;
     }
-    if current < 20 {
+    if target >= 20 && current < 20 {
         run_migration_step(conn, 20, v19_v21::migrate_v20)?;
     }
-    if current < 21 {
+    if target >= 21 && current < 21 {
         run_migration_step(conn, 21, v19_v21::migrate_v21)?;
     }
-    if current < 22 {
+    if target >= 22 && current < 22 {
         run_migration_step(conn, 22, v19_v21::migrate_v22)?;
     }
-    if current < 23 {
+    if target >= 23 && current < 23 {
         run_migration_step(conn, 23, v22_v23::migrate_v23)?;
     }
-    if current < 24 {
+    if target >= 24 && current < 24 {
         run_migration_step(conn, 24, v23_v24::migrate_v24)?;
     }
-    if current < 25 {
+    if target >= 25 && current < 25 {
         run_migration_step(conn, 25, v25::migrate_v25)?;
     }
-    if current < 26 {
+    if target >= 26 && current < 26 {
         run_migration_step(conn, 26, v26::migrate_v26)?;
     }
-    if current < 27 {
+    if target >= 27 && current < 27 {
         run_migration_step(conn, 27, v27::migrate_v27)?;
     }
-    if current < 28 {
+    if target >= 28 && current < 28 {
         run_migration_step(conn, 28, v28::migrate_v28)?;
     }
-    if current < 29 {
+    if target >= 29 && current < 29 {
         run_migration_step(conn, 29, v29::migrate_v29)?;
     }
-    if current < 30 {
+    if target >= 30 && current < 30 {
         run_migration_step(conn, 30, v30::migrate_v30)?;
     }
-    if current < 31 {
+    if target >= 31 && current < 31 {
         run_migration_step(conn, 31, v31_regime_manager_state::migrate_v31)?;
     }
-    if current < 32 {
+    if target >= 32 && current < 32 {
         run_migration_step(conn, 32, v32_audit_log_command_id_index::migrate_v32)?;
     }
-    if current < 33 {
+    if target >= 33 && current < 33 {
         run_migration_step(conn, 33, v33_suggestion_context_scope::migrate_v33)?;
     }
-    if current < 34 {
+    if target >= 34 && current < 34 {
         run_migration_step(conn, 34, v34_memory_graph::migrate_v34)?;
     }
-    if current < 35 {
+    if target >= 35 && current < 35 {
         run_migration_step(conn, 35, v35_memory_edge_unique::migrate_v35)?;
     }
-    if current < 36 {
+    if target >= 36 && current < 36 {
         run_migration_step(conn, 36, v36_egress_ledger::migrate_v36)?;
     }
-    if current < 37 {
+    if target >= 37 && current < 37 {
         run_migration_step(conn, 37, v37_audit_log_hash_chain::migrate_v37)?;
     }
-    if current < 38 {
+    if target >= 38 && current < 38 {
         run_migration_step(conn, 38, v38_sync_tombstones::migrate_v38)?;
     }
-    if current < 39 {
+    if target >= 39 && current < 39 {
         run_migration_step(conn, 39, v39_hlc_clock::migrate_v39)?;
     }
-    if current < 40 {
+    if target >= 40 && current < 40 {
         run_migration_step(conn, 40, v40_egress_recipient_count::migrate_v40)?;
     }
-    if current < 41 {
+    if target >= 41 && current < 41 {
         run_migration_step(conn, 41, v41_cjk_bigram_shadow::migrate_v41)?;
     }
-    if current < 42 {
+    if target >= 42 && current < 42 {
         run_migration_step(conn, 42, v42_digest_processing_markers::migrate_v42)?;
     }
-    if current < 43 {
+    if target >= 43 && current < 43 {
         run_migration_step(
             conn,
             43,
             v43_gui_interactions_drop_unused_columns::migrate_v43,
         )?;
     }
-    if current < 44 {
+    if target >= 44 && current < 44 {
         run_migration_step(conn, 44, v44_learning_persistence::migrate_v44)?;
+    }
+    if target >= 45 && current < 45 {
+        run_migration_step(conn, 45, v45_drop_search_trigram::migrate_v45)?;
+    }
+    if target >= 46 && current < 46 {
+        run_migration_step(conn, 46, v46_adaptive_scorer_state::migrate_v46)?;
+    }
+    if target >= 47 && current < 47 {
+        run_migration_step(conn, 47, v47_transcripts::migrate_v47)?;
+    }
+    if target >= 48 && current < 48 {
+        run_migration_step(conn, 48, v48_pomodoro_state::migrate_v48)?;
+    }
+    if target >= 49 && current < 49 {
+        run_migration_step(conn, 49, v49_durable_tasks::migrate_v49)?;
+    }
+    if target >= 50 && current < 50 {
+        run_migration_step(conn, 50, v50_extension_registry::migrate_v50)?;
+    }
+    if target >= 51 && current < 51 {
+        run_migration_step(conn, 51, v51_work_context::migrate_v51)?;
+    }
+    if target >= 52 && current < 52 {
+        run_migration_step(conn, 52, v52_skill_pack_activation::migrate_v52)?;
     }
 
     Ok(())

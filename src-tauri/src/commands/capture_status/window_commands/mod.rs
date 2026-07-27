@@ -11,15 +11,40 @@
 mod normalization;
 mod overlay;
 
+#[cfg(debug_assertions)]
 use std::time::Duration;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager};
+use tauri::{AppHandle, Manager};
+#[cfg(debug_assertions)]
+use tauri::{LogicalPosition, LogicalSize};
 use tracing::debug;
 
 use crate::ipc_error::IpcError;
 
 use super::types::{DebugWindowFocusResponse, DebugWindowStateResponse};
 
+#[cfg(debug_assertions)]
 pub(super) use super::types::debug_window_state_response;
+
+#[cfg(not(debug_assertions))]
+pub(super) fn debug_window_state_disabled() -> DebugWindowStateResponse {
+    DebugWindowStateResponse {
+        ok: false,
+        label: String::new(),
+        exists: false,
+        visible: None,
+        focused: None,
+        fullscreen: None,
+        outer_position: None,
+        inner_size: None,
+        cursor_position: None,
+        cursor_monitor_index: None,
+        resolved_monitor_index: None,
+        current_monitor: None,
+        available_monitors: Vec::new(),
+        error_code: Some("debug_only".to_string()),
+        error_message: Some("debug commands are not available in release builds".to_string()),
+    }
+}
 
 pub async fn debug_normalize_main_window_state(
     app: AppHandle,
@@ -66,21 +91,26 @@ pub async fn show_main_window(app: AppHandle) -> Result<(), IpcError> {
     }
 }
 
+#[cfg(not(debug_assertions))]
 pub async fn debug_focus_window(
     app: AppHandle,
     label: String,
 ) -> Result<DebugWindowFocusResponse, IpcError> {
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, label);
-        return Ok(DebugWindowFocusResponse {
-            ok: false,
-            label: String::new(),
-            visible: false,
-            error_code: Some("debug_only".to_string()),
-            error_message: Some("debug commands are not available in release builds".to_string()),
-        });
-    }
+    let _ = (app, label);
+    Ok(DebugWindowFocusResponse {
+        ok: false,
+        label: String::new(),
+        visible: false,
+        error_code: Some("debug_only".to_string()),
+        error_message: Some("debug commands are not available in release builds".to_string()),
+    })
+}
+
+#[cfg(debug_assertions)]
+pub async fn debug_focus_window(
+    app: AppHandle,
+    label: String,
+) -> Result<DebugWindowFocusResponse, IpcError> {
     let label = label.trim().to_string();
     if label.is_empty() {
         return Ok(DebugWindowFocusResponse {
@@ -131,61 +161,40 @@ pub async fn debug_focus_window(
     })
 }
 
+#[cfg(not(debug_assertions))]
 pub async fn debug_window_state(
     app: AppHandle,
     label: String,
 ) -> Result<DebugWindowStateResponse, IpcError> {
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, label);
-        return Ok(DebugWindowStateResponse {
-            ok: false,
-            label: String::new(),
-            exists: false,
-            visible: None,
-            focused: None,
-            fullscreen: None,
-            outer_position: None,
-            inner_size: None,
-            cursor_position: None,
-            cursor_monitor_index: None,
-            resolved_monitor_index: None,
-            current_monitor: None,
-            available_monitors: Vec::new(),
-            error_code: Some("debug_only".to_string()),
-            error_message: Some("debug commands are not available in release builds".to_string()),
-        });
-    }
+    let _ = (app, label);
+    Ok(debug_window_state_disabled())
+}
+
+#[cfg(debug_assertions)]
+pub async fn debug_window_state(
+    app: AppHandle,
+    label: String,
+) -> Result<DebugWindowStateResponse, IpcError> {
     let label = label.trim().to_string();
     Ok(debug_window_state_response(&app, label))
 }
 
+#[cfg(not(debug_assertions))]
 pub async fn debug_set_window_fullscreen(
     app: AppHandle,
     label: String,
     fullscreen: bool,
 ) -> Result<DebugWindowStateResponse, IpcError> {
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, label, fullscreen);
-        return Ok(DebugWindowStateResponse {
-            ok: false,
-            label: String::new(),
-            exists: false,
-            visible: None,
-            focused: None,
-            fullscreen: None,
-            outer_position: None,
-            inner_size: None,
-            cursor_position: None,
-            cursor_monitor_index: None,
-            resolved_monitor_index: None,
-            current_monitor: None,
-            available_monitors: Vec::new(),
-            error_code: Some("debug_only".to_string()),
-            error_message: Some("debug commands are not available in release builds".to_string()),
-        });
-    }
+    let _ = (app, label, fullscreen);
+    Ok(debug_window_state_disabled())
+}
+
+#[cfg(debug_assertions)]
+pub async fn debug_set_window_fullscreen(
+    app: AppHandle,
+    label: String,
+    fullscreen: bool,
+) -> Result<DebugWindowStateResponse, IpcError> {
     let label = label.trim().to_string();
     if label.is_empty() {
         return Ok(DebugWindowStateResponse {
@@ -258,6 +267,7 @@ pub async fn debug_set_window_fullscreen(
     Ok(debug_window_state_response(&app, label))
 }
 
+#[cfg(not(debug_assertions))]
 pub async fn debug_set_window_bounds(
     app: AppHandle,
     label: String,
@@ -266,27 +276,19 @@ pub async fn debug_set_window_bounds(
     width: f64,
     height: f64,
 ) -> Result<DebugWindowStateResponse, IpcError> {
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, label, x, y, width, height);
-        return Ok(DebugWindowStateResponse {
-            ok: false,
-            label: String::new(),
-            exists: false,
-            visible: None,
-            focused: None,
-            fullscreen: None,
-            outer_position: None,
-            inner_size: None,
-            cursor_position: None,
-            cursor_monitor_index: None,
-            resolved_monitor_index: None,
-            current_monitor: None,
-            available_monitors: Vec::new(),
-            error_code: Some("debug_only".to_string()),
-            error_message: Some("debug commands are not available in release builds".to_string()),
-        });
-    }
+    let _ = (app, label, x, y, width, height);
+    Ok(debug_window_state_disabled())
+}
+
+#[cfg(debug_assertions)]
+pub async fn debug_set_window_bounds(
+    app: AppHandle,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<DebugWindowStateResponse, IpcError> {
     let label = label.trim().to_string();
     if label.is_empty()
         || !x.is_finite()

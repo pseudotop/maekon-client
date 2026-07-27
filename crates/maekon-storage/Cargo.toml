@@ -34,6 +34,7 @@ argon2 = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

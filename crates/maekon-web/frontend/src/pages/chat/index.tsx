@@ -14,7 +14,11 @@ import { useAudioCapture } from './hooks/useAudioCapture'
 import { useMessageStream } from './hooks/useMessageStream'
 import { useSessionHandlers } from './hooks/useSessionHandlers'
 import { useSessionSetup } from './hooks/useSessionSetup'
+import { buildSendSessionMessageArgs } from './ipcPayloads'
 import { MessageBubble } from './MessageBubble'
+import { completeSessionTurn } from './messageStreamState'
+import { chatSendErrorMessage } from './providerErrorGuidance'
+import { clearAcceptedAttachments, clearAcceptedText, removeOptimisticMessage } from './sendDraftState'
 import type { AttachmentPayload, Transport } from './types'
 import { errorMessage, ipc, now, parseDataUrl, parseOptionalJsonValue, parseOptionalToolDefinitions } from './utils'
 
@@ -58,8 +62,19 @@ export default function Chat() {
   const [requestingSuggestions, setRequestingSuggestions] = useState(false)
   const [suggestionCooldown, setSuggestionCooldown] = useState(false)
 
+  const handleTurnCompleted = useCallback(
+    (completedAt: string) => {
+      if (!activeId) return
+      setSessions((previous) => completeSessionTurn(previous, activeId, completedAt))
+    },
+    [activeId, setSessions],
+  )
+
   // ---- Message stream (SSE listener, scroll handling) ----
-  const { messages, setMessages, sending, setSending, scrollRef, handleScroll } = useMessageStream(activeId)
+  const { messages, setMessages, sending, setSending, scrollRef, handleScroll } = useMessageStream(
+    activeId,
+    handleTurnCompleted,
+  )
 
   // ---- Derived values ----
   const selectedHttpSurface = useMemo(
@@ -204,6 +219,8 @@ export default function Chat() {
   // ---- Send ----
   const handleSend = useCallback(async () => {
     if ((!input.trim() && attachments.length === 0) || !activeId || sending || payloadInvalid) return
+    const submittedInput = input
+    const submittedAttachments = attachments
     const text = input.trim()
     const attachmentPayload: AttachmentPayload[] = attachments.map((attachment) => {
       const parsed = parseDataUrl(attachment.data)
@@ -232,26 +249,41 @@ export default function Chat() {
       .join('\n')
     const displayText =
       attachments.length > 0 ? [attachmentSummary, text].filter((section) => section.length > 0).join('\n') : text
-    setInput('')
-    setAttachments([])
-    // Reset textarea height after clearing input
-    const ta = document.querySelector<HTMLTextAreaElement>('form textarea')
-    if (ta) ta.style.height = 'auto'
-    setMessages((p) => [...p, { role: 'user', content: displayText, timestamp: now() }])
+    const optimisticUserMessage = { role: 'user' as const, content: displayText, timestamp: now() }
+    setMessages((p) => [...p, optimisticUserMessage])
     setSending(true)
     try {
-      await ipc('send_session_message', {
-        sessionId: activeId,
-        message: text,
-        attachments: attachmentPayload,
-        tools: parsedTools.value,
-        context: messageContext,
-        responseFormat: parsedResponseFormat.value,
-      })
+      await ipc(
+        'send_session_message',
+        buildSendSessionMessageArgs({
+          sessionId: activeId,
+          message: text,
+          attachments: attachmentPayload,
+          tools: parsedTools.value,
+          context: messageContext,
+          responseFormat: parsedResponseFormat.value,
+        }),
+      )
+      setInput((current) => clearAcceptedText(current, submittedInput))
+      setAttachments((current) => clearAcceptedAttachments(current, submittedAttachments))
+      // Reset textarea height only after the backend accepts the message.
+      const ta = document.querySelector<HTMLTextAreaElement>('form textarea')
+      if (ta && ta.value === submittedInput) ta.style.height = 'auto'
     } catch (e) {
       console.warn('send_session_message failed:', e)
+      setMessages((current) => removeOptimisticMessage(current, optimisticUserMessage))
       setSending(false)
-      addToast('error', errorMessage(e, t('chat.send_failed', 'Failed to send the message.')), 5000)
+      addToast(
+        'error',
+        chatSendErrorMessage(e, {
+          fullTextConsentRequiredMessage: t(
+            'chat.full_text_consent_required',
+            'Enable AI text processing and external providers in Privacy → Consent, then try again.',
+          ),
+          fallback: t('chat.send_failed', 'Failed to send the message.'),
+        }),
+        5000,
+      )
     }
   }, [
     input,

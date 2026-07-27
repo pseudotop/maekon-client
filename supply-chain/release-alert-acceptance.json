@@ -1,4 +1,19 @@
 {
-  "dependabot": [],
+  "dependabot": [
+    {
+      "package": "pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Pillow < 12.3.0 advisories affect only the offline ML-training helper scripts (scripts/requirements-training.txt). The dependency is never installed into, bundled with, or executed by shipped client artifacts (DMG/MSI/DEB). Upgrading past the deliberate <12.0 cap requires separate training-pipeline validation; re-triage before 2026-10-31."
+    },
+    {
+      "package": "Pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Case-variant duplicate of the pillow entry above — Dependabot reports the same requirements-training.txt advisories under both spellings and the gate matches package names exactly."
+    }
+  ],
   "codeql": []
 }

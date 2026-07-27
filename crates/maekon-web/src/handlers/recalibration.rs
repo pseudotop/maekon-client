@@ -10,7 +10,7 @@ use axum::Json;
 use chrono::{DateTime, Duration, Utc};
 use maekon_api_contracts::recalibration::{CreateOverrideRequest, ListOverridesQuery};
 use maekon_core::id_generation::generate_id;
-use maekon_core::models::recalibration::RegimeOverride;
+use maekon_core::models::recalibration::{RegimeOverride, UserOverrideAction};
 
 use crate::error::ApiError;
 use crate::AppState;
@@ -18,6 +18,22 @@ use crate::AppState;
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+fn action_kind(action: &UserOverrideAction) -> &'static str {
+    match action {
+        UserOverrideAction::MarkAsNoise => "mark_as_noise",
+        UserOverrideAction::ReassignRegime { .. } => "reassign_regime",
+        UserOverrideAction::MarkAsPersonalTime { .. } => "mark_as_personal_time",
+    }
+}
+
+async fn audit_override_event(state: &AppState, action_type: &str, details: serde_json::Value) {
+    if let Some(audit) = state.automation.audit_logger.as_ref() {
+        audit
+            .log_event(action_type, "recalibration", &details.to_string())
+            .await;
+    }
+}
 
 /// `POST /api/recalibration/override`
 pub async fn create_override(
@@ -39,6 +55,17 @@ pub async fn create_override(
 
     store.save_override(&entry).await?;
 
+    audit_override_event(
+        &state,
+        "recalibration.override.created",
+        serde_json::json!({
+            "override_id": &entry.override_id,
+            "action": action_kind(&entry.user_action),
+            "lifecycle": "until_removed",
+        }),
+    )
+    .await;
+
     Ok(Json(serde_json::json!({
         "ok": true,
         "override_id": entry.override_id,
@@ -56,6 +83,16 @@ pub async fn delete_override(
         })?;
 
     store.delete_override(&id).await?;
+
+    audit_override_event(
+        &state,
+        "recalibration.override.removed",
+        serde_json::json!({
+            "override_id": &id,
+            "lifecycle": "removed_by_user",
+        }),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -116,6 +153,10 @@ pub async fn trigger_recluster(
 mod tests {
     use super::*;
     use crate::error::ApiError;
+    use maekon_automation::audit::{AuditLogAdapter, AuditLogger};
+    use maekon_core::ports::audit_log::AuditLogPort;
+    use maekon_storage::sqlite::SqliteStorage;
+    use std::sync::Arc;
 
     #[test]
     fn list_overrides_query_defaults() {
@@ -206,5 +247,49 @@ mod tests {
             result.err().unwrap(),
             ApiError::ServiceUnavailable(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn create_and_remove_emit_durable_audit_context() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+        let (event_tx, _) = tokio::sync::broadcast::channel(4);
+        let mut state = AppState::with_core(storage.clone(), event_tx);
+        state.analysis.override_store = Some(storage);
+
+        let logger = Arc::new(tokio::sync::RwLock::new(AuditLogger::default()));
+        let audit = Arc::new(AuditLogAdapter::new(logger));
+        state.automation.audit_logger = Some(audit.clone());
+
+        let Json(created) = create_override(
+            State(state.clone()),
+            Json(CreateOverrideRequest {
+                segment_id: "segment-audit".to_string(),
+                original_regime_id: Some("focus".to_string()),
+                action: UserOverrideAction::MarkAsNoise,
+            }),
+        )
+        .await
+        .unwrap();
+        let override_id = created["override_id"].as_str().unwrap().to_string();
+
+        let created_entries = audit
+            .entries_by_action_prefix("recalibration.override.created", 10)
+            .await;
+        assert_eq!(created_entries.len(), 1);
+        let created_details = created_entries[0].details.as_deref().unwrap();
+        assert!(created_details.contains("until_removed"));
+        assert!(created_details.contains("mark_as_noise"));
+
+        let Json(removed) = delete_override(State(state), Path(override_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(removed["deleted_id"], override_id);
+        let removed_entries = audit
+            .entries_by_action_prefix("recalibration.override.removed", 10)
+            .await;
+        assert_eq!(removed_entries.len(), 1);
+        let removed_details = removed_entries[0].details.as_deref().unwrap();
+        assert!(removed_details.contains("removed_by_user"));
+        assert!(removed_details.contains(&override_id));
     }
 }

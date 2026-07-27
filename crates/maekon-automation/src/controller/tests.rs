@@ -502,6 +502,128 @@ async fn run_workflow_no_executor_returns_error() {
 }
 
 #[tokio::test]
+async fn run_workflow_block_audits_one_payload_safe_denial_before_execution() {
+    use maekon_core::config::ConfirmationRequirement;
+
+    let policy_client = Arc::new(PolicyClient::new());
+    let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+    let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+    let mut controller = AutomationController::new(
+        policy_client,
+        audit_logger.clone(),
+        sandbox,
+        SandboxConfig::default(),
+    );
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Block);
+
+    let sensitive_payload = "raw-sensitive-workflow-payload";
+    let preset = WorkflowPreset {
+        id: "workflow-blocked".to_string(),
+        name: "sensitive workflow name".to_string(),
+        description: String::new(),
+        category: PresetCategory::Productivity,
+        steps: vec![WorkflowStep {
+            name: "sensitive step name".to_string(),
+            intent: AutomationIntent::Raw(AutomationAction::KeyType {
+                text: sensitive_payload.to_string(),
+            }),
+            delay_ms: 0,
+            stop_on_failure: true,
+        }],
+        builtin: false,
+        platform: None,
+        ai_profile_id: None,
+    };
+
+    let err = controller
+        .run_workflow(&preset)
+        .await
+        .expect_err("Block policy must deny before attempting the unwired executor");
+    assert!(matches!(err, AutomationError::PolicyBlocked));
+
+    let logger = audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(denied.len(), 1, "workflow denial must be terminal-only");
+    assert_eq!(denied[0].command_id, "workflow-blocked");
+    assert_eq!(denied[0].session_id, "workflow-blocked");
+    assert_eq!(denied[0].action_type, "workflow_denied");
+    let audit_blob = serde_json::to_string(&denied).unwrap();
+    assert!(audit_blob.contains("reason=BLOCK"));
+    assert!(audit_blob.contains("steps=1"));
+    assert!(!audit_blob.contains(sensitive_payload));
+    assert!(!audit_blob.contains("sensitive workflow name"));
+    assert!(!audit_blob.contains("sensitive step name"));
+    assert!(logger
+        .recent_entries(10)
+        .iter()
+        .all(|entry| entry.status != crate::audit::AuditStatus::Started));
+}
+
+#[tokio::test]
+async fn run_workflow_user_denial_audits_one_payload_safe_terminal_entry() {
+    use maekon_core::config::ConfirmationRequirement;
+
+    let policy_client = Arc::new(PolicyClient::new());
+    let audit_logger = Arc::new(RwLock::new(AuditLogger::new(100, 10)));
+    let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+    let mut controller = AutomationController::new(
+        policy_client,
+        audit_logger.clone(),
+        sandbox,
+        SandboxConfig::default(),
+    );
+    controller.set_enabled(true);
+    controller.set_confirmation_policy(ConfirmationRequirement::Confirm);
+
+    let preset = WorkflowPreset {
+        id: "workflow-user-denied".to_string(),
+        name: "private workflow".to_string(),
+        description: String::new(),
+        category: PresetCategory::Productivity,
+        steps: vec![WorkflowStep {
+            name: "private step".to_string(),
+            intent: AutomationIntent::ExecuteHotkey {
+                keys: vec!["Ctrl".to_string(), "S".to_string()],
+            },
+            delay_ms: 0,
+            stop_on_failure: true,
+        }],
+        builtin: false,
+        platform: None,
+        ai_profile_id: None,
+    };
+
+    let pending = controller.pending_confirmations.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::task::yield_now().await;
+            let mut map = pending.lock().await;
+            if let Some((_, tx)) = map.remove("workflow-user-denied") {
+                let _ = tx.send(false);
+                break;
+            }
+        }
+    });
+
+    let err = controller
+        .run_workflow(&preset)
+        .await
+        .expect_err("rejected confirmation must deny before workflow execution");
+    assert!(matches!(err, AutomationError::UserDenied));
+
+    let logger = audit_logger.read().await;
+    let denied = logger.entries_by_status(&crate::audit::AuditStatus::Denied, 10);
+    assert_eq!(denied.len(), 1, "workflow denial must be terminal-only");
+    assert_eq!(denied[0].command_id, "workflow-user-denied");
+    assert_eq!(denied[0].action_type, "workflow_denied");
+    let audit_blob = serde_json::to_string(&denied).unwrap();
+    assert!(audit_blob.contains("reason=USER_DENIED"));
+    assert!(!audit_blob.contains("private workflow"));
+    assert!(!audit_blob.contains("private step"));
+}
+
+#[tokio::test]
 async fn run_workflow_with_executor_success() {
     use crate::input_driver::{NoOpElementFinder, NoOpInputDriver};
     use crate::intent_resolver::{IntentExecutor, IntentResolver};
@@ -1397,6 +1519,106 @@ async fn execute_command_default_disabled_sandbox_without_inline_audits_failed()
             .entries_by_status(&crate::audit::AuditStatus::Completed, 10)
             .is_empty(),
         "skipped no-op actions must not be audited as Completed"
+    );
+}
+
+#[tokio::test]
+async fn execute_command_success_marks_cli_bridge_healthy() {
+    // #8050: a successful command execution marks the CLI-bridge availability
+    // flag healthy — the flag is no longer a permanent-false dead reader.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let policy = make_policy(AuditLevel::Basic, 5000);
+    let (controller, policy_client, _) = make_controller_with_policy(policy.clone());
+    // Start unhealthy so a success must actively flip it true.
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut controller = controller.with_health_flag(flag.clone());
+    controller.set_enabled(true);
+    wire_noop_inline_action_executor(&mut controller);
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-cli-ok".to_string(),
+        session_id: "sess-cli-ok".to_string(),
+        action: AutomationAction::KeyType {
+            text: "hi".to_string(),
+        },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_0099".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    };
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(matches!(result, CommandResult::Success));
+    assert!(
+        flag.load(Ordering::Relaxed),
+        "a successful command must mark the CLI bridge healthy (#8050)"
+    );
+}
+
+#[tokio::test]
+async fn execute_command_failure_marks_cli_bridge_unhealthy() {
+    // #8050: a genuine execution failure (disabled sandbox, no inline executor)
+    // marks the CLI-bridge flag unhealthy.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let policy = make_policy(AuditLevel::Basic, 5000);
+    let (controller, policy_client, _) = make_controller_with_policy(policy.clone());
+    // Start healthy so the failure must actively flip it false.
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut controller = controller.with_health_flag(flag.clone());
+    controller.set_enabled(true);
+    // Deliberately NO inline executor + default-disabled sandbox → the command
+    // fails at dispatch.
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-cli-fail".to_string(),
+        session_id: "sess-cli-fail".to_string(),
+        action: AutomationAction::MouseMove { x: 0, y: 0 },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_disabled01".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::Internal,
+    };
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(
+        matches!(result, CommandResult::Failed(_)),
+        "expected Failed, got {result:?}"
+    );
+    assert!(
+        !flag.load(Ordering::Relaxed),
+        "a failed command must mark the CLI bridge unhealthy (#8050)"
+    );
+}
+
+#[tokio::test]
+async fn policy_denied_command_keeps_cli_bridge_healthy() {
+    // #8050: a policy `Denied` verdict is a healthy control decision — the bridge
+    // executed the gate correctly — so it must NOT mark the CLI bridge
+    // disconnected. This is the semantic-pollution fix: previously the flag
+    // conflated "last command outcome" with "connection", so a normal denial
+    // dragged the tray into a permanent disconnected state.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut policy = make_policy(AuditLevel::Basic, 5000);
+    policy.confirmation = maekon_core::config::ConfirmationRequirement::Block;
+    let (controller, policy_client, _) = make_controller_with_policy(policy.clone());
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut controller = controller.with_health_flag(flag.clone());
+    controller.set_enabled(true);
+    policy_client.update_policies(vec![policy]).await;
+
+    let cmd = AutomationCommand {
+        command_id: "cmd-cli-denied".to_string(),
+        session_id: "sess-cli-denied".to_string(),
+        action: AutomationAction::KeyType {
+            text: "hi".to_string(),
+        },
+        timeout_ms: None,
+        policy_token: "test-pol:nonce_block01".to_string(),
+        origin: maekon_core::models::automation::CommandOrigin::External,
+    };
+    let result = controller.execute_command(&cmd).await.unwrap();
+    assert!(matches!(result, CommandResult::Denied));
+    assert!(
+        flag.load(Ordering::Relaxed),
+        "a policy-denied command must not disconnect the CLI bridge (#8050)"
     );
 }
 

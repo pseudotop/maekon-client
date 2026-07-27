@@ -42,10 +42,11 @@ use crate::types::TimeWindow;
 // (additional imports retained below)
 use crate::models::daily_digest::DailyDigest;
 use crate::models::storage_records::{
-    DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord, FocusWorkSessionRecord,
-    FrameExportRecord, FrameRecord, FrameTagLinkRecord, HourlyMetricsRecord, LocalSuggestionRecord,
-    MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow, SegmentDetailRecord,
-    SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
+    AppDeletionCounts, DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord,
+    FocusWorkSessionRecord, FrameExportRecord, FrameRecord, FrameTagLinkRecord,
+    HourlyMetricsRecord, LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction,
+    SearchEventRow, SearchFrameRow, SegmentDetailRecord, SegmentSummaryRecord,
+    StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
 };
 use crate::models::work_session::FocusMetrics;
 use crate::ports::annotation_storage::AnnotationStorage;
@@ -165,6 +166,23 @@ pub trait StorageMaintenanceStorage: Send + Sync {
     ) -> Result<DeletedRangeCounts, CoreError>;
 
     async fn delete_all_data(&self) -> Result<(), CoreError>;
+
+    /// Retroactively delete all locally-stored data attributable to the given
+    /// apps / app-name patterns (#8045 B2 — Recall-parity retroactive
+    /// exclusion). Removes matching `frames` metadata, `events`, and the derived
+    /// `activity_segments` (LLM summaries) + `embedding_vectors` for those apps,
+    /// leaving cross-device suppression tombstones for the two synced derived
+    /// tables so a peer cannot resurrect them.
+    ///
+    /// `app_names` are matched case-insensitively (exact); `app_patterns` use
+    /// the same `*`-glob semantics as the capture-time exclusion filter. Returns
+    /// the on-disk frame file paths of the deleted frames (the caller deletes the
+    /// files best-effort) plus the per-table row counts.
+    async fn delete_data_for_apps(
+        &self,
+        app_names: &[String],
+        app_patterns: &[String],
+    ) -> Result<(Vec<String>, AppDeletionCounts), CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +332,18 @@ pub trait DigestStorage: Send + Sync {
 // Sub-trait: BackupStorage
 // ---------------------------------------------------------------------------
 
+/// One personal-data table in the GDPR Art.20 (data portability) export
+/// (#8056 P2-3). Rows are raw column→value JSON objects exactly as stored; the
+/// free-text PII masking is applied by the export handler (web layer), keeping
+/// the storage dump policy-free.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PersonalDataTableExport {
+    /// The SQLite table name.
+    pub name: String,
+    /// Every row as a JSON object keyed by column name.
+    pub rows: Vec<serde_json::Value>,
+}
+
 /// Backup export/import operations (tags, frame-tags, events, frames, metrics).
 ///
 /// Async per ADR-026 PR-7: every method routes through the storage
@@ -323,6 +353,13 @@ pub trait DigestStorage: Send + Sync {
 pub trait BackupStorage: Send + Sync {
     async fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
     async fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError>;
+    /// GDPR Art.20 data-portability dump: every personal-data table this device
+    /// holds, as raw column→value JSON rows. Covers the tables the scoped
+    /// `/export/*` and `/backup` surfaces omit (activity_segments, suggestions,
+    /// coaching_events, habit_streaks, memory_claims/edges, frame_annotations,
+    /// ai_sessions/messages, focus_metrics, work_sessions, digests, …). Free-text
+    /// PII masking is applied by the caller. (#8056 P2-3)
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError>;
     async fn list_event_exports(
         &self,
         from: &str,

@@ -837,7 +837,7 @@ impl AuditLogPort for MockRecorder {
             })
             .unwrap_or(AuditStatus::Completed);
         self.entries.lock().unwrap().push(AuditEntry {
-            entry_id: Ulid::new().to_string(),
+            entry_id: Ulid::generate().to_string(),
             timestamp: chrono::Utc::now(),
             session_id: session_id.into(),
             command_id: command_id.into(),

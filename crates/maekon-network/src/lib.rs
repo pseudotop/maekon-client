@@ -47,7 +47,7 @@ pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 pub fn default_model_for_provider(provider: &maekon_core::config::AiProviderType) -> &'static str {
     use maekon_core::config::AiProviderType;
     match provider {
-        AiProviderType::Anthropic => "claude-sonnet-4-20250514",
+        AiProviderType::Anthropic => "claude-sonnet-5",
         AiProviderType::OpenAi => "gpt-5.4",
         AiProviderType::Google => "gemini-2.5-flash",
         AiProviderType::Ollama => "qwen3:8b",

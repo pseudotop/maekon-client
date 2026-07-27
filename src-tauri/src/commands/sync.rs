@@ -47,6 +47,14 @@ pub struct SyncResultDto {
     pub applied: usize,
     pub skipped: usize,
     pub tombstoned: usize,
+    /// #8056 P3: whether the cycle attempted a push (had local changes). `false`
+    /// means "nothing to push" — a clean no-op distinct from a failed delivery.
+    pub push_attempted: bool,
+    /// #8056 P3: number of peers that confirmed receipt of the pushed changeset.
+    /// `0` with `push_attempted = true` means the local changes reached NO peer
+    /// (all peers offline/failed) — the UI can surface this as a delivery
+    /// warning instead of silently reporting a successful-looking empty cycle.
+    pub pushed_to_peers: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -54,6 +62,30 @@ pub struct SyncPeerDto {
     pub device_id: String,
     pub device_name: String,
     pub last_sync_at: String,
+}
+
+fn peer_dto(peer: maekon_core::models::sync::PeerInfo) -> SyncPeerDto {
+    SyncPeerDto {
+        device_id: peer.device_id,
+        device_name: peer.device_name,
+        last_sync_at: peer.last_sync_at,
+    }
+}
+
+fn validate_peer_id(device_id: &str) -> Result<&str, IpcError> {
+    let trimmed = device_id.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 128
+        || !trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':')
+        })
+    {
+        return Err(IpcError::new(
+            "validation.invalid_arguments",
+            "Invalid sync peer identifier",
+        ));
+    }
+    Ok(trimmed)
 }
 
 #[command]
@@ -75,11 +107,7 @@ pub async fn get_sync_status(
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .map(|p| SyncPeerDto {
-                    device_id: p.device_id,
-                    device_name: p.device_name,
-                    last_sync_at: p.last_sync_at,
-                })
+                .map(peer_dto)
                 .collect();
 
             Ok(SyncStatusDto {
@@ -123,7 +151,11 @@ pub async fn trigger_sync_cycle(
             applied: result.applied,
             skipped: result.skipped_lww + result.skipped_dup,
             tombstoned: result.tombstoned,
+            push_attempted: result.push_attempted,
+            pushed_to_peers: result.pushed_to_peers,
         }),
+        // A `None` result means neither pull nor push happened this cycle — a
+        // genuine no-op. `SyncResultDto::default()` reports push_attempted=false.
         Ok(None) => Ok(SyncResultDto::default()),
         Err(e) => Err(IpcError::from(e)),
     }
@@ -137,22 +169,24 @@ pub async fn discover_sync_peers(
 
     let peers = engine.discover_peers().await.map_err(IpcError::from)?;
 
-    Ok(peers
-        .into_iter()
-        .map(|p| SyncPeerDto {
-            device_id: p.device_id,
-            device_name: p.device_name,
-            last_sync_at: p.last_sync_at,
-        })
-        .collect())
+    Ok(peers.into_iter().map(peer_dto).collect())
 }
 
-// #7683 F2: set_sync_enabled and forget_peer were removed as residual dead
-// IPCs. SyncTab.tsx only ever calls get_sync_status / discover_sync_peers /
-// trigger_sync_cycle — there is no "forget device" button, and enabling sync
-// is documented as a manual `sync.enabled = true` config-file edit (the
-// "not enabled" guidance panel), never a UI toggle. Zero callers anywhere in
-// crates/maekon-web/frontend/src for either command.
+#[command]
+pub async fn forget_sync_peer(
+    state: tauri::State<'_, SyncRuntimeState>,
+    device_id: String,
+) -> Result<Vec<SyncPeerDto>, IpcError> {
+    let device_id = validate_peer_id(&device_id)?;
+    let engine = state.engine().ok_or_else(sync_not_enabled)?;
+
+    engine
+        .forget_peer(device_id)
+        .await
+        .map_err(IpcError::from)?;
+    let peers = engine.discover_peers().await.map_err(IpcError::from)?;
+    Ok(peers.into_iter().map(peer_dto).collect())
+}
 
 #[cfg(test)]
 mod tests {
@@ -172,5 +206,29 @@ mod tests {
             classify_sync_availability(true, true),
             SyncAvailabilityDto::Ready
         ));
+    }
+
+    #[test]
+    fn sync_peer_identifier_validation_is_bounded_and_transport_safe() {
+        assert_eq!(
+            validate_peer_id(" qc-peer_01.example:2 ").unwrap(),
+            "qc-peer_01.example:2"
+        );
+        assert_eq!(
+            validate_peer_id("").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id("peer with spaces").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id("peer/with/path").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id(&"x".repeat(129)).unwrap_err().code,
+            "validation.invalid_arguments"
+        );
     }
 }

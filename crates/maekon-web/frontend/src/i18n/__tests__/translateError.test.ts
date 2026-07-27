@@ -5,6 +5,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { IpcError } from '../../api/desktop'
 
+import enResource from '../locales/en.json'
+import esResource from '../locales/es.json'
+import jaResource from '../locales/ja.json'
+import koResource from '../locales/ko.json'
+import zhCNResource from '../locales/zh-CN.json'
 import { hasTranslation, translatedCodes, translateError } from '../translateError'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -21,6 +26,35 @@ function readWireCodeRegistry(): string[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
 }
+
+function collectReplacementCharacterPaths(value: unknown, path = ''): string[] {
+  if (typeof value === 'string') {
+    return value.includes('\uFFFD') ? [path] : []
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => collectReplacementCharacterPaths(entry, `${path}[${index}]`))
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, entry]) =>
+      collectReplacementCharacterPaths(entry, path ? `${path}.${key}` : key),
+    )
+  }
+  return []
+}
+
+describe('locale resource integrity', () => {
+  const resources = {
+    en: enResource,
+    es: esResource,
+    ja: jaResource,
+    ko: koResource,
+    'zh-CN': zhCNResource,
+  }
+
+  it.each(Object.entries(resources))('%s contains no Unicode replacement characters', (_locale, resource) => {
+    expect(collectReplacementCharacterPaths(resource)).toEqual([])
+  })
+})
 
 describe('wire-code i18n coverage', () => {
   const registry = readWireCodeRegistry()

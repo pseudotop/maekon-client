@@ -11,6 +11,12 @@ interface RouteErrorFallbackProps {
   isRecovering?: boolean
   onRetry: () => void
   onGoHome: () => void
+  /**
+   * #8079 (CRT-PRV-UX-RECOVERY-001): navigate to the Support & Diagnostics
+   * destination so a stuck user has an actionable recovery path beyond
+   * retry/home. Optional — the button is only rendered when supplied.
+   */
+  onReportProblem?: () => void
 }
 
 export function RouteErrorFallback({
@@ -20,6 +26,7 @@ export function RouteErrorFallback({
   isRecovering,
   onRetry,
   onGoHome,
+  onReportProblem,
 }: RouteErrorFallbackProps) {
   const { t } = useTranslation()
   const retryButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -103,6 +110,16 @@ export function RouteErrorFallback({
             {t('errors.route.goHome')}
           </Button>
         </div>
+
+        {/* Recovery affordance: reach Support & Diagnostics to report the
+            problem or copy diagnostics (CRT-PRV-UX-RECOVERY-001). */}
+        {onReportProblem && (
+          <div className="mt-3">
+            <Button variant="ghost" size="sm" onClick={onReportProblem}>
+              {t('support.reportProblem')}
+            </Button>
+          </div>
+        )}
 
         {/* Dev-only debug details — self-controlling <details>, no state needed */}
         {import.meta.env.DEV && (

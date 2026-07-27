@@ -139,7 +139,7 @@ pub struct TelemetryConfig {
 }
 
 fn default_telemetry_enabled() -> bool {
-    true
+    false
 }
 
 fn default_telemetry_sample_rate() -> f64 {
@@ -696,6 +696,15 @@ mod tests {
         config
             .validate_integrity_policy()
             .expect("serde-defaulted UpdateConfig must validate");
+    }
+
+    #[test]
+    fn telemetry_defaults_fail_closed_until_explicit_opt_in() {
+        assert!(!TelemetryConfig::default().enabled);
+
+        let sparse: TelemetryConfig =
+            serde_json::from_str("{}").expect("sparse telemetry config must deserialize");
+        assert!(!sparse.enabled);
     }
 
     // ── #7726 (ctd-W2 E4): storage.max_storage_mb cap + notification bounds ──

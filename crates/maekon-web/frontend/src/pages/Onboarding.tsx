@@ -1,7 +1,7 @@
 /**
- * First-run onboarding page — 6-step guide shown before the main shell
- * (Intro → Permissions → Consent → Features → Coaching → Ready).
- * #5707: StepCoaching inserted at index 4 (opt-in only; skipping leaves coaching off).
+ * First-run onboarding page — 7-step guide shown before the main shell
+ * (Intro → Permissions → Consent → Features → Audio → Coaching → Ready).
+ * StepCoaching remains opt-in only at index 5; skipping leaves coaching off.
  */
 
 import {
@@ -19,8 +19,10 @@ import {
   Monitor,
   Rocket,
   RotateCcw,
+  Search as SearchIcon,
   Shield,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -46,9 +48,10 @@ interface OnboardingProps {
   onComplete: () => void
 }
 
-// Intro → Permissions → Consent → Features → Coaching → Ready.
-// #5707: TOTAL_STEPS 5→6 (StepCoaching inserted between Features and Ready).
-const TOTAL_STEPS = 6
+// Intro → Permissions → Consent → Features → Audio → Coaching → Ready.
+// Audio is disclosure-only and default-off: advancing defers microphone capture
+// without touching settings, devices, models, or provider endpoints.
+const TOTAL_STEPS = 7
 
 // The 6 master fields that make up the monitoring consent bundle (identical to MONITORING_FIELDS in ConsentToggleSection).
 // On grant, send a fresh grant where these 6 are true and the other 8 (high-sensitivity / additional opt-in) are false.
@@ -668,9 +671,49 @@ function FeatureItem({ icon, label }: { icon: ReactNode; label: string }) {
   )
 }
 
+/**
+ * StepFeatures — index 3 of 6. Enumerates what Maekon can do (Capture /
+ * Analysis / Suggestions / Search) and, per #8059 G2b, offers a low-friction,
+ * privacy-first opt-in that pre-enables the built-but-hidden AI features
+ * (local embedding + AI semantic search + AI daily-digest narrative).
+ *
+ * The opt-in mirrors the StepCoaching explicit-click pattern (#5707): the user
+ * must click "Enable AI features" to activate; skipping the step leaves the
+ * three analysis flags at their privacy-first default (off). Everything runs
+ * on-device and takes effect after the app restarts.
+ */
 function StepFeatures() {
   const { t } = useTranslation()
   const iconCls = cn(iconSize.base, 'text-brand-text')
+  const [enabling, setEnabling] = useState(false)
+  const [enabled, setEnabled] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Explicit, informed opt-in: fetch current settings, then flip the three
+  // analysis flags (analysis + embedding + llm_summary) that make up the AI
+  // features bundle. No auto-enable — only on click.
+  const handleEnableAiFeatures = useCallback(async () => {
+    setEnabling(true)
+    setError(null)
+    try {
+      const current = await fetchSettings()
+      await updateSettings({
+        ...current,
+        analysis: {
+          ...current.analysis,
+          enabled: true,
+          embedding_enabled: true,
+          llm_summary_enabled: true,
+        },
+      })
+      setEnabled(true)
+    } catch (nextError) {
+      setError(errorMessageFromInvoke(nextError))
+    } finally {
+      setEnabling(false)
+    }
+  }, [])
+
   return (
     <div className="flex flex-col items-center text-center">
       <div className={cn('mb-6 flex items-center justify-center rounded-full bg-brand-signal/15 p-4', motion.opacity)}>
@@ -682,6 +725,43 @@ function StepFeatures() {
         <FeatureItem icon={<Camera className={iconCls} />} label={t('onboarding.step3Capture')} />
         <FeatureItem icon={<Cpu className={iconCls} />} label={t('onboarding.step3Analysis')} />
         <FeatureItem icon={<Lightbulb className={iconCls} />} label={t('onboarding.step3Suggestions')} />
+        <FeatureItem icon={<SearchIcon className={iconCls} />} label={t('onboarding.step3Search')} />
+      </div>
+
+      {/* #8059 G2b: privacy-first AI-features opt-in (default off). */}
+      <div className="mt-6 w-full max-w-md text-left">
+        {enabled ? (
+          <div data-testid="onboarding-aifeatures-enabled">
+            <Alert variant="success" title={t('onboarding.aiFeatures.enabled')}>
+              <p>{t('onboarding.aiFeatures.enabledNote')}</p>
+            </Alert>
+          </div>
+        ) : (
+          <>
+            <p className={cn(typography.small, colors.text.secondary, 'mb-3')}>
+              {t('onboarding.aiFeatures.optInHint')}
+            </p>
+
+            {error && (
+              <Alert variant="error" className="mb-4" title={t('onboarding.aiFeatures.error', { error })}>
+                <p>{error}</p>
+              </Alert>
+            )}
+
+            <Button
+              type="button"
+              variant="secondary"
+              size="md"
+              className="w-full"
+              isLoading={enabling}
+              onClick={() => void handleEnableAiFeatures()}
+              data-testid="onboarding-aifeatures-enable"
+            >
+              <Sparkles className={cn(iconCls, 'mr-2')} />
+              {enabling ? t('onboarding.aiFeatures.enabling') : t('onboarding.aiFeatures.enableButton')}
+            </Button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -776,6 +856,28 @@ function StepCoaching() {
   )
 }
 
+function StepAudioDeferred() {
+  const { t } = useTranslation()
+  return (
+    <div className="flex flex-col items-center text-center" data-testid="onboarding-audio-deferred">
+      <div className={cn('mb-6 flex items-center justify-center rounded-full bg-brand-signal/15 p-4', motion.opacity)}>
+        <Mic className={cn(iconSize.hero, 'text-brand-text')} />
+      </div>
+      <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>{t('onboarding.audio.title')}</h2>
+      <p className={cn(typography.body, colors.text.secondary, 'mb-6 max-w-md')}>{t('onboarding.audio.description')}</p>
+      <div className="w-full max-w-md text-left">
+        <Alert variant="info" title={t('onboarding.audio.statusTitle')}>
+          <p>{t('onboarding.audio.statusDescription')}</p>
+        </Alert>
+        <ul className="mt-4 space-y-2 text-content-secondary text-sm">
+          <li>{t('onboarding.audio.localNote')}</li>
+          <li>{t('onboarding.audio.egressNote')}</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
 function StepReady() {
   const { t } = useTranslation()
   const shortcut = IS_MAC ? '⌘K' : 'Ctrl+K'
@@ -786,6 +888,12 @@ function StepReady() {
       </div>
       <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>{t('onboarding.step4Title')}</h2>
       <p className={cn(typography.body, colors.text.secondary, 'mb-4 max-w-sm')}>{t('onboarding.step4Desc')}</p>
+      {/* #8686 AC5: set the first-run expectation — the first source-backed
+          recovery card surfaces in the tracking panel within ~15 minutes of
+          normal work, so a new user knows where to look and when. */}
+      <p className={cn(typography.body, colors.text.secondary, 'mb-4 max-w-sm')}>
+        {t('onboarding.step4RecoveryCardHint')}
+      </p>
       <div
         role="note"
         className={cn(
@@ -859,9 +967,10 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
           {step === 1 && <StepPermissions onReadyChange={setPermissionStepReady} />}
           {step === 2 && <StepConsent />}
           {step === 3 && <StepFeatures />}
-          {/* #5707: StepCoaching at index 4 — opt-in only, skipping leaves default-off intact */}
-          {step === 4 && <StepCoaching />}
-          {step === 5 && <StepReady />}
+          {step === 4 && <StepAudioDeferred />}
+          {/* #5707: StepCoaching remains opt-in only; skipping leaves default-off intact */}
+          {step === 5 && <StepCoaching />}
+          {step === 6 && <StepReady />}
         </div>
 
         {/* Navigation buttons */}

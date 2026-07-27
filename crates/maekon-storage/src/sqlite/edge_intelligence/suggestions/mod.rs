@@ -196,6 +196,25 @@ mod tests {
     }
 
     #[test]
+    fn saving_terminal_equivalent_preserves_feedback_tombstone() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let original = suggestion("dismissed-original", "Take the same short break", -60);
+        storage.save_rule_suggestion_sync(&original).unwrap();
+        assert!(storage
+            .dismiss_unified_suggestion(&original.suggestion_id)
+            .unwrap());
+
+        let regenerated = suggestion("regenerated-id", "Take the same short break", 0);
+        let persisted_id = storage.save_rule_suggestion_sync(&regenerated).unwrap();
+
+        assert_eq!(persisted_id, original.suggestion_id);
+        assert!(storage.list_suggestions(10).unwrap().is_empty());
+        let recent = storage.list_recent_suggestions(10).unwrap();
+        assert_eq!(recent.len(), 1, "no replacement row should be inserted");
+        assert!(recent[0].dismissed_at.is_some());
+    }
+
+    #[test]
     fn list_suggestions_preserves_distinct_context_scopes() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
         storage
@@ -263,6 +282,27 @@ mod tests {
         assert_eq!(restored.app_name.as_deref(), Some("Calculator"));
         assert_eq!(restored.window_title.as_deref(), Some("Calculator"));
         assert_eq!(restored.target_id.as_deref(), Some("display-result"));
+    }
+
+    #[test]
+    fn list_suggestions_by_state_does_not_restore_terminal_rows() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+        for id in ["still-pending", "dismissed-pending", "acted-pending"] {
+            storage
+                .save_suggestion_with_state(&suggestion(id, id, 0), "pending", None)
+                .unwrap();
+        }
+        assert!(storage
+            .dismiss_unified_suggestion("dismissed-pending")
+            .unwrap());
+        assert!(storage
+            .mark_unified_suggestion_acted("acted-pending")
+            .unwrap());
+
+        let restored = storage.list_suggestions_by_state("pending", 10).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].suggestion_id, "still-pending");
     }
 
     /// #6938: under the LIMIT, deferred restore must keep the SOONEST-resurfacing

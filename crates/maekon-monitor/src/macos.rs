@@ -150,17 +150,20 @@ fn title_via_ax(pid: u32) -> Option<String> {
 /// struct is what the pure-logic helpers operate on, so they stay headless-
 /// testable (no live window server required).
 #[derive(Debug, Clone)]
-struct RawCgWindow {
+pub(crate) struct RawCgWindow {
     owner_name: String,
-    owner_pid: u32,
+    // #8849: read cross-module by `foreground_fullscreen` (frontmost external
+    // window's owner + rect) for the overlay fullscreen-suppression policy.
+    pub(crate) owner_pid: u32,
     layer: i64,
     on_screen: bool,
-    bounds: Option<WindowBounds>,
+    pub(crate) bounds: Option<WindowBounds>,
 }
 
-/// Query CGWindowList for the frontmost on-screen, layer-0 (normal) window and
-/// reduce it to owner name / pid / bounds. No permission required.
-fn frontmost_via_cgwindowlist() -> Option<RawCgWindow> {
+/// Enumerate all on-screen windows (front-to-back, desktop chrome excluded) as
+/// [`RawCgWindow`] entries. No permission required (owner name/pid/layer/bounds
+/// come from CGWindowList; window titles do NOT and stay unread here).
+fn onscreen_windows() -> Option<Vec<RawCgWindow>> {
     // On-screen windows, front-to-back order, excluding desktop chrome.
     let option = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
     // Untyped `CFArray<*const c_void>`; each element is a CFDictionary.
@@ -179,7 +182,40 @@ fn frontmost_via_cgwindowlist() -> Option<RawCgWindow> {
         }
     }
 
+    Some(parsed)
+}
+
+/// Query CGWindowList for the frontmost on-screen, layer-0 (normal) window and
+/// reduce it to owner name / pid / bounds. No permission required.
+pub(crate) fn frontmost_via_cgwindowlist() -> Option<RawCgWindow> {
+    let parsed = onscreen_windows()?;
     pick_frontmost_layer_zero(&parsed).cloned()
+}
+
+/// Owner-app names of all normal (layer 0), on-screen windows.
+///
+/// Backs the capture-time partial-occlusion guard (#8054 P2-4): a background
+/// window of an excluded/sensitive app that shares the display with the
+/// (non-excluded) active window would otherwise be captured in a full-monitor
+/// grab. Only owner names are returned — window titles require screen-recording
+/// permission (`kCGWindowName`), so this supports app-name / sensitive-app
+/// exclusion, not per-window title matching. Duplicate names are de-duplicated
+/// (a single app can own many windows). Empty when the list is unavailable.
+pub fn visible_window_app_names() -> Vec<String> {
+    let Some(windows) = onscreen_windows() else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for window in windows {
+        if window.layer == 0
+            && window.on_screen
+            && !window.owner_name.is_empty()
+            && !names.contains(&window.owner_name)
+        {
+            names.push(window.owner_name);
+        }
+    }
+    names
 }
 
 /// Parse one CGWindowList CFDictionary entry into a [`RawCgWindow`].

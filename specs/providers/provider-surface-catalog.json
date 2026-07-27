@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-06-02T06:38:42Z",
+  "updated_at": "2026-07-26T00:00:00Z",
   "vendors": [
     {
       "vendor_id": "anthropic",
@@ -285,14 +285,14 @@
       },
       "default_models": {
         "llm_models": [
-          "claude-sonnet-4-20250514",
-          "claude-opus-4-1-20250805",
-          "claude-opus-4-20250514"
+          "claude-opus-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7"
         ],
         "ocr_models": [
-          "claude-sonnet-4-20250514",
-          "claude-opus-4-1-20250805",
-          "claude-opus-4-20250514"
+          "claude-opus-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7"
         ]
       },
       "unknown_model_policy": {
@@ -301,42 +301,9 @@
       },
       "known_models": [
         {
-          "id": "claude-sonnet-4-20250514",
-          "display_name": "Claude Sonnet 4",
+          "id": "claude-opus-5",
+          "display_name": "Claude Opus 5",
           "aliases": [
-            "claude-sonnet-4"
-          ],
-          "id_prefixes": [],
-          "capabilities": {
-            "llm": true,
-            "ocr": true,
-            "image_input": true
-          },
-          "notes": [
-            "Known multimodal Anthropic model."
-          ]
-        },
-        {
-          "id": "claude-opus-4-1-20250805",
-          "display_name": "Claude Opus 4.1",
-          "aliases": [
-            "claude-opus-4-1"
-          ],
-          "id_prefixes": [],
-          "capabilities": {
-            "llm": true,
-            "ocr": true,
-            "image_input": true
-          },
-          "notes": [
-            "Known multimodal Anthropic model."
-          ]
-        },
-        {
-          "id": "claude-opus-4-20250514",
-          "display_name": "Claude Opus 4",
-          "aliases": [
-            "claude-opus-4",
             "opus"
           ],
           "id_prefixes": [],
@@ -347,6 +314,110 @@
           },
           "notes": [
             "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-opus-4-8",
+          "display_name": "Claude Opus 4.8",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-opus-4-7",
+          "display_name": "Claude Opus 4.7",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-opus-4-6",
+          "display_name": "Claude Opus 4.6",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-sonnet-5",
+          "display_name": "Claude Sonnet 5",
+          "aliases": [
+            "sonnet"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "display_name": "Claude Sonnet 4.6",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "display_name": "Claude Haiku 4.5",
+          "aliases": [
+            "haiku"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model. 200K context (other current models are 1M)."
+          ]
+        },
+        {
+          "id": "claude-fable-5",
+          "display_name": "Claude Fable 5",
+          "aliases": [
+            "fable"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Anthropic's most capable widely released model; priced above Opus tier."
           ]
         }
       ],
@@ -878,11 +949,17 @@
       },
       "default_models": {
         "llm_models": [
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.4",
           "gpt-5.2-codex",
           "gpt-5.2"
         ],
         "ocr_models": [
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.4",
           "gpt-5.2-codex",
           "gpt-5.2"
@@ -893,6 +970,50 @@
         "ocr": "warn"
       },
       "known_models": [
+        {
+          "id": "gpt-5.6-sol",
+          "display_name": "GPT-5.6 Sol",
+          "aliases": [
+            "gpt-5.6"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Initial Maekon subprocess test default; flagship GPT-5.6 model."
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "display_name": "GPT-5.6 Terra",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "GPT-5.6 intelligence and cost balanced candidate."
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "display_name": "GPT-5.6 Luna",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "GPT-5.6 cost-sensitive, high-volume candidate."
+          ]
+        },
         {
           "id": "gpt-5.4",
           "display_name": "GPT-5.4",
@@ -944,7 +1065,8 @@
             "json_schema",
             "cwd",
             "sandbox",
-            "approval_policy"
+            "approval_policy",
+            "reasoning_effort"
           ],
           "unsupported": [
             "response_format"
@@ -957,7 +1079,8 @@
           "supported": [
             "model",
             "image",
-            "json_schema"
+            "json_schema",
+            "reasoning_effort"
           ],
           "unsupported": [],
           "notes": [
@@ -1066,6 +1189,9 @@
       },
       "default_models": {
         "llm_models": [
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.4",
           "gpt-5.2-codex",
           "gpt-5.2"
@@ -1077,6 +1203,50 @@
         "ocr": "warn"
       },
       "known_models": [
+        {
+          "id": "gpt-5.6-sol",
+          "display_name": "GPT-5.6 Sol",
+          "aliases": [
+            "gpt-5.6"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "Initial Maekon subprocess test default; flagship GPT-5.6 model."
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "display_name": "GPT-5.6 Terra",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "GPT-5.6 intelligence and cost balanced candidate."
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "display_name": "GPT-5.6 Luna",
+          "aliases": [],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": false,
+            "image_input": true
+          },
+          "notes": [
+            "GPT-5.6 cost-sensitive, high-volume candidate."
+          ]
+        },
         {
           "id": "gpt-5.4",
           "display_name": "GPT-5.4",
@@ -1128,7 +1298,8 @@
             "json_schema",
             "cwd",
             "sandbox",
-            "approval_policy"
+            "approval_policy",
+            "reasoning_effort"
           ],
           "unsupported": [
             "response_format"
@@ -1234,14 +1405,14 @@
       },
       "default_models": {
         "llm_models": [
-          "claude-opus-4-6",
-          "claude-sonnet-4",
+          "claude-opus-5",
+          "claude-sonnet-5",
           "sonnet",
           "opus"
         ],
         "ocr_models": [
-          "claude-opus-4-6",
-          "claude-sonnet-4",
+          "claude-opus-5",
+          "claude-sonnet-5",
           "sonnet",
           "opus"
         ]
@@ -1252,8 +1423,8 @@
       },
       "known_models": [
         {
-          "id": "claude-opus-4-6",
-          "display_name": "Claude Opus 4.6",
+          "id": "claude-opus-5",
+          "display_name": "Claude Opus 5",
           "aliases": [
             "opus"
           ],
@@ -1264,12 +1435,12 @@
             "image_input": true
           },
           "notes": [
-            "Claude Code subprocess surface supports multimodal OCR in Maekon."
+            "Known multimodal Anthropic model."
           ]
         },
         {
-          "id": "claude-sonnet-4",
-          "display_name": "Claude Sonnet 4",
+          "id": "claude-sonnet-5",
+          "display_name": "Claude Sonnet 5",
           "aliases": [
             "sonnet"
           ],
@@ -1280,7 +1451,23 @@
             "image_input": true
           },
           "notes": [
-            "Claude Code subprocess surface supports multimodal OCR in Maekon."
+            "Known multimodal Anthropic model."
+          ]
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "display_name": "Claude Haiku 4.5",
+          "aliases": [
+            "haiku"
+          ],
+          "id_prefixes": [],
+          "capabilities": {
+            "llm": true,
+            "ocr": true,
+            "image_input": true
+          },
+          "notes": [
+            "Known multimodal Anthropic model. 200K context (other current models are 1M)."
           ]
         }
       ],

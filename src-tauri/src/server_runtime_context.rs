@@ -55,19 +55,22 @@ impl ServerBootstrapContext {
         // #7073: provision the shared at-rest encryption key so the integration
         // state store (pending proactive-prompt bodies + insight/audit records) is
         // AES-256-GCM encrypted, not the lone plaintext-at-rest island. `.db_key`
-        // lives in `data_dir_path`; `load_or_create` is idempotent, so the storage
-        // runtime later loads the SAME key. FAIL-CLOSED: a key-provisioning failure
-        // aborts startup rather than persisting integration state in plaintext,
-        // mirroring StorageRuntimeBuilder.
-        let encryption_key = maekon_storage::encryption::EncryptionKey::load_or_create(
-            data_dir_path,
-        )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "at-rest encryption key provisioning failed; refusing to start with the \
+        // lives in `data_dir_path`. #8040: resolved via the SAME
+        // `resolve_shared_master_key` the storage runtime uses (keychain-sealed,
+        // with a verified-migration/plaintext-file fallback) — NOT an independent
+        // `load_or_create` call, which would risk this caller regenerating a
+        // fresh, DIFFERENT key on a launch where `StorageRuntimeBuilder` had
+        // already migrated `.db_key` into the keychain and deleted the file
+        // (silent divergence between the two stores' keys). FAIL-CLOSED: a
+        // key-provisioning failure aborts startup rather than persisting
+        // integration state in plaintext, mirroring StorageRuntimeBuilder.
+        let encryption_key = crate::storage_runtime::resolve_shared_master_key(data_dir_path)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "at-rest encryption key provisioning failed; refusing to start with the \
                  integration state store unencrypted: {error}"
-            )
-        })?;
+                )
+            })?;
         let integration_runtime = IntegrationRuntimeBuilder::new(
             config,
             &config_dir,

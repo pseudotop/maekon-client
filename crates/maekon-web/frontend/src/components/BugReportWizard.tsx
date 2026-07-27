@@ -31,7 +31,7 @@ export default function BugReportWizard({ open, onClose }: BugReportWizardProps)
 
   const [step, setStep] = useState<WizardStep>('generate')
   const [piiLevel, setPiiLevel] = useState<string>('standard')
-  const [includeLogs, setIncludeLogs] = useState(true)
+  const [includeLogs, setIncludeLogs] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [bundle, setBundle] = useState<BugReportBundle | null>(null)
   const [error, setError] = useState<string | null>(null)

@@ -1,7 +1,7 @@
 use crate::focus_shared::make_rule_suggestion;
 use chrono::{DateTime, Duration, Utc};
 use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionType};
-use maekon_core::models::work_session::FocusMetrics;
+use maekon_core::models::work_session::{FocusMetrics, Interruption};
 use tracing::{debug, info, warn};
 
 use crate::workflow_intelligence::PlaybookSignal;
@@ -55,6 +55,11 @@ impl FocusAnalyzer {
                 return None;
             }
         };
+        if suggestion_id != suggestion.suggestion_id {
+            debug!(id = %suggestion_id, "equivalent terminal break suggestion suppressed");
+            self.update_cooldown(CooldownType::Break).await;
+            return None;
+        }
 
         // Native OS notification copy is English-only by convention: it is rendered
         // by the OS outside the WebView, so the frontend i18n layer (which owns the
@@ -118,6 +123,11 @@ impl FocusAnalyzer {
                 return None;
             }
         };
+        if suggestion_id != suggestion.suggestion_id {
+            debug!(id = %suggestion_id, "equivalent terminal focus-time suggestion suppressed");
+            self.update_cooldown(CooldownType::FocusTime).await;
+            return None;
+        }
 
         let title = "🎯 Focus time needed";
         let body = format!(
@@ -148,30 +158,26 @@ impl FocusAnalyzer {
 
     pub(super) async fn maybe_suggest_restore_context(
         &self,
-        app: &str,
+        interruption: &Interruption,
         now: DateTime<Utc>,
     ) -> Option<Suggestion> {
         if !self.check_cooldown(CooldownType::RestoreContext).await {
             return None;
         }
 
-        let interruption = match self.storage.get_pending_interruption().await {
-            Ok(Some(int)) => int,
-            _ => return None,
-        };
-
-        if (now - interruption.interrupted_at).num_minutes() > 30 {
+        let duration_mins = (now - interruption.interrupted_at).num_minutes();
+        if !(0..=30).contains(&duration_mins) {
             return None;
         }
 
-        let duration_mins = (now - interruption.interrupted_at).num_minutes();
+        let from_app = interruption.from_app.as_str();
 
         let suggestion = make_rule_suggestion(
             // #5696: dedicated type (was ContextBased).
             SuggestionType::RestoreContext,
             format!(
                 "You were interrupted from {} about {} minutes ago. Consider restoring your previous context.",
-                app, duration_mins
+                from_app, duration_mins
             ),
             0.9,
             Priority::High,
@@ -184,11 +190,16 @@ impl FocusAnalyzer {
                 return None;
             }
         };
+        if suggestion_id != suggestion.suggestion_id {
+            debug!(id = %suggestion_id, "equivalent terminal context-restore suggestion suppressed");
+            self.update_cooldown(CooldownType::RestoreContext).await;
+            return None;
+        }
 
         let title = "🔄 Restore context";
         let body = format!(
             "You were interrupted from {} {} minutes ago. Return to your previous task?",
-            app, duration_mins
+            from_app, duration_mins
         );
 
         if let Err(e) = self.notifier.show_notification(title, &body).await {
@@ -203,7 +214,7 @@ impl FocusAnalyzer {
             }
             info!(
                 "context restore suggestion sent: {} (interrupted {} min ago)",
-                app, duration_mins
+                from_app, duration_mins
             );
         }
 
@@ -237,6 +248,11 @@ impl FocusAnalyzer {
                 return None;
             }
         };
+        if suggestion_id != suggestion.suggestion_id {
+            debug!(id = %suggestion_id, "equivalent terminal pattern suggestion suppressed");
+            self.update_cooldown(CooldownType::PatternDetected).await;
+            return None;
+        }
 
         let title = "🧭 Recurring playbook";
         let confidence_percent = (signal.confidence * 100.0).round() as i32;

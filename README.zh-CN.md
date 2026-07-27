@@ -21,9 +21,11 @@
 
 Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM 的情况下独立使用。它提供本地上下文采集、由用户审核的下一步行动候选、策略门控自动化和内置仪表盘。基于 Rust 和 Tauri v2（WebView 外壳 + React 前端）构建，在 macOS、Windows 和 Linux 上提供原生性能。
 
+公开渠道是面向邀请制 Global Alpha 的早期 prerelease，不代表 stable release 或运营就绪。
+
 ## Source Build 快速开始
 
-公开仓库已经可用，但公开 GitHub Release 资产尚未发布。在第一个公开版本发布之前，请从本地 source checkout 运行 Maekon。
+公开仓库已经可用，`v0.0.1-rc.6` 是当前公开 prerelease。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -42,7 +44,7 @@ cp target/debug/maekon-sandbox-worker \
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-Release 安装命令记录在下面的安装文档中，并将在公开 Release 资产发布后成为推荐路径。如需版本锁定、签名验证和卸载说明：
+Release 安装命令记录在下面的安装文档中。如需 prerelease 版本锁定、签名验证和卸载说明：
 - 英文: [`docs/install.md`](./docs/install.md)
 - 韩文: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -50,7 +52,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 
 - **将活动整理为受治理的工作洞察**: 在同一个地方追踪上下文、时间线、专注趋势、中断情况和已批准的自动化路径。
 - **设备端轻量运行**: 边缘处理（增量编码、缩略图、OCR）减少传输量，保持快速响应。
-- **生产级桌面技术栈**: 跨平台二进制文件、自动更新、系统托盘集成和本地 Web 仪表盘。
+- **在 Global Alpha 中评估桌面技术栈**: Prerelease 包含跨平台源码、更新基础、系统托盘集成和本地 Web 仪表盘；使用前请验证具体 build 与平台。
 
 ## 适用人群
 
@@ -71,7 +73,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 独立模式现已可用。
 
 联网模式仅作为可选的预览路径提供。
-独立模式仍是正式发布的生产级默认路径。
+独立模式是 Global Alpha 当前的默认评估路径。
 
 ## 安全与隐私概览
 
@@ -96,11 +98,11 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 | 声明 | 验证位置 |
 |---|---|
 | 排除/敏感应用在**捕获时点**被排除，而不仅是上传时 | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)，接入捕获门控: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
-| 每次离开设备的传输都记录在本地 egress 账本中，可在应用内浏览 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 读取路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 声明为 egress policy 覆盖范围的 runtime 路径会记录到本地账本，并可在应用内浏览 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 读取路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 记忆图谱积累的关于你的信念 (claims) 可浏览并可一键撤回 (Privacy → Claims) | claims 路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 同意是 fail-closed 的: 没有有效授权就不捕获 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
-| PII 过滤在存储之前和任何 egress 之前执行 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| 自动化无法绕过策略、沙箱和审计日志 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| 视觉管线中的适用路径会在其文档化存储或 egress 步骤前应用已配置的 PII 过滤 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| 支持的自动化执行路径按设计经过策略、沙箱和审计组件 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### 源码同步策略
 
@@ -112,7 +114,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 - **实时上下文监控**: 追踪活动窗口、系统资源和用户活动
 - **边缘图像处理**: 截图捕获、增量编码、缩略图和 OCR
 - **策略门控自动化**: 将已批准的动作通过策略检查、沙箱隔离和审计日志执行
-- **联网服务器功能（预览/可选）**: 可审核的下一步行动候选和反馈同步可用于分阶段验证，并非默认生产路径
+- **联网服务器功能（预览/可选）**: 可审核的下一步行动候选和反馈同步可用于分阶段验证，并非默认独立路径
 - **系统托盘**: 在后台运行，支持快速访问
 - **自动更新**: 基于 GitHub Releases 的自动更新
 - **跨平台**: 支持 macOS、Windows 和 Linux
@@ -192,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 联网模式仅为预览版本，需要显式配置服务器/认证信息才能启用。
-除非您的环境已验证联网模式，否则请使用独立模式作为默认生产路径。
+除非您的环境已验证联网模式，否则请使用独立模式作为 Global Alpha 默认路径。
 
 在无头 CI/远程调试会话中，macOS 托盘初始化可能因缺少 WindowServer 而失败，此时可使用：
 ```bash

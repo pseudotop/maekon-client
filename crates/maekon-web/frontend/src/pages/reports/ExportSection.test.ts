@@ -1,14 +1,63 @@
 import { describe, expect, it } from 'vitest'
-import { EXPORT_METRIC_COLORS, formatExportMetricTooltipValue } from './ExportSection'
+import type { ReportResponse } from '../../api/client'
+import { ApiClientError } from '../../api/client'
+import { requiresCaptureReauthForExport } from '../../api/reauth'
+import { buildReportExportFilename, buildReportSummaryFilename, serializeReportSummary } from './ExportSection'
 
-describe('ExportSection metric chart formatting', () => {
-  it('keeps metric labels visible and formats values as percentages', () => {
-    expect(formatExportMetricTooltipValue(12.956, 'CPU')).toEqual(['13.0%', 'CPU'])
-    expect(formatExportMetricTooltipValue(79.824, 'Memory')).toEqual(['79.8%', 'Memory'])
+// #8081-A: /reports/export is now a real export surface. These guard the
+// download filenames (scope-encoded, non-colliding) and the report-summary
+// serialization (an exact snapshot of the loaded report).
+describe('reports export helpers (#8081-A)', () => {
+  it('encodes data type, date range, and format into the raw-export filename', () => {
+    expect(buildReportExportFilename('metrics', 'csv', '2026-07-01', '2026-07-08')).toBe(
+      'maekon_report_metrics_2026-07-01_2026-07-08.csv',
+    )
+    expect(buildReportExportFilename('events', 'json', '2026-07-01', '2026-07-08')).toBe(
+      'maekon_report_events_2026-07-01_2026-07-08.json',
+    )
   })
 
-  it('uses a memory line color that matches the memory legend swatch', () => {
-    expect(EXPORT_METRIC_COLORS.memoryStroke).toBe('#14b8a6')
-    expect(EXPORT_METRIC_COLORS.memoryLegendStyle.backgroundColor).toBe(EXPORT_METRIC_COLORS.memoryStroke)
+  it('omits the range suffix when no dates are supplied', () => {
+    expect(buildReportExportFilename('frames', 'json')).toBe('maekon_report_frames.json')
+    expect(buildReportSummaryFilename()).toBe('maekon_report_summary.json')
+  })
+
+  it('always names the report-summary export .json', () => {
+    expect(buildReportSummaryFilename('2026-07-01', '2026-07-08')).toBe(
+      'maekon_report_summary_2026-07-01_2026-07-08.json',
+    )
+  })
+
+  it('serializes the loaded report verbatim (round-trips to the same object)', () => {
+    const report = {
+      title: 'Weekly',
+      from_date: '2026-07-01',
+      to_date: '2026-07-08',
+      days: 7,
+      total_active_secs: 100,
+      total_idle_secs: 20,
+      total_captures: 5,
+      total_events: 42,
+      avg_cpu: 12.5,
+      avg_memory: 34.1,
+      daily_stats: [],
+      app_stats: [],
+      hourly_activity: [],
+      productivity: {},
+    } as unknown as ReportResponse
+
+    const serialized = serializeReportSummary(report)
+    expect(JSON.parse(serialized)).toEqual(report)
+    // Pretty-printed for human readability.
+    expect(serialized).toContain('\n')
+  })
+
+  it('requests capture re-auth only for a protected frame export', () => {
+    const locked = new ApiClientError('auth.reauth_required', 'Re-authentication required', 403)
+
+    expect(requiresCaptureReauthForExport('frames', locked)).toBe(true)
+    expect(requiresCaptureReauthForExport('events', locked)).toBe(false)
+    expect(requiresCaptureReauthForExport('metrics', locked)).toBe(false)
+    expect(requiresCaptureReauthForExport('frames', new Error('network unavailable'))).toBe(false)
   })
 })

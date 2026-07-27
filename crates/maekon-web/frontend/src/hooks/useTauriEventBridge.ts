@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { notifyRouteRecovery } from '../routes/recoverySignals'
 import { IS_TAURI } from '../utils/platform'
+import { setOsCapturePermissionBlocked } from './useOsPermissionStatus'
 import { addToast } from './useToast'
 
 type TauriEventPayload = {
@@ -39,6 +40,16 @@ function isChatPayload(payload: unknown): payload is { sessionId?: string } {
   const obj = payload as Record<string, unknown>
   // sessionId is optional, but if present must be a string
   return !('sessionId' in obj) || typeof obj.sessionId === 'string'
+}
+
+function isOsPermissionPayload(payload: unknown): payload is { state: 'revoked' | 'restored' } {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'state' in payload &&
+    ((payload as Record<string, unknown>).state === 'revoked' ||
+      (payload as Record<string, unknown>).state === 'restored')
+  )
 }
 
 /**
@@ -209,6 +220,27 @@ export function useTauriEventBridge() {
               navigateTo(`/chat?sid=${encodeURIComponent(sid)}`)
             } else {
               navigateTo('/chat')
+            }
+          }))
+        ) {
+          return
+        }
+
+        // #8686 AC4: mid-session OS screen-capture permission transitions
+        // pushed by the Rust monitor loop. Revocation flips the persistent
+        // CapturePermissionNotice banner on (capture is already stopped
+        // fail-closed on the Rust side); restoration clears it.
+        if (
+          !(await registerListener('capture-os-permission', (event: TauriEventPayload) => {
+            if (!isOsPermissionPayload(event.payload)) {
+              return
+            }
+            const revoked = event.payload.state === 'revoked'
+            setOsCapturePermissionBlocked(revoked)
+            if (revoked) {
+              addToast('warning', tRef.current('capturePermission.revokedToast'), 10000)
+            } else {
+              addToast('success', tRef.current('capturePermission.restoredToast'), 6000)
             }
           }))
         ) {

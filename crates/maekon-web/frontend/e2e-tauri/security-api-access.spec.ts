@@ -2,6 +2,15 @@
 import http from 'node:http'
 import { fetchApiJson, invokeIpc } from './helpers.js'
 
+type SecuritySettingsSnapshot = {
+  server?: { base_url?: string }
+  ai_provider?: {
+    ocr_api?: { api_key?: string }
+    llm_api?: { api_key?: string }
+  }
+  tls?: { ca_cert_path?: string }
+}
+
 /**
  * Calls the REST API from outside using a Node.js HTTP client.
  * WebdriverIO tests run under Node.js, so direct HTTP requests are possible.
@@ -64,7 +73,7 @@ describe('S1: API Access Control', () => {
    * @tauri_only_reason REST /api/settings returns the real desktop config snapshot from disk
    */
   it('T202: get_settings does not expose server credentials', async () => {
-    const config = await fetchApiJson<Record<string, any>>('/settings')
+    const config = await fetchApiJson<SecuritySettingsSnapshot>('/settings')
 
     // server.base_url must be masked
     if (config.server) {

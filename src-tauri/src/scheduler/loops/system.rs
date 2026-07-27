@@ -747,6 +747,19 @@ impl Scheduler {
                                 .await;
                             }
 
+                            // #8056 P3: compliance-window age cap on the security
+                            // audit trails (audit_log + session_audit_log). These are
+                            // excluded from enforce_all_retention and RETAINED across
+                            // erasure, so they need their own bounded prune. audit_log
+                            // is pruned chain-safely (ADR-072 tamper-evidence preserved).
+                            {
+                                let sqlite6 = sqlite6.clone();
+                                offload_storage("audit-trail retention", move || {
+                                    sqlite6.enforce_audit_retention()
+                                })
+                                .await;
+                            }
+
                             // GDPR Art.17 erasure tombstone outbox GC (#5174 S5/R4):
                             // bound the retained sync_tombstones at max(retention, 90)
                             // days. Accepted convergence-cliff trade-off (see method doc).

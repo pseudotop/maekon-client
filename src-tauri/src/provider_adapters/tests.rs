@@ -1230,6 +1230,10 @@ async fn guarded_analysis_provider_denies_without_full_text_consent_and_audits_i
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
@@ -1372,6 +1376,10 @@ async fn guarded_llm_provider_denies_without_full_text_consent_and_audits_it() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
@@ -2044,6 +2052,10 @@ async fn guarded_ocr_provider_denies_without_ocr_consent_and_audits_it() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
@@ -2152,7 +2164,10 @@ async fn sanitize_outbound_masks_pii_in_chat_content() {
     );
 
     let sanitized = guard
-        .sanitize_outbound(&chat_message("please email user@example.com about it"))
+        .sanitize_outbound(
+            &chat_message("please email user@example.com about it"),
+            "session-test",
+        )
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2179,7 +2194,9 @@ async fn sanitize_outbound_fails_closed_without_active_window() {
         None,
     );
 
-    let result = guard.sanitize_outbound(&chat_message("hello")).await;
+    let result = guard
+        .sanitize_outbound(&chat_message("hello"), "session-test")
+        .await;
 
     assert!(
         matches!(
@@ -2228,7 +2245,7 @@ async fn sanitize_outbound_masks_pii_in_attachments() {
     ];
 
     let sanitized = guard
-        .sanitize_outbound(&message)
+        .sanitize_outbound(&message, "session-test")
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2287,7 +2304,7 @@ async fn sanitize_outbound_strips_inline_attachment_data() {
     ];
 
     let sanitized = guard
-        .sanitize_outbound(&message)
+        .sanitize_outbound(&message, "session-test")
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2301,6 +2318,87 @@ async fn sanitize_outbound_strips_inline_attachment_data() {
             }
             other => panic!("unexpected attachment variant: {other:?}"),
         }
+    }
+}
+
+#[tokio::test]
+async fn chat_privacy_audit_uses_session_correlation_for_denied_and_allowed_attempts() {
+    use super::guarded_conversation::ConversationContentGuard;
+    use maekon_core::models::ai_session::{Attachment, MessageContext};
+    use maekon_core::models::audit::AuditStatus;
+
+    let audit = Arc::new(RwLock::new(
+        AuditLogger::new(20, 10)
+            .with_pii_sanitizer(Arc::new(maekon_vision::privacy::VisionPiiSanitizer)),
+    ));
+    let window = WindowInfo {
+        title: "Editor".to_string(),
+        app_name: "Code".to_string(),
+        app_bundle_id: None,
+        pid: 7,
+        bounds: None,
+    };
+    let (denied_guard, _denied_temp) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions::default()),
+        Some(window.clone()),
+        Some(audit.clone()),
+    );
+    let (allowed_guard, _allowed_temp) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        Some(window),
+        Some(audit.clone()),
+    );
+    let correlation_id = "session-correlation-9077";
+
+    let denied = denied_guard
+        .sanitize_outbound(&chat_message("raw-secret-denied"), correlation_id)
+        .await;
+    assert!(matches!(denied, Err(CoreError::PolicyDenied { .. })));
+    let mut allowed_message = chat_message("raw-secret-allowed");
+    allowed_message.context = Some(MessageContext {
+        regime: Some("private@example.com".to_string()),
+        active_app: Some("Editor C:\\Users\\Synthetic".to_string()),
+    });
+    allowed_message.attachments = vec![Attachment::File {
+        path: "C:\\Users\\Synthetic\\private.txt".to_string(),
+        mime: Some("text/plain".to_string()),
+        data: Some("raw-secret-attachment".to_string()),
+    }];
+    allowed_guard
+        .sanitize_outbound(&allowed_message, correlation_id)
+        .await
+        .expect("allowed chat should be sanitized");
+
+    let entries = audit.write().await.drain_all();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| {
+        entry.command_id == correlation_id
+            && entry.session_id == correlation_id
+            && !entry
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("raw-secret")
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.action_type == "privacy.external_llm.denied" && entry.status == AuditStatus::Denied
+    }));
+    let allowed_details = entries
+        .iter()
+        .find(|entry| {
+            entry.action_type == "privacy.external_llm.allowed"
+                && entry.status == AuditStatus::Completed
+        })
+        .and_then(|entry| entry.details.as_deref())
+        .expect("allowed privacy audit details");
+    for token in ["o=1", "n=1", "ac=1", "cp=1", "cc=1", "ib=1", "ia=0", "ec=1"] {
+        assert!(
+            allowed_details.contains(token),
+            "strict audit sanitization must preserve safe oracle token {token}"
+        );
     }
 }
 

@@ -37,12 +37,12 @@ pub use maekon_core::ports::scheduler_storage::SchedulerStorage;
 pub use schedule::audio_capture_permitted_now;
 pub use schedule::capture_permitted_now;
 pub use schedule::set_battery_saver_active_for_scheduler;
+#[cfg(feature = "server")]
+pub(crate) use schedule::tracking_schedule_allows_capture;
 // #7735 E-3: `should_run_now_with_time` re-export removed — its only consumer
 // (`capture_permitted_now_inner`, formerly in `tracking_schedule_helper.rs`)
 // moved into `maekon_core::capture_gate` and now calls the core-crate-local
 // `should_run_now_with_time` directly (no `crate::scheduler::` path needed).
-#[cfg(feature = "server")]
-pub(crate) use schedule::tracking_schedule_active;
 pub(crate) use trigger_state::AdaptiveTriggerState;
 
 use maekon_analysis::focus_analyzer::FocusAnalyzer;

@@ -169,7 +169,8 @@ fn crt_prv_auto_005_audit_logger() {
 }
 #[test]
 fn crt_prv_auto_006_input_driver() {
-    assert_exists("crates/maekon-automation/src/input_driver.rs");
+    // Split into an ADR-003 directory module (#8691) — assert the directory, same as audit (AUTO-005)
+    assert_exists("crates/maekon-automation/src/input_driver");
 }
 #[test]
 fn crt_prv_auto_007_overlay_driver() {

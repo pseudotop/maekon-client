@@ -14,6 +14,10 @@
 - [guides/public-private-ci-split.ko.md](./guides/public-private-ci-split.ko.md): fork-safe public CI와 maintainer-only validation 경계
 - [guides/hybrid-import-workflow.ko.md](./guides/hybrid-import-workflow.ko.md): public PR import, attribution, parent validation, export handoff 절차
 - [guides/good-first-issues.ko.md](./guides/good-first-issues.ko.md): 공개 안전 첫 기여 가이드와 starter issue batch
+- [guides/qc-upload-spool-recovery.ko.md](./guides/qc-upload-spool-recovery.ko.md): 격리 upload 중단, 재시작 re-prime, exact sent-marker 검증
+- [guides/product-terminology.ko.md](./guides/product-terminology.ko.md): 사용자 노출 용어와 고위험 문구 SSOT
+- [guides/global-alpha-feedback-operations.ko.md](./guides/global-alpha-feedback-operations.ko.md): 프라이버시 안전 Alpha 피드백, 참여 철회, 인시던트 중단 계약
+- [contracts/public-surface-source-map.v1.json](./contracts/public-surface-source-map.v1.json): source→export/generated consumer 인벤토리와 게시 경계
 
 ## 하위 디렉터리
 

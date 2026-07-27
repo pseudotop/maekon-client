@@ -183,6 +183,11 @@ impl AutomationGuiStreamService {
             _ => None,
         });
 
+        #[cfg(debug_assertions)]
+        let sse_stream = sse_stream.take(crate::qc_stream_recovery::stream_limit(
+            crate::qc_stream_recovery::StreamChannel::Gui,
+        ));
+
         Ok(Sse::new(sse_stream).keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))

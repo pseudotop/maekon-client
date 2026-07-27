@@ -10,7 +10,7 @@ export default mergeConfig(
       environment: 'jsdom',
       globals: true,
       setupFiles: ['./src/__tests__/setup.ts'],
-      include: ['src/**/*.test.{ts,tsx}'],
+      include: ['src/**/*.test.{ts,tsx}', 'e2e-live/**/*.test.ts', 'e2e-tauri/**/*.test.ts'],
       resolve: {
         alias: {
           '@src': fileURLToPath(new URL('./src', import.meta.url)),

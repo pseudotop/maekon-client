@@ -1,9 +1,14 @@
 pub(crate) mod analysis_helpers;
 mod analysis_setup;
-mod embedding_setup;
+// #8059: `pub(crate)` so the web semantic-search wiring
+// (`app_runtime_launch::web_server_wiring`) can call
+// `embedding_setup::build_web_search_components`, tapping the same embedding
+// source as this scheduler ingestion path.
+pub(crate) mod embedding_setup;
 mod sync_setup;
 
 use anyhow::Result;
+use maekon_analysis::focus_analyzer::FocusAnalyzer;
 use maekon_core::config::AppConfig;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
@@ -27,11 +32,21 @@ use crate::runtime_state::SceneFinderSlot;
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::scheduler::{Scheduler, SchedulerStorage};
 
+/// Upper bound on how many previously-unindexed segments a single startup FTS
+/// backfill pass indexes (#8051). Bounds startup cost for heavy-history users;
+/// a larger backlog is drained across subsequent restarts (see
+/// `SqliteStorage::backfill_unindexed_segments_fts`).
+const FTS_BACKFILL_MAX_SEGMENTS: usize = 5_000;
+
 #[derive(Clone)]
 pub(crate) struct AgentRuntimeBundle {
     storage: Arc<dyn StorageService>,
     scheduler_storage: Arc<dyn SchedulerStorage>,
     focus_storage: Arc<dyn FocusStorage>,
+    /// Pre-built FocusAnalyzer shared with Tauri consent commands. Production
+    /// wiring installs one instance so runtime consent narrowing can clear its
+    /// in-memory pattern state immediately.
+    focus_analyzer: Option<Arc<FocusAnalyzer>>,
     calibration_writer: Option<Arc<dyn CalibrationWriter>>,
     calibration_reader: Option<Arc<dyn CalibrationReader>>,
     override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
@@ -172,7 +187,10 @@ impl AgentRuntimeBundle {
         if let Some(ref stores) = self.provider_secret_stores {
             builder = builder.with_provider_secret_stores(stores.clone());
         }
-        let support = builder.build().await?;
+        let mut support = builder.build().await?;
+        if let Some(ref focus_analyzer) = self.focus_analyzer {
+            support.focus_analyzer = focus_analyzer.clone();
+        }
         let accessibility_extractor = support.accessibility_extractor.clone();
         let external_llm_privacy_guard = crate::provider_adapters::ExternalOcrPrivacyGuard::new(
             self.consent_manager.clone().unwrap_or_else(|| {
@@ -333,49 +351,20 @@ impl AgentRuntimeBundle {
             };
 
         let embedding_config = &self.config.analysis.embedding;
-        let search_coordinator: Option<Arc<maekon_analysis::AdaptiveSearchCoordinator>> = if let (
-            Some(ref vs),
-            Some(ref vi),
-        ) =
-            (&embedding.vector_store, &vector_index)
-        {
-            let sc = maekon_analysis::SearchConfig {
-                brute_force_threshold: 10_000,
-                ivf_threshold: 100_000,
-                hnsw_threshold: 5_000,
-                oversample_factor: embedding_config.binary_oversample_factor,
-                default_nprobe: embedding_config.ivf_nprobe,
-                forced_strategy: match embedding_config.index_strategy.as_str() {
-                    "auto" => None,
-                    s @ ("brute_force" | "ivf" | "ivf_binary") => Some(s.to_string()),
-                    // "hnsw" is meaningful only when compiled with the feature
-                    // AND an AnnIndex is wired (not the case in production).
-                    #[cfg(feature = "hnsw")]
-                    "hnsw" => Some("hnsw".to_string()),
-                    other => {
-                        // review4 F9: an unrecognized index_strategy previously
-                        // degraded silently to a full brute-force scan. Warn once
-                        // at startup and fall back to auto strategy selection.
-                        tracing::warn!(
-                            index_strategy = %other,
-                            "unrecognized embedding.index_strategy; using auto strategy selection"
-                        );
-                        None
-                    }
-                },
-                // #7479: when quantization is disabled the coordinator must route
-                // to the f32 search path — the INT8 tiers read `vector_int8`,
-                // which is NULL for every row in that mode.
-                quantization_enabled: embedding_config.quantization_enabled,
+        let search_coordinator: Option<Arc<maekon_analysis::AdaptiveSearchCoordinator>> =
+            if let (Some(ref vs), Some(ref vi)) = (&embedding.vector_store, &vector_index) {
+                // #8059: SearchConfig construction moved to the shared
+                // `embedding_setup::search_config_from` so the scheduler ingestion
+                // coordinator and the web search coordinator stay in lock-step.
+                let sc = embedding_setup::search_config_from(embedding_config);
+                Some(Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
+                    vs.clone(),
+                    vi.clone(),
+                    sc,
+                )))
+            } else {
+                None
             };
-            Some(Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
-                vs.clone(),
-                vi.clone(),
-                sc,
-            )))
-        } else {
-            None
-        };
 
         if let Some(ref vi) = vector_index {
             scheduler = scheduler.with_vector_index(vi.clone());
@@ -430,6 +419,10 @@ impl AgentRuntimeBundle {
             Some(external_llm_privacy_guard.clone()),
             self.regime_manager.clone(),
             self.regime_classifier.clone(),
+            // #8051: share the single SqliteStorage Arc as the FTS content
+            // indexer so closed segments become keyword-searchable.
+            Some(self.sqlite_storage_concrete.clone()
+                as Arc<dyn maekon_core::ports::text_search::TextSearchProvider>),
             self.breaker_registry.clone(),
             #[cfg(feature = "analysis")]
             self.provider_secret_stores.as_ref(),
@@ -617,6 +610,64 @@ impl AgentRuntimeBundle {
             }
         }
 
+        // --- #8051: one-shot FTS content backfill ---
+        //
+        // Segments persisted before the live segment-close FTS wiring existed
+        // are absent from `search_fts`, so keyword search returns nothing for
+        // them. Index them once at startup as a detached, bounded, non-fatal
+        // task. It is a single `NOT IN` batch (capped at
+        // `FTS_BACKFILL_MAX_SEGMENTS`) offloaded to `spawn_blocking` via
+        // `with_conn`, so it never touches the scheduler hot path; a larger
+        // backlog is drained across restarts. Not a long-running loop, so no
+        // shutdown wiring is required.
+        {
+            let storage = self.sqlite_storage_concrete.clone();
+            tokio::spawn(async move {
+                match storage
+                    .backfill_unindexed_segments_fts(FTS_BACKFILL_MAX_SEGMENTS)
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(n) => info!("FTS backfill: indexed {n} previously-unindexed segment(s)"),
+                    Err(e) => tracing::warn!(
+                        "FTS backfill failed (non-fatal; keyword search may miss older \
+                         segments until the next start): {e}"
+                    ),
+                }
+            });
+        }
+
+        // --- #8686 AC7 (ADR-028): one-shot durable-task reconcile at startup ---
+        //
+        // Expires PROPOSED candidates past their TTL (clearing their content)
+        // and counts confirmed-candidate/to-do integrity drift. The store
+        // persists a monotonic reconcile floor, so replays across restarts are
+        // idempotent. Previously this contract existed only in tests — nothing
+        // invoked it at launch, so stale proposals survived restarts with
+        // their content intact. Detached, bounded, non-fatal (same shape as
+        // the #8051 FTS backfill above).
+        {
+            use maekon_core::ports::task_store::TaskCommandPort as _;
+            let storage = self.sqlite_storage_concrete.clone();
+            tokio::spawn(async move {
+                match storage.reconcile_tasks(chrono::Utc::now()).await {
+                    Ok(report) => {
+                        if report.expired_candidates > 0 || report.integrity_errors > 0 {
+                            info!(
+                                expired = report.expired_candidates,
+                                integrity_errors = report.integrity_errors,
+                                "durable-task reconcile: expired stale candidates at startup"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "durable-task reconcile failed (non-fatal; stale proposed candidates \
+                         keep their content until the next start): {e}"
+                    ),
+                }
+            });
+        }
+
         info!("Agent started (offline={})", self.offline_mode);
         scheduler.run(shutdown_rx, Some(self.app_handle)).await;
         info!("Agent ended");
@@ -642,6 +693,7 @@ impl AgentRuntimeBundle {
             storage,
             scheduler_storage,
             focus_storage,
+            focus_analyzer: None,
             calibration_writer: None,
             calibration_reader: None,
             override_store: None,
@@ -722,6 +774,11 @@ impl AgentRuntimeBundle {
         focus_mode: Arc<crate::focus_mode::FocusModeState>,
     ) -> Self {
         self.focus_mode = Some(focus_mode);
+        self
+    }
+
+    pub(crate) fn with_focus_analyzer(mut self, focus_analyzer: Arc<FocusAnalyzer>) -> Self {
+        self.focus_analyzer = Some(focus_analyzer);
         self
     }
 

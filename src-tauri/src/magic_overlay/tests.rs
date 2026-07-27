@@ -38,22 +38,66 @@ fn overlay_monitor_layout_treats_invalid_scale_as_one() {
 
 #[test]
 fn passive_tracking_surface_uses_capture_compatible_windows_on_windows() {
+    // Signature: (target_os, effective_capture_permitted, indicator_visible, capture_paused).
+    // With capture effectively permitted + indicator visible + not paused → shown.
     assert_eq!(
-        passive_tracking_surface_policy("windows", true, false),
+        passive_tracking_surface_policy("windows", true, true, false),
         PassiveTrackingSurfacePolicy::ThinBorderWindows
     );
+    // Indicator hidden → Hidden.
     assert_eq!(
-        passive_tracking_surface_policy("windows", false, false),
+        passive_tracking_surface_policy("windows", true, false, false),
         PassiveTrackingSurfacePolicy::Hidden
     );
+    // Paused → Hidden.
     assert_eq!(
-        passive_tracking_surface_policy("windows", true, true),
+        passive_tracking_surface_policy("windows", true, true, true),
         PassiveTrackingSurfacePolicy::Hidden
     );
+    // Non-Windows never uses the thin-border surface.
     assert_eq!(
-        passive_tracking_surface_policy("macos", true, false),
+        passive_tracking_surface_policy("macos", true, true, false),
         PassiveTrackingSurfacePolicy::Hidden
     );
+}
+
+/// #8094 regression: the passive recording border must stay HIDDEN when capture
+/// is NOT effectively permitted (e.g. a fresh no-consent profile) even though the
+/// indicator is visible and capture is not paused. Before the effective-gate term
+/// was added this returned `ThinBorderWindows`, rendering a recording border while
+/// nothing was captured (QC CRT-PRV-UX-PRIVACY-VIS-001).
+#[test]
+fn passive_tracking_surface_hidden_when_capture_not_effectively_permitted() {
+    assert_eq!(
+        passive_tracking_surface_policy(
+            "windows", /* effective */ false, /* indicator_visible */ true,
+            /* capture_paused */ false,
+        ),
+        PassiveTrackingSurfacePolicy::Hidden,
+        "no-consent (effective gate closed) must hide the border despite indicator_visible"
+    );
+    // Sanity: flipping only the effective term to true (all else equal) shows it.
+    assert_eq!(
+        passive_tracking_surface_policy("windows", true, true, false),
+        PassiveTrackingSurfacePolicy::ThinBorderWindows,
+        "granting effective capture (all else equal) surfaces the border"
+    );
+}
+
+/// #8094: the macOS native recording border visibility decision requires the
+/// effective capture gate (in addition to the indicator toggle, pause, and CUA
+/// safe mode). Pure decision → testable on every platform.
+#[test]
+fn native_recording_border_requires_effective_capture_gate() {
+    use super::native_recording_border_visible;
+    // Effective gate closed → never show, regardless of the other flags.
+    assert!(!native_recording_border_visible(false, true, false, false));
+    // All conditions satisfied → show.
+    assert!(native_recording_border_visible(true, true, false, false));
+    // Indicator hidden / paused / CUA safe mode each independently veto.
+    assert!(!native_recording_border_visible(true, false, false, false));
+    assert!(!native_recording_border_visible(true, true, true, false));
+    assert!(!native_recording_border_visible(true, true, false, true));
 }
 
 #[test]
@@ -80,6 +124,62 @@ fn tracking_border_window_specs_do_not_create_fullscreen_capture_targets() {
             "tracking border spec must not be a full-screen capture target: {spec:?}"
         );
     }
+}
+
+// ── #8849 fullscreen-policy decision (external-application scenario) ────────
+//
+// The pure `decide_fullscreen_policy` is the honest, deterministic oracle for
+// the external-app fullscreen scenario CRT-PRV-OVL-005 requires — it does NOT
+// use the Maekon main window as the sole oracle (the prior spec's only path).
+// The platform probe that FEEDS `external_fullscreen` needs a real desktop and
+// is validated separately per target; here we lock the decision it drives.
+
+/// #8849: a foreground EXTERNAL application reported fullscreen (owned windows
+/// all NOT fullscreen) must still SUPPRESS the overlay, with a reason that
+/// attributes it to the external app — the exact gap the previous
+/// owned-window-only path missed.
+#[test]
+fn decide_suppresses_for_external_fullscreen_without_owned_fullscreen() {
+    let decision = types::decide_fullscreen_policy(false, Some(true));
+    assert!(
+        !decision.overlay_allowed,
+        "external fullscreen must suppress the overlay"
+    );
+    assert!(decision.fullscreen_detected);
+    assert_eq!(decision.policy, "suppress");
+    assert!(
+        decision.reason.contains("external"),
+        "reason must attribute suppression to the external app: {}",
+        decision.reason
+    );
+}
+
+/// The owned-window path is preserved (ADD external detection, do not replace):
+/// a Maekon-owned fullscreen window still suppresses even when the external
+/// probe reports not-fullscreen.
+#[test]
+fn decide_suppresses_for_owned_fullscreen() {
+    let decision = types::decide_fullscreen_policy(true, Some(false));
+    assert!(!decision.overlay_allowed);
+    assert_eq!(decision.policy, "suppress");
+    assert!(decision.reason.contains("fullscreen"));
+}
+
+/// No fullscreen anywhere → overlay allowed. An UNDETERMINED external probe
+/// (`None` — unsupported platform / no X server / permission) degrades to
+/// allowed rather than suppressing (graceful, matches prior behavior).
+#[test]
+fn decide_allows_when_nothing_fullscreen_or_probe_undetermined() {
+    let allowed = types::decide_fullscreen_policy(false, Some(false));
+    assert!(allowed.overlay_allowed);
+    assert!(!allowed.fullscreen_detected);
+    assert_eq!(allowed.policy, "show_on_top");
+
+    let undetermined = types::decide_fullscreen_policy(false, None);
+    assert!(
+        undetermined.overlay_allowed,
+        "an undetermined external probe must not suppress the overlay"
+    );
 }
 
 #[test]
@@ -177,6 +277,32 @@ fn pointer_context_hidden_payload_carries_no_coordinates() {
     assert!(!payload.click_pulse);
 }
 
+#[test]
+fn passive_overlay_window_hides_when_no_surface_is_active() {
+    assert_eq!(
+        passive_overlay_window_policy(false, false, false),
+        PassiveOverlayWindowPolicy::Hidden,
+    );
+    assert_eq!(
+        passive_overlay_window_policy(false, true, true),
+        PassiveOverlayWindowPolicy::Hidden,
+        "CUA safe mode must not leave the passive full-screen compositor active",
+    );
+}
+
+#[test]
+fn passive_overlay_window_remains_for_coaching_or_effective_capture() {
+    assert_eq!(
+        passive_overlay_window_policy(true, false, true),
+        PassiveOverlayWindowPolicy::FullScreenClickThrough,
+        "coaching remains visible even when capture is unavailable",
+    );
+    assert_eq!(
+        passive_overlay_window_policy(false, true, false),
+        PassiveOverlayWindowPolicy::FullScreenClickThrough,
+    );
+}
+
 // ── #7076 least-privilege event-scoping policy ───────────────────────────
 //
 // These cover the window-label selection logic that `emit_overlay_event` uses to
@@ -187,7 +313,7 @@ fn pointer_context_hidden_payload_carries_no_coordinates() {
 
 #[test]
 fn screen_content_events_are_scoped_to_the_overlay_window() {
-    // Every screen-content event (focus/detection/heatmap) resolves to the
+    // Every screen-content event (focus/detection/heatmap/pointer coordinates) resolves to the
     // transparent overlay webview label, never an app-wide broadcast.
     for event in OVERLAY_SCREEN_CONTENT_EVENTS {
         assert_eq!(
@@ -206,6 +332,15 @@ fn screen_content_target_excludes_lower_privilege_windows() {
         .expect("update-focus is a screen-content event");
     assert_ne!(target, "main");
     assert_ne!(target, "tracking-panel");
+}
+
+#[test]
+fn pointer_coordinates_are_scoped_to_the_overlay_window() {
+    assert_eq!(
+        screen_content_event_target("overlay:pointer-context-update"),
+        Some("magic-overlay"),
+        "pointer coordinates must never be broadcast to main or tracking-panel webviews",
+    );
 }
 
 #[test]

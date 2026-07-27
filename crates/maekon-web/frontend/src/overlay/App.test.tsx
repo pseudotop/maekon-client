@@ -356,7 +356,9 @@ describe('overlay app', () => {
     window.localStorage.clear()
     mockInvoke.mockReset()
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
+      if (cmd === 'get_suggestions_panel_open') return Promise.resolve(false)
       if (cmd === 'get_pending_suggestions') return Promise.resolve([])
       return Promise.resolve(undefined)
     })
@@ -366,21 +368,40 @@ describe('overlay app', () => {
     })
   })
 
-  it('renders a persistent tracking border while capture is active and the indicator is visible', async () => {
+  it('keeps the recording border off the interactive magic-overlay surface', async () => {
     render(
       <I18nextProvider i18n={i18n}>
         <OverlayApp />
       </I18nextProvider>,
     )
 
-    await waitFor(() => {
-      const border = screen.getByTestId('tracking-border')
-      expect(border).toBeInTheDocument()
-      expect(border).toHaveClass('border-[3px]')
-      expect(border).not.toHaveClass('bg-brand-signal')
-    })
+    await flushAsyncEffects()
+    expect(screen.queryByTestId('tracking-border')).not.toBeInTheDocument()
   })
 
+  it('hides the tracking border when screen consent is not granted', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_capture_status') {
+        return Promise.resolve({
+          paused: false,
+          indicator_visible: true,
+          consent_granted: false,
+          permitted: false,
+        })
+      }
+      if (cmd === 'get_pending_suggestions') return Promise.resolve([])
+      return Promise.resolve(undefined)
+    })
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+
+    await flushAsyncEffects()
+    expect(screen.queryByTestId('tracking-border')).not.toBeInTheDocument()
+  })
   it.each([
     ['tracking-border-top', 'top-0', 'h-[3px]'],
     ['tracking-border-bottom', 'bottom-0', 'h-[3px]'],
@@ -399,6 +420,8 @@ describe('overlay app', () => {
     expect(border).toHaveClass(edgeClass)
     expect(border).toHaveClass(sizeClass)
     expect(border).toHaveClass('bg-brand-signal')
+    expect(border).toHaveClass('motion-safe:animate-tracking-blink')
+    expect(border).not.toHaveClass('animate-tracking-blink')
     expect(border).not.toHaveClass('border-[3px]')
   })
 
@@ -557,6 +580,40 @@ describe('overlay app', () => {
     })
   })
 
+  it('hydrates a cold-start suggestions panel before writing layout state back', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
+      if (cmd === 'get_suggestions_panel_open') return Promise.resolve(true)
+      if (cmd === 'get_pending_suggestions') return Promise.resolve([])
+      return Promise.resolve(undefined)
+    })
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Suggestions panel')).toHaveClass('translate-x-0')
+    })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('get_suggestions_panel_open')
+      expect(
+        mockInvoke.mock.calls.some(
+          ([cmd, payload]) => cmd === 'toggle_suggestions_panel' && (payload as { open?: boolean })?.open === true,
+        ),
+      ).toBe(true)
+    })
+    expect(
+      mockInvoke.mock.calls.some(
+        ([cmd, payload]) => cmd === 'toggle_suggestions_panel' && (payload as { open?: boolean })?.open === false,
+      ),
+    ).toBe(false)
+  })
+
   it('submits accept, reject, and defer feedback from GUI action buttons and refreshes the list', async () => {
     let pendingSuggestions = [
       suggestionFixture('gui-suggestion-accept', 'Accept GUI action'),
@@ -564,7 +621,8 @@ describe('overlay app', () => {
       suggestionFixture('gui-suggestion-defer', 'Defer GUI action'),
     ]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)
@@ -639,7 +697,8 @@ describe('overlay app', () => {
   it('routes the explain GUI action to chat IPC without removing the active suggestion', async () => {
     const suggestion = suggestionFixture('gui-suggestion-explain', 'Explain GUI action')
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve([suggestion])
       if (cmd === 'explain_suggestion_in_chat') return Promise.resolve('chat-session-1')
       return Promise.resolve(undefined)
@@ -677,7 +736,8 @@ describe('overlay app', () => {
     const replay = loadSuggestionReplayFixture()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)
@@ -739,7 +799,8 @@ describe('overlay app', () => {
     const replay = loadCalculatorSuggestionReplayFixture()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)
@@ -818,7 +879,8 @@ describe('overlay app', () => {
   it('renders an unread contour marker at the GUI target and opens an adjacent suggestion popover', async () => {
     const replay = loadCalculatorSuggestionReplayFixture()
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       return Promise.resolve(undefined)
     })
@@ -863,7 +925,8 @@ describe('overlay app', () => {
   it('can attach suggestions as a side panel to the active process window', async () => {
     const replay = loadCalculatorSuggestionReplayFixture()
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       return Promise.resolve(undefined)
     })
@@ -907,7 +970,8 @@ describe('overlay app', () => {
     Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true })
 
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       return Promise.resolve(undefined)
     })
@@ -964,7 +1028,8 @@ describe('overlay app', () => {
   it('filters GUI suggestions to the active app target across Notes, Finder, and Safari scenarios', async () => {
     const replay = loadMultiAppGuiSuggestionFixture()
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       if (cmd === 'submit_suggestion_feedback') return Promise.resolve({ suggestionId: payload?.suggestionId })
       return Promise.resolve(undefined)
@@ -1023,7 +1088,8 @@ describe('overlay app', () => {
   it('prefers target-scoped GUI suggestions over generic suggestions in the same Safari window', async () => {
     const replay = loadTargetScopedGuiSuggestionPriorityFixture()
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       if (cmd === 'submit_suggestion_feedback') return Promise.resolve({ suggestionId: payload?.suggestionId })
       return Promise.resolve(undefined)
@@ -1078,7 +1144,8 @@ describe('overlay app', () => {
     const replay = loadEndToEndSuggestionWorkflowFixture()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)
@@ -1188,7 +1255,8 @@ describe('overlay app', () => {
     const replay = loadSuggestionRumReplayTrailFixture()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'record_suggestion_replay_event') {
         return Promise.resolve({ traceId: `rum-${payload?.suggestionId ?? 'target'}` })
@@ -1293,7 +1361,8 @@ describe('overlay app', () => {
   it('can show suggestions in a bottom dock with a target breadcrumb', async () => {
     const replay = loadCalculatorSuggestionReplayFixture()
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       return Promise.resolve(undefined)
     })
@@ -1330,7 +1399,8 @@ describe('overlay app', () => {
   it('shows clarification instead of action affordances when Calculator context mismatches the instruction target', async () => {
     const replay = loadCalculatorClarificationFixture()
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(replay.suggestions)
       if (cmd === 'explain_suggestion_in_chat') return Promise.resolve('chat-session-calculator-clarification')
       return Promise.resolve(undefined)
@@ -1386,7 +1456,8 @@ describe('overlay app', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') {
         getPendingCalls += 1
         if (getPendingCalls === 1) {
@@ -1453,7 +1524,8 @@ describe('overlay app', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') {
         getPendingCalls += 1
         if (getPendingCalls === 1) {
@@ -1538,7 +1610,8 @@ describe('overlay app', () => {
     const replay = loadSensitiveGuiRedactionFixture()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)
@@ -1602,7 +1675,8 @@ describe('overlay app', () => {
     const user = userEvent.setup()
     let pendingSuggestions = [...replay.suggestions]
     mockInvoke.mockImplementation((cmd: string, payload?: { suggestionId?: string }) => {
-      if (cmd === 'get_capture_status') return Promise.resolve({ paused: false, indicator_visible: true })
+      if (cmd === 'get_capture_status')
+        return Promise.resolve({ paused: false, indicator_visible: true, consent_granted: true, permitted: true })
       if (cmd === 'get_pending_suggestions') return Promise.resolve(pendingSuggestions)
       if (cmd === 'submit_suggestion_feedback') {
         pendingSuggestions = pendingSuggestions.filter((item) => item.id !== payload?.suggestionId)

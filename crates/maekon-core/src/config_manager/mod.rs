@@ -171,8 +171,8 @@ impl ConfigManager {
                          defaults (telemetry/capture disabled until re-enabled)"
                     );
                     config_reset_from_corruption = true;
-                    // Fail-closed: do NOT re-seed the fresh-install default-on
-                    // telemetry/capture intent over an unrecoverable opt-out.
+                    // Fail-closed: do not seed any telemetry/capture intent
+                    // over an unrecoverable opt-out.
                     let recovery_config = AppConfig::fail_closed_recovery_default();
                     // Overwrite the corrupt file so the next launch is clean.
                     if let Err(e) = persistence::save_to_file(&config_path, &recovery_config) {

@@ -2,7 +2,36 @@ import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { addToast } from '../../../hooks/useToast'
+import { IS_LINUX, IS_MAC, IS_WINDOWS } from '../../../utils/platform'
 import { errorMessage, ipc } from '../utils'
+
+/** The i18next translate function, as returned by `useTranslation()`. */
+type MicTranslate = ReturnType<typeof useTranslation>['t']
+
+/**
+ * #8053: OS-specific path a user follows to grant microphone permission. Detected
+ * from the existing `platform` util (no new dependency). Falls back to a generic
+ * hint when the platform is unknown (e.g. standalone browser mode).
+ */
+function micPermissionPath(t: MicTranslate): string {
+  if (IS_MAC) return t('chat.mic_permission_path_macos', 'System Settings › Privacy & Security › Microphone')
+  if (IS_WINDOWS) return t('chat.mic_permission_path_windows', 'Settings › Privacy & security › Microphone')
+  if (IS_LINUX)
+    return t('chat.mic_permission_path_linux', 'your desktop privacy settings (varies by distribution / portal)')
+  return t('chat.mic_permission_path_generic', 'your system privacy settings')
+}
+
+/**
+ * #8053: compose the mic-failure toast — the base error plus OS-aware guidance for
+ * granting microphone permission, the dominant cause of a failed capture on
+ * macOS/Windows. The guidance is phrased conditionally ("If access was blocked…")
+ * so it stays accurate when the real cause is a missing or busy device.
+ */
+function notifyMicError(t: MicTranslate, err: unknown): void {
+  const base = errorMessage(err, t('chat.mic_error', 'Microphone not available'))
+  const hint = t('chat.mic_permission_hint', 'If microphone access was blocked, enable it in:')
+  addToast('error', `${base} — ${hint} ${micPermissionPath(t)}`, 8000)
+}
 
 export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<React.SetStateAction<string>>) {
   const { t } = useTranslation()
@@ -41,6 +70,17 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
         if (capabilities?.audio_compiled !== true) {
           setAudioAvailable(false)
           setAudioTooltip(t('chat.audio_not_compiled', 'Audio is not available in this build'))
+          return
+        }
+        // #8651: model readiness is only a capability signal. Consent is a
+        // separate fail-closed prerequisite and must shape the visible affordance.
+        const consent = await invoke<{
+          status: string
+          permissions?: { microphone?: boolean }
+        }>('get_consent')
+        if (consent.status !== 'Valid' || consent.permissions?.microphone !== true) {
+          setAudioAvailable(false)
+          setAudioTooltip(t('chat.mic_consent_required', 'Enable microphone consent in Privacy'))
           return
         }
         const status = await invoke<{
@@ -122,7 +162,7 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
       } catch (err) {
         recordingRef.current = false
         setRecording(false)
-        addToast('error', errorMessage(err, t('chat.mic_error', 'Microphone not available')), 5000)
+        notifyMicError(t, err)
       }
     },
     [isReadOnly, transcribing, t, micMode],
@@ -153,7 +193,7 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
       try {
         await ipc('start_vad_listening')
       } catch (err) {
-        addToast('error', errorMessage(err, t('chat.mic_error', 'Microphone not available')), 5000)
+        notifyMicError(t, err)
       }
     } else {
       try {

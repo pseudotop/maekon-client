@@ -52,6 +52,72 @@ pub fn get_active_window_windows() -> Result<Option<WindowInfo>, MonitorError> {
     }
 }
 
+/// Detects whether the foreground **external** (non-Maekon-owned) window is
+/// fullscreen / monitor-covering (#8849). Compares `GetForegroundWindow` →
+/// `GetWindowRect` against the rect of the monitor the window sits on
+/// (`MonitorFromWindow` + `GetMonitorInfoW`), so it catches both exclusive
+/// fullscreen and borderless "fake" fullscreen (#8858). Windows owned by this
+/// process are excluded (the overlay policy's owned-window path is the SSOT).
+/// `None` when there is no foreground window or the coordinates cannot be
+/// obtained.
+pub fn foreground_window_is_fullscreen_windows() -> Option<bool> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    // SAFETY: all are read-only Win32 queries. GetForegroundWindow's HWND is
+    // null-checked, RECT/MONITORINFO are zeroed() POD structs, and the required
+    // MONITORINFO.cbSize is set before the GetMonitorInfoW call. No resources to free.
+    unsafe {
+        let hwnd: HWND = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+
+        // External windows only: exclude windows owned by our process (or of unknown owner).
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == GetCurrentProcessId() {
+            return Some(false);
+        }
+
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return None;
+        }
+
+        let hmonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if hmonitor.is_null() {
+            return None;
+        }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(hmonitor, &mut info) == 0 {
+            return None;
+        }
+
+        let window = WindowBounds {
+            x: rect.left,
+            y: rect.top,
+            width: (rect.right - rect.left).max(0) as u32,
+            height: (rect.bottom - rect.top).max(0) as u32,
+        };
+        let m = info.rcMonitor;
+        let monitor = WindowBounds {
+            x: m.left,
+            y: m.top,
+            width: (m.right - m.left).max(0) as u32,
+            height: (m.bottom - m.top).max(0) as u32,
+        };
+        Some(crate::foreground_fullscreen::window_covers_monitor(
+            window,
+            monitor,
+            crate::foreground_fullscreen::COVER_TOLERANCE_PX,
+        ))
+    }
+}
+
 fn get_window_bounds(hwnd: HWND) -> Option<WindowBounds> {
     // SAFETY: GetWindowRect writes into a stack-allocated RECT via valid &mut.
     // hwnd is a non-null handle obtained from GetForegroundWindow.
