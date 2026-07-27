@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-indicator-visible"
+description = "Enables the set_indicator_visible command without any pre-configured scope."
+commands.allow = ["set_indicator_visible"]
+
+[[permission]]
+identifier = "deny-set-indicator-visible"
+description = "Denies the set_indicator_visible command without any pre-configured scope."
+commands.deny = ["set_indicator_visible"]

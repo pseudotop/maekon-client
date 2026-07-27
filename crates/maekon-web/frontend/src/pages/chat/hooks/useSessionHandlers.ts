@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { downloadBlob } from '../../../api/client'
 import { addToast } from '../../../hooks/useToast'
 import { MAX_CACHED_SESSIONS } from '../constants'
+import { chatCreateErrorMessage } from '../providerErrorGuidance'
 import type { ChatMessage, MessageRecord, SessionConfig, SessionInfo, Transport } from '../types'
 import { errorMessage, ipc, recordToChat } from '../utils'
 
@@ -16,7 +17,7 @@ interface UseSessionHandlersParams {
   setSessions: React.Dispatch<React.SetStateAction<SessionInfo[]>>
   setSessionLoadError: React.Dispatch<React.SetStateAction<string | null>>
   transport: Transport
-  selectedHttpSurface: { surface_id: string } | null
+  selectedHttpSurface: { surface_id: string; display_name: string } | null
   resolvedModel: string | undefined
   systemPrompt: string
   isHistorical: (s: SessionInfo) => boolean
@@ -103,7 +104,16 @@ export function useSessionHandlers({
         setSessionLoadError(null)
       } catch (e) {
         console.warn('create_ai_session failed:', e)
-        const message = errorMessage(e, t('chat.create_failed', 'Failed to create an AI session.'))
+        const message = chatCreateErrorMessage(e, {
+          providerName: selectedHttpSurface?.display_name,
+          providerNotConfiguredMessage: (provider) =>
+            t('chat.provider_not_configured', {
+              provider,
+              defaultValue:
+                '{{provider}} is not configured. Add its credential in Settings → AI & Automation, then try again.',
+            }),
+          fallback: t('chat.create_failed', 'Failed to create an AI session.'),
+        })
         setCreateError(message)
         addToast('error', message, 6000)
       }

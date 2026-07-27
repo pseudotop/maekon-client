@@ -97,6 +97,30 @@ CREATE INDEX idx_memory_edges_dst ON memory_edges(dst_id, edge_type);
 - **regime 신념 수정**: 명시적 out-of-scope. ADR-012 의 파괴적 centroid merge 는 그대로; 이 ADR 은 regime 에 provenance/split 을 추가하지 않는다.
 - **Traversal-first 검색**: Phase 1/2 는 RRF hybrid 검색을 주 retriever 로 유지; 엣지는 augment(re-rank/expand)할 뿐 `hybrid_search_service`를 대체하지 않는다.
 
+### 5. 범위 명확화 — claim 을 제안/코칭 입력으로 사용 (defer; 2026-07, #8058 P2-2)
+
+2026-07 기능 감사에서 `coaching_engine`·suggestion 크레이트가 `MemoryGraphPort`
+참조 **0건**임이 관찰됨: 그래프의 read 표면은 (a) 웹 대시보드
+(`handlers/memory_claims.rs` — list/retract, 즉 표시 + 사용자 액션), (b)
+`belief_revision`(기본 **off**) 뿐. 위에서 언급한 검색-augment read-path(엣지
+re-rank/expand)조차 **아직 미배선** — `semantic_search_service` 는 claim/edge 를
+읽지 않는다. 요컨대 active claim/edge 는 현재 **표시 + belief revision 전용**으로만
+축적되며, 생성(generation) 결정에 흐르지 않는다.
+
+이는 비준된 범위에 **부합**하며 회귀가 아니다. 수용 기준(아래)은 substrate·승격·
+durability·belief revision·degradation·markdown 렌더를 다루며, claim 이 제안/코칭
+*생성*에 반영된다는 항목은 **없다**. 표시 외 ADR 의도 read-path 는 검색 augment
+(엣지가 hybrid 검색을 re-rank/expand)이지, claim 텍스트를 제안/코칭 프롬프트에
+주입하는 것이 **아니다**. 둘은 실질적으로 다른 설계(검색 re-rank vs 프롬프트-컨텍스트
+주입 vs 코칭 게이트 신호)이며, 각각 고유의 프라이버시 표면(claim 텍스트는
+사용자-파생이며 생성 경계를 새로 넘게 됨)·egress 감사·평가 요건을 가진다.
+
+**결정**: claim-as-generation-input consumer 는 **신규·미비준 설계**이므로 임시로
+도입하지 않고 전용 follow-up(ADR amendment 또는 신규 ADR)으로 연기한다. 이미
+범위화된 검색 augment(위 항목) 배선이 더 작고 ADR-정합적인 첫 단계이며 마찬가지로
+follow-up 으로 추적한다. 이 명확화에는 런타임 변경이 수반되지 않는다 —
+"display-only" 관찰이 구현 버그로 오인되지 않도록 경계를 기록할 뿐이다.
+
 ## 결과 (Consequences)
 
 ### 긍정

@@ -101,7 +101,10 @@ mod tests {
         let request = ProviderModelsRequest {
             provider_type: "openai".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: Some("https://example.test/v1/models".to_string()),
+            // The in-process catalog port is the unit under test. A loopback literal keeps this
+            // fixture independent of DNS while following the local discovery path's documented
+            // loopback exception, so execution reaches the injected fixed-status transport.
+            endpoint: Some("http://127.0.0.1/v1/models".to_string()),
             surface: Some("llm_api".to_string()),
             surface_id: Some("provider_surface.openai.direct_api".to_string()),
             use_saved_secret: false,

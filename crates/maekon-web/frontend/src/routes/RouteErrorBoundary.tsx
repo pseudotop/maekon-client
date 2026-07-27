@@ -94,6 +94,7 @@ interface InnerProps {
   onCatch: (error: Error, info: ErrorInfo) => void
   onRetry: () => void
   onGoHome: () => void
+  onReportProblem: () => void
 }
 
 interface InnerState {
@@ -127,6 +128,7 @@ class RouteErrorBoundaryInner extends Component<InnerProps, InnerState> {
           isRecovering={this.props.isRecovering}
           onRetry={this.props.onRetry}
           onGoHome={this.props.onGoHome}
+          onReportProblem={this.props.onReportProblem}
         />
       )
     }
@@ -285,6 +287,12 @@ export function RouteErrorBoundary({ route, children }: RouteErrorBoundaryProps)
     navigate('/')
   }, [navigate])
 
+  // #8079: route a stuck user to the Support & Diagnostics destination so they
+  // can report the problem or copy privacy-sanitized diagnostics.
+  const handleReportProblem = useCallback(() => {
+    navigate('/support')
+  }, [navigate])
+
   return (
     <RouteErrorBoundaryInner
       key={resetKey}
@@ -293,6 +301,7 @@ export function RouteErrorBoundary({ route, children }: RouteErrorBoundaryProps)
       onCatch={handleCatch}
       onRetry={handleRetry}
       onGoHome={handleGoHome}
+      onReportProblem={handleReportProblem}
     >
       {children}
     </RouteErrorBoundaryInner>

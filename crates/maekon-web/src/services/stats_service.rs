@@ -39,8 +39,27 @@ impl StatsQueryService {
 
         let events = self.ctx.storage.get_events(from, to, 100000).await?;
         let frames = self.ctx.storage.get_frames(from, to, 100000).await?;
-        let events_logged = events.len() as u64;
-        let frames_captured = frames.len() as u64;
+
+        // #8077-B: the headline "today" counts come from real `COUNT(*)`-in-range
+        // queries, not `.len()` of the 100k-capped materialized lists above. The
+        // cap silently undercounted, so the Dashboard total diverged from the
+        // Storage tab's all-time `COUNT(*)`. The materialized lists are still used
+        // below for the per-app activity breakdown (a single day never exceeds the
+        // cap in practice).
+        let window = maekon_core::types::TimeWindow::new(from, to)
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+        let events_logged = self
+            .ctx
+            .storage
+            .count_events_in_range(&window)
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let frames_captured = self
+            .ctx
+            .storage
+            .count_frames_in_range(&window)
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         let mut app_stats = build_activity_counts(&events, &frames);
         let session_app_durations = app_durations_for_range(&self.ctx, from, to).await;

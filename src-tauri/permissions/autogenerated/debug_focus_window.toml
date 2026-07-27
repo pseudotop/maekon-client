@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-debug-focus-window"
+description = "Enables the debug_focus_window command without any pre-configured scope."
+commands.allow = ["debug_focus_window"]
+
+[[permission]]
+identifier = "deny-debug-focus-window"
+description = "Denies the debug_focus_window command without any pre-configured scope."
+commands.deny = ["debug_focus_window"]

@@ -4,11 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { executeSceneAction } from '../../api/client'
 import type { UiScene } from '../../api/contracts'
-import { Alert, Checkbox } from '../../components/ui'
+import { Alert, Checkbox, Spinner } from '../../components/ui'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
+import { useFrameImage } from '../../hooks/useFrameImage'
 import { iconSize, motion, typography } from '../../styles/tokens'
-import { resolveImageUrl } from '../../utils/api-base'
 import type { FrameItem, ProjectedSceneElement, SceneOverlayProps } from './types'
 
 // ── useSceneState: shared state for viewport + assistant ─────────
@@ -190,7 +190,7 @@ interface SceneViewportProps {
   scene: SceneState
 }
 
-export function SceneViewport({ currentFrame, imageLoadFailed, onImageLoadFailed, scene }: SceneViewportProps) {
+export function SceneViewport({ currentFrame, onImageLoadFailed, scene }: SceneViewportProps) {
   const { t } = useTranslation()
   const {
     showSceneOverlay,
@@ -201,27 +201,59 @@ export function SceneViewport({ currentFrame, imageLoadFailed, onImageLoadFailed
     projectedSceneElements,
   } = scene
 
+  // #8077-A: authenticated blob load (raw <img> is cross-origin-blocked in the
+  // Tauri desktop app) plus a truthful unavailable reason + recovery action.
+  const frameImage = useFrameImage(currentFrame.image_url)
+  const imageShown = (frameImage.phase === 'raw' || frameImage.phase === 'ready') && !!frameImage.src
+
+  // Keep the parent's latch in sync so the overlay toggle disables on failure.
+  useEffect(() => {
+    if (frameImage.phase === 'error') onImageLoadFailed()
+  }, [frameImage.phase, onImageLoadFailed])
+
   return (
     <div
       ref={sceneViewportCallbackRef}
       className="relative aspect-video overflow-hidden rounded-lg bg-surface-elevated"
     >
-      {!imageLoadFailed ? (
+      {imageShown ? (
         <img
-          src={resolveImageUrl(currentFrame.image_url) ?? undefined}
+          src={frameImage.src ?? undefined}
           alt={`Screenshot at ${currentFrame.timestamp}`}
           className="h-full w-full object-contain"
-          onError={() => onImageLoadFailed()}
+          onError={frameImage.notifyImgError}
         />
+      ) : frameImage.phase === 'loading' ? (
+        <div className="flex h-full w-full items-center justify-center">
+          <Spinner />
+        </div>
       ) : (
-        <div className="flex h-full w-full items-center justify-center px-4 text-center text-content-secondary text-sm">
-          {t(
-            'replay.imageUnavailable',
-            '스크린샷 이미지를 불러오지 못했습니다. file 보존 policy 또는 path state를 확인하세요.',
-          )}
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-4 text-center text-content-secondary text-sm">
+          <p>
+            {frameImage.reason === 'reauth'
+              ? t('frameImage.reauth', 'Re-authentication is required to view this screenshot.')
+              : t(
+                  'replay.imageUnavailable',
+                  'Unable to load the screenshot. It may have been removed by the retention policy, or re-authentication may be required.',
+                )}
+          </p>
+          {frameImage.reason === 'reauth' ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              isLoading={frameImage.reauthPending}
+              onClick={() => void frameImage.reauthenticate()}
+            >
+              {t('frameImage.reauthAction', 'Re-authenticate')}
+            </Button>
+          ) : frameImage.retryable ? (
+            <Button variant="secondary" size="sm" onClick={frameImage.retry}>
+              {t('frameImage.retry', 'Retry')}
+            </Button>
+          ) : null}
         </div>
       )}
-      {!imageLoadFailed &&
+      {imageShown &&
         showSceneOverlay &&
         projectedSceneElements.map((element) => (
           <button

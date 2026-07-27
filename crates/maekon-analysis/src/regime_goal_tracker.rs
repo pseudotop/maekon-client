@@ -35,6 +35,46 @@ impl RegimeGoalTracker {
         self.goals = regime_goals.clone();
     }
 
+    /// Seed today's accumulated minutes (and reconstruct already-passed
+    /// notification thresholds) from persisted per-regime minute totals, so a
+    /// restart of the 24/7 agent does not reset same-day goal progress (#8052).
+    ///
+    /// `entries` is an iterator of `(regime_label, minutes_logged_today)` — the
+    /// caller must pass only rows whose stored (local) date is today. Minutes
+    /// are SET, not added: they are the authoritative persisted total for the
+    /// day, and a later `record_minutes` continues accruing from there.
+    ///
+    /// The persisted schema does not record WHICH milestones already fired, so
+    /// the already-crossed thresholds are reconstructed from the minutes/target
+    /// ratio (against the tracker's currently configured target) and marked
+    /// notified. This blocks the 25/50/75/100% coaching nudges from re-firing
+    /// for milestones reached earlier today; thresholds not yet crossed stay
+    /// armed and fire normally as more minutes accrue. A regime with no
+    /// configured goal keeps its seeded minutes but arms no thresholds.
+    pub fn hydrate_today_minutes(&mut self, entries: impl IntoIterator<Item = (String, u32)>) {
+        // Apply any pending rollover first so a seed that lands just after local
+        // midnight does not repopulate a stale prior day.
+        self.ensure_date_rollover();
+        for (regime_label, minutes) in entries {
+            if minutes == 0 {
+                continue;
+            }
+            self.today_minutes.insert(regime_label.clone(), minutes);
+            // Reconstruct already-passed thresholds from the seeded minutes and
+            // the current target so previously-fired milestones do not nudge
+            // again. `current_percentage` reads the value just inserted.
+            if let Some(percentage) = self.current_percentage(&regime_label) {
+                let crossed: Vec<u8> = GOAL_THRESHOLDS
+                    .into_iter()
+                    .filter(|threshold| percentage >= *threshold as u16)
+                    .collect();
+                if !crossed.is_empty() {
+                    self.notified_thresholds.insert(regime_label, crossed);
+                }
+            }
+        }
+    }
+
     /// Record additional minutes for a regime. Triggers date rollover if needed.
     pub fn record_minutes(&mut self, regime_label: &str, additional_minutes: u32) {
         self.ensure_date_rollover();
@@ -316,6 +356,82 @@ mod tests {
         let mut tracker = RegimeGoalTracker::new();
         tracker.record_minutes("Unknown", 50);
         assert_eq!(tracker.check_threshold("Unknown"), None);
+    }
+
+    /// #8052 primary regression: a restart at noon after 80 of 100 minutes must
+    /// NOT under-report progress, NOT re-fire the 25/50/75% nudges already
+    /// delivered earlier today, and must still fire the 100% milestone once it
+    /// is genuinely reached. Also proves in-RAM minutes never regress below the
+    /// hydrated value as new minutes accrue.
+    #[test]
+    fn restart_hydration_noon_80_of_100_no_regression() {
+        // "Before restart": a fresh tracker accrued 80 min and fired 25/50/75.
+        // "After restart" is a brand-new tracker (in-RAM state lost) hydrated
+        // from the persisted 80-minute total.
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+        tracker.hydrate_today_minutes([("Deep Work".to_string(), 80u32)]);
+
+        // 1. No under-report: progress surfaces the hydrated 80 min (not 0).
+        let progress = tracker.progress("Deep Work").unwrap();
+        assert_eq!(progress.current_minutes, 80);
+        assert_eq!(progress.percentage, 80);
+
+        // 2. No re-fire: 25/50/75 were reconstructed as notified, so no nudge.
+        assert_eq!(
+            tracker.check_threshold("Deep Work"),
+            None,
+            "already-passed thresholds must not re-fire after restart"
+        );
+
+        // 3. The 100% milestone was NOT yet crossed at 80 min, so it stays armed
+        //    and fires exactly once when minutes genuinely reach the target.
+        tracker.record_minutes("Deep Work", 20); // 80 -> 100
+        assert_eq!(
+            tracker.progress("Deep Work").unwrap().current_minutes,
+            100,
+            "post-restart minutes must accrue on top of the hydrated value"
+        );
+        assert_eq!(tracker.check_threshold("Deep Work"), Some(100));
+        assert_eq!(tracker.check_threshold("Deep Work"), None);
+    }
+
+    #[test]
+    fn hydrate_ignores_zero_and_seeds_multiple_regimes() {
+        let mut tracker = RegimeGoalTracker::new();
+        let mut goals = HashMap::new();
+        goals.insert("Deep Work".to_string(), 100);
+        goals.insert("Communication".to_string(), 60);
+        tracker.update_goals(&goals);
+
+        tracker.hydrate_today_minutes([
+            ("Deep Work".to_string(), 50u32),
+            ("Communication".to_string(), 0u32), // zero seeds nothing
+        ]);
+
+        assert_eq!(tracker.progress("Deep Work").unwrap().current_minutes, 50);
+        assert_eq!(
+            tracker.progress("Communication").unwrap().current_minutes,
+            0
+        );
+        // Deep Work crossed 25/50 (50%) — those must not re-fire, but 75 stays armed.
+        assert_eq!(tracker.check_threshold("Deep Work"), None);
+        tracker.record_minutes("Deep Work", 25); // 50 -> 75
+        assert_eq!(tracker.check_threshold("Deep Work"), Some(75));
+    }
+
+    #[test]
+    fn hydrate_seeds_minutes_even_without_configured_goal() {
+        // A persisted regime whose goal was removed from config keeps its seeded
+        // minutes (harmless — `progress` returns None without a goal) but arms
+        // no thresholds, so a later goal re-add does not lose today's minutes.
+        let mut tracker = RegimeGoalTracker::new();
+        tracker.hydrate_today_minutes([("Orphan".to_string(), 40u32)]);
+        assert!(tracker.progress("Orphan").is_none());
+
+        let mut goals = HashMap::new();
+        goals.insert("Orphan".to_string(), 100);
+        tracker.update_goals(&goals);
+        assert_eq!(tracker.progress("Orphan").unwrap().current_minutes, 40);
     }
 
     #[test]

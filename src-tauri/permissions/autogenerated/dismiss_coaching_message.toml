@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dismiss-coaching-message"
+description = "Enables the dismiss_coaching_message command without any pre-configured scope."
+commands.allow = ["dismiss_coaching_message"]
+
+[[permission]]
+identifier = "deny-dismiss-coaching-message"
+description = "Denies the dismiss_coaching_message command without any pre-configured scope."
+commands.deny = ["dismiss_coaching_message"]

@@ -14,6 +14,7 @@ use maekon_core::config::{CoachingConfig, PiiFilterLevel};
 use maekon_core::models::coaching::{
     trigger_type_name, CoachingMessage, CoachingProfile, GoalProgressView, TriggerType,
 };
+use maekon_core::ports::adaptive_scorer_store::AdaptiveScorerStore;
 use maekon_core::ports::coaching_effectiveness_store::CoachingEffectivenessStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::collections::HashMap;
@@ -34,6 +35,18 @@ use tracing::{debug, warn};
 /// the LRU simply drops the oldest un-resolved entry if that bound is somehow
 /// exceeded (bounded memory — house concurrency rule).
 const MESSAGE_FEATURE_CACHE_CAP: usize = 256;
+
+/// Bound on the number of distinct regimes whose EMA dwell-duration is retained
+/// in `regime_avg_duration` (#8045 C1). Previously an unbounded `HashMap` keyed
+/// by `regime_id`, it grew one entry per distinct regime ever entered over the
+/// process lifetime — a slow leak on a 24/7 agent. An `LruCache` (the same
+/// bounded-collection pattern as `message_features`) keeps only the hottest
+/// regimes; long-dead regimes age out on their own, and `remove_regime` provides
+/// immediate cascade eviction when the orchestrator reports a hard-delete/merge.
+/// The cap comfortably exceeds the realistic concurrent-regime count
+/// (`RegimeManager::max_active` default 7 plus inactive/archived), so an active
+/// regime's EMA is never evicted from under it.
+const REGIME_AVG_DURATION_CACHE_CAP: usize = 64;
 
 use crate::coaching_template::CoachingTemplateRegistry;
 use crate::feedback_tracker::FeedbackTracker;
@@ -68,6 +81,18 @@ pub struct CoachingEngine {
     /// persist/load failure is logged, never fatal.
     pub(super) effectiveness_store: Option<Arc<dyn CoachingEffectivenessStore>>,
 
+    /// Optional narrow persistence port for the `adaptive_scorer`'s learned
+    /// weights (#8058 P2-1). `None` ⇒ in-memory only (every unit test). Before
+    /// #8058 the adaptive scorer was the ONLY feedback-learning component NOT
+    /// persisted — its weights and `train_count` evaporated on exit while the
+    /// sibling effectiveness/scorer-tally/regime-reaction state already survived
+    /// restart, so a user restarting before accumulating `MIN_TRAINING_SAMPLES`
+    /// in one session could never reach `is_ready()`. Write-through happens after
+    /// each training update; load-on-start via
+    /// [`hydrate_adaptive_scorer_from_store`]. Advisory state — a persist/load
+    /// failure is logged, never fatal.
+    pub(super) adaptive_scorer_store: Option<Arc<dyn AdaptiveScorerStore>>,
+
     /// Profile display name -> last alert timestamp (cooldown enforcement).
     pub(super) last_alert: RwLock<HashMap<String, DateTime<Utc>>>,
     /// Current regime ID for transition detection.
@@ -86,7 +111,11 @@ pub struct CoachingEngine {
     /// corrects a stale comment that previously claimed the key was
     /// `regime_label`; that mismatch caused `build_variables`'s lookup to
     /// always miss (#7480 follow-up).
-    pub(super) regime_avg_duration: RwLock<HashMap<String, f64>>,
+    /// Bounded `LruCache` (`REGIME_AVG_DURATION_CACHE_CAP`) so it cannot grow
+    /// without bound over a 24/7 process (#8045 C1). Readers use `peek` (no
+    /// recency bump) under the read lock; the writer uses `put` under the write
+    /// lock. `remove_regime` evicts on cascade.
+    pub(super) regime_avg_duration: RwLock<LruCache<String, f64>>,
 
     /// Count of regime transitions today. Reset at midnight.
     pub(super) context_switch_count: RwLock<u32>,
@@ -105,11 +134,14 @@ pub struct CoachingEngine {
 
     /// Adaptive scorer — online logistic regression for should-show decisions.
     ///
-    /// DEFERRED / NOT WIRED (review4 F15): `train_on_feedback` — the only path that
-    /// trains this scorer — has no production caller, so `is_ready()` never becomes
-    /// true and the rule-based effectiveness gate is always used. The scaffolding is
-    /// retained for a future feedback-wiring effort and does not currently influence
-    /// coaching decisions.
+    /// WIRED: `train_on_feedback` (the path that trains this scorer) is called
+    /// from both feedback paths ([`record_explicit_feedback`] and
+    /// [`evaluate_implicit_feedback`]), so once `MIN_TRAINING_SAMPLES` updates
+    /// accumulate, `is_ready()` becomes true and `evaluate()` prefers its learned
+    /// prediction over the rule-based effectiveness gate. #8058 P2-1 additionally
+    /// persists its weights through [`adaptive_scorer_store`] after each update so
+    /// the warm-up survives restart (previously the ONLY learning component reset
+    /// on exit).
     pub(super) adaptive_scorer: RwLock<AdaptiveScorer>,
     /// Per-`message_id` extracted features, cached at `evaluate()` time so a later
     /// feedback event trains the adaptive scorer on the features of the SPECIFIC
@@ -149,11 +181,15 @@ impl CoachingEngine {
             goal_tracker: RwLock::new(goal_tracker),
             feedback_tracker: RwLock::new(FeedbackTracker::new()),
             effectiveness_store: None,
+            adaptive_scorer_store: None,
             last_alert: RwLock::new(HashMap::new()),
             current_regime_id: RwLock::new(None),
             current_regime_entered: RwLock::new(None),
             snoozed_until: RwLock::new(None),
-            regime_avg_duration: RwLock::new(HashMap::new()),
+            regime_avg_duration: RwLock::new(LruCache::new(
+                NonZeroUsize::new(REGIME_AVG_DURATION_CACHE_CAP)
+                    .unwrap_or_else(|| panic!("REGIME_AVG_DURATION_CACHE_CAP must be non-zero")),
+            )),
             context_switch_count: RwLock::new(0),
             context_switch_date: RwLock::new(chrono::Utc::now().date_naive()),
             last_app_name: RwLock::new(String::new()),
@@ -191,6 +227,59 @@ impl CoachingEngine {
     pub fn with_effectiveness_store(mut self, store: Arc<dyn CoachingEffectivenessStore>) -> Self {
         self.effectiveness_store = Some(store);
         self
+    }
+
+    /// Attach the narrow adaptive-scorer persistence port (#8058 P2-1) so the
+    /// online-logistic-regression weights survive restart. Call
+    /// [`hydrate_adaptive_scorer_from_store`] once after construction to load the
+    /// prior model.
+    pub fn with_adaptive_scorer_store(mut self, store: Arc<dyn AdaptiveScorerStore>) -> Self {
+        self.adaptive_scorer_store = Some(store);
+        self
+    }
+
+    /// Write the current adaptive-scorer weights through to the persistence port
+    /// (#8058 P2-1). Full-snapshot, idempotent upsert of the singleton row —
+    /// called after each training update so a daily-restart user keeps the model
+    /// warm-up. A `None` store or a write failure is a silent/logged no-op: this
+    /// state is advisory and must never block the coaching path (ADR-017).
+    async fn persist_adaptive_scorer(
+        &self,
+        state: &maekon_core::models::coaching::AdaptiveScorerState,
+    ) {
+        let Some(store) = self.adaptive_scorer_store.as_ref() else {
+            return;
+        };
+        if let Err(e) = store.save_adaptive_scorer_state(state) {
+            debug!(error = %e, "adaptive scorer persist failed (advisory, ignored)");
+        }
+    }
+
+    /// Load the persisted adaptive-scorer weights into the live model on startup
+    /// (#8058 P2-1). Fail-safe: a missing store, an empty row, or a stale-shaped
+    /// weight vector all start from the neutral default model (today's behavior)
+    /// and only warn — it must never panic the scheduler.
+    pub async fn hydrate_adaptive_scorer_from_store(&self) {
+        let Some(store) = self.adaptive_scorer_store.as_ref() else {
+            return;
+        };
+        match store.load_adaptive_scorer_state() {
+            Ok(Some(state)) => match AdaptiveScorer::from_state(&state) {
+                Ok(scorer) => {
+                    let train_count = scorer.train_count();
+                    *self.adaptive_scorer.write().await = scorer;
+                    debug!(train_count, "adaptive scorer hydrated from storage");
+                }
+                Err(reason) => {
+                    warn!(
+                        reason,
+                        "adaptive scorer state invalid; starting from default"
+                    )
+                }
+            },
+            Ok(None) => debug!("adaptive scorer: no persisted state, starting fresh"),
+            Err(e) => warn!(error = %e, "adaptive scorer load failed; starting from default"),
+        }
     }
 
     /// Write the current effectiveness scores through to the persistence port
@@ -495,16 +584,21 @@ impl CoachingEngine {
         let features = self.message_features.write().await.pop(message_id);
         if let Some(features) = features {
             let label = if positive { 1.0 } else { 0.0 };
-            // Update and read the count under a single guard, then drop it before
-            // logging — the tracing temporaries must not be held across an
-            // `.await`, or the future stops being `Send` (CoachingPort::record_feedback
-            // requires a `Send` future).
-            let train_count = {
+            // Update, then snapshot the model, under a single guard; drop it
+            // before the `.await`/logging — neither the guard nor tracing
+            // temporaries may be held across an await, or the future stops being
+            // `Send` (CoachingPort::record_feedback requires a `Send` future). The
+            // snapshot (a plain owned struct) is Send, so it can cross the await.
+            let (train_count, snapshot) = {
                 let mut scorer = self.adaptive_scorer.write().await;
                 scorer.update(&features, label);
-                scorer.train_count()
+                (scorer.train_count(), scorer.snapshot())
             };
             debug!(message_id, positive, train_count, "adaptive scorer trained");
+            // #8058 P2-1: write-through so the learned weights survive restart —
+            // otherwise a user restarting before accumulating MIN_TRAINING_SAMPLES
+            // in a single session could never reach is_ready().
+            self.persist_adaptive_scorer(&snapshot).await;
         }
     }
 
@@ -522,7 +616,18 @@ impl CoachingEngine {
     /// Returns 1800 (30 min) as default when no history exists.
     pub async fn avg_regime_duration_secs(&self, regime_id: &str) -> u64 {
         let avgs = self.regime_avg_duration.read().await;
-        avgs.get(regime_id).copied().unwrap_or(1800.0) as u64
+        // `peek` (not `get`) so a read does not need `&mut` and does not bump LRU
+        // recency — reads must not keep an otherwise-cold regime alive in the cache.
+        avgs.peek(regime_id).copied().unwrap_or(1800.0) as u64
+    }
+
+    /// Evict the per-regime EMA-duration entry for `regime_id` (#8045 C1). The
+    /// orchestrator calls this alongside `RegimeClassifier::remove_regime` when a
+    /// regime is hard-deleted / user-deleted / merged away (the ids returned by
+    /// `RegimeManager::run_maintenance`/`delete`/`merge`), so a dead regime does
+    /// not linger in the cache until LRU eviction would otherwise reach it.
+    pub async fn remove_regime(&self, regime_id: &str) {
+        self.regime_avg_duration.write().await.pop(regime_id);
     }
 
     /// Register a coaching message for pending feedback evaluation.
@@ -651,6 +756,18 @@ impl CoachingEngine {
     pub async fn update_regime_goals(&self, goals: &HashMap<String, u32>) {
         let mut tracker = self.goal_tracker.write().await;
         tracker.update_goals(goals);
+    }
+
+    /// Seed today's goal progress from persisted habit-streak minute totals so a
+    /// restart does not reset same-day progress or re-fire already-passed
+    /// coaching nudges (#8052). Delegates to
+    /// [`RegimeGoalTracker::hydrate_today_minutes`]; the caller supplies only
+    /// rows whose stored (local) date is today. Called once at composition-root
+    /// startup, after `new()` set the configured goals and before the coaching
+    /// loops run.
+    pub async fn hydrate_goal_progress(&self, entries: impl IntoIterator<Item = (String, u32)>) {
+        let mut tracker = self.goal_tracker.write().await;
+        tracker.hydrate_today_minutes(entries);
     }
 
     // NOTE (#7600): `CoachingEngine` intentionally does NOT implement a

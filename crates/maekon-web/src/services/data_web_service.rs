@@ -78,7 +78,11 @@ impl DataCommandService {
         result.metrics_deleted = deleted.metrics_deleted;
         result.process_snapshots_deleted = deleted.process_snapshots_deleted;
         result.idle_periods_deleted = deleted.idle_periods_deleted;
-        result.message = format!("{} records were deleted", result.total());
+        // #8045 B1: the count reflects the derived-data cascade (LLM summaries /
+        // embeddings / local suggestions removed for the window) via
+        // `DeletedRangeCounts::total`, not just the five raw-table fields the
+        // frozen `DeleteResult` HTTP contract carries.
+        result.message = format!("{} records were deleted", deleted.total());
 
         Ok(result)
     }
@@ -145,7 +149,10 @@ impl DataCommandService {
     }
 }
 
-fn resolve_stored_frame_path(frames_dir: &Path, stored_path: &str) -> Result<PathBuf, ApiError> {
+pub(crate) fn resolve_stored_frame_path(
+    frames_dir: &Path,
+    stored_path: &str,
+) -> Result<PathBuf, ApiError> {
     let candidate = Path::new(stored_path);
     if candidate.is_absolute() {
         return Err(ApiError::BadRequest("Invalid frame path".to_string()));

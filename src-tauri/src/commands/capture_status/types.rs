@@ -4,9 +4,12 @@
 //! ADR-013 split from `capture_status/mod.rs`.
 
 use serde::Serialize;
+#[cfg(debug_assertions)]
 use tauri::{AppHandle, Manager};
+#[cfg(debug_assertions)]
 use tracing::debug;
 
+#[cfg(debug_assertions)]
 use super::position::{resolve_point_monitor_index, resolve_window_monitor_index, MonitorBounds};
 
 #[derive(Serialize)]
@@ -20,10 +23,12 @@ pub struct DebugMonitorInfo {
     pub current: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub struct CaptureStatusResponse {
     pub paused: bool,
     pub indicator_visible: bool,
+    pub consent_granted: bool,
+    pub permitted: bool,
 }
 
 #[derive(Serialize)]
@@ -73,6 +78,7 @@ pub struct DebugWindowNormalizationResponse {
     pub error_message: Option<String>,
 }
 
+#[cfg(debug_assertions)]
 pub(super) fn debug_window_state_response(
     app: &AppHandle,
     label: String,

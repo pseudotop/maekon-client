@@ -1,4 +1,4 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..035.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..043.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -149,6 +149,7 @@ fn declared_app_command_permissions(capability: &Value) -> BTreeSet<String> {
 }
 
 const OVERLAY_APP_COMMANDS: &[&str] = &[
+    "get_suggestions_panel_open",
     "toggle_suggestions_panel",
     "toggle_automation_confirm",
     "get_pending_suggestions",
@@ -177,6 +178,7 @@ const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
     "analyze_current_scene",
     "get_focus_mode_status",
     "toggle_focus_mode",
+    "get_pending_suggestion_count",
     "toggle_suggestions_panel",
     "show_main_window",
     "simulate_tray_action",
@@ -186,9 +188,15 @@ const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
 
 /// Some modules under commands/ are pure helpers (no #[tauri::command] —
 /// e.g., generate_external_cert.rs is a build-time helper, suggestion_parser.rs
-/// is a JSON parser invoked by suggestion handler). For these the contract is
-/// "file exists + declares at least one public function".
-const HELPER_MODULES: &[&str] = &["generate_external_cert", "suggestion_parser"];
+/// is a JSON parser invoked by suggestion handler, privacy_audit.rs writes the
+/// durable privacy-transition audit rows invoked by the pause/focus command
+/// paths, #8094). For these the contract is "file exists + declares at least
+/// one public function".
+const HELPER_MODULES: &[&str] = &[
+    "generate_external_cert",
+    "privacy_audit",
+    "suggestion_parser",
+];
 
 /// Every module (file or directory) under `src/commands/` that the
 /// `crt_prv_ipc_0NN_*` tests below cover. This is the manifest that
@@ -216,19 +224,32 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "consent",
     "detection",
     "error_report",
+    "extension",
     "focus",
     "generate_external_cert",
     "integration",
     "notification",
     "onboarding",
     "permissions",
+    "privacy_audit",
+    "qc_upload_spool",
+    "reauth",
     "settings",
+    "shortcuts",
     "suggestion_parser",
     "suggestions",
     "sync",
     "system",
+    "task",
     "tray",
 ];
+
+/// Rust files colocated with command modules for test organization only.
+///
+/// Keep this allowlist explicit so the module enumeration still fails closed
+/// for a newly added production command module. Each listed file is also
+/// checked below to ensure it does not expose a Tauri command.
+const TEST_SUPPORT_MODULES: &[&str] = &["capture_tests"];
 
 fn assert_command_module(name: &str) {
     let file_path = commands_dir().join(format!("{name}.rs"));
@@ -272,6 +293,23 @@ fn assert_command_module(name: &str) {
             "Expected src/commands/{name} module to declare at least one #[tauri::command] fn"
         );
     }
+}
+
+fn assert_command_module_absent(name: &str) {
+    let file_path = commands_dir().join(format!("{name}.rs"));
+    let dir_path = commands_dir().join(name);
+    assert!(
+        !file_path.exists() && !dir_path.exists(),
+        "Removed duplicate IPC module src/commands/{name} must stay absent"
+    );
+
+    let mod_path = commands_dir().join("mod.rs");
+    let mod_src = fs::read_to_string(&mod_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", mod_path.display(), e));
+    assert!(
+        !mod_src.contains(&format!("mod {name};")),
+        "Removed duplicate IPC module {name} must not be registered"
+    );
 }
 
 #[test]
@@ -329,9 +367,12 @@ fn crt_prv_ipc_011_coaching() {
     assert_command_module("coaching");
 }
 
-// crt_prv_ipc_012_dashboard removed (#7637): the `dashboard` command module was
-// deleted as a dead IPC duplicate (delivered via the embedded HTTP API), so the
-// module-existence contract no longer applies.
+/// The dashboard IPC duplicate was removed in #7637. Keep the historical TC as
+/// a negative contract so the stale command surface cannot silently return.
+#[test]
+fn crt_prv_ipc_012_dashboard() {
+    assert_command_module_absent("dashboard");
+}
 
 #[test]
 fn crt_prv_ipc_013_detection() {
@@ -393,9 +434,12 @@ fn crt_prv_ipc_024_system() {
     assert_command_module("system");
 }
 
-// crt_prv_ipc_025_tracking_schedule removed (#7637): the `tracking_schedule`
-// command module was deleted as a dead IPC duplicate (delivered via the embedded
-// HTTP API), so the module-existence contract no longer applies.
+/// The tracking-schedule IPC duplicate was removed in #7637. The embedded HTTP
+/// API remains the delivery surface, and this TC guards that boundary.
+#[test]
+fn crt_prv_ipc_025_tracking_schedule() {
+    assert_command_module_absent("tracking_schedule");
+}
 
 #[test]
 fn crt_prv_ipc_028_notification() {
@@ -538,6 +582,173 @@ fn crt_prv_ipc_034_tray() {
     assert_command_module("tray");
 }
 
+/// #8044: capture-history re-authentication (biometric/PIN) IPC command
+/// module coverage — get/authenticate/register-pin/clear-pin/lock/set-config.
+#[test]
+fn crt_prv_ipc_036_reauth() {
+    assert_command_module("reauth");
+}
+
+/// #8094: durable privacy-transition audit helper module coverage.
+/// `privacy_audit.rs` is a pure helper (HELPER_MODULES) invoked by the
+/// capture-pause and focus-mode command paths to write privacy-safe
+/// `audit_log` rows — it must exist AND must never grow an IPC surface of
+/// its own: audit writes are a side effect of existing commands, not a
+/// frontend-invokable capability (#8094 shipped with a "no new IPC
+/// commands" constraint).
+#[test]
+fn crt_prv_ipc_037_privacy_audit() {
+    assert_command_module("privacy_audit");
+
+    let path = commands_dir().join("privacy_audit.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    assert!(
+        !src.contains("#[tauri::command]") && !src.contains("#[command]"),
+        "privacy_audit is a helper module by contract — it must not declare \
+         #[tauri::command] functions (add a proper command module + capability \
+         review instead of growing this helper into an IPC surface)"
+    );
+}
+
+/// #8194: the native shortcut-collision TC requires the read-only shortcut
+/// registry diagnostics command to remain part of the Tauri IPC surface.
+#[test]
+fn crt_prv_ipc_038_shortcuts() {
+    assert_command_module("shortcuts");
+}
+
+/// #8577 (ADR-028): durable task lifecycle IPC module coverage — list/confirm/
+/// dismiss/transition/delete. The commands mint their own ids and request
+/// hashes, so this module must keep a real `#[command]` surface rather than
+/// degrading into a helper.
+/// #8586 (ADR-029): Extension registry IPC module coverage — list/install/
+/// enable/update/rollback/uninstall. Registration is intentionally absent from
+/// the IPC surface so the WebView cannot forge provenance or trust fields.
+#[test]
+fn crt_prv_ipc_041_extension() {
+    assert_command_module("extension");
+}
+
+/// #8588 adversarial-review Fix 2: the trusted Skill Pack activation commands
+/// must be present on the extension IPC surface and registered in the invoke
+/// handler. Registration completeness (build manifest + capability scope) is
+/// enforced globally by crt_prv_ipc_029/030; this pins the specific command
+/// surface #8588 adds so a future refactor cannot silently drop it.
+#[test]
+fn crt_prv_ipc_042_skill_pack_activation() {
+    let ext = fs::read_to_string(commands_dir().join("extension.rs"))
+        .expect("read commands/extension.rs");
+    for command in ["activate_skill_pack", "clear_skill_pack_activation"] {
+        assert!(
+            ext.contains(&format!("pub async fn {command}")),
+            "extension module must declare the {command} command"
+        );
+    }
+    let lib = fs::read_to_string(src_dir().join("lib.rs")).expect("read lib.rs");
+    let handler = extract_invoke_handler_commands(&lib);
+    assert!(
+        handler.contains("activate_skill_pack") && handler.contains("clear_skill_pack_activation"),
+        "skill pack activation commands must be registered in the invoke handler"
+    );
+}
+
+/// #9305: QC upload spool recovery exposes a real frontend-invokable IPC
+/// surface, so it must remain covered by the module enumeration contract.
+#[test]
+fn crt_prv_ipc_043_qc_upload_spool() {
+    assert_command_module("qc_upload_spool");
+}
+
+#[test]
+fn crt_prv_ipc_040_task() {
+    assert_command_module("task");
+}
+
+/// #8199: native fullscreen-policy diagnostics must remain debug-gated rather
+/// than restoring the broad production overlay IPC removed by #7686.
+#[test]
+fn crt_prv_ipc_039_overlay_fullscreen_debug_gate() {
+    let path = commands_dir().join("coaching.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    let command = src
+        .split("pub async fn debug_set_overlay_interactive")
+        .nth(1)
+        .and_then(|tail| tail.split("/// Dismiss a coaching overlay message").next())
+        .expect("debug overlay interactive command must remain present");
+
+    assert!(
+        command.contains("#[cfg(not(debug_assertions))]")
+            && command.contains("debug_only")
+            && command.contains("overlay.set_interactive(interactive)")
+            && command.contains("overlay.fullscreen_policy_state()"),
+        "debug overlay policy command must be release-gated and exercise the real policy path"
+    );
+}
+
+/// #8568: destructive recovery fixtures must remain compiled out of release
+/// builds instead of becoming a production CLI or IPC surface.
+#[test]
+fn crt_prv_qc_recovery_fixture_cli_is_debug_only() {
+    let src_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let lib = fs::read_to_string(src_root.join("lib.rs")).expect("read lib.rs");
+    // After the ADR-003 split (#8765) the legacy-migration recovery fixture
+    // lives in the `qc_fixture_cli/recovery.rs` directory module.
+    let fixture = fs::read_to_string(src_root.join("qc_fixture_cli").join("recovery.rs"))
+        .expect("read qc_fixture_cli/recovery.rs");
+    let upload_spool =
+        fs::read_to_string(src_root.join("qc_upload_spool.rs")).expect("read qc_upload_spool.rs");
+
+    // The debug gate must sit in the module's attribute STACK, not be the
+    // immediately-adjacent line: #9071 stacked `#[cfg(feature = "analysis")]`
+    // (plus a comment) between `#[cfg(debug_assertions)]` and
+    // `mod qc_upload_spool;` — cfg attributes AND-compose, so the release
+    // guarantee held, but the old exact-adjacency string match went stale and
+    // latently broke `cargo test --workspace` (#9083 follow-on).
+    assert!(
+        module_attribute_stack(&lib, "pub(crate) mod qc_fixture_cli;")
+            .contains("#[cfg(debug_assertions)]"),
+        "the QC fixture module must remain absent from release builds"
+    );
+    assert!(
+        fixture.contains("debug-prepare-qc-legacy-migration")
+            && fixture.contains("debug-verify-qc-legacy-migration")
+            && !fixture.contains("#[tauri::command]"),
+        "the legacy migration fixture must remain a debug CLI without an IPC surface"
+    );
+    assert!(
+        module_attribute_stack(&lib, "mod qc_upload_spool;").contains("#[cfg(debug_assertions)]")
+            && upload_spool.contains("debug-prepare-qc-upload-spool")
+            && upload_spool.contains("debug-verify-qc-upload-spool")
+            && upload_spool.contains("MAEKON_DEBUG_QC_UPLOAD_SPOOL_FIXTURE")
+            && !upload_spool.contains("#[tauri::command]"),
+        "the upload-spool fixture must remain a debug-only CLI without an IPC surface"
+    );
+}
+
+/// Collect the contiguous attribute/comment lines directly above a module
+/// declaration. cfg attributes on the same item AND-compose, so gate checks
+/// must look at the whole stack instead of demanding exact line adjacency.
+fn module_attribute_stack(source: &str, declaration: &str) -> String {
+    let declaration_start = source
+        .lines()
+        .position(|line| line.trim() == declaration)
+        .unwrap_or_else(|| panic!("module declaration not found: {declaration}"));
+    let lines: Vec<&str> = source.lines().collect();
+    let mut stack: Vec<&str> = Vec::new();
+    for line in lines[..declaration_start].iter().rev() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[") || trimmed.starts_with("//") {
+            stack.push(trimmed);
+        } else {
+            break;
+        }
+    }
+    stack.reverse();
+    stack.join("\n")
+}
+
 /// G1 (#7718) enumeration guard: the module set under `src/commands/` must
 /// exactly match `COVERED_COMMAND_MODULES`. This catches the drift class that
 /// let `audit`/`consent`/`tray` sit uncovered for multiple modules' worth of
@@ -550,6 +761,7 @@ fn crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage() {
         fs::read_dir(&dir).unwrap_or_else(|e| panic!("Failed to read {}: {}", dir.display(), e));
 
     let mut discovered: BTreeSet<String> = BTreeSet::new();
+    let mut discovered_test_support: BTreeSet<String> = BTreeSet::new();
     for entry in entries {
         let entry = entry.unwrap_or_else(|e| panic!("Failed to read dir entry: {e}"));
         let path = entry.path();
@@ -571,6 +783,17 @@ fn crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage() {
             if stem == "mod" {
                 continue;
             }
+            if TEST_SUPPORT_MODULES.contains(&stem) {
+                let support_src = fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+                assert!(
+                    !support_src.contains("#[tauri::command]")
+                        && !support_src.contains("#[command]"),
+                    "Test-support module {stem} must not expose a Tauri command"
+                );
+                discovered_test_support.insert(stem.to_owned());
+                continue;
+            }
             discovered.insert(stem.to_owned());
         }
     }
@@ -582,12 +805,22 @@ fn crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage() {
 
     let missing_coverage: Vec<&String> = discovered.difference(&covered).collect();
     let stale_coverage: Vec<&String> = covered.difference(&discovered).collect();
+    let expected_test_support: BTreeSet<String> = TEST_SUPPORT_MODULES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let missing_test_support: Vec<&String> = expected_test_support
+        .difference(&discovered_test_support)
+        .collect();
 
     assert!(
-        missing_coverage.is_empty() && stale_coverage.is_empty(),
+        missing_coverage.is_empty()
+            && stale_coverage.is_empty()
+            && missing_test_support.is_empty(),
         "src/commands/ module set drifted from COVERED_COMMAND_MODULES — \
          modules on disk but uncovered (add a crt_prv_ipc_0NN_* test + list entry): {missing_coverage:?}; \
-         modules listed but no longer on disk (remove the list entry, and the test if orphaned): {stale_coverage:?}"
+         modules listed but no longer on disk (remove the list entry, and the test if orphaned): {stale_coverage:?}; \
+         allowlisted test-support modules missing from disk: {missing_test_support:?}"
     );
 }
 

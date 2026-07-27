@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-trigger-sync-cycle"
+description = "Enables the trigger_sync_cycle command without any pre-configured scope."
+commands.allow = ["trigger_sync_cycle"]
+
+[[permission]]
+identifier = "deny-trigger-sync-cycle"
+description = "Denies the trigger_sync_cycle command without any pre-configured scope."
+commands.deny = ["trigger_sync_cycle"]

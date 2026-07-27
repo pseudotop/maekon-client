@@ -1466,6 +1466,49 @@ fn recent_audit_entries_empty_when_no_rows() {
     assert!(storage.recent_audit_entries(100).is_empty());
 }
 
+#[test]
+fn audit_stats_aggregate_terminal_statuses_from_storage() {
+    use chrono::Utc;
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let statuses = [
+        AuditStatus::Completed,
+        AuditStatus::Failed,
+        AuditStatus::Denied,
+        AuditStatus::Timeout,
+        AuditStatus::Started,
+    ];
+    for (index, status) in statuses.into_iter().enumerate() {
+        storage.save_audit_entry(&AuditEntry {
+            entry_id: format!("audit-stats-{index}"),
+            timestamp: Utc::now(),
+            session_id: "system.privacy".to_string(),
+            command_id: "system.privacy".to_string(),
+            action_type: "test".to_string(),
+            status,
+            details: None,
+            execution_time_ms: None,
+        });
+    }
+
+    let stats = storage.audit_stats();
+
+    assert_eq!(stats.total, 4, "Started is not a terminal execution");
+    assert_eq!(stats.completed, 1);
+    assert_eq!(stats.failed, 1);
+    assert_eq!(stats.denied, 1);
+    assert_eq!(stats.timeout, 1);
+}
+
+#[test]
+fn audit_stats_are_empty_when_storage_has_no_rows() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let stats = storage.audit_stats();
+    assert_eq!(stats.total, 0);
+    assert_eq!(stats.completed, 0);
+}
+
 // ── Egress audit ledger (V36, #4803/E20) ────────────────────────────
 
 fn make_egress_record(record_id: &str, disposition: &str) -> EgressLedgerRecord {

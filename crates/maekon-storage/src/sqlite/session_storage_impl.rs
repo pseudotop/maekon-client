@@ -144,7 +144,11 @@ impl SessionStoragePort for SqliteStorage {
         .map_err(CoreError::from)
     }
 
-    async fn list_sessions(&self, limit: u32) -> Result<Vec<SessionRecord>, CoreError> {
+    async fn list_sessions(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<SessionRecord>, CoreError> {
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -153,12 +157,12 @@ impl SessionStoragePort for SqliteStorage {
                             created_at, last_active, terminated_at, title
                      FROM ai_sessions
                      ORDER BY last_active DESC
-                     LIMIT ?1",
+                     LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(StorageError::Sqlite)?;
 
             let rows = stmt
-                .query_map([limit], |row| {
+                .query_map(rusqlite::params![limit, offset], |row| {
                     Ok(SessionRecord {
                         session_id: row.get(0)?,
                         provider_name: row.get(1)?,
@@ -469,8 +473,35 @@ mod tests {
         storage.save_session(&make_session("s1")).await.unwrap();
         storage.save_session(&make_session("s2")).await.unwrap();
 
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_paginates_by_offset() {
+        // #8057 (P3): older sessions past the first `limit` window must be
+        // reachable via `offset`. Rows come back last_active DESC → [s3,s2,s1].
+        let storage = setup().await;
+        for (id, minutes_ago) in [("s1", 30i64), ("s2", 20), ("s3", 10)] {
+            let mut record = make_session(id);
+            record.last_active = Utc::now() - chrono::Duration::minutes(minutes_ago);
+            storage.save_session(&record).await.unwrap();
+        }
+
+        let page0 = storage.list_sessions(1, 0).await.unwrap();
+        assert_eq!(page0.len(), 1);
+        assert_eq!(page0[0].session_id, "s3");
+
+        let page1 = storage.list_sessions(1, 1).await.unwrap();
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1[0].session_id, "s2");
+
+        let tail = storage.list_sessions(10, 1).await.unwrap();
+        let ids: Vec<&str> = tail.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["s2", "s1"]);
+
+        // Offset past the end yields an empty page (not an error).
+        assert!(storage.list_sessions(10, 99).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -479,7 +510,7 @@ mod tests {
         storage.save_session(&make_session("s1")).await.unwrap();
         storage.terminate_session("s1").await.unwrap();
 
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert_eq!(sessions[0].state, SessionState::Terminated);
         assert!(sessions[0].terminated_at.is_some());
     }
@@ -532,7 +563,7 @@ mod tests {
 
         storage.delete_session("s1").await.unwrap();
 
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert!(sessions.is_empty());
 
         let msgs = storage.load_messages("s1", 10, 0).await.unwrap();
@@ -584,7 +615,7 @@ mod tests {
         storage.delete_session("s1").await.unwrap();
 
         // Both parent and child rows gone, despite FK being OFF.
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert!(sessions.is_empty(), "session row must be deleted");
         let msgs = storage.load_messages("s1", 10, 0).await.unwrap();
         assert!(
@@ -682,14 +713,14 @@ mod tests {
         storage.save_session(&make_session("s1")).await.unwrap();
         storage.update_session_usage("s1", 100, 200).await.unwrap();
 
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert_eq!(sessions[0].total_input_tokens, 100);
         assert_eq!(sessions[0].total_output_tokens, 200);
         assert_eq!(sessions[0].turn_count, 1); // auto-incremented by SQL
 
         // Second call should accumulate
         storage.update_session_usage("s1", 50, 30).await.unwrap();
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert_eq!(sessions[0].total_input_tokens, 150);
         assert_eq!(sessions[0].total_output_tokens, 230);
         assert_eq!(sessions[0].turn_count, 2);
@@ -702,7 +733,7 @@ mod tests {
 
         storage.update_session_title("s1", "My Chat").await.unwrap();
 
-        let sessions = storage.list_sessions(10).await.unwrap();
+        let sessions = storage.list_sessions(10, 0).await.unwrap();
         assert_eq!(sessions[0].title, Some("My Chat".to_string()));
     }
 

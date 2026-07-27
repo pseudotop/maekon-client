@@ -130,15 +130,15 @@ jobs:
 
       - name: Build release binary (macOS release feature parity)
         if: runner.os == 'macOS'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,lan-sync,stt,download
 
       - name: Build release binary (Windows release feature parity)
         if: runner.os == 'Windows'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,windows-sandbox
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,windows-sandbox,lan-sync,stt,download
 
       - name: Build release binary (Linux release feature parity)
         if: runner.os == 'Linux'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify,linux-sandbox
+        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify,linux-sandbox,lan-sync,stt,download
 
       - name: Run clippy (warnings only, non-blocking)
         continue-on-error: true
@@ -146,11 +146,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify,linux-sandbox"
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            FEATURES="grpc,windows-sandbox"
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
           else
-            FEATURES="grpc"
+            FEATURES="grpc,lan-sync,stt,download"
           fi
           cargo clippy --locked --target ${{ matrix.target }} -p maekon-app --features "$FEATURES" -- -W warnings
 

@@ -44,6 +44,7 @@ pub mod claim_promoter;
 pub mod clustering_strategy;
 pub mod constraint_builder;
 pub mod content_tracker;
+pub mod current_context;
 pub mod daily_digest_generator;
 pub mod daily_insight_generator;
 pub mod digest_exporter;
@@ -92,6 +93,10 @@ pub use assembler::{
 };
 pub use calibration_buffer::CalibrationBuffer;
 pub use content_tracker::ContentTracker;
+pub use current_context::{
+    BuiltCurrentContextPrompt, CurrentContextPromptInput, CURRENT_CONTEXT_SUGGESTION_PROMPT,
+    LOCAL_CURRENT_SCENE_SOURCE_ID,
+};
 pub use few_shot_selector::FewShotSelector;
 pub use param_resolver::ParamResolver;
 pub use pattern_miner::{detect_gui_patterns, GuiPattern, PatternMiner};

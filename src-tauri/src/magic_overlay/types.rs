@@ -91,6 +91,44 @@ pub struct OverlayFullscreenPolicyPayload {
     pub reason: String,
 }
 
+/// The **pure** decision of the fullscreen-suppression policy (CRT-PRV-OVL-005).
+/// Independent of any real OS state, so it is unit-testable on every platform.
+///
+/// - `owned_fullscreen`: one of the Maekon-owned webviews is fullscreen
+///   (the `app_handle.webview_windows()` path).
+/// - `external_fullscreen`: a foreground **external** app is fullscreen /
+///   monitor-covering (platform probe, #8849). `None` means undetermined
+///   (unsupported platform / missing permission / etc.).
+///
+/// If either one is fullscreen, the overlay is suppressed. When an external app
+/// is the cause, a distinct diagnostic reason is recorded.
+pub(super) fn decide_fullscreen_policy(
+    owned_fullscreen: bool,
+    external_fullscreen: Option<bool>,
+) -> OverlayFullscreenPolicyPayload {
+    let external = external_fullscreen.unwrap_or(false);
+    if owned_fullscreen || external {
+        let reason = if external {
+            "foreground external application is fullscreen"
+        } else {
+            "native fullscreen window detected"
+        };
+        OverlayFullscreenPolicyPayload {
+            fullscreen_detected: true,
+            policy: "suppress".to_string(),
+            overlay_allowed: false,
+            reason: reason.to_string(),
+        }
+    } else {
+        OverlayFullscreenPolicyPayload {
+            fullscreen_detected: false,
+            policy: "show_on_top".to_string(),
+            overlay_allowed: true,
+            reason: "no fullscreen window detected".to_string(),
+        }
+    }
+}
+
 /// A single UI element in the detection overlay scene.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionElementPayload {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-onboarding-status"
+description = "Enables the get_onboarding_status command without any pre-configured scope."
+commands.allow = ["get_onboarding_status"]
+
+[[permission]]
+identifier = "deny-get-onboarding-status"
+description = "Denies the get_onboarding_status command without any pre-configured scope."
+commands.deny = ["get_onboarding_status"]

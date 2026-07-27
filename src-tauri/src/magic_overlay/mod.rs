@@ -18,9 +18,11 @@ pub use types::{
     OverlayGoalPayload, OverlayModePayload, OverlayPointerContextPayload, OverlayUpgradePayload,
 };
 pub use window::create_tracking_panel;
+pub(crate) use window::set_tracking_panel_visible;
 
 use maekon_core::config::OverlayMode;
 use maekon_core::models::coaching::{CoachingMessage, DismissAction};
+use maekon_core::ports::foreground_window::ForegroundFullscreenProbe;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
@@ -39,12 +41,41 @@ pub(crate) enum PassiveTrackingSurfacePolicy {
     ThinBorderWindows,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassiveOverlayWindowPolicy {
+    Hidden,
+    FullScreenClickThrough,
+}
+
+pub(crate) fn passive_overlay_window_policy(
+    coaching_visible: bool,
+    effective_capture_permitted: bool,
+    cua_safe_mode: bool,
+) -> PassiveOverlayWindowPolicy {
+    if coaching_visible || (effective_capture_permitted && !cua_safe_mode) {
+        PassiveOverlayWindowPolicy::FullScreenClickThrough
+    } else {
+        PassiveOverlayWindowPolicy::Hidden
+    }
+}
+
 pub(crate) fn passive_tracking_surface_policy(
     target_os: &str,
+    effective_capture_permitted: bool,
     indicator_visible: bool,
     capture_paused: bool,
 ) -> PassiveTrackingSurfacePolicy {
-    if target_os == "windows" && indicator_visible && !capture_paused {
+    // #8094: the passive recording border may render ONLY when capture is
+    // EFFECTIVELY permitted — i.e. `capture_permitted_now` (consent.screen_capture
+    // AND capture_enabled AND active_hours AND NOT tracking-muted AND NOT paused).
+    // A fresh no-consent profile has `effective_capture_permitted == false`, so the
+    // border stays hidden even though `indicator.show_border` defaults true. Before
+    // this term was added, a no-consent Windows profile rendered a recording border
+    // while nothing was captured (QC CRT-PRV-UX-PRIVACY-VIS-001). `capture_paused`
+    // is already subsumed by the effective gate but kept as an explicit belt-and-
+    // suspenders term.
+    if target_os == "windows" && effective_capture_permitted && indicator_visible && !capture_paused
+    {
         PassiveTrackingSurfacePolicy::ThinBorderWindows
     } else {
         PassiveTrackingSurfacePolicy::Hidden
@@ -52,10 +83,54 @@ pub(crate) fn passive_tracking_surface_policy(
 }
 
 pub(crate) fn current_passive_tracking_surface_policy(
+    effective_capture_permitted: bool,
     indicator_visible: bool,
     capture_paused: bool,
 ) -> PassiveTrackingSurfacePolicy {
-    passive_tracking_surface_policy(std::env::consts::OS, indicator_visible, capture_paused)
+    passive_tracking_surface_policy(
+        std::env::consts::OS,
+        effective_capture_permitted,
+        indicator_visible,
+        capture_paused,
+    )
+}
+
+/// #8094: the macOS native recording border may show ONLY when capture is
+/// effectively permitted, the indicator is visible, capture is not paused, and
+/// CUA safe mode is off. Pure so it is unit-testable on every platform (the
+/// `#[cfg(target_os = "macos")]` call sites that consume it are not).
+// All non-test callers (commands/capture_status, setup/platform,
+// reconcile_capture_indicator below) are `#[cfg(target_os = "macos")]`-gated,
+// so on other platforms the lib build sees no user — mirror the
+// `native_border::mod.rs` pattern to keep the fn cross-platform-testable
+// without tripping the deny(dead_code) CI build on Linux/Windows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn native_recording_border_visible(
+    effective_capture_permitted: bool,
+    indicator_visible: bool,
+    capture_paused: bool,
+    cua_safe_mode: bool,
+) -> bool {
+    effective_capture_permitted && indicator_visible && !capture_paused && !cua_safe_mode
+}
+
+/// Reads the EFFECTIVE capture-permitted gate (the same `capture_permitted_now`
+/// composite the monitor loop uses to decide whether to capture) from
+/// `AppState`. This is the single source of truth the recording border mirrors:
+/// the border must never render unless capture is actually happening (#8094).
+///
+/// Fail-closed: consent flows through `ConsentGate` (all-false unless consent is
+/// currently `Valid`, and all-false when no `ConsentManager` is wired), so a
+/// fresh no-consent profile yields `false`.
+pub(crate) fn effective_capture_permitted(
+    state: &crate::runtime_state::AppState,
+    capture_paused: bool,
+) -> bool {
+    let consent = maekon_core::ports::consent_manager::ConsentGate::from_ref(
+        state.capture.consent_manager.as_ref(),
+    )
+    .permissions_snapshot();
+    crate::scheduler::capture_permitted_now(&state.config, &consent, capture_paused)
 }
 
 pub(crate) fn sync_passive_tracking_surface<R: Runtime>(
@@ -69,9 +144,48 @@ pub(crate) fn sync_passive_tracking_surface<R: Runtime>(
     let Some(ref overlay) = state.magic_overlay else {
         return;
     };
-    match current_passive_tracking_surface_policy(indicator_visible, capture_paused) {
+    // #8094: gate the border on the live effective capture state, not just the
+    // raw `indicator_visible`/`capture_paused` flags.
+    let effective = effective_capture_permitted(&state, capture_paused);
+    match current_passive_tracking_surface_policy(effective, indicator_visible, capture_paused) {
         PassiveTrackingSurfacePolicy::ThinBorderWindows => overlay.show_passive_tracking_surface(),
         PassiveTrackingSurfacePolicy::Hidden => overlay.hide_passive_tracking_surface(),
+    }
+}
+
+/// #8094: reconcile BOTH recording-indicator surfaces (Windows passive thin-
+/// border + macOS native border) to the live effective capture gate.
+///
+/// Call after any transition that can change the effective gate WITHOUT already
+/// syncing the border — notably a consent grant/revoke, which opens or closes
+/// the `screen_capture` term. The pause / indicator IPC sites already call
+/// `sync_passive_tracking_surface`; this is the consent-change equivalent so a
+/// grant surfaces the border immediately and a revoke tears it down within the
+/// same command (not only after the next pause/indicator toggle).
+pub(crate) fn reconcile_capture_indicator(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    let Some(state) = app.try_state::<crate::runtime_state::AppState>() else {
+        return;
+    };
+    let paused = state.capture_paused.load(Ordering::Relaxed);
+    let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
+    // Windows passive border (effective gate computed inside).
+    sync_passive_tracking_surface(app, paused, indicator_visible);
+    // macOS native border.
+    #[cfg(target_os = "macos")]
+    if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
+        let effective = effective_capture_permitted(&state, paused);
+        border.0.set_paused(paused);
+        if native_recording_border_visible(
+            effective,
+            indicator_visible,
+            paused,
+            crate::app_runtime_launch::cua_safe_mode_enabled(),
+        ) {
+            border.0.show();
+        } else {
+            border.0.hide();
+        }
     }
 }
 
@@ -90,6 +204,7 @@ const OVERLAY_SCREEN_CONTENT_EVENTS: &[&str] = &[
     "overlay:detection-update",
     "overlay:detection-clear",
     "overlay:heatmap-update",
+    "overlay:pointer-context-update",
 ];
 
 /// Returns the single webview label a screen-content event must be scoped to, or
@@ -121,9 +236,10 @@ pub(crate) fn emit_overlay_event<S: serde::Serialize + Clone>(
 
 /// Handle for managing the MagicOverlay Tauri WebView window.
 ///
-/// Created during app setup. The overlay window is created and shown at
-/// startup so persistent components (TrackingBorder, CaptureFlash) render
-/// immediately. The window is transparent and click-through by default.
+/// Created during app setup. The interactive overlay WebView is pre-created
+/// hidden and shown only for an active transient surface. Persistent recording
+/// indication uses the separate thin border windows, avoiding an idle
+/// full-screen transparent compositor surface.
 ///
 /// # Note: CoachingOverlayPort consideration
 ///
@@ -201,6 +317,56 @@ impl MagicOverlayHandle {
         Ok(())
     }
 
+    /// Return whether the interactive overlay surface was visible before a
+    /// short-lived diagnostic probe changed its layout.
+    #[cfg(debug_assertions)]
+    pub(crate) fn window_is_visible(&self) -> bool {
+        self.app_handle
+            .get_webview_window(OVERLAY_LABEL)
+            .and_then(|window| window.is_visible().ok())
+            .unwrap_or(false)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn window_exists(&self) -> bool {
+        self.app_handle.get_webview_window(OVERLAY_LABEL).is_some()
+    }
+
+    /// Restore the overlay surface after a diagnostic probe.
+    ///
+    /// Probes temporarily make the full-screen surface visible and
+    /// click-through. If the surface was hidden before the probe, hide it again
+    /// so its transparent WebView cannot keep compositing indefinitely. If it
+    /// was already visible, re-apply the live mode so an interactive panel or
+    /// confirmation dialog does not remain click-through.
+    #[cfg(debug_assertions)]
+    pub(crate) fn restore_window_after_probe(&self, existed: bool, was_visible: bool) {
+        if !existed {
+            if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
+                if let Err(error) = window.destroy() {
+                    debug!("overlay diagnostic probe destroy failed: {error}");
+                }
+            }
+            return;
+        }
+
+        if was_visible {
+            if let Ok(state) = self.state.try_read() {
+                self.apply_window_layout(&state);
+            } else {
+                debug!("overlay state busy while restoring diagnostic probe layout");
+            }
+            return;
+        }
+
+        if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
+            let _ = window.set_ignore_cursor_events(true);
+            if let Err(error) = window.hide() {
+                debug!("overlay diagnostic probe hide failed: {error}");
+            }
+        }
+    }
+
     pub fn show_passive_tracking_surface(&self) {
         if let Err(e) = sync_tracking_border_windows(&self.app_handle, true) {
             debug!("tracking border windows unavailable: {e}");
@@ -234,15 +400,10 @@ impl MagicOverlayHandle {
             return;
         }
 
-        if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
-            if let Err(e) = show_overlay_window(&window) {
-                debug!("window show failed: {e}");
-            }
-        }
-
         let mut state = self.state.write().await;
         state.visible = true;
         state.current_message_id = Some(message.message_id.clone());
+        self.apply_window_layout(&state);
     }
 
     /// Upgrade the coaching message text with LLM-personalized content.
@@ -269,10 +430,15 @@ impl MagicOverlayHandle {
     /// Dismiss a coaching message from the overlay.
     pub async fn dismiss(&self, message_id: &str, _action: DismissAction) {
         let mut state = self.state.write().await;
-        if state.current_message_id.as_deref() == Some(message_id) {
+        let dismissed_current = state.current_message_id.as_deref() == Some(message_id);
+        if dismissed_current {
             state.current_message_id = None;
+            state.visible = false;
         }
-        state.visible = false;
+
+        if dismissed_current && self.app_handle.get_webview_window(OVERLAY_LABEL).is_some() {
+            self.apply_window_layout(&state);
+        }
         drop(state);
 
         if let Err(e) = self.app_handle.emit("overlay:dismiss", message_id) {
@@ -411,8 +577,39 @@ impl MagicOverlayHandle {
     ///   1. Automation Confirm — full-screen interactive (modal backdrop)
     ///   2. Detection — full-screen interactive (inspection mode)
     ///   3. Suggestions Panel — compact right-edge strip interactive
-    ///   4. Default — full-screen click-through
+    ///   4. Passive capture/coaching — full-screen click-through
+    ///   5. Idle — hidden
     fn apply_window_layout(&self, state: &OverlayState) {
+        let effective_capture = self
+            .app_handle
+            .try_state::<crate::runtime_state::AppState>()
+            .map(|app_state| {
+                let paused = app_state
+                    .capture_paused
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                effective_capture_permitted(&app_state, paused)
+            })
+            .unwrap_or(false);
+        let passive_policy = passive_overlay_window_policy(
+            state.visible,
+            effective_capture,
+            crate::app_runtime_launch::cua_safe_mode_enabled(),
+        );
+        let window_required = state.automation_confirm_active
+            || state.detection_active
+            || state.suggestions_panel_open
+            || passive_policy == PassiveOverlayWindowPolicy::FullScreenClickThrough;
+
+        if !window_required {
+            if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
+                if let Err(error) = window.destroy() {
+                    debug!("idle overlay destroy failed: {error}");
+                }
+            }
+            debug!("Overlay layout: destroyed (idle)");
+            return;
+        }
+
         if let Err(e) = self.ensure_window() {
             debug!("ensure_window failed: {e}");
             return;
@@ -457,6 +654,9 @@ impl MagicOverlayHandle {
             let _ = window.set_ignore_cursor_events(false);
             debug!("Overlay layout: compact panel strip");
         } else {
+            // Reset passive geometry before either showing or hiding. A later
+            // pointer/coaching event may show the pre-created window directly;
+            // it must not inherit the previous 380px suggestions-strip bounds.
             if let Ok(monitor) = target_overlay_monitor(&self.app_handle) {
                 let layout = overlay_monitor_layout(&monitor);
                 let _ = window.set_position(tauri::LogicalPosition::new(
@@ -468,13 +668,23 @@ impl MagicOverlayHandle {
                     layout.logical_height,
                 ));
             }
+
             let _ = window.set_ignore_cursor_events(true);
-            debug!("Overlay layout: full-screen click-through");
+            let _ = show_overlay_window(&window);
+            debug!("Overlay layout: full-screen click-through (passive surface active)");
         }
     }
 
+    /// Evaluate the fullscreen-suppression policy (CRT-PRV-OVL-005).
+    ///
+    /// Considers BOTH a Maekon-owned webview reporting fullscreen (via
+    /// `webview_windows()`) AND — added in #8849 — the foreground EXTERNAL
+    /// application (fullscreen game, browser video, presentation), which
+    /// `webview_windows()` cannot see. The pure decision lives in
+    /// [`types::decide_fullscreen_policy`] so the external scenario is
+    /// unit-testable without a live desktop.
     fn evaluate_fullscreen_policy(&self) -> OverlayFullscreenPolicyPayload {
-        let fullscreen_detected = self
+        let owned_fullscreen = self
             .app_handle
             .webview_windows()
             .into_values()
@@ -483,74 +693,119 @@ impl MagicOverlayHandle {
                     && window.is_fullscreen().unwrap_or(false)
             });
 
-        if fullscreen_detected {
-            OverlayFullscreenPolicyPayload {
-                fullscreen_detected: true,
-                policy: "suppress".to_string(),
-                overlay_allowed: false,
-                reason: "native fullscreen window detected".to_string(),
-            }
-        } else {
-            OverlayFullscreenPolicyPayload {
-                fullscreen_detected: false,
-                policy: "show_on_top".to_string(),
-                overlay_allowed: true,
-                reason: "no fullscreen window detected".to_string(),
-            }
+        // #8849: probe the foreground external window through the platform port.
+        // `None` (undetermined — unsupported platform / no X server / permission)
+        // degrades gracefully to "external not fullscreen".
+        let external_fullscreen =
+            maekon_monitor::foreground_fullscreen::PlatformForegroundFullscreenProbe
+                .foreground_is_fullscreen();
+
+        types::decide_fullscreen_policy(owned_fullscreen, external_fullscreen)
+    }
+
+    /// THE single authoritative gate every INTERACTIVE overlay-open path routes
+    /// through (#8858). Evaluates the fullscreen policy FIRST — before any cold
+    /// `ensure_window()` — considering the foreground external app (#8849), then
+    /// records and emits the decision. Callers MUST NOT create/show an
+    /// interactive surface when the returned decision is not `overlay_allowed`
+    /// (OVL-005). Kept as one method so a future refactor cannot reintroduce a
+    /// bypass (routing is asserted by the maekon-lint overlay-gate gate).
+    fn gate_interactive_open(&self) -> OverlayFullscreenPolicyPayload {
+        let decision = self.evaluate_fullscreen_policy();
+        *self.last_fullscreen_policy.lock() = Some(decision.clone());
+        if let Err(e) = self.app_handle.emit("overlay:fullscreen-policy", &decision) {
+            debug!("emit overlay:fullscreen-policy failed: {e}");
         }
+        if !decision.overlay_allowed {
+            debug!(
+                policy = %decision.policy,
+                reason = %decision.reason,
+                "interactive overlay open suppressed"
+            );
+        }
+        decision
     }
 
     pub fn set_interactive(&self, interactive: bool) {
-        if let Err(e) = self.ensure_window() {
-            debug!("ensure_window failed: {e}");
-            return;
-        }
-
         if interactive {
-            let decision = self.evaluate_fullscreen_policy();
-            *self.last_fullscreen_policy.lock() = Some(decision.clone());
-            if let Err(e) = self.app_handle.emit("overlay:fullscreen-policy", &decision) {
-                debug!("emit overlay:fullscreen-policy failed: {e}");
-            }
-            if !decision.overlay_allowed {
+            // #8858: gate FIRST — evaluate the fullscreen policy (incl. external
+            // foreground apps, #8849) BEFORE any cold window creation. A
+            // suppressed open must NEVER create/show the interactive surface.
+            if !self.gate_interactive_open().overlay_allowed {
                 if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
                     let _ = window.set_ignore_cursor_events(true);
                     let _ = window.hide();
                 }
-                debug!(
-                    policy = %decision.policy,
-                    reason = %decision.reason,
-                    "overlay interactive request suppressed"
-                );
                 return;
             }
-        }
-
-        if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
-            if interactive {
+            if let Err(e) = self.ensure_window() {
+                debug!("ensure_window failed: {e}");
+                return;
+            }
+            if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
                 let _ = window.set_focusable(false);
                 let _ = show_overlay_window(&window);
                 let _ = window.set_ignore_cursor_events(false);
-            } else if let Ok(state) = self.state.try_read() {
+            }
+            debug!("Overlay set_interactive=true");
+        } else {
+            // Closing needs no gate — recompute the passive/idle layout, which
+            // may hide or destroy the surface (apply_window_layout handles the
+            // ensure/destroy decision itself; no cold ensure_window here).
+            if let Ok(state) = self.state.try_read() {
                 self.apply_window_layout(&state);
-                return;
-            } else {
+            } else if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
                 let _ = window.set_ignore_cursor_events(true);
             }
+            debug!("Overlay set_interactive=false");
         }
-        debug!("Overlay set_interactive={interactive}");
     }
 
-    pub async fn set_panel_mode(&self, open: bool) {
-        // #6830: awaited write lock instead of try_write() + silent skip — on
-        // lock contention the old path dropped the update while the command still
-        // returned Ok, so the panel layout silently did not change. Holding the
-        // write guard across the sync `apply_window_layout` matches the existing
-        // emit_detection_scene/clear_detection_scene pattern. Callers are async
-        // Tauri commands.
-        let mut state = self.state.write().await;
-        state.suggestions_panel_open = open;
-        self.apply_window_layout(&state);
+    /// Set the suggestions-panel mode, routing an OPEN through the single
+    /// fullscreen gate (#8858). Returns the AUTHORITATIVE resolved open state:
+    /// an open suppressed by the policy resolves to `false` so native + frontend
+    /// state stay in agreement (OVL-005). The gate (an OS probe + event emit)
+    /// runs OUTSIDE the state write lock; the guard is held only across the sync
+    /// `apply_window_layout`, matching the emit_detection_scene pattern (#6830).
+    pub async fn set_panel_mode(&self, open: bool) -> bool {
+        let effective_open = if open {
+            self.gate_interactive_open().overlay_allowed
+        } else {
+            false
+        };
+        {
+            // Scope the write guard so it drops at its last use
+            // (`apply_window_layout`), not across the trailing return
+            // (clippy::significant_drop_tightening). Held across the sync
+            // `apply_window_layout` — matching emit_detection_scene (#6830).
+            let mut state = self.state.write().await;
+            state.suggestions_panel_open = effective_open;
+            self.apply_window_layout(&state);
+        }
+        effective_open
+    }
+
+    /// Toggle the suggestions panel from its AUTHORITATIVE native state (#8847).
+    ///
+    /// Native-first: the toggle target is derived from the native
+    /// `suggestions_panel_open` flag, not from the frontend WebView (which the
+    /// idle policy may have destroyed), so the shortcut works from a cold/idle
+    /// overlay. The OPEN transition routes through the single fullscreen gate
+    /// (#8858). Returns the resolved open state so the caller can emit an
+    /// idempotent explicit state event.
+    pub async fn toggle_panel_mode(&self) -> bool {
+        let target_open = !self.state.read().await.suggestions_panel_open;
+        self.set_panel_mode(target_open).await
+    }
+
+    /// Return the native suggestions-panel state.
+    ///
+    /// The overlay WebView can be created lazily after a tracking-panel open
+    /// request. In that cold-start path the event emitted before WebView
+    /// readiness is not buffered, so the frontend must hydrate from this
+    /// authoritative state before writing its initial reducer value back.
+    pub async fn suggestions_panel_open(&self) -> bool {
+        self.state.read().await.suggestions_panel_open
     }
 
     pub async fn set_automation_confirm_mode(&self, active: bool) {
@@ -577,9 +832,18 @@ impl MagicOverlayHandle {
         );
     }
 
-    pub fn emit_toggle_suggestions(&self) {
-        if let Err(e) = self.app_handle.emit("overlay:toggle-suggestions", ()) {
-            debug!("emit overlay:toggle-suggestions failed: {e}");
+    /// Emit the AUTHORITATIVE suggestions-panel open/closed state as an
+    /// idempotent explicit event (#8847). The frontend's
+    /// `overlay:set-suggestions-panel` listener converges its reducer to this
+    /// value, so event timing cannot invert or lose the native state — unlike a
+    /// relative toggle event, which is lost when the WebView was destroyed by
+    /// the idle policy. Replaces the former emit-only relative toggle emitter.
+    pub fn emit_suggestions_panel_state(&self, open: bool) {
+        if let Err(e) = self.app_handle.emit(
+            "overlay:set-suggestions-panel",
+            serde_json::json!({ "open": open }),
+        ) {
+            debug!("emit overlay:set-suggestions-panel failed: {e}");
         }
     }
 
@@ -602,9 +866,11 @@ impl MagicOverlayHandle {
             }
         }
 
-        if let Err(e) = self
-            .app_handle
-            .emit("overlay:pointer-context-update", &payload)
+        // Pointer coordinates are screen-content-derived data. Keep them in
+        // the transparent overlay webview instead of broadcasting them to the
+        // main and tracking-panel webviews.
+        if let Err(e) =
+            emit_overlay_event(&self.app_handle, "overlay:pointer-context-update", &payload)
         {
             debug!("failed to emit overlay:pointer-context-update: {e}");
         }

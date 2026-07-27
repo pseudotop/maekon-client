@@ -36,6 +36,26 @@ pub trait TextSearchProvider: Send + Sync {
     /// Index (or update) the searchable text for a given segment.
     async fn sync_segment(&self, segment_id: &str, searchable_text: &str) -> Result<(), CoreError>;
 
+    /// Index (or update) a segment's searchable text, optionally enriched with
+    /// additional content sources that fall within `[start_time, end_time]`
+    /// (RFC 3339 strings).
+    ///
+    /// The default implementation ignores the time range and delegates to
+    /// [`sync_segment`](Self::sync_segment), indexing only `searchable_text`.
+    /// FTS5-backed providers override this to also gather window titles and
+    /// suggestion content from the local database within the range. Keeping a
+    /// delegating default preserves binary compatibility for providers and test
+    /// doubles that only implement the base method.
+    async fn sync_segment_enriched(
+        &self,
+        segment_id: &str,
+        searchable_text: &str,
+        _start_time: &str,
+        _end_time: &str,
+    ) -> Result<(), CoreError> {
+        self.sync_segment(segment_id, searchable_text).await
+    }
+
     /// Execute a phrase search: all CJK bigram tokens of `query` are joined into
     /// a single quoted FTS5 phrase, requiring them to appear contiguously in the
     /// shadow index. Returns only documents where the full phrase matches.

@@ -283,6 +283,24 @@ impl std::fmt::Display for PiiFilterLevel {
     }
 }
 
+impl PiiFilterLevel {
+    /// Canonical settings-API token — MUST equal the serde variant token
+    /// (capitalized), which is also what `config.json` persists and what the
+    /// settings UI `<select>` options use. The lowercase `Display` impl above
+    /// is for logs only: assembling the settings response through `Display`
+    /// produced `"strict"`, which matched no `<select>` option and made the
+    /// browser fall back to the first option ("Off") right after a successful
+    /// save (#9146). Locked to serde by `settings_token_matches_serde_token`.
+    pub fn as_settings_token(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Basic => "Basic",
+            Self::Standard => "Standard",
+            Self::Strict => "Strict",
+        }
+    }
+}
+
 impl std::fmt::Display for Weekday {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -626,5 +644,20 @@ mod tests {
             ExternalDataPolicy::PiiFilterStandard.effective_egress_pii_level(PiiFilterLevel::Off),
             PiiFilterLevel::Standard
         );
+    }
+
+    /// #9146: the settings-API token must stay byte-identical to the serde
+    /// variant token — a drift here reintroduces the save-then-shows-Off bug.
+    #[test]
+    fn settings_token_matches_serde_token() {
+        for level in [
+            PiiFilterLevel::Off,
+            PiiFilterLevel::Basic,
+            PiiFilterLevel::Standard,
+            PiiFilterLevel::Strict,
+        ] {
+            let serde_token = serde_json::to_value(level).unwrap();
+            assert_eq!(serde_token.as_str().unwrap(), level.as_settings_token());
+        }
     }
 }

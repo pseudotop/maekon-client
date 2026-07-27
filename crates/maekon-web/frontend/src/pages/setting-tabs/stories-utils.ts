@@ -104,6 +104,7 @@ export function makeDefaultFormData(overrides?: Partial<AppSettings>): AppSettin
       min_confidence: 0.5,
       max_suggestions: 5,
       embedding_enabled: true,
+      llm_summary_enabled: false,
       gui_intelligence_enabled: true,
       text_intelligence_enabled: true,
       auto_tuner_enabled: false,

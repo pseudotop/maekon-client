@@ -65,19 +65,62 @@ impl SqliteSyncMerger {
         let tables = table_descriptor::ALL_TABLE_NAMES;
         let mut total_deleted = 0usize;
         for table in &tables {
+            // hlc <= (bw, bc), lexicographically — spares HLC strictly above the anchor.
+            let scope_predicate = match bound {
+                Some(_) => {
+                    "origin_device_id = ?1 \
+                     AND (hlc_wall_ms < ?2 OR (hlc_wall_ms = ?2 AND hlc_counter <= ?3))"
+                }
+                None => "origin_device_id = ?1",
+            };
+
+            // #8043: record a durable suppression tombstone for EVERY row this event erases,
+            // BEFORE the hard-delete — so the fast-path DeletionEvent leaves the SAME durable
+            // suppression as the offline-peer tombstone stream (`delete_all_data_inner`). Without
+            // it, an unrelated later re-grant that resets the sender's push watermark to
+            // `Hlc::default()` (`sync_engine::SyncEngine::new`) re-extracts + re-pushes the
+            // un-erased source rows, and this peer — holding no suppression tombstone — re-accepts
+            // them via normal LWW/AppendOnly merge, silently undoing the Art.17 erasure fleet-wide.
+            // The tombstone uses the same origin-scoped (+ anchor-bounded) predicate as the DELETE
+            // so its set == the deleted set; the cross-device-stable row_id (composite for
+            // embeddings) comes from the shared descriptor; it is stamped at each row's OWN HLC
+            // (never a peer-controlled anchor → no far-future poison) with keep-higher ON CONFLICT
+            // so an existing higher-HLC tombstone (e.g. the offline stream's anchor skeleton) is
+            // never lowered.
+            let row_id_sql = table_descriptor::descriptor_for(table)
+                .map(|d| d.tombstone_row_id_sql())
+                .unwrap_or_else(|| "id".to_string());
+            let insert_sql = format!(
+                "INSERT INTO sync_tombstones \
+                   (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+                 SELECT '{table}', CAST({row_id_sql} AS TEXT), origin_device_id, \
+                        hlc_wall_ms, hlc_counter, datetime('now') \
+                 FROM {table} WHERE {scope_predicate} \
+                 ON CONFLICT(table_name, row_id) DO UPDATE SET \
+                   origin_device_id = excluded.origin_device_id, \
+                   hlc_wall_ms = excluded.hlc_wall_ms, \
+                   hlc_counter = excluded.hlc_counter, \
+                   deleted_at  = excluded.deleted_at \
+                 WHERE excluded.hlc_wall_ms > sync_tombstones.hlc_wall_ms \
+                    OR (excluded.hlc_wall_ms = sync_tombstones.hlc_wall_ms \
+                        AND excluded.hlc_counter > sync_tombstones.hlc_counter)"
+            );
+            match bound {
+                Some((bw, bc)) => {
+                    conn.execute(&insert_sql, rusqlite::params![origin_device_id, bw, bc])
+                }
+                None => conn.execute(&insert_sql, rusqlite::params![origin_device_id]),
+            }
+            .map_err(|e| {
+                StorageError::Internal(format!("record deletion tombstones on {table}: {e}"))
+            })?;
+
+            let delete_sql = format!("DELETE FROM {table} WHERE {scope_predicate}");
             let deleted = match bound {
                 Some((bw, bc)) => {
-                    // hlc <= (bw, bc), lexicographically — spares HLC strictly above the anchor.
-                    let sql = format!(
-                        "DELETE FROM {table} WHERE origin_device_id = ?1 \
-                         AND (hlc_wall_ms < ?2 OR (hlc_wall_ms = ?2 AND hlc_counter <= ?3))"
-                    );
-                    conn.execute(&sql, rusqlite::params![origin_device_id, bw, bc])
+                    conn.execute(&delete_sql, rusqlite::params![origin_device_id, bw, bc])
                 }
-                None => {
-                    let sql = format!("DELETE FROM {table} WHERE origin_device_id = ?1");
-                    conn.execute(&sql, rusqlite::params![origin_device_id])
-                }
+                None => conn.execute(&delete_sql, rusqlite::params![origin_device_id]),
             }
             .map_err(|e| StorageError::Internal(format!("GDPR deletion on {table}: {e}")))?;
             total_deleted += deleted;
@@ -880,6 +923,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_event_records_tombstone_that_blocks_later_repush() {
+        // #8043: the DeletionEvent FAST PATH must leave a durable suppression tombstone,
+        // not only hard-delete. Otherwise, after the erasing device re-grants consent and
+        // its push watermark resets to Hlc::default(), it re-extracts + re-pushes the
+        // un-erased source rows and this peer (holding no tombstone) re-accepts them —
+        // silently undoing the Art.17 erasure.
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        // The peer holds a copy of the erasing device's row.
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments \
+                     (id, start_time, end_time, duration_secs, trigger_reason, \
+                      dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-d', '2026-01-01', '2026-01-01', 3600, 'timer', \
+                             'Dev', 100, 1, ?1)",
+                    rusqlite::params![remote_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+
+        // Apply the device-wide DeletionEvent (unbounded — pre-#5181 ZERO watermark).
+        let del = ChangeSet {
+            kind: ChangeSetKind::DeletionEvent,
+            origin_device_id: remote_id.to_string(),
+            origin_device_name: "Remote".to_string(),
+            ..Default::default()
+        };
+        let r = merger.apply_changes(del).await.unwrap();
+        assert!(r.tombstoned > 0, "row hard-deleted by the DeletionEvent");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-d'"
+            ),
+            0
+        );
+        // A suppression tombstone was recorded at the erased row's own HLC (100,1).
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones \
+                 WHERE table_name='activity_segments' AND row_id='seg-d' \
+                   AND hlc_wall_ms=100 AND hlc_counter=1"
+            ),
+            1,
+            "DeletionEvent must record a durable suppression tombstone"
+        );
+
+        // Post-re-grant re-push of the SAME row (same HLC) is suppressed — no resurrection.
+        let repush = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            segments: vec![seg_json("seg-d", 100, 1, remote_id)],
+            ..Default::default()
+        };
+        let r2 = merger.apply_changes(repush).await.unwrap();
+        assert_eq!(
+            r2.applied, 0,
+            "stale re-push suppressed by the recorded tombstone"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-d'"
+            ),
+            0,
+            "peer stays erased (no re-hydration after re-grant watermark reset)"
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_event_tombstone_allows_genuine_post_regrant_write() {
+        // #8043 companion: the recorded tombstone (own-HLC) must NOT block a genuinely newer
+        // re-authored row (HLC strictly above the erased version) — the P1 re-grant path.
+        let (storage, local_id) = setup();
+        let remote_id = "remote-dev";
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO activity_segments \
+                     (id, start_time, end_time, duration_secs, trigger_reason, \
+                      dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES ('seg-r', '2026-01-01', '2026-01-01', 3600, 'timer', \
+                             'Dev', 100, 1, ?1)",
+                    rusqlite::params![remote_id],
+                )
+                .unwrap();
+        }
+        let merger = SqliteSyncMerger::new(storage.connection_arc(), local_id);
+        merger
+            .apply_changes(ChangeSet {
+                kind: ChangeSetKind::DeletionEvent,
+                origin_device_id: remote_id.to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Re-authored post-re-grant row at a strictly higher HLC applies (tombstone cleared).
+        let regrant = ChangeSet {
+            origin_device_id: remote_id.to_string(),
+            segments: vec![seg_json("seg-r", 500, 0, remote_id)],
+            ..Default::default()
+        };
+        let r = merger.apply_changes(regrant).await.unwrap();
+        assert_eq!(r.applied, 1, "higher-HLC post-re-grant write is allowed");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-r'"
+            ),
+            1,
+            "genuine post-re-grant data is not over-suppressed"
+        );
+    }
+
+    #[tokio::test]
     async fn deletion_event_bounded_spares_post_anchor_rows() {
         // #5181: a DeletionEvent stamped with the erasure HLC anchor must delete the
         // erasing device's pre-erasure rows but SPARE a post-re-grant row (HLC > anchor).
@@ -1246,6 +1412,125 @@ mod tests {
         let conn = storage.connection_arc();
         let g = conn.test_lock();
         g.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn age_retention_records_tombstone_blocking_peer_resurrection() {
+        // #8043 gap-2 end-to-end: device A ages out its OWN locally-authored segment via
+        // periodic retention; a peer B that still holds A's row serves it back on the next
+        // pull. Before the fix A re-accepted it (data past its retention horizon,
+        // Art.5(1)(e)). The retention tombstone recorded at delete time must suppress it.
+        let (storage, dev_a) = setup();
+        // A authors a segment (origin = A) with a very old start_time (2019).
+        {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            g.execute(
+                "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                 trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                 VALUES ('seg-old', '2019-01-01T00:00:00+00:00', '2019-01-01T00:00:00+00:00', \
+                         3600, 'timer', 'Dev', 4242, 0, ?1)",
+                rusqlite::params![dev_a],
+            )
+            .unwrap();
+        }
+
+        let deleted = storage.enforce_segment_retention(30).unwrap();
+        assert_eq!(deleted, 1, "aged local segment deleted");
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-old'"
+            ),
+            0
+        );
+        // A local-origin suppression tombstone captured at the row's own HLC (4242,0).
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones \
+                 WHERE table_name='activity_segments' AND row_id='seg-old' AND hlc_wall_ms=4242"
+            ),
+            1,
+            "retention must record a local-origin suppression tombstone"
+        );
+
+        // Simulate A pulling from peer B: B serves A's still-held row (origin = A). The
+        // changeset origin is B, so A's self-origin guard does NOT skip it.
+        let merger_a = SqliteSyncMerger::new(storage.connection_arc(), dev_a.clone());
+        let pull = ChangeSet {
+            origin_device_id: "device-B".to_string(),
+            origin_device_name: "B".to_string(),
+            segments: vec![seg_json("seg-old", 4242, 0, &dev_a)],
+            ..Default::default()
+        };
+        let r = merger_a.apply_changes(pull).await.unwrap();
+        assert_eq!(
+            r.applied, 0,
+            "re-pushed aged segment suppressed by retention tombstone"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id='seg-old'"
+            ),
+            0,
+            "aged segment stays deleted (no resurrection)"
+        );
+    }
+
+    #[tokio::test]
+    async fn age_retention_does_not_tombstone_peer_origin_rows() {
+        // Retention must not tombstone a PEER-origin row — that would wrongly propagate an
+        // erasure of the peer's still-live data. Only the local-origin aged row is tombstoned;
+        // a genuinely newer peer write for the peer-origin row is NOT over-suppressed.
+        let (storage, dev_a) = setup();
+        {
+            let conn = storage.connection_arc();
+            let g = conn.test_lock();
+            for (id, origin, w) in [
+                ("seg-local", dev_a.as_str(), 100u64),
+                ("seg-peer", "device-B", 200),
+            ] {
+                g.execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES (?1, '2019-01-01T00:00:00+00:00', '2019-01-01T00:00:00+00:00', 3600, \
+                             'timer', 'Dev', ?2, 0, ?3)",
+                    rusqlite::params![id, w, origin],
+                )
+                .unwrap();
+            }
+        }
+        storage.enforce_segment_retention(30).unwrap();
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones WHERE row_id='seg-local'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones WHERE row_id='seg-peer'"
+            ),
+            0,
+            "a device must not tombstone a peer-origin row"
+        );
+
+        // A genuinely newer B write for the peer-origin row is NOT suppressed.
+        let merger_a = SqliteSyncMerger::new(storage.connection_arc(), dev_a);
+        let push = ChangeSet {
+            origin_device_id: "device-B".to_string(),
+            segments: vec![seg_json("seg-peer", 900, 0, "device-B")],
+            ..Default::default()
+        };
+        let r = merger_a.apply_changes(push).await.unwrap();
+        assert_eq!(
+            r.applied, 1,
+            "peer's own newer write is not over-suppressed"
+        );
     }
 
     #[tokio::test]

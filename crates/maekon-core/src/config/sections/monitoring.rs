@@ -100,6 +100,15 @@ pub struct VisionConfig {
     pub thumbnail_height: u32,
     #[serde(default)]
     pub ocr_enabled: bool,
+    /// OCR recognition languages as BCP-47 tags (e.g. `ko-KR`, `en-US`).
+    ///
+    /// Threaded into the frame processor's OCR sources (#8054): macOS Vision
+    /// applies them via `setRecognitionLanguages:`, and the leptess fallback
+    /// maps them to Tesseract codes. Defaults to Korean-first so the primary
+    /// target platform recognizes Korean screen text out of the box. An empty
+    /// list keeps each engine's built-in default.
+    #[serde(default = "default_ocr_languages")]
+    pub ocr_languages: Vec<String>,
     #[serde(default)]
     pub privacy_mode: bool,
 }
@@ -238,6 +247,14 @@ pub(crate) fn default_thumbnail_width() -> u32 {
 
 pub(crate) fn default_thumbnail_height() -> u32 {
     270
+}
+
+/// Default OCR recognition languages (BCP-47): Korean first, then English.
+/// Mirrors `maekon_vision::native_ocr::DEFAULT_OCR_LANGUAGES` — kept as a
+/// plain string list here so `maekon-core` stays free of a `maekon-vision`
+/// dependency (#8054).
+pub(crate) fn default_ocr_languages() -> Vec<String> {
+    vec!["ko-KR".to_string(), "en-US".to_string()]
 }
 
 // ── Private default helpers ─────────────────────────────────────────

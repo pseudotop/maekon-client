@@ -127,6 +127,12 @@ pub(super) fn build_openai_chat_request_body(
         "model": model,
         "max_tokens": max_output_tokens,
         "stream": true,
+        // #8057 (P2-1): without `stream_options.include_usage` OpenAI's
+        // Chat Completions streaming NEVER emits a usage chunk, so the SSE
+        // parser's usage branch below is dead and every chat-completions
+        // surface reports 0 tokens — silently disarming the daily BYOK budget
+        // gate. Request the trailing usage chunk on every streamed turn.
+        "stream_options": { "include_usage": true },
         "messages": api_messages,
     });
 

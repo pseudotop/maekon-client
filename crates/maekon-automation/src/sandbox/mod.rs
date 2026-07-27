@@ -147,6 +147,30 @@ fn create_native_sandbox() -> Arc<dyn Sandbox> {
     Arc::new(FailClosedSandbox)
 }
 
+/// Whether a native platform sandbox can actually enforce isolation on this
+/// host + build (#8686 AC3). Mirrors the exact probes `create_native_sandbox`
+/// uses, without constructing the automation pipeline — consumed by the
+/// feature-capability snapshot so settings surfaces can show the honest
+/// per-OS sandbox state instead of implying containment everywhere.
+pub fn native_sandbox_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        LinuxSandbox::new().is_available()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        MacOsSandbox::new().is_available()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        WindowsSandbox::new().is_available()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

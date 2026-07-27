@@ -356,7 +356,7 @@ mod tests {
                 .unwrap_or(AuditStatus::Completed);
 
             self.entries.lock().unwrap().push(AuditEntry {
-                entry_id: Ulid::new().to_string(),
+                entry_id: Ulid::generate().to_string(),
                 timestamp: chrono::Utc::now(),
                 action_type: "external_grpc".into(),
                 command_id: command_id.into(),
@@ -377,7 +377,7 @@ mod tests {
 
     fn mk_ctx() -> AuthContext {
         AuthContext {
-            command_id: Ulid::new().to_string(),
+            command_id: Ulid::generate().to_string(),
             client_id: "client-1".into(),
             auth_type: AuthType::Jwt,
             jti: None,

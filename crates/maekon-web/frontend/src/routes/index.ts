@@ -1,4 +1,5 @@
 export { OutletContextError } from './OutletContextError'
+export { default as PersistentRouteRenderer } from './PersistentRouteRenderer'
 export { RouteErrorBoundary } from './RouteErrorBoundary'
 export { RouteErrorFallback } from './RouteErrorFallback'
 export { default as RouteRenderer } from './RouteRenderer'

@@ -52,10 +52,32 @@ pub async fn get_goals(
 }
 
 /// PUT /api/coaching/goals
+///
+/// Updates the live coaching engine's regime goal targets AND persists them to
+/// the durable config, which is the single source of truth for
+/// `coaching.regime_goals` (#8083). Config is what `CoachingEngine::new`
+/// re-hydrates on restart and what the settings-save path deliberately
+/// preserves (regime_goals is display-only there), so this dedicated endpoint is
+/// the sole writer — mirroring the Tauri `update_regime_goals` IPC command.
+///
+/// The durable config write happens FIRST (the only fallible step): a failure is
+/// surfaced as an error instead of a false success that would silently revert on
+/// the next restart. The engine (in-RAM, infallible) is updated only after the
+/// config write succeeds, so the two never diverge. The config write is skipped
+/// when no config manager is wired (standalone / tests), matching the sibling
+/// tracking-schedule handler.
 pub async fn update_goals(
     State(state): State<AppState>,
     Json(body): Json<UpdateGoalsRequest>,
 ) -> Result<Json<()>, ApiError> {
+    if let Some(ref manager) = state.core.config_manager {
+        manager
+            .update_with(|config| {
+                config.coaching.regime_goals = body.goals.clone();
+                Ok(())
+            })
+            .map_err(ApiError::from)?;
+    }
     if let Some(ref engine) = state.analysis.coaching_engine {
         engine.update_regime_goals(&body.goals).await;
     }
@@ -308,6 +330,40 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// #8083: the goals endpoint is the durable single source of truth for
+    /// `coaching.regime_goals` — it must persist to config (not just the in-RAM
+    /// engine), so the goal survives restart and the settings-save path can
+    /// safely preserve it. Calls the handler directly to assert the config
+    /// side-effect (the router path is covered by the tests above).
+    #[tokio::test]
+    async fn update_goals_persists_to_config_as_durable_ssot() {
+        use maekon_core::config_manager::ConfigManager;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let config_manager = ConfigManager::with_path(dir.path().join("config.json")).unwrap();
+        let mut state = test_app_state_with_coaching();
+        state.core.config_manager = Some(config_manager.clone());
+
+        let mut goals = HashMap::new();
+        goals.insert("deep_work".to_string(), 180u32);
+
+        let Json(()) = super::update_goals(State(state), Json(UpdateGoalsRequest { goals }))
+            .await
+            .expect("update_goals should succeed and persist to config");
+
+        assert_eq!(
+            config_manager
+                .get()
+                .coaching
+                .regime_goals
+                .get("deep_work")
+                .copied(),
+            Some(180),
+            "the goals endpoint must persist to config as the durable SSOT",
+        );
     }
 
     #[test]

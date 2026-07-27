@@ -48,11 +48,15 @@ fn build_loopback_pinned_client(config: &ExternalApiEndpoint) -> Option<reqwest:
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
-    crate::outbound::hardened_client_builder()
-        .timeout(std::time::Duration::from_secs(config.timeout_secs))
-        .resolve_to_addrs(host_key, &addrs)
-        .build()
-        .ok()
+    // #8045 C3: this constructor already fails closed unless the endpoint is provably
+    // loopback (checked above), so cleartext is intentionally permitted here.
+    crate::outbound::hardened_client_builder(
+        crate::outbound::TransportPolicy::AllowLoopbackCleartext,
+    )
+    .timeout(std::time::Duration::from_secs(config.timeout_secs))
+    .resolve_to_addrs(host_key, &addrs)
+    .build()
+    .ok()
 }
 
 /// Normalize an Ollama endpoint URL to use `/v1/chat/completions`.
@@ -183,12 +187,16 @@ impl AnalysisClient {
         // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
         // build() only fails on TLS backend initialization failure (process-fatal); in that case we
         // explicitly panic rather than fall back to a redirect-following reqwest::Client::default().
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .unwrap_or_else(|error| {
-                panic!("hardened analysis HTTP client build failed (TLS backend init): {error}")
-            });
+        // #8045 C3: https_only backstop derived from the resolved endpoint (loopback Ollama keeps
+        // cleartext; a remote analysis provider is HTTPS-only).
+        let http_client = crate::outbound::hardened_client_builder(
+            crate::outbound::TransportPolicy::for_endpoint(&resolved_endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened analysis HTTP client build failed (TLS backend init): {error}")
+        });
 
         // D7: resolve per-endpoint breaker.
         let breaker_key = endpoint_authority(&resolved_endpoint)

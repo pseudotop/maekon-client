@@ -1,5 +1,6 @@
 // Privacy/isolation config — PII filter level, automation sandbox, excluded-app list
 use super::super::enums::{ConfirmationRequirement, PiiFilterLevel, SandboxProfile};
+use super::reauth::ReauthConfig;
 use serde::{Deserialize, Serialize};
 
 /// Safe-by-default confidence floor for LLM-planned automation intents.
@@ -22,6 +23,10 @@ pub struct PrivacyConfig {
     pub auto_exclude_sensitive: bool,
     #[serde(default)]
     pub pii_filter_level: PiiFilterLevel,
+    /// Capture-history viewing re-authentication (biometric/PIN) settings.
+    /// Enabled by default (#8044).
+    #[serde(default)]
+    pub reauth: ReauthConfig,
 }
 
 impl Default for PrivacyConfig {
@@ -32,6 +37,7 @@ impl Default for PrivacyConfig {
             excluded_title_patterns: Vec::new(),
             auto_exclude_sensitive: true,
             pii_filter_level: PiiFilterLevel::Standard,
+            reauth: ReauthConfig::default(),
         }
     }
 }

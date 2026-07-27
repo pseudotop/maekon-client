@@ -17,6 +17,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function technicalErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  return String(error)
+}
+
 /**
  * Phase 4 D11: format a release `published_at` ISO-8601 timestamp as a
  * short human-readable string. Returns `null` when input is null or
@@ -106,6 +111,9 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
     (status?.phase === 'PendingApproval' || status?.phase === 'ReadyToInstall') && !freshness.severelyStale
   const hasApprovalAction = status?.phase === 'PendingApproval' || status?.phase === 'ReadyToInstall'
   const isDownloading = status?.phase === 'Downloading'
+  const rawStatusMessage = status?.message?.trim() || null
+  const visibleStatusMessage =
+    status?.phase === 'Error' ? t('updates.statusCheckFailed') : (rawStatusMessage ?? t('updates.statusUnavailable'))
 
   const phaseLabel = useMemo(() => {
     const phase = status?.phase
@@ -137,10 +145,10 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
       <div className="mb-4 flex items-center justify-between">
         <CardTitle>{t('updates.title')}</CardTitle>
         <div className="flex items-center space-x-2">
-          <Badge color={stream.status === 'connected' ? 'success' : 'warning'} size="sm">
+          <Badge color="default" size="sm">
             {stream.status === 'connected' ? t('updates.live') : t('updates.polling')}
           </Badge>
-          <Badge color={freshness.stale ? 'warning' : 'success'} size="sm">
+          <Badge color="default" size="sm">
             {freshness.stale ? t('updates.stale') : t('updates.fresh')}
           </Badge>
           <Badge
@@ -153,7 +161,7 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
                     ? 'info'
                     : status?.phase === 'ReadyToInstall'
                       ? 'success'
-                      : 'info'
+                      : 'default'
             }
             size="sm"
           >
@@ -162,7 +170,14 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
         </div>
       </div>
 
-      <p className={cn('text-content-strong', typography.body)}>{status?.message ?? t('updates.statusUnavailable')}</p>
+      <p className={cn('text-content-strong', typography.body)}>{visibleStatusMessage}</p>
+
+      {status?.phase === 'Error' && rawStatusMessage && (
+        <details className={cn('mt-2 text-content-secondary', typography.caption)} data-testid="update-status-details">
+          <summary className="cursor-pointer select-none">{t('updates.technicalDetails')}</summary>
+          <code className="mt-1 block break-words rounded bg-surface-secondary p-2">{rawStatusMessage}</code>
+        </details>
+      )}
 
       <p className={cn('mt-2 text-content-secondary', typography.caption)}>
         {freshness.ageSec === null
@@ -177,6 +192,12 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
       {(stream.lastError || stream.retryCount > 0) && (
         <div className={cn('mt-2 text-semantic-warning', typography.caption)}>
           {stream.lastError ? t('updates.streamIssue') : t('updates.reconnecting', { count: stream.retryCount })}
+        </div>
+      )}
+
+      {stream.recoveredAt !== null && (
+        <div role="status" aria-live="polite" className={cn('mt-2 text-content-secondary', typography.caption)}>
+          {t('updates.streamRecovered')}
         </div>
       )}
 
@@ -342,8 +363,14 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
       </div>
 
       {actionMutation.isError && (
-        <div className={cn('mt-3 text-semantic-error', typography.caption)}>
-          {(actionMutation.error as Error).message}
+        <div className={cn('mt-3 text-semantic-error', typography.caption)} role="alert">
+          <p>{t('updates.actionFailed')}</p>
+          <details className="mt-1" data-testid="update-action-details">
+            <summary className="cursor-pointer select-none">{t('updates.technicalDetails')}</summary>
+            <code className="mt-1 block break-words rounded bg-surface-secondary p-2">
+              {technicalErrorMessage(actionMutation.error)}
+            </code>
+          </details>
         </div>
       )}
     </Card>

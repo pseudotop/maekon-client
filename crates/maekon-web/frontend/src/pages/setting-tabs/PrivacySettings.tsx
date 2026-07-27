@@ -82,6 +82,7 @@ export default function PrivacySettings({ privacy, onChange }: PrivacySettingsPr
               }
               placeholder={t('settings.excludedAppsPlaceholder', '1Password, Discord, Slack')}
             />
+            <p className={form.helper}>{t('settings.excludedAppsRetroactiveNote')}</p>
           </div>
 
           <div>

@@ -82,6 +82,37 @@ impl OAuthProviderConfig {
         }
     }
 
+    /// Read-only Google Calendar OAuth preset (MK-EXT-01.C01 #8590).
+    ///
+    /// Requests **only** the minimum read-only scope
+    /// (`calendar.events.readonly`) — never a write/full-access scope. Requires
+    /// an app-owned Desktop OAuth client id created in Google Cloud; Google does
+    /// not publish a shared public client id for third-party desktop apps.
+    ///
+    /// The connector built on this preset has no Calendar write path
+    /// (see `crate::integration::google_calendar`).
+    pub fn google_calendar_readonly(client_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: crate::integration::google_calendar::GOOGLE_CALENDAR_PROVIDER_ID.into(),
+            issuer: "https://accounts.google.com".into(),
+            client_id: client_id.into(),
+            authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+            token_endpoint: "https://oauth2.googleapis.com/token".into(),
+            scopes: vec![
+                crate::integration::google_calendar::GOOGLE_CALENDAR_READONLY_SCOPE.into(),
+            ],
+            callback_port: 1457,
+            callback_path: "/auth/callback".into(),
+            api_base_url: "https://www.googleapis.com/calendar/v3".into(),
+            authorization_extra_params: vec![
+                ("access_type".into(), "offline".into()),
+                // Least privilege: do not auto-include other already-granted scopes.
+                ("include_granted_scopes".into(), "false".into()),
+                ("prompt".into(), "consent".into()),
+            ],
+        }
+    }
+
     /// Standard OpenAI API base URL (for API key authentication).
     pub const OPENAI_API_BASE_URL: &'static str = "https://api.openai.com/v1";
 
@@ -204,6 +235,28 @@ mod tests {
         assert_eq!(
             OAuthProviderConfig::OPENAI_API_BASE_URL,
             "https://api.openai.com/v1"
+        );
+    }
+
+    #[test]
+    fn google_calendar_preset_requests_only_readonly_scope() {
+        // #8590: minimum read-only scope only — no write/full-access scope should be present.
+        let config = OAuthProviderConfig::google_calendar_readonly("desktop-client-id");
+        assert_eq!(config.provider_id, "google_calendar");
+        assert_eq!(
+            config.scopes,
+            vec!["https://www.googleapis.com/auth/calendar.events.readonly".to_string()]
+        );
+        assert!(config.scopes.iter().all(|s| s.ends_with(".readonly")));
+        // No write scope is mixed in.
+        assert!(!config
+            .scopes
+            .iter()
+            .any(|s| s == "https://www.googleapis.com/auth/calendar"
+                || s == "https://www.googleapis.com/auth/calendar.events"));
+        assert_eq!(
+            config.api_base_url,
+            "https://www.googleapis.com/calendar/v3"
         );
     }
 }

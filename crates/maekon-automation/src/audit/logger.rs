@@ -3,9 +3,43 @@ use maekon_core::config::PiiFilterLevel;
 use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStats, AuditStatus};
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::traits::{AuditPersistence, AuditQuery};
+use super::traits::{AuditPersistError, AuditPersistence, AuditQuery};
+
+/// #8045 C2: emit a periodic warning roughly every this many dropped entries so
+/// sustained best-effort audit loss (levels below `Full`) is visible in logs
+/// without warning on every single drop under a burst.
+const DROP_WARN_INTERVAL: u64 = 100;
+
+/// #8045 C2: fail-closed audit-record error surfaced to the automation action
+/// path at `AuditLevel::Full`. Callers map it to a Denied/Failed outcome so a
+/// Full-audited action never executes (or is never reported as succeeded) while
+/// its audit trail is incomplete.
+#[derive(Debug)]
+pub enum AuditError {
+    /// The bounded in-memory buffer is at capacity; recording would drop an entry.
+    BufferOverflow { capacity: usize },
+    /// The durable persistence sink rejected the entry (channel full/closed).
+    PersistRejected(AuditPersistError),
+}
+
+impl std::fmt::Display for AuditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BufferOverflow { capacity } => {
+                write!(
+                    f,
+                    "audit buffer at capacity ({capacity}); Full-level record refused"
+                )
+            }
+            Self::PersistRejected(e) => write!(f, "audit persistence rejected entry: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AuditError {}
 
 const REDACTED_APP: &str = "[REDACTED_APP]";
 const REDACTED_SECRET: &str = "[REDACTED_SECRET]";
@@ -26,6 +60,11 @@ pub struct AuditLogger {
     /// strictest PII filtering unconditionally at the record boundary (not
     /// user-configurable — audit log is a security control, not a feature).
     pub(super) pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
+    /// #8045 C2: running count of audit entries dropped best-effort (buffer
+    /// overflow or persistence rejection) at levels below `Full`. Read via
+    /// [`Self::dropped_count`]; a warning fires every `DROP_WARN_INTERVAL` drops
+    /// so sustained silent audit degradation is observable.
+    pub(super) dropped_entries: AtomicU64,
 }
 
 impl AuditLogger {
@@ -37,6 +76,7 @@ impl AuditLogger {
             persistence: None,
             query: None,
             pii_sanitizer: None,
+            dropped_entries: AtomicU64::new(0),
         }
     }
 
@@ -121,11 +161,48 @@ impl AuditLogger {
     }
 
     pub fn log_event(&mut self, action_type: &str, session_id: &str, details: &str) {
+        self.log_event_with_status(action_type, session_id, AuditStatus::Completed, details);
+    }
+
+    /// Record a named runtime event with its actual outcome.
+    ///
+    /// Policy/privacy denial events must not use [`Self::log_event`], whose
+    /// default `Completed` status is reserved for successful observations.
+    pub fn log_event_with_status(
+        &mut self,
+        action_type: &str,
+        session_id: &str,
+        status: AuditStatus,
+        details: &str,
+    ) {
         self.push_entry(
             &maekon_core::generate_id("evt"),
             session_id,
             action_type,
-            AuditStatus::Completed,
+            status,
+            Some(details.to_string()),
+        );
+    }
+
+    /// Record a runtime event whose caller-provided correlation id must remain
+    /// queryable through the public audit export's `command_id` field.
+    ///
+    /// Unlike [`Self::log_event_with_status`], this does not generate a fresh
+    /// command id. Callers must pass an already-sanitized opaque identifier;
+    /// conversation sessions use their UUID so runtime, egress ledger, and
+    /// audit export can be reconciled without persisting message content.
+    pub fn log_correlated_event_with_status(
+        &mut self,
+        action_type: &str,
+        correlation_id: &str,
+        status: AuditStatus,
+        details: &str,
+    ) {
+        self.push_entry(
+            correlation_id,
+            correlation_id,
+            action_type,
+            status,
             Some(details.to_string()),
         );
     }
@@ -199,7 +276,28 @@ impl AuditLogger {
     }
 
     pub fn recent_entries(&self, limit: usize) -> Vec<AuditEntry> {
-        self.buffer.iter().rev().take(limit).cloned().collect()
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let mut results: Vec<AuditEntry> = self.buffer.iter().rev().take(limit).cloned().collect();
+
+        // Privacy/system audit writers persist directly to SQLite instead of
+        // passing through this automation buffer. Merge the durable rows so
+        // unfiltered audit views and exports do not silently omit them.
+        if let Some(query) = &self.query {
+            let mut seen: std::collections::HashSet<String> =
+                results.iter().map(|entry| entry.entry_id.clone()).collect();
+            for entry in query.recent_entries(limit) {
+                if seen.insert(entry.entry_id.clone()) {
+                    results.push(entry);
+                }
+            }
+        }
+
+        results.sort_by_key(|entry| std::cmp::Reverse(entry.timestamp));
+        results.truncate(limit);
+        results
     }
 
     pub fn entries_by_status(&self, status: &AuditStatus, limit: usize) -> Vec<AuditEntry> {
@@ -275,6 +373,10 @@ impl AuditLogger {
     }
 
     pub fn stats(&self) -> AuditStats {
+        if let Some(query) = &self.query {
+            return query.stats();
+        }
+
         let mut completed = 0;
         let mut failed = 0;
         let mut denied = 0;
@@ -298,6 +400,155 @@ impl AuditLogger {
         }
     }
 
+    /// #8045 C2: total audit entries dropped best-effort so far (buffer overflow
+    /// or persistence rejection at levels below `Full`). Best-effort observability
+    /// metric — a `Full`-level record fails closed rather than relying on this.
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_entries.load(Ordering::Relaxed)
+    }
+
+    /// #8045 C2: increment the dropped counter and emit a periodic warning.
+    fn note_drop(&self, reason: &str) {
+        let total = self.dropped_entries.fetch_add(1, Ordering::Relaxed) + 1;
+        if total % DROP_WARN_INTERVAL == 1 {
+            tracing::warn!(
+                reason,
+                total_dropped = total,
+                "audit entry dropped (best-effort level); audit completeness degraded"
+            );
+        }
+    }
+
+    /// Build a sanitized [`AuditEntry`]. `raw_details` is sanitized exactly once
+    /// here (D5 iter-6 record-boundary PII filtering), so callers pass raw text.
+    fn build_entry(
+        &self,
+        command_id: &str,
+        session_id: &str,
+        action_type: &str,
+        status: AuditStatus,
+        raw_details: Option<String>,
+        execution_time_ms: Option<u64>,
+    ) -> AuditEntry {
+        AuditEntry {
+            entry_id: maekon_core::generate_id("aud"),
+            timestamp: Utc::now(),
+            session_id: session_id.to_string(),
+            command_id: command_id.to_string(),
+            action_type: action_type.to_string(),
+            status,
+            details: self.sanitize_details(raw_details),
+            execution_time_ms,
+        }
+    }
+
+    /// Best-effort record path (levels below `Full`, and level-less log methods):
+    /// evict the oldest buffer entry on overflow (counting the drop), persist
+    /// best-effort, then buffer. Never fails.
+    fn push_best_effort(&mut self, entry: AuditEntry) {
+        if self.buffer.len() >= self.max_buffer_size {
+            self.buffer.pop_front();
+            self.note_drop("buffer");
+        }
+        if let Some(ref cb) = self.persistence {
+            cb.persist(&entry);
+        }
+        self.buffer.push_back(entry);
+    }
+
+    /// #8045 C2: fail-closed record path for `AuditLevel::Full`.
+    ///
+    /// Mirrors `PolicyClient::persist_checked` (durability first): persists before
+    /// committing to the volatile buffer. At `Full`, a persistence rejection or a
+    /// buffer-at-capacity condition returns `Err` WITHOUT dropping an entry
+    /// silently, so the caller can deny the action. Below `Full` it records
+    /// best-effort (dropping the oldest on overflow, counting the drop) and
+    /// returns `Ok`. `None` is a no-op `Ok`.
+    fn push_checked(&mut self, level: AuditLevel, entry: AuditEntry) -> Result<(), AuditError> {
+        if matches!(level, AuditLevel::None) {
+            return Ok(());
+        }
+        let fail_closed = matches!(level, AuditLevel::Full);
+
+        // Durability first: a Full-level entry the sink rejects fails the action
+        // rather than living only in a volatile buffer.
+        if let Some(cb) = self.persistence.as_ref() {
+            if let Err(e) = cb.persist_checked(&entry) {
+                self.note_drop("persist");
+                if fail_closed {
+                    return Err(AuditError::PersistRejected(e));
+                }
+                // Lower levels: best-effort — still buffer locally below.
+            }
+        }
+
+        if self.buffer.len() >= self.max_buffer_size {
+            if fail_closed {
+                self.note_drop("buffer");
+                return Err(AuditError::BufferOverflow {
+                    capacity: self.max_buffer_size,
+                });
+            }
+            self.buffer.pop_front();
+            self.note_drop("buffer");
+        }
+        self.buffer.push_back(entry);
+        Ok(())
+    }
+
+    /// #8045 C2: fail-closed variant of [`Self::log_start_if`]. At
+    /// `AuditLevel::Full` returns `Err` when the start entry cannot be durably
+    /// recorded (buffer at capacity, or the persistence sink rejected it), so the
+    /// caller denies the command BEFORE it executes. Levels below `Full` record
+    /// best-effort and return `Ok`; `None` is a no-op `Ok`.
+    pub fn try_log_start_if(
+        &mut self,
+        level: AuditLevel,
+        command_id: &str,
+        session_id: &str,
+        action_type: &str,
+    ) -> Result<(), AuditError> {
+        if matches!(level, AuditLevel::None) {
+            return Ok(());
+        }
+        let entry = self.build_entry(
+            command_id,
+            session_id,
+            action_type,
+            AuditStatus::Started,
+            None,
+            None,
+        );
+        self.push_checked(level, entry)
+    }
+
+    /// #8045 C2: fail-closed variant of [`Self::log_with_status_and_time`] — same
+    /// `Full`-fails-closed / lower-best-effort semantics as [`Self::try_log_start_if`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_log_with_status_and_time(
+        &mut self,
+        level: AuditLevel,
+        command_id: &str,
+        session_id: &str,
+        action_type: &str,
+        status: AuditStatus,
+        details: &str,
+        execution_time_ms: u64,
+    ) -> Result<(), AuditError> {
+        if matches!(level, AuditLevel::None) {
+            return Ok(());
+        }
+        let entry = self.build_entry(
+            command_id,
+            session_id,
+            action_type,
+            status,
+            Some(details.to_string()),
+            Some(execution_time_ms),
+        );
+        self.push_checked(level, entry)
+    }
+
     fn push_entry(
         &mut self,
         command_id: &str,
@@ -306,27 +557,8 @@ impl AuditLogger {
         status: AuditStatus,
         details: Option<String>,
     ) {
-        if self.buffer.len() >= self.max_buffer_size {
-            self.buffer.pop_front();
-            tracing::warn!("audit buffer full: dropping oldest entry");
-        }
-
-        let entry = AuditEntry {
-            entry_id: maekon_core::generate_id("aud"),
-            timestamp: Utc::now(),
-            session_id: session_id.to_string(),
-            command_id: command_id.to_string(),
-            action_type: action_type.to_string(),
-            status,
-            details: self.sanitize_details(details),
-            execution_time_ms: None,
-        };
-
-        if let Some(ref cb) = self.persistence {
-            cb.persist(&entry);
-        }
-
-        self.buffer.push_back(entry);
+        let entry = self.build_entry(command_id, session_id, action_type, status, details, None);
+        self.push_best_effort(entry);
     }
 
     fn push_entry_with_time(
@@ -338,29 +570,15 @@ impl AuditLogger {
         raw_details: Option<String>,
         execution_time_ms: Option<u64>,
     ) {
-        // D5 iter-6: sanitize details at record boundary.
-        let details = self.sanitize_details(raw_details);
-        if self.buffer.len() >= self.max_buffer_size {
-            self.buffer.pop_front();
-            tracing::warn!("audit buffer full: dropping oldest entry");
-        }
-
-        let entry = AuditEntry {
-            entry_id: maekon_core::generate_id("aud"),
-            timestamp: Utc::now(),
-            session_id: session_id.to_string(),
-            command_id: command_id.to_string(),
-            action_type: action_type.to_string(),
+        let entry = self.build_entry(
+            command_id,
+            session_id,
+            action_type,
             status,
-            details,
+            raw_details,
             execution_time_ms,
-        };
-
-        if let Some(ref cb) = self.persistence {
-            cb.persist(&entry);
-        }
-
-        self.buffer.push_back(entry);
+        );
+        self.push_best_effort(entry);
     }
 
     /// #6277: record a completion with the caller's REAL status + action_type

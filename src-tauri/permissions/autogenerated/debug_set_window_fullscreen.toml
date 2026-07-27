@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-debug-set-window-fullscreen"
+description = "Enables the debug_set_window_fullscreen command without any pre-configured scope."
+commands.allow = ["debug_set_window_fullscreen"]
+
+[[permission]]
+identifier = "deny-debug-set-window-fullscreen"
+description = "Denies the debug_set_window_fullscreen command without any pre-configured scope."
+commands.deny = ["debug_set_window_fullscreen"]

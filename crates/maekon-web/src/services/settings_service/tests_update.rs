@@ -362,10 +362,6 @@ async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
             min_interval_secs: 900,
         },
     );
-    settings
-        .coaching
-        .regime_goals
-        .insert("deep_work".to_string(), 180);
 
     crate::services::settings_web_service::SettingsCommandService::new(context)
         .update_settings(&settings)
@@ -395,9 +391,64 @@ async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
             .expect("TimeAware profile")
             .enabled
     );
+}
+
+/// #8083/#8052 regression: a Settings save must NOT clobber `regime_goals` that
+/// were added via the dedicated coaching-goals endpoint. The QC CJ-03-01 repro:
+/// open Settings (its form seeds a goal-less `regime_goals` from config at load),
+/// add a goal via the Coaching goals section / IPC (which persists to config),
+/// then click Save Settings — the stale, goal-less form payload used to
+/// full-replace `config.coaching.regime_goals`, making the just-added goal
+/// disappear. `regime_goals` is now display-only in the settings write path
+/// (owned solely by the goals endpoint), so the saved config must retain the
+/// goal even though the incoming settings payload carries none.
+#[tokio::test]
+async fn update_settings_preserves_regime_goals_owned_by_goals_endpoint() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+
+    // A goal was added earlier via the dedicated goals endpoint (which persists
+    // to config). Simulate that pre-existing durable state directly on config.
+    config_manager
+        .update_with(|config| {
+            config
+                .coaching
+                .regime_goals
+                .insert("deep_work".to_string(), 180);
+            Ok(())
+        })
+        .expect("seed a goal via the dedicated-endpoint-owned config field");
+
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let context = test_context_from_state(&state);
+
+    // A stale Settings form: it changes an unrelated coaching field (forcing a
+    // coaching write + engine hot-reload) but carries an EMPTY regime_goals map,
+    // exactly as a form that loaded before the goal was added would.
+    let mut settings = AppSettings::default();
+    settings.coaching.enabled = true;
+    assert!(
+        settings.coaching.regime_goals.is_empty(),
+        "the stale form payload must carry no goals to reproduce the clobber"
+    );
+
+    crate::services::settings_web_service::SettingsCommandService::new(context)
+        .update_settings(&settings)
+        .await
+        .expect("settings update should succeed");
+
+    // The unrelated coaching change persisted...
+    let saved = config_manager.get();
+    assert!(
+        saved.coaching.enabled,
+        "the unrelated coaching change persisted"
+    );
+    // ...but the goal added via the dedicated endpoint SURVIVES the save.
     assert_eq!(
         saved.coaching.regime_goals.get("deep_work").copied(),
-        Some(180)
+        Some(180),
+        "a Settings save must not clobber goals owned by the dedicated goals endpoint",
     );
 }
 

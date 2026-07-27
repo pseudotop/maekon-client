@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-extension-enablement"
+description = "Enables the set_extension_enablement command without any pre-configured scope."
+commands.allow = ["set_extension_enablement"]
+
+[[permission]]
+identifier = "deny-set-extension-enablement"
+description = "Denies the set_extension_enablement command without any pre-configured scope."
+commands.deny = ["set_extension_enablement"]

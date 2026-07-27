@@ -43,7 +43,12 @@ mod tests {
     #[test]
     fn create_request_deserializes_defaults() {
         let req: CreateBugReportRequest = serde_json::from_str("{}").unwrap();
-        assert!(req.include_logs);
+        // #8801 flipped the contract default to EXCLUDE runtime logs
+        // (privacy fail-closed); this handler-side mirror went stale and
+        // latently broke `cargo test --workspace` (#9083 follow-on). Keep it
+        // aligned with the contract's own
+        // `create_request_defaults_runtime_logs_to_excluded` test.
+        assert!(!req.include_logs);
         assert!(req.pii_level.is_none());
     }
 

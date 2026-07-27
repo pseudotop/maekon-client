@@ -41,8 +41,8 @@ use maekon_core::ports::storage::{MetricsStorage, StorageService};
 use maekon_core::ports::web_storage::{
     ActivityStatsStorage, BackupStorage, CoachingQueryStorage, DashboardStreamingStorage,
     DigestStorage, EventQueryStorage, FocusQueryStorage, FrameQueryStorage, GuiInteractionStorage,
-    HabitStorage, SegmentQueryStorage, StorageMaintenanceStorage, SuggestionQueryStorage,
-    TagStorage,
+    HabitStorage, PersonalDataTableExport, SegmentQueryStorage, StorageMaintenanceStorage,
+    SuggestionQueryStorage, TagStorage,
 };
 use maekon_core::types::TimeWindow;
 use maekon_storage::sqlite::SqliteStorage;
@@ -417,6 +417,22 @@ impl StorageMaintenanceStorage for FailingStorage {
             .await
             .map_err(Into::into)
     }
+
+    async fn delete_data_for_apps(
+        &self,
+        app_names: &[String],
+        app_patterns: &[String],
+    ) -> Result<
+        (
+            Vec<String>,
+            maekon_core::models::storage_records::AppDeletionCounts,
+        ),
+        CoreError,
+    > {
+        StorageMaintenanceStorage::delete_data_for_apps(&*self.inner, app_names, app_patterns)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 // ── ActivityStatsStorage ─────────────────────────────────────────────────────
@@ -628,6 +644,13 @@ impl BackupStorage for FailingStorage {
 
     async fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError> {
         BackupStorage::list_backup_frame_tags(&*self.inner).await
+    }
+
+    // #8056 P2-3: delegates like every other BackupStorage method above — this
+    // impl only injects faults for the specific methods named in the file
+    // header doc comment (currently `start_idle_period`), not this trait.
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError> {
+        BackupStorage::export_personal_data_tables(&*self.inner).await
     }
 
     async fn list_event_exports(

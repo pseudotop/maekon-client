@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-24T00:00:00Z",
+  "updated_at": "2026-07-26T00:00:00Z",
   "rules": [
     {
       "provider_type": "OpenAi",
@@ -21,9 +21,81 @@
     {
       "provider_type": "Anthropic",
       "model": "claude-3-sonnet-20240229",
-      "warn_at": "2025-12-01T00:00:00Z",
-      "block_at": "2026-04-01T00:00:00Z",
-      "replacement": "claude-sonnet-4-20250514",
+      "warn_at": "2025-05-21T00:00:00Z",
+      "block_at": "2025-07-21T00:00:00Z",
+      "replacement": "claude-sonnet-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-5-sonnet-20240620",
+      "warn_at": "2025-08-28T00:00:00Z",
+      "block_at": "2025-10-28T00:00:00Z",
+      "replacement": "claude-sonnet-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-5-sonnet-20241022",
+      "warn_at": "2025-08-28T00:00:00Z",
+      "block_at": "2025-10-28T00:00:00Z",
+      "replacement": "claude-sonnet-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-opus-20240229",
+      "warn_at": "2025-11-05T00:00:00Z",
+      "block_at": "2026-01-05T00:00:00Z",
+      "replacement": "claude-opus-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-7-sonnet-20250219",
+      "warn_at": "2025-12-19T00:00:00Z",
+      "block_at": "2026-02-19T00:00:00Z",
+      "replacement": "claude-sonnet-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-5-haiku-20241022",
+      "warn_at": "2025-12-19T00:00:00Z",
+      "block_at": "2026-02-19T00:00:00Z",
+      "replacement": "claude-haiku-4-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-3-haiku-20240307",
+      "warn_at": "2026-02-19T00:00:00Z",
+      "block_at": "2026-04-19T00:00:00Z",
+      "replacement": "claude-haiku-4-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-sonnet-4-20250514",
+      "warn_at": "2026-04-15T00:00:00Z",
+      "block_at": "2026-06-15T00:00:00Z",
+      "replacement": "claude-sonnet-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-opus-4-20250514",
+      "warn_at": "2026-04-15T00:00:00Z",
+      "block_at": "2026-06-15T00:00:00Z",
+      "replacement": "claude-opus-5",
+      "action": "warn_then_block"
+    },
+    {
+      "provider_type": "Anthropic",
+      "model": "claude-opus-4-1-20250805",
+      "warn_at": "2026-06-05T00:00:00Z",
+      "block_at": "2026-08-05T00:00:00Z",
+      "replacement": "claude-opus-5",
       "action": "warn_then_block"
     }
   ]

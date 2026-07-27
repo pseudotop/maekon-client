@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-extract-ax-tree"
+description = "Enables the extract_ax_tree command without any pre-configured scope."
+commands.allow = ["extract_ax_tree"]
+
+[[permission]]
+identifier = "deny-extract-ax-tree"
+description = "Denies the extract_ax_tree command without any pre-configured scope."
+commands.deny = ["extract_ax_tree"]

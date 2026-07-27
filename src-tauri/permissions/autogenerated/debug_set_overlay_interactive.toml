@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-debug-set-overlay-interactive"
+description = "Enables the debug_set_overlay_interactive command without any pre-configured scope."
+commands.allow = ["debug_set_overlay_interactive"]
+
+[[permission]]
+identifier = "deny-debug-set-overlay-interactive"
+description = "Denies the debug_set_overlay_interactive command without any pre-configured scope."
+commands.deny = ["debug_set_overlay_interactive"]

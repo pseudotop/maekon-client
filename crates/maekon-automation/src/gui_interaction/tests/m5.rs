@@ -485,6 +485,10 @@ async fn m5_nonce_replay_blocked_deterministically() {
         .await
         .unwrap();
 
+    let mut rejection_events = service.subscribe();
+    let replay_nonce = ticket.nonce.clone();
+    let replay_signature = ticket.signature.clone();
+
     // Replay same nonce — must be rejected
     let err = service
         .prepare_execution(&sid, &token, GuiExecutionRequest { ticket })
@@ -505,6 +509,21 @@ async fn m5_nonce_replay_blocked_deterministically() {
             "Error message should mention nonce replay, got: {msg}"
         );
     }
+
+    let event = rejection_events
+        .try_recv()
+        .expect("nonce replay should emit a rejection history event");
+    assert_eq!(event.session_id, sid);
+    assert_eq!(event.state, GuiSessionState::Confirmed);
+    assert_eq!(event.event_type, "gui_session.ticket_rejected");
+    assert_eq!(event.message.as_deref(), Some("reason=nonce_replay"));
+    let serialized = serde_json::to_string(&event).unwrap();
+    assert!(!serialized.contains(&replay_nonce));
+    assert!(!serialized.contains(&replay_signature));
+    assert!(matches!(
+        rejection_events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+mod adaptive_scorer_store_impl;
 mod annotation_storage_impl;
 mod calibration_store_impl;
 pub(crate) mod cjk_shadow;
@@ -9,6 +10,7 @@ mod device_identity;
 pub(crate) mod edge_intelligence;
 mod events;
 pub use events::storage_event_id;
+mod extension_registry_impl;
 mod feedback_scorer_store_impl;
 mod few_shot_storage_impl;
 mod focus_storage_impl;
@@ -23,15 +25,21 @@ mod maintenance;
 mod memory_graph_impl;
 mod metrics;
 mod override_store_impl;
+mod pomodoro_store_impl;
 mod preset_storage_impl;
 mod regime_reaction_store_impl;
 mod scheduler_storage_impl;
 mod session_context_store_impl;
 mod session_storage_impl;
+mod skill_pack_registry_impl;
 mod tags;
+mod task_store_impl;
+mod transcript_storage_impl;
 pub mod vector_index_impl;
 pub mod vector_store_impl;
 mod web_storage_impl;
+mod work_context_store_impl;
+mod work_context_writers;
 
 #[cfg(test)]
 mod port_contract_tests;
@@ -117,6 +125,13 @@ pub struct SqliteStorage {
     /// floor lives in the `hlc_clock` table reached through the same `GuardedConnection`
     /// mutex (shared with `SqliteVectorStore`'s clock), so RMW stays serialized + monotonic.
     pub(super) clock: Arc<hlc_clock::HlcClock>,
+    /// #8589 (ADR-030 §7 + Amendment I1): master key for deriving the
+    /// work-context raw-plane per-account AEAD subkey. `Some` whenever the
+    /// database itself was opened encrypted (production); `None` for the
+    /// unencrypted in-memory path, where consented raw writes fail closed rather
+    /// than persist plaintext. Wired independently of SQLCipher — the raw plane
+    /// is an app-level AEAD on the blob columns, not the SQLCipher page cipher.
+    pub(super) work_context_raw_key: Option<EncryptionKey>,
 }
 
 impl SqliteStorage {
@@ -130,6 +145,22 @@ impl SqliteStorage {
         retention_days: u32,
         encryption_key: Option<&EncryptionKey>,
     ) -> Result<Self, StorageError> {
+        Self::open_with_max_schema_version(path, retention_days, encryption_key, None)
+    }
+
+    /// Open a disk-backed database migrating only up to `max_schema_version`
+    /// (`None` = [`migration::CURRENT_VERSION`], i.e. the production path).
+    ///
+    /// The bounded form exists solely for the QC legacy-migration fixture
+    /// (#9083): it produces a REAL older-schema database, replacing the old
+    /// approach of migrating fully and then deleting newer-version artifacts —
+    /// a forgery that silently broke whenever `CURRENT_VERSION` advanced.
+    pub fn open_with_max_schema_version(
+        path: &Path,
+        retention_days: u32,
+        encryption_key: Option<&EncryptionKey>,
+        max_schema_version: Option<u32>,
+    ) -> Result<Self, StorageError> {
         let conn = Connection::open(path)
             .map_err(|e| StorageError::Internal(format!("Failed to open SQLite database: {e}")))?;
 
@@ -137,7 +168,8 @@ impl SqliteStorage {
 
         configure_connection(&conn, true)?;
 
-        migration::run_migrations(&conn)
+        let target = max_schema_version.unwrap_or(migration::CURRENT_VERSION);
+        migration::run_migrations_to(&conn, target)
             .map_err(|e| StorageError::Internal(format!("migration failure: {e}")))?;
 
         post_migration_setup(&conn)?;
@@ -148,6 +180,10 @@ impl SqliteStorage {
             conn: Arc::new(GuardedConnection::new_unflagged(conn)),
             retention_days,
             clock: Arc::new(hlc_clock::HlcClock::new()),
+            // Encrypted-at-rest DB → the same master key seeds the raw-plane
+            // subkey derivation (Amendment I1). Cloned, not borrowed, because the
+            // raw writer runs inside the spawn_blocking connection closure.
+            work_context_raw_key: encryption_key.cloned(),
         })
     }
 
@@ -167,7 +203,21 @@ impl SqliteStorage {
             conn: Arc::new(GuardedConnection::new_unflagged(conn)),
             retention_days,
             clock: Arc::new(hlc_clock::HlcClock::new()),
+            work_context_raw_key: None,
         })
+    }
+
+    /// #8589: inject the work-context raw-plane master key on a storage handle
+    /// opened without SQLCipher (the in-memory / plaintext-file paths).
+    ///
+    /// Production reaches the raw key automatically through `open(..,
+    /// Some(&key))`; this consuming builder lets the composition root and tests
+    /// enable consented raw-plane writes on an otherwise-unencrypted handle
+    /// without dragging in the SQLCipher page cipher. Call before wrapping in
+    /// `Arc`.
+    pub fn with_work_context_raw_key(mut self, key: EncryptionKey) -> Self {
+        self.work_context_raw_key = Some(key);
+        self
     }
 
     /// Expose the shared [`GuardedConnection`] for shared-connection adapters
@@ -558,6 +608,46 @@ impl SqliteStorage {
 }
 
 impl SqliteStorage {
+    /// Return terminal-status aggregates from the durable audit log.
+    ///
+    /// `Started` rows are intentionally excluded from `total`, matching
+    /// `AuditLogger::stats`. On a SQLite error, logs a warning and returns the
+    /// fail-safe empty aggregate.
+    pub fn audit_stats(&self) -> maekon_core::models::audit::AuditStats {
+        let read = self.conn.read_lock();
+        let conn = read.conn();
+        let result = conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Denied' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Timeout' THEN 1 ELSE 0 END), 0)
+             FROM audit_log",
+            [],
+            |row| {
+                let completed: i64 = row.get(0)?;
+                let failed: i64 = row.get(1)?;
+                let denied: i64 = row.get(2)?;
+                let timeout: i64 = row.get(3)?;
+                Ok(maekon_core::models::audit::AuditStats {
+                    total: (completed + failed + denied + timeout) as usize,
+                    completed: completed as usize,
+                    failed: failed as usize,
+                    denied: denied as usize,
+                    timeout: timeout as usize,
+                })
+            },
+        );
+
+        match result {
+            Ok(stats) => stats,
+            Err(error) => {
+                warn!(err = %error, "audit: audit_stats query failed");
+                maekon_core::models::audit::AuditStats::default()
+            }
+        }
+    }
+
     /// Return audit entries whose `command_id` equals the given value, ordered
     /// newest-first, up to `limit` rows.
     ///
@@ -809,7 +899,19 @@ impl SqliteStorage {
         let last_seq = rows[rows.len() - 1].seq;
         let mut verified_count: u64 = 0;
         let mut expected_seq = first_seq;
-        let mut expected_prev = GENESIS_PREV_HASH.to_string();
+        // #8056 P3: the compliance-window retention prune may have removed the
+        // oldest chain prefix, recording the pruned prefix's final `entry_hash`
+        // as the new chain root anchor. When present, the retained chain's first
+        // row links to that anchor instead of GENESIS. Accept it so a pruned-but-
+        // otherwise-intact chain still verifies (ADR-072 tamper-evidence across
+        // retention). Absent anchor → the chain still starts at GENESIS.
+        let mut expected_prev = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = ?1",
+                [crate::audit_chain::AUDIT_CHAIN_PRUNED_ROOT_META_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| GENESIS_PREV_HASH.to_string());
 
         for r in &rows {
             // 1) seq contiguity (gap detection).
@@ -831,7 +933,7 @@ impl SqliteStorage {
             //    first row uses genesis).
             if r.prev_hash != expected_prev {
                 let reason = if r.seq == first_seq {
-                    "first chained row prev_hash != genesis".to_string()
+                    "first chained row prev_hash != genesis/pruned-root".to_string()
                 } else {
                     "prev_hash != prior entry_hash (broken link)".to_string()
                 };

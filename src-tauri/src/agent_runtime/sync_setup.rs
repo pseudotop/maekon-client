@@ -17,16 +17,43 @@ pub(super) struct SyncResult {
     pub sync_engine: Option<Arc<SyncEngine>>,
 }
 
-/// Minimum length for `MAEKON_SYNC_PASSPHRASE`.
+use maekon_core::config::{
+    MIN_SYNC_PASSPHRASE_LEN, SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT, SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
+};
+
+/// Whether a sync passphrase satisfies the minimum-length policy.
 ///
 /// The passphrase derives (via Argon2id) both the LAN HMAC challenge-response
 /// key and the AES-256-GCM payload-encryption key, so a trivially short value
-/// yields a weak key.  This is a length floor, not a substitute for entropy.
-const MIN_SYNC_PASSPHRASE_LEN: usize = 12;
-
-/// Whether a sync passphrase satisfies the minimum-length policy.
+/// yields a weak key. [`MIN_SYNC_PASSPHRASE_LEN`] is a length floor, not a
+/// substitute for entropy.
 fn sync_passphrase_meets_policy(passphrase: &str) -> bool {
     passphrase.chars().count() >= MIN_SYNC_PASSPHRASE_LEN
+}
+
+/// Resolve the sync passphrase, preferring the `MAEKON_SYNC_PASSPHRASE`
+/// environment variable (headless / power-user override) and falling back to
+/// the OS keychain entry `maekon/sync_passphrase` (#8056 P2-2).
+///
+/// Without the keychain fallback, a GUI app launched from Finder / the Start
+/// menu — which does not inherit a shell's exported env — could never activate
+/// sync even with `config.sync.enabled = true`, because the passphrase was only
+/// ever read from the env var. The keychain entry is written by the Settings →
+/// Sync setup route. This mirrors the existing `keyring::Entry` lookup for the
+/// remote-sync token. The keychain read is a quick, one-time startup call (the
+/// surrounding `build_sync_engine` already performs blocking SQLite work here),
+/// matching the inline keychain read in the remote-transport branch below.
+fn resolve_sync_passphrase() -> String {
+    let from_env = std::env::var("MAEKON_SYNC_PASSPHRASE").unwrap_or_default();
+    if !from_env.is_empty() {
+        return from_env;
+    }
+    keyring::Entry::new(
+        SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
+        SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT,
+    )
+    .and_then(|entry| entry.get_password())
+    .unwrap_or_default()
 }
 
 /// Build the cross-device sync engine.
@@ -43,9 +70,12 @@ pub(super) async fn build_sync_engine(
         return SyncResult { sync_engine: None };
     }
 
-    let passphrase = std::env::var("MAEKON_SYNC_PASSPHRASE").unwrap_or_default();
+    let passphrase = resolve_sync_passphrase();
     if passphrase.is_empty() {
-        warn!("sync enabled but MAEKON_SYNC_PASSPHRASE not set; sync disabled");
+        warn!(
+            "sync enabled but no passphrase available (checked MAEKON_SYNC_PASSPHRASE and the \
+             OS keychain entry maekon/sync_passphrase); sync disabled — set one in Settings → Sync"
+        );
         return SyncResult { sync_engine: None };
     }
     if !sync_passphrase_meets_policy(&passphrase) {
@@ -77,6 +107,14 @@ pub(super) async fn build_sync_engine(
         device_id.clone(),
     ));
 
+    #[cfg(debug_assertions)]
+    let qc_transport = match crate::qc_sync_peer::transport_from_env(data_dir) {
+        Ok(transport) => transport,
+        Err(error) => {
+            warn!(error = %error, "isolated QC sync-peer transport setup failed");
+            return SyncResult { sync_engine: None };
+        }
+    };
     let transport_result: Result<
         Arc<dyn maekon_core::ports::sync_transport::SyncTransport>,
         CoreError,
@@ -223,6 +261,14 @@ pub(super) async fn build_sync_engine(
         }
     };
 
+    #[cfg(debug_assertions)]
+    let transport_result = if let Some(transport) = qc_transport {
+        info!("isolated QC sync-peer transport enabled");
+        Ok(transport)
+    } else {
+        transport_result
+    };
+
     match transport_result {
         Ok(transport) => {
             // Reuse the application-wide ConsentManager instead
@@ -302,6 +348,19 @@ mod tests {
             result.sync_engine.is_none(),
             "sync disabled must yield no engine"
         );
+    }
+
+    /// #8056 P2-2: the env var takes precedence over the keychain fallback.
+    /// (The keychain fallback path is exercised in integration rather than here
+    /// to avoid touching the real OS keychain from a unit test.) Serialized
+    /// because it mutates the `MAEKON_SYNC_PASSPHRASE` process env.
+    #[test]
+    #[serial_test::serial]
+    fn resolve_sync_passphrase_prefers_env() {
+        std::env::set_var("MAEKON_SYNC_PASSPHRASE", "env-passphrase-value");
+        let resolved = resolve_sync_passphrase();
+        std::env::remove_var("MAEKON_SYNC_PASSPHRASE");
+        assert_eq!(resolved, "env-passphrase-value");
     }
 
     /// GN-3: the passphrase length floor rejects short/empty passphrases and

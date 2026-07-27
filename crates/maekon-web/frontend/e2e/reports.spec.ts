@@ -13,7 +13,8 @@ const dailyActivityName = i18nRegex('reports.dailyActivity')
 const appUsageName = i18nRegex('reports.appUsage')
 const trendName = i18nRegex('reports.trend')
 const hourlyActivityName = i18nRegex('reports.hourlyActivity')
-const systemMetricsName = i18nRegex('reports.systemMetrics')
+const exportTitleName = i18nRegex('reports.exportTitle')
+const exportMetricsLabelName = i18nRegex('reports.exportMetrics')
 
 const mockedReport = {
   title: 'Test Report',
@@ -140,9 +141,12 @@ test.describe('Reports', () => {
     await expect(page.getByText(hourlyActivityName)).toBeVisible()
   })
 
-  test('should display system metrics section', async ({ page }) => {
+  test('should display export section with system metrics option', async ({ page }) => {
+    // /reports/export is a pure export surface now — the System Metrics Trend
+    // chart no longer renders there; metrics appear as a download option.
     await page.goto('/reports/export')
-    await expect(page.getByText(systemMetricsName)).toBeVisible()
+    await expect(page.getByText(exportTitleName)).toBeVisible()
+    await expect(page.getByText(exportMetricsLabelName).first()).toBeVisible()
   })
 
   test('should select custom date range', async ({ page }) => {

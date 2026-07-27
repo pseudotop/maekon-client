@@ -1,0 +1,81 @@
+{
+  "contractVersion": "maekon.public-surface-map.v1",
+  "sourceRoot": "pseudotop/oneshim",
+  "clientSourceOfTruth": "clients/maekon-client",
+  "exportTarget": "pseudotop/maekon-client",
+  "publicationRule": "The parent client tree is authoritative. The public client repository is a vetted snapshot export, and mutable status evidence is never exported as release proof.",
+  "surfaces": [
+    {
+      "id": "client-readmes",
+      "owner": "maekon-client-public-docs",
+      "sources": ["clients/maekon-client/README.md", "clients/maekon-client/README.ko.md", "clients/maekon-client/README.ja.md", "clients/maekon-client/README.zh-CN.md", "clients/maekon-client/README.es.md"],
+      "transform": "snapshot-copy",
+      "consumers": ["pseudotop/maekon-client repository root", "GitHub repository landing surface"],
+      "publicationBoundary": "Included in the public snapshot; claims describe an early Global Alpha prerelease, not a stable release or production readiness.",
+      "verificationCommand": "node web/apps/maekon-landing/scripts/verify-public-contracts.mjs --expected-version=v0.0.1-rc.6"
+    },
+    {
+      "id": "status-snapshot",
+      "owner": "maekon-client-release-evidence",
+      "sources": ["clients/maekon-client/docs/STATUS.md", "clients/maekon-client/docs/STATUS.ko.md"],
+      "transform": "none",
+      "consumers": ["parent SSOT maintainers", "release and export review"],
+      "publicationBoundary": "Mutable internal evidence only; excluded from public snapshot export by docs/STATUS*.md.",
+      "verificationCommand": "gh run view 29057097908 --repo pseudotop/maekon-client --json headSha,conclusion,url,jobs"
+    },
+    {
+      "id": "telemetry-guide",
+      "owner": "maekon-client-privacy",
+      "sources": ["clients/maekon-client/crates/maekon-core/src/config/sections/storage.rs", "clients/maekon-client/src-tauri/src/telemetry/mod.rs", "clients/maekon-client/crates/maekon-api-contracts/src/bug_report.rs", "clients/maekon-client/docs/guides/telemetry.md", "clients/maekon-client/docs/guides/telemetry.ko.md"],
+      "transform": "snapshot-copy",
+      "consumers": ["pseudotop/maekon-client telemetry guides", "maekon.dev platform and privacy routes"],
+      "publicationBoundary": "Configuration default, effective runtime state, feature consent, build capability, and diagnostic export consent are separate claims.",
+      "verificationCommand": "pnpm -C web --filter @maekon/landing verify:contracts:test"
+    },
+    {
+      "id": "provider-contract",
+      "owner": "maekon-client-provider-adapters",
+      "sources": ["clients/maekon-client/specs/providers/provider-surface-catalog.json", "clients/maekon-client/docs/contracts/ai-provider-contract.md", "clients/maekon-client/docs/contracts/ai-provider-contract.ko.md", "clients/maekon-client/crates/maekon-network/src/ai_llm_client", "clients/maekon-client/crates/maekon-network/src/ai_ocr_client"],
+      "transform": "runtime-include-and-snapshot-copy",
+      "consumers": ["maekon-core provider catalog", "pseudotop/maekon-client provider contract"],
+      "publicationBoundary": "Parser and catalog maturity do not imply runtime selection, stable release status, provider availability, or a current live smoke result.",
+      "verificationCommand": "cargo test -p maekon-network --lib ai_llm_client::tests && cargo test -p maekon-network --lib ai_ocr_client::tests"
+    },
+    {
+      "id": "landing-locales",
+      "owner": "maekon-public-web",
+      "sources": ["web/apps/maekon-landing/src/locales/en.json", "web/apps/maekon-landing/src/locales/ko.json"],
+      "transform": "Vite route build plus search, metadata, sitemap, and localized-href generation",
+      "consumers": ["maekon.dev English routes", "maekon.dev Korean routes", "generated search and discovery artifacts"],
+      "publicationBoundary": "EN is the authoring baseline and KO must preserve semantic parity; deployment evidence is separate from source and local-build evidence.",
+      "verificationCommand": "pnpm -C web --filter @maekon/landing verify"
+    },
+    {
+      "id": "alpha-feedback",
+      "owner": "maekon-global-alpha-operations",
+      "sources": ["clients/maekon-client/docs/contracts/global-alpha-feedback-policy.json", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.md", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.ko.md", "web/apps/maekon-landing/src/pages/AlphaFeedback.tsx"],
+      "transform": "snapshot-copy for client docs; Vite route build for landing",
+      "consumers": ["pseudotop/maekon-client feedback policy and runbook", "maekon.dev/alpha-feedback", "maekon.dev/ko/alpha-feedback"],
+      "publicationBoundary": "General feedback and privacy participation requests use the Alpha path; security vulnerabilities use private reporting only.",
+      "verificationCommand": "pnpm -C web --filter @maekon/landing verify:contracts:test"
+    },
+    {
+      "id": "security-reporting",
+      "owner": "maekon-security",
+      "sources": ["clients/maekon-client/SECURITY.md", "web/apps/maekon-landing/src/locales/en.json", "web/apps/maekon-landing/src/locales/ko.json"],
+      "transform": "snapshot-copy and Vite route link rendering",
+      "consumers": ["pseudotop/maekon-client security policy", "maekon.dev privacy and feedback routes"],
+      "publicationBoundary": "Vulnerability details must use the private GitHub advisory route and must not enter public feedback payloads.",
+      "verificationCommand": "pnpm -C web --filter @maekon/landing verify:contracts:test"
+    },
+    {
+      "id": "docs-site",
+      "owner": "maekon-public-docs",
+      "sources": ["docs-site-maekon/docs", "docs-site-maekon/i18n/ko/docusaurus-plugin-content-docs/current"],
+      "transform": "Docusaurus EN and KO static builds",
+      "consumers": ["docs.maekon.dev", "docs.maekon.dev/ko"],
+      "publicationBoundary": "The docs site is an independent build and deployment surface; it does not inherit currentness from the client export or landing deployment.",
+      "verificationCommand": "pnpm -C docs-site-maekon build"
+    }
+  ]
+}

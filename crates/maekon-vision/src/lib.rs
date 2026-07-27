@@ -31,6 +31,7 @@ pub mod contour_classifier;
 pub mod delta;
 pub mod element_finder;
 pub mod encoder;
+pub mod frame_pii;
 pub mod gui_detector;
 /// Backward-compatible re-export for Phase 1 callers.
 pub use gui_detector as input_correlator;

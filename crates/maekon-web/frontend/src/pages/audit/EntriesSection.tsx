@@ -1,11 +1,26 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { type AuditEntry, fetchAuditLogs } from '../../api/client'
+import { type AuditExportEntry, fetchAuditExport } from '../../api/client'
 import { Select } from '../../components/ui'
 import { Badge } from '../../components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import { typography } from '../../styles/tokens'
+
+/**
+ * Render a stable, bounded correlation token without exposing raw command or
+ * audit payload identifiers. FNV-1a is used only for display correlation, not
+ * for security or integrity decisions.
+ */
+export function auditCorrelationLabel(entry: Pick<AuditExportEntry, 'command_id' | 'entry_id'>): string {
+  const source = entry.command_id || entry.entry_id
+  let hash = 0x811c9dc5
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `audit-${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
 
 function statusBadge(s: string, t: (key: string) => string) {
   switch (s) {
@@ -52,9 +67,16 @@ export default function EntriesSection() {
   const { t } = useTranslation()
   const [statusFilter, setStatusFilter] = useState<string>('')
 
+  // #8114: the list reads the DURABLE audit_log table (`/audit/export`) —
+  // the same integrity-verifiable source `/audit/verify` covers — instead of
+  // the in-memory automation buffer. Consent grant/revoke and privacy
+  // transitions (pause/resume, focus) only exist in the durable table, so the
+  // buffer-backed list showed an incomplete picture after those events. The
+  // automation buffer still feeds the runtime summary cards (a distinct,
+  // labeled purpose in SummarySection).
   const { data: auditLogs } = useQuery({
-    queryKey: ['auditLogPage', statusFilter],
-    queryFn: () => fetchAuditLogs(100, statusFilter || undefined),
+    queryKey: ['auditDurablePage', statusFilter],
+    queryFn: () => fetchAuditExport({ limit: 100, status: statusFilter || undefined }),
     refetchInterval: 10_000,
   })
 
@@ -62,7 +84,10 @@ export default function EntriesSection() {
     <Card id="section-entries">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle>{t('auditLog.entries')}</CardTitle>
+          <div>
+            <CardTitle>{t('auditLog.entries')}</CardTitle>
+            <p className="mt-1 text-content-tertiary text-xs">{t('auditLog.durableSourceNote')}</p>
+          </div>
           <Select
             value={statusFilter}
             selectSize="sm"
@@ -95,7 +120,7 @@ export default function EntriesSection() {
                     {t('automation.statusLabel')}
                   </th>
                   <th className={`px-2 py-2 text-left ${typography.weight.medium} text-content-secondary`}>
-                    {t('auditLog.details')}
+                    {t('automation.commandId')}
                   </th>
                   <th className={`px-2 py-2 text-right ${typography.weight.medium} text-content-secondary`}>
                     {t('automation.elapsed')}
@@ -103,18 +128,18 @@ export default function EntriesSection() {
                 </tr>
               </thead>
               <tbody>
-                {(auditLogs ?? []).map((entry: AuditEntry) => (
+                {(auditLogs ?? []).map((entry: AuditExportEntry) => (
                   <tr key={entry.entry_id} className="border-muted border-b">
                     <td className="whitespace-nowrap px-2 py-2 text-content-strong">
                       {new Date(entry.timestamp).toLocaleString()}
                     </td>
                     <td className="px-2 py-2 text-content-strong">{entry.action_type}</td>
                     <td className="px-2 py-2">{statusBadge(entry.status, t)}</td>
-                    <td className="max-w-xs truncate px-2 py-2 text-content-secondary" title={entry.details ?? ''}>
-                      {entry.details ?? '-'}
+                    <td className={`whitespace-nowrap px-2 py-2 ${typography.family.mono} text-content-secondary`}>
+                      {auditCorrelationLabel(entry)}
                     </td>
                     <td className="px-2 py-2 text-right text-content-strong">
-                      {entry.elapsed_ms != null ? `${entry.elapsed_ms}ms` : '-'}
+                      {entry.execution_time_ms != null ? `${entry.execution_time_ms}ms` : '-'}
                     </td>
                   </tr>
                 ))}

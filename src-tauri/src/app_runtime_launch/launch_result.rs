@@ -10,6 +10,10 @@ pub(crate) struct AppRuntimeLaunchResult {
     /// fallback) and injects it into the main WebView so the legit dashboard can
     /// authenticate to `/api`. NEVER persisted; NEVER exposed over HTTP.
     pub(crate) local_auth_token: std::sync::Arc<str>,
+    /// #8044: the shared capture-history re-auth gate. setup.rs registers it (with
+    /// the platform biometric verifier) as `ReauthRuntimeState` managed state so
+    /// the biometric/PIN command opens the SAME gate the web middleware reads.
+    pub(crate) reauth_gate: std::sync::Arc<maekon_core::reauth::CaptureReauthGate>,
     pub(crate) state_builder: ManagedStateBuilder,
     /// External gRPC supervisor task handle — must stay alive for the process
     /// lifetime. Dropping it stops the supervisor, silently halting the external

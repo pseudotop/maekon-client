@@ -24,7 +24,21 @@ impl ProviderModelCatalogPort for ReqwestProviderModelCatalogClient {
     ) -> Result<ProviderModelCatalogResponse, ProviderModelCatalogError> {
         // #6892: redirect=none — model discovery is also a provider egress that carries
         // api-key/Bearer headers, so disable 30x following (F1 sibling; SSRF host guard is #6894).
-        let mut builder = crate::outbound::hardened_client_builder().timeout(request.timeout);
+        // #8045 C3: https_only backstop. When the maekon-web SSRF guard has already
+        // resolved+validated the host and pinned it to loopback address(es) (see the
+        // `resolved_addrs` pin below), the actual connection target is loopback, so
+        // cleartext is safe even if the endpoint's host string is not literally
+        // loopback. Otherwise derive from the endpoint URL — remote endpoints are
+        // HTTPS-only, loopback endpoints (e.g. Ollama) keep cleartext.
+        let pinned_all_loopback = !request.resolved_addrs.is_empty()
+            && request.resolved_addrs.iter().all(|a| a.ip().is_loopback());
+        let transport_policy = if pinned_all_loopback {
+            crate::outbound::TransportPolicy::AllowLoopbackCleartext
+        } else {
+            crate::outbound::TransportPolicy::for_endpoint(&request.endpoint)
+        };
+        let mut builder =
+            crate::outbound::hardened_client_builder(transport_policy).timeout(request.timeout);
 
         // #6902: when the caller (maekon-web SSRF guard) has already resolved and validated
         // the endpoint host and passed it via `resolved_addrs`, pin that host to these

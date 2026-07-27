@@ -79,6 +79,56 @@ pub struct TranscriptionResult {
     pub processing_secs: f32,
 }
 
+/// A persisted speech-to-text transcription (V47, #8059).
+///
+/// Local-only by design: transcripts are voice content that stays on the device
+/// ("meetings stay on your machine too"), so this record carries NO HLC/sync
+/// columns and never enters the cross-device sync outbox. The `text` is the
+/// PII-masked transcript — masking happens at the STT provider boundary, before
+/// this record is ever built — so a persisted transcript inherits the same
+/// privacy discipline as every other stored user artifact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptRecord {
+    /// Stable unique id. Also the `search_fts.segment_id` key for this row's
+    /// keyword-search index entry.
+    pub id: String,
+    /// RFC3339 wall-clock time the utterance was transcribed. Range
+    /// delete/query and age-retention sweeps filter on this column.
+    pub timestamp: String,
+    /// Length of the transcribed audio in seconds.
+    pub duration_secs: f32,
+    /// STT engine that produced the text: `whisper` | `cloud` | `fallback`.
+    pub source: String,
+    /// Detected language tag, when the provider reports one.
+    pub language: Option<String>,
+    /// PII-masked transcript text.
+    pub text: String,
+    /// RFC3339 time the row was persisted.
+    pub created_at: String,
+}
+
+impl TranscriptRecord {
+    /// Build a persistable record from a completed transcription, stamping a
+    /// fresh id + wall-clock timestamps.
+    ///
+    /// `source` is the normalized STT engine label (`whisper` | `cloud` |
+    /// `fallback`). The caller passes the already-PII-masked
+    /// `TranscriptionResult` (masking runs at the provider boundary), so `text`
+    /// inherits the mask.
+    pub fn from_transcription(source: &str, result: &TranscriptionResult) -> Self {
+        let now = chrono::Utc::now().to_rfc3339();
+        Self {
+            id: format!("transcript-{}", uuid::Uuid::new_v4()),
+            timestamp: now.clone(),
+            duration_secs: result.duration_secs,
+            source: source.to_string(),
+            language: result.language.clone(),
+            text: result.text.clone(),
+            created_at: now,
+        }
+    }
+}
+
 use crate::config::WhisperModelSize;
 
 /// Download progress event sent via channel.
@@ -276,5 +326,44 @@ mod tests {
         let buf = AudioBuffer::new(vec![]);
         let wav = buf.to_wav_bytes();
         assert_eq!(wav.len(), 44); // header only
+    }
+
+    #[test]
+    fn transcript_record_from_transcription_copies_masked_fields() {
+        let result = TranscriptionResult {
+            text: "quarterly planning sync".to_string(),
+            language: Some("en".to_string()),
+            duration_secs: 12.5,
+            processing_secs: 3.0,
+        };
+        let record = TranscriptRecord::from_transcription("whisper", &result);
+
+        assert_eq!(record.text, "quarterly planning sync");
+        assert_eq!(record.source, "whisper");
+        assert_eq!(record.language.as_deref(), Some("en"));
+        assert!((record.duration_secs - 12.5).abs() < f32::EPSILON);
+        // A fresh id + non-empty timestamps must be stamped.
+        assert!(
+            record.id.starts_with("transcript-"),
+            "id must be namespaced"
+        );
+        assert!(!record.timestamp.is_empty(), "timestamp must be stamped");
+        assert_eq!(
+            record.timestamp, record.created_at,
+            "both stamps are the transcription instant"
+        );
+    }
+
+    #[test]
+    fn transcript_record_ids_are_unique() {
+        let result = TranscriptionResult {
+            text: "hello".to_string(),
+            language: None,
+            duration_secs: 1.0,
+            processing_secs: 0.5,
+        };
+        let a = TranscriptRecord::from_transcription("cloud", &result);
+        let b = TranscriptRecord::from_transcription("cloud", &result);
+        assert_ne!(a.id, b.id, "each record must get a distinct id");
     }
 }

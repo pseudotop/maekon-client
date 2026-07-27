@@ -9,6 +9,7 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "notification:default",
+    "allow-get-suggestions-panel-open",
     "allow-toggle-suggestions-panel",
     "allow-toggle-automation-confirm",
     "allow-get-pending-suggestions",

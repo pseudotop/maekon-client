@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-task-candidates"
+description = "Enables the list_task_candidates command without any pre-configured scope."
+commands.allow = ["list_task_candidates"]
+
+[[permission]]
+identifier = "deny-list-task-candidates"
+description = "Denies the list_task_candidates command without any pre-configured scope."
+commands.deny = ["list_task_candidates"]

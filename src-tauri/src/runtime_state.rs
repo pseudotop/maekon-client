@@ -12,6 +12,7 @@ use maekon_core::ports::monitor::ActivityMonitor;
 use maekon_core::ports::oauth::OAuthPort;
 use maekon_core::ports::session_storage::SessionStoragePort;
 use maekon_core::ports::stt_provider::SttProvider;
+use maekon_core::ports::transcript_storage::TranscriptStoragePort;
 use maekon_core::ports::vision::FrameProcessor;
 use maekon_core::ports::work_classifier::WorkTypeClassifier;
 use maekon_storage::sqlite::SqliteStorage;
@@ -22,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::Arc;
 use tauri::{App, Manager};
 
+use crate::inflight_registry::InflightRegistry;
 use crate::magic_overlay::MagicOverlayHandle;
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::session_manager::SessionManagerImpl;
@@ -61,6 +63,10 @@ pub struct CaptureContext {
 /// Audio capture, STT engine, and model management for voice input.
 pub struct AudioContext {
     pub capture: Option<Arc<dyn AudioCapturePort>>,
+    /// True only for the exact debug-only isolated QC audio fixture. The UI
+    /// readiness path uses this to avoid requiring a real Whisper model while
+    /// the synthetic adapter proves consent teardown without opening a mic.
+    pub synthetic_fixture: bool,
     /// RwLock allows hot-reload after model download.
     pub stt_engine: Arc<tokio::sync::RwLock<Option<Arc<dyn SttProvider>>>>,
     pub model_downloader: Option<Arc<dyn ModelDownloader>>,
@@ -78,6 +84,7 @@ impl AudioContext {
     pub(crate) fn disabled(model_dir: PathBuf) -> Self {
         Self {
             capture: None,
+            synthetic_fixture: false,
             stt_engine: Arc::new(tokio::sync::RwLock::new(None)),
             model_downloader: None,
             model_dir,
@@ -93,6 +100,14 @@ pub struct AiSessionRuntimeState {
     manager: Option<Arc<SessionManagerImpl>>,
     session_storage: Option<Arc<dyn SessionStoragePort>>,
     max_history_turns: u32,
+    /// #8057 (P3): abort handles for the in-flight `send_session_message` drain
+    /// tasks, keyed by session id. Lets `interrupt_session_turn` cancel a
+    /// background stream for a backend WITHOUT a native turn-interrupt
+    /// (HTTP/Ollama) so a "stop" actually halts BYOK token consumption. Each
+    /// entry carries a monotonic token so a finishing task only deregisters ITS
+    /// OWN registration (never a newer same-session turn); `abort_inflight`
+    /// aborts + removes.
+    inflight: Arc<InflightRegistry>,
 }
 
 impl Default for AiSessionRuntimeState {
@@ -101,6 +116,7 @@ impl Default for AiSessionRuntimeState {
             manager: None,
             session_storage: None,
             max_history_turns: 100,
+            inflight: Arc::new(InflightRegistry::default()),
         }
     }
 }
@@ -115,7 +131,21 @@ impl AiSessionRuntimeState {
             manager,
             session_storage,
             max_history_turns,
+            inflight: Arc::new(InflightRegistry::default()),
         }
+    }
+
+    /// Shared handle to the in-flight drain-task registry (#8057 P3). Cloned into
+    /// each spawned drain task so it can deregister itself on completion.
+    pub(crate) fn inflight_registry(&self) -> Arc<InflightRegistry> {
+        self.inflight.clone()
+    }
+
+    /// Abort the in-flight drain task for `session_id`, if any (#8057 P3):
+    /// stops background token consumption for backends without a native turn
+    /// interrupt. Returns true when a task was aborted.
+    pub(crate) fn abort_inflight(&self, session_id: &str) -> bool {
+        self.inflight.abort(session_id)
     }
 
     pub(crate) fn manager_impl(&self) -> Option<Arc<SessionManagerImpl>> {
@@ -188,6 +218,11 @@ pub struct AudioRuntimeState {
     /// Remembers (at the pause edge) whether VAD was running, so an unpause can
     /// auto-restart it. One-shot: set at pause, read-and-cleared at unpause.
     vad_resume_pending: Arc<AtomicBool>,
+    /// Local transcript persistence port (#8059). `None` in the `disabled()`
+    /// placeholder + test builders that skip storage wiring; when present, a
+    /// successful transcription is saved (best-effort) so it survives restart
+    /// and is reachable from keyword search.
+    transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
 }
 
 impl AudioRuntimeState {
@@ -196,6 +231,7 @@ impl AudioRuntimeState {
         consent_manager: Option<Arc<dyn ConsentManagerPort>>,
         capture_paused: Arc<AtomicBool>,
         audio: AudioContext,
+        transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
     ) -> Self {
         Self {
             config_manager,
@@ -204,6 +240,7 @@ impl AudioRuntimeState {
             audio,
             audio_regate: Arc::new(tokio::sync::Notify::new()),
             vad_resume_pending: Arc::new(AtomicBool::new(false)),
+            transcript_storage,
         }
     }
 
@@ -218,6 +255,7 @@ impl AudioRuntimeState {
             None,
             Arc::new(AtomicBool::new(true)),
             AudioContext::disabled(std::env::temp_dir().join("maekon-audio-models")),
+            None,
         )
     }
 
@@ -250,6 +288,13 @@ impl AudioRuntimeState {
 
     pub(crate) fn audio(&self) -> &AudioContext {
         &self.audio
+    }
+
+    /// Local transcript persistence port (#8059). `None` when storage wiring is
+    /// absent (disabled placeholder / test builders); the persist path is a
+    /// no-op in that case, so transcription still succeeds.
+    pub(crate) fn transcript_storage(&self) -> Option<Arc<dyn TranscriptStoragePort>> {
+        self.transcript_storage.clone()
     }
 }
 
@@ -298,6 +343,20 @@ impl Drop for ActionReservation {
     }
 }
 
+/// Single-flight reservation for an explicit current-context suggestion run.
+/// The flag is released on every return path, including provider errors and
+/// task cancellation, because the reservation is owned by this RAII guard.
+pub(crate) struct CurrentContextRequestReservation {
+    in_flight: Arc<AtomicBool>,
+}
+
+impl Drop for CurrentContextRequestReservation {
+    fn drop(&mut self) {
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Feature-scoped Tauri managed state for overlay suggestion IPC and shortcuts.
 #[derive(Default)]
 pub struct SuggestionRuntimeState {
@@ -313,6 +372,10 @@ pub struct SuggestionRuntimeState {
     /// twice under the Auto policy. The UI's disable-while-pending is a UX
     /// nicety; this is the correctness guarantee.
     in_flight: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
+    /// At most one explicit current-context provider turn may run at once.
+    /// This prevents a double-click or concurrent IPC retry from producing two
+    /// provider calls for one user gesture.
+    current_context_in_flight: Arc<AtomicBool>,
 }
 
 impl SuggestionRuntimeState {
@@ -325,6 +388,7 @@ impl SuggestionRuntimeState {
             overlay,
             shared_regime: None,
             in_flight: Arc::default(),
+            current_context_in_flight: Arc::default(),
         }
     }
 
@@ -341,6 +405,22 @@ impl SuggestionRuntimeState {
             in_flight: self.in_flight.clone(),
             suggestion_id: suggestion_id.to_string(),
         })
+    }
+
+    pub(crate) fn try_reserve_current_context_request(
+        &self,
+    ) -> Option<CurrentContextRequestReservation> {
+        self.current_context_in_flight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| CurrentContextRequestReservation {
+                in_flight: self.current_context_in_flight.clone(),
+            })
     }
 
     /// Attach the shared cross-loop regime snapshot (#7600, chainable).
@@ -556,6 +636,10 @@ pub struct AppState {
     pub connection: ConnectionStatus,
     /// Focus mode state — transient, not persisted. Suppresses coaching + notifications.
     pub focus_mode: Arc<crate::focus_mode::FocusModeState>,
+    /// The same analyzer instance used by scheduler loops. Consent commands use
+    /// this handle to clear in-memory activity-pattern state immediately after
+    /// the own-field permission closes.
+    pub focus_analyzer: Option<Arc<maekon_analysis::focus_analyzer::FocusAnalyzer>>,
     /// Capture-related resources for IPC commands (A1, A2).
     pub capture: CaptureContext,
     /// Analysis provider health (None when no LLM configured).
@@ -970,6 +1054,7 @@ mod tests {
                     cli_connected: Arc::new(AtomicBool::new(false)),
                 },
                 focus_mode: Arc::new(crate::focus_mode::FocusModeState::new()),
+                focus_analyzer: None,
                 capture: CaptureContext {
                     frame_processor: None,
                     frame_storage: None,

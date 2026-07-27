@@ -36,11 +36,12 @@ describe('e2e-tauri app launcher platform helpers', () => {
   })
 
   it('sets isolated Windows app profile directories for e2e launches', () => {
-    const env = e2eProfileEnv('C:\\repo\\clients\\maekon-client', 'C:\\evidence\\profile')
+    const env = e2eProfileEnv('C:\\repo\\clients\\maekon-client', 'C:\\evidence\\profile', 'win32')
 
     expect(normalize(env.APPDATA)).toBe(normalize('C:\\evidence\\profile\\roaming'))
     expect(normalize(env.LOCALAPPDATA)).toBe(normalize('C:\\evidence\\profile\\local'))
     expect(env.MAEKON_APP_FLAVOR).toBe('e2e')
+    expect(env.MAEKON_OFFLINE_MODE).toBe('1')
   })
 
   it('adds the OpenSSL runtime bin directory to Windows launch PATH when configured', () => {

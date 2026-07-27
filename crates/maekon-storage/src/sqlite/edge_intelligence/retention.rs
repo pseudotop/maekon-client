@@ -7,6 +7,14 @@ use super::super::SqliteStorage;
 /// A cap to prevent unbounded growth. Excess rows are deleted in `enforce_all_retention`.
 const EGRESS_LEDGER_MAX_ROWS: i64 = 5000;
 
+/// Compliance retention window (days) for the security audit trails
+/// (`audit_log` + `session_audit_log`). Two years — the upper bound of common
+/// SOC2 / HIPAA / SOX audit-log retention requirements. Both tables are RETAINED
+/// across GDPR erasure (Art.17(3) legal-obligation basis), so without an age cap
+/// they grow unbounded (#8056 P3). 730 days keeps well beyond a typical audit
+/// horizon while bounding growth.
+const AUDIT_TRAIL_RETENTION_DAYS: i64 = 730;
+
 impl SqliteStorage {
     /// Delete activity segments older than `max_days`. Returns the number of deleted rows.
     pub fn enforce_segment_retention(&self, max_days: u32) -> Result<usize, StorageError> {
@@ -22,6 +30,19 @@ impl SqliteStorage {
             .unwrap_or(false);
         if !table_exists {
             return Ok(0);
+        }
+        // #8043: `activity_segments` is a cross-device-synced table, so an age DELETE that
+        // leaves no tombstone lets a peer that still holds a locally-authored segment
+        // re-push it on the next sync (peer resurrection → Art.5(1)(e) violation). Capture a
+        // LOCAL-origin suppression tombstone for each aged row BEFORE deleting — same
+        // predicate as the DELETE so the tombstone set matches the removed rows exactly.
+        if let Some(local) = crate::sync_retention_tombstone::local_device_id(conn) {
+            crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                conn,
+                "activity_segments",
+                &format!("start_time < '{cutoff}' AND start_time IS NOT NULL"),
+                &local,
+            )?;
         }
         let deleted = conn
             .execute(
@@ -120,6 +141,19 @@ impl SqliteStorage {
         self.conn.write_lock().run(0u64, |conn| {
             let mut total: u64 = 0;
 
+            // #8043: `suggestions` (90d) and `regime_overrides` (180d) below are
+            // cross-device-synced tables. Their age DELETEs must leave a suppression
+            // tombstone or a peer that still holds a locally-authored row re-pushes it on
+            // the next sync (peer resurrection → Art.5(1)(e) violation). Read the local
+            // device id once; capture LOCAL-origin tombstones immediately BEFORE those two
+            // DELETEs, using the identical predicate so the tombstone set matches the removed
+            // rows. Every OTHER table in this fn (work_sessions/interruptions/gui_interactions/
+            // local_suggestions/focus_metrics/daily_digests/digest_processing_markers/
+            // coaching_events/egress_ledger) is absent from the synced set
+            // (`sync_table_descriptor::ALL_TABLE_NAMES`), so it carries no cross-device
+            // resurrection risk and needs no tombstone.
+            let local_device = crate::sync_retention_tombstone::local_device_id(conn);
+
             // work_sessions: 90 days (only closed sessions with ended_at set)
             let n = conn
                 .execute(
@@ -147,7 +181,15 @@ impl SqliteStorage {
                 .unwrap_or(0) as u64;
             total += n;
 
-            // suggestions: 90 days
+            // suggestions: 90 days (#8043: capture LOCAL-origin tombstones first — synced table)
+            if let Some(local) = local_device.as_deref() {
+                crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                    conn,
+                    "suggestions",
+                    "created_at < datetime('now', '-90 days')",
+                    local,
+                )?;
+            }
             let n = conn
                 .execute(
                     "DELETE FROM suggestions WHERE created_at < datetime('now', '-90 days')",
@@ -193,7 +235,15 @@ impl SqliteStorage {
                 .unwrap_or(0) as u64;
             total += n;
 
-            // regime_overrides: 180 days
+            // regime_overrides: 180 days (#8043: capture LOCAL-origin tombstones first — synced table)
+            if let Some(local) = local_device.as_deref() {
+                crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                    conn,
+                    "regime_overrides",
+                    "created_at < datetime('now', '-180 days')",
+                    local,
+                )?;
+            }
             let n = conn
                 .execute(
                     "DELETE FROM regime_overrides WHERE created_at < datetime('now', '-180 days')",
@@ -212,6 +262,43 @@ impl SqliteStorage {
                 .execute(
                     "DELETE FROM coaching_events \
                      WHERE shown_at < datetime('now', '-90 days') AND shown_at IS NOT NULL",
+                    [],
+                )
+                .unwrap_or(0) as u64;
+            total += n;
+
+            // transcripts (V47, #8059): 90 days. Voice transcripts are user
+            // activity content that would otherwise grow unbounded; pruned on
+            // `timestamp` like the sibling 90-day behavior tables above. NOT a
+            // synced table → no suppression tombstone. Delete the paired
+            // `search_fts` rows FIRST (the subquery still sees the rows), scoped
+            // to `content_type = 'transcript'` so no real segment index row is
+            // touched — otherwise the keyword index would accumulate orphaned
+            // transcript entries pointing at deleted rows.
+            let _ = conn.execute(
+                "DELETE FROM search_fts \
+                 WHERE content_type = 'transcript' \
+                   AND segment_id IN ( \
+                       SELECT id FROM transcripts \
+                       WHERE timestamp < datetime('now', '-90 days') \
+                   )",
+                [],
+            );
+            let n = conn
+                .execute(
+                    "DELETE FROM transcripts WHERE timestamp < datetime('now', '-90 days')",
+                    [],
+                )
+                .unwrap_or(0) as u64;
+            total += n;
+
+            // pomodoro_state (V48, #8218): singleton focus-session state. A
+            // session older than the behavior-data window is no longer useful
+            // for resume and must not bypass local retention indefinitely.
+            let n = conn
+                .execute(
+                    "DELETE FROM pomodoro_state
+                     WHERE started_at < datetime('now', '-90 days')",
                     [],
                 )
                 .unwrap_or(0) as u64;
@@ -238,5 +325,302 @@ impl SqliteStorage {
 
             Ok(total)
         })
+    }
+
+    /// Enforce the compliance-window age cap on the security audit trails
+    /// (#8056 P3). `audit_log` and `session_audit_log` are excluded from
+    /// `enforce_all_retention` and RETAINED across GDPR erasure, so they would
+    /// otherwise grow without bound.
+    ///
+    /// - `session_audit_log` (not hash-chained): plain age DELETE past the
+    ///   window.
+    /// - `audit_log` (V37 SHA-256 hash chain, ADR-072 mirror): a CHAIN-SAFE
+    ///   prefix prune. Only the oldest contiguous prefix that is entirely older
+    ///   than the window is removed, and the pruned prefix's final `entry_hash`
+    ///   is recorded as the retained chain's root anchor
+    ///   ([`crate::audit_chain::AUDIT_CHAIN_PRUNED_ROOT_META_KEY`]) in the SAME
+    ///   transaction, so `verify_audit_chain` still passes (it accepts the
+    ///   anchor as the chain root). Rows within the window are never pruned, so
+    ///   the chain is never emptied and tamper-evidence is preserved.
+    ///
+    /// Returns the total number of rows deleted across both trails.
+    pub fn enforce_audit_retention(&self) -> Result<u64, StorageError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(AUDIT_TRAIL_RETENTION_DAYS)).to_rfc3339();
+        // `run_mut` — the audit_log prune needs a transaction (anchor write +
+        // prefix DELETE must be atomic). write_lock is skipped while the
+        // deletion_flag is set (never prune during an erase).
+        self.conn.write_lock().run_mut(0u64, |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| StorageError::Internal(format!("audit retention tx begin: {e}")))?;
+            let mut total: u64 = 0;
+
+            // session_audit_log: not chained → simple age DELETE.
+            total += tx
+                .execute(
+                    "DELETE FROM session_audit_log WHERE timestamp < ?1",
+                    rusqlite::params![cutoff],
+                )
+                .unwrap_or(0) as u64;
+
+            // audit_log: chain-safe prefix prune. `first_recent_seq` is the
+            // smallest seq WITHIN the window; every chained row below it is the
+            // prunable prefix. `None` → all chained rows are within the window
+            // (or there are none), so there is nothing to prune and the chain is
+            // left untouched (never emptied).
+            let first_recent_seq: Option<i64> = tx
+                .query_row(
+                    "SELECT MIN(seq) FROM audit_log WHERE seq IS NOT NULL AND timestamp >= ?1",
+                    rusqlite::params![cutoff],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap_or(None);
+
+            if let Some(recent_seq) = first_recent_seq {
+                // The row at `recent_seq - 1` is the last row of the prunable
+                // prefix; its `entry_hash` already equals the retained first
+                // row's `prev_hash`, so it becomes the recorded chain root. If it
+                // does not exist, there is no older prefix to prune.
+                let anchor: Option<String> = tx
+                    .query_row(
+                        "SELECT entry_hash FROM audit_log WHERE seq = ?1",
+                        rusqlite::params![recent_seq - 1],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+
+                if let Some(anchor_hash) = anchor {
+                    // Record the new chain root BEFORE deleting the prefix, in
+                    // this same transaction so the two are atomic.
+                    tx.execute(
+                        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?1, ?2)",
+                        rusqlite::params![
+                            crate::audit_chain::AUDIT_CHAIN_PRUNED_ROOT_META_KEY,
+                            anchor_hash
+                        ],
+                    )
+                    .map_err(|e| StorageError::Internal(format!("audit anchor write: {e}")))?;
+
+                    total += tx
+                        .execute(
+                            "DELETE FROM audit_log WHERE seq IS NOT NULL AND seq < ?1",
+                            rusqlite::params![recent_seq],
+                        )
+                        .map_err(|e| StorageError::Internal(format!("audit prefix prune: {e}")))?
+                        as u64;
+                }
+            }
+
+            tx.commit()
+                .map_err(|e| StorageError::Internal(format!("audit retention commit: {e}")))?;
+
+            if total > 0 {
+                tracing::info!(
+                    "Enforced audit-trail retention: pruned {total} rows older than {AUDIT_TRAIL_RETENTION_DAYS} days"
+                );
+            }
+            Ok(total)
+        })
+    }
+}
+
+#[cfg(test)]
+mod audit_retention_tests {
+    use super::*;
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    fn audit_entry(i: usize, ts: chrono::DateTime<Utc>) -> AuditEntry {
+        AuditEntry {
+            entry_id: format!("id-{i}"),
+            timestamp: ts,
+            session_id: "sess".to_string(),
+            command_id: format!("cmd-{i}"),
+            action_type: "test".to_string(),
+            status: AuditStatus::Completed,
+            details: None,
+            execution_time_ms: Some(1),
+        }
+    }
+
+    fn count(storage: &SqliteStorage, table: &str) -> i64 {
+        let conn = storage.connection_arc();
+        let n = conn
+            .read_lock()
+            .run::<_, i64, rusqlite::Error>(|c| {
+                c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            })
+            .unwrap_or(-1);
+        n
+    }
+
+    #[test]
+    fn audit_log_prune_is_chain_safe_and_keeps_recent() {
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        let now = Utc::now();
+        let old = now - chrono::Duration::days(AUDIT_TRAIL_RETENTION_DAYS + 70);
+
+        // 3 old + 3 recent chained rows (seq 0..5 in insertion order).
+        for i in 0..3 {
+            storage.save_audit_entry(&audit_entry(i, old));
+        }
+        for i in 3..6 {
+            storage.save_audit_entry(&audit_entry(i, now));
+        }
+        assert_eq!(count(&storage, "audit_log"), 6);
+        assert!(
+            storage.verify_audit_chain().ok,
+            "chain must verify before prune"
+        );
+
+        let pruned = storage.enforce_audit_retention().expect("audit retention");
+        assert_eq!(pruned, 3, "the 3 rows older than the window must be pruned");
+        assert_eq!(
+            count(&storage, "audit_log"),
+            3,
+            "the 3 recent rows must survive"
+        );
+
+        // Chain-safe: the retained chain (first row now links to the recorded
+        // pruned-root anchor, not GENESIS) must still verify (ADR-072).
+        let report = storage.verify_audit_chain();
+        assert!(
+            report.ok,
+            "chain must still verify after a chain-safe prefix prune: {:?}",
+            report.first_break
+        );
+
+        // Idempotent: a second pass prunes nothing (all remaining rows are recent).
+        assert_eq!(
+            storage.enforce_audit_retention().expect("second pass"),
+            0,
+            "recent rows within the window must never be pruned"
+        );
+        assert!(storage.verify_audit_chain().ok);
+    }
+
+    #[test]
+    fn session_audit_log_prune_drops_old_keeps_recent() {
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        let old_ts =
+            (Utc::now() - chrono::Duration::days(AUDIT_TRAIL_RETENTION_DAYS + 30)).to_rfc3339();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.retained_write_lock();
+            guard
+                .execute(
+                    "INSERT INTO session_audit_log (timestamp, session_id, category, event_type) \
+                     VALUES (?1, 's', 'session', 'start')",
+                    rusqlite::params![old_ts],
+                )
+                .expect("seed old session_audit_log row");
+            guard
+                .execute(
+                    "INSERT INTO session_audit_log (session_id, category, event_type) \
+                     VALUES ('s', 'session', 'start')",
+                    [],
+                )
+                .expect("seed recent session_audit_log row");
+        }
+        assert_eq!(count(&storage, "session_audit_log"), 2);
+
+        storage.enforce_audit_retention().expect("audit retention");
+
+        assert_eq!(
+            count(&storage, "session_audit_log"),
+            1,
+            "only the row older than the compliance window must be pruned"
+        );
+    }
+
+    /// V47 (#8059): `enforce_all_retention` must prune voice transcripts older
+    /// than the 90-day window AND their paired `search_fts` rows, while keeping
+    /// recent transcripts and never touching unrelated FTS rows.
+    #[test]
+    fn transcript_retention_prunes_old_and_cleans_fts() {
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        let old_ts = (Utc::now() - chrono::Duration::days(120)).to_rfc3339();
+        let recent_ts = (Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.retained_write_lock();
+            for (id, ts) in [("tr-old", &old_ts), ("tr-recent", &recent_ts)] {
+                guard
+                    .execute(
+                        "INSERT INTO transcripts (id, timestamp, duration_secs, source, text) \
+                         VALUES (?1, ?2, 1.0, 'whisper', 'content')",
+                        rusqlite::params![id, ts],
+                    )
+                    .expect("seed transcript");
+                guard
+                    .execute(
+                        "INSERT INTO search_fts (segment_id, content_type, searchable_text, shadow) \
+                         VALUES (?1, 'transcript', 'content', '')",
+                        rusqlite::params![id],
+                    )
+                    .expect("seed transcript fts row");
+            }
+            // Unrelated segment FTS row that transcript cleanup must never touch.
+            guard
+                .execute(
+                    "INSERT INTO search_fts (segment_id, content_type, searchable_text, shadow) \
+                     VALUES ('seg-keep', 'segment', 'keep', '')",
+                    [],
+                )
+                .expect("seed segment fts row");
+        }
+        assert_eq!(count(&storage, "transcripts"), 2);
+
+        storage
+            .enforce_all_retention()
+            .expect("enforce_all_retention");
+
+        assert_eq!(
+            count(&storage, "transcripts"),
+            1,
+            "only the transcript older than 90 days must be pruned"
+        );
+        let survivor: String = {
+            let conn = storage.connection_arc();
+            let id = conn
+                .read_lock()
+                .run::<_, String, rusqlite::Error>(|c| {
+                    c.query_row("SELECT id FROM transcripts", [], |r| r.get(0))
+                })
+                .expect("read survivor");
+            id
+        };
+        assert_eq!(survivor, "tr-recent", "the recent transcript must survive");
+
+        // The pruned transcript's FTS row is gone; the recent one's and the
+        // unrelated segment's FTS rows survive.
+        let fts_ids = |seg: &str| -> i64 {
+            let conn = storage.connection_arc();
+            let n = conn
+                .read_lock()
+                .run::<_, i64, rusqlite::Error>(|c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM search_fts WHERE segment_id = ?1",
+                        rusqlite::params![seg],
+                        |r| r.get(0),
+                    )
+                })
+                .unwrap_or(-1);
+            n
+        };
+        assert_eq!(
+            fts_ids("tr-old"),
+            0,
+            "pruned transcript FTS row must be gone"
+        );
+        assert_eq!(
+            fts_ids("tr-recent"),
+            1,
+            "recent transcript FTS row survives"
+        );
+        assert_eq!(
+            fts_ids("seg-keep"),
+            1,
+            "unrelated segment FTS row must never be touched"
+        );
     }
 }

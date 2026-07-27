@@ -1,3 +1,4 @@
+#[cfg(any(debug_assertions, test))]
 pub(crate) mod benchmark;
 mod command_timeout;
 pub(super) mod types;

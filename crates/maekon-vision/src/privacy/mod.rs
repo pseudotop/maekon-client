@@ -8,6 +8,10 @@ mod adapter;
 mod detection;
 mod redaction;
 
+#[cfg(test)]
+#[path = "exact_app_tests.rs"]
+mod exact_app_tests;
+
 // Public surface — all callers use `maekon_vision::privacy::{...}`
 pub use adapter::VisionPiiSanitizer;
 pub use detection::{
