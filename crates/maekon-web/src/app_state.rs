@@ -29,6 +29,7 @@ use maekon_core::ports::integration::{
 use maekon_core::ports::memory_graph_port::MemoryGraphPort;
 use maekon_core::ports::override_store::OverrideStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use maekon_core::ports::pomodoro_store::PomodoroStorePort;
 use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
 use maekon_core::ports::regime_storage::RegimeStoragePort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
@@ -95,6 +96,15 @@ pub struct CoreState {
 pub struct AuthState {
     pub local_auth_token: Option<Arc<str>>,
     pub(crate) integration_auth_rate_limiter: IntegrationAuthRateLimiter,
+    /// Capture-history viewing re-authentication gate (#8044). A "view" gate
+    /// distinct from `local_auth_token` (the session token) — it blocks a
+    /// physical accessor who opens the captured screenshot timeline on an
+    /// already-authenticated session. Defaults to a **disabled** gate
+    /// (viewing allowed); the composition root injects an enabled gate from
+    /// `config.privacy.reauth`. Shares the **same `Arc`** as the Tauri
+    /// re-auth command, so this middleware immediately sees a gate the
+    /// command opened via `record_success()`.
+    pub reauth_gate: Arc<maekon_core::reauth::CaptureReauthGate>,
 }
 
 pub(crate) const INTEGRATION_AUTH_FAILURE_LIMIT: u32 = 5;
@@ -250,14 +260,22 @@ pub struct AnalysisState {
 #[derive(Clone)]
 pub struct SessionState {
     pub manager: Option<Arc<dyn SessionManager>>,
-    pub pomodoro: Arc<std::sync::Mutex<Option<maekon_core::models::pomodoro::PomodoroSession>>>,
+    pub pomodoro: Arc<Mutex<PomodoroRuntimeState>>,
+    pub pomodoro_store: Option<Arc<dyn PomodoroStorePort>>,
+}
+
+#[derive(Default)]
+pub struct PomodoroRuntimeState {
+    pub session: Option<maekon_core::models::pomodoro::PomodoroSession>,
+    pub hydrated: bool,
 }
 
 impl Default for SessionState {
     fn default() -> Self {
         Self {
             manager: None,
-            pomodoro: Arc::new(std::sync::Mutex::new(None)),
+            pomodoro: Arc::new(Mutex::new(PomodoroRuntimeState::default())),
+            pomodoro_store: None,
         }
     }
 }

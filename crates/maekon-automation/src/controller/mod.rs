@@ -49,8 +49,12 @@ pub struct AutomationController {
     pub(super) intent_planner: Option<Arc<dyn IntentPlanner>>,
     pub(super) scene_finder: Option<Arc<dyn ElementFinder>>,
     pub(super) gui_service: Option<Arc<GuiInteractionService>>,
-    /// Health flag: `true` after a successful command, `false` on failure.
-    /// Read by the health-check loop. `None` when no caller has wired a flag.
+    /// CLI-bridge availability flag (#8050): `true` after a `Success` or a policy
+    /// `Denied` verdict (both prove the bridge executed the gate), `false` only
+    /// on a genuine execution/transport failure (`Failed`/`Timeout`/`Err`). Read
+    /// by the health-check loop. `None` when no caller has wired a flag; the
+    /// composition root seeds the shared flag optimistically (`true`) so an idle
+    /// bridge that has never run a command is not counted as disconnected.
     pub(super) last_command_ok: Option<Arc<AtomicBool>>,
     /// Pending confirmations awaiting user approval via overlay modal.
     /// Key: command_id, Value: (confirmation data, oneshot sender for response).
@@ -103,8 +107,10 @@ impl AutomationController {
         }
     }
 
-    /// Attach a shared health flag that is set to `true` on successful command
-    /// execution and `false` on failure.
+    /// Attach a shared CLI-bridge availability flag (#8050): set to `true` on a
+    /// `Success` or policy `Denied` verdict (the bridge executed the gate), and
+    /// `false` only on a genuine execution/transport failure
+    /// (`Failed`/`Timeout`/`Err`).
     pub fn with_health_flag(mut self, flag: Arc<AtomicBool>) -> Self {
         self.last_command_ok = Some(flag);
         self

@@ -23,6 +23,29 @@ This document defines the versioned request/response contract expected by the re
 - `google`
 - `generic`
 
+## Public surface classification
+
+Provider names and the catalog `stability` field describe adapter-contract
+maturity, not Maekon release maturity. Use these classes when documenting a
+surface:
+
+- **parser** — request/response parsing code and fixtures exist for the named
+  provider shape; this does not prove a reachable service.
+- **catalog/example** — the provider appears in a catalog or configuration
+  example; listing alone does not select or initialize it at runtime.
+- **roadmap** — a planned surface with no claim of current runtime selection.
+- **preview** — an explicit opt-in runtime path whose exact endpoint, platform,
+  consent, and current verification evidence must be checked separately.
+- **shipped** — source for the runtime path exists in the current exported
+  snapshot. This does not mean a stable release exists or that current live
+  smoke passed.
+
+In particular, `stability=ga` in
+`specs/providers/provider-surface-catalog.json` means the adapter contract is
+treated as mature within the catalog. It is not evidence of a Maekon stable
+release, universal provider availability, production readiness, or a current
+green live smoke run.
+
 ## Remote LLM Contract
 
 ## Request requirements

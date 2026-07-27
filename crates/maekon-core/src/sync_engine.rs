@@ -384,6 +384,17 @@ impl SyncEngine {
         if !local_changes.is_empty() {
             info!(rows = local_changes.row_count(), "pushing local changes");
             let delivered = self.transport.push(&local_changes).await?;
+            // #8056 P3: record the push outcome on the returned result so the UI
+            // can distinguish "nothing to push" (no result / push_attempted=false)
+            // from "had local changes but reached 0 peers" (push_attempted=true,
+            // pushed_to_peers=0). `delivered` is the count of peers that confirmed
+            // receipt (best-effort fanout), NOT a row count. Attach to the existing
+            // merge result when present, otherwise materialize a push-only result.
+            {
+                let result = merge_result.get_or_insert_with(SyncResult::default);
+                result.push_attempted = true;
+                result.pushed_to_peers = delivered;
+            }
             // #5143: audit the egress in the #4803 ledger ONLY when the data
             // actually reached a destination. A best-effort transport (LAN with
             // zero peers or all-peers-failed) returns 0 → nothing left the
@@ -651,11 +662,14 @@ impl SyncEngine {
         self.transport.discover_peers().await
     }
 
-    // #7683 F2 already removed the `forget_peer` Tauri IPC command as a
-    // residual dead command (see commands/sync.rs). This wrapper had no
-    // remaining caller once that command was deleted, so it is removed too;
-    // the underlying `SyncTransport::forget_peer` port method stays (tested
-    // per-adapter in maekon-network/maekon-storage).
+    /// Forget a peer through the configured transport.
+    ///
+    /// Transport adapters own the trust/session persistence details: LAN
+    /// clears its TOFU pin and token cache, file transport removes the peer's
+    /// changesets, and remote transport revokes the server-side peer record.
+    pub async fn forget_peer(&self, device_id: &str) -> Result<(), CoreError> {
+        self.transport.forget_peer(device_id).await
+    }
 }
 
 #[cfg(test)]
@@ -1775,11 +1789,25 @@ mod tests {
         .await
         .with_egress(sink.clone(), "sync.test".to_string());
 
-        engine.run_cycle().await.unwrap();
+        let result = engine.run_cycle().await.unwrap();
 
         assert!(
             sink.records().is_empty(),
             "zero confirmed deliveries must record no egress"
+        );
+
+        // #8056 P3: the cycle had local changes to push but reached zero peers.
+        // The result must carry that distinction (push_attempted=true,
+        // pushed_to_peers=0) so the UI can warn about undelivered changes
+        // instead of reporting a clean no-op.
+        let result = result.expect("a cycle with local changes must yield a result");
+        assert!(
+            result.push_attempted,
+            "push was attempted (there were local changes)"
+        );
+        assert_eq!(
+            result.pushed_to_peers, 0,
+            "zero peers confirmed delivery must be visible in the result"
         );
     }
 
@@ -1982,7 +2010,17 @@ mod tests {
         .await;
 
         let result = engine.run_cycle().await.unwrap();
-        assert!(result.is_none()); // no merge happened
+        // #8056 P3: a push-only cycle (no pull-phase merge) now surfaces a
+        // result carrying the push outcome, rather than `None` — otherwise a
+        // caller could never distinguish "nothing to push" from "pushed but no
+        // merge happened this cycle" (see `push_attempted`/`pushed_to_peers`).
+        let result = result.expect("a cycle that pushed local changes must yield a result");
+        assert_eq!(result.applied, 0, "no merge happened, so no rows applied");
+        assert!(result.push_attempted, "there were local changes to push");
+        assert_eq!(
+            result.pushed_to_peers, 1,
+            "MockTransport confirms 1 delivery"
+        );
         assert_eq!(merger.apply_count.load(Ordering::SeqCst), 0);
         assert_eq!(transport.push_count.load(Ordering::SeqCst), 1);
     }

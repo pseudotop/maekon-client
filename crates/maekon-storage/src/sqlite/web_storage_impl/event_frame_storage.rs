@@ -18,7 +18,8 @@ use async_trait::async_trait;
 
 use maekon_core::error::CoreError;
 use maekon_core::models::storage_records::{
-    DeletedRangeCounts, FrameRecord, SearchEventRow, SearchFrameRow, StorageStatsSummaryRecord,
+    AppDeletionCounts, DeletedRangeCounts, FrameRecord, SearchEventRow, SearchFrameRow,
+    StorageStatsSummaryRecord,
 };
 use maekon_core::ports::web_storage::{
     EventQueryStorage, FrameQueryStorage, StorageMaintenanceStorage,
@@ -163,6 +164,16 @@ impl StorageMaintenanceStorage for SqliteStorage {
 
     async fn delete_all_data(&self) -> Result<(), CoreError> {
         SqliteStorage::delete_all_data_async(self)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn delete_data_for_apps(
+        &self,
+        app_names: &[String],
+        app_patterns: &[String],
+    ) -> Result<(Vec<String>, AppDeletionCounts), CoreError> {
+        SqliteStorage::delete_data_for_apps_async(self, app_names, app_patterns)
             .await
             .map_err(Into::into)
     }

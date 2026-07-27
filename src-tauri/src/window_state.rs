@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
-use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow, Window};
+use tauri::{Monitor, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow, Window};
 use tracing::{debug, warn};
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -147,6 +147,84 @@ pub(crate) fn restore_main_window_state(window: &WebviewWindow) {
     }
 }
 
+/// Show, restore, and focus the main window through the portable Tauri API,
+/// with a Windows-native restore fallback for minimized borderless WebViews.
+///
+/// Tauri's `unminimize()` can report success while a Windows WebView remains
+/// iconic. The stable HWND fallback is intentionally limited to the window
+/// already owned by this process; it performs no title search or coordinate
+/// interaction.
+pub(crate) fn show_restore_and_focus_main_window<R: Runtime>(window: &WebviewWindow<R>) {
+    if let Err(error) = window.show() {
+        debug!(error = %error, "main window show failed");
+    }
+    if let Err(error) = window.unminimize() {
+        debug!(error = %error, "main window unminimize failed");
+    }
+    #[cfg(target_os = "windows")]
+    restore_windows_webview_window(window);
+    if let Err(error) = window.set_focus() {
+        debug!(error = %error, "main window focus failed");
+    }
+    #[cfg(target_os = "windows")]
+    foreground_windows_webview_window(window);
+}
+
+#[cfg(target_os = "windows")]
+fn windows_webview_handle<R: Runtime>(window: &WebviewWindow<R>) -> Option<*mut core::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut core::ffi::c_void),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_windows_webview_window<R: Runtime>(window: &WebviewWindow<R>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_RESTORE};
+
+    let Some(handle) = windows_webview_handle(window) else {
+        debug!("main window native restore skipped: HWND unavailable");
+        return;
+    };
+    // SAFETY: raw-window-handle returned the live HWND owned by `window`, and
+    // it remains valid for this synchronous call.
+    let minimized_before = unsafe { IsIconic(handle) } != 0;
+    unsafe {
+        ShowWindow(handle, SW_RESTORE);
+    }
+    let minimized_after = unsafe { IsIconic(handle) } != 0;
+    tracing::info!(
+        native_window_handle = handle as usize,
+        minimized_before,
+        minimized_after,
+        "Windows main window restore attempted"
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_windows_webview_window<R: Runtime>(window: &WebviewWindow<R>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+
+    let Some(handle) = windows_webview_handle(window) else {
+        debug!("main window native foreground skipped: HWND unavailable");
+        return;
+    };
+    // SAFETY: raw-window-handle returned the live HWND owned by `window`, and
+    // it remains valid for this synchronous call.
+    let accepted = unsafe { SetForegroundWindow(handle) } != 0;
+    tracing::info!(
+        native_window_handle = handle as usize,
+        accepted,
+        "Windows main window foreground attempted"
+    );
+    if !accepted {
+        debug!("Windows declined the main window foreground transition");
+    }
+}
+
 pub(crate) fn ensure_main_window_on_available_monitor(window: &Window) {
     if window.label() != MAIN_WINDOW_LABEL {
         return;
@@ -174,6 +252,7 @@ pub(crate) fn ensure_main_window_on_available_monitor(window: &Window) {
     }
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn ensure_main_webview_window_on_available_monitor(window: &WebviewWindow) {
     if window.label() != MAIN_WINDOW_LABEL {
         return;
@@ -237,6 +316,7 @@ fn state_from_window(window: &Window) -> Result<MainWindowState, String> {
     }
 }
 
+#[cfg(debug_assertions)]
 fn state_from_webview_window(window: &WebviewWindow) -> Result<MainWindowState, String> {
     let position = window
         .outer_position()
@@ -537,5 +617,18 @@ mod tests {
                 height: 1_080,
             }
         );
+    }
+
+    #[test]
+    fn windows_restore_fallback_keeps_restore_before_foreground() {
+        let source = include_str!("window_state.rs");
+        let restore = source
+            .find("ShowWindow(handle, SW_RESTORE)")
+            .expect("native restore call");
+        let foreground = source
+            .find("SetForegroundWindow(handle)")
+            .expect("native foreground call");
+
+        assert!(restore < foreground);
     }
 }

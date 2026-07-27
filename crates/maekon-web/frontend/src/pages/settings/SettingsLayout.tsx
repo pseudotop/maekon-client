@@ -6,7 +6,7 @@ import { useShellLayoutContext } from '../../contexts/ShellLayoutContext'
 import { RouteErrorBoundary, routeTree } from '../../routes'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
-import { SettingsFormProvider, useSettingsFormContext } from './SettingsFormContext'
+import { useSettingsFormContext } from './SettingsFormContext'
 
 // Derive settings tabs from routeTree (single source of truth)
 const settingsNode = routeTree.find((r) => r.path === '/settings')
@@ -119,15 +119,12 @@ function SettingsContent() {
 }
 
 export default function SettingsLayout() {
-  // Provider is OUTSIDE the error boundary so a recovery reset does not
-  // remount the provider and destroy unsaved form edits. The boundary still
-  // isolates settings-tab crashes per-route — it just can't take out the
-  // form state on reset.
+  // The provider lives above the app's route renderer so both a recovery reset
+  // and top-level navigation preserve unsaved form edits. This boundary still
+  // isolates settings-tab crashes per-route without owning the draft lifetime.
   return (
-    <SettingsFormProvider>
-      <RouteErrorBoundary route="/settings">
-        <SettingsContent />
-      </RouteErrorBoundary>
-    </SettingsFormProvider>
+    <RouteErrorBoundary route="/settings">
+      <SettingsContent />
+    </RouteErrorBoundary>
   )
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-submit-suggestion-feedback"
+description = "Enables the submit_suggestion_feedback command without any pre-configured scope."
+commands.allow = ["submit_suggestion_feedback"]
+
+[[permission]]
+identifier = "deny-submit-suggestion-feedback"
+description = "Denies the submit_suggestion_feedback command without any pre-configured scope."
+commands.deny = ["submit_suggestion_feedback"]

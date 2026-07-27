@@ -54,8 +54,13 @@ client workspace.
 | [025](./ADR-025-codex-chatgpt-subscription-tos-gate.md) | OpenAI Codex / ChatGPT Subscription ToS Gate (App-Server Path) | Accepted | `provider-surface-catalog.json`, `session_manager/factory.rs`, `provider_adapters/llm_resolver.rs` |
 | [026](./ADR-026-async-storage-convergence-consent-port.md) | Async Storage Convergence + Object-Safe ConsentManagerPort | Accepted | `maekon-core` storage ports + `consent.rs`, `maekon-storage/src/sqlite`, `maekon-web`, `focus_analyzer` |
 | [027](./ADR-027-suggestion-action-binding.md) | Suggestion Action Binding (Derived, Gate-Preserving) | Accepted | `maekon-core` `intent/workflow.rs` derivation helper, `src-tauri/commands/suggestions/`, overlay Run affordance |
+| [028](./ADR-028-durable-task-lifecycle-boundary.md) | Durable Task Lifecycle Boundary | Accepted | `maekon-core` task models/ports, `maekon-storage`, `src-tauri`, `maekon-web` |
+| [029](./ADR-029-extension-package-runtime-boundary.md) | Extension Package and Runtime Boundary | Accepted | `maekon-core` extension contracts, trust reuse, `src-tauri`, extension-facing UI/API |
+| [030](./ADR-030-work-context-envelope-convergence.md) | Work Context Envelope and Convergence | Accepted | `maekon-core` work-context models/ports, future encrypted ledger, timeline/task/memory evidence projections |
+| [031](./ADR-031-extension-authorization-account-boundary.md) | Extension Authorization and Account Boundary | Accepted | `maekon-core` authorization broker, account-scoped OAuth/Keychain, readiness UI/API |
+| [032](./ADR-032-memory-graph-generation-input-contract.md) | Memory-Graph Generation-Input Contract | Proposed | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
 
-**Next available ID**: `ADR-028`.
+**Next available ID**: `ADR-033`.
 
 ## Conventions Summary
 

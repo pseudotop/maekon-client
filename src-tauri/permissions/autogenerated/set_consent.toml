@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-consent"
+description = "Enables the set_consent command without any pre-configured scope."
+commands.allow = ["set_consent"]
+
+[[permission]]
+identifier = "deny-set-consent"
+description = "Denies the set_consent command without any pre-configured scope."
+commands.deny = ["set_consent"]

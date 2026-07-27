@@ -351,6 +351,10 @@ impl Scheduler {
                         // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
                         // consent record AND on a missing ConsentManager (#7728).
                         let consent = ConsentGate::from_ref(consent_mgr_f.as_ref()).permissions_snapshot();
+                        // Reconcile before the composite capture-gate `continue` so
+                        // expired/update-required/missing consent cannot leave a
+                        // pattern learner alive until a later valid grant.
+                        focus.reconcile_activity_pattern_consent(&consent).await;
                         let paused = capture_paused_f.load(Ordering::Relaxed);
                         let permitted = config_mgr_f.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
@@ -359,7 +363,7 @@ impl Scheduler {
                             debug!("focus loop: capture gate closed (TS/consent/paused) — skipping tick");
                             continue;
                         }
-                        let rule_suggestions = focus.analyze_periodic().await;
+                        let rule_suggestions = focus.analyze_periodic(&consent).await;
                         let _ = &rule_suggestions;
                         // #5696: bridge produced rule suggestions into the live
                         // review queue (save + OS toast already happened inside

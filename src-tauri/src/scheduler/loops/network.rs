@@ -83,6 +83,14 @@ impl Scheduler {
         let storage4 = self.storage.clone();
         let frame_storage4 = self.frame_storage.clone();
         let egress4 = egress_policy;
+        // #8050: a successful batch upload definitively proves the server is
+        // reachable, so it is a valid POSITIVE confirmation for the server-health
+        // flag. It is a secondary signal to the heartbeat: only successes are
+        // recorded here. Upload failures are deliberately NOT written — a flush
+        // error can be data/validation-specific (not a connectivity fault) and
+        // would flap against the heartbeat, which owns the authoritative negative
+        // signal.
+        let server_health_flag = self.server_health_flag.clone();
 
         tokio::spawn(async move {
             let mut interval = super::intervals::coalescing_interval(sync_interval);
@@ -112,6 +120,18 @@ impl Scheduler {
                                         if !sent_ids.is_empty() {
                                             let count = sent_ids.len();
                                             debug!("batch: {count}items sent");
+                                            // #8050: a non-empty upload confirms
+                                            // the server is reachable — positive
+                                            // health confirmation only (see the
+                                            // `server_health_flag` note at the top
+                                            // of this loop for why failures are
+                                            // left to the heartbeat).
+                                            if let Some(ref flag) = server_health_flag {
+                                                flag.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                            }
                                             // E20-43 #4835: NON-PII upload outcome. Label is the
                                             // bounded, code-defined upload-channel authority only —
                                             // no per-user/per-event data. The `BatchSink` port does
@@ -201,6 +221,12 @@ impl Scheduler {
     ) -> tokio::task::JoinHandle<()> {
         let api = self.api_client.clone();
         let sid = session_id;
+        // #8050: the heartbeat is the authoritative "server reachable" signal —
+        // a dedicated periodic liveness RPC that runs every interval independent
+        // of whether there is user data to upload, so its success/failure is the
+        // most direct and consistent proxy for server connectivity. Store the
+        // outcome so the health-check loop can surface it in the tray.
+        let server_health_flag = self.server_health_flag.clone();
 
         tokio::spawn(async move {
             let api = match api {
@@ -223,7 +249,14 @@ impl Scheduler {
                             // is safe after the egress consent gate passes.
                             crate::telemetry::metrics::record_heartbeat();
                             crate::telemetry::metrics::record_loop_iteration("heartbeat");
-                            if let Err(e) = api.send_heartbeat(&sid).await {
+                            let outcome = api.send_heartbeat(&sid).await;
+                            if let Some(ref flag) = server_health_flag {
+                                // #8050: authoritative server-connectivity write —
+                                // `true` on a reachable server, `false` on a failed
+                                // heartbeat (both directions).
+                                flag.store(outcome.is_ok(), std::sync::atomic::Ordering::Relaxed);
+                            }
+                            if let Err(e) = outcome {
                                 warn!(err.code = %e.code(), "heartbeat failure: {e}");
                             }
                         }
@@ -339,6 +372,10 @@ mod tests {
     #[derive(Default)]
     struct CountingApiClient {
         heartbeats: AtomicUsize,
+        /// #8050: when set, `send_heartbeat` returns `Err` so the server-health
+        /// write path can be exercised in both directions. Defaults to `false`
+        /// (Ok), keeping every existing test unchanged.
+        fail_heartbeat: std::sync::atomic::AtomicBool,
     }
 
     #[derive(Default)]
@@ -381,6 +418,12 @@ mod tests {
 
         async fn send_heartbeat(&self, _session_id: &str) -> Result<(), CoreError> {
             self.heartbeats.fetch_add(1, Ordering::SeqCst);
+            if self.fail_heartbeat.load(Ordering::SeqCst) {
+                return Err(CoreError::Internal {
+                    code: InternalCode::Generic,
+                    message: "heartbeat: injected failure".to_string(),
+                });
+            }
             Ok(())
         }
     }
@@ -440,6 +483,10 @@ mod tests {
 
             async fn load_frame(&self, _relative_path: &Path) -> Result<Vec<u8>, CoreError> {
                 Err(unused_port_error("frame storage"))
+            }
+
+            async fn load_latest_frame(&self) -> Result<Option<(Vec<u8>, String)>, CoreError> {
+                Ok(None)
             }
 
             async fn enforce_retention(&self) -> Result<usize, CoreError> {
@@ -743,6 +790,156 @@ mod tests {
         handle.abort();
     }
 
+    /// Drive the heartbeat interval under the paused clock until at least
+    /// `target` heartbeats have been sent, then return. Robust against executor
+    /// scheduling: each iteration advances one full interval and yields so the
+    /// spawned loop can process the due tick.
+    async fn advance_until_heartbeats(api: &CountingApiClient, target: usize) {
+        for _ in 0..100 {
+            if api.heartbeats.load(Ordering::SeqCst) >= target {
+                return;
+            }
+            tokio::time::advance(Duration::from_secs(30)).await;
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "heartbeat count never reached {target} (stuck at {})",
+            api.heartbeats.load(Ordering::SeqCst)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_writes_server_health_flag_both_directions() {
+        // #8050: the heartbeat is the authoritative server-connectivity writer.
+        // A success flips the flag healthy, a failure flips it unhealthy, and a
+        // recovery flips it back — proving the adapter is no longer a dead writer.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consent_manager = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+        consent_manager
+            .grant_consent(
+                ConsentPermissions {
+                    telemetry: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .expect("grant telemetry consent");
+
+        let api_client = Arc::new(CountingApiClient::default());
+        // Start the flag DELIBERATELY unhealthy so the first successful heartbeat
+        // must actively flip it true — a dead writer would leave it false.
+        let server = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let llm = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let cli = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let scheduler = scheduler_with_api(api_client.clone()).with_health_flags(
+            server.clone(),
+            llm.clone(),
+            cli.clone(),
+        );
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = scheduler.spawn_heartbeat_loop(
+            Duration::from_secs(30),
+            "session-test".to_string(),
+            upload_policy_with_telemetry_consent(consent_manager.clone()),
+            shutdown_rx,
+        );
+
+        advance_until_heartbeats(&api_client, 1).await;
+        assert!(
+            server.load(std::sync::atomic::Ordering::Relaxed),
+            "a successful heartbeat must flip server health healthy"
+        );
+
+        // Inject a failure — the next heartbeat must flip the flag unhealthy.
+        api_client.fail_heartbeat.store(true, Ordering::SeqCst);
+        let before = api_client.heartbeats.load(Ordering::SeqCst);
+        advance_until_heartbeats(&api_client, before + 1).await;
+        assert!(
+            !server.load(std::sync::atomic::Ordering::Relaxed),
+            "a failed heartbeat must flip server health unhealthy"
+        );
+
+        // Recover — a subsequent success must flip it healthy again.
+        api_client.fail_heartbeat.store(false, Ordering::SeqCst);
+        let before = api_client.heartbeats.load(Ordering::SeqCst);
+        advance_until_heartbeats(&api_client, before + 1).await;
+        assert!(
+            server.load(std::sync::atomic::Ordering::Relaxed),
+            "a recovered heartbeat must flip server health healthy again"
+        );
+
+        // The heartbeat writer is scoped to server health only.
+        assert!(
+            llm.load(std::sync::atomic::Ordering::Relaxed),
+            "heartbeat must not touch the llm flag"
+        );
+        assert!(
+            cli.load(std::sync::atomic::Ordering::Relaxed),
+            "heartbeat must not touch the cli flag"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn successful_batch_upload_confirms_server_health() {
+        // #8050: a successful batch upload is a positive server-reachability
+        // confirmation, so it flips the server flag healthy even when no
+        // heartbeat has run yet.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consent_manager = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+        consent_manager
+            .grant_consent(
+                ConsentPermissions {
+                    telemetry: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .expect("grant telemetry consent");
+
+        let batch_sink = Arc::new(CountingBatchSink::default());
+        // Start unhealthy so a successful flush must actively flip it true.
+        let server = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let llm = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let cli = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let scheduler = scheduler_with_batch_sink(batch_sink.clone()).with_health_flags(
+            server.clone(),
+            llm.clone(),
+            cli.clone(),
+        );
+        // NOTE: no shutdown path here — `CountingBatchSink::flush` always returns a
+        // non-empty id vec, so the sync loop's shutdown drain (flush-until-empty)
+        // would never terminate against this test double. `handle.abort()` stops
+        // the loop after the assertion, mirroring the heartbeat test.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = scheduler.spawn_sync_loop(
+            Duration::from_millis(10),
+            upload_policy_with_telemetry_consent(consent_manager.clone()),
+            shutdown_rx,
+        );
+
+        // Under full-suite parallel load, the preceding SQLite spawn_blocking
+        // work can finish after a paused-clock advance. Use a short real interval
+        // and wait within an explicit timeout instead of assuming task order.
+        let flush_observed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if batch_sink.flushes.load(Ordering::SeqCst) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        flush_observed.expect("sync loop must flush at least once under granted telemetry consent");
+        assert!(
+            server.load(std::sync::atomic::Ordering::Relaxed),
+            "a successful batch upload must confirm the server reachable"
+        );
+
+        handle.abort();
+    }
+
     // ── #7574 regression: regime checkpoint sub-tick timer ─────────────────
     //
     // `spawn_aggregation_loop` lives in `system.rs`, but it is
@@ -784,33 +981,27 @@ mod tests {
         }
     }
 
-    /// Waits until `counter` reaches `expected`, robust under paused virtual time
-    /// and heavy parallel `--workspace` load. A plain `yield_now()` loop stalled
-    /// at count 1 under full-suite load (the public #138 flake): it busy-spins
-    /// this current-thread runtime, and two things then race against that spin —
-    /// (1) the spawned loop's first aggregation tick parks in real-OS-thread
-    /// `spawn_blocking` housekeeping (FTS-optimize / log-cleanup in `system.rs`)
-    /// and cannot return to its `select!` to deliver the next checkpoint tick
-    /// until that thread finishes, and (2) the checkpoint `tokio::time::interval`
-    /// tick, though due after the caller's `advance`, is only delivered once the
-    /// time driver is re-processed. So each iteration nudges the paused clock
-    /// (re-drives the due tick — item 2) and hands off to the blocking pool
-    /// (parks this runtime so it releases its core, letting the housekeeping
-    /// thread finish — item 1). Neither is a fixed real-time sleep; the sub-second
-    /// nudge is orders of magnitude below the 30-min cadence, so it cannot itself
-    /// manufacture an extra checkpoint, and the assertion is unchanged.
+    /// Waits for `counter` under a paused clock and full-workspace load. The
+    /// spawned aggregation loop performs real-OS-thread `spawn_blocking`
+    /// maintenance on its first tick, so a fixed number of immediate hand-offs
+    /// can finish before maintenance on a slower Windows runner. A five-second
+    /// real-time deadline bounds the wait while absorbing runner speed variance.
     async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
             if counter.load(Ordering::SeqCst) >= expected {
                 return;
             }
-            // (2) Re-drive the time driver so an already-due interval tick fires.
+            // Re-drive the time driver so an already-due interval tick fires.
             tokio::time::advance(Duration::from_millis(1)).await;
-            // (1) Park on a trivial blocking-pool hand-off (NOT a fixed sleep) so
-            // this runtime releases its core and the in-flight housekeeping thread
-            // can finish, letting the spawned loop return to its `select!`.
-            let _ = tokio::task::spawn_blocking(|| ()).await;
+            // Yield the runtime core so in-flight maintenance can complete and
+            // the spawned loop can return to its `select!`.
+            let _ = tokio::task::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_millis(10));
+            })
+            .await;
         }
+        panic!("counter did not reach {expected} within the observation deadline");
     }
 
     fn scheduler_with_regime_checkpoint(

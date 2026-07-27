@@ -38,6 +38,18 @@ pub trait FrameStoragePort: Send + Sync {
     /// Load a single frame image by relative path.
     async fn load_frame(&self, relative_path: &Path) -> Result<Vec<u8>, CoreError>;
 
+    /// Load the most recently captured frame image (read-only path used by the
+    /// automation OCR element-finder). Returns the decoded frame bytes plus the
+    /// image format string (e.g. `"webp"`), or `None` when no frame exists.
+    ///
+    /// A torn/corrupt newest frame is skipped in favour of the next-older good
+    /// frame rather than surfacing an error, so a single bad write never blocks
+    /// element-finding. Decryption (when the backing store is encrypted at rest)
+    /// happens inside this call, so callers receive plaintext image bytes —
+    /// this is why automation MUST share the SAME encrypted store instance as
+    /// the capture writer instead of building a keyless one over the same dir.
+    async fn load_latest_frame(&self) -> Result<Option<(Vec<u8>, String)>, CoreError>;
+
     /// Delete frames older than the configured retention period.
     /// Returns the number of deleted files.
     async fn enforce_retention(&self) -> Result<usize, CoreError>;

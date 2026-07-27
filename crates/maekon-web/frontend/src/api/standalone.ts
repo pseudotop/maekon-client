@@ -226,6 +226,7 @@ function makeDefaultSettings(): AppSettings {
       min_confidence: 0.5,
       max_suggestions: 5,
       embedding_enabled: true,
+      llm_summary_enabled: false,
       gui_intelligence_enabled: true,
       text_intelligence_enabled: true,
       auto_tuner_enabled: false,
@@ -595,6 +596,12 @@ export async function handleStandaloneRequest(
   options?: RequestInit,
   force = false,
 ): Promise<Response | null> {
+  // A Tauri desktop window always depends on its authenticated local Axum API.
+  // Turning transport failures into standalone mock responses hides a broken
+  // runtime and can present fabricated dashboard totals as live data (#8201).
+  if (force && isTauriWindow()) {
+    return null
+  }
   if (!standaloneMode && !force) {
     return null
   }
@@ -681,7 +688,7 @@ export async function handleStandaloneRequest(
       .toLowerCase()
     if (provider === 'anthropic') {
       return jsonResponse({
-        models: ['claude-sonnet-4-20250514', 'claude-opus-4-1-20250805', 'claude-opus-4-20250514'],
+        models: ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-5'],
       })
     }
     if (provider === 'google' || provider === 'gemini') {

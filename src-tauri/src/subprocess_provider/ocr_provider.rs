@@ -9,12 +9,13 @@ use tempfile::tempdir;
 use tokio::process::Command;
 
 use super::{
-    append_model_flag, append_oneshot_flags, build_codex_ocr_prompt, build_path_based_ocr_prompt,
-    classify_subprocess_error_with_redactions, default_llm_model_for_surface,
-    default_ocr_model_for_surface, invocation_runtime_for_surface, is_gemini_json_flag_error,
-    parse_ocr_output, provider_name_for_surface_id, write_prompt_and_collect_output,
-    write_subprocess_ocr_image, BoxFuture, DetectedSubprocessCli, SubprocessKind,
-    DEFAULT_SUBPROCESS_TIMEOUT_SECS, OCR_SCHEMA_JSON,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags, build_codex_ocr_prompt,
+    build_path_based_ocr_prompt, classify_subprocess_error_with_redactions,
+    default_llm_model_for_surface, default_ocr_model_for_surface, invocation_runtime_for_surface,
+    is_gemini_json_flag_error, parse_ocr_output, provider_name_for_surface_id,
+    write_prompt_and_collect_output, write_subprocess_ocr_image, BoxFuture, DetectedSubprocessCli,
+    SubprocessKind, DEFAULT_CODEX_SUBPROCESS_MODEL, DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+    OCR_SCHEMA_JSON,
 };
 use maekon_api_contracts::provider_specs::subprocess_supports_json_output;
 
@@ -45,7 +46,7 @@ impl SubprocessOcrProvider {
                     .ok()
                     .flatten()
             })
-            .unwrap_or_else(|| "gpt-5.4".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string());
         let timeout_secs = config
             .ocr_api
             .as_ref()
@@ -112,6 +113,7 @@ impl SubprocessOcrProvider {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,

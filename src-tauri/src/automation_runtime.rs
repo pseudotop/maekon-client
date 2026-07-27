@@ -9,12 +9,13 @@ use maekon_core::error::CoreError;
 use maekon_core::models::intent::{ElementBounds, IntentConfig, UiElement};
 use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::element_finder::ElementFinder;
+use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::input_driver::InputDriver;
 use maekon_core::ports::intent_planner::IntentPlanner;
 use maekon_core::ports::llm_provider::LlmCallHealth;
 use maekon_core::ports::secret_store::SecretStoreSet;
 use maekon_core::ports::skill_loader::SkillLoader;
-use maekon_storage::frame_storage::FrameFileStorage;
+use maekon_core::ports::skill_pack_registry::ActiveSkillResolverPort;
 use maekon_vision::element_finder::OcrElementFinder;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -142,7 +143,7 @@ impl ElementFinder for CompositeElementFinder {
 pub fn build_automation_runtime(
     ai_config: &AiProviderConfig,
     pii_filter_level: PiiFilterLevel,
-    frame_storage: Option<Arc<FrameFileStorage>>,
+    frame_storage: Option<Arc<dyn FrameStoragePort>>,
     external_ocr_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     skill_loader: Option<Arc<dyn SkillLoader>>,
     secret_stores: Option<SecretStoreSet>,
@@ -158,6 +159,9 @@ pub fn build_automation_runtime(
     // #6333 A10 / E42.2: minimum LLM self-reported interpretation confidence to
     // auto-execute an LLM-planned intent (0.0 is explicit opt-out).
     min_llm_confidence: f64,
+    // #8588: resolves the trusted Skill Pack activation. `None` means no skill
+    // body is ever promoted into instruction position.
+    skill_resolver: Option<Arc<dyn ActiveSkillResolverPort>>,
 ) -> Result<AutomationRuntime, CoreError> {
     let adapters = resolve_ai_provider_adapters(
         ai_config,
@@ -211,6 +215,11 @@ pub fn build_automation_runtime(
     let intent_executor = Arc::new(IntentExecutor::new(resolver, IntentConfig::default()));
     let planner = LlmIntentPlanner::new(adapters.llm.clone(), element_finder.clone())
         .with_min_llm_confidence(min_llm_confidence);
+    let planner = if let Some(resolver) = skill_resolver {
+        planner.with_skill_resolver(resolver)
+    } else {
+        planner
+    };
     let intent_planner: Arc<dyn IntentPlanner> = if let Some(loader) = skill_loader {
         Arc::new(planner.with_skill_loader(loader))
     } else {
@@ -241,13 +250,13 @@ pub fn build_noop_intent_executor() -> Arc<IntentExecutor> {
 }
 
 pub struct LatestFrameOcrElementFinder {
-    frame_storage: Arc<FrameFileStorage>,
+    frame_storage: Arc<dyn FrameStoragePort>,
     inner: OcrElementFinder,
 }
 
 impl LatestFrameOcrElementFinder {
     pub fn new(
-        frame_storage: Arc<FrameFileStorage>,
+        frame_storage: Arc<dyn FrameStoragePort>,
         ocr_provider: Arc<dyn maekon_core::ports::ocr_provider::OcrProvider>,
     ) -> Self {
         Self {
@@ -361,6 +370,7 @@ mod tests {
     };
     #[cfg(feature = "analysis")]
     use maekon_storage::env_secret_store::EnvSecretStore;
+    use maekon_storage::frame_storage::FrameFileStorage;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -529,6 +539,64 @@ mod tests {
         assert_eq!(result[0].text, "save");
     }
 
+    /// #8045 regression: the automation OCR element-finder must read frames
+    /// through the SAME encrypted store the capture writer uses. Before this fix
+    /// `web_server_runtime` built a SECOND keyless `FrameFileStorage` over the
+    /// same frames dir, so `load_latest_frame` handed AES-256-GCM ciphertext to
+    /// the WebP decoder — silently breaking element-finding on every default
+    /// (encrypted) install.
+    ///
+    /// This pins the contract that fixes it: an encrypted store shared as
+    /// `Arc<dyn FrameStoragePort>` round-trips `load_latest_frame` to the
+    /// original plaintext, while a keyless reader over the SAME bytes does not.
+    #[tokio::test]
+    async fn shared_encrypted_frame_storage_decrypts_but_keyless_reader_does_not() {
+        use maekon_core::ports::frame_storage::FrameStoragePort;
+        use maekon_storage::encryption::EncryptionKey;
+
+        let temp_dir = TempDir::new().unwrap();
+        let key = Arc::new(EncryptionKey::from_bytes([0x11; 32]));
+
+        // Capture-writer side: encrypted-at-rest store (mirrors
+        // `SharedCaptureServices::build` → `with_encryption`).
+        let writer = FrameFileStorage::with_encryption(
+            temp_dir.path().to_path_buf(),
+            100,
+            7,
+            Some(key.clone()),
+        )
+        .await
+        .unwrap();
+        let plaintext = b"maekon-webp-frame-bytes".to_vec();
+        writer.save_frame(Utc::now(), &plaintext).await.unwrap();
+
+        // Automation side sharing the SAME encrypted instance via the port trait
+        // (the type this PR widened from `Arc<FrameFileStorage>`).
+        let shared: Arc<dyn FrameStoragePort> = Arc::new(writer);
+        let (decrypted, _fmt) = shared
+            .load_latest_frame()
+            .await
+            .unwrap()
+            .expect("shared encrypted reader must return the latest frame");
+        assert_eq!(
+            decrypted, plaintext,
+            "shared encrypted reader must decrypt to the original plaintext"
+        );
+
+        // The old bug: a SECOND keyless store over the SAME dir cannot decrypt,
+        // so it never yields the plaintext the OCR decoder needs.
+        let keyless = FrameFileStorage::new(temp_dir.path().to_path_buf(), 100, 7)
+            .await
+            .unwrap();
+        // Also acceptable: a keyless read that skips the undecodable frame (None).
+        if let Some((raw, _)) = keyless.load_latest_frame().await.unwrap() {
+            assert_ne!(
+                raw, plaintext,
+                "keyless reader over encrypted data must NOT yield plaintext (the #8045 bug)"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn latest_frame_finder_returns_not_found_when_no_frame_exists() {
         let temp_dir = TempDir::new().unwrap();
@@ -564,6 +632,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         )
         .expect("LocalModel arm must not return Err");
         assert_eq!(runtime.access_mode, AiAccessMode::LocalModel);
@@ -600,6 +669,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         );
         result.expect("LocalModel arm must not return Err");
     }
@@ -628,6 +698,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         )
         .unwrap();
         assert_eq!(runtime.access_mode, AiAccessMode::ProviderApiKey);
@@ -666,6 +737,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         ) {
             Ok(_) => panic!("Expected an error"),
             // Iter-109: emission variant depends on whether the `server`
@@ -711,6 +783,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         )
         .unwrap();
         assert_eq!(runtime.ocr_source, ProviderSource::Remote);
@@ -744,6 +817,7 @@ mod tests {
             crate::breaker_registry::CircuitBreakerRegistry::new(),
             None, // llm_call_health — not tracked in unit tests
             0.0,  // min_llm_confidence — gate disabled in unit tests
+            None, // skill_resolver — no skill activation in unit tests (#8588)
         );
         let err = result
             .err()

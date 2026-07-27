@@ -69,6 +69,19 @@ describe('SuggestionItem action binding (#7917 / ADR-027)', () => {
     expect(screen.queryByText('No auto action')).toBeNull()
   })
 
+  it('keeps a single highlighted action and lays review actions out in a readable two-column grid', () => {
+    render(<SuggestionItem item={makeSuggestion({ action: { label: 'Deep Work Start' } })} onAction={vi.fn()} />)
+
+    expect(screen.getByTestId('run-suggestion-action')).toHaveClass('w-full', 'bg-brand')
+    expect(screen.getByTestId('suggestion-review-actions')).toHaveClass('grid', 'grid-cols-2')
+
+    for (const label of ['suggestions.accept', 'suggestions.reject', 'suggestions.later', 'suggestions.explain']) {
+      const button = screen.getByText(label).closest('button')
+      expect(button).toHaveClass('whitespace-nowrap', 'bg-surface-muted')
+      expect(button?.className).not.toMatch(/semantic-(success|error)/)
+    }
+  })
+
   it('invokes run_suggestion_action with the suggestion id and reports success', async () => {
     invokeMock.mockResolvedValueOnce(undefined)
     const onRan = vi.fn()

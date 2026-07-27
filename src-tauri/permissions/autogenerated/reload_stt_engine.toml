@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reload-stt-engine"
+description = "Enables the reload_stt_engine command without any pre-configured scope."
+commands.allow = ["reload_stt_engine"]
+
+[[permission]]
+identifier = "deny-reload-stt-engine"
+description = "Denies the reload_stt_engine command without any pre-configured scope."
+commands.deny = ["reload_stt_engine"]

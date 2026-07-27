@@ -57,6 +57,18 @@ pub fn detect_display_server() -> DisplayServer {
     DisplayServer::Unknown
 }
 
+/// Whether the foreground **external** window is fullscreen (#8849). X11-only —
+/// checks the active window's `_NET_WM_STATE_FULLSCREEN`. Returns `None` on
+/// Wayland (no EWMH active-window path) or when the X server is unreachable
+/// (graceful degradation — allow the overlay, matching today's behavior).
+/// Synchronous / blocking, so the caller runs it under `spawn_blocking`.
+pub fn foreground_window_is_fullscreen_linux() -> Option<bool> {
+    match detect_display_server() {
+        DisplayServer::Wayland => None,
+        _ => crate::x11_active_window::active_window_is_fullscreen(),
+    }
+}
+
 pub async fn get_active_window_linux() -> Result<Option<WindowInfo>, MonitorError> {
     let display_server = detect_display_server();
 

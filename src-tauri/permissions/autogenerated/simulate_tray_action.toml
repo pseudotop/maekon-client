@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-simulate-tray-action"
+description = "Enables the simulate_tray_action command without any pre-configured scope."
+commands.allow = ["simulate_tray_action"]
+
+[[permission]]
+identifier = "deny-simulate-tray-action"
+description = "Denies the simulate_tray_action command without any pre-configured scope."
+commands.deny = ["simulate_tray_action"]

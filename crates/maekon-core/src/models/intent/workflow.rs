@@ -277,10 +277,21 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     // `stop_on_failure: true`. A failed/un-switched activation must HALT the workflow
     // rather than let a subsequent step synthesize input (e.g. Cmd+W / Alt+Tab) against
     // whatever window currently has focus.
+    //
+    // Cross-platform activation semantics (#8055 P2-2): `ActivateApp` brings a window
+    // to the FRONT. Only macOS `open -a <name>` ALSO launches the app when it is not
+    // running; on Windows (`AppActivate`) and Linux (`wmctrl`/`xdotool`) the target app
+    // must ALREADY be open, otherwise the step reports failure and — per the rule above —
+    // halts the workflow. The descriptions below therefore promise "bring to the front"
+    // (the honest common behaviour), not "launch". These are environment-specific SAMPLE
+    // templates: the named apps must be installed (macOS) or already running (Win/Linux),
+    // or the user edits the app names for their setup — see
+    // docs/guides/automation-playbook-templates.md ("Platform differences").
     presets.push(WorkflowPreset {
         id: "morning-routine".to_string(),
         name: "Start of Day".to_string(),
-        description: "Launch Mail, Calendar, and VS Code to begin your workday".to_string(),
+        description: "Bring Mail, Calendar, and VS Code to the front to begin your workday"
+            .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
@@ -316,7 +327,7 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     presets.push(WorkflowPreset {
         id: "meeting-prep".to_string(),
         name: "Meeting Prep".to_string(),
-        description: "Open Zoom and Notes to get ready for a meeting".to_string(),
+        description: "Bring Zoom and Notes to the front to get ready for a meeting".to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
@@ -372,8 +383,9 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     presets.push(WorkflowPreset {
         id: "daily-priority-sync".to_string(),
         name: "Daily Priority Review".to_string(),
-        description: "Open Calendar, Jira, and Slack in sequence to align on the day's priorities"
-            .to_string(),
+        description:
+            "Bring Calendar, Notion, and Slack to the front to align on the day's priorities"
+                .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
@@ -385,9 +397,9 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
                 stop_on_failure: true,
             },
             WorkflowStep {
-                name: "Open Jira".to_string(),
+                name: "Open Notion".to_string(),
                 intent: AutomationIntent::ActivateApp {
-                    app_name: "Jira".to_string(),
+                    app_name: "Notion".to_string(),
                 },
                 delay_ms: 1200,
                 stop_on_failure: true,
@@ -409,22 +421,22 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     presets.push(WorkflowPreset {
         id: "bug-triage-loop".to_string(),
         name: "Bug Triage".to_string(),
-        description: "Cycle through the issue tracker, monitoring tools, and IDE to triage bugs"
+        description: "Bring Slack, Terminal, and VS Code to the front to triage incoming bugs"
             .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Open Issue Tracker".to_string(),
+                name: "Open Slack".to_string(),
                 intent: AutomationIntent::ActivateApp {
-                    app_name: "Issue Tracker".to_string(),
+                    app_name: "Slack".to_string(),
                 },
                 delay_ms: 0,
                 stop_on_failure: true,
             },
             WorkflowStep {
-                name: "Open Monitoring".to_string(),
+                name: "Open Terminal".to_string(),
                 intent: AutomationIntent::ActivateApp {
-                    app_name: "Monitoring".to_string(),
+                    app_name: "Terminal".to_string(),
                 },
                 delay_ms: 1200,
                 stop_on_failure: true,
@@ -447,14 +459,15 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
         id: "customer-followup".to_string(),
         name: "Customer Follow-Up".to_string(),
         description:
-            "Open CRM, Notion, and Mail to review customer feedback and prepare follow-up actions"
+            "Bring Calendar, Notion, and Mail to the front to review customer feedback and \
+             schedule follow-up actions"
                 .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
             WorkflowStep {
-                name: "Open CRM".to_string(),
+                name: "Open Calendar".to_string(),
                 intent: AutomationIntent::ActivateApp {
-                    app_name: "CRM".to_string(),
+                    app_name: "Calendar".to_string(),
                 },
                 delay_ms: 0,
                 stop_on_failure: true,
@@ -484,7 +497,8 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     presets.push(WorkflowPreset {
         id: "release-readiness".to_string(),
         name: "Release Readiness".to_string(),
-        description: "Save code, then open Terminal and a browser to kick off release checks"
+        description: "Save code, then bring Terminal and a browser to the front to kick off \
+             release checks"
             .to_string(),
         category: PresetCategory::Workflow,
         steps: vec![
@@ -560,11 +574,20 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
             },
         ]
     } else {
-        // No cross-app "hide others" on Windows/Linux, so minimize everything first
-        // (Show Desktop — reversible), THEN bring the Maekon dashboard back to the front.
-        // The activation is the LAST step (no input synthesis follows it), so it stays
-        // MAEKON-AUTO-1-safe while still using `stop_on_failure: true`.
+        // No cross-app "hide others" on Windows/Linux. Verify that the host target can
+        // be activated BEFORE synthesizing the global Show Desktop shortcut, then
+        // minimize everything and bring the verified Maekon dashboard back to the front.
+        // Both activations stop on failure, so neither the reversible clearing action nor
+        // any later input can continue after a missing/unresolved host target (#8466).
         vec![
+            WorkflowStep {
+                name: "Verify Maekon dashboard".to_string(),
+                intent: AutomationIntent::ActivateApp {
+                    app_name: "Maekon".to_string(),
+                },
+                delay_ms: 0,
+                stop_on_failure: true,
+            },
             WorkflowStep {
                 name: "Show desktop".to_string(),
                 intent: AutomationIntent::ExecuteHotkey {
@@ -599,6 +622,73 @@ pub fn builtin_presets() -> Vec<WorkflowPreset> {
     });
 
     presets
+}
+
+#[cfg(test)]
+mod preset_app_name_tests {
+    use super::*;
+
+    /// Collect every `ActivateApp` target app name across all builtin presets.
+    fn builtin_activate_app_names() -> Vec<String> {
+        builtin_presets()
+            .iter()
+            .flat_map(|preset| preset.steps.iter())
+            .filter_map(|step| match &step.intent {
+                AutomationIntent::ActivateApp { app_name } => Some(app_name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Guard (#8055 P2-1): no builtin `ActivateApp` step may reference a
+    /// placeholder/generic name that resolves to no real application on any
+    /// platform. Such ghosts (`open -a "Issue Tracker"` etc.) always exit
+    /// non-zero, so a `stop_on_failure` step halts the whole workflow at step 1
+    /// ("partially failed 0/N"). Builtin presets must name real, commonly
+    /// installed apps; users clone-and-edit for their own tooling.
+    #[test]
+    fn no_builtin_activate_app_step_uses_a_ghost_placeholder_name() {
+        // Names that are category descriptions, not launchable app identifiers.
+        const GHOST_NAMES: &[&str] = &["Issue Tracker", "Monitoring", "CRM", "Jira"];
+        let names = builtin_activate_app_names();
+        assert!(
+            !names.is_empty(),
+            "expected at least one builtin ActivateApp step to guard"
+        );
+        for name in &names {
+            assert!(
+                !GHOST_NAMES.contains(&name.as_str()),
+                "builtin preset references ghost app name {name:?} that resolves to no real \
+                 application — replace with a real, commonly installed app (#8055 P2-1)"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn deep_work_preset_verifies_host_before_and_after_show_desktop() {
+        let preset = builtin_presets()
+            .into_iter()
+            .find(|preset| preset.id == PRESET_DEEP_WORK_START)
+            .expect("deep-work-start builtin preset");
+
+        assert_eq!(preset.steps.len(), 3);
+        for index in [0, 2] {
+            assert!(
+                matches!(
+                    &preset.steps[index].intent,
+                    AutomationIntent::ActivateApp { app_name } if app_name == "Maekon"
+                ),
+                "step {index} must activate the verified Maekon host target"
+            );
+            assert!(preset.steps[index].stop_on_failure);
+        }
+        assert!(matches!(
+            &preset.steps[1].intent,
+            AutomationIntent::ExecuteHotkey { keys }
+                if keys == &["Win".to_string(), "D".to_string()]
+        ));
+    }
 }
 
 #[cfg(test)]

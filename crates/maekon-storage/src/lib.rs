@@ -48,5 +48,6 @@ pub mod regime_manager_state_store;
 pub mod sqlite;
 pub mod sync_extractor;
 pub mod sync_merger;
+pub(crate) mod sync_retention_tombstone;
 pub(crate) mod sync_table_descriptor;
 pub mod temp_file_projection;

@@ -98,6 +98,15 @@ impl SqliteStorage {
                 )
                 .map_err(|e| StorageError::Internal(format!("event delete failure: {e}")))?
                 as u64;
+
+            // V48 (#8218): the Pomodoro session is focus/activity state. A
+            // user-requested activity-range deletion removes a session that
+            // started inside the same closed interval.
+            tx.execute(
+                "DELETE FROM pomodoro_state WHERE started_at >= ?1 AND started_at <= ?2",
+                rusqlite::params![from, to],
+            )
+            .map_err(|e| StorageError::Internal(format!("pomodoro delete failure: {e}")))?;
         }
 
         if delete_frames {
@@ -160,10 +169,144 @@ impl SqliteStorage {
                 as u64;
         }
 
+        // #8045 B1: derived-data cascade. `activity_segments` (LLM summaries),
+        // `embedding_vectors`, and `local_suggestions` are DERIVED from the raw
+        // events/frames of a window, but the range delete above only touched the
+        // raw tables — so a user deleting a sensitive period previously kept its
+        // LLM summaries / embeddings / suggestions (they were only pruned by
+        // separate age-based sweeps). Cascade them here, inside the SAME
+        // transaction, for the overlapping window. Gated on the raw content they
+        // are derived from (`events`/`frames`); a metrics/idle/process-only
+        // delete leaves them untouched (they carry no screen/window content).
+        if delete_events || delete_frames {
+            Self::cascade_derivatives_in_range(&tx, from, to, &mut counts)?;
+            Self::cascade_transcripts_in_range(&tx, from, to, &mut counts)?;
+        }
+
         tx.commit()
             .map_err(|e| StorageError::Internal(format!("Failed to commit range deletion: {e}")))?;
 
         Ok(counts)
+    }
+
+    /// Delete voice transcripts (V47, #8059) overlapping `[from, to]` — plus
+    /// their paired `search_fts` index rows — inside the caller's range-delete
+    /// transaction.
+    ///
+    /// Transcripts are voice-activity content, so they are removed alongside the
+    /// derivative cascade on `delete_events || delete_frames` (any screen/voice
+    /// content delete); a metrics/idle/process-only delete leaves them untouched.
+    /// They are LOCAL-ONLY (absent from `sync_table_descriptor::ALL_TABLE_NAMES`),
+    /// so — unlike the synced derivative tables — no suppression tombstone is
+    /// needed: a never-synced row cannot be resurrected by a peer.
+    ///
+    /// The `search_fts` rows are removed FIRST (the subquery still sees the
+    /// transcript rows) and scoped to `content_type = 'transcript'` so a
+    /// coincidental `segment_id` collision can never drop a real segment's index
+    /// entry.
+    fn cascade_transcripts_in_range(
+        tx: &rusqlite::Transaction<'_>,
+        from: &str,
+        to: &str,
+        counts: &mut DeletedRangeCounts,
+    ) -> Result<(), StorageError> {
+        tx.execute(
+            "DELETE FROM search_fts \
+             WHERE content_type = 'transcript' \
+               AND segment_id IN ( \
+                   SELECT id FROM transcripts WHERE timestamp >= ?1 AND timestamp <= ?2 \
+               )",
+            rusqlite::params![from, to],
+        )
+        .map_err(|e| StorageError::Internal(format!("transcript FTS range delete failure: {e}")))?;
+
+        counts.transcripts_deleted = tx
+            .execute(
+                "DELETE FROM transcripts WHERE timestamp >= ?1 AND timestamp <= ?2",
+                rusqlite::params![from, to],
+            )
+            .map_err(|e| StorageError::Internal(format!("transcript range delete failure: {e}")))?
+            as u64;
+
+        Ok(())
+    }
+
+    /// Deletes the derived-data rows (`activity_segments`, `embedding_vectors`,
+    /// `local_suggestions`) overlapping `[from, to]`, inside the caller's
+    /// range-delete transaction (#8045 B1).
+    ///
+    /// `activity_segments` and `embedding_vectors` are cross-device-synced
+    /// tables, so — exactly like the age-based sweeps (#8043) — a plain DELETE
+    /// with no tombstone would let a peer that still holds a locally-authored
+    /// row re-push it on the next sync (peer resurrection → GDPR Art. 5(1)(e)).
+    /// A LOCAL-origin suppression tombstone is captured for each aged-into-range
+    /// row BEFORE the DELETE, using the IDENTICAL predicate so the tombstone set
+    /// matches the removed rows exactly. `local_suggestions` is NOT in the synced
+    /// set (`sync_table_descriptor::ALL_TABLE_NAMES`), so it needs no tombstone.
+    ///
+    /// Embeddings are keyed on their own `timestamp`; a SEGMENT_SUMMARY embedding
+    /// shares the segment's window, so the two window filters remove the matched
+    /// segment and its embedding together.
+    fn cascade_derivatives_in_range(
+        tx: &rusqlite::Transaction<'_>,
+        from: &str,
+        to: &str,
+        counts: &mut DeletedRangeCounts,
+    ) -> Result<(), StorageError> {
+        // Read the local device id once for the tombstone capture below. `None`
+        // (sync never ran) => no tombstone needed (a never-synced row was never
+        // delivered to any peer, so it cannot be resurrected).
+        let local_device = crate::sync_retention_tombstone::local_device_id(tx);
+
+        // activity_segments (LLM summaries): matched on `start_time`.
+        let seg_predicate =
+            format!("start_time >= '{from}' AND start_time <= '{to}' AND start_time IS NOT NULL");
+        if let Some(local) = local_device.as_deref() {
+            crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                tx,
+                "activity_segments",
+                &seg_predicate,
+                local,
+            )?;
+        }
+        counts.activity_segments_deleted = tx
+            .execute(
+                "DELETE FROM activity_segments \
+                 WHERE start_time >= ?1 AND start_time <= ?2 AND start_time IS NOT NULL",
+                rusqlite::params![from, to],
+            )
+            .map_err(|e| StorageError::Internal(format!("segment range delete failure: {e}")))?
+            as u64;
+
+        // embedding_vectors: matched on `timestamp`.
+        let emb_predicate = format!("timestamp >= '{from}' AND timestamp <= '{to}'");
+        if let Some(local) = local_device.as_deref() {
+            crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                tx,
+                "embedding_vectors",
+                &emb_predicate,
+                local,
+            )?;
+        }
+        counts.embedding_vectors_deleted = tx
+            .execute(
+                "DELETE FROM embedding_vectors WHERE timestamp >= ?1 AND timestamp <= ?2",
+                rusqlite::params![from, to],
+            )
+            .map_err(|e| StorageError::Internal(format!("embedding range delete failure: {e}")))?
+            as u64;
+
+        // local_suggestions (NOT synced → no tombstone): matched on `created_at`.
+        counts.local_suggestions_deleted = tx
+            .execute(
+                "DELETE FROM local_suggestions WHERE created_at >= ?1 AND created_at <= ?2",
+                rusqlite::params![from, to],
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!("local suggestion range delete failure: {e}"))
+            })? as u64;
+
+        Ok(())
     }
 
     /// Map the RFC3339 range bounds (`from`, `to`) to the hour-bucket key range
@@ -259,8 +402,8 @@ impl SqliteStorage {
             "trigger_params_snapshots",
             // V11: FTS5 virtual table
             "search_fts",
-            // V18: Korean trigram FTS5 table
-            "search_trigram",
+            // (V18 `search_trigram` was dropped by V45 (#8056) — no longer erased
+            //  here; a DELETE on the now-absent table would error this txn.)
             // V12-V14
             "vector_binary_codes",
             "vector_index_meta",
@@ -279,6 +422,9 @@ impl SqliteStorage {
             // erased with activity data like coaching_effectiveness.
             "feedback_scorer_tallies",
             "regime_reaction_stats",
+            // V46: coaching adaptive-scorer weights (#8058 P2-1) — user-derived
+            // learning, erased with activity data like the sibling learning tables.
+            "adaptive_scorer_state",
             // V18-V31 user-data tables (#4478): close the pre-existing right-to-erasure
             // gap. Child before parent: ai_conversation_messages CASCADEs from ai_sessions.
             // NOTE: `audit_log` / `session_audit_log` are deliberately RETAINED (NOT
@@ -323,6 +469,53 @@ impl SqliteStorage {
             // V42: digest downstream processing markers are user-derived activity
             // processing state, not retained system metadata.
             "digest_processing_markers",
+            // V47 (#8059): voice transcripts are user activity content, erased with
+            // the rest of the user's data. Their paired `search_fts` index rows are
+            // cleared by the whole-table `DELETE FROM search_fts` above (search_fts
+            // is in ALL_TABLES) + the post-commit FTS rebuild, so no separate
+            // transcript-FTS cleanup is needed here. LOCAL-ONLY table — no tombstone.
+            "transcripts",
+            // V48 (#8218): local focus-session state. No sync tombstone; it is
+            // fully erased with the rest of the user's activity data.
+            "pomodoro_state",
+            // V49 (#8577, ADR-028): durable task lifecycle. LOCAL-ONLY tables — no
+            // sync tombstone. Child before parent (FK is inert, but keep the
+            // convention): blocker edges + receipts, then to-dos + source refs,
+            // then the candidate root. Full erasure deletes all task data; the
+            // retained audit/egress records carry category + outcome only.
+            "todo_blockers",
+            "task_transition_receipts",
+            "todo_items",
+            "task_source_refs",
+            "task_candidates",
+            // V51 (#8587, ADR-030 §12): work-context ledger. FULL LOCAL ERASURE
+            // (this path) deletes EVERY plane INCLUDING the content-free suppression
+            // tombstones — after credentials/cursors/connector are gone, no
+            // acquisition path can resurrect them (§12; Amendment B3 distinguishes
+            // this from uninstall, which RETAINS tombstones). LOCAL-ONLY tables — no
+            // sync tombstone. Child before parent (FK inert): projection/raw/conflict
+            // /tombstone/cursor/epoch reference or scope the envelope, so they go
+            // before the envelopes themselves.
+            "work_context_raw_blobs",
+            "work_context_projections",
+            "work_context_conflicts",
+            "work_context_tombstones",
+            "work_context_cursors",
+            "work_context_access_epochs",
+            "work_context_envelopes",
+            // V52 (#8588, ADR-029): trusted Skill Pack catalog + activation.
+            // LOCAL-ONLY tables — no sync tombstone. Child before parent (FK is
+            // inert, but keep the convention): the singleton activation points at
+            // a catalog row, so it goes first.
+            //
+            // NOTE: `skill_pack_activation_audit` (V52) is deliberately RETAINED,
+            // mirroring `audit_log`/`egress_ledger`. It holds NO user content by
+            // construction — the table has no body/context column at all, only the
+            // skill id, version, body DIGEST, decision and capability outcomes.
+            // Retention rests on the same GDPR Art. 17(3) processing-record basis
+            // as `audit_log`. Intentionally absent from ALL_TABLES; do NOT add it.
+            "skill_pack_activation",
+            "skill_pack_catalog",
         ];
 
         let tx = conn
@@ -397,14 +590,15 @@ impl SqliteStorage {
             .map_err(|e| StorageError::Internal(format!("Failed to commit GDPR deletion: {e}")))?;
 
         // GDPR defense-in-depth (#4478 G2): the committed `DELETE FROM search_fts`
-        // / `search_trigram` already cleared the FTS5 `*_content` backing tables
-        // (the raw OCR/window-title text), but a `DELETE` leaves tombstoned term
-        // postings — tokenized user content — in the `*_data` index segments until
-        // the index is merged. Rebuild the index from the now-empty content so no
-        // tokenized content lingers. Best-effort + POST-commit: the raw text is
-        // already erased transactionally, so a rebuild failure must NOT roll back
-        // (and thereby fail) the erasure itself.
-        for fts in ["search_fts", "search_trigram"] {
+        // already cleared the FTS5 `*_content` backing table (the raw OCR/window-
+        // title text), but a `DELETE` leaves tombstoned term postings — tokenized
+        // user content — in the `*_data` index segments until the index is merged.
+        // Rebuild the index from the now-empty content so no tokenized content
+        // lingers. Best-effort + POST-commit: the raw text is already erased
+        // transactionally, so a rebuild failure must NOT roll back (and thereby
+        // fail) the erasure itself. (`search_trigram` was dropped by V45 (#8056),
+        // so it is no longer rebuilt here.)
+        for fts in ["search_fts"] {
             if let Err(e) = conn.execute(&format!("INSERT INTO {fts}({fts}) VALUES('rebuild')"), [])
             {
                 tracing::warn!("FTS5 index rebuild after GDPR erasure failed for {fts}: {e}");
@@ -412,5 +606,306 @@ impl SqliteStorage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod range_cascade_tests {
+    use super::SqliteStorage;
+    use maekon_core::types::TimeWindow;
+
+    const IN_RANGE: &str = "2026-01-15T12:00:00+00:00";
+    const OUT_OF_RANGE: &str = "2026-02-15T12:00:00+00:00";
+
+    fn window() -> TimeWindow {
+        TimeWindow::from_rfc3339_pair("2026-01-01T00:00:00+00:00", "2026-01-31T23:59:59+00:00")
+            .unwrap()
+    }
+
+    /// Seed one in-range + one out-of-range row into each of the three derived
+    /// tables, all local-origin so the synced ones are tombstone-eligible.
+    fn seed_derivatives(storage: &SqliteStorage, local: &str) {
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        for (id, ts) in [("seg-in", IN_RANGE), ("seg-out", OUT_OF_RANGE)] {
+            guard
+                .execute(
+                    "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
+                     trigger_reason, dominant_category, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES (?1, ?2, ?2, 1, 'timer', 'Dev', 100, 1, ?3)",
+                    rusqlite::params![id, ts, local],
+                )
+                .unwrap();
+        }
+        for (seg, ts) in [("seg-in", IN_RANGE), ("seg-out", OUT_OF_RANGE)] {
+            guard
+                .execute(
+                    "INSERT INTO embedding_vectors (segment_id, content_type, original_text, \
+                     vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id) \
+                     VALUES (?1, 'screen', 'txt', x'0102', 'm1', ?2, 200, 2, ?3)",
+                    rusqlite::params![seg, ts, local],
+                )
+                .unwrap();
+        }
+        for ts in [IN_RANGE, OUT_OF_RANGE] {
+            guard
+                .execute(
+                    "INSERT INTO local_suggestions (suggestion_type, payload, created_at) \
+                     VALUES ('tip', '{}', ?1)",
+                    rusqlite::params![ts],
+                )
+                .unwrap();
+        }
+    }
+
+    fn count(storage: &SqliteStorage, sql: &str) -> i64 {
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        guard.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn range_delete_cascades_to_derivatives_with_tombstones() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let (local, _) = storage.ensure_device_identity("Local").unwrap();
+        seed_derivatives(&storage, &local);
+
+        // delete_events=true triggers the derivative cascade.
+        let counts = storage
+            .delete_data_in_range(&window(), true, false, false, false, false)
+            .unwrap();
+
+        assert_eq!(counts.activity_segments_deleted, 1);
+        assert_eq!(counts.embedding_vectors_deleted, 1);
+        assert_eq!(counts.local_suggestions_deleted, 1);
+
+        // Only the in-range derived rows are gone; out-of-range rows survive.
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id = 'seg-in'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM activity_segments WHERE id = 'seg-out'"
+            ),
+            1,
+            "an out-of-range segment must survive"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM embedding_vectors WHERE segment_id = 'seg-out'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM local_suggestions"),
+            1,
+            "only the in-range local suggestion is removed"
+        );
+
+        // Suppression tombstones captured for the two SYNCED derived tables so a
+        // peer cannot resurrect them; the composite embedding key is used.
+        let seg_tomb = count(
+            &storage,
+            "SELECT COUNT(*) FROM sync_tombstones \
+             WHERE table_name = 'activity_segments' AND row_id = 'seg-in'",
+        );
+        assert_eq!(seg_tomb, 1, "in-range segment must leave a tombstone");
+        let emb_key = format!("seg-in{}m1", '\u{1f}');
+        let emb_tomb = {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_tombstones \
+                     WHERE table_name = 'embedding_vectors' AND row_id = ?1",
+                    rusqlite::params![emb_key],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            emb_tomb, 1,
+            "in-range embedding must leave a composite tombstone"
+        );
+        // local_suggestions is NOT a synced table → no tombstone.
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM sync_tombstones WHERE table_name = 'local_suggestions'"
+            ),
+            0,
+            "local_suggestions is not synced and must not be tombstoned"
+        );
+    }
+
+    // ── transcript erasure cascade (V47, #8059) ──────────────────────────
+
+    fn seed_transcript(storage: &SqliteStorage, id: &str, ts: &str, text: &str) {
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        guard
+            .execute(
+                "INSERT INTO transcripts (id, timestamp, duration_secs, source, language, text) \
+                 VALUES (?1, ?2, 2.0, 'whisper', 'en', ?3)",
+                rusqlite::params![id, ts, text],
+            )
+            .unwrap();
+        // Mirror the live save path's FTS index write so cleanup can be verified.
+        guard
+            .execute(
+                "INSERT INTO search_fts (segment_id, content_type, searchable_text, shadow) \
+                 VALUES (?1, 'transcript', ?2, '')",
+                rusqlite::params![id, text],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn range_delete_removes_transcripts_and_their_fts_rows() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        seed_transcript(&storage, "tr-in", IN_RANGE, "in range transcript");
+        seed_transcript(&storage, "tr-out", OUT_OF_RANGE, "out of range transcript");
+        // A non-transcript FTS row that must never be touched by transcript cleanup.
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "INSERT INTO search_fts (segment_id, content_type, searchable_text, shadow) \
+                     VALUES ('seg-keep', 'segment', 'keep me', '')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // delete_events=true triggers the content cascade (transcripts included).
+        let counts = storage
+            .delete_data_in_range(&window(), true, false, false, false, false)
+            .unwrap();
+        assert_eq!(counts.transcripts_deleted, 1);
+        assert!(
+            counts.total() >= 1,
+            "the transcript delete must contribute to the reported total"
+        );
+
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM transcripts WHERE id = 'tr-in'"
+            ),
+            0,
+            "the in-range transcript must be deleted"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM transcripts WHERE id = 'tr-out'"
+            ),
+            1,
+            "an out-of-range transcript must survive"
+        );
+        // Paired FTS row for the deleted transcript is gone; the out-of-range
+        // transcript's and the unrelated segment's FTS rows survive.
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM search_fts WHERE segment_id = 'tr-in'"
+            ),
+            0,
+            "the deleted transcript's FTS row must be removed"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM search_fts WHERE segment_id = 'tr-out'"
+            ),
+            1,
+            "the surviving transcript's FTS row must remain"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM search_fts WHERE segment_id = 'seg-keep'"
+            ),
+            1,
+            "a non-transcript FTS row must never be touched by transcript cleanup"
+        );
+    }
+
+    #[test]
+    fn metrics_only_range_delete_leaves_transcripts_untouched() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        seed_transcript(&storage, "tr-in", IN_RANGE, "in range transcript");
+
+        // delete_events=delete_frames=false → no content cascade.
+        let counts = storage
+            .delete_data_in_range(&window(), false, false, true, false, false)
+            .unwrap();
+        assert_eq!(counts.transcripts_deleted, 0);
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM transcripts"),
+            1,
+            "a metrics-only range delete must not remove transcripts"
+        );
+        assert_eq!(
+            count(
+                &storage,
+                "SELECT COUNT(*) FROM search_fts WHERE segment_id = 'tr-in'"
+            ),
+            1,
+            "a metrics-only range delete must not touch transcript FTS rows"
+        );
+    }
+
+    #[test]
+    fn full_wipe_removes_transcripts() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        seed_transcript(&storage, "tr-1", IN_RANGE, "wipe me");
+
+        storage.delete_all_data().unwrap();
+
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM transcripts"),
+            0,
+            "delete_all_data must clear transcripts (ALL_TABLES membership)"
+        );
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM search_fts"),
+            0,
+            "the whole-table search_fts wipe must clear the transcript FTS row too"
+        );
+    }
+
+    #[test]
+    fn metrics_only_range_delete_leaves_derivatives_untouched() {
+        // A metrics/idle/process-only delete (delete_events=delete_frames=false)
+        // must not cascade — derived screen/window content is unrelated.
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let (local, _) = storage.ensure_device_identity("Local").unwrap();
+        seed_derivatives(&storage, &local);
+
+        let counts = storage
+            .delete_data_in_range(&window(), false, false, true, false, false)
+            .unwrap();
+
+        assert_eq!(counts.activity_segments_deleted, 0);
+        assert_eq!(counts.embedding_vectors_deleted, 0);
+        assert_eq!(counts.local_suggestions_deleted, 0);
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM activity_segments"),
+            2,
+            "no segment may be deleted by a metrics-only range delete"
+        );
+        assert_eq!(
+            count(&storage, "SELECT COUNT(*) FROM sync_tombstones"),
+            0,
+            "no tombstone may be captured when no derived row is deleted"
+        );
     }
 }

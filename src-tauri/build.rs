@@ -39,12 +39,15 @@ const APP_COMMANDS: &[&str] = &[
     "reload_embedding_model",
     "dismiss_coaching_message",
     "submit_coaching_feedback",
+    "debug_set_overlay_interactive",
+    "get_suggestions_panel_open",
     "toggle_suggestions_panel",
     "toggle_automation_confirm",
     "get_coaching_history",
     "get_goal_progress",
     "update_regime_goals",
     "get_habit_streaks",
+    "get_global_shortcut_status",
     "get_capture_status",
     "toggle_capture_pause",
     "set_indicator_visible",
@@ -71,17 +74,22 @@ const APP_COMMANDS: &[&str] = &[
     "poll_ax_focus_observer",
     "stop_ax_focus_observer",
     "analyze_current_scene",
+    "get_pending_suggestion_count",
     "get_pending_suggestions",
     "get_suggestion_history",
     "submit_suggestion_feedback",
     "record_suggestion_replay_event",
     "request_chat_suggestions",
+    "request_current_context_suggestions",
     "explain_suggestion_in_chat",
     "get_suggestion_stats",
     "get_suggestion_daily_stats",
     "get_sync_status",
     "trigger_sync_cycle",
     "discover_sync_peers",
+    "forget_sync_peer",
+    "get_qc_upload_spool_status",
+    "run_qc_upload_spool_step",
     "confirm_automation_command",
     "run_suggestion_action",
     "toggle_detection_overlay",
@@ -111,6 +119,26 @@ const APP_COMMANDS: &[&str] = &[
     "set_consent",
     "withdraw_consent",
     "take_microphone_upgrade_notice",
+    "list_extensions",
+    "install_extension",
+    "set_extension_enablement",
+    "update_extension",
+    "rollback_extension",
+    "uninstall_extension",
+    "activate_skill_pack",
+    "clear_skill_pack_activation",
+    "list_task_candidates",
+    "list_todos",
+    "confirm_task_candidate",
+    "dismiss_task_candidate",
+    "transition_todo",
+    "delete_todo",
+    "get_capture_reauth_status",
+    "authenticate_capture_history",
+    "register_capture_reauth_pin",
+    "clear_capture_reauth_pin",
+    "lock_capture_reauth",
+    "set_capture_reauth_config",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -130,6 +158,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
     println!("cargo:rerun-if-changed=src/main.rs");
+
+    // #8044: link LocalAuthentication.framework on macOS so `LAContext` is
+    // available at load time for the capture-history biometric re-auth adapter
+    // (`reauth::verifier`). Without the explicit link the class may be absent
+    // and `AnyClass::get("LAContext")` returns None → biometric degrades to the
+    // PIN fallback. Harmless if already linked (the linker dedups frameworks).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-lib=framework=LocalAuthentication");
+    }
     // #7734: the command surface + generate_handler! moved into the `[lib]`
     // target (src/lib.rs) — track it too so ACL/APP_COMMANDS regen picks up
     // command-set changes made there, not just in the thin bin shim.
@@ -155,8 +192,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     }
 
+    // Keep WDIO permissions out of production ACLs. The nested capability is
+    // discovered only when the explicit test-only feature is enabled.
+    let capabilities_pattern = if std::env::var_os("CARGO_FEATURE_WEBDRIVER").is_some() {
+        "capabilities/**/*.json"
+    } else {
+        "capabilities/*.json"
+    };
+    println!("cargo:rerun-if-changed=capabilities");
+
     let attrs = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS))
+        .capabilities_path_pattern(capabilities_pattern)
         // The linker-embedded manifest above replaces the winres one; leaving
         // both in place would fail the bin link with a duplicate RT_MANIFEST.
         .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());

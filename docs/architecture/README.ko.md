@@ -53,8 +53,14 @@ ADR 번호는 이 레지스트리 안에서만 의미가 있으며 전역 ONESHI
 | [024](./ADR-024-conversation-content-guard-port.md) | 대화 콘텐츠 가드 포트 | Accepted | `provider_adapters/guarded_conversation.rs`, `session_manager/factory.rs`, `ConversationSession` 포트 |
 | [025](./ADR-025-codex-chatgpt-subscription-tos-gate.md) | OpenAI Codex / ChatGPT 구독 ToS 게이트 (App-Server 경로) | Accepted | `provider-surface-catalog.json`, `session_manager/factory.rs`, `provider_adapters/llm_resolver.rs` |
 | [026](./ADR-026-async-storage-convergence-consent-port.md) | 비동기 스토리지 수렴 + 객체 안전 ConsentManagerPort | Accepted | `maekon-core` 스토리지 포트 + `consent.rs`, `maekon-storage/src/sqlite`, `maekon-web`, `focus_analyzer` |
+| [027](./ADR-027-suggestion-action-binding.ko.md) | 제안 액션 바인딩 (파생 방식, 게이트 보존) | Accepted | `maekon-core` `intent/workflow.rs` 파생 헬퍼, `src-tauri/commands/suggestions/`, overlay Run 어포던스 |
+| [028](./ADR-028-durable-task-lifecycle-boundary.ko.md) | 영속 Task Lifecycle 경계 | Accepted | `maekon-core` task 모델/포트, `maekon-storage`, `src-tauri`, `maekon-web` |
+| [029](./ADR-029-extension-package-runtime-boundary.ko.md) | Extension Package와 Runtime 경계 | Accepted | `maekon-core` extension 계약, trust 재사용, `src-tauri`, extension-facing UI/API |
+| [030](./ADR-030-work-context-envelope-convergence.ko.md) | Work Context Envelope와 수렴 | Accepted | `maekon-core` work-context 모델/포트, 향후 암호화 ledger, timeline/task/memory evidence projection |
+| [031](./ADR-031-extension-authorization-account-boundary.ko.md) | Extension Authorization과 Account 경계 | Accepted | `maekon-core` authorization broker, account-scoped OAuth/Keychain, readiness UI/API |
+| [032](./ADR-032-memory-graph-generation-input-contract.ko.md) | Memory-Graph Generation-Input 계약 | Proposed | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
 
-**다음 가용 ID**: `ADR-027`.
+**다음 가용 ID**: `ADR-033`.
 
 ## 컨벤션 요약
 

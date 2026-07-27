@@ -266,7 +266,7 @@ export function SuggestionsPanel({
         )}
       >
         <div className="flex items-center gap-3">
-          <span className="shrink-0 rounded-full bg-brand/10 px-2 py-1 text-brand text-xs">
+          <span className="shrink-0 rounded-full border border-muted bg-surface-muted px-2 py-1 text-content-secondary text-xs">
             {breadcrumb ?? t('suggestions.currentTarget', 'Current target')}
           </span>
           <div className="min-w-0 flex-1">
@@ -284,7 +284,7 @@ export function SuggestionsPanel({
                 type="button"
                 onClick={() => void handleAction(primary.id, 'accept')}
                 className={cn(
-                  'rounded-md bg-semantic-success/15 px-2 py-1 text-semantic-success text-xs',
+                  'rounded-md bg-brand px-2 py-1 text-content-inverse text-xs hover:bg-brand-hover',
                   motion.colors,
                 )}
               >
@@ -293,7 +293,10 @@ export function SuggestionsPanel({
               <button
                 type="button"
                 onClick={() => void handleAction(primary.id, 'explain')}
-                className={cn('rounded-md bg-brand/10 px-2 py-1 text-brand text-xs', motion.colors)}
+                className={cn(
+                  'rounded-md border border-muted bg-surface-muted px-2 py-1 text-content-secondary text-xs hover:bg-active hover:text-content',
+                  motion.colors,
+                )}
               >
                 {t('suggestions.explain')}
               </button>
@@ -320,7 +323,7 @@ export function SuggestionsPanel({
       className={cn(
         'fixed z-panel max-h-[calc(100vh-6rem)] w-80 max-w-[calc(100vw-2rem)] transform rounded-xl border border-DEFAULT bg-surface-overlay text-content shadow-2xl',
         placement === 'window-side-panel' && anchor
-          ? 'rounded-l-none border-l-brand/50'
+          ? 'rounded-l-none border-l-DEFAULT'
           : placement === 'adjacent-popover' && anchor
             ? ''
             : 'top-20 right-4',
@@ -345,7 +348,9 @@ export function SuggestionsPanel({
 
       {breadcrumb && (
         <div className="border-muted border-b px-4 py-2">
-          <span className="rounded-full bg-brand/10 px-2 py-1 text-brand text-xs">{breadcrumb}</span>
+          <span className="rounded-full border border-muted bg-surface-muted px-2 py-1 text-content-secondary text-xs">
+            {breadcrumb}
+          </span>
         </div>
       )}
 
@@ -360,7 +365,7 @@ export function SuggestionsPanel({
             typography.weight.medium,
             motion.colors,
             activeTab === 'active'
-              ? 'border-brand border-b-2 text-brand'
+              ? 'border-content border-b-2 text-content'
               : 'text-content-secondary hover:text-content-primary',
           )}
           onClick={() => setActiveTab('active')}
@@ -374,7 +379,7 @@ export function SuggestionsPanel({
             typography.weight.medium,
             motion.colors,
             activeTab === 'history'
-              ? 'border-brand border-b-2 text-brand'
+              ? 'border-content border-b-2 text-content'
               : 'text-content-secondary hover:text-content-primary',
           )}
           onClick={() => setActiveTab('history')}
@@ -388,7 +393,7 @@ export function SuggestionsPanel({
             typography.weight.medium,
             motion.colors,
             activeTab === 'stats'
-              ? 'border-brand border-b-2 text-brand'
+              ? 'border-content border-b-2 text-content'
               : 'text-content-secondary hover:text-content-primary',
           )}
           onClick={() => setActiveTab('stats')}
@@ -443,7 +448,9 @@ export function SuggestionsPanel({
                     'rounded-full px-2 py-0.5 text-[10px]',
                     typography.weight.medium,
                     motion.colors,
-                    sourceFilter.has(src) ? 'bg-brand/20 text-brand' : 'bg-surface-muted text-content-tertiary',
+                    sourceFilter.has(src)
+                      ? 'border border-DEFAULT bg-surface-muted text-content-secondary'
+                      : 'border border-transparent bg-transparent text-content-tertiary hover:bg-surface-muted',
                   )}
                   aria-pressed={sourceFilter.has(src)}
                   onClick={() => toggleSource(src)}

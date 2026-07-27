@@ -64,6 +64,9 @@ mod tests {
         // regression test can assert owned data survives the spawn_blocking move.
         saved_bounds: Mutex<Vec<Option<maekon_core::models::context::WindowBounds>>>,
         incremented_frames: AtomicU64,
+        // #8113: counts start_idle_period calls so the consent-gate tests can
+        // assert whether the idle_periods WRITE happened.
+        idle_starts: AtomicU64,
     }
 
     struct NoopDesktopNotifier;
@@ -151,6 +154,7 @@ mod tests {
             &self,
             _start_time: chrono::DateTime<chrono::Utc>,
         ) -> Result<i64, maekon_core::error::CoreError> {
+            self.idle_starts.fetch_add(1, Ordering::Relaxed);
             Ok(1)
         }
 
@@ -348,6 +352,10 @@ mod tests {
 
         fn enforce_all_retention(&self) -> Result<u64, maekon_core::error::CoreError> {
             unimplemented!("handle_idle_tick should not call enforce_all_retention")
+        }
+
+        fn enforce_audit_retention(&self) -> Result<u64, maekon_core::error::CoreError> {
+            unimplemented!("handle_idle_tick should not call enforce_audit_retention")
         }
 
         fn gc_sync_tombstones(
@@ -842,8 +850,14 @@ mod tests {
         assert_eq!(before.len(), 1);
         assert_eq!(before[0].state, "active");
 
-        let _ =
-            idle::handle_idle_resume_edge(&mut idle_tracker, &sqlite, &None, &Some(focus)).await;
+        let _ = idle::handle_idle_resume_edge(
+            &mut idle_tracker,
+            &sqlite,
+            &None,
+            &Some(focus),
+            &maekon_core::consent::ConsentPermissions::default(),
+        )
+        .await;
 
         let after = storage
             .list_work_sessions("1970-01-01", "9999-12-31", 10)
@@ -881,6 +895,7 @@ mod tests {
                 sqlite: &sqlite,
                 notif: &None,
                 focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
                 input_collector: &input_collector,
                 event_tx: &event_tx,
             },
@@ -909,6 +924,7 @@ mod tests {
                 sqlite: &sqlite,
                 notif: &None,
                 focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
                 input_collector: &input_collector,
                 event_tx: &event_tx,
             },
@@ -929,6 +945,82 @@ mod tests {
                 panic!("broadcast channel closed unexpectedly")
             }
         }
+    }
+
+    /// #8113: pre-consent, the Active→Idle edge must NOT persist an
+    /// idle_periods row — but the realtime event (and thus notifications /
+    /// in-RAM detection) must keep working. `ConsentPermissions::default()`
+    /// is all-false (fail-closed), so this is the first-run state.
+    #[tokio::test]
+    async fn handle_idle_tick_does_not_persist_pre_consent() {
+        let mock = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = mock.clone();
+        let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(0));
+        let input_collector = InputActivityCollector::new();
+        let (tx, mut rx) = broadcast::channel::<RealtimeEvent>(16);
+        let event_tx: Option<broadcast::Sender<RealtimeEvent>> = Some(tx);
+
+        idle::handle_idle_tick(
+            &mut idle_tracker,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
+            0,
+            false,
+        )
+        .await;
+
+        assert_eq!(
+            mock.idle_starts.load(Ordering::Relaxed),
+            0,
+            "idle_periods write must be consent-gated (input_activity=false)"
+        );
+        assert!(
+            idle_tracker.idle_period_id().is_none(),
+            "no period id may be set when the write was gated"
+        );
+        // The in-RAM edge still surfaces to subscribers.
+        assert!(
+            matches!(rx.try_recv(), Ok(RealtimeEvent::Idle(u)) if u.is_idle),
+            "realtime Idle event must still be emitted pre-consent"
+        );
+    }
+
+    /// #8113 counterpart: with `input_activity` granted the write proceeds
+    /// exactly as before the gate.
+    #[tokio::test]
+    async fn handle_idle_tick_persists_with_input_activity_consent() {
+        let mock = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = mock.clone();
+        let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(0));
+        let input_collector = InputActivityCollector::new();
+        let consent = maekon_core::consent::ConsentPermissions {
+            input_activity: true,
+            ..Default::default()
+        };
+
+        idle::handle_idle_tick(
+            &mut idle_tracker,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent,
+                input_collector: &input_collector,
+                event_tx: &None,
+            },
+            0,
+            false,
+        )
+        .await;
+
+        assert_eq!(mock.idle_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(idle_tracker.idle_period_id(), Some(1));
     }
 
     /// Bonus: verifies that Active→Active (mid-Active) ticks are also suppressed.
@@ -961,6 +1053,7 @@ mod tests {
                 sqlite: &sqlite,
                 notif: &None,
                 focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
                 input_collector: &input_collector,
                 event_tx: &event_tx,
             },
@@ -981,6 +1074,7 @@ mod tests {
                 sqlite: &sqlite,
                 notif: &None,
                 focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
                 input_collector: &input_collector,
                 event_tx: &event_tx,
             },

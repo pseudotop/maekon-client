@@ -84,7 +84,12 @@ impl TokenManager {
             // constructor. The redirect-only build cannot fail, so a build error
             // is a fail-loud invariant violation rather than a silent fall back
             // to a redirect-following client.
-            client: crate::outbound::hardened_client_builder()
+            // #8045 C3: even this deprecated/test constructor gets the https_only
+            // backstop derived from `base_url` — loopback stub servers (mockito)
+            // keep cleartext, any remote base_url is HTTPS-only.
+            client: crate::outbound::hardened_client_builder(
+                crate::outbound::TransportPolicy::for_endpoint(base_url),
+            )
                 .build()
                 .unwrap_or_else(|error| {
                     panic!(

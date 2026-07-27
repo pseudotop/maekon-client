@@ -26,6 +26,10 @@ pub use error::MonitorError;
 pub mod activity;
 pub mod clipboard;
 pub mod file_access;
+// Foreground external-window fullscreen detection (#8849). The pure decision
+// function compiles + unit-tests on every host; only platform-specific
+// coordinate collection is delegated to each OS module.
+pub mod foreground_fullscreen;
 // Shared running-flag + thread-handle + platform-wake skeleton for
 // `key_hook`/`mouse_hook` (#7727) -- private, reached crate-wide via
 // `crate::hook_lifecycle`, mirroring the `trusted_binary` mod pattern below.
@@ -119,6 +123,27 @@ pub fn active_window_reliable() -> bool {
 #[must_use]
 pub const fn active_window_reliable() -> bool {
     true
+}
+
+/// Owner-app names of all normal, on-screen windows on the current display(s).
+///
+/// Used by the capture-time partial-occlusion guard (#8054 P2-4) to detect
+/// background windows of excluded/sensitive apps that share the screen with the
+/// active (non-excluded) window. macOS enumerates via CGWindowList (owner names
+/// only — titles need screen-recording permission). Windows and Linux have no
+/// cheap, permission-free all-window enumeration wired yet, so they return an
+/// empty list (the active-app exclusion check still applies on every platform);
+/// broader coverage is tracked as follow-up.
+#[must_use]
+pub fn visible_window_app_names() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::visible_window_app_names()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

@@ -92,6 +92,25 @@ impl SessionManagerImpl {
             });
         }
 
+        // #8057 (P3, #4872): a backend that owns ONE long-lived process (the
+        // Codex app-server) cannot be recovered by flipping state back to Active
+        // — the held handle stays dead and the next send re-fails. Surface an
+        // honest error and mark Failed rather than returning a false "recovered"
+        // session. Re-creating the session (or #4872 thread resume) is the fix.
+        if !managed.session.can_self_heal_on_retry() {
+            managed.state = SessionState::Failed;
+            warn!(
+                session_id,
+                "session backend is not recoverable in place (long-lived process); \
+                 re-create the session (#4872)"
+            );
+            return Err(CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "session backend cannot be recovered in place; re-create the session"
+                    .into(),
+            });
+        }
+
         managed.retry_count += 1;
         managed.state = SessionState::Recovering;
         info!(

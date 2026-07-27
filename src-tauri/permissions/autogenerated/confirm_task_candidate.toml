@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-confirm-task-candidate"
+description = "Enables the confirm_task_candidate command without any pre-configured scope."
+commands.allow = ["confirm_task_candidate"]
+
+[[permission]]
+identifier = "deny-confirm-task-candidate"
+description = "Denies the confirm_task_candidate command without any pre-configured scope."
+commands.deny = ["confirm_task_candidate"]

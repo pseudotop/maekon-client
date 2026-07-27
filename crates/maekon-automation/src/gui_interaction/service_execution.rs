@@ -321,6 +321,18 @@ impl GuiInteractionService {
                 });
             }
             if stored.used_ticket_nonces.contains(&req.ticket.nonce) {
+                // Publish a stable, privacy-safe history event before returning.
+                // The raw nonce, signature, and ticket id are intentionally
+                // excluded: operators need the rejection reason, not secrets
+                // that could make a replay easier to investigate unsafely.
+                drop(sessions);
+                tracing::warn!(session_id, reason = "nonce_replay", "GUI ticket rejected");
+                self.publish_event(
+                    session_id.to_string(),
+                    GuiSessionState::Confirmed,
+                    "gui_session.ticket_rejected",
+                    Some("reason=nonce_replay".to_string()),
+                );
                 return Err(GuiInteractionError::TicketInvalid {
                     code: maekon_core::error_codes::GuiCode::TicketInvalid,
                     message: "ticket nonce replay detected".to_string(),

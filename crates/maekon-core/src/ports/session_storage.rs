@@ -41,8 +41,11 @@ pub trait SessionStoragePort: Send + Sync {
         output_tokens: u64,
     ) -> Result<(), CoreError>;
 
-    /// List sessions ordered by last_active DESC.
-    async fn list_sessions(&self, limit: u32) -> Result<Vec<SessionRecord>, CoreError>;
+    /// List sessions ordered by last_active DESC, paginated. #8057 (P3): the
+    /// `offset` lets callers page past the first `limit` sessions so older
+    /// history beyond the window stays reachable.
+    async fn list_sessions(&self, limit: u32, offset: u32)
+        -> Result<Vec<SessionRecord>, CoreError>;
 
     /// Persist a batch of messages for a session.
     async fn save_messages(

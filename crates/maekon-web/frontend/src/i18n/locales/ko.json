@@ -1,5 +1,7 @@
 {
   "common": {
+    "refresh": "새로고침",
+    "retry": "다시 시도",
     "loading": "로딩 중...",
     "error": "오류",
     "save": "저장",
@@ -27,7 +29,54 @@
     "navigate": "Navigate",
     "previous": "Previous"
   },
+  "support": {
+    "pageTitle": "지원 및 진단",
+    "pageDescription": "도움을 받고, 진단을 실행하고, 문제를 신고하세요. 진단 및 버그 신고 자료는 요청한 경우에만 생성되며, 사용자의 조치 없이는 기기 밖으로 전송되지 않습니다.",
+    "reportProblem": "문제 신고"
+  },
+  "integrations": {
+    "title": "연동",
+    "description": "Maekon을 조직의 시스템에 연결하여 프롬프트를 받고 컨텍스트를 동기화하세요. 모든 외부 전송은 먼저 개인정보 및 동의 검사를 통과합니다.",
+    "loading": "연동 상태를 불러오는 중...",
+    "statusError": "연동 상태를 불러올 수 없습니다.",
+    "disabledTitle": "연동이 꺼져 있습니다",
+    "disabledDescription": "아웃바운드 연동 런타임이 비활성화되어 있습니다. 설정 → 고급에서 연동을 켜거나 승인된 관리형 연동 프로필을 적용하세요.",
+    "auth": {
+      "title": "기기 인증",
+      "description": "이 기기가 연동에 연결하도록 승인합니다.",
+      "loading": "인증 상태를 확인하는 중...",
+      "error": "인증 확인에 실패했습니다.",
+      "expired": "인증 요청이 만료되었습니다. 다시 시작하세요.",
+      "startError": "인증을 시작할 수 없습니다.",
+      "nonInteractive": "이 연동은 비대화형 자격 증명을 사용하므로 여기서 승인할 수 없습니다.",
+      "notConnected": "이 기기는 연결되어 있지 않습니다.",
+      "connect": "연결",
+      "awaiting": "이 기기를 승인하기를 기다리는 중입니다.",
+      "instructions": "인증 페이지를 열고 이 코드를 입력하세요:",
+      "codeLabel": "코드",
+      "openVerification": "인증 페이지 열기",
+      "expiresAt": "만료",
+      "cancel": "취소",
+      "connected": "연결됨",
+      "disconnectHint": "연결을 끊으면 이 기기의 인증과 대기 중인 로그인이 지워집니다. 자격 증명 공급자의 자격 증명은 취소되지 않습니다.",
+      "disconnect": "연결 끊기"
+    },
+    "inbox": {
+      "title": "받은 편지함",
+      "description": "연결된 시스템에서 받은 프롬프트와 요청입니다.",
+      "refresh": "새로 고침",
+      "error": "받은 편지함을 불러올 수 없습니다.",
+      "actionError": "작업에 실패했습니다. 다시 시도하세요.",
+      "loading": "받은 편지함을 불러오는 중...",
+      "empty": "아직 프롬프트가 없습니다. 연결된 시스템의 요청이 여기에 표시됩니다.",
+      "source": "출처",
+      "received": "수신",
+      "ack": "확인",
+      "dismiss": "무시"
+    }
+  },
   "nav": {
+    "support": "지원",
     "dashboard": "대시보드",
     "timeline": "타임라인",
     "reports": "리포트",
@@ -50,9 +99,13 @@
     "groupMonitor": "모니터",
     "groupInsights": "인사이트",
     "groupManage": "관리",
-    "groupSystem": "시스템"
+    "groupSystem": "시스템",
+    "tasks": "할 일"
   },
   "dashboard": {
+    "metricsError": "시스템 지표를 불러오지 못했습니다",
+    "processesError": "프로세스를 불러오지 못했습니다",
+    "countScopeNote": "캡처 및 이벤트는 오늘의 활동을 나타냅니다. 전체 누적 합계는 설정 › 저장소를 참조하세요.",
     "title": "활동 요약",
     "realtime": "실시간",
     "connecting": "연결 중...",
@@ -66,6 +119,10 @@
     "idleTime": "유휴 시간",
     "captures": "캡처 수",
     "events": "이벤트",
+    "capturePending": {
+      "title": "캡처 활동 분석 대기 중",
+      "description": "실시간 캡처 합계는 현재 확인할 수 있습니다. 타임라인 분류와 집중 분석은 처리가 완료되면 표시됩니다."
+    },
     "cpuMemory24h": "CPU / Memory 사용량 (24시간)",
     "appUsageTime": "앱 사용 시간",
     "recentProcesses": "최근 프로세스 (Top 5)",
@@ -111,11 +168,15 @@
     "readyToInstall": "설치 준비 완료",
     "error": "오류",
     "statusUnavailable": "업데이트 상태를 불러오지 못했습니다",
+    "statusCheckFailed": "업데이트 정보를 가져오지 못했습니다. 네트워크 또는 서버 상태를 확인한 뒤 다시 시도하세요.",
+    "actionFailed": "업데이트 작업을 완료하지 못했습니다. 다시 시도하세요.",
+    "technicalDetails": "기술 세부 정보",
     "lastUpdateUnknown": "마지막 업데이트 신호: 알 수 없음",
     "lastUpdateAge": "마지막 업데이트 신호: {{seconds}}초 전",
     "staleActionBlocked": "상태가 지연되어 승인/연기 작업이 일시 차단되었습니다. 지금 확인으로 상태를 새로고침하세요.",
     "streamIssue": "실시간 업데이트 스트림에 일시적인 문제가 있어 폴링으로 전환했습니다.",
     "reconnecting": "실시간 업데이트 스트림 재연결 중 ({{count}}회 시도)...",
+    "streamRecovered": "실시간 업데이트 스트림 연결이 복구되었습니다. 작업이나 알림을 반복하지 않고 상태 업데이트를 계속 수신합니다.",
     "currentVersion": "현재 버전",
     "latestVersion": "최신 버전",
     "openRelease": "릴리즈 노트 열기",
@@ -134,6 +195,9 @@
     "policySignature": "릴리즈 아티팩트는 Ed25519 서명 검증이 필수입니다.",
     "policyRollback": "재시작 실패 시 이전 바이너리로 자동 롤백합니다.",
     "versionInfo": "버전 정보",
+    "aboutTitle": "정보",
+    "aboutBuildDate": "빌드 날짜",
+    "aboutCommit": "커밋",
     "releaseName": "릴리스",
     "downloadInProgress": "업데이트 다운로드 중...",
     "channelTitle": "업데이트 채널",
@@ -165,10 +229,25 @@
     "releasedAgoHours_plural": "{{count}}시간 전 배포",
     "releasedAgoDays": "{{count}}일 전 배포",
     "releasedAgoDays_plural": "{{count}}일 전 배포",
-    "readyToInstallMsg": "Download complete. Ready to install.",
-    "installNow": "Install Now"
+    "readyToInstallMsg": "다운로드가 완료되었습니다. 설치할 준비가 되었습니다.",
+    "installNow": "지금 설치"
+  },
+  "frameImage": {
+    "reauth": "이 스크린샷을 보려면 재인증이 필요합니다.",
+    "reauthAction": "재인증",
+    "deleted": "보존 정책에 따라 이 스크린샷이 삭제되었습니다.",
+    "missing": "이 프레임에 대해 캡처된 스크린샷이 없습니다.",
+    "unavailable": "스크린샷을 일시적으로 사용할 수 없습니다.",
+    "retry": "다시 시도",
+    "short": "사용 불가"
   },
   "timeline": {
+    "annotations": "메모",
+    "addAnnotation": "메모 추가...",
+    "addAnnotationSubmit": "추가",
+    "deleteAnnotation": "메모 삭제",
+    "annotationUpdateFailed": "메모를 업데이트하지 못했습니다.",
+    "tagUpdateFailed": "태그를 업데이트하지 못했습니다.",
     "title": "타임라인",
     "captures": "개 캡처",
     "showing": "개 표시",
@@ -220,8 +299,10 @@
     "noActivity": "이 날 기록된 활동이 없습니다"
   },
   "settings": {
+    "storageScopeNote": "저장된 모든 데이터의 누적 합계입니다(전체 기간).",
     "title": "설정",
     "tabs": {
+      "integrations": "연동",
       "general": "일반",
       "privacy": "텔레메트리",
       "monitoring": "모니터링",
@@ -344,6 +425,10 @@
         "input": {
           "title": "입력 모드 선택",
           "description": "푸시 투 토크는 예측 가능하고, 음성 감지는 방 환경에 맞춘 감도 조정이 필요합니다."
+        },
+        "bystander": {
+          "title": "녹음 전 주변인에게 알리기",
+          "description": "오디오를 켜기 전에 주변 참여자에게 수집 범위를 알리고 필요한 경우 동의를 받으세요."
         }
       },
       "advanced": {
@@ -419,6 +504,8 @@
     "exportFrames": "프레임 내보내기",
     "exporting": "내보내는 중...",
     "language": "언어",
+    "appearanceTitle": "화면 테마",
+    "appearanceDarkModeDesc": "대시보드 전체에 어두운 색상 테마를 사용합니다. 첫 실행 시에는 운영체제 설정을 따릅니다.",
     "korean": "한국어",
     "english": "English",
     "viewSetupGuide": "설정 가이드 다시 보기",
@@ -583,6 +670,7 @@
     "piiStrict": "Strict - + API 키, IP, 경로",
     "piiDesc": "수집 데이터에서 개인정보를 마스킹합니다",
     "excludedApps": "제외할 앱 (쉼표 구분)",
+    "excludedAppsRetroactiveNote": "앱을 여기에 추가하면 앞으로의 캡처뿐 아니라 이미 기록된 해당 앱의 이력(스크린샷, 이벤트, 파생된 AI 요약 및 임베딩)도 함께 삭제됩니다.",
     "excludedAppsPlaceholder": "1Password, Discord, Slack",
     "excludedAppPatterns": "제외할 앱 패턴 (쉼표 구분)",
     "excludedAppPatternsPlaceholder": "*은행*, *뱅킹*, *crypto*",
@@ -667,7 +755,7 @@
     "bugReportPiiStandard": "Standard - 이메일, 전화번호, 신용카드 마스킹",
     "bugReportPiiStrict": "Strict - API 키, IP, 파일 경로도 마스킹",
     "bugReportIncludeLogs": "런타임 로그 포함",
-    "bugReportIncludeLogsDesc": "최근 네이티브 런타임 로그를 리포트에 첨부합니다.",
+    "bugReportIncludeLogsDesc": "선택 사항: 최근 네이티브 런타임 로그를 검토한 뒤 포함합니다. 로그는 기본 제외되며 자동 업로드되지 않습니다.",
     "bugReportGenerate": "리포트 생성",
     "bugReportGenerateFailedTitle": "리포트 생성 실패",
     "bugReportGenerateFailed": "버그 리포트를 생성하지 못했습니다.",
@@ -702,7 +790,7 @@
     "bugReportNoEntries": "항목 없음",
     "bugReportBack": "이전",
     "bugReportNext": "다음",
-    "bugReportShareDesc": "버그 리포트를 공유할 방법을 선택하세요. 버그 ID는 여러 채널에서 리포트를 연결하는 데 사용됩니다.",
+    "bugReportShareDesc": "공유 전에 번들을 검토하세요. 원본 화면·OCR·창 내용·프롬프트·비밀정보·고객 데이터·전체 로컬 경로는 보내지 마세요. 자동 업로드는 없습니다.",
     "bugReportOpenGitHub": "GitHub 이슈 열기",
     "bugReportOpenGitHubDesc": "환경 정보가 채워진 이슈 템플릿을 엽니다.",
     "bugReportOpenFailed": "GitHub 이슈 페이지를 열지 못했습니다.",
@@ -717,11 +805,15 @@
     "bugReportExported": "버그 리포트를 성공적으로 내보냈습니다.",
     "bugReportExportFailed": "버그 리포트를 내보내지 못했습니다.",
     "bugReportEmailSupport": "이메일 지원",
-    "bugReportEmailSupportDesc": "지원팀에게 미리 작성된 이메일을 엽니다.",
+    "bugReportEmailSupportDesc": "기기에서 이메일 초안을 열고, 명시적으로 선택한 경우에만 검토한 번들을 첨부합니다.",
     "saving": "저장 중...",
     "saveSettings": "설정 저장",
     "savedFull": "설정이 저장되었습니다. 일부 설정은 앱 재시작 후 적용됩니다.",
     "exportDone": "데이터를 내보냈습니다.",
+    "exportFailed": "내보내기가 완료되지 않았습니다",
+    "exportStorageRecovery": "디스크 여유 공간을 확보하거나 Maekon 로컬 저장소를 사용 중인 프로그램을 닫은 뒤 다시 시도하세요. 이 내보내기는 완료로 표시되지 않았습니다.",
+    "exportGenericRecovery": "오류를 확인한 뒤 다시 시도하세요. 이 내보내기는 완료로 표시되지 않았습니다.",
+    "exportRetry": "내보내기 다시 시도",
     "days": {
       "Mon": "월",
       "Tue": "화",
@@ -769,6 +861,11 @@
       "reload": "엔진 재로드",
       "delete": "삭제",
       "delete_confirm": "다운로드된 모델을 삭제하시겠습니까? 나중에 다시 다운로드할 수 있습니다.",
+      "actionErrorTitle": "모델 작업 실패",
+      "downloadFailed": "모델 다운로드를 시작할 수 없습니다: {{error}}",
+      "cancelFailed": "다운로드를 취소할 수 없습니다: {{error}}",
+      "deleteFailed": "모델을 삭제할 수 없습니다: {{error}}",
+      "reloadFailed": "음성 인식 엔진을 다시 로드할 수 없습니다: {{error}}",
       "language": "STT 언어",
       "input_mode": "입력 모드",
       "ptt": "푸시 투 토크",
@@ -797,7 +894,14 @@
       "coaching": "Coaching",
       "integration": "Integration",
       "sync": "Cross-Device Sync"
-    }
+    },
+    "permissionAutomationSandboxLabel": "자동화 샌드박스",
+    "permissionAutomationSandboxDescAvailable": "이 기기에서는 자동화 동작이 별도 프로세스의 플랫폼 샌드박스 안에서 실행됩니다.",
+    "permissionAutomationSandboxDescUnavailable": "이 기기 또는 빌드에서는 플랫폼 샌드박스를 사용할 수 없습니다. 자동화는 fail-closed 로 동작하며, 격리 없이 실행하는 대신 동작을 거부합니다.",
+    "permissionLinuxSessionLabel": "그래픽 세션",
+    "permissionLinuxSessionDescWayland": "Wayland 세션이 감지되었습니다. Wayland 에서는 활성 창 감지와 트래킹 패널을 사용할 수 없고, 캡처는 축소된 컨텍스트로 계속됩니다. 전체 기능을 사용하려면 X11 세션으로 로그인하세요.",
+    "permissionLinuxSessionDescX11": "X11 세션이 감지되었습니다. 활성 창 감지와 트래킹 패널이 지원됩니다.",
+    "permissionLinuxSessionDescUnknown": "그래픽 세션 유형을 확인할 수 없습니다. 활성 창 감지가 불안정할 수 있습니다."
   },
   "privacy": {
     "claims": {
@@ -918,6 +1022,8 @@
     "resumeCapture": "캡처 다시 시작",
     "capturePaused": "캡처 일시정지됨",
     "captureRunning": "캡처 실행 중",
+    "captureConsentRequired": "동의 필요",
+    "captureBlocked": "현재 개인정보 또는 일정 설정으로 캡처가 차단됨",
     "capturePauseUnavailable": "캡처 일시정지는 데스크톱 앱에서 사용할 수 있습니다.",
     "currentData": "현재 저장된 데이터",
     "eventsLabel": "이벤트",
@@ -926,7 +1032,7 @@
     "storageSizeLabel": "저장 용량",
     "dataRangeLabel": "데이터 기간",
     "deleteByRangeTitle": "날짜 범위로 삭제",
-    "deleteByRangeDesc": "특정 기간의 데이터만 선택적으로 삭제합니다",
+    "deleteByRangeDesc": "특정 기간의 데이터만 선택적으로 삭제합니다. 해당 기간에서 파생된 AI 활동 요약, 임베딩, 로컬 제안도 함께 삭제되어 어떤 흔적도 남지 않습니다.",
     "startDate": "시작 날짜",
     "endDate": "종료 날짜",
     "dataTypesHint": "삭제할 데이터 유형 (선택 안하면 전체)",
@@ -1026,6 +1132,28 @@
           "dismiss": "닫기"
         }
       },
+      "fullText": {
+        "label": "AI 텍스트 처리 및 외부 제공자",
+        "description": "AI 기능을 위해 Maekon이 전체 텍스트를 처리하도록 허용합니다. 외부 AI 제공자를 선택하면 최소화되고 마스킹된 텍스트가 이 기기 밖으로 전송될 수 있습니다.",
+        "collectedTitle": "켜져 있을 때 Maekon이 처리할 수 있는 항목:",
+        "collected": {
+          "chatText": "AI 채팅에 사용자가 명시적으로 제출한 텍스트",
+          "activeContext": "AI 요청에 포함되는 최소화되고 마스킹된 활성 앱 컨텍스트",
+          "providerResult": "Maekon 세션으로 반환되는 제공자 결과"
+        },
+        "disclosure": "기본적으로 꺼져 있습니다. 전체 텍스트 AI 처리와, 외부 제공자가 설정된 경우 최소화되고 마스킹된 텍스트의 기기 외부 전송에 동의할 때만 켜세요. 제공자 설정과 개인정보 필터는 계속 적용되며 원본 스크린샷, 자격 증명 또는 제외된 앱 콘텐츠의 전송을 허용하지 않습니다."
+      },
+      "ocrProcessing": {
+        "label": "OCR 텍스트 처리",
+        "description": "이미 동의한 화면 캡처에서 Maekon이 텍스트를 추출하도록 허용합니다. 외부 OCR 제공자를 별도로 설정하지 않으면 처리는 이 기기 안에서 이루어집니다.",
+        "collectedTitle": "켜져 있을 때 로컬에서 처리되고 보존될 수 있는 항목:",
+        "collected": {
+          "screenPixels": "화면 캡처 동의로 이미 허용된 캡처의 픽셀",
+          "extractedText": "로컬 캡처 및 장면 맥락에 사용되는 추출 텍스트와 텍스트 영역 좌표",
+          "retention": "설정된 보존 기간에 따라 로컬 캡처 기록과 함께 저장되는 OCR 텍스트"
+        },
+        "disclosure": "이 동의만으로 원본 스크린샷의 기기 외부 전송을 허용하지 않습니다. 외부 OCR에는 제공자 설정도 필요하며, 마스킹 없는 원본 스크린샷 전송에는 아래의 별도 최고 민감도 동의가 필요합니다. 이 항목을 끄면 캡처, 장면 분석, 제공자 경로의 새 OCR 텍스트가 차단됩니다. 이미 보존된 기록은 동의 철회 또는 데이터 삭제로 지우세요."
+      },
       "unredactedExternalOcr": {
         "label": "마스킹 없는 외부 OCR",
         "description": "가장 민감한 항목으로 기본적으로 꺼져 있습니다. 원본 스크린샷을 외부 OCR 제공자에게 보내는 것을 명시적으로 허용할 때만 켜세요.",
@@ -1038,17 +1166,56 @@
         "disclosure": "이 동의는 OCR 처리 동의 및 마스킹 없는 외부 OCR을 허용하는 AI 설정과 별도로 필요합니다. 이 명시적 동의가 없으면 설정이 켜져 있어도 원본 화면의 외부 OCR 전송은 차단됩니다."
       },
       "withdraw": {
-        "label": "동의 철회",
-        "description": "철회하면 모든 수집이 중단되고 이미 수집된 데이터의 소거를 요청합니다. 단순히 모니터링을 끄는 것보다 강력한 조치입니다.",
-        "button": "동의 철회",
-        "confirmTitle": "동의를 철회하시겠습니까?",
-        "confirmMessage": "모든 수집이 중단되고 이미 수집된 데이터의 소거를 요청합니다.",
+        "label": "동의 철회 및 데이터 삭제",
+        "description": "동의를 철회하면 모든 수집이 중단되고 이 기기에서 Maekon이 관리하는 수집 데이터가 삭제됩니다. 모니터링만 끄는 것보다 강한 조치입니다.",
+        "button": "동의 철회 및 데이터 삭제",
+        "confirmTitle": "동의를 철회하고 데이터를 삭제하시겠습니까?",
+        "confirmMessage": "모든 수집이 중단되고 이 기기에서 Maekon이 관리하는 데이터가 삭제됩니다.",
         "confirmNote": "이미 디스크로 내보내거나 백업한 파일은 앱 외부에 저장되어 있어 이 작업으로 삭제되지 않습니다.",
-        "confirmButton": "철회하고 소거"
+        "confirmButton": "철회하고 데이터 삭제"
+      },
+      "patternLearning": {
+        "label": "패턴 학습·코칭",
+        "description": "Maekon 이 반복되는 작업 패턴을 로컬에서 학습해 포커스 플레이북과 능동 코칭에 사용합니다. 끄면 패턴 학습이 중단되며, 이미 파생된 통계는 일반 보존 정책에 따라 소멸합니다.",
+        "collectedTitle": "이 동의가 허용하는 것",
+        "collected": {
+          "habitStats": "로컬 습관·포커스 패턴 통계",
+          "playbookSignals": "활동에서 파생된 포커스 플레이북 신호",
+          "coachingTriggers": "능동 코칭 트리거 평가"
+        }
+      },
+      "crossDeviceSync": {
+        "label": "기기 간 동기화",
+        "description": "로컬 네트워크에서 본인이 페어링한 기기와 Maekon 데이터를 동기화하도록 허용합니다. 끄면 새 동기화 세션이 중단되며, 페어링된 기기의 기존 사본은 유지됩니다.",
+        "collectedTitle": "이 동의가 허용하는 것",
+        "collected": {
+          "syncPayloads": "페어링된 기기로 보내는 암호화된 동기화 페이로드",
+          "deviceIdentity": "페어링·전송 인증에 쓰이는 기기 식별자"
+        }
+      },
+      "memoryGraphEnrichment": {
+        "label": "메모리 그래프 보강",
+        "description": "Maekon 이 활동 간 연결을 로컬 메모리 그래프로 파생해 맥락 회상을 개선하도록 허용합니다. 끄면 새 보강이 중단되며, 기존 엣지는 일반 보존 정책에 따라 소멸합니다.",
+        "collectedTitle": "이 동의가 허용하는 것",
+        "collected": {
+          "memoryEdges": "활동·주제·세션 간 파생 링크",
+          "derivedEntities": "링크의 기준이 되는 로컬 추출 엔터티"
+        }
       }
     }
   },
   "search": {
+    "getHelp": "도움말 보기",
+    "clarificationTitle": "여러 기록이 일치합니다",
+    "clarificationDescription": "하나를 정답으로 추정하지 않고 전체 결과를 표시합니다. 앱을 선택해 범위를 좁혀 보세요.",
+    "clarificationIncompleteDescription": "하나를 정답으로 추정하지 않습니다. 결과를 선택하기 전에 출처를 좁히거나 검색어를 구체화하세요.",
+    "clarificationAllApps": "모든 앱",
+    "clarificationAppLabel": "앱별 결과 좁히기",
+    "clarificationSourceLabel": "출처별 결과 좁히기",
+    "semanticEnableHint": "시맨틱 검색이 꺼져 있습니다 — Settings → Advanced에서 켜세요(재시작 후 적용).",
+    "enableAiFeatures": "AI 기능 켜기",
+    "noResultsTryKeyword": "텍스트 검색 결과가 없습니다. Keyword 모드로 활동 요약을 관련도순으로 검색해 보세요.",
+    "tryKeyword": "키워드 검색 시도",
     "title": "검색",
     "placeholder": "검색어 입력...",
     "semanticPlaceholder": "찾고 싶은 내용을 설명하세요...",
@@ -1112,6 +1279,24 @@
     "to": "To"
   },
   "reports": {
+    "exportTitle": "리포트 데이터 내보내기",
+    "exportDescription": "선택한 기간의 활동 데이터를 다운로드합니다. 생성 전에 범위와 형식을 선택하세요.",
+    "exportFrom": "시작일",
+    "exportTo": "종료일",
+    "exportFormat": "형식",
+    "exportSummary": "리포트 요약",
+    "exportSummaryDesc": "이 페이지 차트의 JSON 스냅샷: 일별·시간별 활동, 앱 사용량, 생산성, 합계.",
+    "exportSummaryButton": "JSON 다운로드",
+    "exportMetrics": "시스템 지표",
+    "exportMetricsDesc": "선택한 기간의 CPU, 메모리, 디스크, 네트워크 샘플.",
+    "exportEvents": "활동 이벤트",
+    "exportEventsDesc": "타임스탬프와 제목이 포함된 창·앱 전환 이벤트.",
+    "exportFrames": "캡처",
+    "exportFramesDesc": "캡처 메타데이터와 OCR로 추출한 텍스트 — 스크린샷 이미지 자체는 포함되지 않습니다.",
+    "exportDownload": "다운로드",
+    "exporting": "내보내는 중…",
+    "exportRedactionNote": "내보내기에는 선택한 기간의 활동 메타데이터(앱 이름, 창 제목, 캡처의 OCR 추출 텍스트)와 시스템 지표가 포함됩니다. 스크린샷 이미지는 포함되지 않습니다. 파일은 브라우저 다운로드 폴더에 저장됩니다.",
+    "exportFailed": "내보내기 실패",
     "title": "활동 리포트",
     "week": "주간",
     "month": "월간",
@@ -1152,7 +1337,7 @@
     "capture": "캡처",
     "noFrames": "해당 시간의 프레임이 없습니다",
     "capturedOcr": "캡처된 OCR",
-    "imageUnavailable": "스크린샷 이미지를 불러오지 못했습니다. 파일 보존 정책 또는 경로 상태를 확인하세요.",
+    "imageUnavailable": "스크린샷을 불러올 수 없습니다. 보존 정책에 따라 삭제되었거나 재인증이 필요할 수 있습니다.",
     "sceneElements": "검출 요소 {{count}}개",
     "sceneUnavailable": "이 프레임의 scene 분석을 불러올 수 없습니다.",
     "showOverlay": "Scene 오버레이 표시",
@@ -1214,7 +1399,12 @@
     "eventsRestored": "이벤트 {{count}}개가 복원되었습니다",
     "framesRestored": "프레임 {{count}}개가 복원되었습니다",
     "errors": "오류 목록",
-    "moreErrors": "외 {{count}}개 오류"
+    "moreErrors": "외 {{count}}개 오류",
+    "fullExportTitle": "내 모든 데이터 내보내기 (GDPR 제20조)",
+    "fullExportDescription": "이 기기가 보유한 모든 개인 데이터 테이블(활동 세그먼트 및 요약, 제안, 코칭, 습관 스트릭, 메모리 그래프, 프레임 주석, AI 대화, 집중 지표, 작업 세션, 다이제스트)을 기계 판독 가능한 JSON 아카이브로 다운로드합니다. 자유 텍스트 내용은 마스킹됩니다.",
+    "exporting": "내보내기 준비 중…",
+    "fullExportButton": "전체 데이터 내보내기 다운로드",
+    "fullExportFailed": "내보내기 실패"
   },
   "automation": {
     "title": "자동화",
@@ -1710,6 +1900,10 @@
     }
   },
   "auditLog": {
+    "exportTitle": "감사 로그 내보내기",
+    "exportHint": "최근 감사 항목(최대 1000개)을 JSON 파일로 다운로드합니다. 증적 메타데이터만 포함되며, 저장된 체인은 위의 무결성 검증 결과로 확인하세요.",
+    "exportButton": "감사 항목 내보내기",
+    "exportFailed": "내보내기 실패",
     "title": "감사 로그",
     "entries": "감사 항목",
     "details": "상세",
@@ -1722,7 +1916,9 @@
     "chainLegacyCount": "{{count}}개의 레거시(해시 체인 이전) 항목이 제외되었습니다.",
     "chainBroken": "무결성 손상 감지됨",
     "chainBrokenDetail": "seq {{seq}}에서 첫 손상 항목 발견: {{reason}}",
-    "chainBrokenUnknown": "알 수 없는 이유로 체인 검증에 실패했습니다."
+    "chainBrokenUnknown": "알 수 없는 이유로 체인 검증에 실패했습니다.",
+    "durableSourceNote": "무결성 검증 가능한 영속 감사 로그 기반 — consent·프라이버시 전환 이벤트를 포함합니다.",
+    "bufferSourceNote": "요약 카드는 이 세션의 인메모리 자동화 런타임 버퍼를 반영하며, 아래의 영속 감사 로그와는 다른 소스입니다."
   },
   "widgets": {
     "title": "위젯",
@@ -1777,8 +1973,22 @@
   },
   "emptyState": {
     "dashboard": {
-      "title": "데이터 수집 중",
-      "description": "Maekon이 백그라운드에서 활동 데이터를 수집하고 있어요. 아무 앱이나 열고 작업을 시작해 보세요. 보통 1분 안에 첫 지표가 나타납니다."
+      "active": {
+        "title": "데이터 수집 중",
+        "description": "Maekon 이 백그라운드에서 활동 데이터를 수집하고 있습니다. 앱을 열고 평소처럼 작업하세요. 첫 지표는 보통 1분 안에 나타나고, 첫 recovery card 는 약 15분 안에 화면 상단 트래킹 패널에 표시됩니다."
+      },
+      "paused": {
+        "title": "활동 수집 일시정지됨",
+        "description": "Maekon은 활동 데이터를 수집하고 있지 않습니다. 대시보드 기록을 시작할 준비가 되면 수집을 재개하세요."
+      },
+      "consentRequired": {
+        "title": "수집 동의 필요",
+        "description": "Maekon은 활동 데이터를 수집하고 있지 않습니다. 수집을 시작하기 전에 권한을 검토하고 동의해 주세요."
+      },
+      "unavailable": {
+        "title": "활동 상태를 확인할 수 없음",
+        "description": "Maekon이 활동 수집 상태를 확인하지 못했습니다. 이 대시보드를 신뢰하기 전에 데스크톱 앱 상태를 확인하세요."
+      }
     },
     "timeline": {
       "title": "스크린샷 캡처가 꺼져 있어요",
@@ -1915,7 +2125,12 @@
     "noOverrides": "이 범위에 오버라이드 없음",
     "noSegments": "이 날짜 범위에 세그먼트 없음",
     "overridden": "재정의됨",
-    "personalTime": "개인 시간"
+    "personalTime": "개인 시간",
+    "untilRemoved": "제거할 때까지 (자동 만료 없음)",
+    "effectMarkAsNoise": "향후 재보정 및 재클러스터링 결과에서 제외됩니다.",
+    "effectReassignRegime": "향후 재클러스터링에서 이 세그먼트에 선택한 활동 유형을 사용합니다.",
+    "effectPersonalTime": "후속 분석에서 이 범위를 개인 시간으로 처리합니다.",
+    "effectUnknown": "후속 재보정에 적용됩니다."
   },
   "sidebar": {
     "claimsBrowser": "메모리 주장",
@@ -1944,7 +2159,7 @@
     "commands": "명령어",
     "executionHistory": "실행 기록",
     "currentStatus": "현재 상태",
-    "updateHistory": "업데이트 기록",
+    "updateChannel": "업데이트 채널",
     "general": "일반",
     "notifications": "알림",
     "privacy": "프라이버시",
@@ -1977,6 +2192,7 @@
     "goalsUpdated": "목표 업데이트됨",
     "settingsTitle": "코칭 목표",
     "regimeLabel": "레짐 라벨",
+    "regimeLabelRequired": "레짐 라벨을 입력하세요.",
     "targetMinutes": "목표 (분)",
     "addGoal": "목표 추가",
     "remove": "삭제",
@@ -1993,7 +2209,7 @@
     "later": "나중에",
     "thanksFeedback": "감사합니다! 학습 중...",
     "adjustingFeedback": "알겠습니다, 조정 중...",
-    "dismissError": "코칭 메시지를 업데이트할 수 없습��다.",
+    "dismissError": "코칭 메시지를 업데이트할 수 없습니다.",
     "feedbackError": "피드백을 저장할 수 없습니다.",
     "dismissLabel": "코칭 메시지 닫기",
     "laterLabel": "나중에 다시 알림",
@@ -2045,8 +2261,8 @@
       "missed": "<50%",
       "noData": "데이터 없음"
     },
-    "noEventsHint": "Coaching nudges will appear here as you work.",
-    "noGoalsHint": "Goals will appear here once regime tracking is active.",
+    "noEventsHint": "작업을 진행하면 여기에 코칭 넛지가 표시됩니다.",
+    "noGoalsHint": "레짐 추적이 활성화되면 여기에 목표가 표시됩니다.",
     "disabledBannerTitle": "코칭이 꺼져 있습니다",
     "disabledBannerDesc": "코칭을 활성화하면 능동적인 넛지와 습관 추적 기능을 사용할 수 있습니다.",
     "disabledBannerButton": "코칭 활성화",
@@ -2055,6 +2271,15 @@
     "regimeLabelPlaceholder": "예: 집중 코딩"
   },
   "onboarding": {
+    "step3Search": "본 모든 것을 검색",
+    "aiFeatures": {
+      "optInHint": "선택 사항: 로컬 임베딩, AI 시맨틱 검색, AI 일일 다이제스트 내러티브를 켭니다. 모든 처리는 온디바이스에서 수행되며 Maekon을 재시작하면 적용됩니다.",
+      "enableButton": "AI 기능 켜기",
+      "enabling": "켜는 중…",
+      "enabled": "AI 기능이 켜졌습니다",
+      "enabledNote": "재시작 후 로컬 임베딩, 시맨틱 검색, AI 일일 다이제스트 내러티브가 활성화됩니다.",
+      "error": "AI 기능을 켜지 못했습니다: {{error}}"
+    },
     "step1Title": "Maekon에 오신 것을 환영합니다",
     "step1Desc": "Maekon은 데스크탑 활동을 모니터링하고 생산성 향상을 위한 지능형 제안을 제공합니다.",
     "step2Title": "권한 설정",
@@ -2129,7 +2354,16 @@
       "monitoringMissingWarning": "모니터링 동의가 아직 부여되지 않았습니다. 코칭이 작동하려면 이전 단계에서 동의를 허용하세요.",
       "error": "코칭을 활성화하지 못했습니다: {{error}}"
     },
-    "stepIndicatorLabel": "단계 표시기"
+    "audio": {
+      "title": "오디오는 기본적으로 꺼져 있습니다",
+      "description": "설정 중에는 마이크 캡처를 보류합니다. 오디오 및 음성-텍스트 옵션은 나중에 설정에서 검토할 수 있습니다.",
+      "statusTitle": "오디오 보류됨",
+      "statusDescription": "마이크 캡처와 음성-텍스트 변환은 비활성 상태로 유지됩니다. 오디오 장치, 모델 또는 provider에 연결하지 않습니다.",
+      "localNote": "로컬 음성-텍스트 변환은 오디오를 명시적으로 활성화하고 모델을 설치할 때까지 꺼진 상태입니다.",
+      "egressNote": "클라우드 음성-텍스트 변환은 설정에서 provider를 선택하고 자격 증명을 구성할 때까지 꺼진 상태입니다."
+    },
+    "stepIndicatorLabel": "단계 표시기",
+    "step4RecoveryCardHint": "작업을 하는 동안 Maekon 이 도울 만한 순간을 살핍니다. 화면에 있던 내용을 근거로 한 다음 단계 제안, 즉 첫 recovery card 는 보통 15분 안에 화면 상단의 작은 트래킹 패널에 나타납니다."
   },
   "chat": {
     "title": "AI 세션",
@@ -2138,10 +2372,12 @@
     "create_session": "세션을 만들어 채팅을 시작하세요",
     "create_failed_title": "세션을 만들 수 없습니다",
     "create_failed": "AI 세션을 만들지 못했습니다.",
+    "provider_not_configured": "{{provider}}이(가) 설정되지 않았습니다. 설정 → AI & 자동화에서 자격 증명을 추가한 뒤 다시 시도하세요.",
     "load_failed_title": "세션을 불러올 수 없습니다",
     "load_failed": "AI 세션을 불러오지 못했습니다.",
     "refresh_failed": "AI 세션 목록을 새로고침하지 못했습니다.",
     "send_failed": "메시지를 보내지 못했습니다.",
+    "full_text_consent_required": "개인정보 → 동의에서 AI 텍스트 처리 및 외부 제공자를 켠 뒤 다시 시도하세요.",
     "retry_failed": "세션을 재시도하지 못했습니다.",
     "delete_failed": "세션을 삭제하지 못했습니다.",
     "input_placeholder": "메시지를 입력하세요...",
@@ -2177,6 +2413,12 @@
     "exported": "Conversation exported",
     "history": "History",
     "mic_error": "Microphone not available",
+    "mic_consent_required": "개인정보에서 마이크 동의를 켜세요",
+    "mic_permission_hint": "마이크 접근이 차단된 경우 다음에서 활성화하세요:",
+    "mic_permission_path_macos": "시스템 설정 › 개인정보 보호 및 보안 › 마이크",
+    "mic_permission_path_windows": "설정 › 개인정보 및 보안 › 마이크",
+    "mic_permission_path_linux": "데스크탑 개인정보 설정(배포판/포털에 따라 다름)",
+    "mic_permission_path_generic": "시스템 개인정보 설정",
     "mic_tooltip": "Hold to speak",
     "mic_vad_stop": "Click to stop listening",
     "mic_vad_tooltip": "Click to toggle listening",
@@ -2264,18 +2506,18 @@
     "openingInChat": "채팅에서 여는 중...",
     "toastAccepted": "제안이 수락되었습니다",
     "toastRejected": "제안이 거부되었습니다",
-    "toastSnoozed": "일시 보���됨",
+    "toastSnoozed": "일시 보류됨",
     "feedbackFailed": "피드백 실패:",
     "feedbackAccepted": "수락됨",
     "feedbackRejected": "거부됨",
     "feedbackSnoozed": "보류됨",
     "statsAccepted": "수락",
-    "statsRejected": "거���",
-    "statsSnoozed": "보��",
+    "statsRejected": "거부",
+    "statsSnoozed": "보류",
     "statsPending": "대기",
     "panelTitle": "제안 ({{count}})",
     "tabActive": "활성 ({{count}})",
-    "tabHistory": "히스��리",
+    "tabHistory": "히스토리",
     "tabStats": "통계",
     "snooze30min": "30분",
     "snooze1hr": "1시간",
@@ -2320,6 +2562,7 @@
     "suggestionsUnavailable": "제안을 사용할 수 없습니다",
     "paused": "일시정지",
     "capturing": "캡처 중",
+    "consentRequired": "동의 필요",
     "resume": "재개",
     "pause": "일시정지",
     "collapse": "접기",
@@ -2345,8 +2588,8 @@
     "screenContextPaused": "화면 맥락 일시정지",
     "localMode": "로컬 모드",
     "captureServicesReady": "캡처 서비스 준비됨",
-    "extractTasks": "현재 앱에서 작업 추출",
-    "extractTasksMeta": "보이는 GUI 맥락으로 제안 생성",
+    "extractTasks": "제안 검토",
+    "extractTasksMeta": "현재 화면을 캡처하지 않고 대기 중인 제안 열기",
     "captureCurrentContextMeta": "현재 화면 맥락 저장",
     "reviewCurrentWindow": "현재 창 점검",
     "reviewCurrentWindowMeta": "GUI, OCR, 접근성 맥락 분석",
@@ -2359,7 +2602,9 @@
     "quitMaekon": "Maekon 종료",
     "chatOpened": "채팅 열림",
     "quitRequested": "종료 요청됨",
-    "quitUnavailable": "종료할 수 없습니다"
+    "quitUnavailable": "종료할 수 없습니다",
+    "findNextStep": "다음 할 일 찾기",
+    "findNextStepMeta": "현재 화면을 읽고 검토 가능한 다음 단계를 제안"
   },
   "trayDashboard": {
     "regionLabel": "트레이 대시보드",
@@ -2426,7 +2671,37 @@
     "discoveredPeers": "발견된 피어",
     "noPeers": "아직 발견된 피어가 없습니다. 다른 기기가 같은 네트워크에서 동기화를 활성화했는지 확인하세요.",
     "lastSync": "마지막",
-    "neverSynced": "동기화한 적 없음"
+    "neverSynced": "동기화한 적 없음",
+    "enableIntro": "패스프레이즈를 선택하고 동기화를 활성화하세요. 이는 OS 키체인에 저장되며(설정 파일에는 저장되지 않음) 종단 간 암호화 키를 유도하는 데 사용됩니다. 동기화할 모든 기기는 동일한 패스프레이즈를 사용해야 합니다.",
+    "passphraseLabel": "동기화 패스프레이즈",
+    "passphrasePlaceholder": "12자 이상",
+    "passphraseTooShort": "패스프레이즈는 최소 {{count}}자 이상이어야 합니다.",
+    "transportLabel": "전송 방식",
+    "transportLan": "LAN — 동일한 Wi-Fi/네트워크",
+    "transportFile": "공유 폴더 — Dropbox, iCloud, NAS",
+    "transportRemote": "원격 동기화 서버",
+    "enableButton": "동기화 활성화",
+    "enableDone": "저장되었습니다. 동기화를 활성화하려면 앱을 재시작하세요.",
+    "envHint": "고급 사용자는 대신 실행 전에 MAEKON_SYNC_PASSPHRASE 환경변수를 설정할 수 있습니다.",
+    "deliveryNoPeers": "변경 사항이 어떤 피어에도 도달하지 못했습니다(모두 오프라인 또는 연결 불가). 다음 동기화 시 재시도됩니다.",
+    "deliveredToPeers": "{{count}}개의 피어에 전달되었습니다.",
+    "forgetPeer": "연결 해제",
+    "forgetPeerConfirm": "{{peerName}}의 연결을 해제할까요? 신뢰 기록이 제거되며 다시 동기화하려면 페어링해야 합니다.",
+    "forgetPeerConfirmAction": "피어 연결 해제",
+    "forgetPeerCancel": "취소",
+    "forgetPeerSuccess": "{{peerName}}의 연결을 해제했습니다.",
+    "forgetPeerError": "피어 연결을 해제하지 못했습니다. 다시 시도하세요.",
+    "uploadRecoveryTitle": "업로드 복구 점검",
+    "uploadRecoveryDescription": "중단된 업로드가 성공이 확인될 때까지 전송 완료로 표시되지 않는지 합성 로컬 데이터로 확인합니다.",
+    "uploadRecoveryInterrupted": "업로드가 중단됐습니다. 항목 {{count}}개는 전송되지 않은 채 로컬에 남아 있습니다.",
+    "uploadRecoveryRetry": "안전하게 다시 시도",
+    "uploadRecoveryRecovered": "{{attempts}}번 시도하고 {{reprimes}}번 다시 준비한 뒤 복구됐습니다. 성공한 뒤에만 전송 완료 표시가 기록됐습니다.",
+    "uploadRecoveryPending": "대기",
+    "uploadRecoverySentMarkers": "전송 완료 표시",
+    "uploadRecoveryStorageId": "저장소 ID",
+    "uploadRecoveryPreserved": "유지됨",
+    "uploadRecoveryMismatch": "불일치",
+    "uploadRecoveryError": "합성 복구 단계를 완료하지 못했습니다."
   },
   "overlay": {
     "focusMode": "집중 모드",
@@ -2553,6 +2828,10 @@
     "result": "결과"
   },
   "advancedTab": {
+    "aiFeaturesMaster": "AI 기능 켜기",
+    "aiFeaturesMasterDescription": "로컬 임베딩, AI 시맨틱 검색, AI 일일 다이제스트 내러티브를 한 번에 켭니다. 모든 처리는 온디바이스에서 수행됩니다. Maekon을 재시작하면 적용됩니다.",
+    "llmSummary": "AI 일일 다이제스트 내러티브",
+    "llmSummaryDescription": "온디바이스 LLM으로 하루를 자연어로 요약합니다(임베딩 필요). 재시작 후 적용됩니다.",
     "maxConcurrentSessions": "최대 동시 세션 수",
     "idleTimeoutSeconds": "유휴 시간 제한(초)",
     "sessionTimeoutSeconds": "세션 시간 제한(초)",
@@ -2615,6 +2894,8 @@
     "columnSegment": "세그먼트",
     "columnOriginal": "원본",
     "columnAction": "작업",
+    "columnLifecycle": "수명",
+    "columnEffect": "후속 효과",
     "columnCreated": "생성됨"
   },
   "presets": {
@@ -2680,7 +2961,204 @@
     }
   },
   "metrics": {
+    "notMeasured": "측정 불가",
+    "withinBudget": "예산 이내",
+    "overBudget": "예산 초과",
+    "selfUsageTitle": "에이전트 리소스 사용량",
+    "selfUsageHint": "데스크톱 에이전트 자체의 메모리·CPU를 잠정 예산과 비교합니다.",
+    "selfUsageDesktopOnly": "데스크톱 앱에서 사용할 수 있습니다.",
+    "snapshotError": "리소스 사용량 샘플링 실패",
+    "selfRss": "메모리 (RSS)",
+    "selfCpu": "CPU",
+    "notMeasuredHint": "이 플랫폼에서는 리소스 사용량을 측정할 수 없습니다.",
     "cpuPercent": "CPU %",
     "memoryGb": "메모리 (GB)"
+  },
+  "reauth": {
+    "title": "본인 확인",
+    "description": "캡처 이력을 열람하려면 재인증하세요.",
+    "reason": "캡처 이력 열람",
+    "useBiometric": "{{kind}}(으)로 잠금 해제",
+    "biometricGeneric": "생체 인증",
+    "usePinInstead": "PIN으로 대신하기",
+    "useBiometricInstead": "생체 인증으로 대신하기",
+    "pinLabel": "PIN",
+    "pinPlaceholder": "PIN을 입력하세요",
+    "unlock": "잠금 해제",
+    "noMethodTitle": "재인증 수단 없음",
+    "noMethodBody": "캡처 이력을 보려면 개인정보 설정에서 PIN을 등록하거나 재인증 요구를 끄세요.",
+    "goToSettings": "설정 열기",
+    "cancel": "취소",
+    "errors": {
+      "cancelled": "인증이 취소되었습니다.",
+      "biometricUnavailable": "생체 인증을 사용할 수 없습니다. PIN을 입력하세요.",
+      "failed": "인증에 실패했습니다. 다시 시도하세요."
+    },
+    "settings": {
+      "sectionTitle": "캡처 이력 재인증",
+      "sectionDescription": "캡처 이력(스크린샷)을 열람하기 전에 생체 또는 PIN 재인증을 요구합니다.",
+      "saveFailed": "설정 저장에 실패했습니다.",
+      "enableLabel": "재인증 요구",
+      "enableHint": "잠금 해제된 기기에 물리적으로 접근한 사람으로부터 캡처 이력을 보호합니다.",
+      "idleLabel": "유휴 후 재요청(분)",
+      "pinSectionTitle": "앱 PIN(폴백)",
+      "pinRegistered": "PIN이 등록되어 있습니다.",
+      "pinNotRegistered": "등록된 PIN이 없습니다.",
+      "registerPin": "PIN 설정",
+      "changePin": "PIN 변경",
+      "removePin": "PIN 삭제",
+      "pinNewLabel": "새 PIN",
+      "pinConfirmLabel": "PIN 확인",
+      "pinMismatch": "PIN이 일치하지 않습니다.",
+      "pinTooShort": "PIN은 4자 이상이어야 합니다.",
+      "pinSaved": "PIN이 저장되었습니다.",
+      "pinRemoved": "PIN이 삭제되었습니다.",
+      "save": "저장",
+      "cancel": "취소",
+      "biometricAvailable": "이 기기에서 {{kind}}을(를) 사용할 수 있습니다.",
+      "biometricUnavailable": "이 기기에서는 생체 인증을 사용할 수 없습니다. PIN을 사용하세요."
+    }
+  },
+  "durableTasks": {
+    "loading": "작업을 불러오는 중…",
+    "loadError": "작업을 불러오지 못했습니다: {{error}}",
+    "suggestedHeading": "제안된 작업",
+    "noSuggestions": "검토할 작업 제안이 없습니다.",
+    "noTitle": "(제목 없음)",
+    "confirm": "확인",
+    "dismiss": "무시",
+    "todosHeading": "할 일",
+    "noTodos": "확정된 할 일이 아직 없습니다.",
+    "state": {
+      "confirmed": "확정됨",
+      "inProgress": "진행 중",
+      "waiting": "대기 중",
+      "done": "완료",
+      "cancelled": "취소됨"
+    }
+  },
+  "extensions": {
+    "loading": "확장을 불러오는 중…",
+    "loadError": "확장을 불러오지 못했습니다: {{error}}",
+    "heading": "확장",
+    "empty": "등록된 확장이 없습니다.",
+    "summaryUnavailable": "전환 중 — 세부 상태 확인",
+    "unavailableReason": "사용 불가: {{reason}}",
+    "install": "설치",
+    "enable": "활성화",
+    "disable": "비활성화",
+    "rollback": "{{version}}(으)로 롤백",
+    "axis": {
+      "installation": "설치",
+      "enablement": "활성화",
+      "authentication": "계정",
+      "grant": "권한 부여",
+      "update": "업데이트",
+      "health": "상태"
+    },
+    "axisValue": {
+      "not_installed": "설치 안 됨",
+      "installing": "설치 중",
+      "installed": "설치됨",
+      "install_failed": "설치 실패",
+      "uninstalling": "제거 중",
+      "uninstalled": "제거됨",
+      "disabled": "비활성",
+      "enabled": "활성",
+      "not_required": "불필요",
+      "unauthenticated": "연결 안 됨",
+      "authenticating": "연결 중",
+      "authenticated": "연결됨",
+      "revoked": "철회됨",
+      "auth_error": "로그인 오류",
+      "not_requested": "요청 안 함",
+      "pending": "대기 중",
+      "granted": "허용됨",
+      "denied": "거부됨",
+      "expired": "만료됨",
+      "current": "최신",
+      "update_available": "업데이트 있음",
+      "staged": "준비됨",
+      "activating": "적용 중",
+      "update_failed": "업데이트 실패",
+      "rollback_available": "롤백 가능",
+      "unknown": "알 수 없음",
+      "healthy": "정상",
+      "degraded": "저하",
+      "unhealthy": "비정상"
+    },
+    "summary": {
+      "discovered": "발견됨",
+      "installed": "설치됨",
+      "enabled": "활성",
+      "authorizing": "승인 중",
+      "ready": "준비됨",
+      "syncing": "동기화 중",
+      "degraded": "저하",
+      "stale": "오래됨",
+      "revoked": "철회됨",
+      "incompatible": "호환 불가"
+    }
+  },
+  "recovery": {
+    "title": "다음 할 일 찾기",
+    "back": "뒤로",
+    "retry": "다시 시도",
+    "loading": "현재 화면을 읽는 중…",
+    "confirmedNotice": "할 일 목록에 추가됨",
+    "conflictNotice": "항목이 방금 변경되어 새로고침했습니다",
+    "confirmFailedNotice": "이 단계를 확정할 수 없습니다",
+    "dismissedNotice": "무시됨",
+    "missingPermission": "필요: {{permission}}",
+    "todosHeading": "확정된 할 일",
+    "noTodos": "아직 확정된 할 일이 없습니다.",
+    "source": {
+      "localScene": "현재 화면"
+    },
+    "lifecycle": {
+      "active": "실시간",
+      "deleted": "소스 삭제됨",
+      "revoked": "접근 철회됨",
+      "expired": "보존 기간 만료"
+    },
+    "card": {
+      "sourceLabel": "출처",
+      "captured": "캡처됨 {{when}}",
+      "nextStepLabel": "제안된 다음 단계",
+      "editTitle": "다음 단계 편집",
+      "editBody": "세부 편집",
+      "untitled": "(제목 없는 단계)",
+      "confirm": "할 일에 추가",
+      "editing": "편집 중",
+      "edit": "편집",
+      "dismiss": "무시"
+    },
+    "outcome": {
+      "errorTitle": "문제가 발생했습니다",
+      "errorDetail": "요청을 완료할 수 없습니다.",
+      "consentTitle": "화면 접근 권한 필요",
+      "consentDetail": "현재 화면을 읽으려면 나열된 권한을 허용하세요.",
+      "throttledTitle": "한 번에 하나씩",
+      "throttledDetail": "이미 요청이 진행 중이거나 오늘 할당량을 모두 사용했습니다.",
+      "noCandidateTitle": "다음 단계를 찾지 못함",
+      "noCandidateDetail": "화면을 검토했지만 제안할 동작이 없습니다.",
+      "providerOfflineTitle": "어시스턴트 오프라인",
+      "providerOfflineDetail": "제안 제공자를 지금 사용할 수 없습니다.",
+      "noContextTitle": "화면 정보 부족",
+      "noContextDetail": "다음 단계를 제안할 만큼의 현재 맥락이 없었습니다."
+    }
+  },
+  "tasks": {
+    "heading": "할 일 및 복구",
+    "subtitle": "제안된 다음 단계를 검토하고 확정된 할 일을 관리하세요."
+  },
+  "capturePermission": {
+    "bannerTitle": "화면 캡처 중지됨 — 권한이 철회되었습니다",
+    "bannerBody": "Maekon 실행 중에 화면 기록 권한이 꺼져 캡처가 즉시 중지되었습니다. 동의 설정은 그대로 유지됩니다. 권한을 다시 켜면 캡처가 재개됩니다.",
+    "openSettings": "시스템 설정 열기",
+    "recheck": "권한 다시 확인",
+    "rechecking": "확인 중…",
+    "revokedToast": "화면 기록 권한이 철회되어 캡처가 중지되었습니다.",
+    "restoredToast": "화면 기록 권한이 복원되어 캡처가 재개되었습니다."
   }
 }

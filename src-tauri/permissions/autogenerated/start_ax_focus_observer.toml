@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-ax-focus-observer"
+description = "Enables the start_ax_focus_observer command without any pre-configured scope."
+commands.allow = ["start_ax_focus_observer"]
+
+[[permission]]
+identifier = "deny-start-ax-focus-observer"
+description = "Denies the start_ax_focus_observer command without any pre-configured scope."
+commands.deny = ["start_ax_focus_observer"]

@@ -441,7 +441,7 @@ mod http_status_mapping {
         let config = ExternalApiEndpoint {
             endpoint: server.url(),
             api_key: "test-key".to_string(),
-            model: Some("claude-sonnet-4-20250514".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             timeout_secs: 30,
             provider_type: AiProviderType::Anthropic,
             surface_id: None,
@@ -556,7 +556,7 @@ mod http_status_mapping {
         let config = ExternalApiEndpoint {
             endpoint: server_url.to_string(),
             api_key: "test-key".to_string(),
-            model: Some("claude-sonnet-4-20250514".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             timeout_secs: 30,
             provider_type: AiProviderType::Anthropic,
             surface_id: None,

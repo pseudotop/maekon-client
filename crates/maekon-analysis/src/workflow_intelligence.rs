@@ -275,18 +275,39 @@ impl WorkflowIntelligence {
         self.register_segment(segment, min_relevance, now)
     }
 
-    /// Test-only: number of aggregated app-usage entries (for the #4802
+    /// Drop every in-memory artifact derived from activity-pattern learning while
+    /// preserving the independently consented app-usage aggregation map.
+    ///
+    /// This is called whenever the live `activity_pattern_learning` permission
+    /// closes. An unfinished segment must not survive a revoke and later become a
+    /// suggestion after re-grant; learned playbooks are removed for the same
+    /// reason. `usage` intentionally remains intact because it is governed by the
+    /// separate `app_usage_analytics` permission.
+    pub fn clear_pattern_state(&mut self) -> bool {
+        let changed = self.active_segment.is_some() || !self.playbooks.is_empty();
+        self.active_segment = None;
+        self.playbooks.clear();
+        changed
+    }
+
+    /// Test-only: number of aggregated app-usage entries (for the #8574
     /// app_usage_analytics gate verification).
     #[cfg(test)]
     pub(crate) fn usage_len(&self) -> usize {
         self.usage.len()
     }
 
-    /// Test-only: whether an active workflow segment exists (for the #4802 gate
+    /// Test-only: whether an active workflow segment exists (for the #8574 gate
     /// verification).
     #[cfg(test)]
     pub(crate) fn has_active_segment(&self) -> bool {
         self.active_segment.is_some()
+    }
+
+    /// Test-only: number of learned workflow playbooks.
+    #[cfg(test)]
+    pub(crate) fn playbook_len(&self) -> usize {
+        self.playbooks.len()
     }
 }
 
@@ -670,5 +691,12 @@ mod tests {
         }
 
         assert!(signal_count >= 1);
+        assert!(wf.usage_len() > 0);
+        assert!(wf.playbook_len() > 0);
+
+        assert!(wf.clear_pattern_state());
+        assert!(!wf.has_active_segment());
+        assert_eq!(wf.playbook_len(), 0);
+        assert!(wf.usage_len() > 0);
     }
 }

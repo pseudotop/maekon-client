@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-resource-usage-snapshot"
+description = "Enables the get_resource_usage_snapshot command without any pre-configured scope."
+commands.allow = ["get_resource_usage_snapshot"]
+
+[[permission]]
+identifier = "deny-get-resource-usage-snapshot"
+description = "Denies the get_resource_usage_snapshot command without any pre-configured scope."
+commands.deny = ["get_resource_usage_snapshot"]

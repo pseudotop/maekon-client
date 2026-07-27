@@ -20,10 +20,10 @@ use maekon_network::http_client::HttpApiClient;
 // SSE client when `use_grpc_context` is disabled (the shipped default).
 #[cfg(feature = "server")]
 use maekon_network::sse_client::SseStreamClient;
-use maekon_storage::frame_storage::FrameFileStorage;
-use maekon_vision::processor::EdgeFrameProcessor;
 use maekon_vision::trigger::SmartCaptureTrigger;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "analysis")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,6 +132,7 @@ type ServerTransportPorts = (
 );
 
 pub(crate) struct AgentSupportContextBuilder<'a> {
+    #[cfg(feature = "analysis")]
     data_dir: &'a Path,
     config: &'a AppConfig,
     focus_storage: Arc<dyn FocusStorage>,
@@ -149,7 +150,7 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// command reflects the actual provider health.
     analysis_health_flag: Option<Arc<AtomicBool>>,
     /// ConfigManager shared with the composition root. When set, the BatchUploader
-    /// suppression predicate uses `snapshot()` to gate uploads during mute windows.
+    /// suppression predicate uses `snapshot()` to gate uploads outside allowed windows.
     config_manager: Option<ConfigManager>,
     /// Shared consent authority from capture wiring. External AI guards must use
     /// this instance instead of reloading consent from disk.
@@ -173,12 +174,13 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
 
 impl<'a> AgentSupportContextBuilder<'a> {
     pub(crate) fn new(
-        data_dir: &'a Path,
+        _data_dir: &'a Path,
         config: &'a AppConfig,
         focus_storage: Arc<dyn FocusStorage>,
     ) -> Self {
         Self {
-            data_dir,
+            #[cfg(feature = "analysis")]
+            data_dir: _data_dir,
             config,
             focus_storage,
             storage: None,
@@ -346,50 +348,35 @@ impl<'a> AgentSupportContextBuilder<'a> {
     }
 
     pub(crate) async fn build(mut self) -> Result<AgentSupportContext> {
+        // #8039: `shared_capture_services` used to be treated as optional here,
+        // with a silent fallback to a keyless `FrameFileStorage::new()` (an
+        // UNENCRYPTED frame store reaching the scheduler) whenever it was
+        // absent. The sole production caller (`agent_runtime::run`) now always
+        // wires it — fed by `build_capture_wiring`'s fail-closed
+        // `SharedCaptureServices::build` (#8039) — so a missing value here is
+        // no longer a legitimate degraded-but-running state; it means this
+        // builder was used incorrectly. Fail closed instead of constructing an
+        // encryption-key-less frame store: there is no "run capture
+        // unencrypted" mode.
+        let Some(shared) = self.shared_capture_services.as_ref() else {
+            anyhow::bail!(
+                "capture services not wired; refusing to build an unencrypted frame store \
+                 (frame_storage would reach the scheduler without at-rest encryption) — #8039"
+            );
+        };
         let (
             frame_storage,
             process_monitor,
             activity_monitor,
             frame_processor,
             accessibility_extractor,
-        ) = if let Some(ref shared) = self.shared_capture_services {
-            (
-                shared.frame_storage.clone(),
-                shared.process_monitor.clone(),
-                shared.activity_monitor.clone(),
-                shared.frame_processor.clone(),
-                shared.accessibility_extractor.clone(),
-            )
-        } else {
-            let frame_storage: Arc<dyn FrameStoragePort> = Arc::new(
-                FrameFileStorage::new(
-                    self.data_dir.to_path_buf(),
-                    self.config.storage.max_storage_mb,
-                    self.config.storage.retention_days,
-                )
-                .await?,
-            );
-            let process_monitor: Arc<dyn ProcessMonitor> =
-                Arc::new(maekon_monitor::process::ProcessTracker::new());
-            let activity_monitor: Arc<dyn ActivityMonitor> = Arc::new(
-                maekon_monitor::activity::ActivityTracker::new(process_monitor.clone()),
-            );
-            let ocr_tessdata = std::env::var("MAEKON_TESSDATA").ok().map(PathBuf::from);
-            let frame_processor: Arc<dyn maekon_core::ports::vision::FrameProcessor> =
-                Arc::new(EdgeFrameProcessor::with_pii_level(
-                    self.config.vision.thumbnail_width,
-                    self.config.vision.thumbnail_height,
-                    ocr_tessdata,
-                    self.config.privacy.pii_filter_level,
-                ));
-            (
-                frame_storage,
-                process_monitor,
-                activity_monitor,
-                frame_processor,
-                None,
-            )
-        };
+        ) = (
+            shared.frame_storage.clone(),
+            shared.process_monitor.clone(),
+            shared.activity_monitor.clone(),
+            shared.frame_processor.clone(),
+            shared.accessibility_extractor.clone(),
+        );
 
         let system_monitor = Arc::new(maekon_monitor::system::SysInfoMonitor::new());
         let capture_trigger: Arc<dyn maekon_core::ports::vision::CaptureTrigger> = Arc::new(
@@ -750,13 +737,15 @@ fn build_server_transports(
         (Arc::new(http_client), Arc::new(sse_stream) as SseClientPort)
     };
 
-    // Build the suppression predicate: uploads are gated by the tracking schedule.
+    // Build the suppression predicate: uploads are allowed only inside an
+    // enabled, configured tracking schedule window. Disabled/empty schedules
+    // preserve unrestricted-by-schedule behavior.
     // Uses snapshot() (O(1) Arc-clone) instead of get() (deep-clone of 37 sections)
     // per CONS-PI13 — the predicate is called on every flush, so hot-path cost matters.
     let mut uploader = BatchUploader::new(api_client.clone(), session_id.to_string(), 100, 3);
     if let Some(mgr) = config_manager {
         let pred: Arc<dyn Fn() -> bool + Send + Sync> =
-            Arc::new(move || crate::scheduler::tracking_schedule_active(&mgr.snapshot()));
+            Arc::new(move || !crate::scheduler::tracking_schedule_allows_capture(&mgr.snapshot()));
         uploader = uploader.with_suppression_predicate(pred);
     }
     let batch_uploader = Arc::new(uploader);

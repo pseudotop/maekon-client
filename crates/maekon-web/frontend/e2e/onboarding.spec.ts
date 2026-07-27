@@ -107,9 +107,10 @@ test.describe('Onboarding (simulated first-run)', () => {
 
     const stepIndicator = page.locator('fieldset[aria-label="Step indicator"]')
     await expect(stepIndicator).toBeVisible()
-    // 6 dots for 6 steps (TOTAL_STEPS in Onboarding.tsx — #5707 added StepCoaching)
+    // 7 dots for 7 steps (TOTAL_STEPS in Onboarding.tsx — #5707 added
+    // StepCoaching; the audio disclosure step later made it 7)
     const dots = stepIndicator.locator('div')
-    await expect(dots).toHaveCount(6)
+    await expect(dots).toHaveCount(7)
   })
 
   test('should skip onboarding via skip button', async ({ page }) => {
@@ -125,14 +126,17 @@ test.describe('Onboarding (simulated first-run)', () => {
     await page.goto('/')
     await expect(page.getByText(step1TitleName)).toBeVisible({ timeout: 10000 })
 
-    // Advance to the Ready step (screen 6 of 6; i18n keys keep their
+    // Advance to the Ready step (screen 7 of 7; i18n keys keep their
     // historical step4* names): welcome → permissions → privacy → features
-    // → coaching (#5707 opt-in, Next leaves it off) → ready.
+    // → audio (disclosure-only, Next defers capture) → coaching (#5707
+    // opt-in, Next leaves it off) → ready.
     const nextBtn = page.getByRole('button', { name: nextButtonName })
     await nextBtn.click()
     await expect(page.getByText(step2TitleName)).toBeVisible({ timeout: 5000 })
     await nextBtn.click()
     // features
+    await nextBtn.click()
+    // audio disclosure
     await nextBtn.click()
     // coaching opt-in
     await nextBtn.click()

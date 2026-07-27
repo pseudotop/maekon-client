@@ -13,6 +13,7 @@ import {
   type ExportFormat,
   type ExternalApiSettings,
   exportData,
+  isApiErrorCode,
   type MonitorControlSettings,
   type NotificationSettings as NotificationSettingsType,
   type OcrValidationSettings as OcrValidationSettingsType,
@@ -34,6 +35,7 @@ import {
   type UpdateAction,
   updateSettings,
 } from '../../api/client'
+import { getCaptureReauthStatus, type ReauthStatus, requiresCaptureReauthForExport } from '../../api/reauth'
 import {
   getCompatibleProviderSurfaces,
   providerSurfaceById,
@@ -42,6 +44,7 @@ import {
   surfaceUnknownModelPolicy,
 } from '../../features/providerSurfaces'
 import { useToast } from '../../hooks/useToast'
+import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import {
   cloneAiProviderProfileConfig,
   isLlmModelCompatibilityUnknown,
@@ -54,6 +57,7 @@ import {
   normalizeSavedProfileName,
   slugifySavedProfileId,
 } from '../settings-utils'
+import { reconcileLoadedSettings } from './settings-form-reconciliation'
 import type { SettingsDataResult } from './useSettingsData'
 
 // ---------------------------------------------------------------------------
@@ -82,6 +86,8 @@ export interface SettingsFormResult {
   exportFormat: ExportFormat
   setExportFormat: React.Dispatch<React.SetStateAction<ExportFormat>>
   exportLoading: ExportDataType | null
+  exportReauthStatus: ReauthStatus | null
+  exportRecovery: ExportRecoveryState | null
 
   // Model discovery state
   modelCatalog: Record<'ocr_api' | 'llm_api', string[]>
@@ -121,6 +127,8 @@ export interface SettingsFormResult {
   handleSaveAiProviderProfile: (requestedName: string) => void
   handleDeleteAiProviderProfile: (profileId: string) => void
   handleExport: (dataType: ExportDataType) => void
+  dismissExportReauth: () => void
+  resumeFrameExport: () => Promise<void>
 
   // Model-related helpers
   resolveEndpointSurface: (which: 'ocr_api' | 'llm_api') => ProviderSurfaceSpec | undefined
@@ -131,12 +139,18 @@ export interface SettingsFormResult {
   discoverModels: (which: 'ocr_api' | 'llm_api') => void
 }
 
+export interface ExportRecoveryState {
+  dataType: ExportDataType
+  detail: string
+  storageFailure: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
 export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const { show: showToast } = useToast()
 
@@ -159,6 +173,8 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
   // ---- Export state -------------------------------------------------------
   const [exportFormat, setExportFormat] = useState<ExportFormat>('json')
   const [exportLoading, setExportLoading] = useState<ExportDataType | null>(null)
+  const [exportReauthStatus, setExportReauthStatus] = useState<ReauthStatus | null>(null)
+  const [exportRecovery, setExportRecovery] = useState<ExportRecoveryState | null>(null)
 
   // ---- Model discovery state ----------------------------------------------
   const [modelCatalog, setModelCatalog] = useState<Record<'ocr_api' | 'llm_api', string[]>>({
@@ -207,6 +223,11 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
 
   const sanitizeLoadedSettings = useCallback(
     (incoming: AppSettings): AppSettings => {
+      // Defensive: SettingsFormProvider is mounted route-persistently
+      // (PersistentRouteRenderer), so a partial settings payload without an
+      // ai_provider block must not crash the whole shell — mirror the
+      // normalizeAppSettingsForUi tolerance (#8685).
+      if (!incoming.ai_provider) return incoming
       const normalizedProfiles = normalizeSavedProfiles(incoming.ai_provider.saved_profiles)
       const aiProvider = {
         ...normalizeAiProviderProfileConfig(incoming.ai_provider),
@@ -283,16 +304,15 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
 
   // ---- Sync settings → formData -------------------------------------------
   useEffect(() => {
-    if (settings) {
+    // A partial payload without an ai_provider block (degraded server or a
+    // mocked partial contract) counts as not-yet-loaded: formData stays null
+    // so Settings pages keep their loading state instead of adopting a
+    // half-shaped baseline (#8685).
+    if (settings?.ai_provider) {
       const sanitized = sanitizeLoadedSettings(settings)
       const serialized = JSON.stringify(sanitized)
-      setFormData((current) => {
-        if (!current) return sanitized
-        if (lastLoadedSettingsRef.current && JSON.stringify(current) === lastLoadedSettingsRef.current) {
-          return sanitized
-        }
-        return current
-      })
+      const previousSerialized = lastLoadedSettingsRef.current
+      setFormData((current) => reconcileLoadedSettings(current, previousSerialized, sanitized))
       lastLoadedSettingsRef.current = serialized
     }
   }, [sanitizeLoadedSettings, settings])
@@ -991,21 +1011,62 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
   }
 
   // ---- Export handler -----------------------------------------------------
-  const handleExport = async (dataType: ExportDataType) => {
+  const performExport = async (dataType: ExportDataType) => {
+    const to = new Date().toISOString()
+    const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const blob = await exportData(dataType, exportFormat, from, to)
+    const ext = exportFormat === 'csv' ? 'csv' : 'json'
+    const timestamp = new Date().toISOString().split('T')[0]
+    downloadBlob(blob, `${dataType}_${timestamp}.${ext}`)
+    setExportRecovery(null)
+    showToast('success', t('settings.exportDone'), 3000)
+  }
+
+  const showExportError = (dataType: ExportDataType, error: unknown) => {
+    const locale = (i18n.resolvedLanguage ?? i18n.language ?? 'en') as WireErrorLocale
+    const detail = translateError(error, locale)
+    setExportRecovery({
+      dataType,
+      detail,
+      storageFailure: isApiErrorCode(error, 'storage.failed'),
+    })
+    showToast('error', `${t('settings.exportFailed')}: ${detail}`, 5000)
+  }
+
+  const handleExport = async (dataType: ExportDataType, allowReauth = true) => {
     setExportLoading(dataType)
     try {
-      const to = new Date().toISOString()
-      const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-      const blob = await exportData(dataType, exportFormat, from, to)
-      const ext = exportFormat === 'csv' ? 'csv' : 'json'
-      const timestamp = new Date().toISOString().split('T')[0]
-      downloadBlob(blob, `${dataType}_${timestamp}.${ext}`)
-      showToast('success', t('settings.exportDone'), 3000)
+      await performExport(dataType)
     } catch (error) {
-      showToast('error', `${t('settings.saveFailed')}: ${error instanceof Error ? error.message : String(error)}`, 5000)
+      if (allowReauth && requiresCaptureReauthForExport(dataType, error)) {
+        try {
+          const status = await getCaptureReauthStatus()
+          if (status.enabled && !status.authenticated) {
+            setExportReauthStatus(status)
+          } else {
+            // The gate may have opened after the rejected request. Retry once.
+            try {
+              await performExport(dataType)
+            } catch (retryError) {
+              showExportError(dataType, retryError)
+            }
+          }
+        } catch (statusError) {
+          showExportError(dataType, statusError)
+        }
+      } else {
+        showExportError(dataType, error)
+      }
     } finally {
       setExportLoading(null)
     }
+  }
+
+  const dismissExportReauth = () => setExportReauthStatus(null)
+
+  const resumeFrameExport = async () => {
+    setExportReauthStatus(null)
+    await handleExport('frames', false)
   }
 
   // ---- Return value -------------------------------------------------------
@@ -1038,6 +1099,8 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     exportFormat,
     setExportFormat,
     exportLoading,
+    exportReauthStatus,
+    exportRecovery,
 
     modelCatalog,
     modelCatalogDetails,
@@ -1065,6 +1128,8 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     handleSaveAiProviderProfile,
     handleDeleteAiProviderProfile,
     handleExport: (dataType: ExportDataType) => void handleExport(dataType),
+    dismissExportReauth,
+    resumeFrameExport,
 
     resolveEndpointSurface,
     getCompatibleSurfaceOptions,

@@ -124,6 +124,9 @@ impl Scheduler {
                                                                 // Used to decide the idle-backoff + battery-saver throttle phase — idle/TS notification
                                                                 // ticks are unaffected; only the expensive collect_context/AX/analysis blocks are gated.
             let mut power_tick_counter: u64 = 0;
+            // #8686 AC4: OS screen-capture permission edge watch (mid-session
+            // TCC revocation → fail-closed stop + one-shot recovery surface).
+            let mut os_permission_watch = capture_gate::OsPermissionWatch::default();
 
             loop {
                 tokio::select! {
@@ -137,6 +140,19 @@ impl Scheduler {
                         // propagation window are unchanged — only the per-second
                         // deep-clone heap churn on the idle hot path is removed.
                         let config_snapshot = config_manager1.as_ref().map(|cm| cm.snapshot());
+                        // One live fail-closed consent snapshot per tick. Idle,
+                        // switch, capture, and analysis paths consume the same
+                        // point-in-time value so own-field gates cannot disagree.
+                        let consent = ConsentGate::from_ref(consent_manager1.as_ref())
+                            .permissions_snapshot();
+                        if let Some(ref focus) = focus1 {
+                            // Reconcile before any composite capture-gate `continue`.
+                            // Expired/update-required/missing consent must clear
+                            // pattern state even when capture work is skipped.
+                            focus
+                                .reconcile_activity_pattern_consent(&consent)
+                                .await;
+                        }
                         // #7652: re-read the shared analyzer slot once per tick — the
                         // guard is cloned and dropped immediately (no `.await` held),
                         // so a runtime install/teardown by `spawn_analysis_loop`
@@ -155,6 +171,7 @@ impl Scheduler {
                                 sqlite: &sqlite1,
                                 notif: &notif1,
                                 focus: &focus1,
+                                consent: consent.clone(),
                                 input_collector: &input_collector,
                                 event_tx: &event_tx_mon,
                             },
@@ -262,14 +279,39 @@ impl Scheduler {
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
                         focus_block.tick(&mut prev_idle_secs, new_idle_secs, idle_threshold, app_handle.as_ref(), config_manager1.as_ref());
-                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
-                        // consent record AND on a missing ConsentManager (#7728).
-                        let consent = ConsentGate::from_ref(consent_manager1.as_ref()).permissions_snapshot();
                         let paused = capture_paused.load(std::sync::atomic::Ordering::Relaxed);
                         let capture_permitted_for_tick = config_manager1.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
                             .unwrap_or(false);
-                        if !capture_permitted_for_tick {
+                        // #8686 AC4: OS permission axis — probed only while the
+                        // config/consent gate is open (a closed gate already
+                        // stops capture; probing then would emit banner noise).
+                        // Revocation stops capture fail-closed within one tick
+                        // and surfaces a one-shot event + desktop notification.
+                        let os_capture_ok = if capture_permitted_for_tick {
+                            super::os_permission_helper::observe_os_capture_permission(
+                                &mut os_permission_watch,
+                                app_handle.as_ref(),
+                                notif1
+                                    .as_deref()
+                                    .map(|n| n as &dyn capture_gate::TsNotifier),
+                            )
+                            .await
+                        } else {
+                            true
+                        };
+                        if !capture_permitted_for_tick || !os_capture_ok {
+                            // #8045 B3: a closed capture gate (consent withdrawn/
+                            // revoked, capture paused, or capture disabled by
+                            // config) must not retain pre-consent dashcam frames
+                            // in RAM. Drop + zeroize any buffered thumbnails/
+                            // titles/accessibility trees now. On a consent
+                            // withdrawal the fail-closed ConsentGate above closes
+                            // this gate within one tick (<=1s), wiping the in-
+                            // memory buffer that `withdraw_consent`'s on-disk
+                            // erase cannot reach. Cheap no-op once the buffer is
+                            // already empty.
+                            ring_buffer.clear();
                             debug!("monitor loop: capture gate closed - skipping context, accessibility, capture, and analysis tick");
                             continue;
                         }
@@ -487,6 +529,7 @@ impl Scheduler {
                                         &app_name,
                                         &event.window_title,
                                         last_focused_element.as_ref(),
+                                        window_bounds.as_ref(),
                                         thumbnail_throttle,
                                     ).await;
                                 }
@@ -512,11 +555,48 @@ impl Scheduler {
                                     // only process captures with importance >= 0.7
                                     let focus_threshold: f32 = if focus_mode.is_active() { 0.7 } else { 0.0 };
 
-                                    if let Some(mut capture_req) = capture_req.filter(|r| r.importance >= focus_threshold) {
+                                    // #8054 P3-1 + P2-4: grab-time safety gate. Evaluated only
+                                    // when a content grab would actually run (throttled — kept
+                                    // off the idle hot path). Skips the capture when the
+                                    // frontmost app switched since the tick-start snapshot
+                                    // (stale-metadata / just-excluded-app TOCTOU) or when a
+                                    // background window of an excluded/sensitive app is visible
+                                    // on the same display. `||` short-circuits so the window
+                                    // enumeration only runs when the app did NOT switch.
+                                    let would_capture = capture_req
+                                        .as_ref()
+                                        .map(|r| r.importance >= focus_threshold)
+                                        .unwrap_or(false)
+                                        || force_post;
+                                    let grab_skip = would_capture
+                                        && (super::monitor_phases::frontmost_app_switched_since(
+                                            act_mon.as_ref(),
+                                            &app_name,
+                                        )
+                                        .await
+                                            || super::monitor_phases::any_excluded_app_visible(
+                                                config_snapshot.as_deref(),
+                                                &maekon_monitor::visible_window_app_names(),
+                                            ));
+                                    if grab_skip {
+                                        debug!(app = %app_name, "capture skipped at grab time (window switch or occluded excluded app)");
+                                    }
+
+                                    if let Some(mut capture_req) = capture_req.filter(|r| !grab_skip && r.importance >= focus_threshold) {
                                         // Inject active window bounds so the frame processor
                                         // captures the correct monitor in multi-monitor setups.
                                         capture_req.window_bounds = window_bounds;
                                         capture_req.app_bundle_id = app_bundle_id.clone();
+                                        // #8054 P2-1: inject the HiDPI scale factor of the
+                                        // active window's monitor so OCR regions are scaled
+                                        // back to logical pixels, matching overlay / element
+                                        // finder coordinates (previously always None → 2x
+                                        // mismatch on Retina).
+                                        capture_req.screen_scale_factor =
+                                            crate::capture_scale::active_monitor_scale_factor(
+                                                app_handle.as_ref(),
+                                                window_bounds.as_ref(),
+                                            );
 
                                         // --- Ring buffer: flush pre-event frames on significant capture ---
                                         if let Some(ref fs) = frame_storage1 {
@@ -564,10 +644,11 @@ impl Scheduler {
                                             last_ocr_regions.clear();
                                             last_frame_rgba = None;
                                         }
-                                    } else if force_post {
-                                        // Post-event forced capture (dashcam "after" frames)
+                                    } else if force_post && !grab_skip {
+                                        // Post-event forced capture (dashcam "after" frames).
+                                        // #8054 P2-3: target the active window's monitor.
                                         if let Some(ref fs) = frame_storage1 {
-                                            if let Ok(thumb_data) = processor.capture_thumbnail().await {
+                                            if let Ok(thumb_data) = processor.capture_thumbnail(window_bounds.as_ref()).await {
                                                 debug!("ring buffer: post-event forced capture");
                                                 if let Err(e) = fs.save_frame(Utc::now(), &thumb_data).await {
                                                     warn!("frame write failed (possible disk full): {e}");
@@ -608,15 +689,16 @@ impl Scheduler {
                                 let app_changed = prev_app.as_ref() != Some(&app_name);
                                 if app_changed {
                                     if let Some(ref focus) = focus1 {
-                                        // Own-field gate: app-usage aggregation requires app_usage_analytics consent.
-                                        // Focus-session tracking is already protected by the composite gate; here only
-                                        // the usage-aggregation path is own-field gated (ConsentPermissions.app_usage_analytics).
+                                        // Independent own-field gates: app-usage aggregation follows
+                                        // app_usage_analytics, while workflow patterns follow
+                                        // activity_pattern_learning. Focus-session tracking remains
+                                        // protected by the composite capture gate.
                                         let rule_suggestions = focus
                                             .on_app_switch_with_context(
                                                 &app_name,
                                                 &focus_window_title,
                                                 focus_ocr_hint.as_deref(),
-                                                consent.app_usage_analytics,
+                                                &consent,
                                             )
                                             .await;
                                         // #5696: bridge rule suggestions (restore-context /

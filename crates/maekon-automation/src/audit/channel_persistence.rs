@@ -15,18 +15,23 @@
 //! than block the reactor or grow unbounded (audit durability is best-effort
 //! under sustained overload; reactor liveness is not negotiable).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use maekon_core::models::audit::AuditEntry;
 use tokio::runtime::Handle;
 
-use super::traits::AuditPersistence;
+use super::traits::{AuditPersistError, AuditPersistence};
 
 /// Default bound for the persistence channel. Large enough to absorb normal
 /// audit bursts (the in-memory buffer default is 500–1000 entries) while still
 /// capping memory under a stalled/slow disk.
 const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
+
+/// #8045 C2: emit a periodic warning roughly every this many dropped entries so
+/// a sustained best-effort audit drop is visible in logs without warning on
+/// every single drop under a burst.
+const DROP_WARN_INTERVAL: u64 = 100;
 
 /// Bounded-channel wrapper that runs a blocking [`AuditPersistence`] callback on
 /// a dedicated `spawn_blocking` drain task instead of on the tokio reactor.
@@ -58,6 +63,10 @@ pub struct ChannelAuditPersistence {
     /// Latches the first "channel closed" warning so a dead drain task does not
     /// spam the log on every subsequent entry.
     closed_logged: AtomicBool,
+    /// #8045 C2: running count of entries dropped (channel full or closed). Read
+    /// via [`Self::dropped_count`] for metrics; a warning is emitted every
+    /// `DROP_WARN_INTERVAL` drops so sustained loss is never fully silent.
+    dropped: AtomicU64,
 }
 
 impl ChannelAuditPersistence {
@@ -92,6 +101,7 @@ impl ChannelAuditPersistence {
             sender: Some(sender),
             fallback: None,
             closed_logged: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
         }
     }
 
@@ -106,6 +116,26 @@ impl ChannelAuditPersistence {
             sender: None,
             fallback: Some(inner),
             closed_logged: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// #8045 C2: total entries dropped so far (channel full or closed). Best-effort
+    /// metric for observability; a `Full`-level record fails closed instead of
+    /// relying on this counter (see `AuditLogger`).
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Increment the dropped counter and emit a periodic warning (#8045 C2).
+    fn note_drop(&self, reason: &str) {
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        if total % DROP_WARN_INTERVAL == 1 {
+            tracing::warn!(
+                reason,
+                total_dropped = total,
+                "audit persistence dropped an entry (best-effort persist)"
+            );
         }
     }
 }
@@ -126,12 +156,38 @@ impl AuditPersistence for ChannelAuditPersistence {
         match sender.try_send(entry.clone()) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("audit persistence channel full; dropping entry to protect reactor");
+                self.note_drop("channel_full");
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 if !self.closed_logged.swap(true, Ordering::Relaxed) {
                     tracing::warn!("audit persistence channel closed; entries no longer persisted");
                 }
+                self.note_drop("channel_closed");
+            }
+        }
+    }
+
+    /// #8045 C2: durability-checked persist. Reports the drop back to the caller
+    /// (instead of only warning) so an `AuditLevel::Full` record can fail closed.
+    fn persist_checked(&self, entry: &AuditEntry) -> Result<(), AuditPersistError> {
+        let Some(sender) = self.sender.as_ref() else {
+            if let Some(fallback) = self.fallback.as_ref() {
+                fallback.persist(entry);
+            }
+            return Ok(());
+        };
+        match sender.try_send(entry.clone()) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.note_drop("channel_full");
+                Err(AuditPersistError::ChannelFull)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                if !self.closed_logged.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("audit persistence channel closed; entries no longer persisted");
+                }
+                self.note_drop("channel_closed");
+                Err(AuditPersistError::ChannelClosed)
             }
         }
     }
@@ -236,6 +292,46 @@ mod tests {
             start.elapsed() < Duration::from_millis(200),
             "persist blocked the caller on a full channel: {:?}",
             start.elapsed()
+        );
+    }
+
+    /// #8045 C2: `persist_checked` surfaces a full channel as
+    /// `Err(ChannelFull)` (so a `AuditLevel::Full` record can fail closed) and
+    /// bumps the dropped counter — unlike `persist`, which drops silently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persist_checked_reports_full_channel_and_counts_drop() {
+        let entered = Arc::new(AtomicUsize::new(0));
+        let entered_clone = entered.clone();
+        let inner: Arc<dyn AuditPersistence> = Arc::new(move |_: &AuditEntry| {
+            entered_clone.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let wrapper = ChannelAuditPersistence::with_capacity(inner, Handle::current(), 1);
+
+        // First send drains immediately; wait until the drain task parks inside the
+        // inner callback so the single channel slot is the only free capacity.
+        wrapper.persist(&make_entry("c-0"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while entered.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "drain task never started handling the first entry"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Fill the single buffered slot, then the next checked persist must report
+        // the channel is full instead of dropping silently.
+        wrapper
+            .persist_checked(&make_entry("c-1"))
+            .expect("first checked persist fills the slot");
+        let err = wrapper
+            .persist_checked(&make_entry("c-2"))
+            .expect_err("full channel must surface an error");
+        assert_eq!(err, super::AuditPersistError::ChannelFull);
+        assert!(
+            wrapper.dropped_count() >= 1,
+            "a rejected checked persist must increment the dropped counter"
         );
     }
 

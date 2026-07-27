@@ -32,7 +32,7 @@ export default function OverlayApp() {
     return <TrackingBorderSurface windowLabel={windowLabel.value} />
   }
 
-  return <InteractiveOverlaySurface windowLabel={windowLabel.value} />
+  return <InteractiveOverlaySurface />
 }
 
 interface TauriWindowLabelState {
@@ -43,6 +43,8 @@ interface TauriWindowLabelState {
 const ACTIVE_TRACKING_BORDER_STATE: CaptureStatePayload = {
   paused: false,
   indicator_visible: true,
+  consent_granted: true,
+  permitted: true,
 }
 
 function isTrackingBorderWindowLabel(windowLabel?: string): windowLabel is string {
@@ -88,15 +90,43 @@ function TrackingBorderSurface({ windowLabel }: { windowLabel: string }) {
   )
 }
 
-function InteractiveOverlaySurface({ windowLabel }: { windowLabel?: string }) {
+function InteractiveOverlaySurface() {
   const { state, dispatch } = useOverlayEvents()
   const { t } = useTranslation()
   const isRich = state.mode === 'rich' || state.mode === 'adaptive'
+  const [suggestionsPanelHydrated, setSuggestionsPanelHydrated] = useState(false)
+
+  // A tracking-panel open request can lazily create this WebView. Tauri events
+  // are not buffered, so hydrate the authoritative native state before the
+  // write-back effect below can overwrite it with the reducer's initial false.
+  useEffect(() => {
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const open = await invoke<boolean>('get_suggestions_panel_open')
+        if (!cancelled && typeof open === 'boolean') {
+          dispatch({ type: 'toggle-suggestions-panel', payload: open })
+        }
+      } catch (e) {
+        console.warn('get_suggestions_panel_open failed:', e)
+      } finally {
+        if (!cancelled) setSuggestionsPanelHydrated(true)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [dispatch])
 
   // Sync suggestions panel open/close → Rust window resize.
   // When open, the overlay shrinks to a compact right-edge strip so it
   // doesn't block mouse events on the rest of the desktop.
   useEffect(() => {
+    if (!suggestionsPanelHydrated) return
+
     ;(async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
@@ -105,7 +135,7 @@ function InteractiveOverlaySurface({ windowLabel }: { windowLabel?: string }) {
         console.warn('toggle_suggestions_panel failed:', e)
       }
     })()
-  }, [state.suggestionsPanelOpen])
+  }, [state.suggestionsPanelOpen, suggestionsPanelHydrated])
 
   // Sync automation confirmation modal → Rust overlay mode.
   // Uses dedicated IPC so the mode priority system can recalculate
@@ -213,7 +243,6 @@ function InteractiveOverlaySurface({ windowLabel }: { windowLabel?: string }) {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
-      <TrackingBorder captureState={state.captureState} windowLabel={windowLabel} />
       <PointerContextHighlight pointerContext={state.pointerContext} />
 
       {/* Detection mode header */}

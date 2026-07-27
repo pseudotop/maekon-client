@@ -168,27 +168,53 @@ pub(super) fn parse_anthropic_sse_event(event_type: &str, data: &str) -> Option<
                 _ => None,
             }
         }
+        "message_start" => {
+            // #8057 (P2-1): Anthropic carries the prompt cost in
+            // `message.usage.input_tokens` on `message_start`; `message_delta`
+            // later carries only `output_tokens`. Without capturing input here
+            // the whole turn's input tokens were dropped (the old `message_delta`
+            // arm required BOTH counts and the wire never satisfies that), so the
+            // budget ledger and `MessageRecord` under-counted every Anthropic turn.
+            // Emit an input-only usage chunk; `output_tokens` is forced to 0 so it
+            // does not double-count the final output the `message_delta` arm adds
+            // (the consumer accumulates the two disjoint chunks — see the drain
+            // loop's `accumulate_tokens`).
+            let val: serde_json::Value = serde_json::from_str(data).ok()?;
+            let input = val
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(|tokens| tokens.as_u64())?;
+            Some(OutboundMessage::Result {
+                content: String::new(),
+                done: false,
+                usage: Some(TokenUsage {
+                    input_tokens: input,
+                    output_tokens: 0,
+                }),
+            })
+        }
         "message_delta" => {
-            // Extract usage from message_delta if present
+            // Extract usage from message_delta if present. #8057 (P2-1):
+            // `output_tokens` alone is sufficient — the real wire omits
+            // `input_tokens` here (it arrived on `message_start`), so requiring
+            // both dropped the turn's output usage entirely. Default the absent
+            // input to 0 so a `message_start`-sourced input is not double-added.
             let val: serde_json::Value = serde_json::from_str(data).ok()?;
             let usage = val.get("usage").and_then(|u| {
-                let input = u.get("input_tokens")?.as_u64()?;
                 let output = u.get("output_tokens")?.as_u64()?;
+                let input = u.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
                 Some(TokenUsage {
                     input_tokens: input,
                     output_tokens: output,
                 })
             });
             // message_delta may contain stop_reason but we handle completion in message_stop
-            if usage.is_some() {
-                Some(OutboundMessage::Result {
-                    content: String::new(),
-                    done: false,
-                    usage,
-                })
-            } else {
-                None
-            }
+            usage.map(|usage| OutboundMessage::Result {
+                content: String::new(),
+                done: false,
+                usage: Some(usage),
+            })
         }
         "message_stop" => Some(OutboundMessage::Result {
             content: String::new(),

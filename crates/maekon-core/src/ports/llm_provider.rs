@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 use crate::error::CoreError;
+use crate::models::prompt_assembly::TrustedInstruction;
 use crate::models::skill::SkillMeta;
 
 // Tri-state constants for LlmCallHealth.
@@ -82,8 +83,14 @@ pub struct InterpretedAction {
 pub struct SkillContext {
     /// Available skill summaries (progressive disclosure — names only).
     pub available_skills: Vec<SkillMeta>,
-    /// Activated skill body to inject fully into the prompt.
-    pub active_skill_body: Option<String>,
+    /// The activated skill, if one is cleared for instruction position.
+    ///
+    /// Typed as [`TrustedInstruction`] rather than `Option<String>` on purpose
+    /// (#8588): a `String` field here would let any caller — including one
+    /// holding a Slack message or a scraped document — put arbitrary text into
+    /// the system prompt. `TrustedInstruction` can only be built from a verified
+    /// Skill Pack activation, so that assignment does not compile.
+    pub active_skill: Option<TrustedInstruction>,
 }
 
 /// LLM provider port — interprets user intent from screen context.

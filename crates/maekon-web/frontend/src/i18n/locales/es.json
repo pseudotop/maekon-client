@@ -1,5 +1,7 @@
 {
   "common": {
+    "refresh": "Actualizar",
+    "retry": "Reintentar",
     "loading": "Cargando...",
     "error": "Error",
     "save": "Guardar",
@@ -27,7 +29,54 @@
     "navigate": "Navigate",
     "previous": "Previous"
   },
+  "support": {
+    "pageTitle": "Soporte y diagnóstico",
+    "pageDescription": "Obtén ayuda, ejecuta diagnósticos e informa de un problema. Los archivos de diagnóstico y de informe de errores se crean solo cuando lo solicitas, y nada sale de tu dispositivo sin tu acción.",
+    "reportProblem": "Informar de un problema"
+  },
+  "integrations": {
+    "title": "Integraciones",
+    "description": "Conecta Maekon a los sistemas de tu organización para recibir avisos y sincronizar el contexto. Cada acción saliente pasa primero los controles de privacidad y consentimiento.",
+    "loading": "Cargando el estado de la integración...",
+    "statusError": "No se pudo cargar el estado de la integración.",
+    "disabledTitle": "Las integraciones están desactivadas",
+    "disabledDescription": "El entorno de integración saliente está desactivado. Activa Integración en Ajustes → Avanzado o aplica un perfil de integración administrado aprobado.",
+    "auth": {
+      "title": "Autorización del dispositivo",
+      "description": "Autoriza este dispositivo para conectarse a tu integración.",
+      "loading": "Comprobando el estado de autorización...",
+      "error": "La comprobación de autorización falló.",
+      "expired": "La solicitud de autorización caducó. Vuelve a empezar.",
+      "startError": "No se pudo iniciar la autorización.",
+      "nonInteractive": "Esta integración usa una credencial no interactiva y no se puede autorizar desde aquí.",
+      "notConnected": "Este dispositivo no está conectado.",
+      "connect": "Conectar",
+      "awaiting": "Esperando a que autorices este dispositivo.",
+      "instructions": "Abre la página de verificación e introduce este código:",
+      "codeLabel": "Tu código",
+      "openVerification": "Abrir la página de verificación",
+      "expiresAt": "Caduca",
+      "cancel": "Cancelar",
+      "connected": "Conectado",
+      "disconnectHint": "Al desconectar se borra la autorización de este dispositivo y cualquier inicio de sesión pendiente. No revoca las credenciales en el proveedor de identidad.",
+      "disconnect": "Desconectar"
+    },
+    "inbox": {
+      "title": "Bandeja de entrada",
+      "description": "Avisos y solicitudes recibidos de los sistemas conectados.",
+      "refresh": "Actualizar",
+      "error": "No se pudo cargar la bandeja de entrada.",
+      "actionError": "La acción falló. Inténtalo de nuevo.",
+      "loading": "Cargando la bandeja de entrada...",
+      "empty": "Aún no hay avisos. Las solicitudes de los sistemas conectados aparecerán aquí.",
+      "source": "Origen",
+      "received": "Recibido",
+      "ack": "Confirmar",
+      "dismiss": "Descartar"
+    }
+  },
   "nav": {
+    "support": "Soporte",
     "dashboard": "Dashboard",
     "timeline": "Línea de tiempo",
     "reports": "Reportes",
@@ -50,9 +99,13 @@
     "groupMonitor": "Monitor",
     "groupInsights": "Perspectivas",
     "groupManage": "Gestión",
-    "groupSystem": "Sistema"
+    "groupSystem": "Sistema",
+    "tasks": "Tareas"
   },
   "dashboard": {
+    "metricsError": "Error al cargar las métricas del sistema",
+    "processesError": "Error al cargar los procesos",
+    "countScopeNote": "Las capturas y los eventos reflejan la actividad de hoy. Consulta Ajustes › Almacenamiento para ver los totales históricos.",
     "title": "Resumen de actividad",
     "realtime": "Tiempo real",
     "connecting": "Conectando...",
@@ -66,6 +119,10 @@
     "idleTime": "Tiempo inactivo",
     "captures": "Capturas",
     "events": "Eventos",
+    "capturePending": {
+      "title": "La actividad capturada está pendiente de análisis",
+      "description": "Los totales de captura en vivo ya están disponibles. Las categorías de la cronología y el análisis de concentración aparecerán después del procesamiento."
+    },
     "cpuMemory24h": "Uso de CPU / Memoria (24h)",
     "appUsageTime": "Tiempo de uso por aplicación",
     "recentProcesses": "Procesos recientes (Top 5)",
@@ -111,11 +168,15 @@
     "readyToInstall": "Listo para instalar",
     "error": "Error",
     "statusUnavailable": "No se pudo obtener el estado de actualización",
+    "statusCheckFailed": "No se pudo obtener la información de actualización. Comprueba la red o el estado del servidor y vuelve a intentarlo.",
+    "actionFailed": "No se pudo completar la acción de actualización. Vuelve a intentarlo.",
+    "technicalDetails": "Detalles técnicos",
     "lastUpdateUnknown": "Última señal de actualización: desconocida",
     "lastUpdateAge": "Última señal de actualización: hace {{seconds}}s",
     "staleActionBlocked": "La aprobación de actualización está temporalmente bloqueada porque el estado está desactualizado. Haga clic en Verificar ahora para actualizar.",
     "streamIssue": "El flujo de actualizaciones en vivo tiene problemas temporales. Cambiando a consulta periódica.",
     "reconnecting": "Reconectando al flujo de actualizaciones en vivo (intento {{count}})...",
+    "streamRecovered": "Se restableció la conexión del flujo de actualizaciones en vivo. Las actualizaciones continúan sin repetir acciones ni notificaciones.",
     "currentVersion": "Actual",
     "latestVersion": "Más reciente",
     "openRelease": "Abrir notas de la versión",
@@ -149,6 +210,9 @@
     "releaseNotes": "Notas de la versión",
     "downloadSize": "Tamaño de descarga: {{size}}",
     "versionInfo": "Version Information",
+    "aboutTitle": "Acerca de",
+    "aboutBuildDate": "Fecha de compilación",
+    "aboutCommit": "Commit",
     "releaseName": "Release",
     "downloadInProgress": "Downloading update...",
     "rolledBack": "Rolled back",
@@ -165,10 +229,25 @@
     "releasedAgoHours_plural": "released {{count}} hours ago",
     "releasedAgoDays": "released {{count}} day ago",
     "releasedAgoDays_plural": "released {{count}} days ago",
-    "readyToInstallMsg": "Download complete. Ready to install.",
-    "installNow": "Install Now"
+    "readyToInstallMsg": "Descarga completada. Lista para instalar.",
+    "installNow": "Instalar ahora"
+  },
+  "frameImage": {
+    "reauth": "Se requiere reautenticación para ver esta captura.",
+    "reauthAction": "Reautenticar",
+    "deleted": "Esta captura fue eliminada por la política de retención.",
+    "missing": "No se capturó ninguna imagen para este fotograma.",
+    "unavailable": "La captura no está disponible temporalmente.",
+    "retry": "Reintentar",
+    "short": "No disponible"
   },
   "timeline": {
+    "annotations": "Notas",
+    "addAnnotation": "Añadir una nota...",
+    "addAnnotationSubmit": "Añadir",
+    "deleteAnnotation": "Eliminar nota",
+    "annotationUpdateFailed": "No se pudo actualizar la nota.",
+    "tagUpdateFailed": "No se pudieron actualizar las etiquetas.",
     "title": "Línea de tiempo",
     "captures": " capturas",
     "showing": " mostrando",
@@ -220,8 +299,10 @@
     "noActivity": "No hay actividad registrada para este día"
   },
   "settings": {
+    "storageScopeNote": "Totales acumulados de todos los datos almacenados (histórico).",
     "title": "Configuración",
     "tabs": {
+      "integrations": "Integraciones",
       "general": "General",
       "privacy": "Telemetría",
       "monitoring": "Monitoreo",
@@ -359,6 +440,10 @@
         "input": {
           "title": "Pick an input mode",
           "description": "Push-to-talk is predictable; voice activity needs sensitivity tuning for your room."
+        },
+        "bystander": {
+          "title": "Avise antes de grabar",
+          "description": "Explique a las personas cercanas qué se capturará y obtenga su consentimiento cuando sea necesario antes de activar el audio."
         }
       },
       "advanced": {
@@ -419,6 +504,8 @@
     "exportFrames": "Exportar fotogramas",
     "exporting": "Exportando...",
     "language": "Idioma",
+    "appearanceTitle": "Apariencia",
+    "appearanceDarkModeDesc": "Usa un tema de color oscuro en todo el panel. El primer inicio sigue la preferencia del sistema operativo.",
     "korean": "한국어",
     "english": "English",
     "storageStats": "Estadísticas de almacenamiento",
@@ -536,6 +623,7 @@
     "piiStrict": "Estricto - + Claves API, IPs, rutas",
     "piiDesc": "Enmascarar información personal en los datos recopilados",
     "excludedApps": "Aplicaciones excluidas (separadas por comas)",
+    "excludedAppsRetroactiveNote": "Añadir una aplicación aquí también elimina el historial ya registrado de esa aplicación —capturas de pantalla, eventos y los resúmenes e incrustaciones de IA derivados—, no solo las capturas futuras.",
     "excludedAppsPlaceholder": "1Password, Discord, Slack",
     "excludedAppPatterns": "Patrones de aplicaciones excluidas (separados por comas)",
     "excludedAppPatternsPlaceholder": "*banco*, *billetera*, *crypto*",
@@ -591,6 +679,10 @@
     "saveSettings": "Guardar configuración",
     "savedFull": "Configuración guardada. Algunas opciones requieren reiniciar la aplicación.",
     "exportDone": "Datos exportados.",
+    "exportFailed": "La exportación no se completó",
+    "exportStorageRecovery": "Libera espacio en disco o cierra el programa que está usando el almacenamiento local de Maekon y vuelve a intentarlo. Esta exportación no se marcó como completada.",
+    "exportGenericRecovery": "Revisa el error y vuelve a intentarlo. Esta exportación no se marcó como completada.",
+    "exportRetry": "Reintentar exportación",
     "days": {
       "Mon": "Lun",
       "Tue": "Mar",
@@ -680,7 +772,7 @@
     "bugReportPiiStandard": "Standard - Oculta correos, teléfonos, tarjetas de crédito",
     "bugReportPiiStrict": "Strict - También oculta claves API, IPs, rutas de archivos",
     "bugReportIncludeLogs": "Incluir registros de ejecución",
-    "bugReportIncludeLogsDesc": "Adjuntar registros nativos de ejecución recientes al informe.",
+    "bugReportIncludeLogsDesc": "Opcional: incluir registros nativos recientes tras revisarlos. Se excluyen de forma predeterminada y nunca se cargan automáticamente.",
     "bugReportGenerate": "Generar informe",
     "bugReportGenerateFailedTitle": "Error al generar el informe",
     "bugReportGenerateFailed": "No se pudo generar el informe de error.",
@@ -715,7 +807,7 @@
     "bugReportNoEntries": "Sin entradas",
     "bugReportBack": "Atrás",
     "bugReportNext": "Siguiente",
-    "bugReportShareDesc": "Elija cómo compartir su informe de error. El ID del error ayuda a correlacionar su informe.",
+    "bugReportShareDesc": "Revise el paquete antes de compartirlo. No envíe pantallas, OCR o ventanas sin procesar, prompts, secretos, datos de clientes ni rutas locales completas. No hay carga automática.",
     "bugReportOpenGitHub": "Abrir issue en GitHub",
     "bugReportOpenGitHubDesc": "Plantilla de issue con detalles del entorno.",
     "bugReportOpenFailed": "No se pudo abrir la página del issue de GitHub.",
@@ -730,7 +822,7 @@
     "bugReportExported": "Informe de error exportado exitosamente.",
     "bugReportExportFailed": "No se pudo exportar el informe de error.",
     "bugReportEmailSupport": "Enviar correo a soporte",
-    "bugReportEmailSupportDesc": "Abrir un correo prellenado para el equipo de soporte.",
+    "bugReportEmailSupportDesc": "Abrir un borrador local y adjuntar el paquete revisado solo si lo elige expresamente.",
     "autostart": {
       "title": "Startup",
       "description": "Automatically start Maekon when you sign in to your computer.",
@@ -769,6 +861,11 @@
       "reload": "Reload Engine",
       "delete": "Delete",
       "delete_confirm": "Delete the downloaded model? You can re-download it later.",
+      "actionErrorTitle": "La acción del modelo falló",
+      "downloadFailed": "No se pudo iniciar la descarga del modelo: {{error}}",
+      "cancelFailed": "No se pudo cancelar la descarga: {{error}}",
+      "deleteFailed": "No se pudo eliminar el modelo: {{error}}",
+      "reloadFailed": "No se pudo recargar el motor de reconocimiento de voz: {{error}}",
       "language": "STT Language",
       "input_mode": "Input Mode",
       "ptt": "Push-to-Talk",
@@ -797,7 +894,14 @@
       "coaching": "Coaching",
       "integration": "Integration",
       "sync": "Cross-Device Sync"
-    }
+    },
+    "permissionAutomationSandboxLabel": "Sandbox de Automatización",
+    "permissionAutomationSandboxDescAvailable": "Las acciones de automatización se ejecutan dentro del sandbox de plataforma fuera de proceso en este dispositivo.",
+    "permissionAutomationSandboxDescUnavailable": "No hay sandbox de plataforma disponible en este dispositivo o compilación. La automatización falla en modo cerrado: las acciones se rechazan en lugar de ejecutarse sin contención.",
+    "permissionLinuxSessionLabel": "Sesión Gráfica",
+    "permissionLinuxSessionDescWayland": "Sesión Wayland detectada. La detección de ventana activa y el panel de seguimiento no están disponibles en Wayland; la captura continúa con contexto reducido. Inicia sesión en X11 para el conjunto completo de funciones.",
+    "permissionLinuxSessionDescX11": "Sesión X11 detectada. La detección de ventana activa y el panel de seguimiento son compatibles.",
+    "permissionLinuxSessionDescUnknown": "No se pudo determinar el tipo de sesión gráfica. La detección de ventana activa puede ser poco fiable."
   },
   "privacy": {
     "claims": {
@@ -918,6 +1022,8 @@
     "resumeCapture": "Reanudar captura",
     "capturePaused": "Captura pausada",
     "captureRunning": "Captura en curso",
+    "captureConsentRequired": "Se requiere consentimiento",
+    "captureBlocked": "La captura está bloqueada por la configuración actual de privacidad o programación.",
     "capturePauseUnavailable": "La pausa de captura está disponible en la aplicación de escritorio.",
     "currentData": "Datos almacenados actualmente",
     "eventsLabel": "Eventos",
@@ -926,7 +1032,7 @@
     "storageSizeLabel": "Tamaño de almacenamiento",
     "dataRangeLabel": "Rango de datos",
     "deleteByRangeTitle": "Eliminar por rango de fechas",
-    "deleteByRangeDesc": "Elimine selectivamente los datos de un período específico",
+    "deleteByRangeDesc": "Elimine selectivamente los datos de un período específico. También se eliminan los datos derivados de ese período —resúmenes de actividad de IA, incrustaciones y sugerencias locales— para no dejar ningún rastro.",
     "startDate": "Fecha de inicio",
     "endDate": "Fecha de fin",
     "dataTypesHint": "Tipos de datos a eliminar (todos si no se selecciona ninguno)",
@@ -1026,6 +1132,28 @@
           "dismiss": "Descartar"
         }
       },
+      "fullText": {
+        "label": "Procesamiento de texto con IA y proveedores externos",
+        "description": "Permite que Maekon procese texto completo para funciones de IA. Si eliges un proveedor externo de IA, el texto minimizado y censurado puede salir de este dispositivo.",
+        "collectedTitle": "Cuando está activado, Maekon puede procesar:",
+        "collected": {
+          "chatText": "Texto que envías explícitamente en un chat de IA",
+          "activeContext": "Contexto minimizado y censurado de la aplicación activa incluido en una solicitud de IA",
+          "providerResult": "El resultado del proveedor devuelto a tu sesión de Maekon"
+        },
+        "disclosure": "Desactivado de forma predeterminada. Actívalo solo si aceptas el procesamiento de texto completo con IA y, cuando haya un proveedor externo configurado, la transferencia fuera del dispositivo de texto minimizado y censurado. La configuración del proveedor y los filtros de privacidad siguen aplicándose; esto nunca autoriza capturas sin procesar, credenciales ni contenido de aplicaciones excluidas."
+      },
+      "ocrProcessing": {
+        "label": "Procesamiento de texto con OCR",
+        "description": "Permite que Maekon extraiga texto de las capturas de pantalla que ya autorizaste. El procesamiento permanece en este dispositivo salvo que configures por separado un proveedor externo de OCR.",
+        "collectedTitle": "Cuando está activado, se procesa y puede conservarse localmente:",
+        "collected": {
+          "screenPixels": "Píxeles de capturas ya permitidas por el consentimiento de captura de pantalla",
+          "extractedText": "Texto extraído y coordenadas de regiones de texto usados en el contexto local de captura y escena",
+          "retention": "Texto OCR almacenado con los registros locales de captura durante el periodo de conservación configurado"
+        },
+        "disclosure": "Este consentimiento no permite por sí solo que las capturas de pantalla sin procesar salgan del dispositivo. El OCR externo también requiere configurar un proveedor; enviar una captura sin censura requiere el consentimiento independiente de máxima sensibilidad que aparece abajo. Desactivar esta opción bloquea nuevo texto OCR en las rutas de captura, análisis de escena y proveedor. Usa Retirar consentimiento o la eliminación de datos para borrar registros conservados anteriormente."
+      },
       "unredactedExternalOcr": {
         "label": "OCR externo sin censura",
         "description": "Máxima sensibilidad, desactivado de forma predeterminada. Actívalo solo si autorizas intencionalmente enviar capturas de pantalla sin procesar a un proveedor externo de OCR.",
@@ -1038,17 +1166,56 @@
         "disclosure": "Este consentimiento es necesario además del consentimiento de procesamiento OCR y del ajuste de IA que permite OCR externo sin censura. Sin este consentimiento explícito, el OCR externo sin procesar se bloquea aunque el ajuste esté activado."
       },
       "withdraw": {
-        "label": "Retirar el consentimiento",
-        "description": "Retirarlo detiene toda la recopilación y solicita la eliminación de los datos ya recopilados. Es más contundente que simplemente desactivar la monitorización.",
-        "button": "Retirar el consentimiento",
-        "confirmTitle": "¿Retirar el consentimiento?",
-        "confirmMessage": "Esto detiene toda la recopilación y solicita la eliminación de los datos ya recopilados.",
+        "label": "Retirar el consentimiento y eliminar datos",
+        "description": "Retirar el consentimiento detiene toda recopilación y elimina los datos que Maekon administra en este dispositivo. Es una acción más contundente que desactivar la monitorización.",
+        "button": "Retirar el consentimiento y eliminar datos",
+        "confirmTitle": "¿Retirar el consentimiento y eliminar los datos?",
+        "confirmMessage": "Se detendrá toda recopilación y Maekon eliminará los datos que administra en este dispositivo.",
         "confirmNote": "Los archivos que ya hayas exportado o respaldado en disco se guardan fuera de la aplicación y no se eliminan con esta acción.",
-        "confirmButton": "Retirar y eliminar"
+        "confirmButton": "Retirar y eliminar datos"
+      },
+      "patternLearning": {
+        "label": "Aprendizaje de Patrones y Coaching",
+        "description": "Permite que Maekon aprenda localmente patrones de trabajo recurrentes para los playbooks de concentración y el coaching proactivo. Al desactivarlo se detiene el aprendizaje; las estadísticas ya derivadas expiran con la retención normal.",
+        "collectedTitle": "Qué habilita esto",
+        "collected": {
+          "habitStats": "Estadísticas locales de hábitos y patrones de concentración",
+          "playbookSignals": "Señales de playbook derivadas de tu actividad",
+          "coachingTriggers": "Evaluación de disparadores de coaching proactivo"
+        }
+      },
+      "crossDeviceSync": {
+        "label": "Sincronización entre Dispositivos",
+        "description": "Permite sincronizar tus datos de Maekon con tus propios dispositivos emparejados en la red local. Al desactivarlo se detienen las nuevas sesiones de sincronización; los dispositivos emparejados conservan sus copias existentes.",
+        "collectedTitle": "Qué habilita esto",
+        "collected": {
+          "syncPayloads": "Cargas de sincronización cifradas hacia tus dispositivos emparejados",
+          "deviceIdentity": "Identidad del dispositivo usada para emparejar y autenticar el transporte"
+        }
+      },
+      "memoryGraphEnrichment": {
+        "label": "Enriquecimiento del Grafo de Memoria",
+        "description": "Permite que Maekon derive conexiones entre tus actividades en un grafo de memoria local que mejora el recuerdo de contexto. Al desactivarlo se detiene el enriquecimiento nuevo; las aristas existentes expiran con la retención normal.",
+        "collectedTitle": "Qué habilita esto",
+        "collected": {
+          "memoryEdges": "Enlaces derivados entre actividades, temas y sesiones",
+          "derivedEntities": "Entidades extraídas localmente que anclan esos enlaces"
+        }
       }
     }
   },
   "search": {
+    "getHelp": "Obtener ayuda",
+    "clarificationTitle": "Coinciden varios historiales",
+    "clarificationDescription": "No se presupone que un resultado sea el correcto. Elige una aplicación para acotar el conjunto completo de resultados.",
+    "clarificationIncompleteDescription": "No se presupone que un resultado sea el correcto. Acota por origen o concreta la búsqueda antes de elegir.",
+    "clarificationAllApps": "Todas las aplicaciones",
+    "clarificationAppLabel": "Acotar resultados por aplicación",
+    "clarificationSourceLabel": "Acotar resultados por origen",
+    "semanticEnableHint": "La búsqueda semántica está desactivada — actívala en Settings → Advanced (se aplica tras reiniciar).",
+    "enableAiFeatures": "Activar funciones de IA",
+    "noResultsTryKeyword": "Sin coincidencias en la búsqueda de texto. Prueba el modo Keyword para ordenar tus resúmenes de actividad por relevancia.",
+    "tryKeyword": "Probar búsqueda por palabra clave",
     "title": "Buscar",
     "placeholder": "Ingrese un término de búsqueda...",
     "results": "Resultados de búsqueda",
@@ -1112,6 +1279,24 @@
     "to": "To"
   },
   "reports": {
+    "exportTitle": "Exportar datos del informe",
+    "exportDescription": "Descarga los datos de actividad del rango seleccionado. Elige el alcance y el formato antes de generar.",
+    "exportFrom": "Desde",
+    "exportTo": "Hasta",
+    "exportFormat": "Formato",
+    "exportSummary": "Resumen del informe",
+    "exportSummaryDesc": "Una instantánea JSON de los gráficos de esta página: actividad diaria y por hora, uso de aplicaciones, productividad y totales.",
+    "exportSummaryButton": "Descargar JSON",
+    "exportMetrics": "Métricas del sistema",
+    "exportMetricsDesc": "Muestras de CPU, memoria, disco y red del rango seleccionado.",
+    "exportEvents": "Eventos de actividad",
+    "exportEventsDesc": "Eventos de ventana y cambio de aplicación con marcas de tiempo y títulos.",
+    "exportFrames": "Capturas",
+    "exportFramesDesc": "Metadatos de captura y texto extraído por OCR: nunca las imágenes de captura de pantalla.",
+    "exportDownload": "Descargar",
+    "exporting": "Exportando…",
+    "exportRedactionNote": "Las exportaciones contienen metadatos de actividad (nombres de aplicaciones, títulos de ventana y texto extraído por OCR de las capturas) y métricas del sistema del rango seleccionado. Nunca se incluyen imágenes de captura de pantalla. Los archivos se guardan en las descargas del navegador.",
+    "exportFailed": "Error al exportar",
     "title": "Reportes de actividad",
     "week": "Semanal",
     "month": "Mensual",
@@ -1152,7 +1337,7 @@
     "capture": "Captura",
     "noFrames": "No hay fotogramas en este momento",
     "capturedOcr": "OCR capturado",
-    "imageUnavailable": "No se pudo cargar la imagen de la captura de pantalla. Verifique la política de retención o el estado de la ruta del archivo.",
+    "imageUnavailable": "No se pudo cargar la captura. Es posible que la política de retención la haya eliminado o que se requiera reautenticación.",
     "sceneElements": "{{count}} elementos detectados",
     "sceneUnavailable": "El análisis de escena no está disponible para este fotograma.",
     "showOverlay": "Mostrar superposición de escena",
@@ -1214,7 +1399,12 @@
     "eventsRestored": "{{count}} eventos restaurados",
     "framesRestored": "{{count}} fotogramas restaurados",
     "errors": "Errores",
-    "moreErrors": "y {{count}} errores más"
+    "moreErrors": "y {{count}} errores más",
+    "fullExportTitle": "Exportar todos mis datos (GDPR Art. 20)",
+    "fullExportDescription": "Descargue un archivo JSON legible por máquina con todas las tablas de datos personales que este dispositivo posee (segmentos de actividad y resúmenes, sugerencias, coaching, rachas de hábitos, el grafo de memoria, anotaciones de fotogramas, chats de IA, métricas de enfoque, sesiones de trabajo y resúmenes). El contenido de texto libre se enmascara.",
+    "exporting": "Preparando la exportación…",
+    "fullExportButton": "Descargar exportación completa de datos",
+    "fullExportFailed": "Error en la exportación"
   },
   "automation": {
     "title": "Automatización",
@@ -1570,6 +1760,10 @@
     }
   },
   "auditLog": {
+    "exportTitle": "Exportar registro de auditoría",
+    "exportHint": "Descarga las entradas de auditoría más recientes (hasta 1000) como archivo JSON. Solo se incluyen metadatos de evidencia; usa la verificación de integridad anterior para validar la cadena almacenada.",
+    "exportButton": "Exportar entradas de auditoría",
+    "exportFailed": "Error al exportar",
     "title": "Registro de auditoría",
     "entries": "Entradas de auditoría",
     "details": "Detalles",
@@ -1582,7 +1776,9 @@
     "chainLegacyCount": "Se excluyeron {{count}} entradas antiguas (previas a la cadena de hash).",
     "chainBroken": "Se detectó una ruptura de integridad",
     "chainBrokenDetail": "Primera entrada dañada en seq {{seq}}: {{reason}}",
-    "chainBrokenUnknown": "La verificación de la cadena falló por un motivo desconocido."
+    "chainBrokenUnknown": "La verificación de la cadena falló por un motivo desconocido.",
+    "durableSourceNote": "Basado en el registro de auditoría duradero y verificable — incluye transiciones de consentimiento y privacidad.",
+    "bufferSourceNote": "Las tarjetas de resumen reflejan el búfer de ejecución de automatización en memoria de esta sesión, no el registro de auditoría duradero de abajo."
   },
   "widgets": {
     "title": "Widgets",
@@ -1637,8 +1833,22 @@
   },
   "emptyState": {
     "dashboard": {
-      "title": "Recopilando datos",
-      "description": "Maekon está recopilando datos de actividad en segundo plano. Abra cualquier aplicación y siga trabajando: sus primeras métricas suelen aparecer en un minuto."
+      "active": {
+        "title": "Recopilando datos",
+        "description": "Maekon está recopilando datos de actividad en segundo plano. Abre cualquier aplicación y sigue trabajando: tus primeras métricas suelen aparecer en un minuto, y tu primera recovery card aparece en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos."
+      },
+      "paused": {
+        "title": "Captura de actividad en pausa",
+        "description": "Maekon no está recopilando datos de actividad. Reanude la captura cuando esté listo para crear su panel."
+      },
+      "consentRequired": {
+        "title": "Se requiere consentimiento para la captura",
+        "description": "Maekon no está recopilando datos de actividad. Revise y conceda el consentimiento antes de iniciar la recopilación."
+      },
+      "unavailable": {
+        "title": "Estado de actividad no disponible",
+        "description": "Maekon no puede confirmar si la captura está activa. Compruebe la aplicación de escritorio antes de confiar en este panel."
+      }
     },
     "timeline": {
       "title": "La captura de pantalla está desactivada",
@@ -1786,7 +1996,7 @@
     "commands": "Comandos",
     "executionHistory": "Historial de ejecución",
     "currentStatus": "Estado actual",
-    "updateHistory": "Historial de actualizaciones",
+    "updateChannel": "Canal de actualización",
     "general": "General",
     "notifications": "Notificaciones",
     "privacy": "Privacidad",
@@ -1964,7 +2174,12 @@
     "noOverrides": "No hay anulaciones en este rango",
     "noSegments": "No se encontraron segmentos para este rango de fechas",
     "overridden": "Anulado",
-    "personalTime": "Tiempo personal"
+    "personalTime": "Tiempo personal",
+    "untilRemoved": "Hasta eliminarlo (sin caducidad automática)",
+    "effectMarkAsNoise": "Se excluye de futuros resultados de recalibración y reagrupación.",
+    "effectReassignRegime": "La reagrupación futura usa el régimen seleccionado para este segmento.",
+    "effectPersonalTime": "El análisis posterior trata este intervalo como tiempo personal.",
+    "effectUnknown": "Se aplica a la recalibración posterior."
   },
   "coaching": {
     "title": "Historial de coaching",
@@ -1977,6 +2192,7 @@
     "goalsUpdated": "Objetivos actualizados",
     "settingsTitle": "Objetivos de coaching",
     "regimeLabel": "Etiqueta de régimen",
+    "regimeLabelRequired": "Introduce una etiqueta de régimen.",
     "targetMinutes": "Objetivo (min)",
     "addGoal": "Añadir objetivo",
     "remove": "Eliminar",
@@ -2045,8 +2261,8 @@
       "missed": "<50%",
       "noData": "Sin datos"
     },
-    "noEventsHint": "Coaching nudges will appear here as you work.",
-    "noGoalsHint": "Goals will appear here once regime tracking is active.",
+    "noEventsHint": "Las sugerencias de coaching aparecerán aquí mientras trabajas.",
+    "noGoalsHint": "Los objetivos aparecerán aquí cuando se active el seguimiento del régimen.",
     "disabledBannerTitle": "El coaching está desactivado",
     "disabledBannerDesc": "Activa el coaching para recibir sugerencias proactivas y hacer seguimiento de tus hábitos.",
     "disabledBannerButton": "Activar coaching",
@@ -2055,6 +2271,15 @@
     "regimeLabelPlaceholder": "p. ej., Programación intensiva"
   },
   "onboarding": {
+    "step3Search": "Busca todo lo que has visto",
+    "aiFeatures": {
+      "optInHint": "Opcional: activa el embedding local, la búsqueda semántica con IA y la narrativa del resumen diario con IA. Todo se procesa en el dispositivo y se aplica tras reiniciar Maekon.",
+      "enableButton": "Activar funciones de IA",
+      "enabling": "Activando…",
+      "enabled": "Funciones de IA activadas",
+      "enabledNote": "Tras reiniciar, el embedding local, la búsqueda semántica y la narrativa del resumen diario con IA estarán activos.",
+      "error": "No se pudieron activar las funciones de IA: {{error}}"
+    },
     "step1Title": "Bienvenido a Maekon",
     "step1Desc": "Maekon monitorea la actividad de su escritorio y ofrece sugerencias inteligentes para aumentar la productividad.",
     "step2Title": "Permisos",
@@ -2129,7 +2354,16 @@
       "monitoringMissingWarning": "El consentimiento de monitorización aún no se ha otorgado. Otórgalo en el paso anterior para que el coaching funcione.",
       "error": "No se pudo activar el coaching: {{error}}"
     },
-    "stepIndicatorLabel": "Indicador de paso"
+    "audio": {
+      "title": "El audio está desactivado de forma predeterminada",
+      "description": "Pospón la captura del micrófono durante la configuración. Puedes revisar las opciones de audio y voz a texto más tarde en Ajustes.",
+      "statusTitle": "Audio pospuesto",
+      "statusDescription": "La captura del micrófono y la voz a texto siguen desactivadas. No se contacta ningún dispositivo, modelo ni proveedor de audio.",
+      "localNote": "La voz a texto local permanece desactivada hasta que habilites el audio e instales un modelo explícitamente.",
+      "egressNote": "La voz a texto en la nube permanece desactivada hasta que elijas un proveedor y configures credenciales en Ajustes."
+    },
+    "stepIndicatorLabel": "Indicador de paso",
+    "step4RecoveryCardHint": "Mientras trabajas, Maekon busca un buen momento para ayudar. Tu primera recovery card — un próximo paso sugerido respaldado por lo que había en pantalla — suele aparecer en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos."
   },
   "chat": {
     "title": "Sesiones de IA",
@@ -2161,10 +2395,12 @@
     "invalid_response_format_json": "El formato de respuesta debe ser JSON válido.",
     "create_failed_title": "No se pudo crear la sesión",
     "create_failed": "No se pudo crear la sesión de IA.",
+    "provider_not_configured": "{{provider}} no está configurado. Añade sus credenciales en Ajustes → IA y automatización y vuelve a intentarlo.",
     "load_failed_title": "No se pudieron cargar las sesiones",
     "load_failed": "No se pudieron cargar las sesiones de IA.",
     "refresh_failed": "No se pudieron actualizar las sesiones de IA.",
     "send_failed": "No se pudo enviar el mensaje.",
+    "full_text_consent_required": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Consentimiento y vuelve a intentarlo.",
     "retry_failed": "No se pudo reintentar la sesión.",
     "delete_failed": "No se pudo eliminar la sesión.",
     "copy_failed": "No se pudo copiar el contenido.",
@@ -2177,6 +2413,12 @@
     "exported": "Conversation exported",
     "history": "History",
     "mic_error": "Microphone not available",
+    "mic_consent_required": "Activa el consentimiento del micrófono en Privacidad",
+    "mic_permission_hint": "Si se bloqueó el acceso al micrófono, actívalo en:",
+    "mic_permission_path_macos": "Configuración del Sistema › Privacidad y seguridad › Micrófono",
+    "mic_permission_path_windows": "Configuración › Privacidad y seguridad › Micrófono",
+    "mic_permission_path_linux": "la configuración de privacidad de tu escritorio (varía según la distribución / portal)",
+    "mic_permission_path_generic": "la configuración de privacidad de tu sistema",
     "mic_tooltip": "Hold to speak",
     "mic_vad_stop": "Click to stop listening",
     "mic_vad_tooltip": "Click to toggle listening",
@@ -2320,6 +2562,7 @@
     "suggestionsUnavailable": "Sugerencias no disponibles",
     "paused": "Pausado",
     "capturing": "Capturando",
+    "consentRequired": "Se requiere consentimiento",
     "resume": "Reanudar",
     "pause": "Pausar",
     "collapse": "Contraer",
@@ -2345,8 +2588,8 @@
     "screenContextPaused": "Contexto de pantalla pausado",
     "localMode": "Modo local",
     "captureServicesReady": "Servicios de captura listos",
-    "extractTasks": "Extraer tareas de la app actual",
-    "extractTasksMeta": "Usar el contexto GUI visible para sugerencias",
+    "extractTasks": "Revisar sugerencias",
+    "extractTasksMeta": "Abrir sugerencias pendientes sin capturar la pantalla actual",
     "captureCurrentContextMeta": "Guardar el contexto de pantalla actual",
     "reviewCurrentWindow": "Revisar ventana actual",
     "reviewCurrentWindowMeta": "Analizar GUI, OCR y accesibilidad",
@@ -2359,7 +2602,9 @@
     "quitMaekon": "Salir de Maekon",
     "chatOpened": "Chat abierto",
     "quitRequested": "Salida solicitada",
-    "quitUnavailable": "Salida no disponible"
+    "quitUnavailable": "Salida no disponible",
+    "findNextStep": "Encontrar mi siguiente paso",
+    "findNextStepMeta": "Lee la pantalla actual y propone un siguiente paso revisable"
   },
   "trayDashboard": {
     "regionLabel": "Panel de bandeja",
@@ -2426,7 +2671,37 @@
     "discoveredPeers": "Pares descubiertos",
     "noPeers": "Aún no se han descubierto pares. Asegúrese de que otros dispositivos estén en la misma red con la sincronización habilitada.",
     "lastSync": "Última",
-    "neverSynced": "Nunca sincronizado"
+    "neverSynced": "Nunca sincronizado",
+    "enableIntro": "Elija una frase de paso y habilite la sincronización. Se almacena en el llavero del sistema operativo (nunca en el archivo de configuración) y se usa para derivar la clave de cifrado de extremo a extremo. Todos los dispositivos que sincronice deben usar la misma frase de paso.",
+    "passphraseLabel": "Frase de paso de sincronización",
+    "passphrasePlaceholder": "Al menos 12 caracteres",
+    "passphraseTooShort": "La frase de paso debe tener al menos {{count}} caracteres.",
+    "transportLabel": "Transporte",
+    "transportLan": "LAN — misma Wi-Fi/red",
+    "transportFile": "Carpeta compartida — Dropbox, iCloud, NAS",
+    "transportRemote": "Servidor de sincronización remoto",
+    "enableButton": "Habilitar sincronización",
+    "enableDone": "Guardado. Reinicie la app para activar la sincronización.",
+    "envHint": "Los usuarios avanzados pueden establecer la variable de entorno MAEKON_SYNC_PASSPHRASE antes de iniciar.",
+    "deliveryNoPeers": "Sus cambios no pudieron llegar a ningún par (todos fuera de línea o inalcanzables). Se reintentará en la próxima sincronización.",
+    "deliveredToPeers": "Entregado a {{count}} par(es).",
+    "forgetPeer": "Desconectar",
+    "forgetPeerConfirm": "¿Desconectar {{peerName}}? Se eliminará su registro de confianza y deberá emparejarse de nuevo para sincronizar.",
+    "forgetPeerConfirmAction": "Desconectar par",
+    "forgetPeerCancel": "Cancelar",
+    "forgetPeerSuccess": "Se desconectó {{peerName}}.",
+    "forgetPeerError": "No se pudo desconectar el par. Inténtelo de nuevo.",
+    "uploadRecoveryTitle": "Comprobación de recuperación de carga",
+    "uploadRecoveryDescription": "Verifica con datos sintéticos locales que una carga interrumpida siga sin marcarse como enviada hasta que el reintento se confirme.",
+    "uploadRecoveryInterrupted": "La carga se interrumpió. {{count}} elementos sintéticos permanecen locales y sin enviar.",
+    "uploadRecoveryRetry": "Reintentar con seguridad",
+    "uploadRecoveryRecovered": "La carga se recuperó tras {{attempts}} intentos y {{reprimes}} reinserciones. La marca de envío solo se escribió después del éxito.",
+    "uploadRecoveryPending": "Pendiente",
+    "uploadRecoverySentMarkers": "Marcas de envío",
+    "uploadRecoveryStorageId": "ID de almacenamiento",
+    "uploadRecoveryPreserved": "Conservado",
+    "uploadRecoveryMismatch": "No coincide",
+    "uploadRecoveryError": "No se pudo completar el paso de recuperación sintético."
   },
   "overlay": {
     "focusMode": "Modo de enfoque",
@@ -2553,6 +2828,10 @@
     "result": "Resultado"
   },
   "advancedTab": {
+    "aiFeaturesMaster": "Activar funciones de IA",
+    "aiFeaturesMasterDescription": "Activa el embedding local, la búsqueda semántica con IA y la narrativa del resumen diario con IA en un solo paso. Todo se procesa en el dispositivo. Se aplica tras reiniciar Maekon.",
+    "llmSummary": "Narrativa del resumen diario con IA",
+    "llmSummaryDescription": "Usa el LLM en el dispositivo para redactar un resumen de tu día en lenguaje natural (requiere embedding). Se aplica tras reiniciar.",
     "maxConcurrentSessions": "Sesiones concurrentes máximas",
     "idleTimeoutSeconds": "Tiempo de espera por inactividad (segundos)",
     "sessionTimeoutSeconds": "Tiempo de espera de sesión (segundos)",
@@ -2615,6 +2894,8 @@
     "columnSegment": "Segmento",
     "columnOriginal": "Original",
     "columnAction": "Acción",
+    "columnLifecycle": "Vigencia",
+    "columnEffect": "Efecto posterior",
     "columnCreated": "Creado"
   },
   "presets": {
@@ -2680,7 +2961,204 @@
     }
   },
   "metrics": {
+    "notMeasured": "n/d",
+    "withinBudget": "Dentro del presupuesto",
+    "overBudget": "Fuera del presupuesto",
+    "selfUsageTitle": "Uso de recursos del agente",
+    "selfUsageHint": "La memoria y CPU propias del agente de escritorio frente a su presupuesto provisional.",
+    "selfUsageDesktopOnly": "Disponible en la aplicación de escritorio.",
+    "snapshotError": "Error al muestrear el uso de recursos",
+    "selfRss": "Memoria (RSS)",
+    "selfCpu": "CPU",
+    "notMeasuredHint": "No se pudo medir el uso de recursos en esta plataforma.",
     "cpuPercent": "CPU %",
     "memoryGb": "Memoria (GB)"
+  },
+  "reauth": {
+    "title": "Verifica tu identidad",
+    "description": "Vuelve a autenticarte para ver tu historial de capturas.",
+    "reason": "Ver tu historial de capturas",
+    "useBiometric": "Desbloquear con {{kind}}",
+    "biometricGeneric": "biometría",
+    "usePinInstead": "Usar PIN en su lugar",
+    "useBiometricInstead": "Usar biometría en su lugar",
+    "pinLabel": "PIN",
+    "pinPlaceholder": "Introduce tu PIN",
+    "unlock": "Desbloquear",
+    "noMethodTitle": "Sin método de reautenticación",
+    "noMethodBody": "Configura un PIN en los ajustes de privacidad para ver el historial de capturas, o desactiva el requisito de reautenticación.",
+    "goToSettings": "Abrir ajustes",
+    "cancel": "Cancelar",
+    "errors": {
+      "cancelled": "La autenticación se canceló.",
+      "biometricUnavailable": "La autenticación biométrica no está disponible. Introduce tu PIN.",
+      "failed": "La autenticación falló. Inténtalo de nuevo."
+    },
+    "settings": {
+      "sectionTitle": "Reautenticación del historial de capturas",
+      "sectionDescription": "Requiere reautenticación biométrica o con PIN antes de ver tu historial de capturas (capturas de pantalla).",
+      "saveFailed": "No se pudo guardar la configuración.",
+      "enableLabel": "Requerir reautenticación",
+      "enableHint": "Protege tu historial de capturas de alguien con acceso físico a tu dispositivo desbloqueado.",
+      "idleLabel": "Volver a pedir tras inactividad (minutos)",
+      "pinSectionTitle": "PIN de la app (alternativa)",
+      "pinRegistered": "Hay un PIN registrado.",
+      "pinNotRegistered": "No hay PIN registrado.",
+      "registerPin": "Establecer PIN",
+      "changePin": "Cambiar PIN",
+      "removePin": "Eliminar PIN",
+      "pinNewLabel": "Nuevo PIN",
+      "pinConfirmLabel": "Confirmar PIN",
+      "pinMismatch": "Los PIN no coinciden.",
+      "pinTooShort": "El PIN debe tener al menos 4 caracteres.",
+      "pinSaved": "PIN guardado.",
+      "pinRemoved": "PIN eliminado.",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "biometricAvailable": "{{kind}} está disponible en este dispositivo.",
+      "biometricUnavailable": "La autenticación biométrica no está disponible en este dispositivo; usa un PIN."
+    }
+  },
+  "durableTasks": {
+    "loading": "Cargando tareas…",
+    "loadError": "No se pudieron cargar las tareas: {{error}}",
+    "suggestedHeading": "Tareas sugeridas",
+    "noSuggestions": "No hay sugerencias de tareas para revisar.",
+    "noTitle": "(sin título)",
+    "confirm": "Confirmar",
+    "dismiss": "Descartar",
+    "todosHeading": "Tareas",
+    "noTodos": "Aún no hay tareas confirmadas.",
+    "state": {
+      "confirmed": "Confirmada",
+      "inProgress": "En progreso",
+      "waiting": "En espera",
+      "done": "Hecha",
+      "cancelled": "Cancelada"
+    }
+  },
+  "extensions": {
+    "loading": "Cargando extensiones…",
+    "loadError": "No se pudieron cargar las extensiones: {{error}}",
+    "heading": "Extensiones",
+    "empty": "No hay extensiones registradas.",
+    "summaryUnavailable": "En transición — ver detalles",
+    "unavailableReason": "No disponible: {{reason}}",
+    "install": "Instalar",
+    "enable": "Activar",
+    "disable": "Desactivar",
+    "rollback": "Volver a {{version}}",
+    "axis": {
+      "installation": "Installation",
+      "enablement": "Enablement",
+      "authentication": "Account",
+      "grant": "Capability grant",
+      "update": "Update",
+      "health": "Health"
+    },
+    "axisValue": {
+      "not_installed": "Not installed",
+      "installing": "Installing",
+      "installed": "Installed",
+      "install_failed": "Install failed",
+      "uninstalling": "Uninstalling",
+      "uninstalled": "Uninstalled",
+      "disabled": "Disabled",
+      "enabled": "Enabled",
+      "not_required": "Not required",
+      "unauthenticated": "Not connected",
+      "authenticating": "Connecting",
+      "authenticated": "Connected",
+      "revoked": "Revoked",
+      "auth_error": "Sign-in error",
+      "not_requested": "Not requested",
+      "pending": "Pending",
+      "granted": "Granted",
+      "denied": "Denied",
+      "expired": "Expired",
+      "current": "Current",
+      "update_available": "Update available",
+      "staged": "Staged",
+      "activating": "Activating",
+      "update_failed": "Update failed",
+      "rollback_available": "Rollback available",
+      "unknown": "Unknown",
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "unhealthy": "Unhealthy"
+    },
+    "summary": {
+      "discovered": "Discovered",
+      "installed": "Installed",
+      "enabled": "Enabled",
+      "authorizing": "Authorizing",
+      "ready": "Ready",
+      "syncing": "Syncing",
+      "degraded": "Degraded",
+      "stale": "Stale",
+      "revoked": "Revoked",
+      "incompatible": "Incompatible"
+    }
+  },
+  "recovery": {
+    "title": "Encontrar mi siguiente paso",
+    "back": "Atrás",
+    "retry": "Reintentar",
+    "loading": "Leyendo tu pantalla actual…",
+    "confirmedNotice": "Añadido a tus tareas",
+    "conflictNotice": "Ese elemento acaba de cambiar: actualizado para ti",
+    "confirmFailedNotice": "No se pudo confirmar este paso",
+    "dismissedNotice": "Descartado",
+    "missingPermission": "Necesita: {{permission}}",
+    "todosHeading": "Tus tareas confirmadas",
+    "noTodos": "Aún no hay tareas confirmadas.",
+    "source": {
+      "localScene": "Pantalla actual"
+    },
+    "lifecycle": {
+      "active": "En vivo",
+      "deleted": "Fuente eliminada",
+      "revoked": "Acceso revocado",
+      "expired": "Retención vencida"
+    },
+    "card": {
+      "sourceLabel": "Fuente",
+      "captured": "Capturado {{when}}",
+      "nextStepLabel": "Siguiente paso sugerido",
+      "editTitle": "Editar siguiente paso",
+      "editBody": "Editar detalles",
+      "untitled": "(paso sin título)",
+      "confirm": "Añadir a tareas",
+      "editing": "Editando",
+      "edit": "Editar",
+      "dismiss": "Descartar"
+    },
+    "outcome": {
+      "errorTitle": "Algo salió mal",
+      "errorDetail": "No se pudo completar la solicitud.",
+      "consentTitle": "Se necesita acceso a la pantalla",
+      "consentDetail": "Concede los permisos indicados para poder leer la pantalla actual.",
+      "throttledTitle": "Uno a la vez",
+      "throttledDetail": "Ya hay una solicitud en curso, o se agotó el presupuesto de hoy.",
+      "noCandidateTitle": "No se encontró un siguiente paso",
+      "noCandidateDetail": "Se revisó tu pantalla, pero no se propuso ninguna acción.",
+      "providerOfflineTitle": "Asistente sin conexión",
+      "providerOfflineDetail": "El proveedor de sugerencias no está disponible ahora mismo.",
+      "noContextTitle": "Poca información en pantalla",
+      "noContextDetail": "No había suficiente contexto actual para sugerir un paso."
+    }
+  },
+  "tasks": {
+    "heading": "Tareas y recuperación",
+    "subtitle": "Revisa los siguientes pasos sugeridos y gestiona tus tareas confirmadas."
+  },
+  "capturePermission": {
+    "bannerTitle": "Captura de pantalla detenida — permiso revocado",
+    "bannerBody": "El permiso de grabación de pantalla se desactivó mientras Maekon estaba en ejecución, así que la captura se detuvo de inmediato. Tu configuración de consentimiento no cambia; vuelve a activar el permiso para reanudar.",
+    "openSettings": "Abrir Configuración del Sistema",
+    "recheck": "Volver a comprobar el permiso",
+    "rechecking": "Comprobando…",
+    "revokedToast": "El permiso de grabación de pantalla fue revocado — captura detenida.",
+    "restoredToast": "Permiso de grabación de pantalla restaurado — captura reanudada."
   }
 }

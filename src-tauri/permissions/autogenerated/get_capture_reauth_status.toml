@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-capture-reauth-status"
+description = "Enables the get_capture_reauth_status command without any pre-configured scope."
+commands.allow = ["get_capture_reauth_status"]
+
+[[permission]]
+identifier = "deny-get-capture-reauth-status"
+description = "Denies the get_capture_reauth_status command without any pre-configured scope."
+commands.deny = ["get_capture_reauth_status"]

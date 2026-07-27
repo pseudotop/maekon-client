@@ -34,6 +34,10 @@ pub fn api_routes() -> Router<AppState> {
         .route("/reports", get(handlers::reports::generate_report))
         .route("/settings", get(handlers::settings::get_settings))
         .route("/settings", post(handlers::settings::update_settings))
+        // #8056 P2-2: enable cross-device sync + store its passphrase from the
+        // GUI (keychain-backed), so a Finder/Start-menu launch can reach sync.
+        .route("/sync/setup", get(handlers::sync_setup::get_sync_setup))
+        .route("/sync/setup", post(handlers::sync_setup::update_sync_setup))
         .route(
             "/ai/provider-surfaces",
             get(handlers::ai_provider_surfaces::list_provider_surfaces),
@@ -102,6 +106,9 @@ pub fn api_routes() -> Router<AppState> {
         .route("/export/frames", get(handlers::export::export_frames))
         .route("/export/ical", get(handlers::export::export_ical))
         .route("/export/toggl", get(handlers::export::export_toggl))
+        // #8056 P2-3: GDPR Art.20 full data-portability export covering the
+        // personal-data tables the scoped exports above omit.
+        .route("/export/full", get(handlers::full_export::export_full))
         .route("/backup", get(handlers::backup::create_backup))
         .route("/backup/restore", post(handlers::backup::restore_backup))
         .route("/tags", get(handlers::tags::list_tags))

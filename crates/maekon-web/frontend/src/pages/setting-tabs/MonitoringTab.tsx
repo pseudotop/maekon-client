@@ -265,6 +265,56 @@ export default function MonitoringTab() {
           ]
         : []
 
+  // #8686 AC3: platform-capability rows sourced from the feature-capability
+  // snapshot — surfaces the modeled per-OS limitations (automation sandbox,
+  // Linux X11-vs-Wayland session degradation) that previously had no UI
+  // consumer. States are honest: `unavailable` means this host/build cannot
+  // provide the capability (no user action exists), `needs_attention` is
+  // reserved for states the user can actually change.
+  const featureCapabilities = data.featureCapabilities
+  if (permissionStatus && featureCapabilities) {
+    const sandboxAvailable = featureCapabilities.automation_sandbox_available === true
+    permissionRows.push({
+      id: 'automation-sandbox',
+      icon: <Monitor className={cn(iconSize.base, 'text-brand-text')} />,
+      label: t('settings.permissionAutomationSandboxLabel', 'Automation Sandbox'),
+      description: sandboxAvailable
+        ? t(
+            'settings.permissionAutomationSandboxDescAvailable',
+            'Automation actions run inside the out-of-process platform sandbox on this device.',
+          )
+        : t(
+            'settings.permissionAutomationSandboxDescUnavailable',
+            'No platform sandbox is available on this device or build. Automation fails closed: actions are refused rather than run uncontained.',
+          ),
+      state: sandboxAvailable ? 'granted' : 'unavailable',
+    })
+  }
+  if (isLinux && featureCapabilities) {
+    const session = featureCapabilities.linux_session_type ?? 'unknown'
+    permissionRows.push({
+      id: 'linux-session',
+      icon: <Monitor className={cn(iconSize.base, 'text-brand-text')} />,
+      label: t('settings.permissionLinuxSessionLabel', 'Graphical Session'),
+      description:
+        session === 'wayland'
+          ? t(
+              'settings.permissionLinuxSessionDescWayland',
+              'Wayland session detected. Active-window detection and the tracking panel are not available under Wayland; capture continues with reduced context. Log into an X11 session for the full feature set.',
+            )
+          : session === 'x11'
+            ? t(
+                'settings.permissionLinuxSessionDescX11',
+                'X11 session detected. Active-window detection and the tracking panel are supported.',
+              )
+            : t(
+                'settings.permissionLinuxSessionDescUnknown',
+                'The graphical session type could not be determined. Active-window detection may be unreliable.',
+              ),
+      state: session === 'x11' ? 'granted' : session === 'wayland' ? 'needs_attention' : 'unavailable',
+    })
+  }
+
   const needsAttention = permissionRows.some((row) => row.state === 'needs_attention')
   const hasUnavailable = permissionRows.some((row) => row.state === 'unavailable')
 

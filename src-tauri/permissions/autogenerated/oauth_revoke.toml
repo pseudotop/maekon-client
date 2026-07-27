@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-oauth-revoke"
+description = "Enables the oauth_revoke command without any pre-configured scope."
+commands.allow = ["oauth_revoke"]
+
+[[permission]]
+identifier = "deny-oauth-revoke"
+description = "Denies the oauth_revoke command without any pre-configured scope."
+commands.deny = ["oauth_revoke"]

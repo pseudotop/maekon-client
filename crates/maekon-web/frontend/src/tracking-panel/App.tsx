@@ -7,18 +7,21 @@ import {
   Crosshair,
   LayoutDashboard,
   Lightbulb,
-  Pin,
   Plus,
   Power,
   Settings,
+  Sparkles,
   WifiOff,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ContextRecoveryPanel } from './ContextRecoveryPanel'
 
 interface CaptureState {
   paused: boolean
   indicator_visible: boolean
+  consent_granted: boolean
+  permitted: boolean
 }
 
 interface ConnectionStatus {
@@ -52,16 +55,43 @@ const COLLAPSED_HEIGHT = 36
 const EXPANDED_WIDTH = 320
 const EXPANDED_HEIGHT = 430
 
+interface PhysicalRect {
+  position: { x: number; y: number }
+  size: { width: number; height: number }
+}
+
+export function clampPanelPosition(
+  position: { x: number; y: number },
+  size: { width: number; height: number },
+  workArea: PhysicalRect,
+) {
+  const maxX = Math.max(workArea.position.x, workArea.position.x + workArea.size.width - size.width)
+  const maxY = Math.max(workArea.position.y, workArea.position.y + workArea.size.height - size.height)
+
+  return {
+    x: Math.min(Math.max(position.x, workArea.position.x), maxX),
+    y: Math.min(Math.max(position.y, workArea.position.y), maxY),
+  }
+}
+
 export function App() {
   const { t } = useTranslation()
-  const [state, setState] = useState<CaptureState>({ paused: false, indicator_visible: true })
+  const [state, setState] = useState<CaptureState>({
+    paused: true,
+    indicator_visible: true,
+    consent_granted: false,
+    permitted: false,
+  })
   const [conn, setConn] = useState<ConnectionStatus>({ server: false, llm: false, cli: false })
   const [expanded, setExpanded] = useState(false)
+  const [recoveryActive, setRecoveryActive] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [sceneResult, setSceneResult] = useState<SceneAnalysisResult | null>(null)
+  const [pendingSuggestionCount, setPendingSuggestionCount] = useState(0)
   const [captureCount, setCaptureCount] = useState(0)
   const positionSaveTimer = useRef<number | null>(null)
   const feedbackTimer = useRef<number | null>(null)
+  const collapsedPosition = useRef<{ x: number; y: number } | null>(null)
 
   const showFeedback = useCallback((msg: string) => {
     setFeedback(msg)
@@ -82,7 +112,21 @@ export function App() {
 
   useEffect(() => {
     let disposed = false
+    let suggestionCountRequest = 0
     const unlistens: Array<() => void> = []
+
+    const refreshPendingSuggestionCount = async () => {
+      const request = ++suggestionCountRequest
+      try {
+        const count = await invoke<number>('get_pending_suggestion_count')
+        if (disposed || request !== suggestionCountRequest) return
+        setPendingSuggestionCount(Number.isSafeInteger(count) && count >= 0 ? count : 0)
+      } catch (e) {
+        if (disposed || request !== suggestionCountRequest) return
+        console.warn('get_pending_suggestion_count failed:', e)
+        setPendingSuggestionCount(0)
+      }
+    }
 
     ;(async () => {
       const { listen: listenAsync } = await import('@tauri-apps/api/event')
@@ -111,6 +155,20 @@ export function App() {
         })
         return
       }
+
+      unlistens.push(
+        await listenAsync('overlay:suggestions-changed', () => {
+          void refreshPendingSuggestionCount()
+        }),
+      )
+      if (disposed) {
+        unlistens.forEach((fn) => {
+          fn()
+        })
+        return
+      }
+
+      void refreshPendingSuggestionCount()
     })()
 
     ;(async () => {
@@ -188,19 +246,31 @@ export function App() {
     const heightDiff = EXPANDED_HEIGHT - COLLAPSED_HEIGHT
 
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      const { currentMonitor, getCurrentWindow } = await import('@tauri-apps/api/window')
       const { LogicalPosition, LogicalSize } = await import('@tauri-apps/api/dpi')
       const win = getCurrentWindow()
       const scale = await win.scaleFactor()
 
       if (next) {
         const pos = await win.outerPosition()
-        await win.setPosition(new LogicalPosition(pos.x / scale, pos.y / scale - heightDiff))
+        collapsedPosition.current = { x: pos.x / scale, y: pos.y / scale }
+        const monitor = await currentMonitor()
+        const desired = { x: pos.x, y: pos.y - heightDiff * scale }
+        const clamped = monitor
+          ? clampPanelPosition(desired, { width: w * scale, height: h * scale }, monitor.workArea)
+          : desired
+        await win.setPosition(new LogicalPosition(clamped.x / scale, clamped.y / scale))
         await win.setSize(new LogicalSize(w, h))
       } else {
         await win.setSize(new LogicalSize(w, h))
-        const pos = await win.outerPosition()
-        await win.setPosition(new LogicalPosition(pos.x / scale, pos.y / scale + heightDiff))
+        const savedPosition = collapsedPosition.current
+        if (savedPosition) {
+          await win.setPosition(new LogicalPosition(savedPosition.x, savedPosition.y))
+          collapsedPosition.current = null
+        } else {
+          const pos = await win.outerPosition()
+          await win.setPosition(new LogicalPosition(pos.x / scale, pos.y / scale + heightDiff))
+        }
       }
     } catch (e) {
       console.warn('toggleExpanded failed:', e)
@@ -217,6 +287,18 @@ export function App() {
       showFeedback(t('trackingPanel.captureFailed'))
     }
   }, [showFeedback, t])
+
+  const handleToggleCapturePause = useCallback(async () => {
+    try {
+      // Apply the command response immediately instead of waiting exclusively
+      // for the broadcast event. The event remains the cross-window source of
+      // truth, while this closes the local repaint gap on transparent WebViews.
+      const nextState = await invoke<CaptureState>('toggle_capture_pause')
+      setState(nextState)
+    } catch (e) {
+      console.debug('toggle_capture_pause failed:', e)
+    }
+  }, [])
 
   const handleSceneAnalysis = useCallback(async () => {
     try {
@@ -259,6 +341,14 @@ export function App() {
     }
   }, [showFeedback, t])
 
+  // The authoritative entry into a current-context generation turn. Opens the
+  // in-panel recovery view, which invokes `request_current_context_suggestions`
+  // (NOT read-only scene analysis, and NOT merely opening the suggestion queue).
+  const handleFindNextStep = useCallback(() => {
+    setExpanded(true)
+    setRecoveryActive(true)
+  }, [])
+
   const handleOpenMaekon = useCallback(async () => {
     await invoke('show_main_window')
   }, [])
@@ -291,16 +381,26 @@ export function App() {
   const allConnected = connCount === 3
   const isLocalMode = connCount === 0
   const expandedStatusMessage = feedback ?? (isLocalMode ? t('trackingPanel.offlineMessage') : null)
-  const runningLabel = state.paused ? t('trackingPanel.screenContextPaused') : t('trackingPanel.screenContextReady')
-  const pendingSuggestionCount = sceneResult ? 1 : 0
-
+  const captureNeedsConsent = !state.consent_granted
+  const captureActive = state.consent_granted && state.permitted && !state.paused
+  const runningLabel = captureNeedsConsent
+    ? t('trackingPanel.consentRequired')
+    : captureActive
+      ? t('trackingPanel.screenContextReady')
+      : t('trackingPanel.screenContextPaused')
+  const compactCaptureLabel = captureNeedsConsent
+    ? t('trackingPanel.consentRequired')
+    : captureActive
+      ? (feedback ?? t('trackingPanel.capturing'))
+      : t('trackingPanel.paused')
+  const captureVisualState = captureNeedsConsent ? 'consent-required' : captureActive ? 'capturing' : 'paused'
   return (
     <div
       data-tauri-drag-region
       data-visual-region="floating-bar-anchor"
-      className={`flex select-none flex-col overflow-hidden rounded-xl bg-black/80 text-white text-xs backdrop-blur-md ${state.paused ? '' : 'animate-panel-glow'}`}
+      className={`flex select-none flex-col overflow-hidden rounded-xl bg-black/80 text-white text-xs backdrop-blur-md ${!captureActive ? '' : 'animate-panel-glow'}`}
       style={
-        state.paused
+        !captureActive
           ? {
               boxShadow: 'inset 0 0 12px 3px rgb(var(--content-muted) / 0.25)',
               border: '1.5px solid rgb(var(--content-muted) / 0.3)',
@@ -310,19 +410,32 @@ export function App() {
     >
       {/* Collapsed bar */}
       <div
+        key={captureVisualState}
         role="toolbar"
         data-tauri-drag-region
         onMouseDown={handleDragMouseDown}
         className="flex cursor-move items-center gap-2 px-3 py-2"
       >
         <span
-          className={`h-2 w-2 shrink-0 rounded-full ${state.paused ? 'bg-status-connecting' : 'bg-status-connected'}`}
+          className={`h-2 w-2 shrink-0 rounded-full ${!captureActive ? 'bg-status-connecting' : 'bg-status-connected'}`}
         />
         {!allConnected && (
-          <span className="h-2 w-2 shrink-0 rounded-full bg-status-error" title={`${connCount}/3 connected`} />
+          <span
+            className="h-2 w-2 shrink-0 rounded-full bg-status-error"
+            // #8058 P3: was a hardcoded English `${connCount}/3 connected`; reuse the
+            // localized key the expanded menu already uses for the same signal.
+            title={t('trackingPanel.serviceLanesConnected', { count: connCount, total: 3 })}
+          />
         )}
-        <span data-tauri-drag-region data-visual-region="screen-context-status" className="flex-1 truncate">
-          {state.paused ? t('trackingPanel.paused') : (feedback ?? t('trackingPanel.capturing'))}
+        <span
+          key={captureVisualState}
+          data-tauri-drag-region
+          data-visual-region="screen-context-status"
+          data-capture-state={captureVisualState}
+          aria-live="polite"
+          className="flex-1 truncate"
+        >
+          {compactCaptureLabel}
         </span>
 
         <button
@@ -338,9 +451,16 @@ export function App() {
         </button>
         <button
           type="button"
-          onClick={() => invoke('toggle_capture_pause')}
-          className="rounded px-1.5 py-0.5 transition-colors hover:bg-white/20"
-          title={state.paused ? t('trackingPanel.resume') : t('trackingPanel.pause')}
+          onClick={() => void handleToggleCapturePause()}
+          disabled={captureNeedsConsent}
+          className="rounded px-1.5 py-0.5 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+          title={
+            captureNeedsConsent
+              ? t('trackingPanel.consentRequired')
+              : state.paused
+                ? t('trackingPanel.resume')
+                : t('trackingPanel.pause')
+          }
         >
           {state.paused ? '\u25B6' : '\u23F8'}
         </button>
@@ -354,7 +474,12 @@ export function App() {
         </button>
         <button
           type="button"
-          onClick={() => invoke('set_indicator_visible', { visible: false })}
+          // #8058 P3: catch the fire-and-forget invoke (see toggle_capture_pause above).
+          onClick={() =>
+            void invoke('set_indicator_visible', { visible: false }).catch((e) =>
+              console.debug('set_indicator_visible failed:', e),
+            )
+          }
           className="rounded px-1 py-0.5 transition-colors hover:bg-white/20"
           title={t('trackingPanel.hide')}
         >
@@ -362,13 +487,18 @@ export function App() {
         </button>
       </div>
 
-      {/* Expanded panel */}
-      {expanded && (
+      {/* Expanded panel — recovery vertical (#8892) or the command menu */}
+      {expanded && recoveryActive && (
+        <div className="border-white/10 border-t">
+          <ContextRecoveryPanel onBack={() => setRecoveryActive(false)} />
+        </div>
+      )}
+      {expanded && !recoveryActive && (
         <section
           data-tauri-drag-region
           aria-label={t('trackingPanel.floatingMenu')}
           data-visual-region="keyboard-a11y-action"
-          className="flex cursor-move flex-col gap-2 border-white/10 border-t px-3 pt-2 pb-3"
+          className="flex max-h-[calc(100vh-2.5rem)] cursor-move flex-col gap-2 overflow-y-auto border-white/10 border-t px-3 pt-2 pb-3"
         >
           <MenuSection title={t('trackingPanel.running')}>
             <CommandMenuItem
@@ -386,10 +516,11 @@ export function App() {
 
           <MenuSection title={t('trackingPanel.pinned')}>
             <CommandMenuItem
-              icon={<Pin size={14} />}
-              label={t('trackingPanel.extractTasks')}
-              meta={t('trackingPanel.extractTasksMeta')}
-              onClick={handleSuggestions}
+              icon={<Sparkles size={14} />}
+              label={t('trackingPanel.findNextStep', 'Find my next step')}
+              meta={t('trackingPanel.findNextStepMeta', 'Read the current screen and propose a reviewable next step')}
+              onClick={handleFindNextStep}
+              visualRegion="context-recovery-entry"
             />
             <CommandMenuItem
               icon={<Camera size={14} />}

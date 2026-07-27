@@ -23,7 +23,9 @@ use maekon_core::models::storage_records::{
     EventExportRecord, FrameExportRecord, FrameTagLinkRecord, HourlyMetricsRecord,
     MetricExportRecord, NewGuiInteraction, SegmentDetailRecord, TagRecord,
 };
-use maekon_core::ports::web_storage::{BackupStorage, GuiInteractionStorage, SegmentQueryStorage};
+use maekon_core::ports::web_storage::{
+    BackupStorage, GuiInteractionStorage, PersonalDataTableExport, SegmentQueryStorage,
+};
 
 use crate::error::StorageError;
 use crate::sqlite::SqliteStorage;
@@ -46,11 +48,25 @@ impl BackupStorage for SqliteStorage {
             .map_err(Into::into)
     }
 
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError> {
+        SqliteStorage::export_personal_data_tables_async(self)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn list_event_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<EventExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before event export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_event_exports_async(self, from, to)
             .await
             .map_err(Into::into)
@@ -61,6 +77,14 @@ impl BackupStorage for SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<MetricExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before metric export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_metric_exports_async(self, from, to)
             .await
             .map_err(Into::into)
@@ -71,6 +95,14 @@ impl BackupStorage for SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<FrameExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before frame export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_frame_exports_async(self, from, to)
             .await
             .map_err(Into::into)

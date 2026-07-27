@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-authenticate-capture-history"
+description = "Enables the authenticate_capture_history command without any pre-configured scope."
+commands.allow = ["authenticate_capture_history"]
+
+[[permission]]
+identifier = "deny-authenticate-capture-history"
+description = "Denies the authenticate_capture_history command without any pre-configured scope."
+commands.deny = ["authenticate_capture_history"]

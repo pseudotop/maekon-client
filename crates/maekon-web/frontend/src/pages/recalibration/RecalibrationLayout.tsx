@@ -19,6 +19,7 @@ import { Button, Card, Spinner } from '../../components/ui'
 import { useCreateOverride, useDeleteOverride, useOverrides, useRecluster } from '../../hooks/useRecalibration'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatLocalCalendarDate, localCalendarDateFromValue } from '../../utils/localDate'
 
 // Default regime options
 const REGIME_OPTIONS = [
@@ -99,7 +100,7 @@ export default function RecalibrationLayout() {
     queryKey: ['recalibration-segments', from, to],
     queryFn: async () => {
       // Use the date part only for the API call
-      const dateStr = from ? from.split('T')[0] : new Date().toISOString().split('T')[0]
+      const dateStr = localCalendarDateFromValue(from) || formatLocalCalendarDate(new Date())
       return fetchDailyDigest(dateStr)
     },
     enabled: !!from,

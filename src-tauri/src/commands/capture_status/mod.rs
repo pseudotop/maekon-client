@@ -20,7 +20,9 @@ use types::{
 };
 
 use std::sync::atomic::Ordering;
-use tauri::{command, AppHandle, Emitter, Manager, State};
+#[cfg(target_os = "macos")]
+use tauri::Manager;
+use tauri::{command, AppHandle, Emitter, Runtime, State};
 use tracing::debug;
 
 use crate::ipc_error::IpcError;
@@ -30,6 +32,41 @@ use position::{is_position_valid, parse_position, MonitorBounds};
 // ---------------------------------------------------------------------------
 // Capture / connection status commands
 // ---------------------------------------------------------------------------
+
+fn capture_status_response(
+    state: &AppState,
+    paused: bool,
+    indicator_visible: bool,
+) -> CaptureStatusResponse {
+    let consent = maekon_core::ports::consent_manager::ConsentGate::from_ref(
+        state.capture.consent_manager.as_ref(),
+    )
+    .permissions_snapshot();
+    CaptureStatusResponse {
+        paused,
+        indicator_visible,
+        consent_granted: consent.screen_capture,
+        permitted: crate::scheduler::capture_permitted_now(&state.config, &consent, paused),
+    }
+}
+
+fn emit_capture_status_payload<R: Runtime>(app: &AppHandle<R>, payload: CaptureStatusResponse) {
+    if let Err(error) = app.emit_to("magic-overlay", "overlay:capture-state-changed", payload) {
+        debug!("emit magic-overlay failed: {error}");
+    }
+    if let Err(error) = app.emit_to("tracking-panel", "overlay:capture-state-changed", payload) {
+        debug!("emit tracking-panel failed: {error}");
+    }
+}
+
+pub(crate) fn emit_current_capture_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
+    let paused = state.capture_paused.load(Ordering::Relaxed);
+    let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
+    emit_capture_status_payload(
+        app,
+        capture_status_response(state, paused, indicator_visible),
+    );
+}
 
 #[command]
 pub async fn show_main_window(app: AppHandle) -> Result<(), IpcError> {
@@ -109,10 +146,9 @@ pub async fn open_devtools(app: AppHandle, label: Option<String>) -> Result<(), 
 pub async fn get_capture_status(
     state: State<'_, AppState>,
 ) -> Result<CaptureStatusResponse, IpcError> {
-    Ok(CaptureStatusResponse {
-        paused: state.capture_paused.load(Ordering::Relaxed),
-        indicator_visible: state.indicator_visible.load(Ordering::Relaxed),
-    })
+    let paused = state.capture_paused.load(Ordering::Relaxed);
+    let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
+    Ok(capture_status_response(&state, paused, indicator_visible))
 }
 
 #[command]
@@ -124,14 +160,8 @@ pub async fn toggle_capture_pause(
     let new_paused = !was_paused;
     let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
 
-    let payload =
-        serde_json::json!({ "paused": new_paused, "indicator_visible": indicator_visible });
-    if let Err(e) = app.emit_to("magic-overlay", "overlay:capture-state-changed", &payload) {
-        debug!("emit magic-overlay failed: {e}");
-    }
-    if let Err(e) = app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload) {
-        debug!("emit tracking-panel failed: {e}");
-    }
+    let payload = capture_status_response(&state, new_paused, indicator_visible);
+    emit_capture_status_payload(&app, payload);
     if let Err(e) = crate::tray::sync_tray_state(&app, new_paused, indicator_visible) {
         debug!("sync_tray_state failed: {e}");
     }
@@ -148,10 +178,7 @@ pub async fn toggle_capture_pause(
     // Shared helper — every pause site must route through this.
     crate::commands::audio::on_capture_pause_toggled(&app, new_paused);
 
-    Ok(CaptureStatusResponse {
-        paused: new_paused,
-        indicator_visible,
-    })
+    Ok(payload)
 }
 
 #[command]
@@ -163,22 +190,10 @@ pub async fn set_indicator_visible(
     state.indicator_visible.store(visible, Ordering::Relaxed);
     let paused = state.capture_paused.load(Ordering::Relaxed);
 
-    let payload = serde_json::json!({ "paused": paused, "indicator_visible": visible });
-    if let Err(e) = app.emit_to("magic-overlay", "overlay:capture-state-changed", &payload) {
-        debug!("emit magic-overlay failed: {e}");
-    }
-    if let Err(e) = app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload) {
-        debug!("emit tracking-panel failed: {e}");
-    }
+    emit_capture_status_payload(&app, capture_status_response(&state, paused, visible));
 
-    if let Some(panel) = app.get_webview_window("tracking-panel") {
-        if visible {
-            if let Err(e) = panel.show() {
-                debug!("window show failed: {e}");
-            }
-        } else if let Err(e) = panel.hide() {
-            debug!("window hide failed: {e}");
-        }
+    if let Err(e) = crate::magic_overlay::set_tracking_panel_visible(&app, visible) {
+        debug!("tracking panel visibility reconcile failed: {e}");
     }
     if let Err(e) = crate::tray::sync_tray_state(&app, paused, visible) {
         debug!("sync_tray_state failed: {e}");
@@ -187,7 +202,16 @@ pub async fn set_indicator_visible(
 
     #[cfg(target_os = "macos")]
     if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-        if visible && !crate::app_runtime_launch::cua_safe_mode_enabled() {
+        // #8094: the native recording border must reflect the EFFECTIVE capture
+        // gate, not just the raw indicator toggle — a fresh no-consent profile
+        // must not render it even with `visible == true`.
+        let effective = crate::magic_overlay::effective_capture_permitted(&state, paused);
+        if crate::magic_overlay::native_recording_border_visible(
+            effective,
+            visible,
+            paused,
+            crate::app_runtime_launch::cua_safe_mode_enabled(),
+        ) {
             border.0.show();
         } else {
             border.0.hide();
@@ -289,10 +313,46 @@ pub async fn get_panel_position(
 
 #[cfg(test)]
 mod tests {
-    use super::position::{
-        is_position_valid, parse_position, resolve_point_monitor_index,
-        resolve_window_monitor_index, MonitorBounds,
+    use super::{
+        position::{
+            is_position_valid, parse_position, resolve_point_monitor_index,
+            resolve_window_monitor_index, MonitorBounds,
+        },
+        types::CaptureStatusResponse,
     };
+
+    #[test]
+    fn capture_status_response_serializes_effective_gate_fields() {
+        let response = CaptureStatusResponse {
+            paused: false,
+            indicator_visible: true,
+            consent_granted: false,
+            permitted: false,
+        };
+        let value = serde_json::to_value(response).expect("serialize capture status");
+
+        assert_eq!(value["paused"], false);
+        assert_eq!(value["indicator_visible"], true);
+        assert_eq!(value["consent_granted"], false);
+        assert_eq!(value["permitted"], false);
+    }
+
+    #[test]
+    fn native_capture_state_entrypoints_use_typed_event_chokepoint() {
+        for (entrypoint, source) in [
+            ("global shortcut", include_str!("../../setup/shortcuts.rs")),
+            ("tray", include_str!("../../tray.rs")),
+        ] {
+            assert!(
+                source.contains("commands::capture_status::emit_current_capture_status"),
+                "{entrypoint} must emit the canonical CaptureStatusResponse"
+            );
+            assert!(
+                !source.contains("\"overlay:capture-state-changed\""),
+                "{entrypoint} must not hand-roll a partial capture-state event"
+            );
+        }
+    }
 
     // --- parse_position tests ---
 

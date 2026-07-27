@@ -6,6 +6,22 @@ use serde::{Deserialize, Serialize};
 /// this floor (prevents excessive network/battery drain).
 pub const MIN_SYNC_INTERVAL_SECS: u64 = 30;
 
+/// OS keychain service + account holding the cross-device sync passphrase
+/// (#8056 P2-2). The passphrase lives in the OS keychain — NOT in config — so a
+/// GUI app launched from Finder / the Start menu (which does not inherit a
+/// shell's `MAEKON_SYNC_PASSPHRASE` env) can still activate sync. Shared between
+/// the read side (`agent_runtime::sync_setup`) and the Settings → Sync write
+/// route so the two never drift on the entry name.
+pub const SYNC_PASSPHRASE_KEYCHAIN_SERVICE: &str = "maekon";
+/// See [`SYNC_PASSPHRASE_KEYCHAIN_SERVICE`].
+pub const SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT: &str = "sync_passphrase";
+
+/// Minimum length for the sync passphrase. Argon2id derives BOTH the AES-256-GCM
+/// payload key and the LAN HMAC challenge-response key from it, so a trivially
+/// short value yields a weak key. This is a length floor, not an entropy
+/// guarantee. Shared by the runtime setup gate and the write route.
+pub const MIN_SYNC_PASSPHRASE_LEN: usize = 12;
+
 /// Sync transport selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

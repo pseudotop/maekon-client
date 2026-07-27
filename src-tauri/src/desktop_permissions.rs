@@ -633,6 +633,25 @@ fn macos_screen_capture_access_granted() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 
+/// Cheap per-tick OS screen-capture permission probe for the monitor loop
+/// (#8686 AC4 mid-session revocation fail-closed axis).
+///
+/// macOS: `CGPreflightScreenCaptureAccess` — a read-only syscall safe to call
+/// every second. Other platforms have no revocable screen-recording permission
+/// concept we can preflight (Windows/Linux report `not_required`/`unavailable`
+/// in the snapshot), so the axis is always open there; xcap-level capture
+/// errors keep their existing warn-and-skip handling.
+pub(crate) fn screen_capture_os_permission_ok() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_screen_capture_access_granted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

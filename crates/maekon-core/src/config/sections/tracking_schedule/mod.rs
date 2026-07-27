@@ -1,4 +1,4 @@
-//! Tracking schedule configuration — wall-clock mute windows (Phase 9 PR-A).
+//! Tracking schedule configuration — wall-clock allowed windows (Phase 9 PR-A).
 //!
 //! Split from a single 725-line file per ADR-013.
 //! Public API (`TrackingScheduleConfig`, `TrackingWindow`) unchanged.

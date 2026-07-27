@@ -1,8 +1,9 @@
 use maekon_core::config::{PiiFilterLevel, PrivacyConfig};
 
 use super::redaction::{
-    mask_api_keys, mask_credit_cards, mask_emails, mask_iban, mask_ip_addresses, mask_korean_id,
-    mask_passport, mask_phone_numbers, mask_ssn, mask_user_paths,
+    mask_api_keys, mask_credit_cards, mask_emails, mask_high_entropy_secrets, mask_iban,
+    mask_ip_addresses, mask_korean_id, mask_passport, mask_phone_numbers, mask_ssn,
+    mask_user_paths,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,36 +30,49 @@ pub fn sanitize_title_with_level(title: &str, level: PiiFilterLevel) -> String {
             result
         }
         PiiFilterLevel::Standard => {
-            // Mask longer / structured numeric PII (IBAN, Korean-ID, SSN, card)
-            // BEFORE phone numbers so the broadened phone scanner (review4 V2/V14,
-            // which now starts at any digit and accepts separator-less runs) cannot
-            // partially consume those values. Email is order-independent. Basic
-            // remains {email, phone}; Standard is a strict superset of it.
-            let mut result = mask_emails(title);
-            result = mask_iban(&result);
-            result = mask_korean_id(&result);
-            result = mask_ssn(&result);
-            result = mask_credit_cards(&result);
-            result = mask_phone_numbers(&result);
-            result = mask_user_paths(&result);
-            // API tokens (sk-/ghp_/AKIA/Bearer/PEM blocks, …) are a high-risk
-            // credential class that commonly leaks through window titles and OCR
-            // text. They are masked at Standard — the shipped default level — and
-            // not only at Strict, because `mask_api_keys` is prefix-anchored and
-            // gated on an >=8-char token, so it does not over-mask ordinary prose.
-            // IP addresses and passport numbers stay Strict-only (higher
-            // false-positive risk, lower secrecy stakes).
-            result = mask_api_keys(&result);
-            result
+            // Structural maskers, then the entropy fallback as the FINAL step.
+            let result = mask_structural_chain(title);
+            // Entropy fallback (#8041): mask prefix-less high-entropy secrets the
+            // prefix-anchored `mask_api_keys` misses. Runs LAST so it never clobbers
+            // an earlier masker's marker (`[USER]`/`[CARD]`/…); the shared heuristic
+            // also skips path / URL / IP-shaped tokens. Standard is the shipped
+            // default AND the export/LLM egress level, so it must run here — over-
+            // masking a high-entropy non-secret never leaks (#6826).
+            mask_high_entropy_secrets(&result)
         }
         PiiFilterLevel::Strict => {
-            // Standard already masks API keys; Strict adds IP + passport on top.
-            let mut result = sanitize_title_with_level(title, PiiFilterLevel::Standard);
+            // Standard's structural chain + IP + passport, THEN the entropy fallback
+            // last of all — so an IPv6/IPv4 address is already `[IP]` before the
+            // entropy pass runs and is therefore skipped rather than mis-masked as
+            // `[API_KEY]`.
+            let mut result = mask_structural_chain(title);
             result = mask_ip_addresses(&result);
             result = mask_passport(&result);
-            result
+            mask_high_entropy_secrets(&result)
         }
     }
+}
+
+/// The structural (pattern-anchored) masker chain shared by Standard and Strict,
+/// excluding the terminal entropy fallback and the Strict-only IP/passport passes.
+///
+/// Longer / structured numeric PII (IBAN, Korean-ID, SSN, card) is masked BEFORE
+/// phone numbers so the broadened phone scanner (review4 V2/V14 — starts at any
+/// digit, accepts separator-less runs) cannot partially consume those values.
+/// Email is order-independent. API tokens (sk-/ghp_/AKIA/Bearer/PEM blocks, …) are
+/// masked here too: they are a high-risk credential class that leaks through window
+/// titles and OCR text, and `mask_api_keys` is prefix-anchored + gated on an 8-or-
+/// more-char token, so it does not over-mask ordinary prose. Basic stays
+/// email + phone; this chain is a strict superset of it.
+fn mask_structural_chain(title: &str) -> String {
+    let mut result = mask_emails(title);
+    result = mask_iban(&result);
+    result = mask_korean_id(&result);
+    result = mask_ssn(&result);
+    result = mask_credit_cards(&result);
+    result = mask_phone_numbers(&result);
+    result = mask_user_paths(&result);
+    mask_api_keys(&result)
 }
 
 pub fn sanitize_title(title: &str) -> String {
@@ -408,6 +422,70 @@ pub fn title_reveals_sensitive_service(window_title: &str) -> bool {
         .any(|phrase| normalized_phrase_matches(&normalized, phrase))
 }
 
+/// Window-title markers that reveal a browser is running in a private /
+/// incognito session (#8045 C4).
+///
+/// LIMITATION (documented deliberately): no cross-platform OS API exposes a
+/// third-party browser's private-browsing state — only the browser itself knows
+/// it. Title-string heuristics are therefore the industry-standard approach
+/// (the same technique Windows Recall and comparable capture tools use to
+/// exclude private windows). Each major browser writes a distinctive marker into
+/// the window title of a private window; we match those markers
+/// case-insensitively as substrings. The set is DATA, not logic — add a browser
+/// or locale by adding its marker string here, no code change required.
+///
+/// All entries are lowercase; comparison is done after `to_lowercase()` (which
+/// is a no-op for the CJK markers). Localized markers cover the product's
+/// locales (en/ko/ja/zh-CN/es) for the browsers that localize the marker.
+pub const PRIVATE_WINDOW_TITLE_MARKERS: &[&str] = &[
+    // Chrome / Chromium / Brave "Incognito" marker, per locale (the literal on
+    // each line IS the marker; the trailing tag is only the locale it belongs to).
+    "incognito",    // en
+    "시크릿 모드",  // ko
+    "シークレット", // ja
+    "无痕",         // zh-CN
+    "incógnito",    // es
+    // Microsoft Edge "InPrivate" (Edge keeps this marker across locales).
+    "inprivate",
+    // Mozilla Firefox "Private Browsing" / "(Private)", per locale.
+    "private browsing",         // en (also Apple Safari)
+    "(private)",                // en Firefox short suffix form
+    "사생활 보호",              // ko
+    "プライベートブラウジング", // ja
+    "隐私浏览",                 // zh-CN
+    "navegación privada",       // es
+                                // Apple Safari "Private Browsing" is covered by the en marker above.
+];
+
+/// Returns `true` when a browser window *title* indicates a private / incognito
+/// session (see [`PRIVATE_WINDOW_TITLE_MARKERS`] for the rationale, marker set,
+/// and the platform limitation). Matched case-insensitively as a substring.
+///
+/// Consumers gate this behind `auto_exclude_sensitive` (see [`should_exclude`]),
+/// so a private window is excluded from capture the same way a sensitive-service
+/// title is — over-exclusion of a non-private title that merely contains a
+/// marker word never leaks (#6826).
+pub fn title_indicates_private_window(window_title: &str) -> bool {
+    let title_lower = window_title.to_lowercase();
+    PRIVATE_WINDOW_TITLE_MARKERS
+        .iter()
+        .any(|marker| title_lower.contains(marker))
+}
+
+/// Canonicalize an application identity for exact-list comparisons.
+///
+/// Windows activity monitors report executable identities such as
+/// `Notepad.exe`, while settings surfaces and imported policies commonly store
+/// the human-facing name `Notepad`. Treat the platform suffix as transport
+/// metadata without weakening the exclusion into a substring match.
+fn canonical_exact_app_identity(app_name: &str) -> String {
+    let normalized = app_name.trim().to_lowercase();
+    normalized
+        .strip_suffix(".exe")
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
 pub fn should_exclude(
     app_name: &str,
     window_title: &str,
@@ -416,8 +494,11 @@ pub fn should_exclude(
     excluded_title_patterns: &[String],
     auto_exclude_sensitive: bool,
 ) -> bool {
-    let lower = app_name.to_lowercase();
-    if excluded_apps.iter().any(|a| a.to_lowercase() == lower) {
+    let exact_identity = canonical_exact_app_identity(app_name);
+    if excluded_apps
+        .iter()
+        .any(|candidate| canonical_exact_app_identity(candidate) == exact_identity)
+    {
         return true;
     }
 
@@ -437,6 +518,15 @@ pub fn should_exclude(
     // finance, health, or legal service even though the host app (e.g. Chrome)
     // is not itself flagged (#6826).
     if auto_exclude_sensitive && title_reveals_sensitive_service(window_title) {
+        return true;
+    }
+
+    // #8045 C4: exclude private / incognito browser windows. The user opened a
+    // private window precisely so its contents are not retained; treat it like a
+    // sensitive-service title and drop it from capture under the same
+    // `auto_exclude_sensitive` policy (title heuristics are the only signal
+    // available — see `title_indicates_private_window`).
+    if auto_exclude_sensitive && title_indicates_private_window(window_title) {
         return true;
     }
 
@@ -463,4 +553,76 @@ pub fn should_exclude_by_policy(
         &privacy.excluded_title_patterns,
         privacy.auto_exclude_sensitive,
     )
+}
+
+#[cfg(test)]
+mod private_window_tests {
+    use super::*;
+
+    /// #8045 C4: representative private-window titles across the major browsers
+    /// and the product's locales are all detected.
+    #[test]
+    fn private_window_titles_detected_per_browser_and_locale() {
+        let private = [
+            // Chrome / Chromium / Brave (Incognito), en + localized.
+            "GitHub - Google Chrome - Incognito",
+            "네이버 - Chrome - 시크릿 모드",
+            "ニュース - Google Chrome - シークレット",
+            "百度 - Google Chrome - 无痕式",
+            "Noticias - Google Chrome - Incógnito",
+            // Microsoft Edge — InPrivate.
+            "Bing - Microsoft Edge - InPrivate",
+            // Firefox — Private Browsing / (Private) + localized.
+            "Mozilla Firefox (Private Browsing)",
+            "Wikipedia — Mozilla Firefox — (Private)",
+            "위키백과 — Mozilla Firefox 사생활 보호 모드",
+            "ウィキペディア — Mozilla Firefox プライベートブラウジング",
+            "维基百科 — Mozilla Firefox 隐私浏览",
+            "Wikipedia — Mozilla Firefox (Navegación privada)",
+            // Safari — Private Browsing.
+            "Start Page — Private Browsing",
+        ];
+        for title in private {
+            assert!(
+                title_indicates_private_window(title),
+                "expected private-window detection for: {title:?}"
+            );
+        }
+    }
+
+    /// Ordinary titles that do not indicate a private window are NOT detected,
+    /// so normal capture is unaffected.
+    #[test]
+    fn ordinary_titles_not_detected_as_private() {
+        let ordinary = [
+            "Inbox (12) - Gmail - Google Chrome",
+            "report-final.docx - Word",
+            "src/main.rs - oneshim - Visual Studio Code",
+            "Zoom Meeting",
+            "Slack | general | oneshim",
+            "Terminal — bash",
+        ];
+        for title in ordinary {
+            assert!(
+                !title_indicates_private_window(title),
+                "ordinary title must not be flagged private: {title:?}"
+            );
+        }
+    }
+
+    /// A private-window title is excluded from capture when
+    /// `auto_exclude_sensitive` is on, and captured when it is off (the setting
+    /// gates the behavior, mirroring the sensitive-service title path).
+    #[test]
+    fn should_exclude_gates_private_window_on_auto_exclude_sensitive() {
+        let title = "GitHub - Google Chrome - Incognito";
+        assert!(
+            should_exclude("Google Chrome", title, &[], &[], &[], true),
+            "private window must be excluded when auto_exclude_sensitive is on"
+        );
+        assert!(
+            !should_exclude("Google Chrome", title, &[], &[], &[], false),
+            "private window must NOT be force-excluded when auto_exclude_sensitive is off"
+        );
+    }
 }

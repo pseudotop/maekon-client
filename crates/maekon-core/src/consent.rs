@@ -119,14 +119,28 @@ pub enum ConsentStatus {
     UpdateRequired,
 }
 
+/// GDPR Article 20 (right to data portability) export envelope (#8056 P2-3).
+///
+/// Produced by the `/export/full` handler and serialized to a downloadable JSON
+/// archive. Carries the consent record, settings, and — via `tables` — every
+/// personal-data table this device holds (the ones the scoped `/export/*` and
+/// `/backup` surfaces omit). Free-text PII in `tables` is masked at Standard by
+/// the producing handler before serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDataExport {
     pub exported_at: DateTime<Utc>,
+    /// Consent-policy version the export was produced under.
+    #[serde(default)]
+    pub policy_version: String,
     pub consent: Option<ConsentRecord>,
     pub settings: serde_json::Value,
     pub event_count: u64,
     pub frame_count: u64,
     pub export_path: PathBuf,
+    /// The full personal-data archive: one entry per table, each a list of
+    /// column→value JSON rows (free-text columns masked). #8056 P2-3.
+    #[serde(default)]
+    pub tables: Vec<crate::ports::web_storage::PersonalDataTableExport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

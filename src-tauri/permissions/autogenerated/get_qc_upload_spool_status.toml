@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-qc-upload-spool-status"
+description = "Enables the get_qc_upload_spool_status command without any pre-configured scope."
+commands.allow = ["get_qc_upload_spool_status"]
+
+[[permission]]
+identifier = "deny-get-qc-upload-spool-status"
+description = "Denies the get_qc_upload_spool_status command without any pre-configured scope."
+commands.deny = ["get_qc_upload_spool_status"]

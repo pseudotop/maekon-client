@@ -6,7 +6,8 @@
 //!
 //! **Tier 1 — Event suppress / sanity (tests 1-12)**: Gate-result assertions
 //! using the 4-term `capture_permitted_now` composite directly. Tests verify
-//! that the gate correctly returns `false` (TS active) or `true` (TS inactive)
+//! that the gate correctly returns `true` inside an allowed window and `false`
+//! outside every configured allowed window
 //! and then perform an actual storage write to confirm the data path behavior.
 //! These tests are GREEN in A.8 only for sanity checks (11-12 inactive-path);
 //! the TS-active suppression tests (1-5) demonstrate that the GATE is already
@@ -25,7 +26,8 @@
 //! that the audio IPC guard fires (CONS-PC04). The system-metrics loop is NOT a
 //! plain "ungated" loop: it is gated on consent (`telemetry`) ONLY, decoupled
 //! from TS/pause/active-hours (CONS-PM09 / spec §3.8 row 16 — infra-health data
-//! continues during a TS mute window). That consent-only-but-TS-decoupled
+//! continues outside a configured allowed window). That consent-only schedule-
+//! decoupled
 //! property is verified for real against the production helper by
 //! `metrics_collection_permitted_tests` in
 //! `src-tauri/src/scheduler/loops/system.rs` (the former theater test 20 here is
@@ -61,7 +63,8 @@ use std::path::PathBuf;
 /// a broad Mon–Fri 00:00–23:59 window so the gate fires during any test run).
 ///
 /// #7734: resets the process-global `BATTERY_SAVER_ACTIVE` flag to `false` —
-/// every gate test in this file calls this fixture (or [`cfg_ts_inactive`])
+/// every gate test in this file calls this fixture (or
+/// [`cfg_ts_outside_allowed_window`])
 /// first, under the shared `#[serial_test::serial(ts_gating)]` guard, so this
 /// is the single reset point for the real `capture_permitted_now`'s
 /// battery-saver term (no reliance on process-start default).
@@ -101,28 +104,37 @@ fn cfg_ts_active() -> AppConfig {
                 Weekday::Sat,
                 Weekday::Sun,
             ],
-            label: "all-day mute".to_string(),
+            label: "all-day allowed".to_string(),
         }],
         timezone: "Local".to_string(),
     };
     cfg
 }
 
-/// Create an `AppConfig` with tracking schedule disabled.
+/// Create an `AppConfig` with an enabled tracking schedule whose configured
+/// window never matches because it has no active weekdays.
 /// Active hours are disabled so the only variable is TS (see [`cfg_ts_active`]
 /// for why an equal-start/end "full day" encoding is wrong against the real
 /// gate).
 ///
 /// #7734: see [`cfg_ts_active`] for the `BATTERY_SAVER_ACTIVE` reset +
 /// explicit-field rationale (identical here).
-fn cfg_ts_inactive() -> AppConfig {
+fn cfg_ts_outside_allowed_window() -> AppConfig {
     set_battery_saver_active_for_scheduler(false);
     let mut cfg = AppConfig::default_config();
     cfg.vision.capture_enabled = true;
     cfg.schedule.pause_on_battery_saver = false;
     cfg.schedule.active_hours_enabled = false;
-    // TS disabled — not firing.
-    cfg.tracking_schedule = TrackingScheduleConfig::default();
+    cfg.tracking_schedule = TrackingScheduleConfig {
+        enabled: true,
+        windows: vec![TrackingWindow {
+            start: "00:00".to_string(),
+            end: "23:59".to_string(),
+            days_of_week: vec![],
+            label: "never active".to_string(),
+        }],
+        timezone: "Local".to_string(),
+    };
     cfg
 }
 
@@ -275,7 +287,7 @@ fn make_file_access_event() -> Event {
 ///
 /// A.9: wired — the loop body now calls `capture_permitted_now`; this helper
 /// confirms the gate logic closes when TS is active (consent granted, not paused).
-fn analysis_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
+fn analysis_loop_would_gate_outside_allowed_window(cfg: &AppConfig) -> bool {
     // Gate closed = loop skips = !gate_result.
     !capture_permitted_now(cfg, &consent_granted(), false)
 }
@@ -283,21 +295,21 @@ fn analysis_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
 /// Returns `true` if the focus loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_focus_loop` now calls `capture_permitted_now`.
-fn focus_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
+fn focus_loop_would_gate_outside_allowed_window(cfg: &AppConfig) -> bool {
     !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the coaching loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_coaching_loop` now calls `capture_permitted_now`.
-fn coaching_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
+fn coaching_loop_would_gate_outside_allowed_window(cfg: &AppConfig) -> bool {
     !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
 /// Returns `true` if the cross-device sync loop would skip its tick when TS is active.
 ///
 /// A.9: wired — `spawn_cross_device_sync_loop` now calls `capture_permitted_now`.
-fn cross_device_sync_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
+fn cross_device_sync_loop_would_gate_outside_allowed_window(cfg: &AppConfig) -> bool {
     !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
@@ -306,11 +318,11 @@ fn cross_device_sync_loop_would_gate_during_ts(cfg: &AppConfig) -> bool {
 ///
 /// A.9: wired — `commands::audio::start_audio_capture` now calls `capture_permitted_now`
 /// and returns `validation.invalid_arguments` when !permitted.
-fn audio_ipc_would_refuse_during_ts(cfg: &AppConfig) -> bool {
+fn audio_ipc_would_refuse_outside_allowed_window(cfg: &AppConfig) -> bool {
     !capture_permitted_now(cfg, &consent_granted(), false)
 }
 
-// ── Tier 1: Per-variant event suppress (TS active → zero rows) ──────────────
+// ── Tier 1: Per-variant event suppress outside allowed windows ──────────────
 //
 // Tests 1-5 assert:
 //   - capture_permitted_now returns FALSE (gate correctly closed)
@@ -322,14 +334,14 @@ fn audio_ipc_would_refuse_during_ts(cfg: &AppConfig) -> bool {
 // calling save_event ONLY when permitted (simulating what A.9 will wire in the
 // actual loops).
 
-/// Test 1: TS active → gate returns false → Window events suppressed.
+/// Test 1: outside allowed windows → Window events suppressed.
 ///
 /// Simulates what A.9 will wire: "only save when permitted". Since TS is
 /// active, no Window rows appear in the events table.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_active_suppresses_window_switch_events() {
-    let cfg = cfg_ts_active();
+async fn outside_allowed_window_suppresses_window_switch_events() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -354,11 +366,11 @@ async fn ts_active_suppresses_window_switch_events() {
     );
 }
 
-/// Test 2: TS active → gate returns false → Process snapshot events suppressed.
+/// Test 2: outside allowed windows → Process snapshot events suppressed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_active_suppresses_process_snapshot_events() {
-    let cfg = cfg_ts_active();
+async fn outside_allowed_window_suppresses_process_snapshot_events() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -381,11 +393,11 @@ async fn ts_active_suppresses_process_snapshot_events() {
     );
 }
 
-/// Test 3: TS active → gate returns false → Input activity events suppressed.
+/// Test 3: outside allowed windows → Input activity events suppressed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_active_suppresses_input_events() {
-    let cfg = cfg_ts_active();
+async fn outside_allowed_window_suppresses_input_events() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -408,11 +420,11 @@ async fn ts_active_suppresses_input_events() {
     );
 }
 
-/// Test 4: TS active → gate returns false → Clipboard events suppressed.
+/// Test 4: outside allowed windows → Clipboard events suppressed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_active_suppresses_clipboard_events() {
-    let cfg = cfg_ts_active();
+async fn outside_allowed_window_suppresses_clipboard_events() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -435,11 +447,11 @@ async fn ts_active_suppresses_clipboard_events() {
     );
 }
 
-/// Test 5: TS active → gate returns false → FileAccess events suppressed.
+/// Test 5: outside allowed windows → FileAccess events suppressed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_active_suppresses_file_access_events() {
-    let cfg = cfg_ts_active();
+async fn outside_allowed_window_suppresses_file_access_events() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -462,17 +474,17 @@ async fn ts_active_suppresses_file_access_events() {
     );
 }
 
-// ── Tier 1: Per-variant sanity when TS inactive (tests 6-10) ────────────────
+// ── Tier 1: Per-variant sanity inside an allowed window (tests 6-10) ────────
 //
-// Tests 6-10 assert: TS inactive + consent granted + active_hours permitting
+// Tests 6-10 assert: allowed window active + consent + active_hours permitting
 // → gate returns TRUE → save_event succeeds → COUNT(*) > 0.
 // These are GREEN in A.8 (storage write path is gated correctly by test logic).
 
-/// Test 6: TS inactive → gate open → Window events allowed.
+/// Test 6: active allowed window → Window events allowed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_inactive_allows_window_events() {
-    let cfg = cfg_ts_inactive();
+async fn active_allowed_window_allows_window_events() {
+    let cfg = cfg_ts_active();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -491,16 +503,16 @@ async fn ts_inactive_allows_window_events() {
     let window_rows = count_events_by_tag(&storage, "Window").await;
     assert!(
         window_rows > 0,
-        "Window events must be written when gate is open (TS inactive) — got {} rows",
+        "Window events must be written when the allowed-window gate is open — got {} rows",
         window_rows
     );
 }
 
-/// Test 7: TS inactive → gate open → Process snapshot events allowed.
+/// Test 7: active allowed window → Process snapshot events allowed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_inactive_allows_process_events() {
-    let cfg = cfg_ts_inactive();
+async fn active_allowed_window_allows_process_events() {
+    let cfg = cfg_ts_active();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -524,11 +536,11 @@ async fn ts_inactive_allows_process_events() {
     );
 }
 
-/// Test 8: TS inactive → gate open → Input activity events allowed.
+/// Test 8: active allowed window → Input activity events allowed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_inactive_allows_input_events() {
-    let cfg = cfg_ts_inactive();
+async fn active_allowed_window_allows_input_events() {
+    let cfg = cfg_ts_active();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -552,11 +564,11 @@ async fn ts_inactive_allows_input_events() {
     );
 }
 
-/// Test 9: TS inactive → gate open → Clipboard events allowed.
+/// Test 9: active allowed window → Clipboard events allowed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_inactive_allows_clipboard_events() {
-    let cfg = cfg_ts_inactive();
+async fn active_allowed_window_allows_clipboard_events() {
+    let cfg = cfg_ts_active();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -580,11 +592,11 @@ async fn ts_inactive_allows_clipboard_events() {
     );
 }
 
-/// Test 10: TS inactive → gate open → FileAccess events allowed.
+/// Test 10: active allowed window → FileAccess events allowed.
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn ts_inactive_allows_file_access_events() {
-    let cfg = cfg_ts_inactive();
+async fn active_allowed_window_allows_file_access_events() {
+    let cfg = cfg_ts_active();
     let consent = consent_granted();
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -610,12 +622,12 @@ async fn ts_inactive_allows_file_access_events() {
 
 // ── Tier 1: Consent + pause composite veto (tests 11-12, CONS-PC02) ─────────
 
-/// Test 11: Consent revoked → events suppressed even when TS inactive and
+/// Test 11: Consent revoked → events suppressed even inside an allowed window and
 /// active_hours permitting. Consent is the top-authority veto (CONS-PC02).
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn consent_revoked_suppresses_events_during_ts_inactive() {
-    let cfg = cfg_ts_inactive(); // TS not firing
+async fn consent_revoked_suppresses_events_inside_allowed_window() {
+    let cfg = cfg_ts_active(); // inside the allowed window
     let consent = consent_revoked(); // consent revoked = top-authority veto
     let capture_paused = false;
     let storage = in_memory_storage();
@@ -624,7 +636,7 @@ async fn consent_revoked_suppresses_events_during_ts_inactive() {
 
     assert!(
         !permitted,
-        "consent revoked must veto capture even when TS inactive + active_hours active \
+        "consent revoked must veto capture inside an allowed window + active_hours active \
          (CONS-PC02 — consent top-authority)"
     );
 
@@ -650,8 +662,8 @@ async fn consent_revoked_suppresses_events_during_ts_inactive() {
 /// composite level as TS (CONS-PC02).
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
-async fn capture_paused_suppresses_events_during_ts_inactive() {
-    let cfg = cfg_ts_inactive(); // TS not firing
+async fn capture_paused_suppresses_events_inside_allowed_window() {
+    let cfg = cfg_ts_active(); // inside the allowed window
     let consent = consent_granted(); // consent granted
     let capture_paused = true; // tray-toggle veto active
     let storage = in_memory_storage();
@@ -660,7 +672,7 @@ async fn capture_paused_suppresses_events_during_ts_inactive() {
 
     assert!(
         !permitted,
-        "capture_paused=true must veto capture even when TS inactive + consent granted \
+        "capture_paused=true must veto capture inside an allowed window + consent granted \
          (CONS-PC02 — tray-pause veto)"
     );
 
@@ -692,9 +704,9 @@ async fn capture_paused_suppresses_events_during_ts_inactive() {
 ///       stub updated to return `true`.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn ts_active_blocks_analysis_loop_tick() {
-    let cfg = cfg_ts_active();
-    let gated = analysis_loop_would_gate_during_ts(&cfg);
+fn outside_allowed_window_blocks_analysis_loop_tick() {
+    let cfg = cfg_ts_outside_allowed_window();
+    let gated = analysis_loop_would_gate_outside_allowed_window(&cfg);
     assert!(
         gated,
         "A.9-pending: analysis loop must skip its tick when TS is active. \
@@ -709,9 +721,9 @@ fn ts_active_blocks_analysis_loop_tick() {
 /// A.9: wires `capture_permitted_now` check into `spawn_focus_loop`.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn ts_active_blocks_focus_loop_tick() {
-    let cfg = cfg_ts_active();
-    let gated = focus_loop_would_gate_during_ts(&cfg);
+fn outside_allowed_window_blocks_focus_loop_tick() {
+    let cfg = cfg_ts_outside_allowed_window();
+    let gated = focus_loop_would_gate_outside_allowed_window(&cfg);
     assert!(
         gated,
         "A.9-pending: focus loop must skip its tick when TS is active. \
@@ -726,9 +738,9 @@ fn ts_active_blocks_focus_loop_tick() {
 /// A.9: wires `capture_permitted_now` check into `spawn_coaching_loop`.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn ts_active_blocks_coaching_loop_tick() {
-    let cfg = cfg_ts_active();
-    let gated = coaching_loop_would_gate_during_ts(&cfg);
+fn outside_allowed_window_blocks_coaching_loop_tick() {
+    let cfg = cfg_ts_outside_allowed_window();
+    let gated = coaching_loop_would_gate_outside_allowed_window(&cfg);
     assert!(
         gated,
         "A.9-pending: coaching loop must skip its tick when TS is active. \
@@ -743,9 +755,9 @@ fn ts_active_blocks_coaching_loop_tick() {
 /// A.9: wires `capture_permitted_now` check into `spawn_cross_device_sync_loop`.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn ts_active_blocks_cross_device_sync_loop_tick() {
-    let cfg = cfg_ts_active();
-    let gated = cross_device_sync_loop_would_gate_during_ts(&cfg);
+fn outside_allowed_window_blocks_cross_device_sync_loop_tick() {
+    let cfg = cfg_ts_outside_allowed_window();
+    let gated = cross_device_sync_loop_would_gate_outside_allowed_window(&cfg);
     assert!(
         gated,
         "A.9-pending: cross-device sync loop must skip its tick when TS is active. \
@@ -768,9 +780,9 @@ fn ts_active_blocks_cross_device_sync_loop_tick() {
 /// documents the expected behavior verified in A.9's implementation.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn audio_capture_ipc_refuses_during_ts() {
-    let cfg = cfg_ts_active();
-    let refuses = audio_ipc_would_refuse_during_ts(&cfg);
+fn audio_capture_ipc_refuses_outside_allowed_window() {
+    let cfg = cfg_ts_outside_allowed_window();
+    let refuses = audio_ipc_would_refuse_outside_allowed_window(&cfg);
     assert!(
         refuses,
         "A.9-pending: start_audio_capture IPC must return validation.invalid_arguments \
@@ -792,16 +804,16 @@ fn audio_capture_ipc_refuses_during_ts() {
 /// GREEN in A.8 and A.9 — heartbeat loop is explicitly excluded from gating.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn heartbeat_loop_continues_during_ts() {
+fn heartbeat_loop_continues_outside_allowed_window() {
     // The heartbeat loop (spawn_heartbeat_loop in loops/network.rs) has no
     // capture_permitted_now check and must remain ungated per spec §3.8.
     // We verify the absence of gating by confirming the gate function itself
     // does NOT encode heartbeat behavior.
-    let cfg = cfg_ts_active();
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
 
-    // Gate result is false (TS active) — but heartbeat is independent of capture gate.
+    // Gate is closed outside allowed windows, but heartbeat is independent.
     let capture_gate = capture_permitted_now(&cfg, &consent, capture_paused);
 
     // Heartbeat should continue regardless of capture gate.
@@ -817,7 +829,7 @@ fn heartbeat_loop_continues_during_ts() {
     // Confirm our fixture: capture IS gated (so we know TS is active).
     assert!(
         !capture_gate,
-        "sanity: capture gate should be closed with TS active config"
+        "sanity: capture gate should be closed outside allowed windows"
     );
 }
 
@@ -827,8 +839,8 @@ fn heartbeat_loop_continues_during_ts() {
 /// GREEN in A.8 and A.9 — OAuth refresh is explicitly excluded from gating.
 #[serial_test::serial(ts_gating)]
 #[test]
-fn oauth_refresh_loop_continues_during_ts() {
-    let cfg = cfg_ts_active();
+fn oauth_refresh_loop_continues_outside_allowed_window() {
+    let cfg = cfg_ts_outside_allowed_window();
     let consent = consent_granted();
     let capture_paused = false;
 
@@ -846,7 +858,7 @@ fn oauth_refresh_loop_continues_during_ts() {
     // Confirm TS is active so the "continues during TS" assertion is meaningful.
     assert!(
         !capture_gate,
-        "sanity: capture gate should be closed with TS active config"
+        "sanity: capture gate should be closed outside allowed windows"
     );
 }
 
@@ -881,35 +893,35 @@ fn oauth_refresh_loop_continues_during_ts() {
 #[serial_test::serial(ts_gating)]
 #[tokio::test]
 async fn gate_truth_table_end_to_end() {
-    // When TS active + consent granted + not paused → gate = false
+    // Inside an allowed window + consent + not paused → gate = true.
     assert!(
-        !capture_permitted_now(&cfg_ts_active(), &consent_granted(), false),
-        "TS active + consent granted + not paused → gate must be closed"
+        capture_permitted_now(&cfg_ts_active(), &consent_granted(), false),
+        "active allowed window + consent granted + not paused → gate must be open"
     );
 
-    // When TS inactive + consent granted + not paused → gate = true
+    // Outside every allowed window → gate = false.
     assert!(
-        capture_permitted_now(&cfg_ts_inactive(), &consent_granted(), false),
-        "TS inactive + consent granted + not paused → gate must be open"
+        !capture_permitted_now(&cfg_ts_outside_allowed_window(), &consent_granted(), false),
+        "outside allowed windows + consent granted + not paused → gate must be closed"
     );
 
-    // When TS inactive + consent revoked + not paused → gate = false (consent veto)
+    // Consent revoked still vetoes inside an allowed window.
     assert!(
-        !capture_permitted_now(&cfg_ts_inactive(), &consent_revoked(), false),
-        "TS inactive + consent revoked → gate must be closed (consent top-authority)"
+        !capture_permitted_now(&cfg_ts_active(), &consent_revoked(), false),
+        "active allowed window + consent revoked → gate must be closed (consent top-authority)"
     );
 
-    // When TS inactive + consent granted + paused → gate = false (tray-pause veto)
+    // Pause still vetoes inside an allowed window.
     assert!(
-        !capture_permitted_now(&cfg_ts_inactive(), &consent_granted(), true),
-        "TS inactive + consent granted + capture_paused → gate must be closed (tray veto)"
+        !capture_permitted_now(&cfg_ts_active(), &consent_granted(), true),
+        "active allowed window + consent granted + capture_paused → gate must be closed (tray veto)"
     );
 
     // Verify storage correctly reflects gate state.
     let storage = in_memory_storage();
 
     // Gate open: write and confirm.
-    let cfg_open = cfg_ts_inactive();
+    let cfg_open = cfg_ts_active();
     let permitted_open = capture_permitted_now(&cfg_open, &consent_granted(), false);
     if permitted_open {
         storage.save_event(&make_window_event()).await.unwrap();
@@ -921,7 +933,7 @@ async fn gate_truth_table_end_to_end() {
 
     // Gate closed: no write.
     let storage2 = in_memory_storage();
-    let cfg_closed = cfg_ts_active();
+    let cfg_closed = cfg_ts_outside_allowed_window();
     let permitted_closed = capture_permitted_now(&cfg_closed, &consent_granted(), false);
     if permitted_closed {
         storage2.save_event(&make_window_event()).await.unwrap();

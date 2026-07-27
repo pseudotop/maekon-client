@@ -7,6 +7,8 @@
 //! **Resource footprint**: 9 floats (36 bytes) + O(1) per prediction/update.
 //! **No external dependencies.**
 
+use maekon_core::models::coaching::AdaptiveScorerState;
+
 /// Minimum training samples before the model's prediction is used.
 /// Below this, falls back to the rule-based gating (TunableParams).
 const MIN_TRAINING_SAMPLES: u32 = 50;
@@ -153,6 +155,41 @@ impl AdaptiveScorer {
     pub fn train_count(&self) -> u32 {
         self.train_count
     }
+
+    /// Snapshot the model into its persistable form (#8058 P2-1).
+    ///
+    /// Copies the fixed-size weight array into a length-`NUM_FEATURES` vector so
+    /// the storage layer can round-trip it without depending on the compile-time
+    /// feature count.
+    pub fn snapshot(&self) -> AdaptiveScorerState {
+        AdaptiveScorerState {
+            weights: self.weights.to_vec(),
+            bias: self.bias,
+            train_count: self.train_count,
+        }
+    }
+
+    /// Rebuild a scorer from persisted state (#8058 P2-1).
+    ///
+    /// Returns `Err` when the stored weight vector does not match the current
+    /// compile-time feature count — a defensive guard so a future change to
+    /// `NUM_FEATURES` cannot load a stale-shaped model. The caller treats this as
+    /// "start fresh from the neutral default" (advisory learning state).
+    pub fn from_state(state: &AdaptiveScorerState) -> Result<Self, String> {
+        if state.weights.len() != NUM_FEATURES {
+            return Err(format!(
+                "adaptive scorer weight count mismatch: stored {}, expected {NUM_FEATURES}",
+                state.weights.len()
+            ));
+        }
+        let mut weights = [0.0_f32; NUM_FEATURES];
+        weights.copy_from_slice(&state.weights);
+        Ok(Self {
+            weights,
+            bias: state.bias,
+            train_count: state.train_count,
+        })
+    }
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -241,6 +278,55 @@ mod tests {
         assert!(f.goal_progress >= 0.0 && f.goal_progress <= 2.0);
         assert!(f.drift_detected == 1.0);
         assert!(f.overstay_ratio == 2.0); // 7200 / 3600
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_learned_state() {
+        let mut scorer = AdaptiveScorer::default();
+        let features = CoachingFeatures::extract(9, 3600, 4, 0.7, 0.6, false, 1, 1800);
+        for _ in 0..60 {
+            scorer.update(&features, 1.0);
+        }
+        assert!(
+            scorer.is_ready(),
+            "60 updates should exceed MIN_TRAINING_SAMPLES"
+        );
+
+        // Round-trip through the persistable snapshot: a restored scorer must
+        // predict identically and keep the same readiness/train_count.
+        let state = scorer.snapshot();
+        let restored = AdaptiveScorer::from_state(&state).expect("valid state restores");
+        assert_eq!(restored.train_count(), scorer.train_count());
+        assert!(
+            restored.is_ready(),
+            "restored scorer keeps its warmed-up state"
+        );
+        assert!(
+            (restored.predict(&features) - scorer.predict(&features)).abs() < f32::EPSILON,
+            "restored weights must reproduce the same prediction"
+        );
+    }
+
+    #[test]
+    fn from_state_rejects_wrong_weight_count() {
+        let bad = AdaptiveScorerState {
+            weights: vec![0.1; NUM_FEATURES + 1],
+            bias: 0.0,
+            train_count: 99,
+        };
+        // A stale-shaped weight vector must be rejected (caller starts fresh) with
+        // a diagnostic naming both the stored and expected counts.
+        let err = AdaptiveScorer::from_state(&bad).unwrap_err();
+        assert!(
+            err.contains("weight count mismatch"),
+            "error should explain the mismatch, got: {err}"
+        );
+        assert!(
+            err.contains(&(NUM_FEATURES + 1).to_string())
+                && err.contains(&NUM_FEATURES.to_string()),
+            "error should name stored ({}) and expected ({NUM_FEATURES}) counts, got: {err}",
+            NUM_FEATURES + 1
+        );
     }
 
     #[test]

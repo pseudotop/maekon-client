@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use maekon_analysis::focus_analyzer::FocusAnalyzer;
 use maekon_api_contracts::stream::{IdleUpdate, RealtimeEvent};
+use maekon_core::consent::ConsentPermissions;
 use maekon_core::models::activity::IdleState;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_monitor::idle::IdleTracker;
@@ -24,15 +25,23 @@ pub(crate) struct IdleTickServices<'a> {
     pub(crate) sqlite: &'a Arc<dyn SchedulerStorage>,
     pub(crate) notif: &'a Option<Arc<NotificationManager>>,
     pub(crate) focus: &'a Option<Arc<FocusAnalyzer>>,
+    pub(crate) consent: ConsentPermissions,
     pub(crate) input_collector: &'a InputActivityCollector,
     pub(crate) event_tx: &'a Option<broadcast::Sender<RealtimeEvent>>,
 }
 
+/// #8113 note: the `end_idle_period` write below is deliberately NOT re-gated
+/// on consent. An `idle_period_id` only exists when the START was persisted
+/// under `input_activity` consent; closing that already-consented row on
+/// resume (one end timestamp) is strictly less ambiguous than leaving it
+/// open-ended after a mid-period consent toggle. Full removal of persisted
+/// rows belongs to the withdraw/erasure path, not this tick.
 pub(crate) async fn handle_idle_resume_edge(
     idle_tracker: &mut IdleTracker,
     sqlite: &Arc<dyn SchedulerStorage>,
     notif: &Option<Arc<NotificationManager>>,
     focus: &Option<Arc<FocusAnalyzer>>,
+    consent: &ConsentPermissions,
 ) -> Vec<Suggestion> {
     if let Some(id) = idle_tracker.idle_period_id() {
         if let Err(e) = sqlite.end_idle_period(id, Utc::now()).await {
@@ -44,7 +53,7 @@ pub(crate) async fn handle_idle_resume_edge(
         notif.reset_session().await;
     }
     if let Some(focus) = focus.as_ref() {
-        focus.on_idle_resume().await
+        focus.on_idle_resume(consent).await
     } else {
         Vec::new()
     }
@@ -67,12 +76,24 @@ pub(crate) async fn handle_idle_tick(
 
     if prev_state == IdleState::Active && idle_info.state == IdleState::Idle {
         // Storage FIRST (spec §U2 I2 ordering). Log-and-continue on failure.
-        match services.sqlite.start_idle_period(Utc::now()).await {
-            Ok(id) => {
-                idle_tracker.set_idle_period_id(Some(id));
-                debug!("idle period started: id={}", id);
+        //
+        // #8113: the idle_periods WRITE is consent-gated on the same
+        // fail-closed per-tick snapshot every other own-field gate uses.
+        // Idle presence is derived from input timing, so `input_activity` is
+        // the owning consent field. Only persistence is gated — in-RAM idle
+        // detection, the realtime event, and idle notifications below keep
+        // working pre-consent (the detector must already be warm at grant
+        // time, and notifications carry no stored data).
+        if services.consent.input_activity {
+            match services.sqlite.start_idle_period(Utc::now()).await {
+                Ok(id) => {
+                    idle_tracker.set_idle_period_id(Some(id));
+                    debug!("idle period started: id={}", id);
+                }
+                Err(e) => warn!("idle period started record failure: {e}"),
             }
-            Err(e) => warn!("idle period started record failure: {e}"),
+        } else {
+            debug!("idle period start not persisted (input_activity consent not granted)");
         }
         // Emit AFTER storage (success or failure — subscribers observe the edge).
         if let Some(tx) = services.event_tx.as_ref() {
@@ -90,6 +111,7 @@ pub(crate) async fn handle_idle_tick(
             services.sqlite,
             services.notif,
             services.focus,
+            &services.consent,
         )
         .await;
         // Emit AFTER storage + notif-reset (success or failure — subscribers observe the edge).

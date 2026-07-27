@@ -177,6 +177,1686 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the activate_skill_pack command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-activate-skill-pack",
+          "markdownDescription": "Enables the activate_skill_pack command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the analyze_current_scene command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-analyze-current-scene",
+          "markdownDescription": "Enables the analyze_current_scene command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the authenticate_capture_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-authenticate-capture-history",
+          "markdownDescription": "Enables the authenticate_capture_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the autostart_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-autostart-capabilities",
+          "markdownDescription": "Enables the autostart_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_model_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-model-download",
+          "markdownDescription": "Enables the cancel_model_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_capture_reauth_pin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-capture-reauth-pin",
+          "markdownDescription": "Enables the clear_capture_reauth_pin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_skill_pack_activation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-skill-pack-activation",
+          "markdownDescription": "Enables the clear_skill_pack_activation command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the complete_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-complete-onboarding",
+          "markdownDescription": "Enables the complete_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the confirm_automation_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-confirm-automation-command",
+          "markdownDescription": "Enables the confirm_automation_command command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the confirm_task_candidate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-confirm-task-candidate",
+          "markdownDescription": "Enables the confirm_task_candidate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the create_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-ai-session",
+          "markdownDescription": "Enables the create_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_focus_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-focus-window",
+          "markdownDescription": "Enables the debug_focus_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_normalize_main_window_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-normalize-main-window-bounds",
+          "markdownDescription": "Enables the debug_normalize_main_window_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_normalize_main_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-normalize-main-window-state",
+          "markdownDescription": "Enables the debug_normalize_main_window_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_place_overlay_for_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-place-overlay-for-window",
+          "markdownDescription": "Enables the debug_place_overlay_for_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_set_overlay_interactive command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-set-overlay-interactive",
+          "markdownDescription": "Enables the debug_set_overlay_interactive command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_set_window_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-set-window-bounds",
+          "markdownDescription": "Enables the debug_set_window_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_set_window_fullscreen command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-set-window-fullscreen",
+          "markdownDescription": "Enables the debug_set_window_fullscreen command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the debug_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-debug-window-state",
+          "markdownDescription": "Enables the debug_window_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_session_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-session-history",
+          "markdownDescription": "Enables the delete_session_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_todo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-todo",
+          "markdownDescription": "Enables the delete_todo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_whisper_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-whisper-model",
+          "markdownDescription": "Enables the delete_whisper_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the disable_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-disable-autostart",
+          "markdownDescription": "Enables the disable_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the discover_sync_peers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-discover-sync-peers",
+          "markdownDescription": "Enables the discover_sync_peers command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the dismiss_coaching_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dismiss-coaching-message",
+          "markdownDescription": "Enables the dismiss_coaching_message command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the dismiss_task_candidate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dismiss-task-candidate",
+          "markdownDescription": "Enables the dismiss_task_candidate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_whisper_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-whisper-model",
+          "markdownDescription": "Enables the download_whisper_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the enable_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-enable-autostart",
+          "markdownDescription": "Enables the enable_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the explain_suggestion_in_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-explain-suggestion-in-chat",
+          "markdownDescription": "Enables the explain_suggestion_in_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_bug_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-bug-report",
+          "markdownDescription": "Enables the export_bug_report command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the extract_ax_tree command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-extract-ax-tree",
+          "markdownDescription": "Enables the extract_ax_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the forget_sync_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-forget-sync-peer",
+          "markdownDescription": "Enables the forget_sync_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_allowed_setting_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-allowed-setting-keys",
+          "markdownDescription": "Enables the get_allowed_setting_keys command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_analysis_health command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-analysis-health",
+          "markdownDescription": "Enables the get_analysis_health command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_app_build_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-app-build-info",
+          "markdownDescription": "Enables the get_app_build_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_audio_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-audio-status",
+          "markdownDescription": "Enables the get_audio_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_automation_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-automation-status",
+          "markdownDescription": "Enables the get_automation_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_autostart_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-autostart-config",
+          "markdownDescription": "Enables the get_autostart_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_capture_reauth_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-capture-reauth-status",
+          "markdownDescription": "Enables the get_capture_reauth_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_capture_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-capture-status",
+          "markdownDescription": "Enables the get_capture_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_coaching_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-coaching-history",
+          "markdownDescription": "Enables the get_coaching_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-connection-status",
+          "markdownDescription": "Enables the get_connection_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-consent",
+          "markdownDescription": "Enables the get_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_desktop_permission_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-desktop-permission-status",
+          "markdownDescription": "Enables the get_desktop_permission_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_feature_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-feature-capabilities",
+          "markdownDescription": "Enables the get_feature_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_focus_mode_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-focus-mode-status",
+          "markdownDescription": "Enables the get_focus_mode_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_global_shortcut_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-global-shortcut-status",
+          "markdownDescription": "Enables the get_global_shortcut_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_goal_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-goal-progress",
+          "markdownDescription": "Enables the get_goal_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_habit_streaks command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-habit-streaks",
+          "markdownDescription": "Enables the get_habit_streaks command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_local_auth_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-local-auth-token",
+          "markdownDescription": "Enables the get_local_auth_token command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_onboarding_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-onboarding-status",
+          "markdownDescription": "Enables the get_onboarding_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_panel_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-panel-position",
+          "markdownDescription": "Enables the get_panel_position command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_pending_suggestion_count command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-pending-suggestion-count",
+          "markdownDescription": "Enables the get_pending_suggestion_count command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_pending_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-pending-suggestions",
+          "markdownDescription": "Enables the get_pending_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_qc_upload_spool_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-qc-upload-spool-status",
+          "markdownDescription": "Enables the get_qc_upload_spool_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_resource_usage_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-resource-usage-snapshot",
+          "markdownDescription": "Enables the get_resource_usage_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_runtime_log_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-runtime-log-snapshot",
+          "markdownDescription": "Enables the get_runtime_log_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_secret_backend_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-secret-backend-capabilities",
+          "markdownDescription": "Enables the get_secret_backend_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_suggestion_daily_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-suggestion-daily-stats",
+          "markdownDescription": "Enables the get_suggestion_daily_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_suggestion_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-suggestion-history",
+          "markdownDescription": "Enables the get_suggestion_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_suggestion_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-suggestion-stats",
+          "markdownDescription": "Enables the get_suggestion_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_suggestions_panel_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-suggestions-panel-open",
+          "markdownDescription": "Enables the get_suggestions_panel_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-sync-status",
+          "markdownDescription": "Enables the get_sync_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_token_usage command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-token-usage",
+          "markdownDescription": "Enables the get_token_usage command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_tray_geometry command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-tray-geometry",
+          "markdownDescription": "Enables the get_tray_geometry command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_tray_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-tray-state",
+          "markdownDescription": "Enables the get_tray_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_web_port command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-web-port",
+          "markdownDescription": "Enables the get_web_port command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-extension",
+          "markdownDescription": "Enables the install_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the interrupt_session_turn command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-interrupt-session-turn",
+          "markdownDescription": "Enables the interrupt_session_turn command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the is_autostart_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-is-autostart-enabled",
+          "markdownDescription": "Enables the is_autostart_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the kill_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-kill-ai-session",
+          "markdownDescription": "Enables the kill_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_ai_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-ai-sessions",
+          "markdownDescription": "Enables the list_ai_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_extensions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-extensions",
+          "markdownDescription": "Enables the list_extensions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_task_candidates command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-task-candidates",
+          "markdownDescription": "Enables the list_task_candidates command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_todos command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-todos",
+          "markdownDescription": "Enables the list_todos command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_session_messages command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-session-messages",
+          "markdownDescription": "Enables the load_session_messages command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the lock_capture_reauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-lock-capture-reauth",
+          "markdownDescription": "Enables the lock_capture_reauth command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the logout_all_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-logout-all-sessions",
+          "markdownDescription": "Enables the logout_all_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mark_autostart_prompt_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mark-autostart-prompt-state",
+          "markdownDescription": "Enables the mark_autostart_prompt_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_cancel_flow command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-cancel-flow",
+          "markdownDescription": "Enables the oauth_cancel_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-connection-status",
+          "markdownDescription": "Enables the oauth_connection_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_flow_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-flow-status",
+          "markdownDescription": "Enables the oauth_flow_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_revoke command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-revoke",
+          "markdownDescription": "Enables the oauth_revoke command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_start_flow command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-start-flow",
+          "markdownDescription": "Enables the oauth_start_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_desktop_permission_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-desktop-permission-settings",
+          "markdownDescription": "Enables the open_desktop_permission_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_devtools command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-devtools",
+          "markdownDescription": "Enables the open_devtools command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the poll_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-poll-ax-focus-observer",
+          "markdownDescription": "Enables the poll_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the probe_provider_surface_endpoint command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-probe-provider-surface-endpoint",
+          "markdownDescription": "Enables the probe_provider_surface_endpoint command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the record_frontend_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-record-frontend-log",
+          "markdownDescription": "Enables the record_frontend_log command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the record_suggestion_replay_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-record-suggestion-replay-event",
+          "markdownDescription": "Enables the record_suggestion_replay_event command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the refresh_detection_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-refresh-detection-overlay",
+          "markdownDescription": "Enables the refresh_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the register_capture_reauth_pin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-capture-reauth-pin",
+          "markdownDescription": "Enables the register_capture_reauth_pin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reload_embedding_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reload-embedding-model",
+          "markdownDescription": "Enables the reload_embedding_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reload_stt_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reload-stt-engine",
+          "markdownDescription": "Enables the reload_stt_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the rename_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rename-ai-session",
+          "markdownDescription": "Enables the rename_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the report_frontend_error command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-report-frontend-error",
+          "markdownDescription": "Enables the report_frontend_error command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_chat_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-chat-suggestions",
+          "markdownDescription": "Enables the request_chat_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_current_context_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-current-context-suggestions",
+          "markdownDescription": "Enables the request_current_context_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_desktop_notification_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-desktop-notification-permission",
+          "markdownDescription": "Enables the request_desktop_notification_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_desktop_screen_capture_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-desktop-screen-capture-permission",
+          "markdownDescription": "Enables the request_desktop_screen_capture_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-onboarding",
+          "markdownDescription": "Enables the reset_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the respond_codex_approval command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-respond-codex-approval",
+          "markdownDescription": "Enables the respond_codex_approval command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the retry_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-retry-ai-session",
+          "markdownDescription": "Enables the retry_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the rollback_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rollback-extension",
+          "markdownDescription": "Enables the rollback_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_qc_upload_spool_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-qc-upload-spool-step",
+          "markdownDescription": "Enables the run_qc_upload_spool_step command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_suggestion_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-suggestion-action",
+          "markdownDescription": "Enables the run_suggestion_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_panel_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-panel-position",
+          "markdownDescription": "Enables the save_panel_position command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the send_session_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-session-message",
+          "markdownDescription": "Enables the send_session_message command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the send_test_notification command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-test-notification",
+          "markdownDescription": "Enables the send_test_notification command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_capture_reauth_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-capture-reauth-config",
+          "markdownDescription": "Enables the set_capture_reauth_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-consent",
+          "markdownDescription": "Enables the set_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_extension_enablement command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-extension-enablement",
+          "markdownDescription": "Enables the set_extension_enablement command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_indicator_visible command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-indicator-visible",
+          "markdownDescription": "Enables the set_indicator_visible command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the show_main_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-show-main-window",
+          "markdownDescription": "Enables the show_main_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the simulate_notification_activation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-simulate-notification-activation",
+          "markdownDescription": "Enables the simulate_notification_activation command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the simulate_tray_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-simulate-tray-action",
+          "markdownDescription": "Enables the simulate_tray_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_audio_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-audio-capture",
+          "markdownDescription": "Enables the start_audio_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-ax-focus-observer",
+          "markdownDescription": "Enables the start_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_vad_listening command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-vad-listening",
+          "markdownDescription": "Enables the start_vad_listening command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the steer_session_turn command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-steer-session-turn",
+          "markdownDescription": "Enables the steer_session_turn command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_and_transcribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-and-transcribe",
+          "markdownDescription": "Enables the stop_and_transcribe command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-ax-focus-observer",
+          "markdownDescription": "Enables the stop_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_vad_listening command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-vad-listening",
+          "markdownDescription": "Enables the stop_vad_listening command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the submit_coaching_feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-submit-coaching-feedback",
+          "markdownDescription": "Enables the submit_coaching_feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the submit_suggestion_feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-submit-suggestion-feedback",
+          "markdownDescription": "Enables the submit_suggestion_feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the take_microphone_upgrade_notice command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-take-microphone-upgrade-notice",
+          "markdownDescription": "Enables the take_microphone_upgrade_notice command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_automation_confirm command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-automation-confirm",
+          "markdownDescription": "Enables the toggle_automation_confirm command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_capture_pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-capture-pause",
+          "markdownDescription": "Enables the toggle_capture_pause command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_detection_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-detection-overlay",
+          "markdownDescription": "Enables the toggle_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_focus_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-focus-mode",
+          "markdownDescription": "Enables the toggle_focus_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_suggestions_panel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-suggestions-panel",
+          "markdownDescription": "Enables the toggle_suggestions_panel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the transition_todo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-transition-todo",
+          "markdownDescription": "Enables the transition_todo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the trigger_manual_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-trigger-manual-capture",
+          "markdownDescription": "Enables the trigger_manual_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the trigger_sync_cycle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-trigger-sync-cycle",
+          "markdownDescription": "Enables the trigger_sync_cycle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the uninstall_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-uninstall-extension",
+          "markdownDescription": "Enables the uninstall_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-extension",
+          "markdownDescription": "Enables the update_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_regime_goals command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-regime-goals",
+          "markdownDescription": "Enables the update_regime_goals command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-setting",
+          "markdownDescription": "Enables the update_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the verify_audit_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-verify-audit-log",
+          "markdownDescription": "Enables the verify_audit_log command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the withdraw_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-withdraw-consent",
+          "markdownDescription": "Enables the withdraw_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the activate_skill_pack command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-activate-skill-pack",
+          "markdownDescription": "Denies the activate_skill_pack command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the analyze_current_scene command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-analyze-current-scene",
+          "markdownDescription": "Denies the analyze_current_scene command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the authenticate_capture_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-authenticate-capture-history",
+          "markdownDescription": "Denies the authenticate_capture_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the autostart_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-autostart-capabilities",
+          "markdownDescription": "Denies the autostart_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_model_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-model-download",
+          "markdownDescription": "Denies the cancel_model_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_capture_reauth_pin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-capture-reauth-pin",
+          "markdownDescription": "Denies the clear_capture_reauth_pin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_skill_pack_activation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-skill-pack-activation",
+          "markdownDescription": "Denies the clear_skill_pack_activation command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the complete_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-complete-onboarding",
+          "markdownDescription": "Denies the complete_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the confirm_automation_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-confirm-automation-command",
+          "markdownDescription": "Denies the confirm_automation_command command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the confirm_task_candidate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-confirm-task-candidate",
+          "markdownDescription": "Denies the confirm_task_candidate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the create_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-create-ai-session",
+          "markdownDescription": "Denies the create_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_focus_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-focus-window",
+          "markdownDescription": "Denies the debug_focus_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_normalize_main_window_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-normalize-main-window-bounds",
+          "markdownDescription": "Denies the debug_normalize_main_window_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_normalize_main_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-normalize-main-window-state",
+          "markdownDescription": "Denies the debug_normalize_main_window_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_place_overlay_for_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-place-overlay-for-window",
+          "markdownDescription": "Denies the debug_place_overlay_for_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_set_overlay_interactive command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-set-overlay-interactive",
+          "markdownDescription": "Denies the debug_set_overlay_interactive command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_set_window_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-set-window-bounds",
+          "markdownDescription": "Denies the debug_set_window_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_set_window_fullscreen command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-set-window-fullscreen",
+          "markdownDescription": "Denies the debug_set_window_fullscreen command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-debug-window-state",
+          "markdownDescription": "Denies the debug_window_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_session_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-session-history",
+          "markdownDescription": "Denies the delete_session_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_todo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-todo",
+          "markdownDescription": "Denies the delete_todo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_whisper_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-whisper-model",
+          "markdownDescription": "Denies the delete_whisper_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the disable_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-disable-autostart",
+          "markdownDescription": "Denies the disable_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the discover_sync_peers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-discover-sync-peers",
+          "markdownDescription": "Denies the discover_sync_peers command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dismiss_coaching_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dismiss-coaching-message",
+          "markdownDescription": "Denies the dismiss_coaching_message command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dismiss_task_candidate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dismiss-task-candidate",
+          "markdownDescription": "Denies the dismiss_task_candidate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_whisper_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-whisper-model",
+          "markdownDescription": "Denies the download_whisper_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the enable_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-enable-autostart",
+          "markdownDescription": "Denies the enable_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the explain_suggestion_in_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-explain-suggestion-in-chat",
+          "markdownDescription": "Denies the explain_suggestion_in_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_bug_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-bug-report",
+          "markdownDescription": "Denies the export_bug_report command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the extract_ax_tree command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-extract-ax-tree",
+          "markdownDescription": "Denies the extract_ax_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the forget_sync_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-forget-sync-peer",
+          "markdownDescription": "Denies the forget_sync_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_allowed_setting_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-allowed-setting-keys",
+          "markdownDescription": "Denies the get_allowed_setting_keys command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_analysis_health command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-analysis-health",
+          "markdownDescription": "Denies the get_analysis_health command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_app_build_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-app-build-info",
+          "markdownDescription": "Denies the get_app_build_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_audio_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-audio-status",
+          "markdownDescription": "Denies the get_audio_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_automation_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-automation-status",
+          "markdownDescription": "Denies the get_automation_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_autostart_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-autostart-config",
+          "markdownDescription": "Denies the get_autostart_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_capture_reauth_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-capture-reauth-status",
+          "markdownDescription": "Denies the get_capture_reauth_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_capture_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-capture-status",
+          "markdownDescription": "Denies the get_capture_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_coaching_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-coaching-history",
+          "markdownDescription": "Denies the get_coaching_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-connection-status",
+          "markdownDescription": "Denies the get_connection_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-consent",
+          "markdownDescription": "Denies the get_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_desktop_permission_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-desktop-permission-status",
+          "markdownDescription": "Denies the get_desktop_permission_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_feature_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-feature-capabilities",
+          "markdownDescription": "Denies the get_feature_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_focus_mode_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-focus-mode-status",
+          "markdownDescription": "Denies the get_focus_mode_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_global_shortcut_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-global-shortcut-status",
+          "markdownDescription": "Denies the get_global_shortcut_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_goal_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-goal-progress",
+          "markdownDescription": "Denies the get_goal_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_habit_streaks command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-habit-streaks",
+          "markdownDescription": "Denies the get_habit_streaks command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_local_auth_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-local-auth-token",
+          "markdownDescription": "Denies the get_local_auth_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_onboarding_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-onboarding-status",
+          "markdownDescription": "Denies the get_onboarding_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_panel_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-panel-position",
+          "markdownDescription": "Denies the get_panel_position command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_pending_suggestion_count command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-pending-suggestion-count",
+          "markdownDescription": "Denies the get_pending_suggestion_count command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_pending_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-pending-suggestions",
+          "markdownDescription": "Denies the get_pending_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_qc_upload_spool_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-qc-upload-spool-status",
+          "markdownDescription": "Denies the get_qc_upload_spool_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_resource_usage_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-resource-usage-snapshot",
+          "markdownDescription": "Denies the get_resource_usage_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_runtime_log_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-runtime-log-snapshot",
+          "markdownDescription": "Denies the get_runtime_log_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_secret_backend_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-secret-backend-capabilities",
+          "markdownDescription": "Denies the get_secret_backend_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_suggestion_daily_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-suggestion-daily-stats",
+          "markdownDescription": "Denies the get_suggestion_daily_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_suggestion_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-suggestion-history",
+          "markdownDescription": "Denies the get_suggestion_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_suggestion_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-suggestion-stats",
+          "markdownDescription": "Denies the get_suggestion_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_suggestions_panel_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-suggestions-panel-open",
+          "markdownDescription": "Denies the get_suggestions_panel_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-sync-status",
+          "markdownDescription": "Denies the get_sync_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_token_usage command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-token-usage",
+          "markdownDescription": "Denies the get_token_usage command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_tray_geometry command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-tray-geometry",
+          "markdownDescription": "Denies the get_tray_geometry command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_tray_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-tray-state",
+          "markdownDescription": "Denies the get_tray_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_web_port command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-web-port",
+          "markdownDescription": "Denies the get_web_port command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-extension",
+          "markdownDescription": "Denies the install_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the interrupt_session_turn command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-interrupt-session-turn",
+          "markdownDescription": "Denies the interrupt_session_turn command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the is_autostart_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-is-autostart-enabled",
+          "markdownDescription": "Denies the is_autostart_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the kill_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-kill-ai-session",
+          "markdownDescription": "Denies the kill_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_ai_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-ai-sessions",
+          "markdownDescription": "Denies the list_ai_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_extensions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-extensions",
+          "markdownDescription": "Denies the list_extensions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_task_candidates command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-task-candidates",
+          "markdownDescription": "Denies the list_task_candidates command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_todos command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-todos",
+          "markdownDescription": "Denies the list_todos command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_session_messages command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-session-messages",
+          "markdownDescription": "Denies the load_session_messages command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the lock_capture_reauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-lock-capture-reauth",
+          "markdownDescription": "Denies the lock_capture_reauth command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the logout_all_sessions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-logout-all-sessions",
+          "markdownDescription": "Denies the logout_all_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mark_autostart_prompt_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mark-autostart-prompt-state",
+          "markdownDescription": "Denies the mark_autostart_prompt_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_cancel_flow command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-cancel-flow",
+          "markdownDescription": "Denies the oauth_cancel_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-connection-status",
+          "markdownDescription": "Denies the oauth_connection_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_flow_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-flow-status",
+          "markdownDescription": "Denies the oauth_flow_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_revoke command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-revoke",
+          "markdownDescription": "Denies the oauth_revoke command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_start_flow command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-start-flow",
+          "markdownDescription": "Denies the oauth_start_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_desktop_permission_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-desktop-permission-settings",
+          "markdownDescription": "Denies the open_desktop_permission_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_devtools command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-devtools",
+          "markdownDescription": "Denies the open_devtools command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the poll_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-poll-ax-focus-observer",
+          "markdownDescription": "Denies the poll_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the probe_provider_surface_endpoint command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-probe-provider-surface-endpoint",
+          "markdownDescription": "Denies the probe_provider_surface_endpoint command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the record_frontend_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-record-frontend-log",
+          "markdownDescription": "Denies the record_frontend_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the record_suggestion_replay_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-record-suggestion-replay-event",
+          "markdownDescription": "Denies the record_suggestion_replay_event command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the refresh_detection_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-refresh-detection-overlay",
+          "markdownDescription": "Denies the refresh_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_capture_reauth_pin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-capture-reauth-pin",
+          "markdownDescription": "Denies the register_capture_reauth_pin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reload_embedding_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reload-embedding-model",
+          "markdownDescription": "Denies the reload_embedding_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reload_stt_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reload-stt-engine",
+          "markdownDescription": "Denies the reload_stt_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the rename_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rename-ai-session",
+          "markdownDescription": "Denies the rename_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the report_frontend_error command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-report-frontend-error",
+          "markdownDescription": "Denies the report_frontend_error command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_chat_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-chat-suggestions",
+          "markdownDescription": "Denies the request_chat_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_current_context_suggestions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-current-context-suggestions",
+          "markdownDescription": "Denies the request_current_context_suggestions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_desktop_notification_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-desktop-notification-permission",
+          "markdownDescription": "Denies the request_desktop_notification_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_desktop_screen_capture_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-desktop-screen-capture-permission",
+          "markdownDescription": "Denies the request_desktop_screen_capture_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-onboarding",
+          "markdownDescription": "Denies the reset_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the respond_codex_approval command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-respond-codex-approval",
+          "markdownDescription": "Denies the respond_codex_approval command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the retry_ai_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-retry-ai-session",
+          "markdownDescription": "Denies the retry_ai_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the rollback_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rollback-extension",
+          "markdownDescription": "Denies the rollback_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_qc_upload_spool_step command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-qc-upload-spool-step",
+          "markdownDescription": "Denies the run_qc_upload_spool_step command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_suggestion_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-suggestion-action",
+          "markdownDescription": "Denies the run_suggestion_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_panel_position command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-panel-position",
+          "markdownDescription": "Denies the save_panel_position command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_session_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-session-message",
+          "markdownDescription": "Denies the send_session_message command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_test_notification command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-test-notification",
+          "markdownDescription": "Denies the send_test_notification command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_capture_reauth_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-capture-reauth-config",
+          "markdownDescription": "Denies the set_capture_reauth_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-consent",
+          "markdownDescription": "Denies the set_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_extension_enablement command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-extension-enablement",
+          "markdownDescription": "Denies the set_extension_enablement command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_indicator_visible command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-indicator-visible",
+          "markdownDescription": "Denies the set_indicator_visible command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the show_main_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-show-main-window",
+          "markdownDescription": "Denies the show_main_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the simulate_notification_activation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-simulate-notification-activation",
+          "markdownDescription": "Denies the simulate_notification_activation command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the simulate_tray_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-simulate-tray-action",
+          "markdownDescription": "Denies the simulate_tray_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_audio_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-audio-capture",
+          "markdownDescription": "Denies the start_audio_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-ax-focus-observer",
+          "markdownDescription": "Denies the start_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_vad_listening command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-vad-listening",
+          "markdownDescription": "Denies the start_vad_listening command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the steer_session_turn command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-steer-session-turn",
+          "markdownDescription": "Denies the steer_session_turn command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_and_transcribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-and-transcribe",
+          "markdownDescription": "Denies the stop_and_transcribe command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_ax_focus_observer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-ax-focus-observer",
+          "markdownDescription": "Denies the stop_ax_focus_observer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_vad_listening command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-vad-listening",
+          "markdownDescription": "Denies the stop_vad_listening command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the submit_coaching_feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-submit-coaching-feedback",
+          "markdownDescription": "Denies the submit_coaching_feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the submit_suggestion_feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-submit-suggestion-feedback",
+          "markdownDescription": "Denies the submit_suggestion_feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the take_microphone_upgrade_notice command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-take-microphone-upgrade-notice",
+          "markdownDescription": "Denies the take_microphone_upgrade_notice command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_automation_confirm command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-automation-confirm",
+          "markdownDescription": "Denies the toggle_automation_confirm command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_capture_pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-capture-pause",
+          "markdownDescription": "Denies the toggle_capture_pause command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_detection_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-detection-overlay",
+          "markdownDescription": "Denies the toggle_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_focus_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-focus-mode",
+          "markdownDescription": "Denies the toggle_focus_mode command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_suggestions_panel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-suggestions-panel",
+          "markdownDescription": "Denies the toggle_suggestions_panel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the transition_todo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-transition-todo",
+          "markdownDescription": "Denies the transition_todo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the trigger_manual_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-trigger-manual-capture",
+          "markdownDescription": "Denies the trigger_manual_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the trigger_sync_cycle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-trigger-sync-cycle",
+          "markdownDescription": "Denies the trigger_sync_cycle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the uninstall_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-uninstall-extension",
+          "markdownDescription": "Denies the uninstall_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-extension",
+          "markdownDescription": "Denies the update_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_regime_goals command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-regime-goals",
+          "markdownDescription": "Denies the update_regime_goals command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_setting command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-setting",
+          "markdownDescription": "Denies the update_setting command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the verify_audit_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-verify-audit-log",
+          "markdownDescription": "Denies the verify_audit_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the withdraw_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-withdraw-consent",
+          "markdownDescription": "Denies the withdraw_consent command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",
@@ -2521,6 +4201,90 @@
           "type": "string",
           "const": "notification:deny-show",
           "markdownDescription": "Denies the show command without any pre-configured scope."
+        },
+        {
+          "description": "Allows all WebDriverIO plugin commands for testing\n#### This default permission set includes:\n\n- `wdio:allow-execute`\n- `wdio:allow-log-frontend`\n- `wdio:allow-debug-plugin`\n- `wdio:allow-get-active-window-label`\n- `wdio:allow-get-window-states`\n- `wdio:allow-list-windows`",
+          "type": "string",
+          "const": "wdio:default",
+          "markdownDescription": "Allows all WebDriverIO plugin commands for testing\n#### This default permission set includes:\n\n- `wdio:allow-execute`\n- `wdio:allow-log-frontend`\n- `wdio:allow-debug-plugin`\n- `wdio:allow-get-active-window-label`\n- `wdio:allow-get-window-states`\n- `wdio:allow-list-windows`"
+        },
+        {
+          "description": "Enables the debug_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-debug-plugin",
+          "markdownDescription": "Enables the debug_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the execute command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-execute",
+          "markdownDescription": "Enables the execute command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_active_window_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-get-active-window-label",
+          "markdownDescription": "Enables the get_active_window_label command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_window_states command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-get-window-states",
+          "markdownDescription": "Enables the get_window_states command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_windows command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-list-windows",
+          "markdownDescription": "Enables the list_windows command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the log_frontend command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:allow-log-frontend",
+          "markdownDescription": "Enables the log_frontend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the debug_plugin command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-debug-plugin",
+          "markdownDescription": "Denies the debug_plugin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the execute command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-execute",
+          "markdownDescription": "Denies the execute command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_active_window_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-get-active-window-label",
+          "markdownDescription": "Denies the get_active_window_label command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_window_states command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-get-window-states",
+          "markdownDescription": "Denies the get_window_states command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_windows command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-list-windows",
+          "markdownDescription": "Denies the list_windows command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the log_frontend command without any pre-configured scope.",
+          "type": "string",
+          "const": "wdio:deny-log-frontend",
+          "markdownDescription": "Denies the log_frontend command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the plugin",
+          "type": "string",
+          "const": "wdio-webdriver:default",
+          "markdownDescription": "Default permissions for the plugin"
         }
       ]
     },

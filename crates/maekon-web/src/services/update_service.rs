@@ -73,13 +73,20 @@ impl UpdateStreamService {
         let control = require_update_control(&self.ctx)?;
         let rx = control.subscribe();
 
-        Ok(BroadcastStream::new(rx).filter_map(|result| match result {
+        let stream = BroadcastStream::new(rx).filter_map(|result| match result {
             Ok(status) => {
                 let json = serde_json::to_string(&status).ok()?;
                 Some(Ok(Event::default().event("update_status").data(json)))
             }
             Err(_) => None,
-        }))
+        });
+
+        #[cfg(debug_assertions)]
+        let stream = stream.take(crate::qc_stream_recovery::stream_limit(
+            crate::qc_stream_recovery::StreamChannel::Update,
+        ));
+
+        Ok(stream)
     }
 }
 
