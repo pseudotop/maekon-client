@@ -117,6 +117,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_accessibility_lines_keeps_unlabelled_structural_node() {
+        let raw = "|||ControlType.Pane||||||0|||0|||1920|||1080\n";
+        let nodes = types::parse_accessibility_lines(raw).unwrap();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].role.as_deref(), Some("ControlType.Pane"));
+        assert!(nodes[0].label.is_empty());
+        assert_eq!(nodes[0].bounds.width, 1920);
+        assert_eq!(nodes[0].bounds.height, 1080);
+    }
+
+    #[test]
+    fn parse_accessibility_lines_rejects_node_without_role_or_label() {
+        let raw = "|||||||||0|||0|||1920|||1080\n";
+
+        assert!(matches!(
+            types::parse_accessibility_lines(raw),
+            Err(maekon_core::error::CoreError::ElementNotFound { .. })
+        ));
+    }
+
+    #[test]
     fn intersects_detects_overlap() {
         let a = maekon_core::models::intent::ElementBounds {
             x: 0,

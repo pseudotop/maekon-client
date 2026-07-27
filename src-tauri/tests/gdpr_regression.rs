@@ -279,7 +279,7 @@ fn delete_all_data_clears_all_tables() {
         "regimes",
         "trigger_params_snapshots",
         "search_fts",
-        "search_trigram",
+        // (V18 `search_trigram` was dropped by V45 (#8056); no longer erased/checked.)
         "vector_binary_codes",
         "vector_index_meta",
         "ivf_centroids",
@@ -465,22 +465,14 @@ fn fts5_shadow_index_purged_after_erasure() {
                     [],
                 )
                 .expect("seed search_fts");
-            guard
-                .execute(
-                    &format!(
-                        "INSERT INTO search_trigram (segment_id, content) \
-                         VALUES ('seg{i}', 'zsecretpii sensitive token {i}')"
-                    ),
-                    [],
-                )
-                .expect("seed search_trigram");
+            // (V18 `search_trigram` was dropped by V45 (#8056), so it is no longer
+            //  seeded/purged here — only `search_fts` carries indexed content now.)
         }
     }
 
     // Empty-fresh baseline for the `*_data` backing tables.
     let fresh = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
     let fresh_fts_data = count_rows(&fresh, "search_fts_data");
-    let fresh_trigram_data = count_rows(&fresh, "search_trigram_data");
 
     // Sanity: indexing grew the `*_data` segments past the empty baseline.
     assert!(
@@ -516,10 +508,6 @@ fn fts5_shadow_index_purged_after_erasure() {
     assert!(
         count_rows(&storage, "search_fts_data") <= fresh_fts_data,
         "search_fts_data must be purged to the empty baseline (no residual postings)"
-    );
-    assert!(
-        count_rows(&storage, "search_trigram_data") <= fresh_trigram_data,
-        "search_trigram_data must be purged to the empty baseline"
     );
 }
 

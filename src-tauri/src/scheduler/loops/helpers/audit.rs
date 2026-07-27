@@ -252,6 +252,7 @@ mod tests {
             last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             llm_summarizer: None,
             embedding_pipeline: None,
+            text_search: None,
             gui_pipeline_state: None,
             gui_work_type_refiner: maekon_analysis::GuiWorkTypeRefiner,
             llm_work_type_refiner: None,

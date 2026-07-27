@@ -88,17 +88,43 @@ pub struct IntegrationRuntimeBindings {
 /// so promoting them to `WebServerRequiredDeps` would need builder surgery out
 /// of this issue's scope — they stay here, covered by the D-5 wiring-map log
 /// instead. `model_catalog_client` is genuinely `analysis`-cfg-conditional.
+///
+/// #8059: `vector_store` / `embedding_provider` / `adaptive_search` are the
+/// semantic-search query-side components. They are `None` unless the user
+/// enabled `analysis.embedding.enabled` (and a real embedding provider could be
+/// built) — the composition root taps the same `embedding_setup` source the
+/// scheduler ingestion pipeline uses, so search reads the SAME
+/// `embedding_vectors` table it writes. All three staying `None` is the honest
+/// degrade: `/api/semantic-search/capabilities` then reports
+/// `semantic_available = false` instead of letting `mode=semantic` 501 or
+/// `mode=hybrid` silently fall back to keyword-only.
 #[derive(Clone, Default)]
 pub struct AnalysisRuntimeBindings {
     pub override_store: Option<Arc<dyn maekon_core::ports::override_store::OverrideStore>>,
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub coaching_engine: Option<Arc<dyn CoachingPort>>,
     pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
+    /// Backing vector store for semantic/hybrid search (same SQLite-backed store
+    /// the scheduler embedding pipeline writes into).
+    pub vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    /// Query-side embedding provider, built from the same config + credential
+    /// resolution as the ingestion pipeline so query and document embeddings match.
+    pub embedding_provider:
+        Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
+    /// Adaptive search coordinator (IVF/brute-force auto-select) over the vector store.
+    pub adaptive_search: Option<Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort>>,
 }
 
 #[derive(Clone, Default)]
 pub struct SessionRuntimeBindings {
     pub session_manager: Option<Arc<dyn SessionManager>>,
+    pub pomodoro_store: Option<Arc<dyn maekon_core::ports::pomodoro_store::PomodoroStorePort>>,
+    /// #8044: capture-history re-authentication gate. When the composition
+    /// root injects the `Arc` it built from `config.privacy.reauth` here, the
+    /// web middleware (`require_capture_reauth`) reads the **same instance**
+    /// as the Tauri re-auth command. `None` leaves `AuthState`'s default
+    /// (disabled) gate in place (no effect).
+    pub reauth_gate: Option<Arc<maekon_core::reauth::CaptureReauthGate>>,
 }
 
 #[derive(Clone, Default)]

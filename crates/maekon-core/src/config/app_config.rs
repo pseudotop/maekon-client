@@ -10,10 +10,10 @@ use std::time::Duration;
 // Use default functions from sections for AppConfig::default_config()
 use crate::config::sections::{
     default_capture_enabled, default_capture_throttle_ms, default_heartbeat_interval_ms,
-    default_idle_threshold_secs, default_max_storage_mb, default_poll_interval_ms,
-    default_process_interval_secs, default_request_timeout_ms, default_retention_days,
-    default_sse_max_retry_secs, default_sync_interval_ms, default_thumbnail_height,
-    default_thumbnail_width,
+    default_idle_threshold_secs, default_max_storage_mb, default_ocr_languages,
+    default_poll_interval_ms, default_process_interval_secs, default_request_timeout_ms,
+    default_retention_days, default_sse_max_retry_secs, default_sync_interval_ms,
+    default_thumbnail_height, default_thumbnail_width,
 };
 
 use crate::config::sections::{
@@ -31,9 +31,9 @@ use crate::config::sections::{
 /// A config file whose `schema_version` is greater than this value was written
 /// by a newer (incompatible) client, so the downgrade guard refuses/warns on it.
 ///
-/// v2 records the #5056 telemetry default-on intent. Future versions still use
-/// this value as the downgrade guard.
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+/// v2 recorded the #5056 telemetry default-on intent. v3 changes fresh and
+/// sparse telemetry configuration to explicit opt-in for #8094.
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// The serde default for the `schema_version` field.
 ///
@@ -99,7 +99,7 @@ pub struct AppConfig {
     pub focus_auto: FocusAutoConfig,
     #[serde(default)]
     pub external_grpc: ExternalGrpcConfig,
-    /// Tracking schedule — wall-clock mute windows (Phase 9 PR-A).
+    /// Tracking schedule — wall-clock allowed windows (Phase 9 PR-A).
     #[serde(default)]
     pub tracking_schedule: TrackingScheduleConfig,
     /// Autostart — onboarding state for cross-platform autostart feature (Phase 9 PR-B1).
@@ -147,6 +147,7 @@ impl AppConfig {
                 thumbnail_width: default_thumbnail_width(),
                 thumbnail_height: default_thumbnail_height(),
                 ocr_enabled: false,
+                ocr_languages: default_ocr_languages(),
                 privacy_mode: false,
             },
             update: UpdateConfig::default(),
@@ -180,9 +181,9 @@ impl AppConfig {
     /// corrupt and cannot be parsed.
     ///
     /// A corrupt config means the user's previously-saved choices (which may
-    /// have been an explicit opt-out) are unrecoverable. Re-seeding the
-    /// fresh-install default-on telemetry intent here would silently re-enable
-    /// collection knobs the user might have turned off. To stay fail-closed we
+    /// have been an explicit opt-out) are unrecoverable. Re-seeding collection
+    /// intents here could silently re-enable knobs the user turned off. To stay
+    /// fail-closed we
     /// start from [`Self::default_config`] and force every collection/export
     /// intent to its most privacy-preserving setting:
     ///
@@ -631,7 +632,7 @@ mod tests {
             llm_api: Some(ExternalApiEndpoint {
                 endpoint: "https://api.anthropic.com/v1/messages".to_string(),
                 api_key: "api-key".to_string(),
-                model: Some("claude-opus-4-1-20250805".to_string()),
+                model: Some("claude-opus-5".to_string()),
                 timeout_secs: 30,
                 provider_type: AiProviderType::Anthropic,
                 surface_id: Some("provider_surface.anthropic.direct_api".to_string()),
@@ -1082,6 +1083,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         let err = config.validate_bounds().unwrap_err();
@@ -1099,6 +1101,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         let err = config.validate_bounds().unwrap_err();
@@ -1113,6 +1116,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         // Contract: capture_throttle_ms == 1000 is the exact minimum allowed value
@@ -1142,6 +1146,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         let err = config.validate_bounds().expect_err(

@@ -105,6 +105,15 @@ pub trait SchedulerStorage: MetricsStorage + Send + Sync {
     /// daily_digests, regime_overrides). Returns total rows deleted.
     fn enforce_all_retention(&self) -> Result<u64, CoreError>;
 
+    /// Enforce the compliance-window age cap on the security audit trails
+    /// (`audit_log` + `session_audit_log`, #8056 P3). Both are excluded from
+    /// `enforce_all_retention` and RETAINED across GDPR erasure, so without this
+    /// they grow unbounded. `audit_log` is pruned CHAIN-SAFELY (oldest contiguous
+    /// prefix only, recording the retained chain's new root anchor) so ADR-072
+    /// tamper-evidence is preserved. Returns total rows pruned. (Trait method so
+    /// the scheduler can call it through the `dyn SchedulerStorage` seam.)
+    fn enforce_audit_retention(&self) -> Result<u64, CoreError>;
+
     /// GC the GDPR Art.17 erasure tombstone outbox (#5174 S5/R4): hard-delete
     /// `sync_tombstones` older than `max(data_retention_days, 90)` days. Returns
     /// rows deleted. (Trait method so the scheduler can call it through the

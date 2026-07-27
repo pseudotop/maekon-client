@@ -4,7 +4,20 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{debug, info};
 
-/// Adapter-side health flags — written by adapters on success/failure.
+/// Adapter-side health flags — each is written by the real adapter that owns
+/// the corresponding subsystem, storing `true` on an observed success and
+/// `false` on an observed failure (#8050). They start optimistic (`true`) at
+/// the composition root, so a subsystem reads healthy until its adapter records
+/// a real failure. Writers:
+/// - `server_ok`: the heartbeat loop (`send_heartbeat` result) and the sync
+///   loop (successful batch `flush`) in `loops/network.rs`.
+/// - `llm_ok`: the `AuditingSession` send decorator (`auditing_session.rs`),
+///   the outermost wrapper over every chat provider.
+/// - `cli_ok`: the automation controller command result
+///   (`maekon-automation` `controller/preset.rs`).
+///
+/// This loop only READS these flags and mirrors them into the UI-facing
+/// [`ConnectionFlags`]; it never writes them.
 pub(crate) struct AdapterHealthFlags {
     pub server_ok: Arc<AtomicBool>,
     pub llm_ok: Arc<AtomicBool>,

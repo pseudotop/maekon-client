@@ -51,6 +51,11 @@ pub(super) fn build_session_manager(
     // — the SAME one injected into the automation controller — so a within-session
     // CRUD add via the controller is immediately visible to `verdict_for`.
     policy_client: Arc<maekon_automation::policy::PolicyClient>,
+    // #8050: shared LLM-connectivity flag. Threaded into every session's
+    // `AuditingSession` decorator so a send success/failure on any provider
+    // drives the tray's "Local LLM" connection status (the health-check loop
+    // reads this flag). It is the SAME Arc the scheduler holds as `llm_ok`.
+    llm_health_flag: Arc<std::sync::atomic::AtomicBool>,
 ) -> (SessionManagerLaunch, CodexApprovalRegistry) {
     let storage_for_audit = sqlite_storage.clone();
     // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
@@ -176,6 +181,10 @@ pub(super) fn build_session_manager(
     }
     manager = manager.with_app_handle(app_handle.clone());
     manager = manager.with_privacy_guard(privacy_guard);
+    manager =
+        manager
+            .with_egress_ledger(sqlite_storage.clone()
+                as Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>);
     // E21 #4871: gate the Codex app-server transport behind the rollout flag
     // (default Off → codex exec; app-server failures fall back to exec).
     manager = manager.with_codex_app_server_rollout(config.ai_provider.codex_app_server_rollout);
@@ -190,6 +199,9 @@ pub(super) fn build_session_manager(
     manager = manager.with_local_llm_target(
         crate::session_manager::factory::resolve_local_llm_target(&config.ai_provider),
     );
+    // #8050: share the composition root's LLM-connectivity flag so every session
+    // created by this manager reports its send outcomes to the tray.
+    manager = manager.with_llm_health_flag(llm_health_flag);
     (
         Some((Arc::new(manager), idle_reaper_interval)),
         approval_registry,

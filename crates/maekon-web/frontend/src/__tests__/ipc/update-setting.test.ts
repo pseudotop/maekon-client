@@ -5,17 +5,17 @@ import { afterEach, describe, expect, it } from 'vitest'
 describe('CRT-MK-M007: update_setting IPC contract', () => {
   afterEach(() => clearMocks())
 
-  it('M007: accepts valid config_json with allowed key', async () => {
+  it('M007: accepts valid configJson with allowed key', async () => {
     mockIPC((cmd, args) => {
       if (cmd === 'update_setting') {
-        const json = (args as any).config_json
+        const json = (args as any).configJson
         const parsed = JSON.parse(json)
         if (parsed.notification) return { ok: true }
         throw new Error('not permitted')
       }
     })
     const result = await invoke('update_setting', {
-      config_json: JSON.stringify({ notification: { enabled: false } }),
+      configJson: JSON.stringify({ notification: { enabled: false } }),
     })
     expect(result).toEqual({ ok: true })
   })
@@ -28,7 +28,7 @@ describe('CRT-MK-M007: update_setting IPC contract', () => {
     //   - WDIO get_allowed_setting_keys contract test (Layer 4)
     mockIPC((cmd, args) => {
       if (cmd === 'update_setting') {
-        const json = (args as any).config_json
+        const json = (args as any).configJson
         const parsed = JSON.parse(json)
         // Reject any key that looks like a sensitive section
         const REJECTED = ['server', 'ai_provider', 'tls', 'grpc', 'sandbox', 'file_access']
@@ -38,7 +38,7 @@ describe('CRT-MK-M007: update_setting IPC contract', () => {
         return { ok: true }
       }
     })
-    await expect(invoke('update_setting', { config_json: JSON.stringify({ server: { url: 'x' } }) })).rejects.toThrow(
+    await expect(invoke('update_setting', { configJson: JSON.stringify({ server: { url: 'x' } }) })).rejects.toThrow(
       /not permitted/,
     )
   })
@@ -47,13 +47,13 @@ describe('CRT-MK-M007: update_setting IPC contract', () => {
     mockIPC((cmd, args) => {
       if (cmd === 'update_setting') {
         try {
-          JSON.parse((args as any).config_json)
+          JSON.parse((args as any).configJson)
         } catch {
           throw new Error('invalid JSON')
         }
         return { ok: true }
       }
     })
-    await expect(invoke('update_setting', { config_json: 'not-json{' })).rejects.toThrow(/invalid JSON/)
+    await expect(invoke('update_setting', { configJson: 'not-json{' })).rejects.toThrow(/invalid JSON/)
   })
 })

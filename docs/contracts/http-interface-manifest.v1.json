@@ -1,7 +1,7 @@
 {
   "schema_version": "http.interface.manifest.v1",
-  "document_version": 9,
-  "updated_at": "2026-07-08",
+  "document_version": 10,
+  "updated_at": "2026-07-23",
   "source": {
     "routes_file": "crates/maekon-web/src/routes.rs",
     "contracts_crate": "crates/maekon-api-contracts"
@@ -343,6 +343,26 @@
         {
           "method": "GET",
           "path": "/api/export/toggl"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/full"
+        }
+      ]
+    },
+    {
+      "module": "sync_setup",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/sync/setup",
+          "response_type": "SyncSetupStatus"
+        },
+        {
+          "method": "POST",
+          "path": "/api/sync/setup",
+          "request_type": "SyncSetupRequest",
+          "response_type": "SyncSetupStatus"
         }
       ]
     },

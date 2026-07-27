@@ -130,6 +130,12 @@ pub fn generate_id(prefix: &str) -> String {
 | `ctx` / `input` / `proc` / `win` / `clip` / `fa` / `tl` | 타임라인/이벤트 어셈블러 컨텍스트 유형 |
 | `cch` | 코칭 엔진 메시지 |
 | `msg` | 일반 메시지 |
+| `clm` | 메모리 claim 노드 (ADR-023 로컬 메모리 그래프) |
+| `edg` | 메모리 그래프 edge (ADR-023 로컬 메모리 그래프) |
+| `tcand` | 영속 task candidate (ADR-028; ADR-028 Accepted 시 효력 발생) |
+| `todo` | 사람이 확정한 영속 Todo (ADR-028; ADR-028 Accepted 시 효력 발생) |
+| `tmut` | 영속 task transition receipt (ADR-028; ADR-028 Accepted 시 효력 발생) |
+| `wctx` | 외부 work-context envelope (ADR-030; ADR-030 Accepted 시 효력 발생) |
 
 ### 3. 변환 범위
 
@@ -187,6 +193,20 @@ pub fn generate_id(prefix: &str) -> String {
 리뷰 후 기각. ULID 의 80비트 랜덤 필드와 예측 가능한 타임스탬프 컴포넌트는 완전한
 예측 불가능성이 필요한 보안 컨텍스트에 불충분하다. UUID v4 는 122비트 CSPRNG 랜덤성을
 제공하고 타임스탬프 누출이 없다.
+
+## Update 2026-07-19 — 영속 task identifier
+
+ADR-028은 Decision §2에 등록된 `tcand`, `todo`, `tmut` prefix를 추가 제안한다.
+이 prefix는 ADR-028이 `Proposed`에서 `Accepted`로 바뀔 때만 효력이 생기며,
+그 전에는 구현이 이를 발급하면 안 된다. 본 update는 이 ADR의 prefix syntax,
+generator, validation, exemption rule을 변경하지 않는다.
+
+## Update 2026-07-19 — Work-context envelope identifier
+
+ADR-030은 외부 work-context envelope를 위해 Decision §2에 등록된 `wctx` prefix를
+추가 제안한다. 이 prefix는 ADR-030이 `Proposed`에서 `Accepted`로 바뀔 때만 효력이
+생기며, 그 전에는 구현이 이를 발급하면 안 된다. 본 update는 이 ADR의 prefix
+syntax, generator, validation, exemption rule을 변경하지 않는다.
 
 ## 알려진 후속 작업 (Known Follow-ups)
 

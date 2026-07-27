@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discover-sync-peers"
+description = "Enables the discover_sync_peers command without any pre-configured scope."
+commands.allow = ["discover_sync_peers"]
+
+[[permission]]
+identifier = "deny-discover-sync-peers"
+description = "Denies the discover_sync_peers command without any pre-configured scope."
+commands.deny = ["discover_sync_peers"]

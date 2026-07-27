@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-pending-suggestions"
+description = "Enables the get_pending_suggestions command without any pre-configured scope."
+commands.allow = ["get_pending_suggestions"]
+
+[[permission]]
+identifier = "deny-get-pending-suggestions"
+description = "Denies the get_pending_suggestions command without any pre-configured scope."
+commands.deny = ["get_pending_suggestions"]

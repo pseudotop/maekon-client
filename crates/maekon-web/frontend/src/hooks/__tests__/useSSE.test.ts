@@ -106,4 +106,37 @@ describe('useSSE', () => {
       })
     }
   })
+
+  it('opens the Tauri query-auth stream without credentialed CORS mode', async () => {
+    mockIsStandaloneModeEnabled.mockReturnValue(false)
+
+    let createdInit: EventSourceInit | undefined
+    const BaseEventSource = globalThis.EventSource
+    class CapturingEventSource extends BaseEventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init)
+        createdInit = init
+      }
+    }
+    Object.defineProperty(globalThis, 'EventSource', {
+      value: CapturingEventSource,
+      writable: true,
+    })
+
+    try {
+      renderHook(() => useSSE())
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(createdInit).toBeUndefined()
+    } finally {
+      Object.defineProperty(globalThis, 'EventSource', {
+        value: BaseEventSource,
+        writable: true,
+      })
+    }
+  })
 })

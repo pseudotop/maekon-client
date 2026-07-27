@@ -30,9 +30,54 @@ fn set_leptess_image(
     })
 }
 
+/// Default Tesseract language when none is configured — preserves the historical
+/// English-only behavior. Korean requires the `kor` traineddata to be present in
+/// the tessdata directory, so the caller opts in explicitly via
+/// [`OcrExtractor::new_with_lang`] rather than defaulting to it and failing
+/// `LepTess::new` when the data file is missing (#8054).
+pub const DEFAULT_TESSERACT_LANG: &str = "eng";
+
+/// Map BCP-47 recognition languages (as used by the macOS/native OCR config,
+/// e.g. `ko-KR`, `en-US`) to a Tesseract `+`-joined language string
+/// (e.g. `kor+eng`). Unknown tags are skipped; an empty result falls back to
+/// [`DEFAULT_TESSERACT_LANG`] so a misconfigured list never yields an
+/// un-initializable extractor (#8054).
+#[must_use]
+pub fn tesseract_lang_from_bcp47(languages: &[String]) -> String {
+    let mut codes: Vec<&str> = Vec::new();
+    for lang in languages {
+        let primary = lang
+            .split(['-', '_'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let code = match primary.as_str() {
+            "ko" => "kor",
+            "en" => "eng",
+            "ja" => "jpn",
+            "zh" => "chi_sim",
+            "de" => "deu",
+            "fr" => "fra",
+            "es" => "spa",
+            _ => continue,
+        };
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    }
+    if codes.is_empty() {
+        DEFAULT_TESSERACT_LANG.to_string()
+    } else {
+        codes.join("+")
+    }
+}
+
 pub struct OcrExtractor {
     tessdata_path: Option<PathBuf>,
     max_chars: usize,
+    /// Tesseract language string (e.g. `eng`, `kor+eng`) passed to
+    /// `LepTess::new`. Defaults to [`DEFAULT_TESSERACT_LANG`].
+    lang: String,
     /// Cached LepTess instance for reuse across extract calls.
     /// Avoids re-initialization overhead (~10-50ms per call).
     cached_leptess: Mutex<Option<leptess::LepTess>>,
@@ -40,6 +85,14 @@ pub struct OcrExtractor {
 
 impl OcrExtractor {
     pub fn new(tessdata_path: Option<PathBuf>) -> Self {
+        Self::new_with_lang(tessdata_path, DEFAULT_TESSERACT_LANG)
+    }
+
+    /// Construct an extractor for an explicit Tesseract language string
+    /// (e.g. `kor+eng`). The corresponding `<lang>.traineddata` files must be
+    /// present in the tessdata directory or `LepTess::new` will fail at first
+    /// use (#8054).
+    pub fn new_with_lang(tessdata_path: Option<PathBuf>, lang: &str) -> Self {
         let path_str = tessdata_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
@@ -50,6 +103,7 @@ impl OcrExtractor {
         Self {
             tessdata_path,
             max_chars: 0,
+            lang: lang.to_string(),
             cached_leptess: Mutex::new(None),
         }
     }
@@ -57,6 +111,12 @@ impl OcrExtractor {
     pub fn with_max_chars(mut self, max_chars: usize) -> Self {
         self.max_chars = max_chars;
         self
+    }
+
+    /// The Tesseract language string this extractor initializes with.
+    #[must_use]
+    pub fn lang(&self) -> &str {
+        &self.lang
     }
 
     /// Extract text from an image using Tesseract OCR.
@@ -88,7 +148,7 @@ impl OcrExtractor {
                 .tessdata_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string());
-            leptess::LepTess::new(tessdata.as_deref(), "eng")
+            leptess::LepTess::new(tessdata.as_deref(), &self.lang)
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))
         };
 
@@ -145,12 +205,13 @@ impl OcrExtractor {
             .map(|p| p.to_string_lossy().to_string());
 
         let max_chars = self.max_chars;
+        let lang = self.lang.clone();
         let raw_data = rgba.into_raw();
 
         let result = tokio::task::spawn_blocking(move || {
             let tessdata_ref = tessdata.as_deref();
 
-            let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
+            let mut lt = leptess::LepTess::new(tessdata_ref, &lang)
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
             set_leptess_image(&mut lt, &raw_data, w, h)?;
@@ -239,12 +300,13 @@ impl OcrExtractor {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
 
+        let lang = self.lang.clone();
         let raw_data = rgba.into_raw();
 
         tokio::task::spawn_blocking(move || {
             let tessdata_ref = tessdata.as_deref();
 
-            let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
+            let mut lt = leptess::LepTess::new(tessdata_ref, &lang)
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
             set_leptess_image(&mut lt, &raw_data, w, h)?;
@@ -384,7 +446,7 @@ impl OcrExtractor {
                 .tessdata_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string());
-            leptess::LepTess::new(tessdata.as_deref(), "eng")
+            leptess::LepTess::new(tessdata.as_deref(), &self.lang)
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))
         };
 
@@ -425,12 +487,13 @@ impl OcrExtractor {
             .tessdata_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
+        let lang = self.lang.clone();
         let raw_data = rgba.into_raw();
 
         tokio::task::spawn_blocking(move || {
             let tessdata_ref = tessdata.as_deref();
 
-            let mut lt = leptess::LepTess::new(tessdata_ref, "eng")
+            let mut lt = leptess::LepTess::new(tessdata_ref, &lang)
                 .map_err(|e| VisionError::Ocr(format!("OCR initialize failure: {e}")))?;
 
             set_leptess_image(&mut lt, &raw_data, w, h)?;
@@ -493,6 +556,40 @@ mod tests {
         let path = PathBuf::from("/usr/share/tessdata");
         let extractor = OcrExtractor::new(Some(path.clone()));
         assert_eq!(extractor.tessdata_path(), Some(&path));
+    }
+
+    #[test]
+    fn default_lang_is_english() {
+        // #8054: the historical English-only default must be preserved so a
+        // build without kor.traineddata never fails LepTess::new.
+        let extractor = OcrExtractor::new(None);
+        assert_eq!(extractor.lang(), "eng");
+    }
+
+    #[test]
+    fn new_with_lang_overrides_language() {
+        let extractor = OcrExtractor::new_with_lang(None, "kor+eng");
+        assert_eq!(extractor.lang(), "kor+eng");
+    }
+
+    #[test]
+    fn bcp47_maps_to_tesseract_codes() {
+        // #8054: the config exposes BCP-47 tags (ko-KR/en-US, matching the
+        // macOS Vision path); leptess needs the mapped Tesseract codes.
+        assert_eq!(
+            tesseract_lang_from_bcp47(&["ko-KR".to_string(), "en-US".to_string()]),
+            "kor+eng"
+        );
+        assert_eq!(tesseract_lang_from_bcp47(&["en_US".to_string()]), "eng");
+        // Unknown tags are skipped; an all-unknown list falls back to English
+        // so a misconfiguration never yields an un-initializable extractor.
+        assert_eq!(tesseract_lang_from_bcp47(&["zz-ZZ".to_string()]), "eng");
+        assert_eq!(tesseract_lang_from_bcp47(&[]), "eng");
+        // Duplicate primaries collapse (ko-KR + ko-KP → single kor).
+        assert_eq!(
+            tesseract_lang_from_bcp47(&["ko-KR".to_string(), "ko-KP".to_string()]),
+            "kor"
+        );
     }
 
     #[test]

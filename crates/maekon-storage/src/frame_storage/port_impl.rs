@@ -30,6 +30,14 @@ impl FrameStoragePort for FrameFileStorage {
         self.load_frame(relative_path).await.map_err(Into::into)
     }
 
+    /// Load the most recent frame (decrypting at rest when a key is installed).
+    ///
+    /// Delegates to `FrameFileStorage::load_latest_frame` and converts
+    /// `StorageError` into `CoreError`.
+    async fn load_latest_frame(&self) -> Result<Option<(Vec<u8>, String)>, CoreError> {
+        self.load_latest_frame().await.map_err(Into::into)
+    }
+
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
         self.enforce_retention().await.map_err(Into::into)
     }

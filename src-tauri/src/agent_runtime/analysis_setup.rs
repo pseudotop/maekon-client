@@ -37,6 +37,11 @@ pub(super) fn build_analysis_pipeline(
     external_llm_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     injected_regime_manager: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
     injected_regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
+    // #8051: FTS content indexer (the shared SqliteStorage cast to the
+    // text-search port). Threaded from the composition root so `handle_segment_close`
+    // can index each closed segment into `search_fts`, making the dashboard
+    // keyword/hybrid search modes return data.
+    text_search: Option<Arc<dyn maekon_core::ports::text_search::TextSearchProvider>>,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     // registry threaded from the composition root, used by the LLM WorkType
     // refiner's analysis provider built below.
@@ -169,6 +174,7 @@ pub(super) fn build_analysis_pipeline(
                 last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 llm_summarizer: embedding.llm_summarizer.take(),
                 embedding_pipeline: embedding.embedding_pipeline.take(),
+                text_search,
                 gui_pipeline_state: None,
                 gui_work_type_refiner: maekon_analysis::GuiWorkTypeRefiner,
                 llm_work_type_refiner,

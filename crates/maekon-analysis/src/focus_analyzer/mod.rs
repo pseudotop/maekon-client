@@ -5,6 +5,7 @@ mod suggestions;
 pub use models::FocusAnalyzerConfig;
 
 use chrono::Utc;
+use maekon_core::consent::ConsentPermissions;
 use maekon_core::models::work_session::AppCategory;
 // #7735 E-2: internal use only — the `FocusStorage` pass-through re-export
 // was dropped from the public path (see `models.rs`); consumers import the
@@ -63,28 +64,37 @@ impl FocusAnalyzer {
     // `[dev-dependencies]` only).
     #[cfg(any(test, feature = "test-support"))]
     pub async fn on_app_switch(&self, new_app: &str) {
-        self.on_app_switch_with_context(new_app, "", None, true)
+        let consent = ConsentPermissions {
+            app_usage_analytics: true,
+            activity_pattern_learning: true,
+            ..Default::default()
+        };
+        self.on_app_switch_with_context(new_app, "", None, &consent)
             .await;
     }
 
-    /// Handle an app switch. `app_usage_permitted` is the app_usage_analytics
-    /// own-field gate from ConsentPermissions; it gates only the WorkflowIntelligence
-    /// app-usage aggregation (update_usage/touch_app/advance_workflow). Focus
-    /// session / interruption tracking (focus metrics) is already protected by a
-    /// separate composite gate (screen_capture), so it is not disabled here.
+    /// Handle an app switch using one live, fail-closed consent snapshot.
+    ///
+    /// `app_usage_analytics` gates only usage aggregation (`update_usage` and
+    /// `touch_app`). `activity_pattern_learning` independently gates workflow
+    /// segments, learned playbooks, and pattern suggestions. Focus session and
+    /// interruption tracking are protected by the caller's separate composite
+    /// capture gate and remain unchanged here.
     pub async fn on_app_switch_with_context(
         &self,
         new_app: &str,
         window_title: &str,
         ocr_hint: Option<&str>,
-        app_usage_permitted: bool,
+        consent: &ConsentPermissions,
     ) -> Vec<maekon_core::models::suggestion::Suggestion> {
+        self.reconcile_activity_pattern_consent(consent).await;
+
         let new_category = AppCategory::from_app_name(new_app);
         let now = Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
 
         let mut previous_usage: Option<(String, AppCategory, u64)> = None;
-        let mut should_suggest_restore = false;
+        let mut resumed_interruption = None;
 
         {
             let mut tracker = self.tracker.write().await;
@@ -181,16 +191,26 @@ impl FocusAnalyzer {
                 }
 
                 if prev_cat.is_communication() && new_category.is_deep_work() {
-                    if let Some(int_id) = tracker.pending_interruption_id.take() {
-                        if let Err(e) = self
-                            .storage
-                            .record_interruption_resume(int_id, new_app)
-                            .await
-                        {
-                            debug!("record_interruption_resume failed: {e}");
+                    if let Some(int_id) = tracker.pending_interruption_id {
+                        match self.storage.resume_interruption(int_id, new_app, now).await {
+                            Ok(Some(interruption)) => {
+                                tracker.pending_interruption_id = None;
+                                debug!("interruption resumed: id={}", int_id);
+                                resumed_interruption = Some(interruption);
+                            }
+                            Ok(None) => {
+                                debug!(
+                                    "pending interruption was not resumed; preserving tracker id: id={}",
+                                    int_id
+                                );
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "resume_interruption failed; preserving tracker id {}: {e}",
+                                    int_id
+                                );
+                            }
                         }
-                        debug!(": id={}", int_id);
-                        should_suggest_restore = true;
                     }
                 }
             }
@@ -218,37 +238,39 @@ impl FocusAnalyzer {
             tracker.current_app_start = Some(now);
         }
 
-        // Own-field gate (#4802): if app_usage_analytics consent is absent, skip the
-        // entire app-usage aggregation path (update_usage/touch_app/advance_workflow).
-        // Without consent, nothing accumulates in WorkflowIntelligence's usage map or
-        // workflow segments.
-        let playbook_signal = if app_usage_permitted {
+        let playbook_signal = {
             let mut intelligence = self.workflow_intelligence.write().await;
 
-            if let Some((prev_app, prev_cat, duration_secs)) = previous_usage {
-                let score = intelligence.update_usage(&prev_app, prev_cat, duration_secs, now);
-                debug!(
-                    app = %prev_app,
-                    category = ?prev_cat,
-                    duration_secs,
-                    relevance = score,
-                    "app relevance update"
-                );
+            if consent.app_usage_analytics {
+                if let Some((prev_app, prev_cat, duration_secs)) = previous_usage {
+                    let score = intelligence.update_usage(&prev_app, prev_cat, duration_secs, now);
+                    debug!(
+                        app = %prev_app,
+                        category = ?prev_cat,
+                        duration_secs,
+                        relevance = score,
+                        "app relevance update"
+                    );
+                }
+
+                let _ = intelligence.touch_app(new_app, new_category, now);
+            } else {
+                debug!("on_app_switch: app_usage_analytics own-field gate closed — skipping usage aggregation");
             }
 
-            let _ = intelligence.touch_app(new_app, new_category, now);
-            intelligence.advance_workflow(
-                new_app,
-                new_category,
-                window_title,
-                ocr_hint,
-                now,
-                self.config.playbook_min_relevance,
-                self.config.workflow_split_idle_secs,
-            )
-        } else {
-            debug!("on_app_switch: app_usage_analytics own-field gate closed — skipping usage aggregation");
-            None
+            if consent.activity_pattern_learning {
+                intelligence.advance_workflow(
+                    new_app,
+                    new_category,
+                    window_title,
+                    ocr_hint,
+                    now,
+                    self.config.playbook_min_relevance,
+                    self.config.workflow_split_idle_secs,
+                )
+            } else {
+                None
+            }
         };
 
         // #5696: collect produced rule suggestions so the scheduler can bridge
@@ -261,15 +283,20 @@ impl FocusAnalyzer {
             }
         }
 
-        if should_suggest_restore {
-            if let Some(s) = self.maybe_suggest_restore_context(new_app, now).await {
+        if let Some(interruption) = resumed_interruption.as_ref() {
+            if let Some(s) = self.maybe_suggest_restore_context(interruption, now).await {
                 produced.push(s);
             }
         }
         produced
     }
 
-    pub async fn analyze_periodic(&self) -> Vec<maekon_core::models::suggestion::Suggestion> {
+    pub async fn analyze_periodic(
+        &self,
+        consent: &ConsentPermissions,
+    ) -> Vec<maekon_core::models::suggestion::Suggestion> {
+        self.reconcile_activity_pattern_consent(consent).await;
+
         let now = Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
 
@@ -298,13 +325,15 @@ impl FocusAnalyzer {
             produced.push(s);
         }
 
-        let playbook_signal = {
+        let playbook_signal = if consent.activity_pattern_learning {
             let mut intelligence = self.workflow_intelligence.write().await;
             intelligence.flush_stale_segment(
                 now,
                 self.config.playbook_min_relevance,
                 self.config.playbook_stale_flush_secs,
             )
+        } else {
+            None
         };
         if let Some(signal) = playbook_signal {
             if let Some(s) = self.maybe_suggest_pattern_detected(signal).await {
@@ -322,11 +351,18 @@ impl FocusAnalyzer {
         produced
     }
 
-    pub async fn on_idle_resume(&self) -> Vec<maekon_core::models::suggestion::Suggestion> {
+    pub async fn on_idle_resume(
+        &self,
+        consent: &ConsentPermissions,
+    ) -> Vec<maekon_core::models::suggestion::Suggestion> {
+        self.reconcile_activity_pattern_consent(consent).await;
+
         let now = Utc::now();
-        let playbook_signal = {
+        let playbook_signal = if consent.activity_pattern_learning {
             let mut intelligence = self.workflow_intelligence.write().await;
             intelligence.flush_stale_segment(now, self.config.playbook_min_relevance, 0)
+        } else {
+            None
         };
 
         let mut tracker = self.tracker.write().await;
@@ -353,6 +389,25 @@ impl FocusAnalyzer {
         }
         produced
     }
+
+    /// Apply the live activity-pattern consent term to in-memory state.
+    ///
+    /// The consent IPC path calls this immediately after a grant narrowing or
+    /// revoke, while switch/periodic/idle paths call it with their own live
+    /// effective snapshot. Closing the term is idempotent and never removes the
+    /// separately consented usage aggregation map.
+    pub async fn reconcile_activity_pattern_consent(&self, consent: &ConsentPermissions) {
+        if consent.activity_pattern_learning {
+            return;
+        }
+
+        let mut intelligence = self.workflow_intelligence.write().await;
+        if intelligence.clear_pattern_state() {
+            debug!(
+                "activity_pattern_learning gate closed — cleared in-memory workflow pattern state"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -361,8 +416,9 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Duration;
     use maekon_core::error::CoreError;
-    use maekon_core::models::suggestion::Suggestion;
-    use maekon_core::models::work_session::FocusMetrics;
+    use maekon_core::error_codes::StorageCode;
+    use maekon_core::models::suggestion::{Suggestion, SuggestionType};
+    use maekon_core::models::work_session::{FocusMetrics, Interruption, WorkSession};
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::TempDir;
@@ -403,7 +459,85 @@ mod tests {
         }
     }
 
-    async fn create_test_analyzer() -> (FocusAnalyzer, TempDir, Arc<MockNotifier>) {
+    struct ResumeFailingStorage;
+
+    #[async_trait]
+    impl FocusStorage for ResumeFailingStorage {
+        async fn increment_focus_metrics(
+            &self,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: u64,
+            _: u32,
+            _: u32,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn add_deep_work_secs(&self, _: i64, _: u64) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn record_interruption(&self, _: &Interruption) -> Result<i64, CoreError> {
+            unreachable!("failure test starts from an existing communication interruption")
+        }
+
+        async fn increment_work_session_interruption(&self, _: i64) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn resume_interruption(
+            &self,
+            _: i64,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Option<Interruption>, CoreError> {
+            Err(CoreError::Storage {
+                code: StorageCode::Failed,
+                message: "injected resume failure".to_string(),
+            })
+        }
+
+        async fn end_work_session(&self, _: i64) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn start_work_session(
+            &self,
+            primary_app: &str,
+            _: AppCategory,
+        ) -> Result<WorkSession, CoreError> {
+            Ok(WorkSession::new(1, primary_app.to_string()))
+        }
+
+        async fn get_or_create_focus_metrics(&self, _: &str) -> Result<FocusMetrics, CoreError> {
+            unreachable!("failure test does not query focus metrics")
+        }
+
+        async fn update_focus_metrics(&self, _: &str, _: &FocusMetrics) -> Result<(), CoreError> {
+            unreachable!("failure test does not update aggregate focus metrics")
+        }
+
+        async fn save_rule_suggestion(&self, _: &Suggestion) -> Result<String, CoreError> {
+            unreachable!("failed resume must not create a suggestion")
+        }
+
+        async fn mark_suggestion_shown_by_id(&self, _: &str) -> Result<(), CoreError> {
+            unreachable!("failed resume must not mark a suggestion shown")
+        }
+
+        async fn get_pending_interruption(&self) -> Result<Option<Interruption>, CoreError> {
+            unreachable!("RestoreContext uses the committed resume snapshot directly")
+        }
+    }
+
+    async fn create_test_analyzer_with_storage() -> (
+        FocusAnalyzer,
+        TempDir,
+        Arc<MockNotifier>,
+        Arc<SqliteStorage>,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let storage = Arc::new(
             SqliteStorage::open(&temp_dir.path().join("test.db"), 30, None)
@@ -411,8 +545,30 @@ mod tests {
         );
         let notifier = Arc::new(MockNotifier::new());
 
-        let analyzer = FocusAnalyzer::with_defaults(storage, notifier.clone());
+        let analyzer = FocusAnalyzer::with_defaults(storage.clone(), notifier.clone());
+        (analyzer, temp_dir, notifier, storage)
+    }
+
+    async fn create_test_analyzer() -> (FocusAnalyzer, TempDir, Arc<MockNotifier>) {
+        let (analyzer, temp_dir, notifier, _storage) = create_test_analyzer_with_storage().await;
         (analyzer, temp_dir, notifier)
+    }
+
+    fn consent(app_usage: bool, pattern_learning: bool) -> ConsentPermissions {
+        ConsentPermissions {
+            app_usage_analytics: app_usage,
+            activity_pattern_learning: pattern_learning,
+            ..Default::default()
+        }
+    }
+
+    async fn test_switch(
+        analyzer: &FocusAnalyzer,
+        new_app: &str,
+    ) -> Vec<maekon_core::models::suggestion::Suggestion> {
+        analyzer
+            .on_app_switch_with_context(new_app, "", None, &consent(true, true))
+            .await
     }
 
     #[tokio::test]
@@ -436,14 +592,13 @@ mod tests {
     async fn app_usage_not_aggregated_with_only_monitoring_bundle() {
         let (analyzer, _temp, _notifier) = create_test_analyzer().await;
 
-        // app_usage_permitted=false (simulates a state where only the monitoring
-        // bundle is granted).
+        let permissions = consent(false, false);
         analyzer
-            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, false)
+            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, &permissions)
             .await;
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
         analyzer
-            .on_app_switch_with_context("Slack", "general", None, false)
+            .on_app_switch_with_context("Slack", "general", None, &permissions)
             .await;
 
         let intelligence = analyzer.workflow_intelligence.read().await;
@@ -463,13 +618,14 @@ mod tests {
     #[tokio::test]
     async fn app_usage_aggregated_when_own_field_granted() {
         let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+        let permissions = consent(true, true);
 
         analyzer
-            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, true)
+            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, &permissions)
             .await;
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
         analyzer
-            .on_app_switch_with_context("Slack", "general", None, true)
+            .on_app_switch_with_context("Slack", "general", None, &permissions)
             .await;
 
         let intelligence = analyzer.workflow_intelligence.read().await;
@@ -481,6 +637,97 @@ mod tests {
             intelligence.has_active_segment(),
             "workflow segment must advance when app_usage_analytics is granted"
         );
+    }
+
+    /// #8574: the two own-field permissions form an independent 2x2 matrix.
+    /// Usage aggregation follows only `app_usage_analytics`; workflow segments
+    /// follow only `activity_pattern_learning`.
+    #[tokio::test]
+    async fn app_usage_and_pattern_learning_follow_independent_consent_matrix() {
+        for (app_usage, pattern_learning) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+            let permissions = consent(app_usage, pattern_learning);
+
+            analyzer
+                .on_app_switch_with_context("Visual Studio Code", "main.rs", None, &permissions)
+                .await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+            analyzer
+                .on_app_switch_with_context("Slack", "general", None, &permissions)
+                .await;
+
+            let intelligence = analyzer.workflow_intelligence.read().await;
+            assert_eq!(
+                intelligence.usage_len() > 0,
+                app_usage,
+                "usage map must follow only app_usage_analytics ({app_usage}, {pattern_learning})"
+            );
+            assert_eq!(
+                intelligence.has_active_segment(),
+                pattern_learning,
+                "workflow state must follow only activity_pattern_learning ({app_usage}, {pattern_learning})"
+            );
+        }
+    }
+
+    /// #8574: narrowing or revoking pattern consent clears unfinished pattern
+    /// state immediately without deleting independently consented usage data.
+    #[tokio::test]
+    async fn runtime_pattern_revoke_clears_pattern_state_but_preserves_usage() {
+        let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+        let granted = consent(true, true);
+
+        analyzer
+            .on_app_switch_with_context("Visual Studio Code", "main.rs", None, &granted)
+            .await;
+        {
+            let intelligence = analyzer.workflow_intelligence.read().await;
+            assert!(intelligence.usage_len() > 0);
+            assert!(intelligence.has_active_segment());
+        }
+
+        let narrowed = consent(true, false);
+        analyzer.reconcile_activity_pattern_consent(&narrowed).await;
+
+        let intelligence = analyzer.workflow_intelligence.read().await;
+        assert!(
+            intelligence.usage_len() > 0,
+            "app-usage aggregation must survive a pattern-only revoke"
+        );
+        assert!(!intelligence.has_active_segment());
+        assert_eq!(intelligence.playbook_len(), 0);
+    }
+
+    /// #8574: periodic and idle flush paths must clear stale pattern state and
+    /// emit no pattern output when the live effective permission is closed.
+    #[tokio::test]
+    async fn periodic_and_idle_flush_fail_closed_without_pattern_consent() {
+        let closed = consent(true, false);
+        for flush_path in ["periodic", "idle"] {
+            let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+            let granted = consent(true, true);
+            analyzer
+                .on_app_switch_with_context("Visual Studio Code", "main.rs", None, &granted)
+                .await;
+
+            let produced = if flush_path == "periodic" {
+                analyzer.analyze_periodic(&closed).await
+            } else {
+                analyzer.on_idle_resume(&closed).await
+            };
+
+            let intelligence = analyzer.workflow_intelligence.read().await;
+            assert!(!intelligence.has_active_segment());
+            assert_eq!(intelligence.playbook_len(), 0);
+            assert!(
+                produced.iter().all(|suggestion| !suggestion
+                    .content
+                    .starts_with("Recurring workflow pattern detected:")),
+                "{flush_path} must not produce a playbook pattern suggestion"
+            );
+        }
     }
 
     #[tokio::test]
@@ -495,6 +742,166 @@ mod tests {
 
         let tracker = analyzer.tracker.read().await;
         assert!(tracker.pending_interruption_id.is_some());
+    }
+
+    /// #8578: the exact tracked interruption is resumed once, removed from the
+    /// pending query, and used directly to build RestoreContext copy.
+    #[tokio::test]
+    async fn communication_to_original_deep_work_resumes_once_and_restores_from_app() {
+        let (analyzer, _temp, _notifier, storage) = create_test_analyzer_with_storage().await;
+
+        assert!(test_switch(&analyzer, "Visual Studio Code")
+            .await
+            .is_empty());
+        assert!(test_switch(&analyzer, "Slack").await.is_empty());
+
+        let produced = test_switch(&analyzer, "Visual Studio Code").await;
+        let restore: Vec<_> = produced
+            .iter()
+            .filter(|suggestion| suggestion.suggestion_type == SuggestionType::RestoreContext)
+            .collect();
+        assert_eq!(
+            restore.len(),
+            1,
+            "one completed interruption yields one restore suggestion"
+        );
+        assert!(restore[0].content.contains("Visual Studio Code"));
+
+        let pending = <SqliteStorage as FocusStorage>::get_pending_interruption(&storage)
+            .await
+            .unwrap();
+        assert!(
+            pending.is_none(),
+            "resumed row must leave the pending query"
+        );
+        assert!(analyzer
+            .tracker
+            .read()
+            .await
+            .pending_interruption_id
+            .is_none());
+    }
+
+    /// #8578: a newer unrelated pending row must not replace the tracker-owned
+    /// exact ID or supply the suggestion copy.
+    #[tokio::test]
+    async fn restore_resume_does_not_mix_with_newer_pending_interruption() {
+        let (analyzer, _temp, _notifier, storage) = create_test_analyzer_with_storage().await;
+
+        test_switch(&analyzer, "Visual Studio Code").await;
+        test_switch(&analyzer, "Slack").await;
+        let tracked_id = analyzer
+            .tracker
+            .read()
+            .await
+            .pending_interruption_id
+            .expect("deep-to-communication switch should be tracked");
+
+        let unrelated = Interruption::new(
+            0,
+            "Terminal".to_string(),
+            "Microsoft Teams".to_string(),
+            None,
+        );
+        let unrelated_id =
+            <SqliteStorage as FocusStorage>::record_interruption(&storage, &unrelated)
+                .await
+                .unwrap();
+        assert!(unrelated_id > tracked_id);
+
+        let produced = test_switch(&analyzer, "Visual Studio Code").await;
+        let restore = produced
+            .iter()
+            .find(|suggestion| suggestion.suggestion_type == SuggestionType::RestoreContext)
+            .expect("tracked interruption should produce RestoreContext");
+        assert!(restore.content.contains("Visual Studio Code"));
+        assert!(!restore.content.contains("Terminal"));
+
+        let still_pending = <SqliteStorage as FocusStorage>::get_pending_interruption(&storage)
+            .await
+            .unwrap()
+            .expect("unrelated row should remain pending");
+        assert_eq!(still_pending.id, unrelated_id);
+    }
+
+    /// #8578: an unknown exact ID produces no suggestion and remains in the
+    /// in-memory tracker so a storage mismatch is never hidden.
+    #[tokio::test]
+    async fn unknown_resume_id_preserves_tracker_and_emits_nothing() {
+        let (analyzer, _temp, _notifier, storage) = create_test_analyzer_with_storage().await;
+
+        test_switch(&analyzer, "Visual Studio Code").await;
+        test_switch(&analyzer, "Slack").await;
+        let recorded_id = analyzer
+            .tracker
+            .read()
+            .await
+            .pending_interruption_id
+            .expect("interruption should be tracked");
+        let unknown_id = recorded_id + 10_000;
+        analyzer.tracker.write().await.pending_interruption_id = Some(unknown_id);
+
+        let produced = test_switch(&analyzer, "Visual Studio Code").await;
+        assert!(produced
+            .iter()
+            .all(|suggestion| suggestion.suggestion_type != SuggestionType::RestoreContext));
+        assert_eq!(
+            analyzer.tracker.read().await.pending_interruption_id,
+            Some(unknown_id)
+        );
+
+        let pending = <SqliteStorage as FocusStorage>::get_pending_interruption(&storage)
+            .await
+            .unwrap()
+            .expect("original row must remain pending");
+        assert_eq!(pending.id, recorded_id);
+    }
+
+    /// #8578: expiry is evaluated from the resumed snapshot; no latest-pending
+    /// lookup can replace it after the transaction.
+    #[tokio::test]
+    async fn restore_context_rejects_snapshot_older_than_thirty_minutes() {
+        let (analyzer, _temp, _notifier) = create_test_analyzer().await;
+        let now = Utc::now();
+        let mut interruption = Interruption::new(
+            1,
+            "Visual Studio Code".to_string(),
+            "Slack".to_string(),
+            None,
+        );
+        interruption.interrupted_at = now - Duration::minutes(31);
+        interruption.resumed_at = Some(now);
+        interruption.resumed_to_app = Some("Visual Studio Code".to_string());
+
+        assert!(analyzer
+            .maybe_suggest_restore_context(&interruption, now)
+            .await
+            .is_none());
+    }
+
+    /// #8578: a storage error cannot clear the exact pending tracker ID or
+    /// create a restore suggestion from an uncommitted snapshot.
+    #[tokio::test]
+    async fn resume_storage_failure_preserves_tracker_and_emits_nothing() {
+        let storage = Arc::new(ResumeFailingStorage);
+        let notifier = Arc::new(MockNotifier::new());
+        let analyzer = FocusAnalyzer::with_defaults(storage, notifier);
+        {
+            let mut tracker = analyzer.tracker.write().await;
+            tracker.current_app = Some("Slack".to_string());
+            tracker.current_category = Some(AppCategory::Communication);
+            tracker.current_app_start = Some(Utc::now());
+            tracker.pending_interruption_id = Some(42);
+        }
+
+        let produced = test_switch(&analyzer, "Visual Studio Code").await;
+        assert!(produced
+            .iter()
+            .all(|suggestion| suggestion.suggestion_type != SuggestionType::RestoreContext));
+        assert_eq!(
+            analyzer.tracker.read().await.pending_interruption_id,
+            Some(42)
+        );
     }
 
     #[tokio::test]
@@ -525,7 +932,8 @@ mod tests {
 
         analyzer.on_app_switch("Visual Studio Code").await;
 
-        analyzer.on_idle_resume().await;
+        let permissions = consent(true, true);
+        analyzer.on_idle_resume(&permissions).await;
 
         let tracker = analyzer.tracker.read().await;
         assert!(tracker.active_session_id.is_none());

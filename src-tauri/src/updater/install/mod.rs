@@ -24,6 +24,7 @@ pub(crate) use verification::SignatureKeySource;
 // Windows rollback is fail-loud unimplemented (#5988), so the const is unused
 // there by design.
 #[cfg_attr(not(unix), allow(dead_code))]
+#[cfg(unix)]
 pub const ROLLBACK_EXIT_CODE: i32 = 75;
 
 impl Updater {
@@ -248,6 +249,7 @@ impl Updater {
     // only the tests call this. Kept compiled + tested there because the future
     // Task 12 `self_replace` implementation reuses this swap-only core.
     #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(any(not(windows), test))]
     pub(crate) fn execute_rollback_swap_only<F>(
         backup_path: &Path,
         current_exe_path: &Path,

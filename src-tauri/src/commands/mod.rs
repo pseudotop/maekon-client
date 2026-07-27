@@ -13,17 +13,23 @@ pub(crate) mod coaching;
 pub mod consent;
 pub(crate) mod detection;
 pub(crate) mod error_report;
+pub mod extension;
 pub(crate) mod focus;
 pub(crate) mod generate_external_cert;
 pub(crate) mod integration;
 pub(crate) mod notification;
 pub(crate) mod onboarding;
 pub(crate) mod permissions;
+pub(crate) mod privacy_audit;
+pub(crate) mod qc_upload_spool;
+pub(crate) mod reauth;
 pub(crate) mod settings;
+pub(crate) mod shortcuts;
 pub(crate) mod suggestion_parser;
 pub(crate) mod suggestions;
 pub(crate) mod sync;
 pub(crate) mod system;
+pub mod task;
 pub(crate) mod tray;
 
 /// Recursively merge `patch` into `base`.

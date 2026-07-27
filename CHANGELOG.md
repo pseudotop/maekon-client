@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.7] - 2026-07-23
+
+### Added
+
+- Durable task lifecycle and interruption recovery (ADR-028): confirmed
+  suggestions become durable to-dos backed by a shipped context-recovery
+  vertical, so the core scene — capture scope → recent context → visible
+  source → reviewed next step → durable to-do → restart and resume — works
+  end to end.
+- Work-context envelope with a read-only ContextSource runtime and an
+  encrypted Context Ledger projection with timeline and retention controls
+  (ADR-030), plus a read-only Google Calendar context-source connector.
+- Extension registry and trusted Skill Pack activation behind a capability
+  resolver (ADR-029).
+- Consent-gated current-context suggestions, an explicit OCR-processing
+  consent tier, and a split activity-pattern consent gate.
+- Privacy-safe alpha intake flow with diagnostic opt-in and a withdrawal
+  path.
+- Audio capture and speech-to-text shipped in the 3-OS release builds, with
+  persisted transcriptions integrated into full-text search and local
+  erasure.
+- Semantic search: embedding/vector adaptive search wired into web analysis,
+  a dashboard keyword FTS mode, and a single AI-features toggle with
+  onboarding and search discoverability.
+- LAN sync shipped with passphrase UX and GDPR Art.20 full data export.
+- Capture-privacy hardening: biometric/PIN re-auth gate for capture history
+  viewing, pixel-level PII redaction of screenshot frames, and excluded-apps
+  enforcement at capture time rather than only at egress.
+- Automation trust chain: suggestion-to-automation bridge with a gated
+  one-click run, GUI human-in-the-loop flow with keychain HMAC
+  auto-provisioning, automation execution policies persisted across
+  restarts, learned relevance gates applied uniformly across suggestion
+  producers, and a memory-graph claims browser with user retraction.
+- Egress transparency browser ("what left this device") and resource-budget
+  self diagnostics (CPU/RSS instrumentation).
+- /support destination with recovery affordances and an integrations tab;
+  locale-aware backend user-facing strings with expanded i18n coverage;
+  Codex subprocess sessions default to GPT-5.6 Sol.
+
+### Changed
+
+- Monitor hot path narrowed — per-tick process enumeration skipped, disk
+  stats gated to a 60s cadence, collectors parallelized — and embedding
+  lazy-load/eviction reduce idle CPU and memory footprint.
+- Integration runtime backstop polls use quiet backoff; local storage schema
+  advanced V46 → V52 with erasure and search wiring for newly persisted data
+  types.
+
+### Fixed
+
+- 370+ fixes across capture/consent state reflection, suggestion panel
+  hierarchy and tracking badges, chat suggestion contract restoration,
+  Windows release checks and VM readiness probes, Windows app-identity
+  privacy normalization, desktop notification click routing, expired
+  capture-mutation recovery, tray/capture gate alignment, and sync/storage
+  robustness.
+
+### Security
+
+- Hardened updater metadata and signing audit; Windows release lint and
+  supply-chain checks restored under the deny-by-default gate.
+
 ## [0.0.1-rc.6] - 2026-06-12
 
 ### Added

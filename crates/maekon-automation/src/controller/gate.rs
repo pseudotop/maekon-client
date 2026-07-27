@@ -135,12 +135,25 @@ impl CommandExecutionGate {
 
         {
             let mut logger = self.audit_logger.write().await;
-            logger.log_start_if(
+            // #8045 C2: at AuditLevel::Full the audit trail is a hard precondition.
+            // If the start entry cannot be durably recorded (bounded buffer at
+            // capacity or persistence back-pressure), DENY the command fail-closed
+            // rather than execute it unaudited. Levels below Full record
+            // best-effort and never return Err here.
+            if let Err(e) = logger.try_log_start_if(
                 audit_level,
                 &cmd.command_id,
                 &cmd.session_id,
                 &audit_action_label(&cmd.action),
-            );
+            ) {
+                drop(logger);
+                tracing::warn!(
+                    command_id = %cmd.command_id,
+                    error = %e,
+                    "audit start failed at Full level; denying command fail-closed"
+                );
+                return Ok(CommandResult::Denied);
+            }
         }
 
         let timeout_ms = cmd.timeout_ms.or(if resolved_config.max_cpu_time_ms > 0 {

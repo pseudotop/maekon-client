@@ -6,8 +6,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Calendar, ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { fetchDailyDigest } from '../api/client'
-import type { DailyDigestResponse } from '../api/contracts'
+import { fetchDailyDigest, fetchSummary } from '../api/client'
+import type { DailyDigestResponse, DailySummary } from '../api/contracts'
+import CaptureProcessingStatus, { hasCapturedActivity } from '../components/CaptureProcessingStatus'
 import GuiInteractionTrack from '../components/GuiInteractionTrack'
 import InsightCard from '../components/InsightCard'
 import PomodoroTimer from '../components/PomodoroTimer'
@@ -17,20 +18,25 @@ import { Button, Card, Skeleton } from '../components/ui'
 import { useCreateOverride, useOverrides } from '../hooks/useRecalibration'
 import { colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import {
+  formatLocalCalendarDate,
+  localDayBoundaryIso,
+  parseLocalCalendarDate,
+  shiftLocalCalendarDate,
+} from '../utils/localDate'
 
 function todayStr(): string {
-  return new Date().toISOString().split('T')[0]
+  return formatLocalCalendarDate(new Date())
 }
 
 function shiftDate(dateStr: string, days: number): string {
-  const d = new Date(dateStr)
-  d.setDate(d.getDate() + days)
-  return d.toISOString().split('T')[0]
+  return shiftLocalCalendarDate(dateStr, days)
 }
 
 function formatDisplayDate(dateStr: string): string {
   try {
-    const d = new Date(dateStr)
+    const d = parseLocalCalendarDate(dateStr)
+    if (!d) return dateStr
     return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   } catch {
     return dateStr
@@ -54,10 +60,14 @@ export default function DashboardDay() {
     queryKey: ['dashboard-day', date],
     queryFn: () => fetchDailyDigest(date),
   })
+  const { data: rawSummary } = useQuery<DailySummary>({
+    queryKey: ['dashboard-day-raw-summary', date],
+    queryFn: () => fetchSummary(date),
+  })
 
   // Fetch overrides for the current date
-  const dateFrom = `${date}T00:00:00Z`
-  const dateTo = `${date}T23:59:59Z`
+  const dateFrom = localDayBoundaryIso(date, 'start')
+  const dateTo = localDayBoundaryIso(date, 'end')
   const { data: overrides } = useOverrides(dateFrom, dateTo)
   const createOverrideMutation = useCreateOverride()
 
@@ -173,6 +183,9 @@ export default function DashboardDay() {
           {/* Content */}
           {data && !isLoading && (
             <>
+              {data.timeline.length === 0 && hasCapturedActivity(rawSummary) && (
+                <CaptureProcessingStatus summary={rawSummary} />
+              )}
               <InsightCard insight={data.insight} />
               <TimelineView
                 timeline={data.timeline}
@@ -181,7 +194,7 @@ export default function DashboardDay() {
                 onCreateOverride={(req) => createOverrideMutation.mutate(req)}
                 isMutating={createOverrideMutation.isPending}
               />
-              <GuiInteractionTrack start={`${date}T00:00:00Z`} end={`${date}T23:59:59Z`} />
+              {dateFrom && dateTo && <GuiInteractionTrack start={dateFrom} end={dateTo} />}
               <StatisticsPanel statistics={data.statistics} />
             </>
           )}

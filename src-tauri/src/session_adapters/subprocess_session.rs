@@ -28,9 +28,10 @@ use crate::session_adapters::prompt_payload::{
 };
 use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
-    append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
-    sanitize_subprocess_error_output, write_prompt_and_collect_output, DetectedSubprocessCli,
-    SubprocessKind,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags,
+    classify_subprocess_error_with_redactions, sanitize_subprocess_error_output,
+    write_prompt_and_collect_output, DetectedSubprocessCli, SubprocessKind,
+    DEFAULT_CODEX_SUBPROCESS_MODEL,
 };
 use tracing::debug;
 
@@ -76,7 +77,7 @@ impl GenericSubprocessSession {
                 .ok()
                 .flatten()
             })
-            .unwrap_or_else(|| "gpt-5.4".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string());
 
         let provider_name = provider_surface_spec(&surface.surface_id)
             .map(|spec| spec.vendor_id.clone())
@@ -160,6 +161,7 @@ impl GenericSubprocessSession {
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -440,6 +442,7 @@ impl GenericSubprocessSession {
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         if let Some(schema) = response_schema.as_ref() {
             let schema_path = temp_dir.path().join("output-schema.json");
@@ -1671,5 +1674,42 @@ fn main() {
             None,
         );
         assert!(session.is_external());
+    }
+
+    fn codex_session_with_model(model: Option<&str>) -> GenericSubprocessSession {
+        GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/bin/false"),
+            },
+            &SessionConfig {
+                transport: SessionTransport::Subprocess,
+                surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+                model: model.map(str::to_string),
+                system_prompt: None,
+                tools_enabled: false,
+                cwd: None,
+                sandbox_policy: None,
+                approval_policy: None,
+            },
+            Arc::new(AiSessionConfig::default()),
+            None,
+        )
+    }
+
+    #[test]
+    fn generic_codex_session_reports_gpt_5_6_sol_by_default() {
+        let session = codex_session_with_model(None);
+
+        assert_eq!(session.info().model, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn generic_codex_session_preserves_explicit_gpt_5_6_overrides() {
+        for model in ["gpt-5.6-terra", "gpt-5.6-luna"] {
+            let session = codex_session_with_model(Some(model));
+
+            assert_eq!(session.info().model, model);
+        }
     }
 }

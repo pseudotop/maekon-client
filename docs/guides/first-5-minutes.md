@@ -40,3 +40,11 @@ Query:
 - `GET /api/automation/policy-events?limit=50`
 
 Expected: a reproducible snapshot of settings, health, and policy actions for tuning.
+
+## 6. Turn on AI features (optional)
+
+AI features ship **off by default** (privacy-first). To unlock local embedding, AI semantic search, and the AI daily-digest narrative, open **Settings → Advanced → Enable AI features** — a single master toggle (individual toggles stay available for power users).
+
+Everything runs **on-device**: local embedding builds the vector index, and the daily digest's narrative is written by the local LLM.
+
+Note: these flags are read at startup, so **restart Maekon** for the pipeline to take effect. After restart, the Search page's **Semantic** mode becomes selectable and the daily digest gains an AI-written narrative.

@@ -1,4 +1,4 @@
-//! Capture-gate policy — tracking-schedule mute windows, the capture privacy
+//! Capture-gate policy — tracking-schedule allowed windows, the capture privacy
 //! gate composite, and monitor power-cadence decisions.
 //!
 //! Moved from `src-tauri` (#7735 E-3): tauri-free, ports-only domain policy.
@@ -15,7 +15,7 @@
 //! * [`should_run_now_with_time`] — the time-injectable active-hours gate.
 //!
 //! * [`capture_permitted_now`] — composes the capture privacy gates:
-//!   `capture_enabled AND consent_granted AND active_hours AND !tracking_schedule_active AND !capture_paused`.
+//!   `capture_enabled AND consent_granted AND active_hours AND tracking_schedule_allows_capture AND !capture_paused`.
 //!
 //! * [`audio_capture_permitted_now`] — identical gate for microphone capture;
 //!   uses `cfg.audio.enabled` instead of `cfg.vision.capture_enabled` (ADR-075 P-3).
@@ -126,7 +126,7 @@ pub fn should_run_now_with_time(config: &AppConfig, now: DateTime<Local>) -> boo
 // ── Implementations ─────────────────────────────────────────────────────────
 
 /// Returns `true` when `now` falls inside any configured tracking-schedule
-/// mute window.
+/// allowed window.
 ///
 /// When `cfg.tracking_schedule.enabled` is `false` or the `windows` list is
 /// empty, the schedule is considered inactive and this returns `false`.
@@ -140,6 +140,17 @@ pub fn tracking_schedule_active(cfg: &AppConfig, now: DateTime<Local>) -> bool {
         return false;
     }
     ts.windows.iter().any(|w| w.window_is_active(now))
+}
+
+/// Returns whether the tracking schedule permits capture at `now`.
+///
+/// A disabled schedule or an enabled schedule with no windows preserves the
+/// legacy unrestricted-by-schedule behavior. Once at least one window is
+/// configured and enabled, capture is fail-closed outside every allowed
+/// window. This is the semantic shown by the Tracking Schedule UI.
+pub fn tracking_schedule_allows_capture(cfg: &AppConfig, now: DateTime<Local>) -> bool {
+    let ts = &cfg.tracking_schedule;
+    !ts.enabled || ts.windows.is_empty() || tracking_schedule_active(cfg, now)
 }
 
 /// Shared composite-gate body, parameterized over the per-mode enable flag AND
@@ -161,7 +172,7 @@ fn capture_permitted_now_inner(
     enabled
         && consent_granted
         && should_run_now_with_time(cfg, now)
-        && !tracking_schedule_active(cfg, now)
+        && tracking_schedule_allows_capture(cfg, now)
         && !capture_paused
 }
 
@@ -174,7 +185,7 @@ fn capture_permitted_now_inner(
 ///     cfg.vision.capture_enabled                 // user-visible capture toggle
 ///     AND consent.screen_capture                 // consent top-authority gate
 ///     AND should_run_now_with_time(cfg, now)     // active_hours gate
-///     AND !tracking_schedule_active(cfg, now)    // tracking-schedule negative gate
+///     AND tracking_schedule_allows_capture(cfg, now) // tracking-schedule allow gate
 ///     AND !capture_paused                         // user tray-toggle veto
 /// ```
 ///
@@ -306,12 +317,21 @@ pub(crate) async fn evaluate_and_notify_transitions<N: TsNotifier + ?Sized>(
         if now_active {
             n.notify_ts(
                 "Tracking Schedule Active",
-                "Capture/telemetry paused during configured window",
+                "Capture/telemetry allowed during configured window",
+            )
+            .await;
+        } else if cfg.tracking_schedule.enabled && !cfg.tracking_schedule.windows.is_empty() {
+            n.notify_ts(
+                "Tracking Schedule Ended",
+                "Capture/telemetry paused outside configured allowed windows",
             )
             .await;
         } else {
-            n.notify_ts("Tracking Schedule Ended", "Capture/telemetry resumed")
-                .await;
+            n.notify_ts(
+                "Tracking Schedule Disabled",
+                "Capture/telemetry no longer restricted by schedule",
+            )
+            .await;
         }
     }
 }
@@ -454,6 +474,60 @@ pub fn decide_monitor_tick(
 // here — `NotificationManager` is a `maekon-app` (src-tauri) type, so the impl
 // moved to `src-tauri/src/notification_manager.rs` (orphan-rule legal: foreign
 // trait + local type).
+
+// ── OsPermissionWatch — mid-session OS permission revocation edges (#8686 AC4) ──
+
+/// Transition of the OS-level screen-capture permission axis between two
+/// monitor-loop observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsPermissionEdge {
+    /// Permission flipped granted → revoked (or was already revoked on the
+    /// very first observation): capture must stop fail-closed and the user
+    /// needs a re-grant path.
+    Revoked,
+    /// Permission flipped revoked → granted: capture may resume.
+    Restored,
+}
+
+/// Tracks the OS screen-capture permission across monitor ticks and reports
+/// only *transitions*, so the caller notifies once per revocation instead of
+/// on every tick (#8686 AC4).
+///
+/// The pure edge detection lives here (tauri-free); the platform probe that
+/// produces the `ok` input is an adapter concern (`src-tauri`'s
+/// `desktop_permissions`). Observation may pause while the capture gate is
+/// closed for other reasons (consent withdrawn, capture disabled, paused) —
+/// the last observed value is retained, so a revoke → (gate closed) →
+/// re-grant round trip still yields a single `Restored` edge when
+/// observation resumes.
+#[derive(Debug, Default)]
+pub struct OsPermissionWatch {
+    last_ok: Option<bool>,
+}
+
+impl OsPermissionWatch {
+    /// Feeds one probe result and returns the edge, if any.
+    ///
+    /// The first observation reports `Revoked` when `ok` is `false` (e.g. the
+    /// permission was revoked while the app was not running), and reports
+    /// nothing when `ok` is `true` (steady state needs no notification).
+    pub fn observe(&mut self, ok: bool) -> Option<OsPermissionEdge> {
+        let edge = match self.last_ok {
+            Some(prev) if prev == ok => None,
+            Some(_) if ok => Some(OsPermissionEdge::Restored),
+            Some(_) => Some(OsPermissionEdge::Revoked),
+            None if ok => None,
+            None => Some(OsPermissionEdge::Revoked),
+        };
+        self.last_ok = Some(ok);
+        edge
+    }
+
+    /// Whether the last observed probe reported the permission as revoked.
+    pub fn is_blocked(&self) -> bool {
+        self.last_ok == Some(false)
+    }
+}
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -651,16 +725,15 @@ mod tests {
     ///
     /// Each combination is constructed by building an `AppConfig` that puts
     /// each gate into the desired state, then asserting that
-    /// `capture_permitted_now` returns `consent AND active_hours AND ts_inactive
+    /// `capture_permitted_now` returns `consent AND active_hours AND ts_allowed
     /// AND !capture_paused`.
     ///
     /// Gate construction:
     ///   - `consent`: `ConsentPermissions { screen_capture: true/false, .. }`
     ///   - `active_hours`: schedule.active_hours_enabled = true, window covers
     ///     the test `now` (Mon 12:30 / Wed 23:00 accordingly)
-    ///   - `ts_inactive` (= !tracking_schedule_active): TS enabled with a window
-    ///     that does NOT cover `now` → active = false → ts_inactive = true
-    ///     OR TS disabled / empty → ts_inactive = true
+    ///   - `ts_allowed`: TS enabled with a window that covers `now`; disabled
+    ///     and empty schedules are covered by dedicated compatibility tests
     ///   - `capture_paused`: passed directly as argument
     #[test]
     fn capture_permitted_combines_all_four_gates() {
@@ -671,20 +744,20 @@ mod tests {
         // Iterate all 16 (bool×bool×bool×bool) combinations.
         for consent_val in [true, false] {
             for active_hours_val in [true, false] {
-                for ts_inactive_val in [true, false] {
+                for ts_allowed_val in [true, false] {
                     for paused_val in [true, false] {
-                        let cfg = build_scenario_cfg(active_hours_val, ts_inactive_val, now);
+                        let cfg = build_scenario_cfg(active_hours_val, ts_allowed_val, now);
                         // Screen gate reads screen_capture; mic mirrors it here (irrelevant to this gate).
                         let c = consent(consent_val, consent_val);
                         let expected =
-                            consent_val && active_hours_val && ts_inactive_val && !paused_val;
+                            consent_val && active_hours_val && ts_allowed_val && !paused_val;
 
                         let got = capture_permitted_now(&cfg, &c, paused_val, now);
 
                         assert_eq!(
                             got, expected,
                             "combo (consent={consent_val}, active_hours={active_hours_val}, \
-                             ts_inactive={ts_inactive_val}, paused={paused_val}) expected \
+                             ts_allowed={ts_allowed_val}, paused={paused_val}) expected \
                              {expected} but got {got}"
                         );
                     }
@@ -711,7 +784,7 @@ mod tests {
     fn audio_capture_permitted_respects_audio_enabled_setting() {
         // The audio gate's veto term is audio.enabled — NOT vision.capture_enabled.
         let now = monday_at(12, 30);
-        let mut cfg = build_scenario_cfg(true, true, now); // active hours cover now; TS inactive
+        let mut cfg = build_scenario_cfg(true, true, now); // active hours and allowed window cover now
         cfg.audio.enabled = false;
         assert!(
             !audio_capture_permitted_now(&cfg, &consent(true, true), false, now),
@@ -822,16 +895,16 @@ mod tests {
         );
     }
 
-    /// Builds an `AppConfig` that puts active_hours and ts_inactive gates into
+    /// Builds an `AppConfig` that puts active_hours and ts_allowed gates into
     /// the desired states for the given test `now`.
     ///
     /// - `active_hours=true`: schedule.active_hours_enabled + window covers `now`'s hour.
     /// - `active_hours=false`: schedule.active_hours_enabled + window does NOT cover `now`.
-    /// - `ts_inactive=true` (TS not firing): TS disabled (enabled=false).
-    /// - `ts_inactive=false` (TS firing): TS enabled with a window covering `now`.
+    /// - `ts_allowed=true`: enabled window covers `now`.
+    /// - `ts_allowed=false`: enabled window does not cover `now`.
     fn build_scenario_cfg(
         active_hours_val: bool,
-        ts_inactive_val: bool,
+        ts_allowed_val: bool,
         now: DateTime<Local>,
     ) -> AppConfig {
         // now = Monday 12:30 in all callers from the truth table.
@@ -855,23 +928,73 @@ mod tests {
         }
 
         // ── Tracking schedule gate ────────────────────────────────────────
-        if ts_inactive_val {
-            // TS not firing: disabled entirely.
-            cfg.tracking_schedule = TrackingScheduleConfig {
-                enabled: false,
-                windows: vec![],
-                timezone: "Local".to_string(),
-            };
-        } else {
-            // TS firing: enabled with a window that covers `now` (12:00–13:00 Mon).
+        if ts_allowed_val {
+            // Allowed window covers now (12:00–13:00 Mon).
             cfg.tracking_schedule = TrackingScheduleConfig {
                 enabled: true,
                 windows: vec![window("12:00", "13:00", vec![Weekday::Mon])],
                 timezone: "Local".to_string(),
             };
+        } else {
+            // Enabled schedule, but its only window is outside now.
+            cfg.tracking_schedule = TrackingScheduleConfig {
+                enabled: true,
+                windows: vec![window("14:00", "15:00", vec![Weekday::Mon])],
+                timezone: "Local".to_string(),
+            };
         }
 
         cfg
+    }
+
+    #[test]
+    fn tracking_schedule_allow_gate_preserves_disabled_and_empty_compatibility() {
+        let now = monday_at(12, 30);
+        let disabled = cfg_with_ts(TrackingScheduleConfig::default());
+        let empty = cfg_with_ts(TrackingScheduleConfig {
+            enabled: true,
+            windows: vec![],
+            timezone: "Local".to_string(),
+        });
+
+        assert!(tracking_schedule_allows_capture(&disabled, now));
+        assert!(tracking_schedule_allows_capture(&empty, now));
+    }
+
+    #[test]
+    fn tracking_schedule_allow_gate_is_fail_closed_outside_configured_windows() {
+        let now = monday_at(12, 30);
+        let cfg = cfg_with_ts(TrackingScheduleConfig {
+            enabled: true,
+            windows: vec![window("14:00", "15:00", vec![Weekday::Mon])],
+            timezone: "Local".to_string(),
+        });
+
+        assert!(!tracking_schedule_allows_capture(&cfg, now));
+        assert!(!capture_permitted_now(
+            &cfg,
+            &consent(true, true),
+            false,
+            now
+        ));
+    }
+
+    #[test]
+    fn tracking_schedule_allow_gate_permits_inside_configured_window() {
+        let now = monday_at(12, 30);
+        let cfg = cfg_with_ts(TrackingScheduleConfig {
+            enabled: true,
+            windows: vec![window("12:00", "13:00", vec![Weekday::Mon])],
+            timezone: "Local".to_string(),
+        });
+
+        assert!(tracking_schedule_allows_capture(&cfg, now));
+        assert!(capture_permitted_now(
+            &cfg,
+            &consent(true, true),
+            false,
+            now
+        ));
     }
 
     /// Test 9: overnight active_hours (22:00–06:00, Mon–Fri) + empty TS at
@@ -911,10 +1034,10 @@ mod tests {
         );
     }
 
-    /// Test 10: consent revoked overrides TS inactive + active_hours active
+    /// Test 10: consent revoked overrides an active allowed window + active hours
     /// (CONS-PC02 — consent has top-authority veto).
     #[test]
-    fn consent_revoked_overrides_ts_inactive_active_hours() {
+    fn consent_revoked_overrides_allowed_window_and_active_hours() {
         let now = monday_at(12, 30);
         let mut cfg = AppConfig::default_config();
         // Active hours cover now.
@@ -936,10 +1059,10 @@ mod tests {
         );
     }
 
-    /// Test 11: capture_paused veto — even when TS inactive + active_hours +
+    /// Test 11: capture_paused veto — even inside an allowed window + active_hours +
     /// consent granted, capture_paused=true → false (CONS-PC02).
     #[test]
-    fn capture_paused_overrides_ts_inactive() {
+    fn capture_paused_overrides_allowed_window() {
         let now = monday_at(12, 30);
         let mut cfg = AppConfig::default_config();
         // All other gates permitting.
@@ -1052,7 +1175,7 @@ mod tests {
         cfg.schedule.active_start_hour = 14;
         cfg.schedule.active_end_hour = 15;
         cfg.schedule.active_days = vec![Weekday::Mon];
-        // TS: enabled with window covering now → ts_active = true → ts_inactive = false.
+        // Tracking schedule window covers now; the other three gates still veto.
         cfg.tracking_schedule = TrackingScheduleConfig {
             enabled: true,
             windows: vec![window("12:00", "13:00", vec![Weekday::Mon])],
@@ -1303,6 +1426,11 @@ mod tests {
     fn notif_cfg(enabled: bool) -> AppConfig {
         let mut cfg = AppConfig::default_config();
         cfg.notification.tracking_schedule_enabled = enabled;
+        cfg.tracking_schedule = TrackingScheduleConfig {
+            enabled: true,
+            windows: vec![window("12:00", "13:00", vec![Weekday::Mon])],
+            timezone: "Local".to_string(),
+        };
         cfg
     }
 
@@ -1322,6 +1450,10 @@ mod tests {
             "expected exactly one notification on TS enter"
         );
         assert_eq!(calls[0].0, "Tracking Schedule Active");
+        assert_eq!(
+            calls[0].1,
+            "Capture/telemetry allowed during configured window"
+        );
         assert!(last.is_some(), "last_notified_at must be set after firing");
     }
 
@@ -1341,6 +1473,10 @@ mod tests {
             "expected exactly one notification on TS exit"
         );
         assert_eq!(calls[0].0, "Tracking Schedule Ended");
+        assert_eq!(
+            calls[0].1,
+            "Capture/telemetry paused outside configured allowed windows"
+        );
     }
 
     /// Test A.18-3: second transition within 60s is suppressed by the debounce.
@@ -1385,5 +1521,55 @@ mod tests {
             last.is_none(),
             "last_notified_at must remain None when config disabled"
         );
+    }
+
+    // ── OsPermissionWatch (#8686 AC4) ────────────────────────────────────────
+
+    #[test]
+    fn os_permission_watch_steady_granted_reports_nothing() {
+        let mut watch = OsPermissionWatch::default();
+        assert_eq!(watch.observe(true), None);
+        assert_eq!(watch.observe(true), None);
+        assert!(!watch.is_blocked());
+    }
+
+    #[test]
+    fn os_permission_watch_reports_revoked_edge_once() {
+        let mut watch = OsPermissionWatch::default();
+        assert_eq!(watch.observe(true), None);
+        assert_eq!(watch.observe(false), Some(OsPermissionEdge::Revoked));
+        // Steady revoked state must not re-notify every tick.
+        assert_eq!(watch.observe(false), None);
+        assert!(watch.is_blocked());
+    }
+
+    #[test]
+    fn os_permission_watch_reports_restored_edge() {
+        let mut watch = OsPermissionWatch::default();
+        watch.observe(true);
+        watch.observe(false);
+        assert_eq!(watch.observe(true), Some(OsPermissionEdge::Restored));
+        assert!(!watch.is_blocked());
+    }
+
+    #[test]
+    fn os_permission_watch_first_observation_revoked_is_surfaced() {
+        // Permission revoked while the app was not running: the very first
+        // tick must still surface the fail-closed state to the user.
+        let mut watch = OsPermissionWatch::default();
+        assert_eq!(watch.observe(false), Some(OsPermissionEdge::Revoked));
+        assert!(watch.is_blocked());
+    }
+
+    #[test]
+    fn os_permission_watch_survives_observation_gaps() {
+        // Revoke → (gate closed for other reasons; no observations) →
+        // re-grant must still produce exactly one Restored edge.
+        let mut watch = OsPermissionWatch::default();
+        watch.observe(true);
+        assert_eq!(watch.observe(false), Some(OsPermissionEdge::Revoked));
+        // ... gate closed: observe() not called for many ticks ...
+        assert_eq!(watch.observe(true), Some(OsPermissionEdge::Restored));
+        assert_eq!(watch.observe(true), None);
     }
 }

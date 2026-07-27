@@ -2,6 +2,7 @@ use chrono::Utc;
 use maekon_core::config::{AppConfig, PrivacyConfig};
 use maekon_core::models::context::{UserContext, WindowBounds};
 use maekon_core::models::focused_element::{AccessibilityElement, FocusedElementInfo};
+use maekon_core::ports::monitor::ActivityMonitor;
 use maekon_core::ports::vision::FrameProcessor;
 use maekon_vision::ring_buffer::{CaptureRingBuffer, RingFrame};
 use std::time::{Duration, Instant};
@@ -33,6 +34,55 @@ pub(super) fn tick_capture_excluded(
             window_title,
         ),
     }
+}
+
+/// Re-read the frontmost app immediately before a content grab and report
+/// whether it changed since `snapshot_app` (the app resolved at tick start).
+///
+/// Closes the capture window-switch TOCTOU (#8054 P3-1): judgment + metadata
+/// are taken from the tick-start snapshot, but the actual grab happens later in
+/// the tick. If the user switched windows in between, the grab would pair stale
+/// metadata with fresh pixels — and could capture an app that became frontmost
+/// after the tick-start exclusion check. A failed re-read reports `false`
+/// (fail-open: a transient monitor error must not silently drop every capture).
+pub(super) async fn frontmost_app_switched_since(
+    activity_monitor: &dyn ActivityMonitor,
+    snapshot_app: &str,
+) -> bool {
+    match activity_monitor.collect_active_context().await {
+        Ok(ctx) => ctx
+            .active_window
+            .map(|window| window.app_name != snapshot_app)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Whether any currently-visible window belongs to an excluded/sensitive app
+/// (#8054 P2-4 partial-occlusion guard).
+///
+/// `visible_apps` is the owner-app names of on-screen windows (from
+/// [`maekon_monitor::visible_window_app_names`]). The active app is already
+/// gated by [`tick_capture_excluded`]; this catches a *background* excluded app
+/// sharing the same display, which a full-monitor grab would otherwise record.
+/// Title-based matching is unavailable for background windows (titles need
+/// screen-recording permission), so this is app-name / sensitive-app based. A
+/// missing config falls back to the fail-safe [`PrivacyConfig::default`].
+pub(super) fn any_excluded_app_visible(
+    config: Option<&AppConfig>,
+    visible_apps: &[String],
+) -> bool {
+    let default_privacy;
+    let privacy = match config {
+        Some(cfg) => &cfg.privacy,
+        None => {
+            default_privacy = PrivacyConfig::default();
+            &default_privacy
+        }
+    };
+    visible_apps
+        .iter()
+        .any(|app| maekon_vision::privacy::should_exclude_by_policy(privacy, app, ""))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,6 +129,7 @@ impl RingThumbnailCadence {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn capture_ring_thumbnail_if_due(
     cadence: &mut RingThumbnailCadence,
     processor: &dyn FrameProcessor,
@@ -86,13 +137,16 @@ pub(super) async fn capture_ring_thumbnail_if_due(
     app_name: &str,
     window_title: &str,
     focused_element: Option<&FocusedElementInfo>,
+    window_bounds: Option<&WindowBounds>,
     throttle: Duration,
 ) {
     if !cadence.should_capture(Instant::now(), throttle) {
         return;
     }
 
-    if let Ok(thumb_data) = processor.capture_thumbnail().await {
+    // #8054 P2-3: capture the monitor holding the active window so the dashcam
+    // pre-event ring buffer follows the user across displays.
+    if let Ok(thumb_data) = processor.capture_thumbnail(window_bounds).await {
         ring_buffer.push(RingFrame {
             timestamp: Utc::now(),
             thumbnail_data: thumb_data,
@@ -114,7 +168,91 @@ pub(super) async fn capture_ring_thumbnail_if_due(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
     use maekon_core::models::context::WindowInfo;
+
+    /// Minimal `ActivityMonitor` double returning a fixed active-window app
+    /// name (or an error) so the grab-time TOCTOU re-check is testable without
+    /// a live window server.
+    struct StubActivityMonitor {
+        active_app: Option<String>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ActivityMonitor for StubActivityMonitor {
+        async fn collect_context(&self) -> Result<UserContext, CoreError> {
+            if self.fail {
+                return Err(CoreError::Internal {
+                    code: maekon_core::error_codes::InternalCode::Generic,
+                    message: "stub failure".to_string(),
+                });
+            }
+            let active_window = self.active_app.as_ref().map(|app| WindowInfo {
+                title: "Doc".to_string(),
+                app_name: app.clone(),
+                app_bundle_id: None,
+                pid: 1,
+                bounds: None,
+            });
+            Ok(UserContext {
+                timestamp: Utc::now(),
+                active_window,
+                processes: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn frontmost_switch_detected_when_app_changed() {
+        let monitor = StubActivityMonitor {
+            active_app: Some("Terminal".to_string()),
+            fail: false,
+        };
+        // Snapshot said "Notes" but the frontmost is now "Terminal" → switched.
+        assert!(frontmost_app_switched_since(&monitor, "Notes").await);
+        // Same app → no switch.
+        assert!(!frontmost_app_switched_since(&monitor, "Terminal").await);
+    }
+
+    #[tokio::test]
+    async fn frontmost_switch_fails_open_on_monitor_error() {
+        let monitor = StubActivityMonitor {
+            active_app: None,
+            fail: true,
+        };
+        // A transient monitor error must NOT report a switch (fail-open: never
+        // silently drop every capture).
+        assert!(!frontmost_app_switched_since(&monitor, "Notes").await);
+    }
+
+    #[test]
+    fn excluded_app_visible_flags_background_sensitive_window() {
+        let mut cfg = AppConfig::default_config();
+        cfg.privacy = PrivacyConfig {
+            excluded_apps: vec!["Slack".to_string()],
+            ..Default::default()
+        };
+        // A background Slack window sharing the display → occlusion guard trips.
+        assert!(any_excluded_app_visible(
+            Some(&cfg),
+            &["Chrome".to_string(), "Slack".to_string()],
+        ));
+        // Only non-excluded apps visible → no skip.
+        assert!(!any_excluded_app_visible(
+            Some(&cfg),
+            &["Chrome".to_string(), "Notes".to_string()],
+        ));
+    }
+
+    #[test]
+    fn excluded_app_visible_uses_fail_safe_default_without_config() {
+        // No config → PrivacyConfig::default() (auto_exclude_sensitive = true)
+        // must still flag a visible sensitive app.
+        assert!(any_excluded_app_visible(None, &["1Password".to_string()]));
+        assert!(!any_excluded_app_visible(None, &["Chrome".to_string()]));
+    }
 
     #[test]
     fn active_window_snapshot_defaults_without_window() {

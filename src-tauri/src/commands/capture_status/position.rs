@@ -41,6 +41,7 @@ fn monitor_contains_point(monitor: &MonitorBounds, x: f64, y: f64) -> bool {
         && y < monitor.y + monitor.height
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(super) fn resolve_window_monitor_index(
     x: f64,
     y: f64,
@@ -61,6 +62,7 @@ pub(super) fn resolve_window_monitor_index(
     })
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(super) fn resolve_point_monitor_index(
     x: f64,
     y: f64,

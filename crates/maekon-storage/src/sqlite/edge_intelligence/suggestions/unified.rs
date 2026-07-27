@@ -1,5 +1,6 @@
 //! Unified V8 `suggestions` table: save, list, dismiss, mark-acted, shown.
 
+use rusqlite::OptionalExtension;
 use tracing::debug;
 
 use crate::error::StorageError;
@@ -10,6 +11,35 @@ use maekon_core::models::suggestion::SuggestionSource;
 use super::super::super::SqliteStorage;
 use super::super::work_sessions::enum_to_sql_str;
 use super::context_columns::suggestion_context_columns;
+
+fn terminal_equivalent_suggestion_id(
+    conn: &rusqlite::Connection,
+    suggestion: &maekon_core::models::suggestion::Suggestion,
+    context_app: Option<&str>,
+    context_window: Option<&str>,
+    context_target_id: Option<&str>,
+) -> Result<Option<String>, StorageError> {
+    conn.query_row(
+        "SELECT suggestion_id FROM suggestions \
+         WHERE suggestion_type = ?1 AND source = ?2 AND content = ?3 \
+           AND COALESCE(context_app, '') = COALESCE(?4, '') \
+           AND COALESCE(context_window, '') = COALESCE(?5, '') \
+           AND COALESCE(context_target_id, '') = COALESCE(?6, '') \
+           AND (dismissed_at IS NOT NULL OR acted_at IS NOT NULL) \
+         ORDER BY created_at DESC LIMIT 1",
+        rusqlite::params![
+            enum_to_sql_str(&suggestion.suggestion_type),
+            enum_to_sql_str(&suggestion.source),
+            suggestion.content,
+            context_app,
+            context_window,
+            context_target_id,
+        ],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| StorageError::Internal(format!("terminal suggestion dedupe failure: {e}")))
+}
 
 /// D2 (#5186): stamp a suggestion INSERT with a monotonic HLC so it propagates via
 /// cross-device sync — EXCEPT `LlmServer`-source rows, which carry server-synthesized
@@ -45,6 +75,16 @@ impl SqliteStorage {
 
         // Write — write_lock (skip when deletion_flag is set → empty id; suggestions ∈ ALL_TABLES).
         self.conn.write_lock().run(String::new(), |conn| {
+            if let Some(existing_id) = terminal_equivalent_suggestion_id(
+                conn,
+                suggestion,
+                context_app,
+                context_window,
+                context_target_id,
+            )? {
+                debug!(id = %existing_id, "terminal equivalent suggestion suppressed");
+                return Ok(existing_id);
+            }
             // F0/#5186 + D2: stamp a monotonic HLC so this row syncs (LlmServer → skip).
             let (hw, hc, hd) = suggestion_stamp(&self.clock, conn, &suggestion.source)
                 .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
@@ -99,6 +139,16 @@ impl SqliteStorage {
         self.with_conn_skip(String::new(), move |conn| {
             let (context_app, context_window, context_target_id) =
                 suggestion_context_columns(&suggestion);
+            if let Some(existing_id) = terminal_equivalent_suggestion_id(
+                conn,
+                &suggestion,
+                context_app,
+                context_window,
+                context_target_id,
+            )? {
+                debug!(id = %existing_id, "terminal equivalent suggestion suppressed");
+                return Ok(existing_id);
+            }
             // F0/#5186 + D2: stamp a monotonic HLC so this row syncs (LlmServer → skip).
             let (hw, hc, hd) = suggestion_stamp(&clock, conn, &suggestion.source)
                 .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
@@ -601,6 +651,7 @@ impl SqliteStorage {
              shown_at, dismissed_at, acted_at, created_at, expires_at, resurface_at, \
              context_app, context_window, context_target_id \
              FROM suggestions WHERE state = ?1 \
+             AND dismissed_at IS NULL AND acted_at IS NULL \
              {order_clause} LIMIT ?2"
         );
         let mut stmt = conn

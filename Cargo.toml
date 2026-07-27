@@ -109,7 +109,7 @@ expect_used = "warn"
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.6"
+version = "0.0.1-rc.7"
 license = "Apache-2.0"
 rust-version = "1.88.0"  # jsonwebtoken 10.4.0 MSRV (cycle 32 F-SC-C33-02)
 repository = "https://github.com/pseudotop/maekon-client"
@@ -133,7 +133,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "gzi
 eventsource-stream = "0.2"
 
 # WebSocket (native-tls로 ring 의존성 회피)
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 
 # 시스템 모니터링
 # Pinned to 0.38 (MSRV 1.88): sysinfo 0.39.x bumps the required rustc to 1.95,
@@ -148,7 +148,7 @@ rusqlite = { version = "0.40", features = ["bundled-sqlcipher", "fallible_uint"]
 # 압축
 flate2 = "1"
 zstd = "0.13"
-lz4_flex = "0.13"
+lz4_flex = "0.14"
 
 # ML inference (ONNX Runtime — aligned with fastembed's transitive version)
 ort = "2.0.0-rc.12"
@@ -170,7 +170,8 @@ tauri-build = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-notification = "2"
-tauri-plugin-webdriver = "0.2"
+tauri-plugin-wdio = "1.2.0"
+tauri-plugin-wdio-webdriver = "1.2.0"
 
 # 공간 인덱스
 rstar = "0.13"
@@ -214,7 +215,7 @@ sha2 = "0.11"
 hmac = "0.13"
 rand = "0.10"
 url = "2"
-ed25519-dalek = "2.1"
+ed25519-dalek = "3.0"
 zeroize = { version = "1", features = ["derive"] }
 gethostname = "1.1"
 
@@ -238,7 +239,7 @@ notify-debouncer-mini = "0.7"
 rustls = "0.23"
 time = "0.3"
 tokio-rustls = "0.26"
-ulid = "1"
+ulid = "3"
 x509-parser = "0.18"
 
 # OS 키체인 (시크릿 저장)
@@ -271,7 +272,7 @@ enigo = { version = "0.6", features = ["serde"] }
 # Pure-Rust + already in the lockfile transitively (enigo / global-hotkey), so it is
 # declared all-target: the native module then compiles + is unit-testable on the
 # macOS/Windows hosts too, even though it is only CALLED on Linux.
-x11rb = "0.13"
+x11rb = "0.14"
 
 # 자동 업데이트 (self-replace only — reqwest 0.12 중복 제거)
 bsdiff = "0.2"
@@ -353,4 +354,3 @@ wry = { path = "patches/wry-0.55.1" }
 tauri-runtime-wry = { path = "patches/tauri-runtime-wry-2.11.2" }
 tray-icon = { path = "patches/tray-icon-0.23.1" }
 muda = { path = "patches/muda-0.19.1" }
-tauri-plugin-webdriver = { path = "patches/tauri-plugin-webdriver-0.2.1" }

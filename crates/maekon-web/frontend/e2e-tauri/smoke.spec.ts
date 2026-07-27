@@ -8,58 +8,7 @@
  * Comprehensive tests live in the private test suite.
  */
 
-import { invokeIpc } from './helpers.js'
-
-async function switchToMainWindow(): Promise<void> {
-  await browser.waitUntil(
-    async () => {
-      const handles = await browser.getWindowHandles()
-      for (const handle of handles) {
-        await browser.switchToWindow(handle)
-        const title = await browser.getTitle().catch(() => '')
-        const url = await browser.getUrl().catch(() => '')
-        const isAuxiliaryWindow = url.includes('overlay') || url.includes('tracking-panel')
-        if (title.includes('Maekon') && !isAuxiliaryWindow) return true
-      }
-      return false
-    },
-    { timeout: 15000, timeoutMsg: 'Maekon main window was not available' },
-  )
-}
-
-async function ensureShellReady(): Promise<void> {
-  const body = await $('body')
-  await body.waitForExist({ timeout: 10000 })
-
-  try {
-    await browser.waitUntil(
-      async () => {
-        const statusBar = await $('.app-shell-statusbar')
-        const skipButton = await $('[data-testid="onboarding-skip"]')
-        return (await statusBar.isExisting()) || (await skipButton.isExisting())
-      },
-      { timeout: 15000, timeoutMsg: 'App shell or onboarding did not render' },
-    )
-  } catch (error) {
-    const title = await browser.getTitle().catch(() => '<title unavailable>')
-    const url = await browser.getUrl().catch(() => '<url unavailable>')
-    const source = await browser.getPageSource().catch(() => '<source unavailable>')
-    console.log(`[e2e-tauri] Render timeout title=${title} url=${url} source=${source.slice(0, 500)}`)
-    throw error
-  }
-
-  if (await (await $('.app-shell-statusbar')).isExisting()) return
-
-  const skipButton = await $('[data-testid="onboarding-skip"]')
-  if (await skipButton.isExisting()) {
-    await skipButton.waitForClickable({ timeout: 10000 })
-    await skipButton.click()
-  } else {
-    await invokeIpc('complete_onboarding')
-    await browser.execute(() => window.location.reload())
-  }
-  await $('.app-shell-statusbar').waitForExist({ timeout: 15000 })
-}
+import { ensureShellReady, switchToMainWindow } from './helpers.js'
 
 describe('Tauri App Smoke', () => {
   before(async () => {

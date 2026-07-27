@@ -46,6 +46,26 @@ function highlightText(text: string, query: string): JSX.Element {
 type SearchType = 'all' | 'frames' | 'events'
 type SearchMode = 'text' | 'keyword' | 'semantic'
 
+function clarificationAppsForResults(results: SearchResult[]): string[] {
+  if (results.length < 3) return []
+
+  const contexts = new Set<string>()
+  const apps: string[] = []
+  const seenApps = new Set<string>()
+
+  for (const result of results) {
+    const app = result.app_name?.trim() || ''
+    const title = result.window_title?.trim() || result.matched_text?.trim() || ''
+    if (app || title) contexts.add(`${app.toLocaleLowerCase()}\u0000${title.toLocaleLowerCase()}`)
+    if (app && !seenApps.has(app)) {
+      seenApps.add(app)
+      apps.push(app)
+    }
+  }
+
+  return contexts.size >= 3 && apps.length >= 2 ? apps : []
+}
+
 export default function Search() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -58,6 +78,7 @@ export default function Search() {
   const [searchMode, setSearchMode] = useState<SearchMode>('text')
   const [searchType, setSearchType] = useState<SearchType>('all')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>(initialTagIds)
+  const [clarificationApp, setClarificationApp] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const pageSize = 20
 
@@ -86,6 +107,7 @@ export default function Search() {
     data: response,
     isLoading: isTextLoading,
     error: textError,
+    refetch: refetchText,
   } = useQuery({
     queryKey: ['search', searchQuery, searchType, selectedTagIds, page],
     queryFn: () =>
@@ -103,6 +125,7 @@ export default function Search() {
     data: semanticResults,
     isLoading: isSemanticLoading,
     error: semanticError,
+    refetch: refetchSemantic,
   } = useQuery({
     queryKey: ['semantic-search', searchQuery],
     // #7600: explicitly request mode=semantic (was previously omitted, which
@@ -125,6 +148,7 @@ export default function Search() {
     data: keywordResults,
     isLoading: isKeywordLoading,
     error: keywordError,
+    refetch: refetchKeyword,
   } = useQuery({
     queryKey: ['keyword-search', searchQuery],
     queryFn: () => fetchSemanticSearch(searchQuery, pageSize, 'keyword'),
@@ -134,6 +158,21 @@ export default function Search() {
   const isLoading =
     searchMode === 'text' ? isTextLoading : searchMode === 'keyword' ? isKeywordLoading : isSemanticLoading
   const error = searchMode === 'text' ? textError : searchMode === 'keyword' ? keywordError : semanticError
+  // #8079 (CRT-PRV-QC-CJ-00-09): the active mode's refetch so the error state
+  // can offer a real retry instead of a dead-end message.
+  const refetch = searchMode === 'text' ? refetchText : searchMode === 'keyword' ? refetchKeyword : refetchSemantic
+  const clarificationApps = response ? clarificationAppsForResults(response.results) : []
+  const hasCompleteTextResultSet = response ? response.total === response.results.length : false
+  const showClarification =
+    searchMode === 'text' && page === 0 && searchQuery.length > 0 && clarificationApps.length >= 2
+  const activeClarificationApp =
+    showClarification && hasCompleteTextResultSet && clarificationApp && clarificationApps.includes(clarificationApp)
+      ? clarificationApp
+      : null
+  const visibleTextResults =
+    response && activeClarificationApp
+      ? response.results.filter((result) => result.app_name === activeClarificationApp)
+      : response?.results || []
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -145,22 +184,26 @@ export default function Search() {
       if (selectedTagIds.length > 0) params.tags = selectedTagIds.join(',')
       setSearchParams(params)
       setPage(0)
+      setClarificationApp(null)
     }
   }
 
   const handleTypeChange = (type: SearchType) => {
     setSearchType(type)
     setPage(0)
+    setClarificationApp(null)
   }
 
   const handleTagToggle = (tagId: number) => {
     setSelectedTagIds((prev) => (prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]))
     setPage(0)
+    setClarificationApp(null)
   }
 
   const handleClearTags = () => {
     setSelectedTagIds([])
     setPage(0)
+    setClarificationApp(null)
   }
 
   return (
@@ -182,6 +225,7 @@ export default function Search() {
             onClick={() => {
               setSearchMode('text')
               setPage(0)
+              setClarificationApp(null)
             }}
           >
             <SearchIcon className="h-3.5 w-3.5" />
@@ -200,6 +244,7 @@ export default function Search() {
             onClick={() => {
               setSearchMode('keyword')
               setPage(0)
+              setClarificationApp(null)
             }}
           >
             <ListOrdered className="h-3.5 w-3.5" />
@@ -221,8 +266,8 @@ export default function Search() {
               semanticAvailable
                 ? undefined
                 : t(
-                    'search.semanticUnavailableHint',
-                    'Keyword search only — semantic search requires embedding setup in this build.',
+                    'search.semanticEnableHint',
+                    'Semantic search is off. Turn on AI features in Settings → Advanced (takes effect after restart).',
                   )
             }
             onClick={() => {
@@ -233,6 +278,7 @@ export default function Search() {
               if (!semanticAvailable) return
               setSearchMode('semantic')
               setPage(0)
+              setClarificationApp(null)
             }}
           >
             <Brain className="h-3.5 w-3.5" />
@@ -243,6 +289,23 @@ export default function Search() {
         {(searchMode === 'text' || searchMode === 'keyword') && (
           <p className="text-content-tertiary text-xs">
             {searchMode === 'keyword' ? t('search.keywordScopeHint') : t('search.textScopeHint')}
+          </p>
+        )}
+        {/* #8059 G2c: when the embedding pipeline is not wired, the disabled
+            "Semantic" toggle now carries an actionable path to turn it on
+            (Settings → Advanced → Enable AI features). Does NOT change or
+            auto-switch the current mode. */}
+        {!semanticAvailable && (
+          <p className="flex flex-wrap items-center gap-1.5 text-content-tertiary text-xs">
+            <span>{t('search.semanticEnableHint')}</span>
+            <button
+              type="button"
+              data-testid="search-enable-ai-features"
+              className="text-brand-text underline underline-offset-2 hover:opacity-80"
+              onClick={() => navigate('/settings/advanced')}
+            >
+              {t('search.enableAiFeatures')}
+            </button>
           </p>
         )}
       </div>
@@ -329,7 +392,17 @@ export default function Search() {
 
       {error && (
         <Card variant="danger" padding="md">
-          <p className="text-semantic-error">{t('search.searchError')}</p>
+          <div className="space-y-3">
+            <p className="text-semantic-error">{t('search.searchError')}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button data-testid="search-error-retry" variant="secondary" size="sm" onClick={() => void refetch()}>
+                {t('common.retry')}
+              </Button>
+              <Button data-testid="search-error-support" variant="ghost" size="sm" onClick={() => navigate('/support')}>
+                {t('search.getHelp')}
+              </Button>
+            </div>
+          </div>
         </Card>
       )}
 
@@ -342,13 +415,88 @@ export default function Search() {
                 "<span className="text-content">{response.query}</span>"{' '}
               </>
             )}
-            {t('search.results')}: <span className="text-brand-text">{response.total}</span>
+            {t('search.results')}:{' '}
+            <span className="text-brand-text">
+              {activeClarificationApp ? visibleTextResults.length : response.total}
+            </span>
             {t('search.resultCount')}
           </div>
 
-          {response.results.length > 0 ? (
-            <div className="space-y-3">
-              {response.results.map((result) => (
+          {showClarification && (
+            <Card
+              data-testid="history-search-clarification"
+              role="region"
+              aria-labelledby="history-search-clarification-title"
+              padding="md"
+              className="space-y-3"
+            >
+              <div className="space-y-1">
+                <h2 id="history-search-clarification-title" className={cn(typography.h3, colors.text.primary)}>
+                  {t('search.clarificationTitle')}
+                </h2>
+                <p className="text-content-secondary text-sm">
+                  {hasCompleteTextResultSet
+                    ? t('search.clarificationDescription')
+                    : t('search.clarificationIncompleteDescription')}
+                </p>
+              </div>
+              <fieldset className="flex flex-wrap gap-2">
+                <legend className="sr-only">
+                  {hasCompleteTextResultSet ? t('search.clarificationAppLabel') : t('search.clarificationSourceLabel')}
+                </legend>
+                {hasCompleteTextResultSet ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      aria-pressed={activeClarificationApp === null}
+                      className={cn(activeClarificationApp === null && 'ring-1 ring-content-tertiary ring-inset')}
+                      onClick={() => setClarificationApp(null)}
+                    >
+                      {t('search.clarificationAllApps')}
+                    </Button>
+                    {clarificationApps.map((app) => (
+                      <Button
+                        key={app}
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        aria-pressed={activeClarificationApp === app}
+                        className={cn(activeClarificationApp === app && 'ring-1 ring-content-tertiary ring-inset')}
+                        onClick={() => setClarificationApp(app)}
+                      >
+                        {app}
+                      </Button>
+                    ))}
+                  </>
+                ) : (
+                  (['frames', 'events'] as SearchType[]).map((type) => (
+                    <Button
+                      key={type}
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      aria-pressed={searchType === type}
+                      className={cn(searchType === type && 'ring-1 ring-content-tertiary ring-inset')}
+                      onClick={() => handleTypeChange(type)}
+                    >
+                      {type === 'frames' ? t('search.frames') : t('search.events')}
+                    </Button>
+                  ))
+                )}
+              </fieldset>
+            </Card>
+          )}
+
+          {visibleTextResults.length > 0 ? (
+            <div
+              id="history-search-results"
+              data-testid="history-search-results"
+              className="space-y-3"
+              aria-live="polite"
+            >
+              {visibleTextResults.map((result) => (
                 <SearchResultCard
                   key={`${result.result_type}-${result.id}`}
                   result={result}
@@ -359,10 +507,24 @@ export default function Search() {
               ))}
             </div>
           ) : (
+            // #8059 G2c: zero text-mode results → nudge toward Keyword mode
+            // (BM25 over activity summaries). The action is an explicit,
+            // user-initiated switch — never a silent auto-switch.
             <EmptyState
               icon={<SearchIcon className="h-8 w-8" aria-hidden="true" />}
               title={t('search.noResults')}
-              description={t('search.searchHint')}
+              description={searchQuery ? t('search.noResultsTryKeyword') : t('search.searchHint')}
+              action={
+                searchQuery
+                  ? {
+                      label: t('search.tryKeyword'),
+                      onClick: () => {
+                        setSearchMode('keyword')
+                        setPage(0)
+                      },
+                    }
+                  : undefined
+              }
             />
           )}
 

@@ -286,7 +286,7 @@ mod tests {
                 .unwrap_or(AuditStatus::Completed);
 
             self.entries.lock().unwrap().push(AuditEntry {
-                entry_id: Ulid::new().to_string(),
+                entry_id: Ulid::generate().to_string(),
                 timestamp: Utc::now(),
                 session_id: session_id.to_string(),
                 command_id: command_id.to_string(),
@@ -314,7 +314,7 @@ mod tests {
             auth_type: AuthType::Jwt,
             client_id: "user-1".into(),
             jti: Some("jti-abc".into()),
-            command_id: Ulid::new().to_string(),
+            command_id: Ulid::generate().to_string(),
         }
     }
 

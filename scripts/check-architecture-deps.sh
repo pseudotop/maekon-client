@@ -6,11 +6,17 @@ cd "$ROOT_DIR"
 
 echo "[arch-deps] Verifying workspace runtime dependency direction"
 
-METADATA_JSON="$(cargo metadata --format-version 1 --no-deps)"
+# E2BIG guard (#8685 R01): cargo metadata JSON is far larger than the kernel
+# argv+env limit on hosted runners — pass it via a temp file, never via an
+# environment variable ("Argument list too long", exit 126 on public CI).
+METADATA_FILE="$(mktemp)"
+trap 'rm -f "$METADATA_FILE"' EXIT
+cargo metadata --format-version 1 --no-deps > "$METADATA_FILE"
 
 if command -v node >/dev/null 2>&1; then
-  ARCH_DEPS_METADATA="$METADATA_JSON" node <<'JS'
-const metadata = JSON.parse(process.env.ARCH_DEPS_METADATA);
+  ARCH_DEPS_METADATA_FILE="$METADATA_FILE" node <<'JS'
+const fs = require('node:fs');
+const metadata = JSON.parse(fs.readFileSync(process.env.ARCH_DEPS_METADATA_FILE, 'utf8'));
 const packages = metadata.packages;
 const workspaceNames = new Set(packages.map((pkg) => pkg.name));
 
@@ -105,12 +111,13 @@ JS
   exit $?
 fi
 
-ARCH_DEPS_METADATA="$METADATA_JSON" python3 - <<'PY'
+ARCH_DEPS_METADATA_FILE="$METADATA_FILE" python3 - <<'PY'
 import json
 import os
 import sys
 
-metadata = json.loads(os.environ["ARCH_DEPS_METADATA"])
+with open(os.environ["ARCH_DEPS_METADATA_FILE"], "r", encoding="utf-8") as _f:
+    metadata = json.load(_f)
 packages = metadata["packages"]
 workspace_names = {pkg["name"] for pkg in packages}
 

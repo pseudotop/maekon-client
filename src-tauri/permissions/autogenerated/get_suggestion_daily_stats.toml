@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-suggestion-daily-stats"
+description = "Enables the get_suggestion_daily_stats command without any pre-configured scope."
+commands.allow = ["get_suggestion_daily_stats"]
+
+[[permission]]
+identifier = "deny-get-suggestion-daily-stats"
+description = "Denies the get_suggestion_daily_stats command without any pre-configured scope."
+commands.deny = ["get_suggestion_daily_stats"]

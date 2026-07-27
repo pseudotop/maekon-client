@@ -18,9 +18,30 @@ function formatHour(hourStr: string): string {
   }
 }
 
+// #8082: CPU utilization is a normalized system-wide percentage (0–100). A
+// corrupt sample, or one that summed per-core busy time on a multi-core host,
+// can arrive negative or above 100. We CLAMP such samples to the plausible
+// [0, 100] band rather than rendering a normalized/derived figure, because the
+// CPU Y-axis is already pinned to domain=[0, 100]: an unclamped 340% would
+// silently draw at the ceiling while the tooltip reported a truthful-looking
+// "340%", presenting an implausible value as a valid reading. Memory is a byte
+// count converted to GB and is only floored at 0 (it has no fixed upper bound).
+const CPU_PERCENT_MIN = 0
+const CPU_PERCENT_MAX = 100
+
 function coerceMetricValue(value: unknown): number {
   const numberValue = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numberValue) ? numberValue : 0
+}
+
+/** Clamp a CPU sample to the plausible [0, 100]% band (#8082). */
+export function clampCpuPercent(value: unknown): number {
+  return Math.min(CPU_PERCENT_MAX, Math.max(CPU_PERCENT_MIN, coerceMetricValue(value)))
+}
+
+/** Floor a byte/GB quantity at 0 — memory can never be negative (#8082). */
+export function floorNonNegative(value: unknown): number {
+  return Math.max(0, coerceMetricValue(value))
 }
 
 function formatMetricTooltipValue(value: unknown, name: unknown): string {
@@ -35,10 +56,10 @@ export default function MetricsChart({ data }: MetricsChartProps) {
     () =>
       (data ?? []).map((m) => ({
         hour: formatHour(m.hour),
-        cpu: m.cpu_avg,
-        cpuMax: m.cpu_max,
-        memory: (m.memory_avg ?? 0) / (1024 * 1024 * 1024), // GB
-        memoryMax: (m.memory_max ?? 0) / (1024 * 1024 * 1024),
+        cpu: clampCpuPercent(m.cpu_avg),
+        cpuMax: clampCpuPercent(m.cpu_max),
+        memory: floorNonNegative(m.memory_avg) / (1024 * 1024 * 1024), // GB
+        memoryMax: floorNonNegative(m.memory_max) / (1024 * 1024 * 1024),
       })),
     [data],
   )

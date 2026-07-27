@@ -3,8 +3,8 @@
 //!
 //! Per ADR-001 §1, `maekon-automation` MUST NOT depend on `maekon-storage`
 //! directly. The binary crate (`src-tauri`) wires the bridge so
-//! `AuditLogger::entries_by_command_id` can fall through from the in-memory
-//! buffer (~1000-row cap) to historical persistence on the V32 partial index.
+//! `AuditLogger` can fall through from the in-memory buffer (~1000-row cap) to
+//! historical persistence for both recent and command-scoped queries.
 //!
 //! Mirrors the existing write-path bridge — see `app_runtime_launch.rs` and
 //! `web_server_runtime.rs` for the `AuditPersistence` callback pattern.
@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use maekon_automation::audit::AuditQuery;
-use maekon_core::models::audit::AuditEntry;
+use maekon_core::models::audit::{AuditEntry, AuditStats};
 use maekon_storage::sqlite::SqliteStorage;
 
 /// SQLite-backed implementation of [`AuditQuery`].
@@ -30,6 +30,14 @@ impl SqliteAuditQuery {
 }
 
 impl AuditQuery for SqliteAuditQuery {
+    fn stats(&self) -> AuditStats {
+        self.storage.audit_stats()
+    }
+
+    fn recent_entries(&self, limit: usize) -> Vec<AuditEntry> {
+        self.storage.recent_audit_entries(limit)
+    }
+
     fn entries_by_command_id(&self, command_id: &str, limit: usize) -> Vec<AuditEntry> {
         self.storage.entries_by_command_id(command_id, limit)
     }

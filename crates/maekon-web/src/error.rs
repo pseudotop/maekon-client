@@ -354,6 +354,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_error_keeps_wire_code_without_leaking_private_detail() {
+        let core = maekon_core::error::CoreError::Storage {
+            code: maekon_core::error_codes::StorageCode::Failed,
+            message: "database is locked at C:\\Users\\alice\\private.db".to_string(),
+        };
+        let (status, body) = response_json(core.into()).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["code"], "storage.failed");
+        assert_eq!(body["error"], "internal server error");
+        assert!(!body.to_string().contains("alice"));
+    }
+
+    #[tokio::test]
     async fn path_bearing_core_errors_hide_private_detail() {
         let config = maekon_core::error::CoreError::Config {
             code: maekon_core::error_codes::ConfigCode::Invalid,

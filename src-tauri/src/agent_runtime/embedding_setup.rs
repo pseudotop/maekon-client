@@ -624,6 +624,140 @@ pub(super) fn build_embedding_components(
     }
 }
 
+/// Build the adaptive `SearchConfig` from the embedding config section.
+///
+/// Shared by the scheduler ingestion wiring (`agent_runtime::run`) and the web
+/// semantic-search wiring ([`build_web_search_components`]) so both coordinators
+/// apply the SAME strategy thresholds / forced-strategy / quantization gate.
+pub(crate) fn search_config_from(
+    embedding_config: &maekon_core::config::EmbeddingConfig,
+) -> maekon_analysis::SearchConfig {
+    maekon_analysis::SearchConfig {
+        brute_force_threshold: 10_000,
+        ivf_threshold: 100_000,
+        hnsw_threshold: 5_000,
+        oversample_factor: embedding_config.binary_oversample_factor,
+        default_nprobe: embedding_config.ivf_nprobe,
+        forced_strategy: match embedding_config.index_strategy.as_str() {
+            "auto" => None,
+            s @ ("brute_force" | "ivf" | "ivf_binary") => Some(s.to_string()),
+            // "hnsw" is meaningful only when compiled with the feature AND an
+            // AnnIndex is wired (not the case in production).
+            #[cfg(feature = "hnsw")]
+            "hnsw" => Some("hnsw".to_string()),
+            other => {
+                // review4 F9: an unrecognized index_strategy previously degraded
+                // silently to a full brute-force scan. Warn once and fall back to
+                // auto strategy selection.
+                warn!(
+                    index_strategy = %other,
+                    "unrecognized embedding.index_strategy; using auto strategy selection"
+                );
+                None
+            }
+        },
+        // #7479: when quantization is disabled the coordinator routes to the f32
+        // search path — the INT8 tiers read `vector_int8`, NULL for every row.
+        quantization_enabled: embedding_config.quantization_enabled,
+    }
+}
+
+/// Query-side semantic-search components for the web dashboard (#8059).
+///
+/// All `None` = honest degrade (embedding disabled, or no real provider could
+/// be built), so `/api/semantic-search/capabilities` reports unavailable rather
+/// than letting `mode=semantic` 501 or `mode=hybrid` silently keyword-degrade.
+#[derive(Default)]
+pub(crate) struct WebSearchComponents {
+    pub(crate) embedding_provider:
+        Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
+    pub(crate) vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    pub(crate) adaptive_search:
+        Option<Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort>>,
+}
+
+/// Build the web dashboard's semantic-search query-side components, tapping the
+/// SAME [`build_embedding_components`] source the scheduler ingestion pipeline
+/// uses. This guarantees query embeddings match document embeddings (identical
+/// model/dims + credential resolution + egress PII floor) and that search reads
+/// the SAME `embedding_vectors` table the scheduler writes into (both build a
+/// `SqliteVectorStore` over the same SQLite connection).
+///
+/// Returns all-`None` unless `analysis.embedding.enabled` AND a real embedding
+/// provider was constructed. The honest-availability signal is
+/// [`EmbeddingComponents::vector_store`]`.is_some()`, which is `Some` only in
+/// that case; the always-present NoOp fallback provider is deliberately NOT
+/// surfaced here (it would falsely flip `semantic_available` to `true` while
+/// returning zero vectors).
+///
+/// Built once at web-server startup — a later `analysis.embedding.enabled` flip
+/// requires an app restart to appear (see the PR's restart-requirement note).
+///
+/// The freshly-built `AdaptiveSearchCoordinator` starts with a cold
+/// `cached_vector_count` (0), so it selects the brute-force/f32 tier. With
+/// quantization disabled (the default) the coordinator routes to the f32
+/// `search_filtered` path regardless of count, so results are correct — the
+/// cold count affects only strategy SELECTION (performance at very large
+/// collections), never correctness. The web search path intentionally does not
+/// run the scheduler's periodic `refresh_count` maintenance.
+///
+/// `external_llm_privacy_guard` is deliberately `None`: the web path never runs
+/// the LLM segment summarizer (it consumes only the embedding provider + vector
+/// store), so the summarizer built inside `build_embedding_components` is
+/// discarded and makes no network calls.
+pub(crate) fn build_web_search_components(
+    config: &AppConfig,
+    sqlite_storage: &Arc<maekon_storage::sqlite::SqliteStorage>,
+    #[cfg(feature = "analysis")] secret_stores: Option<&SecretStoreSet>,
+    #[cfg(feature = "analysis")] egress_ledger: Option<
+        Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>,
+    >,
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+) -> WebSearchComponents {
+    let vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore> = Arc::new(
+        maekon_storage::sqlite::vector_store_impl::SqliteVectorStore::new(
+            sqlite_storage.connection_arc(),
+        ),
+    );
+
+    let components = build_embedding_components(
+        config,
+        Some(vector_store.clone()),
+        None, // external_llm_privacy_guard: the web path discards the summarizer.
+        #[cfg(feature = "analysis")]
+        secret_stores,
+        #[cfg(feature = "analysis")]
+        egress_ledger,
+        breaker_registry,
+    );
+
+    // `vector_store` is `Some` only when embedding is enabled AND a real provider
+    // was wired; in that case `embedding_provider` is that real (fallback-wrapped)
+    // provider — the NoOp fallback is applied only when `vector_store` stays
+    // `None`. Gating on both keeps `semantic_available` honest.
+    match (components.vector_store, components.embedding_provider) {
+        (Some(vs), Some(ep)) => {
+            let vector_index: Arc<dyn maekon_core::ports::vector_index::VectorIndex> = Arc::new(
+                maekon_storage::sqlite::vector_index_impl::SqliteVectorIndex::new(
+                    sqlite_storage.connection_arc(),
+                ),
+            );
+            let coordinator: Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort> =
+                Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
+                    vs.clone(),
+                    vector_index,
+                    search_config_from(&config.analysis.embedding),
+                ));
+            WebSearchComponents {
+                embedding_provider: Some(ep),
+                vector_store: Some(vs),
+                adaptive_search: Some(coordinator),
+            }
+        }
+        _ => WebSearchComponents::default(),
+    }
+}
+
 /// Lightweight fallback wrapper for the default/OSS build (`embedding` feature
 /// off) (#4813).
 ///

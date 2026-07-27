@@ -56,7 +56,7 @@ pub struct CreateBugReportRequest {
 }
 
 fn default_include_logs() -> bool {
-    true
+    false
 }
 
 #[cfg(test)]
@@ -93,9 +93,9 @@ mod tests {
     }
 
     #[test]
-    fn create_request_defaults() {
+    fn create_request_defaults_runtime_logs_to_excluded() {
         let req: CreateBugReportRequest = serde_json::from_str("{}").unwrap();
-        assert!(req.include_logs);
+        assert!(!req.include_logs);
         assert!(req.pii_level.is_none());
     }
 

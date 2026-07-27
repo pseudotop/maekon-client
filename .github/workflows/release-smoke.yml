@@ -203,17 +203,18 @@ jobs:
         shell: bash
         # Mirror release.yml: scope to `-p maekon-app` and use the same
         # OS-conditional feature set. Linux also needs `systemd-notify` because
-        # the released DEB ships a Type=notify unit.
+        # the released DEB ships a Type=notify unit. All three ship `lan-sync`
+        # (#8056) and `stt,download` (#8053) to mirror the shipped feature set.
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify,linux-sandbox"
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            FEATURES="grpc,windows-sandbox"
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
           else
-            FEATURES="grpc"
+            FEATURES="grpc,lan-sync,stt,download"
           fi
           ./scripts/cargo-cache.sh build --locked --release --target "$TARGET" -p maekon-app --features "$FEATURES"
 

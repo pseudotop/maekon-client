@@ -642,16 +642,35 @@ jobs:
       # - #6118: Linux releases need `systemd-notify` for Type=notify units.
       # - #6752: shipped Linux/Windows releases must include the native sandbox
       #   feature for their platform instead of presenting unenforced sandbox UI.
+      # - #8056: shipped releases (all 3 OS) must include `lan-sync` so the
+      #   cross-device LAN sync engine compiles in — without it
+      #   `SyncTransportKind::Lan` short-circuits to "sync disabled" and
+      #   `discover_sync_peers` can never work in a shipped binary. Default
+      #   remains opt-in via `config.sync.enabled`; the feature only gates code
+      #   inclusion, not activation.
+      # - #8053: shipped releases (all 3 OS) must include `stt,download` so the
+      #   local audio/STT subsystem (~3,900 LoC `maekon-audio` crate + 10 tauri
+      #   commands + AudioTab UI) compiles in — without it `audio_wiring.rs` wires
+      #   every capability to `None` and all 10 audio commands dead-end in
+      #   `service.unavailable`. `stt` pulls in the base `audio` feature plus
+      #   `maekon-audio/whisper`; `download` adds on-demand model fetching. Models
+      #   are NOT bundled — they download on demand. `cloud-stt` is deliberately
+      #   excluded (local-only privacy posture). The feature only gates code
+      #   inclusion, not activation (opt-in via `config.audio.enabled`).
       - name: Assert native release feature sets
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q 'FEATURES="grpc,systemd-notify,linux-sandbox"' .github/workflows/release.yml; then
-            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify,linux-sandbox (#6118/#6752)." >&2
+          if ! grep -q 'FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify,linux-sandbox,lan-sync,stt,download (#6118/#6752/#8056/#8053)." >&2
             exit 1
           fi
-          if ! grep -q 'FEATURES="grpc,windows-sandbox"' .github/workflows/release.yml; then
-            echo "::error::Windows release build must use FEATURES=grpc,windows-sandbox (#6752)." >&2
+          if ! grep -q 'FEATURES="grpc,windows-sandbox,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::Windows release build must use FEATURES=grpc,windows-sandbox,lan-sync,stt,download (#6752/#8056/#8053)." >&2
+            exit 1
+          fi
+          if ! grep -q 'FEATURES="grpc,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::macOS release build must use FEATURES=grpc,lan-sync,stt,download (#8056/#8053)." >&2
             exit 1
           fi
 
@@ -660,14 +679,17 @@ jobs:
         # Feature set is OS-conditional. Linux keeps `systemd-notify` for its
         # Type=notify unit and adds `linux-sandbox`; Windows adds
         # `windows-sandbox`. macOS has no native sandbox Cargo feature here.
+        # All three ship `lan-sync` (#8056) so the LAN cross-device sync engine
+        # is compiled into the shipped binary, and `stt,download` (#8053) so the
+        # local audio/STT subsystem + on-demand model download are live.
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify,linux-sandbox"
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            FEATURES="grpc,windows-sandbox"
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
           else
-            FEATURES="grpc"
+            FEATURES="grpc,lan-sync,stt,download"
           fi
           ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
 
@@ -717,7 +739,7 @@ jobs:
           ./scripts/cargo-cache.sh tauri build \
             --bundles nsis \
             --target ${{ matrix.target }} \
-            --features grpc,windows-sandbox \
+            --features grpc,windows-sandbox,lan-sync,stt,download \
             --ci \
             --config "$CONFIG_PATH"
 

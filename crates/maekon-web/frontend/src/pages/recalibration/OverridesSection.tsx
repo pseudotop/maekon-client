@@ -1,11 +1,25 @@
 import { Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { RegimeOverride } from '../../api/contracts'
 import { Badge, Button, Card, Skeleton } from '../../components/ui'
 import { useTypedOutletContext } from '../../routes'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { RecalibrationOutletContext } from './RecalibrationLayout'
 import { formatDateTime, getActionLabel } from './RecalibrationLayout'
+
+export function getOverrideEffectLabel(override: RegimeOverride, t: (key: string) => string): string {
+  switch (override.user_action.type) {
+    case 'MARK_AS_NOISE':
+      return t('recalibration.effectMarkAsNoise')
+    case 'REASSIGN_REGIME':
+      return t('recalibration.effectReassignRegime')
+    case 'MARK_AS_PERSONAL_TIME':
+      return t('recalibration.effectPersonalTime')
+    default:
+      return t('recalibration.effectUnknown')
+  }
+}
 
 export default function OverridesSection() {
   const { t } = useTranslation()
@@ -29,12 +43,14 @@ export default function OverridesSection() {
 
       {!overridesLoading && overrides && overrides.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[600px] text-left text-sm">
+          <table className="w-full min-w-[900px] text-left text-sm">
             <thead>
               <tr className={cn('border-DEFAULT border-b', colors.text.tertiary)}>
                 <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnSegment')}</th>
                 <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnOriginal')}</th>
                 <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnAction')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnLifecycle')}</th>
+                <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnEffect')}</th>
                 <th className={`pr-4 pb-2 ${typography.weight.medium}`}>{t('overridesSection.columnCreated')}</th>
                 <th className={`pb-2 ${typography.weight.medium}`} />
               </tr>
@@ -52,6 +68,10 @@ export default function OverridesSection() {
                     <Badge color="info" size="sm">
                       {getActionLabel(override, t)}
                     </Badge>
+                  </td>
+                  <td className={cn('py-2 pr-4 text-xs', colors.text.secondary)}>{t('recalibration.untilRemoved')}</td>
+                  <td className={cn('max-w-64 py-2 pr-4 text-xs', colors.text.secondary)}>
+                    {getOverrideEffectLabel(override, t)}
                   </td>
                   <td className={cn('py-2 pr-4 text-xs', colors.text.tertiary)}>
                     {formatDateTime(override.created_at)}

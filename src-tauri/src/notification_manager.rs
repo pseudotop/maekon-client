@@ -31,6 +31,31 @@ impl NotificationActivationError {
     }
 }
 
+/// Resolve a notification's payload route into a validated in-app navigation
+/// outcome (safe internal path + focus intent).
+///
+/// # OS notification click routing is out of scope (#8058 P2-8)
+///
+/// This function is the validated ROUTE target, but its only non-test caller is
+/// the debug-only [`crate::commands::notification::simulate_notification_activation`]
+/// harness — production OS toasts are NOT wired to it, and clicking a real
+/// desktop toast does nothing. That is a hard limitation of the notification
+/// stack, not an oversight:
+///
+/// `tauri-plugin-notification` 2.3.3 exposes NO desktop click/action callback.
+/// Its `builder()` supports only title/body/icon/sound; action registration and
+/// `onAction` listeners exist in `mobile.rs` (iOS/Android) ONLY. The desktop
+/// `show()` spawns and immediately drops the `notify_rust` handle
+/// (`let _ = notification.show();`), so even Linux's `wait_for_action` is
+/// unreachable through the plugin. Delivering real click→navigate on desktop
+/// would mean bypassing the plugin with a direct `notify-rust` integration
+/// (Linux-only action support; macOS/Windows have no usable click callback) plus
+/// a per-notification wait task — a new subsystem, not a P2 wiring.
+///
+/// The real, working navigation surface is the in-app overlay/suggestion panel
+/// (clicking an in-app card DOES route). This helper is retained as the single
+/// validated routing seam so that if a future plugin/ADR adds a desktop click
+/// callback, the OS path can call exactly this function with no logic drift.
 pub fn notification_activation_outcome_from_route(
     route: Option<&str>,
 ) -> Result<NotificationActivationOutcome, NotificationActivationError> {

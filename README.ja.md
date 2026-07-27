@@ -21,9 +21,11 @@
 
 MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデスクトップエージェントです。ローカルコンテキストの収集、ユーザーが確認する次の行動候補、ポリシーゲート付き自動化、内蔵ダッシュボードを提供します。RustとTauri v2（Reactフロントエンドを包むWebViewシェル）で構築されており、macOS、Windows、Linuxでネイティブパフォーマンスを発揮します。
 
+公開チャネルは招待制Global Alpha向けの初期prereleaseです。Stable releaseや運用準備完了を示すものではありません。
+
 ## Source Buildクイックスタート
 
-公開リポジトリは利用可能ですが、公開GitHub Releaseアセットはまだ公開されていません。最初の公開リリースが利用可能になるまでは、ローカルのsource checkoutからMaekonを実行してください。
+公開リポジトリは利用可能で、`v0.0.1-rc.6`が現在の公開prereleaseです。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -42,7 +44,7 @@ cp target/debug/maekon-sandbox-worker \
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-リリースインストーラーのコマンドは下記のインストール文書に記載されており、公開リリースアセットが公開された後に推奨パスになります。バージョン固定、署名検証の強制、アンインストール方法：
+リリースインストーラーのコマンドは下記のインストール文書に記載されています。Prereleaseのversion固定、署名検証の強制、アンインストール方法：
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -50,7 +52,7 @@ cp target/debug/maekon-sandbox-worker \
 
 - **活動をガバナンスされたワークインサイトに整理**: コンテキスト、タイムライン、フォーカスパターン、中断、承認済み自動化パスをひとつの場所で追跡します。
 - **軽量なオンデバイス処理**: Edge処理（デルタエンコーディング、サムネイル、OCR）により転送量を削減し、高速なレスポンスを維持します。
-- **本番環境レベルのデスクトップスタック**: クロスプラットフォームバイナリ、自動アップデート、システムトレイ統合、ローカルWebダッシュボードを備えています。
+- **Global Alphaでデスクトップスタックを評価**: Prereleaseにはクロスプラットフォームソース、更新基盤、システムトレイ統合、ローカルWebダッシュボードが含まれます。利用前に対象buildとplatformを検証してください。
 
 ## 対象ユーザー
 
@@ -71,7 +73,7 @@ cp target/debug/maekon-sandbox-worker \
 Standaloneモードは現在利用可能です。
 
 Connectedモードはopt-inプレビューパスとしてのみ提供されています。
-リリース運用環境ではStandaloneモードがデフォルトの本番パスです。
+Global AlphaではStandaloneモードが現在のデフォルト評価パスです。
 
 ## セキュリティとプライバシーの概要
 
@@ -96,11 +98,11 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 | 主張 | 検証場所 |
 |---|---|
 | 除外/機密アプリはアップロード時ではなく**キャプチャ時点で**除外されます | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)、キャプチャゲート配線: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
-| デバイスを離れるすべての送信はローカルegress台帳に記録され、アプリ内で閲覧できます (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + リーダールート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Egress policyの対象として宣言されたruntime pathはローカル台帳に記録され、アプリ内で閲覧できます (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + リーダールート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | メモリグラフが蓄積したユーザーに関する信念(claims)は閲覧・ワンクリック撤回が可能です (Privacy → Claims) | claimsルート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 同意はfail-closedです: 有効な同意がなければキャプチャしません | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
-| PIIフィルタリングは保存前およびすべてのegress前に実行されます | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| 自動化はポリシー・サンドボックス・監査ログを迂回できません | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| Vision pipelineの対象pathは、文書化された保存またはegress stepの前に設定済みPII filterを適用します | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| サポート対象の自動化実行pathはpolicy・sandbox・audit componentを通るよう設計されています | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### ソース同期ポリシー
 
@@ -112,7 +114,7 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - **リアルタイムコンテキストモニタリング**: アクティブウィンドウ、システムリソース、ユーザーアクティビティを追跡します
 - **Edgeイメージ処理**: スクリーンショットキャプチャ、デルタエンコーディング、サムネイル、OCR
 - **ポリシーゲート付き自動化**: 承認済みアクションをポリシー検査、サンドボックス隔離、監査ログ経由で実行します
-- **サーバー連携機能（プレビュー / Opt-in）**: 確認可能な次の行動候補とフィードバック同期は段階的検証用に提供されており、デフォルトの本番パスではありません
+- **サーバー連携機能（プレビュー / Opt-in）**: 確認可能な次の行動候補とフィードバック同期は段階的検証用に提供されており、デフォルトのStandaloneパスではありません
 - **システムトレイ**: バックグラウンドで実行され、クイックアクセスが可能です
 - **自動アップデート**: GitHub Releasesに基づく自動アップデート
 - **クロスプラットフォーム**: macOS、Windows、Linuxをサポートします
@@ -192,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 Connectedモードはプレビュー専用であり、明示的なサーバー/認証設定が必要です。
-環境でConnectedモードの検証が完了していない限り、Standaloneモードをデフォルトの本番パスとして使用してください。
+環境でConnectedモードの検証が完了していない限り、StandaloneモードをGlobal Alphaのデフォルトパスとして使用してください。
 
 macOS headless CI/リモートデバッグセッションなど、WindowServerがなくトレイの初期化が失敗する可能性がある場合:
 ```bash

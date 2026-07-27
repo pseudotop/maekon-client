@@ -112,13 +112,22 @@ impl OAuthClient {
             // (see outbound::hardened_client_builder), so a build error is a
             // fail-loud invariant violation rather than a silent fall back to a
             // redirect-following client.
-            http: crate::outbound::hardened_client_builder()
-                .build()
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "OAuth HTTP client must build with redirects disabled (#7068/#6892): {error}"
-                    )
-                }),
+            // #8045 C3: this single `http` client is shared across every
+            // configured provider, so it cannot statically commit to
+            // `https_only` without breaking loopback dev/test IdPs (and the
+            // loopback redirect regression test below). The credential-exfil-on-
+            // 30x threat it guards is already closed by redirect=none; cleartext
+            // egress to a remote token endpoint stays out of scope for the shared
+            // builder here.
+            http: crate::outbound::hardened_client_builder(
+                crate::outbound::TransportPolicy::AllowLoopbackCleartext,
+            )
+            .build()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "OAuth HTTP client must build with redirects disabled (#7068/#6892): {error}"
+                )
+            }),
             secret_store,
             providers: provider_map,
             active_flows: Arc::new(Mutex::new(HashMap::new())),

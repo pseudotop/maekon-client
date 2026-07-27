@@ -764,6 +764,79 @@ async fn recover_session_fails_after_max_retries() {
     }
 }
 
+/// A session that cannot self-heal in place (#8057 P3) — mirrors the Codex
+/// app-server backend whose single long-lived process is dead after a failure.
+struct NonHealingSession;
+
+#[async_trait]
+impl ConversationSession for NonHealingSession {
+    async fn send_message(
+        &self,
+        _: &maekon_core::models::ai_session::SessionMessage,
+    ) -> Result<maekon_core::ports::conversation_session::ResponseStream, CoreError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+    fn info(&self) -> ConversationSessionInfo {
+        ConversationSessionInfo {
+            session_id: "non-healing".to_string(),
+            provider_name: "codex".to_string(),
+            model: "m".to_string(),
+            state: SessionState::Failed,
+            transport: SessionTransport::Subprocess,
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+            turn_count: 0,
+            title: None,
+        }
+    }
+    fn session_id(&self) -> &str {
+        "non-healing"
+    }
+    fn provider_name(&self) -> &str {
+        "codex"
+    }
+    fn can_self_heal_on_retry(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn recover_session_rejects_non_self_healing_backend() {
+    // #8057 (P3, #4872): a backend that cannot re-establish itself in place must
+    // surface an honest `service.unavailable` error (guiding re-creation) rather
+    // than a misleading "recovered" (Active) transition that re-fails next send.
+    let mgr = test_manager();
+    let id = "non-healing".to_string();
+    mgr.sessions.write().await.insert(
+        id.clone(),
+        ManagedSession {
+            session: Arc::new(NonHealingSession),
+            state: SessionState::Failed,
+            created_at: Instant::now(),
+            last_active: Instant::now(),
+            retry_count: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+        },
+    );
+
+    let err = match mgr.recover_session(&id).await {
+        Ok(_) => panic!("a non-self-healing backend must not be recovered in place"),
+        Err(e) => e,
+    };
+    assert_eq!(err.code(), "service.unavailable");
+    assert!(
+        err.to_string().contains("re-create"),
+        "error must guide re-creation, got: {err}"
+    );
+
+    // State stays Failed (never flipped to Active) — retry_count untouched.
+    let sessions = mgr.sessions.read().await;
+    let managed = sessions.get(&id).unwrap();
+    assert_eq!(managed.state, SessionState::Failed);
+    assert_eq!(managed.retry_count, 0);
+}
+
 // ── report_failure tests ───────────────────────────────────
 
 #[tokio::test]
@@ -1095,6 +1168,7 @@ impl ConversationContentGuard for PassthroughGuard {
     async fn sanitize_outbound(
         &self,
         message: &maekon_core::models::ai_session::SessionMessage,
+        _correlation_id: &str,
     ) -> Result<maekon_core::models::ai_session::SessionMessage, CoreError> {
         Ok(message.clone())
     }
@@ -1297,10 +1371,14 @@ done"#
     }
 
     fn subprocess_config() -> SessionConfig {
+        subprocess_config_with_model(None)
+    }
+
+    fn subprocess_config_with_model(model: Option<&str>) -> SessionConfig {
         SessionConfig {
             transport: SessionTransport::Subprocess,
             surface_id: Some(APP_SERVER_SURFACE.to_string()),
-            model: None,
+            model: model.map(str::to_string),
             system_prompt: None,
             tools_enabled: false,
             cwd: None,
@@ -1333,6 +1411,31 @@ done"#
             "thr_42",
             "an app-server session uses the server thread id as its session id"
         );
+        assert_eq!(
+            session.info().model,
+            "gpt-5.6-sol",
+            "an app-server session with no override must use the GPT-5.6 Sol default"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(maekon_codex_allowed_dirs_env)]
+    async fn explicit_model_override_reaches_app_server_session_info() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = write_fake_codex(dir.path(), Some("codex-cli 1.2.3"), "codex-app-server/1.0");
+        std::env::set_var("MAEKON_CODEX_ALLOWED_DIRS", dir.path());
+
+        let mgr = test_manager().with_codex_app_server_rollout(CodexAppServerRollout::OptIn);
+        let result = mgr
+            .connect_codex_app_server(
+                &app_server_surface(exe),
+                &subprocess_config_with_model(Some("gpt-5.6-terra")),
+            )
+            .await;
+        std::env::remove_var("MAEKON_CODEX_ALLOWED_DIRS");
+
+        let session = result.expect("explicit model override should create app-server session");
+        assert_eq!(session.info().model, "gpt-5.6-terra");
     }
 
     /// T2 (probe-fail → graceful): a binary whose `--version` exits non-zero is

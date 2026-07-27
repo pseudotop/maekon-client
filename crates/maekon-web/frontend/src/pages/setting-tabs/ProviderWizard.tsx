@@ -42,7 +42,7 @@ const PROVIDERS: ProviderDef[] = [
     docsUrl: 'https://console.anthropic.com/settings/keys',
     placeholder: 'sk-ant-...',
     surfaceId: 'provider_surface.anthropic.direct_api',
-    defaultModel: 'claude-sonnet-4-20250514',
+    defaultModel: 'claude-sonnet-5',
   },
   {
     id: 'openai',

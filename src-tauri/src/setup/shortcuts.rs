@@ -48,7 +48,7 @@ fn collision_list_contains(list: Option<&str>, component: &str) -> bool {
 /// capture pause state. Emits state change events to overlay and tracking panel,
 /// and rebuilds the tray menu to reflect the new state.
 fn register_capture_shortcut(app: &App) {
-    use tauri::{Emitter, Manager};
+    use tauri::Manager;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let result =
@@ -65,24 +65,9 @@ fn register_capture_shortcut(app: &App) {
                             let indicator_visible = state
                                 .indicator_visible
                                 .load(std::sync::atomic::Ordering::Relaxed);
-                            let payload = serde_json::json!({
-                                "paused": new_paused,
-                                "indicator_visible": indicator_visible
-                            });
-                            if let Err(e) = handle.emit_to(
-                                "magic-overlay",
-                                "overlay:capture-state-changed",
-                                &payload,
-                            ) {
-                                tracing::debug!("emit magic-overlay failed: {e}");
-                            }
-                            if let Err(e) = handle.emit_to(
-                                "tracking-panel",
-                                "overlay:capture-state-changed",
-                                &payload,
-                            ) {
-                                tracing::debug!("emit tracking-panel failed: {e}");
-                            }
+                            crate::commands::capture_status::emit_current_capture_status(
+                                &handle, &state,
+                            );
                             if let Err(e) =
                                 crate::tray::sync_tray_state(&handle, new_paused, indicator_visible)
                             {
@@ -191,9 +176,26 @@ fn activate_overlay_shortcut(app_handle: &tauri::AppHandle) {
 
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let state: tauri::State<'_, crate::runtime_state::AppState> = handle.state();
-        if let Some(ref overlay) = state.magic_overlay {
+        let overlay = handle
+            .try_state::<crate::runtime_state::SuggestionRuntimeState>()
+            .and_then(|state| state.overlay());
+        if let Some(overlay) = overlay {
             overlay.set_interactive(true);
+            tracing::info!(
+                target: "maekon_app::global_shortcut",
+                shortcut = "CmdOrCtrl+Shift+O",
+                action = "overlay_set_interactive",
+                outcome = "accepted",
+                "global shortcut activation handled"
+            );
+        } else {
+            tracing::warn!(
+                target: "maekon_app::global_shortcut",
+                shortcut = "CmdOrCtrl+Shift+O",
+                action = "overlay_set_interactive",
+                outcome = "overlay_unavailable",
+                "global shortcut activation could not be handled"
+            );
         }
     });
 }
@@ -282,10 +284,15 @@ fn activate_suggestions_shortcut(app_handle: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<crate::runtime_state::SuggestionRuntimeState>() {
             if let Some(overlay) = state.overlay() {
-                // Only emit the toggle event — the frontend's useEffect
-                // calls toggle_suggestions_panel IPC which handles both
-                // window resize and interactivity.
-                overlay.emit_toggle_suggestions();
+                // #8847 native-first: toggle the AUTHORITATIVE native panel state
+                // instead of emitting a toggle event to a frontend WebView that
+                // the idle policy may have destroyed (in which case the event
+                // would be lost). `toggle_panel_mode` creates the WebView on open
+                // and routes the OPEN through the single fullscreen gate (#8858).
+                // Then emit the RESOLVED state so any pre-existing frontend
+                // reducer converges idempotently — timing cannot invert or lose it.
+                let open = overlay.toggle_panel_mode().await;
+                overlay.emit_suggestions_panel_state(open);
             }
         }
     });

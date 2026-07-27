@@ -30,6 +30,8 @@ const CONSENT_QUERY_KEY = ['consent'] as const
 // Stable id of the microphone cloud-egress disclosure Alert. The microphone toggle's Checkbox
 // points to this id via aria-describedby, so the screen reader also reads the disclosure when it reads the toggle.
 const MICROPHONE_DISCLOSURE_ID = 'consent-microphone-disclosure'
+const FULL_TEXT_DISCLOSURE_ID = 'consent-full-text-disclosure'
+const OCR_PROCESSING_DISCLOSURE_ID = 'consent-ocr-processing-disclosure'
 const UNREDACTED_OCR_DISCLOSURE_ID = 'consent-unredacted-external-ocr-disclosure'
 
 // The 6 master fields that make up the monitoring bundle. All true when ON, all false when OFF.
@@ -119,7 +121,11 @@ function EnumeratedToggle({
   )
 }
 
-export default function ConsentToggleSection() {
+interface ConsentToggleSectionProps {
+  onConsentChanged?: () => void
+}
+
+export default function ConsentToggleSection({ onConsentChanged }: ConsentToggleSectionProps = {}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [showWithdrawModal, setShowWithdrawModal] = useState(false)
@@ -137,6 +143,7 @@ export default function ConsentToggleSection() {
     mutationFn: (permissions: ConsentPermissions) => setConsent(permissions),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: CONSENT_QUERY_KEY })
+      onConsentChanged?.()
     },
   })
 
@@ -145,6 +152,7 @@ export default function ConsentToggleSection() {
     onSuccess: () => {
       setShowWithdrawModal(false)
       queryClient.invalidateQueries({ queryKey: CONSENT_QUERY_KEY })
+      onConsentChanged?.()
     },
   })
 
@@ -174,7 +182,15 @@ export default function ConsentToggleSection() {
   // The high-sensitivity opt-in is considered active if either of the two fields is on.
   const clipboardOn = isActive(status, permissions.clipboard_monitoring || permissions.file_access_monitoring)
   const microphoneOn = isActive(status, permissions.microphone)
+  const fullTextOn = isActive(status, permissions.full_text_extraction)
+  const ocrProcessingOn = isActive(status, permissions.ocr_processing)
   const unredactedExternalOcrOn = isActive(status, permissions.unredacted_external_ocr)
+  // #8686 AC2: these three opt-ins are granted during onboarding (coaching /
+  // sync / memory graph) but previously had NO granular revoke — only the
+  // nuclear withdraw-everything path removed them.
+  const patternLearningOn = isActive(status, permissions.activity_pattern_learning)
+  const crossDeviceSyncOn = isActive(status, permissions.cross_device_sync)
+  const memoryGraphOn = isActive(status, permissions.memory_graph_enrichment)
   const mutating = setMutation.isPending || withdrawMutation.isPending
 
   const statusLabel: Record<ConsentStatus, string> = {
@@ -206,8 +222,28 @@ export default function ConsentToggleSection() {
     setMutation.mutate({ ...permissions, microphone: next })
   }
 
+  const handleFullText = (next: boolean) => {
+    setMutation.mutate({ ...permissions, full_text_extraction: next })
+  }
+
+  const handleOcrProcessing = (next: boolean) => {
+    setMutation.mutate({ ...permissions, ocr_processing: next })
+  }
+
   const handleUnredactedExternalOcr = (next: boolean) => {
     setMutation.mutate({ ...permissions, unredacted_external_ocr: next })
+  }
+
+  const handlePatternLearning = (next: boolean) => {
+    setMutation.mutate({ ...permissions, activity_pattern_learning: next })
+  }
+
+  const handleCrossDeviceSync = (next: boolean) => {
+    setMutation.mutate({ ...permissions, cross_device_sync: next })
+  }
+
+  const handleMemoryGraph = (next: boolean) => {
+    setMutation.mutate({ ...permissions, memory_graph_enrichment: next })
   }
 
   const lastError = setMutation.isError
@@ -316,6 +352,48 @@ export default function ConsentToggleSection() {
 
         <div className="space-y-2">
           <EnumeratedToggle
+            testId="consent-full-text-toggle"
+            label={t('privacy.consent.fullText.label')}
+            description={t('privacy.consent.fullText.description')}
+            collectedTitle={t('privacy.consent.fullText.collectedTitle')}
+            collected={[
+              t('privacy.consent.fullText.collected.chatText'),
+              t('privacy.consent.fullText.collected.activeContext'),
+              t('privacy.consent.fullText.collected.providerResult'),
+            ]}
+            checked={fullTextOn}
+            disabled={mutating}
+            onChange={handleFullText}
+            describedById={FULL_TEXT_DISCLOSURE_ID}
+          />
+          <Alert id={FULL_TEXT_DISCLOSURE_ID} variant="warning">
+            {t('privacy.consent.fullText.disclosure')}
+          </Alert>
+        </div>
+
+        <div className="space-y-2">
+          <EnumeratedToggle
+            testId="consent-ocr-processing-toggle"
+            label={t('privacy.consent.ocrProcessing.label')}
+            description={t('privacy.consent.ocrProcessing.description')}
+            collectedTitle={t('privacy.consent.ocrProcessing.collectedTitle')}
+            collected={[
+              t('privacy.consent.ocrProcessing.collected.screenPixels'),
+              t('privacy.consent.ocrProcessing.collected.extractedText'),
+              t('privacy.consent.ocrProcessing.collected.retention'),
+            ]}
+            checked={ocrProcessingOn}
+            disabled={mutating}
+            onChange={handleOcrProcessing}
+            describedById={OCR_PROCESSING_DISCLOSURE_ID}
+          />
+          <Alert id={OCR_PROCESSING_DISCLOSURE_ID} variant="info">
+            {t('privacy.consent.ocrProcessing.disclosure')}
+          </Alert>
+        </div>
+
+        <div className="space-y-2">
+          <EnumeratedToggle
             testId="consent-unredacted-external-ocr-toggle"
             label={t('privacy.consent.unredactedExternalOcr.label')}
             description={t('privacy.consent.unredactedExternalOcr.description')}
@@ -334,6 +412,50 @@ export default function ConsentToggleSection() {
             {t('privacy.consent.unredactedExternalOcr.disclosure')}
           </Alert>
         </div>
+        {/* #8686 AC2: granular revoke for the three onboarding-granted opt-ins
+            that previously only the nuclear withdraw path could remove. */}
+        <EnumeratedToggle
+          testId="consent-pattern-learning-toggle"
+          label={t('privacy.consent.patternLearning.label')}
+          description={t('privacy.consent.patternLearning.description')}
+          collectedTitle={t('privacy.consent.patternLearning.collectedTitle')}
+          collected={[
+            t('privacy.consent.patternLearning.collected.habitStats'),
+            t('privacy.consent.patternLearning.collected.playbookSignals'),
+            t('privacy.consent.patternLearning.collected.coachingTriggers'),
+          ]}
+          checked={patternLearningOn}
+          disabled={mutating}
+          onChange={handlePatternLearning}
+        />
+
+        <EnumeratedToggle
+          testId="consent-cross-device-sync-toggle"
+          label={t('privacy.consent.crossDeviceSync.label')}
+          description={t('privacy.consent.crossDeviceSync.description')}
+          collectedTitle={t('privacy.consent.crossDeviceSync.collectedTitle')}
+          collected={[
+            t('privacy.consent.crossDeviceSync.collected.syncPayloads'),
+            t('privacy.consent.crossDeviceSync.collected.deviceIdentity'),
+          ]}
+          checked={crossDeviceSyncOn}
+          disabled={mutating}
+          onChange={handleCrossDeviceSync}
+        />
+
+        <EnumeratedToggle
+          testId="consent-memory-graph-toggle"
+          label={t('privacy.consent.memoryGraphEnrichment.label')}
+          description={t('privacy.consent.memoryGraphEnrichment.description')}
+          collectedTitle={t('privacy.consent.memoryGraphEnrichment.collectedTitle')}
+          collected={[
+            t('privacy.consent.memoryGraphEnrichment.collected.memoryEdges'),
+            t('privacy.consent.memoryGraphEnrichment.collected.derivedEntities'),
+          ]}
+          checked={memoryGraphOn}
+          disabled={mutating}
+          onChange={handleMemoryGraph}
+        />
       </div>
 
       {/* Consent ≠ OS screen-access note (both are required) */}

@@ -6,9 +6,12 @@
  *   2. Clicking the toggle calls form.setFormData (via handleCoachingChange).
  *   3. Default-off guard: coaching.enabled defaults false in makeDefaultFormData
  *      stories-utils so that a bare default render shows the toggle unchecked.
+ *   4. Blank goal labels show accessible validation without submitting settings.
+ *   5. Goal input is only reset after a successful mutation.
  */
-import { fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
+import type { FormEvent } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
 import CoachingSettingsTab from './CoachingSettingsTab'
@@ -19,6 +22,7 @@ import { makeDefaultFormData } from './stories-utils'
 // in scope at module-evaluation time.
 
 const mockUseSettingsFormContext = vi.hoisted(() => vi.fn())
+const mockUpdateGoalsMutate = vi.hoisted(() => vi.fn())
 
 vi.mock('../settings/SettingsFormContext', () => ({
   useSettingsFormContext: mockUseSettingsFormContext,
@@ -30,7 +34,7 @@ vi.mock('../settings/SettingsFormContext', () => ({
 
 vi.mock('../../hooks/useCoaching', () => ({
   useGoalProgress: vi.fn().mockReturnValue({ data: [], isLoading: false }),
-  useUpdateGoals: vi.fn().mockReturnValue({ mutate: vi.fn(), isPending: false }),
+  useUpdateGoals: vi.fn().mockReturnValue({ mutate: mockUpdateGoalsMutate, isPending: false }),
 }))
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -41,6 +45,7 @@ describe('CoachingSettingsTab — master toggle (#5707)', () => {
   beforeEach(() => {
     setFormData.mockReset()
     mockUseSettingsFormContext.mockReset()
+    mockUpdateGoalsMutate.mockReset()
   })
 
   it('renders the master Enable coaching toggle at the top of the tab', () => {
@@ -102,5 +107,60 @@ describe('CoachingSettingsTab — master toggle (#5707)', () => {
     const updaterArg = setFormData.mock.calls[0][0] as (prev: typeof formData) => typeof formData
     const next = updaterArg(formData)
     expect(next?.coaching?.enabled).toBe(true)
+  })
+
+  it('shows accessible validation for a blank goal label without submitting settings', () => {
+    const formData = makeDefaultFormData()
+    const handleSubmit = vi.fn((event: FormEvent) => event.preventDefault())
+
+    mockUseSettingsFormContext.mockReturnValue({
+      form: { formData, setFormData },
+    })
+
+    renderWithProviders(
+      <form onSubmit={handleSubmit}>
+        <CoachingSettingsTab />
+      </form>,
+    )
+
+    const labelInput = screen.getByLabelText(/regime label/i)
+    fireEvent.click(screen.getByRole('button', { name: /add goal/i }))
+
+    const error = screen.getByRole('alert')
+    expect(error).toHaveTextContent(/enter a regime label/i)
+    expect(labelInput).toHaveAttribute('aria-invalid', 'true')
+    expect(labelInput).toHaveAttribute('aria-describedby', error.id)
+    expect(labelInput).toHaveFocus()
+    expect(mockUpdateGoalsMutate).not.toHaveBeenCalled()
+    expect(handleSubmit).not.toHaveBeenCalled()
+  })
+
+  it('preserves goal input until the mutation succeeds', () => {
+    const formData = makeDefaultFormData()
+    const handleSubmit = vi.fn((event: FormEvent) => event.preventDefault())
+
+    mockUseSettingsFormContext.mockReturnValue({
+      form: { formData, setFormData },
+    })
+
+    renderWithProviders(
+      <form onSubmit={handleSubmit}>
+        <CoachingSettingsTab />
+      </form>,
+    )
+
+    const labelInput = screen.getByLabelText(/regime label/i)
+    fireEvent.change(labelInput, { target: { value: 'Deep Coding' } })
+    fireEvent.click(screen.getByRole('button', { name: /add goal/i }))
+
+    expect(mockUpdateGoalsMutate).toHaveBeenCalledTimes(1)
+    expect(mockUpdateGoalsMutate.mock.calls[0][0]).toEqual({ 'Deep Coding': 60 })
+    expect(labelInput).toHaveValue('Deep Coding')
+    expect(handleSubmit).not.toHaveBeenCalled()
+
+    const mutationOptions = mockUpdateGoalsMutate.mock.calls[0][1] as { onSuccess: () => void }
+    act(() => mutationOptions.onSuccess())
+
+    expect(labelInput).toHaveValue('')
   })
 })

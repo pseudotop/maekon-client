@@ -114,12 +114,16 @@ impl RemoteEmbeddingProvider {
         // embedding text body. build() only fails on TLS backend initialization failure
         // (process-fatal); we panic explicitly there rather than falling back to a redirect-following
         // reqwest::Client::default().
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .unwrap_or_else(|error| {
-                panic!("hardened embedding HTTP client build failed (TLS backend init): {error}")
-            });
+        // #8045 C3: https_only backstop derived from the target endpoint (a
+        // loopback local-embedding server keeps cleartext; remote is HTTPS-only).
+        let http_client = crate::outbound::hardened_client_builder(
+            crate::outbound::TransportPolicy::for_endpoint(&endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened embedding HTTP client build failed (TLS backend init): {error}")
+        });
 
         // D7: resolve per-endpoint breaker; malformed endpoint falls back to
         // a "none" key so at least the construction succeeds and runtime

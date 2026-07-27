@@ -4,6 +4,7 @@ import type {
   AppUsage,
   AuditChainReport,
   AuditEntry,
+  AuditExportEntry,
   AutomationContracts,
   AutomationStats,
   AutomationStatus,
@@ -14,6 +15,7 @@ import type {
   CoachingTemplateListDto,
   ConsentPermissions,
   ConsentSnapshot,
+  CreateFrameAnnotationRequest,
   CreateOverrideRequest,
   CreateTagRequest,
   DailyDigestResponse,
@@ -34,6 +36,7 @@ import type {
   FeatureCapabilitySnapshot,
   FocusMetricsResponse,
   Frame,
+  FrameAnnotation,
   GuiConfirmRequest,
   GuiConfirmResponse,
   GuiCreateSessionRequest,
@@ -104,6 +107,7 @@ import type {
   WorkflowPreset,
   WorkSession,
 } from './contracts'
+import { normalizeAppSettingsForUi } from './settings-normalization'
 import { handleStandaloneRequest, isStandaloneModeEnabled } from './standalone'
 
 export type * from './contracts'
@@ -113,7 +117,7 @@ const BASE_URL = '/api'
 const DEFAULT_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 2
 
-class ApiClientError extends Error {
+export class ApiClientError extends Error {
   readonly code: string
   readonly status: number
 
@@ -123,6 +127,11 @@ class ApiClientError extends Error {
     this.code = code
     this.status = status
   }
+}
+
+/** Narrow an unknown request failure by its stable backend error code. */
+export function isApiErrorCode(error: unknown, code: string): error is ApiClientError {
+  return error instanceof ApiClientError && error.code === code
 }
 
 async function apiErrorFromResponse(response: Response): Promise<ApiClientError> {
@@ -300,7 +309,7 @@ export async function fetchStorageStats(): Promise<StorageStats> {
 export async function fetchSettings(): Promise<AppSettings> {
   const res = await fetchWithRetry(`${BASE_URL}/settings`)
   if (!res.ok) throw new Error('Settings query failed')
-  return res.json()
+  return normalizeAppSettingsForUi(await res.json())
 }
 
 export async function fetchIntegrationStatus(): Promise<IntegrationStatus> {
@@ -353,6 +362,19 @@ export async function cancelIntegrationDeviceAuthorization(
   return res.json()
 }
 
+// #8080 (CRT-PRV-QC-CJ-04-10): wires the EXISTING backend endpoint
+// `POST /integration/auth/reset` (handlers::integration::reset_auth_state).
+// It clears this device's local authorization state and any pending device
+// authorization flow — it does NOT revoke credentials at the identity
+// provider (no such endpoint exists yet; see PR follow-up note).
+export async function resetIntegrationAuth(): Promise<IntegrationDeviceAuthorizationCommandResult> {
+  const res = await fetchWithRetry(`${BASE_URL}/integration/auth/reset`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error('Integration authorization reset failed')
+  return res.json()
+}
+
 export async function fetchIntegrationInbox(): Promise<IntegrationInboxResponse> {
   const res = await fetchWithRetry(`${BASE_URL}/integration/inbox`)
   if (!res.ok) throw new Error('Integration inbox query failed')
@@ -398,7 +420,7 @@ export async function updateSettings(settings: AppSettings): Promise<AppSettings
     const err = await res.json().catch(() => ({ error: 'Failed to save settings' }))
     throw new Error(err.error || 'Failed to save settings')
   }
-  return res.json()
+  return normalizeAppSettingsForUi(await res.json())
 }
 
 export async function fetchProviderSurfaces(): Promise<ProviderSurfaceCatalog> {
@@ -545,8 +567,7 @@ export async function exportData(
 
   const res = await fetchWithRetry(`${BASE_URL}/export/${dataType}?${params}`)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Viewer request failed' }))
-    throw new Error(err.error || 'Viewer request failed')
+    throw await apiErrorFromResponse(res)
   }
   return res.blob()
 }
@@ -638,6 +659,36 @@ export async function batchAddTag(frameIds: number[], tagId: number): Promise<{ 
   })
   if (!res.ok) throw new Error(`batch tag: ${res.status}`)
   return res.json()
+}
+
+// ── Frame annotations (#8078 / CJ-02-04) ────────────────────────────────────
+// Local-only user notes attached to a captured frame. Backend: V30
+// `frame_annotations` table + `handlers::annotations`.
+
+export async function fetchFrameAnnotations(frameId: number): Promise<FrameAnnotation[]> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations`)
+  if (!res.ok) throw new Error('annotation query failed')
+  return res.json()
+}
+
+export async function createFrameAnnotation(
+  frameId: number,
+  input: CreateFrameAnnotationRequest,
+): Promise<FrameAnnotation> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error(`create annotation: ${res.status}`)
+  return res.json()
+}
+
+export async function deleteFrameAnnotation(frameId: number, annotationId: string): Promise<void> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations/${annotationId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`delete annotation: ${res.status}`)
 }
 
 export async function fetchReport(params: ReportParams): Promise<ReportResponse> {
@@ -795,6 +846,33 @@ export async function fetchAuditVerify(): Promise<AuditChainReport> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Audit chain verification failed' }))
     throw new Error(err.error || 'Audit chain verification failed')
+  }
+  return res.json()
+}
+
+// #8081-B: audit-trail export. Fetches the durable automation audit entries
+// from `GET /api/audit/export` (newest-first, DoS-capped at 1000 server-side)
+// so the audit UI can offer a downloadable, privacy-bounded evidence snapshot.
+// Each entry carries only display evidence metadata; session_id and free-form
+// details are structurally omitted. Durable chain integrity is checked through
+// the separate audit verification endpoint. Backend returns 503
+// when the audit logger is not configured — surfaced as a thrown Error.
+export interface AuditExportParams {
+  commandId?: string
+  status?: string
+  limit?: number
+}
+
+export async function fetchAuditExport(params: AuditExportParams = {}): Promise<AuditExportEntry[]> {
+  const query = new URLSearchParams()
+  if (params.commandId) query.set('command_id', params.commandId)
+  if (params.status) query.set('status', params.status)
+  if (params.limit != null) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/audit/export${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Audit export failed' }))
+    throw new Error(err.error || 'Audit export failed')
   }
   return res.json()
 }

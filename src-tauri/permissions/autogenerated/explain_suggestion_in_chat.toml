@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-explain-suggestion-in-chat"
+description = "Enables the explain_suggestion_in_chat command without any pre-configured scope."
+commands.allow = ["explain_suggestion_in_chat"]
+
+[[permission]]
+identifier = "deny-explain-suggestion-in-chat"
+description = "Denies the explain_suggestion_in_chat command without any pre-configured scope."
+commands.deny = ["explain_suggestion_in_chat"]

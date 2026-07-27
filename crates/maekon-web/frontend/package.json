@@ -1,6 +1,6 @@
 {
   "name": "maekon-dashboard",
-  "version": "0.0.1-rc.6",
+  "version": "0.0.1-rc.7",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5273 --strictPort",
@@ -13,6 +13,7 @@
     "format": "biome format --write src/",
     "test": "vitest run",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",
+    "typecheck:e2e:live": "tsc --noEmit -p e2e-live/tsconfig.json",
     "test:pnpm-config": "node scripts/test-pnpm-config.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -75,13 +76,15 @@
     "@types/react-dom": "^18.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^4.3.3",
-    "@wdio/cli": "^9.27.0",
-    "@wdio/globals": "^9.27.0",
-    "@wdio/json-reporter": "^9.20.0",
-    "@wdio/local-runner": "^9.27.0",
-    "@wdio/mocha-framework": "^9.27.0",
-    "@wdio/spec-reporter": "^9.27.0",
-    "@wdio/types": "^9.27.0",
+    "@wdio/cli": "^9.30.0",
+    "@wdio/globals": "^9.29.1",
+    "@wdio/json-reporter": "^9.30.0",
+    "@wdio/local-runner": "^9.30.0",
+    "@wdio/mocha-framework": "^9.30.0",
+    "@wdio/spec-reporter": "^9.29.1",
+    "@wdio/tauri-plugin": "^1.2.0",
+    "@wdio/tauri-service": "1.1.0",
+    "@wdio/types": "^9.29.1",
     "autoprefixer": "^10.5.0",
     "jsdom": "^25.0.0",
     "postcss": "^8.5.12",
@@ -90,6 +93,6 @@
     "typescript": "^5.6.3",
     "vite": "^6.4.3",
     "vitest": "^4.1.5",
-    "webdriverio": "^9.27.0"
+    "webdriverio": "^9.30.0"
   }
 }

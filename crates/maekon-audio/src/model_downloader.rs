@@ -235,6 +235,38 @@ fn build_download_client() -> reqwest::Client {
         .expect("failed to build whisper-download reqwest client")
 }
 
+/// Iter-90 / F2 (#8053): map a reqwest send error to the canonical
+/// timeout-vs-generic `CoreError` split (cloud_stt.rs:107,
+/// http_client.rs `map_reqwest_error`) so Grafana can group model-download
+/// timeouts separately. A free `fn` (not a closure) so it can be reused by both
+/// the initial download send and the F2 416 full-restart retry send.
+fn map_download_send_error(e: reqwest::Error) -> CoreError {
+    if e.is_timeout() {
+        CoreError::RequestTimeout {
+            code: maekon_core::error_codes::NetworkCode::Timeout,
+            timeout_ms: 0, // sentinel; reqwest client-level timeout is not exposed
+        }
+    } else {
+        CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: format!("model download request: {e}"),
+        }
+    }
+}
+
+/// F2 (#8053): whether a streaming error should PRESERVE the `.part` for a later
+/// resume. Transient network interruptions (`Network` / `RequestTimeout`) are
+/// resumable, so the partial is kept and continued via a Range request on the
+/// next attempt. Terminal errors (cancellation, size ceiling, integrity
+/// mismatch, local IO) are not resumable and the partial must be removed (the
+/// F-RC-C23 orphan-cleanup invariant).
+fn should_preserve_part_for_resume(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::Network { .. } | CoreError::RequestTimeout { .. }
+    )
+}
+
 impl WhisperModelDownloader {
     pub fn new() -> Self {
         Self {
@@ -341,24 +373,39 @@ impl ModelDownloader for WhisperModelDownloader {
                 message: format!("create model dir: {e}"),
             })?;
 
-        info!(model = ?model, url = %url, "starting model download");
+        // F2 (#8053): resume an interrupted download instead of restarting the
+        // whole (~1.5 GB) transfer. A `.part` from a previous attempt (network
+        // drop / app close mid-stream) is continued via an HTTP Range request for
+        // the missing tail. `resume_from` is the current `.part` length; 0 means
+        // no partial exists, so a normal full download runs.
+        let resume_from = tokio::fs::metadata(&part_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
 
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            // Iter-90: split timeout vs generic per canonical pattern
-            // (cloud_stt.rs:107, http_client.rs map_reqwest_error) so
-            // Grafana can group model-download timeouts separately.
-            if e.is_timeout() {
-                CoreError::RequestTimeout {
-                    code: maekon_core::error_codes::NetworkCode::Timeout,
-                    timeout_ms: 0, // sentinel; reqwest client-level timeout is not exposed
-                }
-            } else {
-                CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: format!("model download request: {e}"),
-                }
+        info!(model = ?model, url = %url, resume_from, "starting model download");
+
+        let mut request = self.client.get(&url);
+        if resume_from > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        }
+        let response = request.send().await.map_err(map_download_send_error)?;
+
+        // F2: HTTP 416 Range Not Satisfiable means the `.part` is at or beyond the
+        // current resource length (stale / oversized upstream). Drop the partial
+        // and retry the whole object from byte 0 (full restart).
+        let response = if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            if let Err(rm) = tokio::fs::remove_file(&part_path).await {
+                debug!("remove stale .part before full restart failed: {rm}");
             }
-        })?;
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(map_download_send_error)?
+        } else {
+            response
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -393,7 +440,20 @@ impl ModelDownloader for WhisperModelDownloader {
             });
         }
 
-        let total_bytes = response.content_length();
+        // F2 (#8053): resume only when we asked for a range AND the server honored
+        // it with 206 Partial Content. A 200 means the server ignored the Range
+        // (or we never sent one) — fall back to a full restart (truncate + fresh
+        // hasher below).
+        let resuming = resume_from > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+
+        // F2: on a 206 the body Content-Length covers only the TAIL, so the true
+        // total is the already-downloaded prefix plus that tail. On a fresh 200 it
+        // is the full object length.
+        let total_bytes = if resuming {
+            response.content_length().map(|tail| resume_from + tail)
+        } else {
+            response.content_length()
+        };
         // F-RC-C19: hard streaming ceiling — abort once the on-disk bytes exceed
         // expected*110% (clamped to 2 GiB) so a runaway/oversized response cannot
         // fill the disk before the post-stream size check would run.
@@ -407,15 +467,33 @@ impl ModelDownloader for WhisperModelDownloader {
             let mut stream = response.bytes_stream();
             // F-RR-22: converted from std::fs::File + sync write_all to tokio::fs::File +
             // AsyncWriteExt::write_all so chunk writes don't block the async runtime.
-            let mut file =
+            // F2 (#8053): APPEND to the surviving prefix when resuming (preserve the
+            // already-downloaded bytes), otherwise truncate-create a fresh file.
+            let mut file = if resuming {
+                tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&part_path)
+                    .await
+                    .map_err(|e| CoreError::AudioCapture {
+                        code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                        message: format!("open part file for resume: {e}"),
+                    })?
+            } else {
                 tokio::fs::File::create(&part_path)
                     .await
                     .map_err(|e| CoreError::AudioCapture {
                         code: maekon_core::error_codes::AudioCode::CaptureFailed,
                         message: format!("create part file: {e}"),
-                    })?;
+                    })?
+            };
+            // F2: this incremental hasher covers the COMPLETE file only for a fresh
+            // download; on resume it sees just the appended tail, so the final digest
+            // is recomputed over the whole `.part` from disk after the stream ends.
             let mut hasher = Sha256::new();
-            let mut downloaded: u64 = 0;
+            // F2: `downloaded` starts at the resumed prefix length so the size
+            // ceiling and progress percentages account for the COMPLETE file, not
+            // just the newly streamed tail.
+            let mut downloaded: u64 = resume_from;
 
             while let Some(chunk_result) = stream.next().await {
                 // Check cancellation
@@ -498,16 +576,38 @@ impl ModelDownloader for WhisperModelDownloader {
         }
         .await;
 
-        // F-RC-C23: on ANY streaming error, drop the orphan `.part` before
-        // propagating (matches the former cancellation cleanup for every path).
-        let (hash, downloaded) = match stream_result {
+        // F-RC-C23 + F2 (#8053): classify the streaming error. Transient network
+        // interruptions (Network / RequestTimeout) PRESERVE the `.part` so the next
+        // download() can resume via Range; terminal errors (cancellation, size
+        // ceiling, integrity, local IO) remove it to avoid a poisoned or unbounded
+        // orphan. The `.part` size stays bounded by `cap` throughout streaming, so
+        // a preserved partial can never exceed the disk-fill ceiling.
+        let (incremental_hash, downloaded) = match stream_result {
             Ok(ok) => ok,
             Err(e) => {
-                if let Err(rm) = tokio::fs::remove_file(&part_path).await {
-                    debug!("remove_file failed: {rm}");
+                if !should_preserve_part_for_resume(&e) {
+                    if let Err(rm) = tokio::fs::remove_file(&part_path).await {
+                        debug!("remove_file failed: {rm}");
+                    }
                 }
                 return Err(e);
             }
+        };
+
+        // F2: the pinned SHA-256 must be verified against the COMPLETE file. A fresh
+        // download's incremental hasher already covers it (zero extra read); a
+        // resumed download's hasher saw only the appended tail, so recompute the
+        // digest over the whole `.part` from disk (bounded 1 MiB streaming read, no
+        // whole-file buffering).
+        let hash = if resuming {
+            hash_file_sha256(&part_path)
+                .await
+                .map_err(|e| CoreError::AudioCapture {
+                    code: maekon_core::error_codes::AudioCode::CaptureFailed,
+                    message: format!("verify resumed part file: {e}"),
+                })?
+        } else {
+            incremental_hash
         };
 
         // F-RC-C22-03 + review4: verify the SHA-256 BEFORE publishing the file at
@@ -1113,5 +1213,195 @@ mod tests {
             matches!(status, ModelDownloadStatus::Error { .. }),
             "cached mismatching hash → Error, got: {status:?}"
         );
+    }
+
+    // ---------- F2 (#8053): download resume via HTTP Range ----------
+
+    /// Lowercase-hex SHA-256 of `parts` concatenated, for asserting the digest a
+    /// resumed download computes over the COMPLETE file (prefix + tail).
+    fn sha256_hex_of(parts: &[&[u8]]) -> String {
+        let mut hasher = Sha256::new();
+        for p in parts {
+            hasher.update(p);
+        }
+        hex_digest(hasher)
+    }
+
+    /// F2: a surviving `.part` is continued via `Range: bytes=<len>-`; a 206
+    /// APPENDS the tail to the preserved prefix, and the pinned SHA-256 is
+    /// verified over the COMPLETE file (prefix + tail). Test bytes cannot match
+    /// the pinned hash, so the run ends in IntegrityCheckFailed whose reported
+    /// `actual` digest proves the append + whole-file hash.
+    #[tokio::test]
+    async fn download_resume_206_appends_and_hashes_complete_file() {
+        let prefix = b"AAAA";
+        let tail = b"BBBBBB";
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/ggml-tiny.bin")
+            .match_header("range", "bytes=4-")
+            .with_status(206)
+            .with_body(tail.as_ref())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let dl = WhisperModelDownloader::new_with_base_url(server.url());
+        let dir = tempdir().unwrap();
+        // Seed the partial left by a prior interrupted attempt.
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        std::fs::write(&part_path, prefix).unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = dl
+            .download(
+                WhisperModelSize::Tiny,
+                dir.path(),
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect_err("test bytes cannot match the pinned SHA-256");
+
+        mock.assert_async().await;
+
+        let complete_hash = sha256_hex_of(&[prefix, tail]);
+        match err {
+            CoreError::IntegrityCheckFailed { message, .. } => assert!(
+                message.contains(&complete_hash),
+                "expected the actual digest over prefix+tail ({complete_hash}) in: {message}"
+            ),
+            other => panic!("expected IntegrityCheckFailed, got: {other:?}"),
+        }
+        // The final file must never be published on a hash mismatch.
+        assert!(
+            !dir.path().join("ggml-tiny.bin").exists(),
+            "final file must not exist after integrity failure"
+        );
+    }
+
+    /// F2: when the server ignores the Range and answers 200 (whole object), the
+    /// prefix is DISCARDED (truncate) and only the fresh body is hashed — proven
+    /// by the reported `actual` digest being over the body alone.
+    #[tokio::test]
+    async fn download_resume_200_ignores_range_and_truncates() {
+        let prefix = b"AAAA";
+        let body = b"BBBBBB";
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/ggml-tiny.bin")
+            .with_status(200)
+            .with_body(body.as_ref())
+            .create_async()
+            .await;
+
+        let dl = WhisperModelDownloader::new_with_base_url(server.url());
+        let dir = tempdir().unwrap();
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        std::fs::write(&part_path, prefix).unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = dl
+            .download(
+                WhisperModelSize::Tiny,
+                dir.path(),
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect_err("test bytes cannot match the pinned SHA-256");
+
+        let body_hash = sha256_hex_of(&[body]);
+        match err {
+            CoreError::IntegrityCheckFailed { message, .. } => assert!(
+                message.contains(&body_hash),
+                "a 200 must truncate the prefix; expected digest over body only \
+                 ({body_hash}) in: {message}"
+            ),
+            other => panic!("expected IntegrityCheckFailed, got: {other:?}"),
+        }
+    }
+
+    /// F2: a 416 Range Not Satisfiable (stale/oversized `.part`) discards the
+    /// partial and full-restarts with a second, range-less request. The reported
+    /// `actual` digest is over the restarted body only, proving the old prefix
+    /// was dropped.
+    #[tokio::test]
+    async fn download_resume_416_discards_part_and_full_restarts() {
+        let prefix = b"AAAAAAAA"; // 8 bytes
+        let body = b"CCCCCC";
+        let mut server = mockito::Server::new_async().await;
+        let mock_416 = server
+            .mock("GET", "/ggml-tiny.bin")
+            .match_header("range", "bytes=8-")
+            .with_status(416)
+            .expect(1)
+            .create_async()
+            .await;
+        let mock_full = server
+            .mock("GET", "/ggml-tiny.bin")
+            .match_header("range", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(body.as_ref())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let dl = WhisperModelDownloader::new_with_base_url(server.url());
+        let dir = tempdir().unwrap();
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        std::fs::write(&part_path, prefix).unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = dl
+            .download(
+                WhisperModelSize::Tiny,
+                dir.path(),
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect_err("test bytes cannot match the pinned SHA-256");
+
+        mock_416.assert_async().await;
+        mock_full.assert_async().await;
+
+        let body_hash = sha256_hex_of(&[body]);
+        match err {
+            CoreError::IntegrityCheckFailed { message, .. } => assert!(
+                message.contains(&body_hash),
+                "a 416 must discard the .part and restart; expected digest over body \
+                 only ({body_hash}) in: {message}"
+            ),
+            other => panic!("expected IntegrityCheckFailed, got: {other:?}"),
+        }
+    }
+
+    /// F2: the error classifier keeps a `.part` only for transient network
+    /// interruptions (resumable) and removes it for terminal errors, so an
+    /// interrupted transfer can resume while a poisoned/oversized partial cannot
+    /// linger (F-RC-C23 invariant).
+    #[test]
+    fn should_preserve_part_for_resume_classifies_transient_vs_terminal() {
+        assert!(should_preserve_part_for_resume(&CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: "connection reset".into(),
+        }));
+        assert!(should_preserve_part_for_resume(
+            &CoreError::RequestTimeout {
+                code: maekon_core::error_codes::NetworkCode::Timeout,
+                timeout_ms: 0,
+            }
+        ));
+        assert!(!should_preserve_part_for_resume(&CoreError::AudioCapture {
+            code: maekon_core::error_codes::AudioCode::CaptureFailed,
+            message: "download cancelled".into(),
+        }));
+        assert!(!should_preserve_part_for_resume(
+            &CoreError::IntegrityCheckFailed {
+                code: maekon_core::error_codes::AudioCode::IntegrityCheckFailed,
+                message: "sha mismatch".into(),
+            }
+        ));
     }
 }

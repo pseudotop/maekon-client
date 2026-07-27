@@ -27,6 +27,8 @@ use crate::session_adapters::claude_session::ClaudeSubprocessSession;
 use crate::session_adapters::subprocess_session::GenericSubprocessSession;
 #[cfg(feature = "analysis")]
 use crate::subprocess_provider::trust;
+#[cfg(feature = "analysis")]
+use crate::subprocess_provider::{append_codex_reasoning_effort, DEFAULT_CODEX_SUBPROCESS_MODEL};
 use crate::subprocess_provider::{
     probe_known_cli_surfaces, runtime_ready_for_surface, DetectedSubprocessCli, ProbedSubprocessCli,
 };
@@ -389,7 +391,10 @@ impl SessionManagerImpl {
         inner: Arc<dyn ConversationSession>,
     ) -> Result<Arc<dyn ConversationSession>, CoreError> {
         let guarded: Arc<dyn ConversationSession> = match self.privacy_guard.clone() {
-            Some(guard) => Arc::new(GuardedConversationSession::new(inner, guard)),
+            Some(guard) => Arc::new(
+                GuardedConversationSession::new(inner, guard)
+                    .with_egress_ledger(self.egress_ledger.clone()),
+            ),
             None if inner.is_external() => {
                 return Err(CoreError::PolicyDenied {
                     code: maekon_core::error_codes::PolicyCode::Denied,
@@ -407,7 +412,13 @@ impl SessionManagerImpl {
                 inner
             }
         };
-        Ok(Arc::new(AuditingSession::new(guarded, self.audit.clone())))
+        // #8050: thread the shared LLM-connectivity flag into the outermost
+        // (audit) decorator so every provider's send outcome updates the tray's
+        // "Local LLM" status through this single chokepoint.
+        Ok(Arc::new(
+            AuditingSession::new(guarded, self.audit.clone())
+                .with_llm_health_flag(self.llm_health_flag.clone()),
+        ))
     }
 
     async fn create_subprocess_session(
@@ -658,6 +669,7 @@ impl SessionManagerImpl {
 
         let mut command = tokio::process::Command::new(&surface.executable_path);
         command.args(&transport.app_server_args);
+        append_codex_reasoning_effort(&mut command, &surface.surface_id);
         let client_info = ClientInfo {
             name: "maekon".to_string(),
             title: "Maekon".to_string(),
@@ -668,7 +680,7 @@ impl SessionManagerImpl {
             model: config
                 .model
                 .clone()
-                .unwrap_or_else(|| "gpt-5.4".to_string()),
+                .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string()),
             cwd: config.cwd.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
             approval_policy: config.approval_policy.clone(),

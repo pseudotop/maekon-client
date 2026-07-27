@@ -41,6 +41,10 @@ impl SettingsCommandService {
                 // #5707: pass the coaching engine handle to the flow to enable
                 // hot-reload.
                 ctx.coaching_engine.clone(),
+                // #8045 B2: storage + frames dir for retroactive app-exclusion
+                // purge (side-effect of the save; no new IPC command).
+                Some(ctx.storage.clone()),
+                ctx.frames_dir.clone(),
             )
         });
         Self { flow }

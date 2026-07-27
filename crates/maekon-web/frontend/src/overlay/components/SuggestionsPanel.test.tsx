@@ -114,3 +114,30 @@ describe('SuggestionsPanel error localization (ADR-019 Follow-up #3)', () => {
     expect(message).toContain('bad value')
   })
 })
+
+describe('SuggestionsPanel visual hierarchy (#8474)', () => {
+  it('keeps replay states neutral instead of coloring every completed step as an accent', async () => {
+    render(
+      <SuggestionsPanel open suggestions={[makeSuggestion()]} onClose={() => {}} onRefresh={() => Promise.resolve()} />,
+    )
+
+    const phases = screen.getByTestId('suggestion-replay-trail').querySelectorAll('[data-rum-phase]')
+    expect(phases).toHaveLength(4)
+    for (const phase of phases) {
+      expect(phase.className).not.toMatch(/brand/)
+    }
+
+    expect(screen.getByTestId('suggestion-replay-trail').querySelector('[data-rum-phase="target"]')).toHaveClass(
+      'bg-transparent',
+      'text-content-tertiary',
+    )
+    for (const phase of ['proposal', 'consent', 'audit']) {
+      expect(screen.getByTestId('suggestion-replay-trail').querySelector(`[data-rum-phase="${phase}"]`)).toHaveClass(
+        'bg-surface-muted',
+        'text-content-secondary',
+      )
+    }
+
+    await waitFor(() => expect(screen.queryByText('Refreshing suggestions...')).not.toBeInTheDocument())
+  })
+})

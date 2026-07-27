@@ -23,7 +23,7 @@ static AX_FOCUS_OBSERVER: OnceLock<
 
 // ── A2: Scene Analysis DTOs ──────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SceneAnalysisResponse {
     pub app_name: String,
     pub window_title: String,
@@ -34,13 +34,18 @@ pub struct SceneAnalysisResponse {
     pub work_type: Option<String>,
 }
 
-#[derive(Serialize)]
+pub(crate) struct CurrentSceneSnapshot {
+    pub(crate) response: SceneAnalysisResponse,
+    pub(crate) observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AccessibilitySnapshot {
     pub focused_element: Option<FocusedElementDto>,
     pub element_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GuiElementDto {
     pub role: String,
     pub label: Option<String>,
@@ -49,14 +54,14 @@ pub struct GuiElementDto {
     pub type_confidence: f32,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FocusedElementDto {
     pub role: String,
     pub label: Option<String>,
     pub extracted_text: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct OcrRegionDto {
     pub text: String,
     pub x: u32,
@@ -213,7 +218,7 @@ impl From<ManualCaptureGateError> for IpcError {
     }
 }
 
-fn manual_capture_permissions(state: &AppState) -> ConsentPermissions {
+pub(crate) fn manual_capture_permissions(state: &AppState) -> ConsentPermissions {
     // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
     // consent record AND on a missing ConsentManager (#7728).
     ConsentGate::from_ref(state.capture.consent_manager.as_ref()).permissions_snapshot()
@@ -293,6 +298,7 @@ fn ax_focus_observer_slot(
 
 #[command]
 pub async fn trigger_manual_capture(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<ManualCaptureResponse, IpcError> {
     let frame_processor = state
@@ -337,7 +343,12 @@ pub async fn trigger_manual_capture(
         monitor_id: None,
         app_bundle_id,
         window_bounds,
-        screen_scale_factor: None,
+        // #8054 P2-1: HiDPI scale of the active window's monitor so OCR regions
+        // align with logical overlay/GUI coordinates.
+        screen_scale_factor: crate::capture_scale::active_monitor_scale_factor(
+            Some(&app),
+            window_bounds.as_ref(),
+        ),
         ocr_processing_permitted: permissions.ocr_processing,
     };
 
@@ -737,8 +748,19 @@ pub async fn stop_ax_focus_observer() -> Result<AxFocusObserverResponse, IpcErro
 
 #[command]
 pub async fn analyze_current_scene(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<SceneAnalysisResponse, IpcError> {
+    Ok(analyze_current_scene_snapshot(&app, &state).await?.response)
+}
+
+/// Side-effect-free scene-analysis use case shared by the diagnostic IPC and
+/// explicit current-context suggestion orchestration. Queue mutation remains
+/// outside this function, so `analyze_current_scene` itself stays read-only.
+pub(crate) async fn analyze_current_scene_snapshot(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<CurrentSceneSnapshot, IpcError> {
     // 1. Get current window context
     let monitor =
         state.capture.activity_monitor.as_ref().ok_or_else(|| {
@@ -746,6 +768,7 @@ pub async fn analyze_current_scene(
         })?;
 
     let ctx = monitor.collect_context().await.map_err(IpcError::from)?;
+    let observed_at = ctx.timestamp;
     let (app_name, window_title, window_bounds, app_bundle_id) = match ctx.active_window {
         Some(ref w) => (
             w.app_name.clone(),
@@ -754,18 +777,21 @@ pub async fn analyze_current_scene(
             w.app_bundle_id.clone(),
         ),
         None => {
-            return Ok(SceneAnalysisResponse {
-                app_name: "unknown".to_string(),
-                window_title: String::new(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                accessibility: None,
-                ocr_regions: Vec::new(),
-                gui_elements: Vec::new(),
-                work_type: None,
+            return Ok(CurrentSceneSnapshot {
+                response: SceneAnalysisResponse {
+                    app_name: "unknown".to_string(),
+                    window_title: String::new(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    accessibility: None,
+                    ocr_regions: Vec::new(),
+                    gui_elements: Vec::new(),
+                    work_type: None,
+                },
+                observed_at,
             });
         }
     };
-    let permissions = manual_capture_permissions(&state);
+    let permissions = manual_capture_permissions(state);
     manual_capture_privacy_gate(
         &state.config,
         &permissions,
@@ -812,7 +838,11 @@ pub async fn analyze_current_scene(
             monitor_id: None,
             app_bundle_id,
             window_bounds,
-            screen_scale_factor: None,
+            // #8054 P2-1: HiDPI scale of the active window's monitor.
+            screen_scale_factor: crate::capture_scale::active_monitor_scale_factor(
+                Some(app),
+                window_bounds.as_ref(),
+            ),
             ocr_processing_permitted: permissions.ocr_processing,
         };
         match fp.capture_and_process(&request).await {
@@ -883,240 +913,20 @@ pub async fn analyze_current_scene(
         )
     });
 
-    Ok(SceneAnalysisResponse {
-        app_name,
-        window_title,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        accessibility,
-        ocr_regions,
-        gui_elements,
-        work_type,
+    Ok(CurrentSceneSnapshot {
+        response: SceneAnalysisResponse {
+            app_name,
+            window_title,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            accessibility,
+            ocr_regions,
+            gui_elements,
+            work_type,
+        },
+        observed_at,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use maekon_core::config::AppConfig;
-    use maekon_core::consent::ConsentPermissions;
-    use maekon_core::models::context::WindowBounds;
-
-    fn allowed_permissions() -> ConsentPermissions {
-        ConsentPermissions {
-            screen_capture: true,
-            ..ConsentPermissions::default()
-        }
-    }
-
-    fn bounds() -> WindowBounds {
-        WindowBounds {
-            x: 10,
-            y: 20,
-            width: 640,
-            height: 480,
-        }
-    }
-
-    #[test]
-    fn manual_capture_gate_blocks_when_capture_disabled() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = false;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            false,
-            Some(&bounds()),
-            "TextEdit",
-            "Untitled",
-        );
-
-        assert_eq!(result, Err(ManualCaptureGateError::CaptureDisabled));
-    }
-
-    #[test]
-    fn manual_capture_gate_blocks_without_screen_capture_consent() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &ConsentPermissions::default(),
-            false,
-            Some(&bounds()),
-            "TextEdit",
-            "Untitled",
-        );
-
-        assert_eq!(
-            result,
-            Err(ManualCaptureGateError::ScreenCaptureConsentMissing)
-        );
-    }
-
-    #[test]
-    fn manual_capture_gate_blocks_when_capture_is_paused() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            true,
-            Some(&bounds()),
-            "TextEdit",
-            "Untitled",
-        );
-
-        assert_eq!(result, Err(ManualCaptureGateError::CapturePaused));
-    }
-
-    #[test]
-    fn manual_capture_gate_requires_window_bounds() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            false,
-            None,
-            "TextEdit",
-            "Untitled",
-        );
-
-        assert_eq!(result, Err(ManualCaptureGateError::WindowBoundsRequired));
-    }
-
-    #[test]
-    fn manual_capture_gate_allows_when_scheduled_capture_gate_allows() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            false,
-            Some(&bounds()),
-            "TextEdit",
-            "Untitled",
-        );
-
-        assert_eq!(result, Ok(()));
-    }
-
-    /// #7909 (T1.1): the exclusion policy applies at capture time — a manual,
-    /// user-initiated capture of an app on the excluded list must be blocked.
-    #[test]
-    fn manual_capture_gate_blocks_excluded_app() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-        config.privacy.excluded_apps = vec!["Slack".to_string()];
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            false,
-            Some(&bounds()),
-            "Slack",
-            "General",
-        );
-
-        assert_eq!(result, Err(ManualCaptureGateError::ExcludedApp));
-    }
-
-    /// #7909 (T1.1): `auto_exclude_sensitive` defaults on, so sensitive apps
-    /// (password managers, banking) are blocked from manual capture without
-    /// any explicit list entry.
-    #[test]
-    fn manual_capture_gate_auto_blocks_sensitive_app() {
-        let mut config = AppConfig::default_config();
-        config.vision.capture_enabled = true;
-
-        let result = manual_capture_privacy_gate(
-            &config,
-            &allowed_permissions(),
-            false,
-            Some(&bounds()),
-            "1Password",
-            "Unlock",
-        );
-
-        assert_eq!(result, Err(ManualCaptureGateError::ExcludedApp));
-    }
-
-    /// Own-field gate (#4802): when only screen_capture is granted
-    /// (ocr_processing=false), the manual-capture OCR text must be discarded (None).
-    #[test]
-    fn manual_ocr_not_collected_with_only_screen_capture() {
-        // allowed_permissions() is screen_capture:true and ocr_processing defaults to false.
-        let perms = allowed_permissions();
-        assert!(perms.screen_capture, "composite gate passes");
-        assert!(!perms.ocr_processing, "ocr_processing defaults to false");
-        let gated =
-            gate_manual_ocr_text(Some("user@example.com".to_string()), perms.ocr_processing);
-        assert!(
-            gated.is_none(),
-            "without ocr_processing, manual-capture OCR text is None (no leak)"
-        );
-    }
-
-    /// Own-field gate (#4802): when ocr_processing is granted, the manual-capture OCR text must be preserved.
-    #[test]
-    fn manual_ocr_collected_when_own_field_granted() {
-        let perms = ConsentPermissions {
-            screen_capture: true,
-            ocr_processing: true,
-            ..ConsentPermissions::default()
-        };
-        let gated = gate_manual_ocr_text(Some("agenda 2026".to_string()), perms.ocr_processing);
-        assert_eq!(
-            gated.as_deref(),
-            Some("agenda 2026"),
-            "with ocr_processing granted, manual-capture OCR text is preserved"
-        );
-    }
-
-    fn sample_ocr_regions() -> Vec<OcrRegionDto> {
-        vec![OcrRegionDto {
-            text: "user@example.com".to_string(),
-            x: 1,
-            y: 2,
-            width: 100,
-            height: 20,
-            confidence: 0.9,
-        }]
-    }
-
-    /// Own-field gate (#4802): when only screen_capture is granted
-    /// (ocr_processing=false), the OCR region text of analyze_current_scene must be
-    /// discarded (empty Vec).
-    #[test]
-    fn scene_ocr_not_collected_with_only_screen_capture() {
-        let perms = allowed_permissions();
-        assert!(perms.screen_capture, "composite gate passes");
-        assert!(!perms.ocr_processing, "ocr_processing defaults to false");
-        let gated = gate_scene_ocr_regions(sample_ocr_regions(), perms.ocr_processing);
-        assert!(
-            gated.is_empty(),
-            "without ocr_processing, scene OCR regions are an empty Vec (no leak)"
-        );
-    }
-
-    /// Own-field gate (#4802): when ocr_processing is granted, the OCR regions of analyze_current_scene are preserved.
-    #[test]
-    fn scene_ocr_collected_when_own_field_granted() {
-        let perms = ConsentPermissions {
-            screen_capture: true,
-            ocr_processing: true,
-            ..ConsentPermissions::default()
-        };
-        let gated = gate_scene_ocr_regions(sample_ocr_regions(), perms.ocr_processing);
-        assert_eq!(
-            gated.len(),
-            1,
-            "with ocr_processing granted, scene OCR regions are preserved"
-        );
-        assert_eq!(gated[0].text, "user@example.com");
-    }
-}
+#[path = "capture_tests.rs"]
+mod tests;

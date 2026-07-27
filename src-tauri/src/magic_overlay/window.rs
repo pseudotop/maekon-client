@@ -1,7 +1,9 @@
 //! Window management helpers for the MagicOverlay: monitor resolution,
 //! layout calculation, and window creation utilities.
 
-use tauri::{AppHandle, Manager, Monitor, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Manager, Monitor, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 use tracing::{debug, info};
 
 pub(super) const OVERLAY_LABEL: &str = "magic-overlay";
@@ -153,7 +155,7 @@ pub(super) fn target_overlay_monitor(app_handle: &AppHandle) -> Result<Monitor, 
 
 // ── Window show helper ───────────────────────────────────────────────────────
 
-pub(super) fn show_overlay_window(window: &WebviewWindow) -> Result<(), String> {
+pub(super) fn show_overlay_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
     window
         .show()
         .map_err(|error| format!("window show failed: {error}"))
@@ -166,7 +168,9 @@ pub(super) fn sync_tracking_border_windows(
     if !visible {
         for label in TRACKING_BORDER_LABELS {
             if let Some(window) = app_handle.get_webview_window(label) {
-                let _ = window.hide();
+                if let Err(error) = window.destroy() {
+                    debug!("tracking border window destroy failed: {error}");
+                }
             }
         }
         return Ok(());
@@ -221,7 +225,7 @@ pub(super) fn sync_tracking_border_windows(
 /// or IPC commands. The panel renders the capture-active border indicator.
 ///
 /// Gracefully degrades on Linux/Wayland (panel not supported).
-pub fn create_tracking_panel(app_handle: &AppHandle) -> Result<(), String> {
+pub fn create_tracking_panel<R: Runtime>(app_handle: &AppHandle<R>) -> Result<(), String> {
     if app_handle.get_webview_window("tracking-panel").is_some() {
         return Ok(());
     }
@@ -285,4 +289,27 @@ pub fn create_tracking_panel(app_handle: &AppHandle) -> Result<(), String> {
 
     info!("Tracking panel window created");
     Ok(())
+}
+
+/// Reconcile the tracking panel's native WebView lifetime with its requested
+/// visibility. Destroying an idle panel releases its WebView2 controller;
+/// showing it again recreates the panel lazily.
+pub(crate) fn set_tracking_panel_visible<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    visible: bool,
+) -> Result<(), String> {
+    if visible {
+        create_tracking_panel(app_handle)?;
+        let panel = app_handle
+            .get_webview_window(TRACKING_PANEL_LABEL)
+            .ok_or_else(|| "tracking panel unavailable after creation".to_string())?;
+        show_overlay_window(&panel)
+    } else {
+        if let Some(panel) = app_handle.get_webview_window(TRACKING_PANEL_LABEL) {
+            panel
+                .destroy()
+                .map_err(|error| format!("tracking panel destroy failed: {error}"))?;
+        }
+        Ok(())
+    }
 }
