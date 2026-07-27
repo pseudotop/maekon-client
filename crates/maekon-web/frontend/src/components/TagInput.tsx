@@ -16,9 +16,22 @@ interface TagInputProps {
   onAddTag: (tag: Tag) => void
   onRemoveTag: (tag: Tag) => void
   placeholder?: string
+  /**
+   * Render the selected tags as non-removable context chips (no remove `x`).
+   * Used by the batch-tag bar, where `selectedTags` are the tags already common
+   * to every selected frame: they still dedup the suggestion dropdown, but there
+   * is no single-frame remove semantics to expose.
+   */
+  readonlySelected?: boolean
 }
 
-export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: TagInputProps) {
+export function TagInput({
+  selectedTags,
+  onAddTag,
+  onRemoveTag,
+  placeholder,
+  readonlySelected = false,
+}: TagInputProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [inputValue, setInputValue] = useState('')
@@ -123,7 +136,13 @@ export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: T
       {selectedTags.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {selectedTags.map((tag) => (
-            <TagBadge key={tag.id} name={tag.name} color={tag.color} size="sm" onRemove={() => onRemoveTag(tag)} />
+            <TagBadge
+              key={tag.id}
+              name={tag.name}
+              color={tag.color}
+              size="sm"
+              onRemove={readonlySelected ? undefined : () => onRemoveTag(tag)}
+            />
           ))}
         </div>
       )}

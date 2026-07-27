@@ -135,6 +135,10 @@ and non-string type fields remain on `Uuid::new_v4()` per the exemptions above.
 | `msg` | Generic message |
 | `clm` | Memory claim node (ADR-023 local memory graph) |
 | `edg` | Memory graph edge (ADR-023 local memory graph) |
+| `tcand` | Durable task candidate (ADR-028; effective when ADR-028 is Accepted) |
+| `todo` | Human-confirmed durable to-do (ADR-028; effective when ADR-028 is Accepted) |
+| `tmut` | Durable task transition receipt (ADR-028; effective when ADR-028 is Accepted) |
+| `wctx` | External work-context envelope (ADR-030; effective when ADR-030 is Accepted) |
 
 ### 3. Conversion scope
 
@@ -198,6 +202,21 @@ additional CSPRNG infrastructure. ULID is lighter and already present in the wor
 Rejected after review. ULID's 80-bit random field and predictable timestamp component are
 insufficient for security contexts that require full unpredictability. UUID v4 provides
 122 bits of CSPRNG randomness and no timestamp leak.
+
+## Update 2026-07-19 — Durable task identifiers
+
+ADR-028 proposes the additive `tcand`, `todo`, and `tmut` prefixes registered in
+Decision §2. They take effect only when ADR-028 changes from `Proposed` to
+`Accepted`; until then no implementation may mint them. This update does not
+change the prefix syntax, generator, validation, or exemption rules in this ADR.
+
+## Update 2026-07-19 — Work-context envelope identifiers
+
+ADR-030 proposes the additive `wctx` prefix registered in Decision §2 for
+external work-context envelopes. It takes effect only when ADR-030 changes from
+`Proposed` to `Accepted`; until then no implementation may mint it. This update
+does not change the prefix syntax, generator, validation, or exemption rules in
+this ADR.
 
 ## Known Follow-ups
 

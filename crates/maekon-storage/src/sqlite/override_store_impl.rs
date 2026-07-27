@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use maekon_core::error::CoreError;
 use maekon_core::models::recalibration::{RegimeOverride, UserOverrideAction};
 use maekon_core::ports::override_store::OverrideStore;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use super::SqliteStorage;
 use crate::error::StorageError;
@@ -177,20 +177,65 @@ impl OverrideStore for SqliteStorage {
 
     async fn delete_override(&self, override_id: &str) -> Result<(), CoreError> {
         let id = override_id.to_string();
+        let clock = self.clock.clone();
 
+        // #8086: `regime_overrides` is a synced table, so a bare local DELETE
+        // left the synchronized copies behind — peers kept the row and the next
+        // pull could resurrect it locally (no suppression entry). Match the
+        // #8043/#8068 durable-erasure discipline: record a `sync_tombstones`
+        // suppression row (stamped at a FRESH deletion HLC so it orders above
+        // the row and every peer copy, but carrying the row's ORIGINAL
+        // `origin_device_id` — the receiving merger deletes by
+        // `pk AND origin_device_id`) and hard-delete the local row in one
+        // transaction.
         self.with_conn(move |conn| {
-            conn.execute(
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| StorageError::Internal(format!("delete override tx: {e}")))?;
+
+            let row_origin: Option<String> = tx
+                .query_row(
+                    "SELECT origin_device_id FROM regime_overrides WHERE override_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| StorageError::Internal(format!("Failed to read override: {e}")))?;
+
+            let Some(row_origin) = row_origin else {
+                return Err(StorageError::NotFound {
+                    resource_type: "RegimeOverride".to_string(),
+                    id,
+                });
+            };
+
+            let h = clock
+                .next(&tx)
+                .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
+            tx.execute(
+                "INSERT INTO sync_tombstones \
+                   (table_name, row_id, origin_device_id, hlc_wall_ms, hlc_counter, deleted_at) \
+                 VALUES ('regime_overrides', ?1, ?2, ?3, ?4, datetime('now')) \
+                 ON CONFLICT(table_name, row_id) DO UPDATE SET \
+                   origin_device_id = excluded.origin_device_id, \
+                   hlc_wall_ms = excluded.hlc_wall_ms, \
+                   hlc_counter = excluded.hlc_counter, \
+                   deleted_at  = excluded.deleted_at \
+                 WHERE excluded.hlc_wall_ms > sync_tombstones.hlc_wall_ms \
+                    OR (excluded.hlc_wall_ms = sync_tombstones.hlc_wall_ms \
+                        AND excluded.hlc_counter > sync_tombstones.hlc_counter)",
+                params![id, row_origin, h.wall_ms, h.counter],
+            )
+            .map_err(|e| StorageError::Internal(format!("record override tombstone: {e}")))?;
+
+            tx.execute(
                 "DELETE FROM regime_overrides WHERE override_id = ?1",
                 params![id],
             )
             .map_err(|e| StorageError::Internal(format!("Failed to delete override: {e}")))?;
 
-            if conn.changes() == 0 {
-                return Err(StorageError::NotFound {
-                    resource_type: "RegimeOverride".to_string(),
-                    id,
-                });
-            }
+            tx.commit()
+                .map_err(|e| StorageError::Internal(format!("delete override commit: {e}")))?;
             Ok(())
         })
         .await
@@ -356,6 +401,67 @@ mod tests {
             .unwrap();
 
         assert!(overrides.is_empty());
+    }
+
+    /// #8086: a local delete of a synced override must record a suppression
+    /// tombstone (carrying the row's ORIGINAL origin_device_id, stamped at a
+    /// FRESH deletion HLC above the row's own) so peers hard-delete their
+    /// copies and cannot resurrect the row on the next pull.
+    #[tokio::test]
+    async fn delete_override_records_suppression_tombstone() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let entry = RegimeOverride {
+            override_id: "ovr-ts".to_string(),
+            segment_id: "seg-ts".to_string(),
+            original_regime_id: None,
+            user_action: UserOverrideAction::MarkAsNoise,
+            created_at: Utc::now(),
+        };
+        storage.save_override(&entry).await.unwrap();
+
+        let (row_origin, row_wall): (String, i64) = {
+            let conn = storage.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .query_row(
+                    "SELECT origin_device_id, hlc_wall_ms FROM regime_overrides \
+                     WHERE override_id='ovr-ts'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+
+        storage.delete_override("ovr-ts").await.unwrap();
+
+        let conn = storage.connection_arc();
+        let guard = conn.test_lock();
+        let (ts_origin, ts_wall, ts_deleted_at): (String, i64, String) = guard
+            .query_row(
+                "SELECT origin_device_id, hlc_wall_ms, deleted_at FROM sync_tombstones \
+                 WHERE table_name='regime_overrides' AND row_id='ovr-ts'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("delete_override must record a sync_tombstones suppression row");
+        assert_eq!(
+            ts_origin, row_origin,
+            "tombstone must carry the ROW's origin_device_id (merger deletes by pk AND origin)"
+        );
+        assert!(
+            ts_wall >= row_wall,
+            "deletion HLC must order at/above the row's own HLC"
+        );
+        assert!(!ts_deleted_at.is_empty());
+
+        let remaining: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM regime_overrides WHERE override_id='ovr-ts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "local row must be hard-deleted");
     }
 
     #[tokio::test]

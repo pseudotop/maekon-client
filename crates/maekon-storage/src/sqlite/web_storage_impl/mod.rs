@@ -13,6 +13,8 @@
 mod backup_segment_gui_storage;
 mod coaching_habit_storage;
 mod event_frame_storage;
+#[cfg(debug_assertions)]
+mod qc_storage_pressure;
 pub(crate) mod suggestion_digest_storage;
 mod tag_activity_focus_storage;
 

@@ -5,6 +5,7 @@
 
 pub(crate) mod action;
 pub mod chat_suggestions;
+pub mod current_context;
 pub(crate) mod feedback;
 mod helpers;
 mod mapping;

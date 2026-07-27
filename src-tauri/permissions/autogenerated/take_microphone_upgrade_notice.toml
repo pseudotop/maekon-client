@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-microphone-upgrade-notice"
+description = "Enables the take_microphone_upgrade_notice command without any pre-configured scope."
+commands.allow = ["take_microphone_upgrade_notice"]
+
+[[permission]]
+identifier = "deny-take-microphone-upgrade-notice"
+description = "Denies the take_microphone_upgrade_notice command without any pre-configured scope."
+commands.deny = ["take_microphone_upgrade_notice"]

@@ -17,7 +17,7 @@ vi.mock('../standalone', () => ({
   isStandaloneModeEnabled: vi.fn(() => false),
 }))
 
-import { fetchMetrics, fetchSettings, fetchUpdateStatus, postUpdateAction } from '../client'
+import { exportData, fetchMetrics, fetchSettings, fetchUpdateStatus, postUpdateAction } from '../client'
 
 describe('api client settings/update transport', () => {
   const fetchMock = vi.fn<typeof fetch>()
@@ -31,6 +31,7 @@ describe('api client settings/update transport', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -122,6 +123,34 @@ describe('api client settings/update transport', () => {
       status: 400,
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps storage.failed typed after export retries are exhausted', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            code: 'storage.failed',
+            error: 'internal server error',
+            status: 500,
+          }),
+          {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+    )
+
+    const assertion = expect(exportData('metrics', 'json')).rejects.toMatchObject({
+      code: 'storage.failed',
+      message: 'internal server error',
+      status: 500,
+    })
+
+    await vi.runAllTimersAsync()
+    await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('postUpdateAction posts JSON to /api/update/action', async () => {

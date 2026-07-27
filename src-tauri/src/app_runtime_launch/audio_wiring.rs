@@ -1,7 +1,30 @@
 use crate::runtime_state::{AudioContext, AudioRuntimeState};
 use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::transcript_storage::TranscriptStoragePort;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
+
+#[cfg(feature = "audio")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioCaptureSelection {
+    Real,
+    Synthetic,
+    Disabled,
+}
+
+/// A fixture request may never fall back to the OS microphone. Debug builds
+/// select the gated synthetic adapter; release builds fail closed.
+#[cfg(feature = "audio")]
+fn select_audio_capture(
+    fixture_variable_present: bool,
+    debug_build: bool,
+) -> AudioCaptureSelection {
+    match (fixture_variable_present, debug_build) {
+        (false, _) => AudioCaptureSelection::Real,
+        (true, true) => AudioCaptureSelection::Synthetic,
+        (true, false) => AudioCaptureSelection::Disabled,
+    }
+}
 
 pub(super) fn build_audio_runtime_state(
     app_handle: &AppHandle,
@@ -9,22 +32,74 @@ pub(super) fn build_audio_runtime_state(
     config: &maekon_core::config::AppConfig,
     capture_consent_manager: Arc<dyn ConsentManagerPort>,
     capture_paused: Arc<std::sync::atomic::AtomicBool>,
+    // #8059: local transcript persistence (`Arc<SqliteStorage>` coerced to the
+    // port). A successful transcription is saved best-effort so it survives
+    // restart and is reachable from keyword search.
+    transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
 ) -> AudioRuntimeState {
-    let model_dir: std::path::PathBuf = app_handle
+    let app_data_dir: std::path::PathBuf = app_handle
         .path()
         .app_data_dir()
-        .map(|d| d.join("models"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("models"));
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let model_dir = app_data_dir.join("models");
+    #[cfg(all(feature = "audio", debug_assertions))]
+    let fixture_data_dir = maekon_core::config_manager::ConfigManager::data_dir()
+        .unwrap_or_else(|_| app_data_dir.clone());
+
+    #[cfg(feature = "audio")]
+    let audio_capture_selection = select_audio_capture(
+        std::env::var_os("MAEKON_DEBUG_QC_AUDIO_FIXTURE").is_some(),
+        cfg!(debug_assertions),
+    );
 
     let audio_capture: Option<Arc<dyn maekon_core::ports::audio_capture::AudioCapturePort>> = {
         #[cfg(feature = "audio")]
         {
             if config.audio.enabled {
-                // #6342: thread the configured max recording duration into the
-                // capture buffers (was silently ignored).
-                Some(Arc::new(maekon_audio::AudioCapture::new(
-                    config.audio.max_recording_secs,
-                )))
+                match audio_capture_selection {
+                    AudioCaptureSelection::Real => {
+                        // #6342: thread the configured max recording duration into the
+                        // capture buffers (was silently ignored).
+                        Some(Arc::new(maekon_audio::AudioCapture::new(
+                            config.audio.max_recording_secs,
+                        )))
+                    }
+                    AudioCaptureSelection::Synthetic => {
+                        #[cfg(debug_assertions)]
+                        {
+                            match crate::qc_audio_fixture::build_from_env(&fixture_data_dir) {
+                                Ok(Some(capture)) => {
+                                    tracing::info!(
+                                        "isolated synthetic QC audio capture enabled; OS microphone remains closed"
+                                    );
+                                    Some(capture)
+                                }
+                                Ok(None) => {
+                                    tracing::error!(
+                                        "synthetic QC audio fixture was selected without its exact gate; audio capture disabled"
+                                    );
+                                    None
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        "synthetic QC audio fixture rejected: {error}; audio capture disabled"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        #[cfg(not(debug_assertions))]
+                        {
+                            None
+                        }
+                    }
+                    AudioCaptureSelection::Disabled => {
+                        tracing::error!(
+                            "synthetic QC audio fixture requested in a release build; audio capture disabled"
+                        );
+                        None
+                    }
+                }
             } else {
                 tracing::debug!("audio capture disabled by config");
                 None
@@ -36,10 +111,25 @@ pub(super) fn build_audio_runtime_state(
         }
     };
 
+    #[cfg(feature = "audio")]
+    let synthetic_fixture = matches!(audio_capture_selection, AudioCaptureSelection::Synthetic)
+        && audio_capture.is_some();
+    #[cfg(not(feature = "audio"))]
+    let synthetic_fixture = false;
+
     let stt_engine: Option<Arc<dyn maekon_core::ports::stt_provider::SttProvider>> = {
         use maekon_core::config::SttProviderKind;
 
-        if !config.audio.enabled {
+        if synthetic_fixture {
+            #[cfg(all(feature = "audio", debug_assertions))]
+            {
+                Some(crate::qc_audio_fixture::synthetic_stt_provider())
+            }
+            #[cfg(not(all(feature = "audio", debug_assertions)))]
+            {
+                None
+            }
+        } else if !config.audio.enabled {
             None
         } else {
             let local_provider: Option<Arc<dyn maekon_core::ports::stt_provider::SttProvider>> = {
@@ -213,6 +303,7 @@ pub(super) fn build_audio_runtime_state(
         capture_paused,
         AudioContext {
             capture: audio_capture,
+            synthetic_fixture,
             stt_engine: Arc::new(tokio::sync::RwLock::new(stt_engine)),
             model_downloader,
             model_dir,
@@ -220,5 +311,35 @@ pub(super) fn build_audio_runtime_state(
             download_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vad_state: Arc::new(parking_lot::Mutex::new("idle".into())),
         },
+        transcript_storage,
     )
+}
+
+#[cfg(all(test, feature = "audio"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_runtime_selects_real_capture() {
+        assert_eq!(
+            select_audio_capture(false, true),
+            AudioCaptureSelection::Real
+        );
+        assert_eq!(
+            select_audio_capture(false, false),
+            AudioCaptureSelection::Real
+        );
+    }
+
+    #[test]
+    fn fixture_request_is_synthetic_in_debug_and_disabled_in_release() {
+        assert_eq!(
+            select_audio_capture(true, true),
+            AudioCaptureSelection::Synthetic
+        );
+        assert_eq!(
+            select_audio_capture(true, false),
+            AudioCaptureSelection::Disabled
+        );
+    }
 }

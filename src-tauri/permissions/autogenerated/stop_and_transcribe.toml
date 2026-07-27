@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-and-transcribe"
+description = "Enables the stop_and_transcribe command without any pre-configured scope."
+commands.allow = ["stop_and_transcribe"]
+
+[[permission]]
+identifier = "deny-stop-and-transcribe"
+description = "Denies the stop_and_transcribe command without any pre-configured scope."
+commands.deny = ["stop_and_transcribe"]

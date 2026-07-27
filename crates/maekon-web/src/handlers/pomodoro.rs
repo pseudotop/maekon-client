@@ -6,6 +6,8 @@ use axum::Json;
 use maekon_api_contracts::pomodoro::{PomodoroSessionResponse, StartPomodoroRequest};
 use maekon_core::id_generation::generate_id;
 use maekon_core::models::pomodoro::{PomodoroSession, PomodoroStatus};
+use maekon_core::ports::pomodoro_store::PomodoroStorePort;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::error::ApiError;
@@ -17,6 +19,25 @@ const DEFAULT_DURATION_MINUTES: u32 = 25;
 const DEFAULT_BREAK_MINUTES: u32 = 5;
 /// Maximum allowed duration in minutes (2 hours).
 const MAX_DURATION_MINUTES: u32 = 120;
+
+fn require_store(state: &AppState) -> Result<Arc<dyn PomodoroStorePort>, ApiError> {
+    state
+        .session
+        .pomodoro_store
+        .clone()
+        .ok_or_else(|| ApiError::ServiceUnavailable("Pomodoro storage is unavailable".to_string()))
+}
+
+async fn hydrate_if_needed(
+    runtime: &mut crate::app_state::PomodoroRuntimeState,
+    store: &dyn PomodoroStorePort,
+) -> Result<(), ApiError> {
+    if !runtime.hydrated {
+        runtime.session = store.load_pomodoro_session().await?;
+        runtime.hydrated = true;
+    }
+    Ok(())
+}
 
 fn session_to_response(session: &PomodoroSession) -> PomodoroSessionResponse {
     let effective = session.effective_status();
@@ -37,6 +58,9 @@ fn session_to_response(session: &PomodoroSession) -> PomodoroSessionResponse {
 }
 
 /// POST /api/pomodoro/start — start a new Pomodoro session.
+// Guard is intentionally held across hydrate + mutation so the session state
+// transition is atomic (#8685 public clippy gate; house precedent in lib.rs).
+#[allow(clippy::significant_drop_tightening)]
 pub async fn start_pomodoro(
     State(state): State<AppState>,
     Json(request): Json<StartPomodoroRequest>,
@@ -57,130 +81,101 @@ pub async fn start_pomodoro(
         )));
     }
 
-    // Scope the mutex guard so it drops before we hand the response to axum.
-    // P2 PR-A: avoids `clippy::significant_drop_tightening` flag; guard is
-    // only needed during state mutation, not response construction.
-    let response = {
-        let mut guard = state
-            .session
-            .pomodoro
-            .lock()
-            .map_err(|_| ApiError::Internal("pomodoro lock poisoned".into()))?;
+    let store = require_store(&state)?;
+    let mut runtime = state.session.pomodoro.lock().await;
+    hydrate_if_needed(&mut runtime, store.as_ref()).await?;
 
-        // Reject if a session is already active
-        if let Some(existing) = guard.as_ref() {
-            let eff = existing.effective_status();
-            if eff == PomodoroStatus::Running || eff == PomodoroStatus::OnBreak {
-                return Err(ApiError::Conflict(
-                    "A Pomodoro session is already active".to_string(),
-                ));
-            }
+    if let Some(existing) = runtime.session.as_ref() {
+        let eff = existing.effective_status();
+        if eff == PomodoroStatus::Running || eff == PomodoroStatus::OnBreak {
+            return Err(ApiError::Conflict(
+                "A Pomodoro session is already active".to_string(),
+            ));
         }
+    }
 
-        let session = PomodoroSession::new(generate_id("pomo"), duration, break_mins);
-        let response = session_to_response(&session);
-        *guard = Some(session);
-        response
-    };
+    let session = PomodoroSession::new(generate_id("pomo"), duration, break_mins);
+    store.save_pomodoro_session(&session).await?;
+    let response = session_to_response(&session);
+    runtime.session = Some(session);
 
     Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// GET /api/pomodoro/current — get current session status + remaining time.
+// Guard is intentionally held across hydrate + mutation so the session state
+// transition is atomic (#8685 public clippy gate; house precedent in lib.rs).
+#[allow(clippy::significant_drop_tightening)]
 pub async fn get_current_pomodoro(
     State(state): State<AppState>,
 ) -> Result<Json<Option<PomodoroSessionResponse>>, ApiError> {
     debug!("GET /api/pomodoro/current");
 
-    // P2 PR-A: scope the guard so it drops before Json construction.
-    let response = {
-        let guard = state
-            .session
-            .pomodoro
-            .lock()
-            .map_err(|_| ApiError::Internal("pomodoro lock poisoned".into()))?;
-        guard.as_ref().map(session_to_response)
-    };
+    let store = require_store(&state)?;
+    let mut runtime = state.session.pomodoro.lock().await;
+    hydrate_if_needed(&mut runtime, store.as_ref()).await?;
+    let response = runtime.session.as_ref().map(session_to_response);
     Ok(Json(response))
 }
 
 /// POST /api/pomodoro/cancel — cancel the current session.
-///
-/// `#[allow(clippy::significant_drop_tightening)]`: the `session: &mut
-/// PomodoroSession` borrow is derived from the guard; Rust's borrow checker
-/// does not permit dropping the guard before the `&mut` borrow ends. The
-/// block-scoped clone-out pattern below already tightens the lock window
-/// to the minimum possible given the borrow constraint — clippy's suggested
-/// `merge-with-single-usage` rewrite produces invalid Rust (`?.` syntax).
+// Guard is intentionally held across hydrate + mutation so the session state
+// transition is atomic (#8685 public clippy gate; house precedent in lib.rs).
 #[allow(clippy::significant_drop_tightening)]
 pub async fn cancel_pomodoro(
     State(state): State<AppState>,
 ) -> Result<Json<PomodoroSessionResponse>, ApiError> {
     debug!("POST /api/pomodoro/cancel");
 
-    // P2 PR-A: mutate under the guard, clone the mutated session out, drop
-    // the guard, then format the response. This pattern tightens the lock
-    // window to only the mutation path.
-    let session = {
-        let mut guard = state
-            .session
-            .pomodoro
-            .lock()
-            .map_err(|_| ApiError::Internal("pomodoro lock poisoned".into()))?;
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| ApiError::NotFound("No active Pomodoro session".to_string()))?;
+    let store = require_store(&state)?;
+    let mut runtime = state.session.pomodoro.lock().await;
+    hydrate_if_needed(&mut runtime, store.as_ref()).await?;
+    let mut session = runtime
+        .session
+        .clone()
+        .ok_or_else(|| ApiError::NotFound("No active Pomodoro session".to_string()))?;
 
-        let eff = session.effective_status();
-        if eff == PomodoroStatus::Completed || eff == PomodoroStatus::Cancelled {
-            return Err(ApiError::Conflict(
-                "Session is already finished".to_string(),
-            ));
-        }
+    let eff = session.effective_status();
+    if eff == PomodoroStatus::Completed || eff == PomodoroStatus::Cancelled {
+        return Err(ApiError::Conflict(
+            "Session is already finished".to_string(),
+        ));
+    }
 
-        session.status = PomodoroStatus::Cancelled;
-        session.completed_at = Some(chrono::Utc::now());
-
-        session.clone()
-    };
+    session.status = PomodoroStatus::Cancelled;
+    session.completed_at = Some(chrono::Utc::now());
+    store.save_pomodoro_session(&session).await?;
+    runtime.session = Some(session.clone());
     Ok(Json(session_to_response(&session)))
 }
 
 /// POST /api/pomodoro/complete — mark session as completed (auto or manual).
-///
-/// `#[allow(clippy::significant_drop_tightening)]`: same rationale as
-/// `cancel_pomodoro` — `session: &mut` borrows from the guard and the
-/// block-scoped clone-out is already the tightest lock window possible.
+// Guard is intentionally held across hydrate + mutation so the session state
+// transition is atomic (#8685 public clippy gate; house precedent in lib.rs).
 #[allow(clippy::significant_drop_tightening)]
 pub async fn complete_pomodoro(
     State(state): State<AppState>,
 ) -> Result<Json<PomodoroSessionResponse>, ApiError> {
     debug!("POST /api/pomodoro/complete");
 
-    // P2 PR-A: mutate under the guard, clone the mutated session out, drop
-    // the guard, then format the response. This pattern tightens the lock
-    // window to only the mutation path.
-    let session = {
-        let mut guard = state
-            .session
-            .pomodoro
-            .lock()
-            .map_err(|_| ApiError::Internal("pomodoro lock poisoned".into()))?;
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| ApiError::NotFound("No active Pomodoro session".to_string()))?;
+    let store = require_store(&state)?;
+    let mut runtime = state.session.pomodoro.lock().await;
+    hydrate_if_needed(&mut runtime, store.as_ref()).await?;
+    let mut session = runtime
+        .session
+        .clone()
+        .ok_or_else(|| ApiError::NotFound("No active Pomodoro session".to_string()))?;
 
-        if session.status == PomodoroStatus::Cancelled {
-            return Err(ApiError::Conflict(
-                "Session was already cancelled".to_string(),
-            ));
-        }
+    if session.status == PomodoroStatus::Cancelled {
+        return Err(ApiError::Conflict(
+            "Session was already cancelled".to_string(),
+        ));
+    }
 
-        session.status = PomodoroStatus::Completed;
-        session.completed_at = Some(chrono::Utc::now());
-
-        session.clone()
-    };
+    session.status = PomodoroStatus::Completed;
+    session.completed_at = Some(chrono::Utc::now());
+    store.save_pomodoro_session(&session).await?;
+    runtime.session = Some(session.clone());
     Ok(Json(session_to_response(&session)))
 }
 
@@ -188,6 +183,14 @@ pub async fn complete_pomodoro(
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+    use maekon_storage::sqlite::SqliteStorage;
+
+    fn state_with_store(storage: Arc<SqliteStorage>) -> AppState {
+        let (event_tx, _) = tokio::sync::broadcast::channel(4);
+        let mut state = AppState::with_core(storage.clone(), event_tx);
+        state.session.pomodoro_store = Some(storage);
+        state
+    }
 
     #[test]
     fn session_to_response_running() {
@@ -227,5 +230,56 @@ mod tests {
         let resp = session_to_response(&session);
         assert_eq!(resp.status, "completed");
         assert_eq!(resp.remaining_secs, 0);
+    }
+
+    #[tokio::test]
+    async fn transitions_persist_across_fresh_runtime_state() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+        let first_state = state_with_store(storage.clone());
+        let (_, Json(started)) = start_pomodoro(
+            State(first_state),
+            Json(StartPomodoroRequest {
+                duration_minutes: Some(25),
+                break_minutes: Some(5),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.status, "running");
+
+        let restarted_state = state_with_store(storage.clone());
+        let Json(restored) = get_current_pomodoro(State(restarted_state.clone()))
+            .await
+            .unwrap();
+        assert_eq!(restored.unwrap().id, started.id);
+
+        let Json(cancelled) = cancel_pomodoro(State(restarted_state)).await.unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        let after_cancel_restart = state_with_store(storage.clone());
+        let Json(restored_cancelled) = get_current_pomodoro(State(after_cancel_restart.clone()))
+            .await
+            .unwrap();
+        assert_eq!(restored_cancelled.unwrap().status, "cancelled");
+
+        let (_, Json(restarted)) = start_pomodoro(
+            State(after_cancel_restart.clone()),
+            Json(StartPomodoroRequest {
+                duration_minutes: Some(25),
+                break_minutes: Some(5),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_ne!(restarted.id, started.id);
+        let Json(completed) = complete_pomodoro(State(after_cancel_restart))
+            .await
+            .unwrap();
+        assert_eq!(completed.status, "completed");
+
+        let after_complete_restart = state_with_store(storage);
+        let Json(restored_completed) = get_current_pomodoro(State(after_complete_restart))
+            .await
+            .unwrap();
+        assert_eq!(restored_completed.unwrap().status, "completed");
     }
 }

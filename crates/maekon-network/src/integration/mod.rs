@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod cloudevents;
 pub mod egress_coordinator;
+// Google Calendar read-only Context Source connector (MK-EXT-01.C01 #8590).
+pub mod google_calendar;
 pub mod http_transport;
 pub mod inbox_coordinator;
 pub mod live_channel;

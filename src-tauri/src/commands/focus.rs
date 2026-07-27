@@ -31,6 +31,14 @@ pub async fn toggle_focus_mode(
             overlay.emit_focus_mode(false, false);
         }
     }
+    // #8094: durably audit the focus-mode enter/exit transition (privacy-safe —
+    // booleans + duration only, no captured content). Best-effort, offloaded.
+    crate::commands::privacy_audit::spawn_audit_focus_mode(
+        state.storage.clone(),
+        active,
+        false,
+        duration_minutes,
+    );
     get_focus_mode_status(state).await
 }
 

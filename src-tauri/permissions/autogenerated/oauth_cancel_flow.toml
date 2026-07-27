@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-oauth-cancel-flow"
+description = "Enables the oauth_cancel_flow command without any pre-configured scope."
+commands.allow = ["oauth_cancel_flow"]
+
+[[permission]]
+identifier = "deny-oauth-cancel-flow"
+description = "Denies the oauth_cancel_flow command without any pre-configured scope."
+commands.deny = ["oauth_cancel_flow"]

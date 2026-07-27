@@ -166,9 +166,10 @@ struct SubprocessOcrEnvelope {
 // ── Internal helper re-exports for submodules ─────────────────
 
 pub(crate) use parsing::{
-    append_model_flag, append_oneshot_flags, append_session_tool_restriction_flags,
-    classify_subprocess_error_with_redactions, sanitize_subprocess_error_output,
-    write_prompt_and_collect_output, SubprocessKind,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags,
+    append_session_tool_restriction_flags, classify_subprocess_error_with_redactions,
+    sanitize_subprocess_error_output, write_prompt_and_collect_output, SubprocessKind,
+    DEFAULT_CODEX_SUBPROCESS_MODEL,
 };
 #[allow(unused_imports)]
 use parsing::{

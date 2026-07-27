@@ -9,16 +9,17 @@
  */
 
 import { Camera, CheckSquare, Copy, Square } from 'lucide-react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { TagBadge } from '../../components/TagBadge'
+import FrameImage from '../../components/FrameImage'
 import { TagInput } from '../../components/TagInput'
 import { Badge, Button, Card, CardTitle, EmptyState, Select } from '../../components/ui'
 import { useTypedOutletContext } from '../../routes'
 import { iconSize, interaction, motion, typography } from '../../styles/tokens'
-import { resolveImageUrl } from '../../utils/api-base'
 import { cn } from '../../utils/cn'
 import { formatDate, formatTime } from '../../utils/formatters'
+import { FrameAnnotations } from './FrameAnnotations'
 import type { ImportanceFilter, TimelineContext } from './TimelineLayout'
 
 function getImportanceBadge(importance: number) {
@@ -87,6 +88,21 @@ export default function AllFrames() {
     standaloneMode,
     captureEnabled,
   } = useTypedOutletContext<TimelineContext>('Timeline')
+
+  // #8078: tags already common to EVERY selected frame. Passed to the batch
+  // TagInput so its suggestion dropdown dedups them out (re-applying a common
+  // tag is a no-op server-side — `add_tag_to_frame` is `INSERT OR IGNORE`).
+  const batchCommonTags = useMemo(() => {
+    if (selectedFrames.size === 0) return []
+    const selected = frames.filter((frame) => selectedFrames.has(frame.id))
+    if (selected.length === 0) return []
+    let common = new Set(selected[0].tag_ids ?? [])
+    for (const frame of selected.slice(1)) {
+      const ids = new Set(frame.tag_ids ?? [])
+      common = new Set([...common].filter((id) => ids.has(id)))
+    }
+    return allTags.filter((tag) => common.has(tag.id))
+  }, [frames, selectedFrames, allTags])
 
   if (frames.length === 0) {
     const emptyState = standaloneMode
@@ -285,11 +301,12 @@ export default function AllFrames() {
                   )}
                 >
                   {frame.image_url ? (
-                    <img
-                      src={resolveImageUrl(frame.image_url) ?? undefined}
+                    <FrameImage
+                      imageUrl={frame.image_url}
                       alt={frame.window_title}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
+                      imgClassName="h-full w-full object-cover"
+                      compact
+                      lazy
                     />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center text-content-tertiary text-xs">
@@ -359,11 +376,12 @@ export default function AllFrames() {
                   {/* Thumbnail */}
                   <div className="h-14 w-24 flex-shrink-0 overflow-hidden rounded bg-hover">
                     {frame.image_url ? (
-                      <img
-                        src={resolveImageUrl(frame.image_url) ?? undefined}
+                      <FrameImage
+                        imageUrl={frame.image_url}
                         alt={frame.window_title}
-                        className="h-full w-full object-cover"
-                        loading="lazy"
+                        imgClassName="h-full w-full object-cover"
+                        compact
+                        lazy
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-content-tertiary text-xs">
@@ -422,43 +440,40 @@ export default function AllFrames() {
         <Card variant="default" padding="lg">
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {/* Image preview */}
-            <button
-              type="button"
-              className="group relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg bg-surface-muted"
-              onClick={openLightbox}
-            >
+            <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-surface-muted">
               {selectedFrame.image_url ? (
-                <>
-                  <img
-                    src={resolveImageUrl(selectedFrame.image_url) ?? undefined}
-                    alt={selectedFrame.window_title}
-                    className="h-full w-full object-contain"
-                  />
-                  <div
-                    className={`absolute inset-0 flex items-center justify-center bg-surface-overlay/0 ${motion.colors} group-hover:bg-surface-overlay/30`}
-                  >
-                    <svg
-                      className={`h-12 w-12 text-content-inverse opacity-0 ${motion.opacity} group-hover:opacity-100`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
+                <FrameImage
+                  imageUrl={selectedFrame.image_url}
+                  alt={selectedFrame.window_title}
+                  imgClassName="h-full w-full object-contain"
+                  onImageClick={openLightbox}
+                  overlay={
+                    <div
+                      className={`absolute inset-0 flex items-center justify-center bg-surface-overlay/0 ${motion.colors} group-hover:bg-surface-overlay/30`}
                     >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"
-                      />
-                    </svg>
-                  </div>
-                </>
+                      <svg
+                        className={`h-12 w-12 text-content-inverse opacity-0 ${motion.opacity} group-hover:opacity-100`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"
+                        />
+                      </svg>
+                    </div>
+                  }
+                />
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-content-tertiary">
                   {t('timeline.noImage')}
                 </div>
               )}
-            </button>
+            </div>
 
             {/* Frame details */}
             <div className="space-y-4">
@@ -509,23 +524,6 @@ export default function AllFrames() {
                   {t('timeline.tags')}
                 </h4>
                 <div className="space-y-2">
-                  {selectedFrameTags.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {selectedFrameTags.map((tag) => (
-                        <TagBadge
-                          key={tag.id}
-                          name={tag.name}
-                          color={tag.color}
-                          size="sm"
-                          onRemove={() => {
-                            if (selectedFrame) {
-                              removeTagMutation.mutate({ frameId: selectedFrame.id, tagId: tag.id })
-                            }
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
                   <TagInput
                     selectedTags={selectedFrameTags}
                     onAddTag={(tag) => {
@@ -542,6 +540,9 @@ export default function AllFrames() {
                   />
                 </div>
               </div>
+
+              {/* Annotations (#8078 CJ-02-04) */}
+              <FrameAnnotations frameId={selectedFrame.id} />
 
               {/* OCR text */}
               {selectedFrame.ocr_text && (
@@ -617,7 +618,8 @@ export default function AllFrames() {
             {t('timeline.clearSelection')}
           </Button>
           <TagInput
-            selectedTags={[]}
+            selectedTags={batchCommonTags}
+            readonlySelected
             onAddTag={(tag) => {
               batchTagMutation.mutate({ frameIds: Array.from(selectedFrames), tagId: tag.id })
             }}

@@ -1,5 +1,7 @@
 use super::feedback::{find_suggestion_explain_payload, submit_suggestion_feedback_to_runtime};
-use super::queries::{pending_suggestions_snapshot, suggestion_history_snapshot};
+use super::queries::{
+    pending_suggestion_count_snapshot, pending_suggestions_snapshot, suggestion_history_snapshot,
+};
 use super::replay::{suggestion_replay_log_context, validate_suggestion_replay_payload};
 use super::types::SuggestionReplayEventPayload;
 use chrono::Utc;
@@ -63,6 +65,12 @@ async fn pending_suggestions_fall_back_to_storage_without_manager() {
             .and_then(|scope| scope.target_id.as_deref()),
         Some("calculator-display-result")
     );
+    assert_eq!(
+        pending_suggestion_count_snapshot(&suggestion_state, &storage)
+            .await
+            .expect("fallback suggestion count"),
+        1
+    );
 }
 
 /// E20-24 (#4816): the OSS local pipeline end-to-end. A locally-generated
@@ -122,6 +130,70 @@ async fn pending_suggestions_surface_locally_generated_via_live_queue() {
         "the locally-generated suggestion must surface from the live queue (no server, no SQLite fallback)"
     );
     assert_eq!(suggestions[0].id, "local-gen-1");
+    assert_eq!(
+        pending_suggestion_count_snapshot(&state, &storage)
+            .await
+            .expect("live queue count"),
+        1
+    );
+}
+
+#[cfg(feature = "local-suggestions")]
+#[tokio::test]
+async fn live_manager_feedback_persists_accept_and_reject_lifecycle() {
+    use maekon_suggestion::deferred::DeferredManager;
+    use maekon_suggestion::feedback::FeedbackSender;
+    use maekon_suggestion::feedback_retry::FeedbackRetryQueue;
+    use maekon_suggestion::history::SuggestionHistory;
+    use maekon_suggestion::queue::SuggestionQueue;
+    use maekon_suggestion::scorer::FeedbackScorer;
+    use tokio::sync::Mutex;
+
+    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+    let accepted = sample_suggestion("persist-accept-1");
+    let rejected = sample_suggestion("persist-reject-1");
+    storage
+        .save_rule_suggestion_sync(&accepted)
+        .expect("save accepted suggestion");
+    storage
+        .save_rule_suggestion_sync(&rejected)
+        .expect("save rejected suggestion");
+
+    let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+    assert!(queue.lock().await.push(accepted));
+    assert!(queue.lock().await.push(rejected));
+    let api: Arc<dyn maekon_core::ports::api_client::ApiClient> =
+        Arc::new(crate::local_api_client::LocalApiClient);
+    let manager = Arc::new(crate::suggestion_manager::SuggestionManager::new(
+        queue,
+        Arc::new(Mutex::new(SuggestionHistory::new(100))),
+        Arc::new(FeedbackSender::new_with_sink(api, None)),
+        Arc::new(Mutex::new(FeedbackScorer::new())),
+        Arc::new(Mutex::new(DeferredManager::new(50))),
+        Arc::new(Mutex::new(FeedbackRetryQueue::new(100, 5))),
+        storage.clone(),
+    ));
+    let state = SuggestionRuntimeState::new(Some(manager), None);
+
+    submit_suggestion_feedback_to_runtime(&state, &storage, "persist-accept-1", "accept", None)
+        .await
+        .expect("accept feedback");
+    submit_suggestion_feedback_to_runtime(&state, &storage, "persist-reject-1", "reject", None)
+        .await
+        .expect("reject feedback");
+
+    assert!(
+        storage
+            .list_suggestions(10)
+            .expect("active suggestions")
+            .is_empty(),
+        "accepted and rejected suggestions must not be restored as pending after restart"
+    );
+    let recent = storage
+        .list_recent_suggestions(10)
+        .expect("suggestion history");
+    assert!(recent.iter().any(|row| row.acted_at.is_some()));
+    assert!(recent.iter().any(|row| row.dismissed_at.is_some()));
 }
 
 /// #7600 fails-before: before this change `SuggestionRuntimeState` had no

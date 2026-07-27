@@ -25,6 +25,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 
+# OS keychain — stores the cross-device sync passphrase written by the
+# Settings → Sync setup route (#8056 P2-2), read back at startup by
+# src-tauri/agent_runtime::sync_setup. Same workspace pin as src-tauri.
+keyring = { workspace = true }
+
 # 로깅
 tracing = { workspace = true }
 

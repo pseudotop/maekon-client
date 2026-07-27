@@ -2,6 +2,11 @@
 
 We take the security of Maekon seriously. If you discover a vulnerability, please follow the procedures outlined in this document to report it.
 
+General Global Alpha feedback, privacy requests, and participation withdrawal
+use `https://maekon.dev/alpha-feedback`. Do not put vulnerability details in
+that form or in a public issue; vulnerabilities use only the private channels
+below.
+
 ## Reporting a Security Vulnerability
 
 **Do not report security vulnerabilities as public issues.** Please use the private channels listed below.

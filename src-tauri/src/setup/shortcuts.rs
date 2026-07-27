@@ -191,9 +191,26 @@ fn activate_overlay_shortcut(app_handle: &tauri::AppHandle) {
 
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let state: tauri::State<'_, crate::runtime_state::AppState> = handle.state();
-        if let Some(ref overlay) = state.magic_overlay {
+        let overlay = handle
+            .try_state::<crate::runtime_state::SuggestionRuntimeState>()
+            .and_then(|state| state.overlay());
+        if let Some(overlay) = overlay {
             overlay.set_interactive(true);
+            tracing::info!(
+                target: "maekon_app::global_shortcut",
+                shortcut = "CmdOrCtrl+Shift+O",
+                action = "overlay_set_interactive",
+                outcome = "accepted",
+                "global shortcut activation handled"
+            );
+        } else {
+            tracing::warn!(
+                target: "maekon_app::global_shortcut",
+                shortcut = "CmdOrCtrl+Shift+O",
+                action = "overlay_set_interactive",
+                outcome = "overlay_unavailable",
+                "global shortcut activation could not be handled"
+            );
         }
     });
 }
@@ -282,10 +299,15 @@ fn activate_suggestions_shortcut(app_handle: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<crate::runtime_state::SuggestionRuntimeState>() {
             if let Some(overlay) = state.overlay() {
-                // Only emit the toggle event — the frontend's useEffect
-                // calls toggle_suggestions_panel IPC which handles both
-                // window resize and interactivity.
-                overlay.emit_toggle_suggestions();
+                // #8847 native-first: toggle the AUTHORITATIVE native panel state
+                // instead of emitting a toggle event to a frontend WebView that
+                // the idle policy may have destroyed (in which case the event
+                // would be lost). `toggle_panel_mode` creates the WebView on open
+                // and routes the OPEN through the single fullscreen gate (#8858).
+                // Then emit the RESOLVED state so any pre-existing frontend
+                // reducer converges idempotently — timing cannot invert or lose it.
+                let open = overlay.toggle_panel_mode().await;
+                overlay.emit_suggestions_panel_state(open);
             }
         }
     });

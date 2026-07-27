@@ -8,6 +8,7 @@ import { Button, Card, CardTitle, Input } from '../../components/ui'
 import { useTypedOutletContext } from '../../routes'
 import { iconSize, typography } from '../../styles/tokens'
 import { formatBytes, formatNumber } from '../../utils/formatters'
+import ConsentToggleSection from './ConsentToggleSection'
 import type { PrivacyContext } from './PrivacyLayout'
 import { DataCard } from './PrivacyLayout'
 
@@ -27,6 +28,7 @@ export default function DataSection() {
     setShowDeleteRangeModal,
     DATA_TYPE_LABELS,
     getDateRangeText,
+    notifyConsentChanged,
   } = useTypedOutletContext<PrivacyContext>('Privacy')
 
   return (
@@ -71,6 +73,11 @@ export default function DataSection() {
           </>
         )}
       </Card>
+
+      {/* Consent belongs to the data overview. Keeping it out of the shared
+          layout lets egress, claims, danger-zone, and export routes surface
+          their selected content immediately below the capture status. */}
+      <ConsentToggleSection onConsentChanged={notifyConsentChanged} />
 
       {/* Delete by range */}
       <Card variant="default" padding="lg">

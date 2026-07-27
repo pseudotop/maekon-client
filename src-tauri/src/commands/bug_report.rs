@@ -39,3 +39,55 @@ pub async fn export_bug_report(
         None => Ok(None), // User cancelled the dialog
     }
 }
+
+/// Opens the real native save dialog for the bounded Windows UIA proof.
+///
+/// The hook exists only in debug builds and remains inert unless the private
+/// harness supplies the explicit gate. It exercises the same command and
+/// `tauri-plugin-dialog` path as the product UI; the harness cancels the dialog,
+/// so it cannot write a report or overwrite user data.
+#[cfg(debug_assertions)]
+pub(crate) fn maybe_spawn_debug_native_dialog_from_env(app: &tauri::AppHandle) {
+    let enabled = std::env::var("MAEKON_TEST_NATIVE_DIALOG")
+        .ok()
+        .is_some_and(|value| {
+            matches!(value.trim(), "1")
+                || value.eq_ignore_ascii_case("true")
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("on")
+        });
+    if !enabled {
+        return;
+    }
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let outcome = export_bug_report(
+            app,
+            "uia-native-dialog".to_owned(),
+            "{\"source\":\"private-windows-uia-proof\"}".to_owned(),
+        )
+        .await;
+        match outcome {
+            Ok(None) => tracing::info!(
+                target: "maekon_app::native_dialog",
+                action = "export_bug_report",
+                outcome = "cancelled",
+                "native dialog proof completed"
+            ),
+            Ok(Some(_)) => tracing::warn!(
+                target: "maekon_app::native_dialog",
+                action = "export_bug_report",
+                outcome = "unexpected_save",
+                "native dialog proof unexpectedly selected a path"
+            ),
+            Err(error) => tracing::warn!(
+                target: "maekon_app::native_dialog",
+                action = "export_bug_report",
+                outcome = "error",
+                error.code = %error.code,
+                "native dialog proof failed"
+            ),
+        }
+    });
+}

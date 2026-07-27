@@ -33,6 +33,11 @@ export function useUpdateGoals() {
     mutationFn: (goals: Record<string, number>) => updateRegimeGoals(goals),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goal-progress'] })
+      // #8083: regime_goals is also carried in the settings payload (display-only
+      // there). Invalidate the settings query so the Settings form's baseline
+      // reflects the just-added/removed goal instead of a stale goal list,
+      // keeping the two surfaces (Coaching goals section and Settings) consistent.
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
       addToast('success', 'Goals updated')
     },
     onError: (err: Error) => {

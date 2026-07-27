@@ -14,6 +14,10 @@ This directory is organized by document intent.
 - [guides/public-private-ci-split.md](./guides/public-private-ci-split.md): fork-safe public CI and maintainer-only validation boundary
 - [guides/hybrid-import-workflow.md](./guides/hybrid-import-workflow.md): public PR import, attribution, parent validation, and export handoff workflow
 - [guides/good-first-issues.md](./guides/good-first-issues.md): public-safe first contribution guide and starter issue batch
+- [guides/qc-upload-spool-recovery.md](./guides/qc-upload-spool-recovery.md): isolated upload interruption, restart re-prime, and exact sent-marker verification
+- [guides/product-terminology.md](./guides/product-terminology.md): user-facing terminology and high-risk copy SSOT
+- [guides/global-alpha-feedback-operations.md](./guides/global-alpha-feedback-operations.md): privacy-safe invited Alpha feedback, withdrawal, and incident-pause contract
+- [contracts/public-surface-source-map.v1.json](./contracts/public-surface-source-map.v1.json): source-to-export/generated consumer inventory and publication boundaries
 
 ## Directories
 

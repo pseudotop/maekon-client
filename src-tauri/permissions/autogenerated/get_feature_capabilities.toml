@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-feature-capabilities"
+description = "Enables the get_feature_capabilities command without any pre-configured scope."
+commands.allow = ["get_feature_capabilities"]
+
+[[permission]]
+identifier = "deny-get-feature-capabilities"
+description = "Denies the get_feature_capabilities command without any pre-configured scope."
+commands.deny = ["get_feature_capabilities"]

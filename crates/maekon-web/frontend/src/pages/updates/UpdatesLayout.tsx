@@ -74,6 +74,9 @@ export default function UpdatesLayout() {
       queryClient.setQueryData(['update-status'], response.status)
       queryClient.invalidateQueries({ queryKey: ['update-status'] })
     },
+    onError: () => {
+      addToast('error', t('updates.actionFailed'))
+    },
   })
 
   const handleChannelChange = (channel: UpdateChannel) => {

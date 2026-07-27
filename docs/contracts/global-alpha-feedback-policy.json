@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "2026-07-19.1",
+  "canonical_url": "https://maekon.dev/alpha-feedback",
+  "intake_state": "hold",
+  "hold_reason": "repository_hold_issue_8683",
+  "external_invites_allowed": false,
+  "scheduled_posts_allowed": false,
+  "channels": {
+    "general_feedback": {
+      "email": "support@maekon.dev",
+      "subject_prefix": "[Maekon Alpha Feedback]"
+    },
+    "privacy_request": {
+      "email": "support@maekon.dev",
+      "subject_prefix": "[Maekon Alpha Privacy Request]"
+    },
+    "withdrawal": {
+      "email": "support@maekon.dev",
+      "subject_prefix": "[Maekon Alpha Withdrawal]"
+    },
+    "security_vulnerability": {
+      "report_url": "https://github.com/pseudotop/maekon-client/security/advisories/new",
+      "policy_url": "https://github.com/pseudotop/maekon-client/security/policy"
+    }
+  },
+  "intake_fields": [
+    "request_type",
+    "contact_email",
+    "acquisition_source",
+    "operating_system",
+    "app_version",
+    "summary",
+    "participation_consent",
+    "quote_consent",
+    "diagnostics_opt_in",
+    "policy_version",
+    "submitted_at"
+  ],
+  "prohibited_content": [
+    "raw_screen_or_screenshot",
+    "raw_ocr_text",
+    "raw_window_title",
+    "prompt_or_conversation_content",
+    "secret_or_credential",
+    "customer_or_third_party_data",
+    "full_local_path"
+  ],
+  "diagnostics": {
+    "source": "Maekon Support and Diagnostics bug-report wizard",
+    "user_initiated_only": true,
+    "automatic_upload": false,
+    "review_before_attachment_required": true
+  },
+  "storage": {
+    "system": "support@maekon.dev mailbox",
+    "data_owner": "pseudotop",
+    "authorized_accounts": [
+      "pseudotop"
+    ],
+    "feedback_retention_days": 90,
+    "closed_contact_record_retention_days": 30,
+    "diagnostic_attachment_retention_days": 30
+  },
+  "service_levels": {
+    "timestamped_receipt_business_days": 3,
+    "privacy_or_withdrawal_completion_calendar_days": 30,
+    "critical_incident_triage_hours": 24
+  },
+  "withdrawal": {
+    "stop_future_contact": true,
+    "stop_future_measurement": true,
+    "delete_direct_identifiers": true,
+    "deidentified_aggregate_counts_may_remain": true
+  },
+  "incident_pause": {
+    "triggers": [
+      "critical_install_failure",
+      "crash_loop",
+      "data_loss",
+      "privacy_boundary_mismatch"
+    ],
+    "actions": [
+      "stop_new_invites",
+      "stop_scheduled_posts",
+      "record_incident_on_issue_8683",
+      "keep_privacy_and_security_channels_open"
+    ]
+  },
+  "operations": {
+    "daily_triage_owner": "pseudotop",
+    "d7_readback_issue": 8697,
+    "outreach_log_issue": 8688
+  }
+}

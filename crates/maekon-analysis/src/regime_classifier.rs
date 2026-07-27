@@ -184,6 +184,24 @@ impl RegimeClassifier {
         }
     }
 
+    /// Evict all per-regime reaction state for `regime_id` (#8045 C1). Called by
+    /// the orchestrator when a regime is hard-deleted / user-deleted / merged
+    /// away (the ids returned by `RegimeManager::run_maintenance`/`delete`/`merge`)
+    /// so `per_regime_stats` cannot accumulate dead keys on a 24/7 agent. Returns
+    /// `true` when a bucket was present. The `regimes` vector is refreshed
+    /// wholesale by `update_regimes` every maintenance cycle, so only the keyed
+    /// stats map needs explicit eviction here.
+    pub fn remove_regime(&mut self, regime_id: &str) -> bool {
+        self.per_regime_stats.remove(regime_id).is_some()
+    }
+
+    /// Bulk eviction for a maintenance sweep's removed-id list (#8045 C1).
+    pub fn remove_regimes(&mut self, regime_ids: &[String]) {
+        for id in regime_ids {
+            self.per_regime_stats.remove(id);
+        }
+    }
+
     fn to_record(regime_id: &str, stats: &UserReactionStats) -> RegimeReactionRecord {
         RegimeReactionRecord {
             regime_id: regime_id.to_string(),
@@ -479,6 +497,47 @@ mod tests {
         // Aggregate (4 total: 3 for regime-x + 1 regime-less) restored too.
         assert_eq!(restored.reaction_stats().total, 4);
         assert_eq!(restored.reaction_stats().accepted, 3);
+    }
+
+    /// #8045 C1: `remove_regime` evicts the per-regime bucket so a hard-deleted /
+    /// merged-away regime cannot leave a dead key in `per_regime_stats`.
+    #[test]
+    fn remove_regime_evicts_per_regime_bucket() {
+        let mut classifier = RegimeClassifier::new(1.5);
+        classifier.record_user_reaction(&make_feedback(
+            "s1",
+            FeedbackType::Accepted,
+            Some("regime-x"),
+        ));
+        assert!(classifier.per_regime_stats().contains_key("regime-x"));
+
+        assert!(
+            classifier.remove_regime("regime-x"),
+            "removing a present bucket reports true"
+        );
+        assert!(!classifier.per_regime_stats().contains_key("regime-x"));
+        assert!(
+            !classifier.remove_regime("regime-x"),
+            "removing an already-gone bucket reports false (idempotent)"
+        );
+    }
+
+    /// #8045 C1: bulk eviction drops every listed regime's bucket in one sweep.
+    #[test]
+    fn remove_regimes_bulk_evicts_all_listed() {
+        let mut classifier = RegimeClassifier::new(1.5);
+        classifier.record_user_reaction(&make_feedback("s1", FeedbackType::Accepted, Some("a")));
+        classifier.record_user_reaction(&make_feedback("s2", FeedbackType::Rejected, Some("b")));
+        classifier.record_user_reaction(&make_feedback("s3", FeedbackType::Deferred, Some("c")));
+
+        classifier.remove_regimes(&["a".to_string(), "b".to_string()]);
+
+        assert!(!classifier.per_regime_stats().contains_key("a"));
+        assert!(!classifier.per_regime_stats().contains_key("b"));
+        assert!(
+            classifier.per_regime_stats().contains_key("c"),
+            "unlisted regime bucket must be retained"
+        );
     }
 
     /// Feedback with no `regime_id` must not create a bogus bucket, and must

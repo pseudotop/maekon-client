@@ -58,6 +58,15 @@ pub(crate) struct AdaptiveTriggerState {
     pub(crate) llm_summarizer: Option<Arc<maekon_analysis::LlmSegmentSummarizer>>,
     pub(crate) embedding_pipeline: Option<Arc<maekon_analysis::EmbeddingPipeline>>,
 
+    // --- Full-text (keyword) search indexing (#8051) ---
+    //
+    // Shares the single `SqliteStorage` Arc (cast to the FTS port). When
+    // present, `handle_segment_close` indexes each closed segment's content
+    // into the FTS5 `search_fts` table so the dashboard "keyword"/"hybrid"
+    // search modes return data. `None` in builds without a text-search backend
+    // (indexing is then skipped — no-op).
+    pub(crate) text_search: Option<Arc<dyn maekon_core::ports::text_search::TextSearchProvider>>,
+
     // --- GUI Activity Intelligence ---
     pub(crate) gui_pipeline_state: Option<GuiPipelineState>,
     pub(crate) gui_work_type_refiner: maekon_analysis::GuiWorkTypeRefiner,

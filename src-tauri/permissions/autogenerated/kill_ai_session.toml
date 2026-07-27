@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kill-ai-session"
+description = "Enables the kill_ai_session command without any pre-configured scope."
+commands.allow = ["kill_ai_session"]
+
+[[permission]]
+identifier = "deny-kill-ai-session"
+description = "Denies the kill_ai_session command without any pre-configured scope."
+commands.deny = ["kill_ai_session"]

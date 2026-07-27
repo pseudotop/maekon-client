@@ -472,22 +472,9 @@ async fn fake_server_websocket_channel_ignores_unsupported_prompt_events_and_rec
         .await
         .expect("websocket bootstrap should succeed");
 
-    server.push_live_raw(
-        serde_json::json!({
-            "specversion": "1.0",
-            "id": "env-unsupported-001",
-            "source": "oneshim://systems/fake-integration-server",
-            "type": "io.oneshim.integration.unsupported_prompt.v1",
-            "subject": "prompt-unsupported-001",
-            "time": Utc::now(),
-            "datacontenttype": "application/json",
-            "data": sample_prompt("prompt-unsupported-001"),
-            "dataschema": "integration.prompt.v1",
-            "oneshimscope": "prompt:read",
-            "oneshimnonce": "nonce-prompt-unsupported-001",
-            "oneshimsessionid": "session-fake-001"
-        })
-        .to_string(),
+    server.push_live_prompt_with_event_type(
+        sample_prompt("prompt-unsupported-001"),
+        "io.oneshim.integration.unsupported_prompt.v1",
     );
     server.push_live_prompt(sample_prompt("prompt-after-unsupported-001"));
 

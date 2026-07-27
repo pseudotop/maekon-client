@@ -21,12 +21,17 @@ impl AutomationController {
         preset: &WorkflowPreset,
     ) -> Result<WorkflowResult, AutomationError> {
         self.ensure_enabled()?;
+        let policy_gate_start = Instant::now();
 
         // Honor the user's confirmation policy for the whole workflow (review4 A11):
         // run_workflow previously ignored it, so a Block/Confirm setting was silently
         // bypassed for custom presets that may carry arbitrary Raw input synthesis.
         match self.confirmation_policy {
-            ConfirmationRequirement::Block => return Err(AutomationError::PolicyBlocked),
+            ConfirmationRequirement::Block => {
+                self.log_workflow_denial(preset, "BLOCK", policy_gate_start.elapsed())
+                    .await;
+                return Err(AutomationError::PolicyBlocked);
+            }
             ConfirmationRequirement::Confirm => {
                 let action_label = format!(
                     "workflow preset: {} ({} steps)",
@@ -37,6 +42,8 @@ impl AutomationController {
                     .request_confirmation(&preset.id, "workflow-step", &[action_label], "CONFIRM")
                     .await?;
                 if !approved {
+                    self.log_workflow_denial(preset, "USER_DENIED", policy_gate_start.elapsed())
+                        .await;
                     return Err(AutomationError::UserDenied);
                 }
             }
@@ -217,6 +224,30 @@ impl AutomationController {
         })
     }
 
+    async fn log_workflow_denial(
+        &self,
+        preset: &WorkflowPreset,
+        reason: &str,
+        elapsed: std::time::Duration,
+    ) {
+        let elapsed_ms = elapsed.as_millis() as u64;
+        let mut logger = self.audit_logger.write().await;
+        logger.log_with_status_and_time(
+            AuditLevel::Basic,
+            &preset.id,
+            &preset.id,
+            "workflow_denied",
+            AuditStatus::Denied,
+            // Keep workflow names, step names, and intent payloads out of the
+            // durable audit trail. They may contain user-entered sensitive text.
+            &format!(
+                "workflow denied before execution: reason={reason}, steps={}",
+                preset.steps.len()
+            ),
+            elapsed_ms,
+        );
+    }
+
     #[cfg(test)]
     pub(super) async fn resolve_for_command(
         &self,
@@ -284,9 +315,19 @@ impl AutomationController {
 
         let result = self.command_execution_gate().execute(cmd).await;
         if let Some(ref flag) = self.last_command_ok {
+            // #8050: the flag represents CLI-bridge AVAILABILITY, not command
+            // outcome. A policy `Denied` verdict is a healthy control decision —
+            // the bridge executed the gate correctly — so it must NOT mark the
+            // bridge "disconnected". Only a genuine execution/transport failure
+            // (`Failed`, `Timeout`, or an `Err`) flips it unhealthy; the flag
+            // returns to healthy on the next `Success`/`Denied`.
             match &result {
-                Ok(CommandResult::Success) => flag.store(true, Ordering::Relaxed),
-                Ok(_) | Err(_) => flag.store(false, Ordering::Relaxed),
+                Ok(CommandResult::Success) | Ok(CommandResult::Denied) => {
+                    flag.store(true, Ordering::Relaxed)
+                }
+                Ok(CommandResult::Failed(_)) | Ok(CommandResult::Timeout) | Err(_) => {
+                    flag.store(false, Ordering::Relaxed)
+                }
             }
         }
         result

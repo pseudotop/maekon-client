@@ -6,11 +6,15 @@
 //   export.rs    — data export queries (events, metrics, frames, search)
 //   vacuum.rs    — SQLite VACUUM, WAL checkpoint, FTS5, ANALYZE
 
+mod app_deletion;
 mod backup;
 mod export;
 mod retention;
 mod stats;
 mod vacuum;
+
+#[cfg(test)]
+mod work_context_erasure_tests;
 
 #[cfg(test)]
 mod tests {

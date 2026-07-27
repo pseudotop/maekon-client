@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Alert, Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
+import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import { colors, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -30,7 +31,7 @@ const MODEL_LABELS: Record<ModelSize, string> = {
 }
 
 export default function AudioTab() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { form, data } = useSettingsFormContext()
   const formData = form.formData
 
@@ -51,6 +52,20 @@ export default function AudioTab() {
   }
   const [audioStatus, setAudioStatus] = useState<AudioStatusResponse | null>(null)
   const [downloading, setDownloading] = useState(false)
+  // #8058 P2-6: surface model download/delete/reload failures. Previously these
+  // catch blocks silently reset state or `// ignore`d the error, so a failed
+  // download or a locked-file delete looked like a no-op to the user.
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  // Localize a thrown IpcError (typed wire codes) the same way GeneralTab does;
+  // falls through to the raw Display string for non-IpcError shapes.
+  const describeError = useCallback(
+    (e: unknown): string => {
+      const locale = (i18n.language?.startsWith('ko') ? 'ko' : 'en') as WireErrorLocale
+      return translateError(e, locale)
+    },
+    [i18n.language],
+  )
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -124,40 +139,61 @@ export default function AudioTab() {
   const vadSilenceMs = audio?.vad_silence_ms ?? 800
 
   const handleDownload = async () => {
+    setActionError(null)
     setDownloading(true)
     try {
       await ipc('download_whisper_model', { modelSize })
-    } catch {
+    } catch (e) {
       setDownloading(false)
+      setActionError(
+        t('settings.audio.downloadFailed', 'Could not start the model download: {{error}}', {
+          error: describeError(e),
+        }),
+      )
       fetchStatus()
     }
   }
 
   const handleCancel = async () => {
+    setActionError(null)
     try {
       await ipc('cancel_model_download')
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.cancelFailed', 'Could not cancel the download: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
   const handleDelete = async () => {
     if (!confirm(t('settings.audio.delete_confirm', 'Delete the downloaded model? You can re-download it later.')))
       return
+    setActionError(null)
     try {
       await ipc('delete_whisper_model', { modelSize })
       fetchStatus()
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.deleteFailed', 'Could not delete the model: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
   const handleReload = async () => {
+    setActionError(null)
     try {
       await ipc('reload_stt_engine')
       fetchStatus()
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.reloadFailed', 'Could not reload the speech-to-text engine: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
@@ -179,6 +215,10 @@ export default function AudioTab() {
           {
             title: t('settings.guidance.audio.input.title'),
             description: t('settings.guidance.audio.input.description'),
+          },
+          {
+            title: t('settings.guidance.audio.bystander.title'),
+            description: t('settings.guidance.audio.bystander.description'),
           },
         ]}
       />
@@ -273,7 +313,22 @@ export default function AudioTab() {
             </Button>
           </>
         )}
+        {/* #8053: a corrupt/failed model (e.g. integrity-check failure) must be
+            clearable — expose Delete in the error state too, reusing the same
+            delete_whisper_model handler so the poisoned file + its `.part` are
+            removed and the user can re-download. */}
+        {modelState === 'error' && !downloading && (
+          <Button variant="danger" size="sm" onClick={handleDelete} disabled={controlsDisabled}>
+            {t('settings.audio.delete', 'Delete')}
+          </Button>
+        )}
       </div>
+
+      {actionError && (
+        <Alert variant="error" title={t('settings.audio.actionErrorTitle', 'Model action failed')}>
+          <p>{actionError}</p>
+        </Alert>
+      )}
 
       <div className="space-y-2">
         <label htmlFor="audio-language" className={cn(typography.label, colors.text.secondary)}>

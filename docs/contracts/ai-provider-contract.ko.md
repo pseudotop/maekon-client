@@ -23,6 +23,27 @@
 - `google`
 - `generic`
 
+## 공개 surface 분류
+
+Provider 이름과 catalog의 `stability` 필드는 adapter contract의 성숙도를
+나타내며 Maekon release 성숙도를 뜻하지 않는다. 공개 문서에는 다음 분류를
+사용한다.
+
+- **parser** — 해당 provider shape의 request/response parser와 fixture가 있다.
+  실제 service가 접근 가능하다는 증거는 아니다.
+- **catalog/example** — catalog나 설정 예시에 나열되어 있다. 나열만으로
+  runtime에서 선택되거나 초기화되었다는 뜻은 아니다.
+- **roadmap** — 계획된 surface이며 현재 runtime 선택을 주장하지 않는다.
+- **preview** — 명시적인 opt-in runtime 경로다. Exact endpoint, platform,
+  consent, 현재 검증 evidence를 별도로 확인해야 한다.
+- **shipped** — 현재 export snapshot에 runtime path source가 있다. Stable release가
+  존재하거나 현재 live smoke가 통과했다는 뜻은 아니다.
+
+특히 `specs/providers/provider-surface-catalog.json`의 `stability=ga`는 catalog
+내 adapter contract가 성숙한 것으로 취급된다는 뜻이다. Maekon stable
+release, 보편적인 provider 가용성, 운영 준비 완료, 현재 green live smoke의
+증거가 아니다.
+
 ## Remote LLM 계약
 
 ## 요청 요구사항

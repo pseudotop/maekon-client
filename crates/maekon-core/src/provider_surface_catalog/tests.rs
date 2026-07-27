@@ -40,13 +40,19 @@ fn returns_google_catalog_shape() {
 }
 
 #[test]
-fn returns_default_model_for_surface() {
-    let model = default_surface_model(
+fn codex_surfaces_default_to_gpt_5_6_sol() {
+    for surface_id in [
         "provider_surface.openai.subprocess_cli",
-        SurfaceCapabilityKind::Llm,
-    )
-    .expect("model should resolve");
-    assert_eq!(model.as_deref(), Some("gpt-5.4"));
+        "provider_surface.openai.codex_app_server",
+    ] {
+        let model = default_surface_model(surface_id, SurfaceCapabilityKind::Llm)
+            .expect("model should resolve");
+        assert_eq!(
+            model.as_deref(),
+            Some("gpt-5.6-sol"),
+            "{surface_id} must share the GPT-5.6 Sol default"
+        );
+    }
 }
 
 #[test]

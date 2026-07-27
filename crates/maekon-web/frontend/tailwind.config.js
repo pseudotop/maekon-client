@@ -74,7 +74,7 @@ export default {
       },
       animation: {
         'tracking-pulse': 'tracking-pulse 3s ease-in-out infinite',
-        'tracking-blink': 'tracking-blink 2s ease-in-out infinite',
+        'tracking-blink': 'tracking-blink 2s ease-in-out 3',
       },
       keyframes: {
         'tracking-pulse': {

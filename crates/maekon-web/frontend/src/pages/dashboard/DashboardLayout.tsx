@@ -18,18 +18,10 @@ import { type ConnectionStatus, type IdleUpdate, type MetricsUpdate, useSSE } fr
 import { useCurrentRoute } from '../../routes'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatLocalCalendarDate, localCalendarDateFromValue } from '../../utils/localDate'
 
 function toApiDate(dateInput?: string): string {
-  if (!dateInput) {
-    return new Date().toISOString().split('T')[0]
-  }
-
-  const parsed = new Date(dateInput)
-  if (Number.isNaN(parsed.getTime())) {
-    return new Date().toISOString().split('T')[0]
-  }
-
-  return parsed.toISOString().split('T')[0]
+  return localCalendarDateFromValue(dateInput) || formatLocalCalendarDate(new Date())
 }
 
 function ConnectionIndicator({ status, t }: { status: ConnectionStatus; t: (key: string) => string }) {

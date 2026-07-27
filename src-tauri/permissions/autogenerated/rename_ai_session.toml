@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rename-ai-session"
+description = "Enables the rename_ai_session command without any pre-configured scope."
+commands.allow = ["rename_ai_session"]
+
+[[permission]]
+identifier = "deny-rename-ai-session"
+description = "Denies the rename_ai_session command without any pre-configured scope."
+commands.deny = ["rename_ai_session"]

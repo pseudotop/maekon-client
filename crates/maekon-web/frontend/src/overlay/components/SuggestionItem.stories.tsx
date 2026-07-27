@@ -28,6 +28,7 @@ const baseSuggestion: SuggestionViewDto = {
   confidence_score: 0.85,
   created_at: '2026-03-27T10:30:00Z',
   reasoning: null,
+  action: { label: 'Clear distractions' },
 }
 
 /** Medium priority suggestion with action buttons. */

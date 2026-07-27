@@ -84,4 +84,20 @@ describe('AllFrames', () => {
 
     expect(screen.getByRole('button', { name: /Figma.*Design Review.*82%/i })).toBeInTheDocument()
   })
+
+  it('renders each assigned frame tag exactly once in the detail panel', () => {
+    mockUseTypedOutletContext.mockReturnValue({
+      ...createContext(),
+      selectedFrame: frame,
+      selectedIndex: 0,
+      selectedFrameTags: [{ id: 7, name: 'delta', color: '#14b8a6' }],
+      addTagMutation: { mutate: vi.fn() } as unknown as TimelineContext['addTagMutation'],
+      removeTagMutation: { mutate: vi.fn() } as unknown as TimelineContext['removeTagMutation'],
+    })
+
+    renderWithProviders(<AllFrames />)
+
+    expect(screen.getAllByText('delta')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /remove delta tag/i })).toBeInTheDocument()
+  })
 })

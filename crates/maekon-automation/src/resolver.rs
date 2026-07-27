@@ -4,6 +4,20 @@ use maekon_core::config::{
     SandboxProfile,
 };
 
+/// Resolve the effective sandbox profile for an execution policy.
+///
+/// # Trust boundary (#8047 E8)
+///
+/// An explicit server-issued `policy.sandbox_profile` takes priority over the
+/// profile that would otherwise be derived from `audit_level` and the
+/// `requires_sudo` escalation below (pinned by the `server_override_takes_priority`
+/// test). This is by design: the server is trusted control-plane data. The
+/// consequence is that a malicious or misconfigured server can hand down a weaker
+/// profile (e.g. `Permissive`) and thereby weaken the client's sandboxing. That
+/// risk is out of this crate's blast radius by design — the client trusts its
+/// paired server for policy. If the server-trust assumption is ever relaxed, this
+/// override must be reconsidered (e.g. clamping the server value to a
+/// locally-derived floor).
 pub fn resolve_sandbox_profile(policy: &ExecutionPolicy) -> SandboxProfile {
     if let Some(profile) = policy.sandbox_profile {
         return profile;

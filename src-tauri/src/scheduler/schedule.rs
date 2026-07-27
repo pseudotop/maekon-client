@@ -39,12 +39,12 @@ pub fn should_run_now(config: &AppConfig) -> bool {
     should_run_now_with_time(config, chrono::Local::now())
 }
 
-/// Returns `true` when the current instant falls inside any configured
-/// tracking-schedule mute window.
-///
-/// Delegates to the time-injectable helper; uses `chrono::Local::now()`.
-pub fn tracking_schedule_active(config: &AppConfig) -> bool {
-    maekon_core::capture_gate::tracking_schedule_active(config, chrono::Local::now())
+/// Whether the configured tracking schedule permits capture at the current
+/// local time. Enabled non-empty schedules require the current instant to fall
+/// inside an allowed window; disabled and empty schedules remain unrestricted.
+/// Delegates to the time-injectable helper using `chrono::Local::now()`.
+pub fn tracking_schedule_allows_capture(config: &AppConfig) -> bool {
+    maekon_core::capture_gate::tracking_schedule_allows_capture(config, chrono::Local::now())
 }
 
 /// Full capture privacy gate composite — use this at all gate sites rather than
@@ -55,7 +55,7 @@ pub fn tracking_schedule_active(config: &AppConfig) -> bool {
 ///     config.vision.capture_enabled       // user-visible capture toggle
 ///     AND consent.screen_capture          // consent top-authority (CONS-PC02)
 ///     AND should_run_now(cfg)             // active_hours gate
-///     AND !tracking_schedule_active(cfg)  // tracking-schedule mute gate
+///     AND tracking_schedule_allows_capture(cfg) // tracking-schedule allow gate
 ///     AND !capture_paused                 // user tray-toggle veto
 /// ```
 pub fn capture_permitted_now(
@@ -271,6 +271,66 @@ mod tests {
             permit(sat_0001),
             "Sat 00:01 must be inside (Fri carry-over, interpretation B — \
              pred-weekday check against active_days) (CONS-C05)"
+        );
+    }
+
+    /// #8094 first-run pin: a FRESH profile (a `ConsentManager` over a path with
+    /// no `consent.json`) must deny screen capture, microphone capture, AND
+    /// telemetry through the PRODUCTION gate wrappers the monitor loop
+    /// (`crate::scheduler::capture_permitted_now`, monitor.rs), audio path
+    /// (`audio_capture_permitted_now`), and egress path (`may_upload_telemetry`)
+    /// actually call. This pins the whole default-deny chain end-to-end:
+    /// fresh `ConsentManager` → `ConsentGate` fail-closed snapshot → composite
+    /// gate == closed, on default config (capture_enabled=true, active_hours off).
+    #[test]
+    fn fresh_profile_default_deny_capture_audio_and_telemetry_first_run() {
+        use maekon_core::consent::{ConsentManager, ConsentPermissions};
+        use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
+
+        // Fresh profile: no consent.json exists yet (first run).
+        let dir = tempfile::tempdir().unwrap();
+        let manager: std::sync::Arc<dyn ConsentManagerPort> =
+            std::sync::Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+        let owned = Some(manager);
+        let gate = ConsentGate::from_ref(owned.as_ref());
+        let snapshot = gate.permissions_snapshot();
+        let cfg = AppConfig::default_config();
+
+        assert!(
+            !capture_permitted_now(&cfg, &snapshot, false),
+            "fresh no-consent profile must deny screen capture (first-run fail-closed, #8094)"
+        );
+        assert!(
+            !audio_capture_permitted_now(&cfg, &snapshot, false),
+            "fresh no-consent profile must deny microphone capture (first-run fail-closed)"
+        );
+        assert!(
+            !gate.may_upload_telemetry(),
+            "fresh no-consent profile must deny telemetry upload (first-run fail-closed)"
+        );
+
+        // Positive control: granting ONLY screen_capture opens the screen gate but
+        // NOT the mic gate — proving the denials above were the consent term, not an
+        // unrelated always-closed gate, and that mic keeps its own consent (#4568).
+        owned
+            .as_ref()
+            .unwrap()
+            .grant_consent(
+                ConsentPermissions {
+                    screen_capture: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .unwrap();
+        let granted = ConsentGate::from_ref(owned.as_ref()).permissions_snapshot();
+        assert!(
+            capture_permitted_now(&cfg, &granted, false),
+            "granting screen_capture consent must open the capture gate on default config"
+        );
+        assert!(
+            !audio_capture_permitted_now(&cfg, &granted, false),
+            "screen consent must NOT open the mic gate (#4568: mic has its own consent)"
         );
     }
 }

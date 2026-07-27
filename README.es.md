@@ -21,9 +21,11 @@
 
 Maekon es un agente de escritorio Apache-2.0 local-first que puede usarse de forma independiente sin ONESHIM. Ofrece captura de contexto local, candidatos para la siguiente acción revisados por el usuario, automatización gobernada por políticas y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
 
+El canal público es un prerelease temprano para Global Alpha por invitación. No es una stable release ni demuestra preparación operativa.
+
 ## Inicio Rápido desde Source Build
 
-El repositorio público ya está disponible, pero los artefactos públicos de GitHub Releases aún no se han publicado. Hasta que exista la primera release pública, ejecute Maekon desde un source checkout local.
+El repositorio público ya está disponible y `v0.0.1-rc.6` es el prerelease público actual. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -42,7 +44,7 @@ cp target/debug/maekon-sandbox-worker \
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-Los comandos del instalador de release están documentados abajo y serán la ruta recomendada después de publicar los artefactos públicos. Para fijar versiones, verificación de firmas y desinstalación:
+Los comandos del instalador de release están documentados abajo. Para fijar la versión prerelease, verificar firmas y desinstalar:
 - Inglés: [`docs/install.md`](./docs/install.md)
 - Coreano: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -50,7 +52,7 @@ Los comandos del instalador de release están documentados abajo y serán la rut
 
 - **Organice la actividad como información de trabajo gobernada**: Registre contexto, cronología, tendencias de enfoque, interrupciones y rutas de automatización aprobadas en un solo lugar.
 - **Manténgase ligero en el dispositivo**: El procesamiento edge (codificación delta, miniaturas, OCR) reduce el volumen de transferencia y mantiene respuestas rápidas.
-- **Use una pila de escritorio lista para producción**: Binario multiplataforma, actualización automática, integración con la bandeja del sistema y panel web local.
+- **Evalúe la pila de escritorio en Global Alpha**: El prerelease incluye código multiplataforma, base de actualización, integración con la bandeja del sistema y panel web local; verifique el build y la plataforma concretos antes de usarlo.
 
 ## Para Quién Es
 
@@ -71,7 +73,7 @@ Los comandos del instalador de release están documentados abajo y serán la rut
 El modo autónomo está disponible ahora.
 
 El modo conectado está disponible únicamente como una opción de vista previa opt-in.
-El modo autónomo sigue siendo la ruta predeterminada lista para producción en versiones de lanzamiento.
+El modo autónomo es la ruta de evaluación predeterminada para Global Alpha.
 
 ## Seguridad y Privacidad de un Vistazo
 
@@ -96,11 +98,11 @@ Las afirmaciones de privacidad anteriores no son texto de marketing — cada una
 | Afirmación | Dónde verificar |
 |---|---|
 | Las apps excluidas/sensibles se excluyen **en el momento de captura**, no solo al subir | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), conectado a la puerta de captura en [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
-| Cada envío fuera del dispositivo se registra en un libro de egress local, consultable en la app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + rutas de lectura en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Las rutas runtime declaradas bajo la política de egress se registran en un libro local consultable en la app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + rutas de lectura en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | Las creencias (claims) del grafo de memoria sobre ti son consultables y retractables con un clic (Privacy → Claims) | rutas de claims en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | El consentimiento es fail-closed: sin permiso válido no hay captura | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
-| El filtrado de PII se ejecuta antes del almacenamiento y antes de cualquier egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| La automatización no puede eludir la política, el sandbox ni el registro de auditoría | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| Las rutas cubiertas de la canalización de visión aplican el filtro PII configurado antes de sus pasos documentados de almacenamiento o egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| Las rutas de ejecución de automatización compatibles están diseñadas para pasar por política, sandbox y auditoría | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### Política de sincronización del código fuente
 
@@ -112,7 +114,7 @@ Este repositorio es una **exportación de instantáneas verificadas** de la fuen
 - **Monitoreo de Contexto en Tiempo Real**: Rastrea ventanas activas, recursos del sistema y actividad del usuario
 - **Procesamiento de Imagen Edge**: Captura de pantalla, codificación delta, miniaturas y OCR
 - **Automatización Gobernada por Políticas**: Encauza acciones aprobadas mediante políticas, aislamiento en sandbox y auditoría
-- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta de producción predeterminada
+- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta autónoma predeterminada
 - **Bandeja del Sistema**: Se ejecuta en segundo plano con acceso rápido
 - **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases
 - **Multiplataforma**: Compatible con macOS, Windows y Linux
@@ -192,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 El modo conectado es solo de vista previa y está intencionalmente restringido tras una configuración explícita de servidor/autenticación.
-Use el modo autónomo como la ruta de producción predeterminada a menos que su entorno haya validado el modo conectado.
+Use el modo autónomo como la ruta predeterminada de Global Alpha a menos que su entorno haya validado el modo conectado.
 
 Para sesiones de CI headless o depuración remota donde la inicialización de la bandeja de macOS puede fallar por la ausencia de WindowServer:
 ```bash

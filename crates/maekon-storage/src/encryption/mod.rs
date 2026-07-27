@@ -18,6 +18,56 @@ use crate::error::StorageError;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
+/// #8589 (ADR-030 §7 + Amendment I1): raw-plane per-account AEAD subkey
+/// derivation (HKDF-SHA256 of this `EncryptionKey`) + crypto-shred semantics.
+pub mod raw_plane;
+
+/// #8040: minimal interface `EncryptionKey::load_or_create_sealed` needs from
+/// an OS-keychain-backed secret vault — narrowed from
+/// `crate::keychain::KeychainOps` so tests can drive the migration/fallback
+/// decision tree with a manual in-memory fake instead of touching the real OS
+/// keychain (mirrors `keychain.rs`'s `#[ignore]`-by-default policy for real
+/// backend access — real-keychain calls can trigger interactive OS prompts /
+/// require an unlocked login session, which `cargo test` must never depend
+/// on). Manual mock implementations only — no mockall (ADR-001 §5).
+pub trait MasterKeyVault: Send + Sync {
+    fn store(&self, namespace: &str, key: &str, value: &str) -> Result<(), StorageError>;
+    fn retrieve(&self, namespace: &str, key: &str) -> Result<Option<String>, StorageError>;
+    fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError>;
+}
+
+impl MasterKeyVault for crate::keychain::KeychainOps {
+    fn store(&self, namespace: &str, key: &str, value: &str) -> Result<(), StorageError> {
+        self.store_sync(namespace, key, value)
+    }
+
+    fn retrieve(&self, namespace: &str, key: &str) -> Result<Option<String>, StorageError> {
+        self.retrieve_sync(namespace, key)
+    }
+
+    fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
+        self.delete_sync(namespace, key)
+    }
+}
+
+/// Fixed keychain namespace for the at-rest master key (#8040). Distinct from
+/// the OAuth namespaces `keychain.rs`'s `KNOWN_OAUTH_KEYS` enumerates.
+const MASTER_KEY_KEYCHAIN_NAMESPACE: &str = "master_key";
+
+/// Derives a stable, data-dir-scoped keychain entry identifier for the
+/// at-rest master key. Multiple maekon profiles/installs on the same OS user
+/// account (e.g. a dev data dir alongside a production one) must each seal
+/// their OWN key — a single global keychain entry would silently hand one
+/// profile another profile's key. SHA-256 is used purely as a stable scoping
+/// identifier here (not a security boundary): the path never leaves this
+/// process.
+fn master_key_keychain_entry(app_data_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(app_data_dir.to_string_lossy().as_bytes());
+    format!("db_key.{}", hex::encode(hasher.finalize()))
+}
+
 /// 32-byte AES-256 database encryption key.
 ///
 /// `ZeroizeOnDrop` derive wipes the 32-byte key material when the last owner is
@@ -43,6 +93,153 @@ impl EncryptionKey {
         key.save_to_file(&key_path)?;
         tracing::info!("New DB encryption key generated: {:?}", key_path);
         Ok(key)
+    }
+
+    /// #8040: load the at-rest master key, preferring the OS keychain (macOS
+    /// Keychain / Windows Credential Manager / Linux kernel keyring) over the
+    /// plaintext `.db_key` file `load_or_create` writes unconditionally —
+    /// same directory as the SQLCipher database and encrypted frame files it
+    /// protects.
+    ///
+    /// Precedence:
+    /// 1. Keychain already holds the key → use it (and remove any stray
+    ///    plaintext `.db_key` left over from an interrupted migration).
+    /// 2. No keychain entry, but a legacy plaintext `.db_key` exists →
+    ///    migrate: seal the file's key into the keychain and read it straight
+    ///    back to confirm the round trip (`seal`). Only on a VERIFIED round
+    ///    trip is the plaintext file deleted. ANY failure (keychain write
+    ///    error, readback mismatch, or the keychain being unreachable at all)
+    ///    keeps the file in place — existing data must stay decryptable —
+    ///    and this launch continues on the file-sourced key; migration
+    ///    retries on the next launch.
+    /// 3. No keychain entry, no file (fresh install) → generate a new key and
+    ///    seal it directly in the keychain. If the keychain itself is
+    ///    unavailable (expected on headless Linux/CI without a keyring
+    ///    backend), fall back to the pre-#8040 plaintext-file scheme, logged
+    ///    explicitly.
+    pub fn load_or_create_sealed(
+        app_data_dir: &Path,
+        keychain: &dyn MasterKeyVault,
+    ) -> Result<Self, StorageError> {
+        let key_path = app_data_dir.join(".db_key");
+        let entry = master_key_keychain_entry(app_data_dir);
+
+        match keychain.retrieve(MASTER_KEY_KEYCHAIN_NAMESPACE, &entry) {
+            Ok(Some(hex)) => {
+                let key = Self::from_hex_string(&hex)?;
+                if key_path.exists() {
+                    match std::fs::remove_file(&key_path) {
+                        Ok(()) => tracing::info!(
+                            "#8040: removed redundant plaintext {key_path:?} — the OS \
+                             keychain already holds the master key"
+                        ),
+                        Err(e) => tracing::warn!(
+                            "#8040: keychain holds the master key but the redundant \
+                             plaintext {key_path:?} could not be removed: {e}"
+                        ),
+                    }
+                }
+                Ok(key)
+            }
+            Ok(None) if key_path.exists() => {
+                // Migration path: legacy plaintext key, no keychain entry yet.
+                let file_key = Self::load_from_file(&key_path)?;
+                match file_key.seal(keychain, &entry) {
+                    Ok(()) => match std::fs::remove_file(&key_path) {
+                        Ok(()) => tracing::info!(
+                            "#8040: master key migrated from plaintext file to the OS \
+                             keychain; {key_path:?} removed"
+                        ),
+                        Err(e) => tracing::warn!(
+                            "#8040: master key sealed in the OS keychain, but the legacy \
+                             plaintext {key_path:?} could not be deleted: {e}. It will be \
+                             ignored from now on (the keychain copy is authoritative)."
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        "#8040: master key keychain migration failed ({e}); continuing on \
+                         the existing plaintext {key_path:?} (no data loss — migration \
+                         retries on the next launch)"
+                    ),
+                }
+                Ok(file_key)
+            }
+            Ok(None) => {
+                // Fresh install: no keychain entry, no file.
+                let key = Self::generate()?;
+                match key.seal(keychain, &entry) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "#8040: new master key generated and sealed in the OS keychain \
+                             (no plaintext key file written)"
+                        );
+                        Ok(key)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "#8040: OS keychain unavailable ({e}); falling back to the \
+                             plaintext key-file scheme (expected on headless Linux/CI \
+                             without a keyring backend)"
+                        );
+                        key.save_to_file(&key_path)?;
+                        tracing::info!("New DB encryption key generated: {:?}", key_path);
+                        Ok(key)
+                    }
+                }
+            }
+            Err(e) => {
+                // Keychain unreachable right now (locked / no backend / etc.) — fall
+                // back to the plaintext-file scheme wholesale rather than fail
+                // closed: master-key availability across reboots must not depend
+                // on an OS feature that may legitimately be absent (headless
+                // Linux/CI).
+                tracing::warn!(
+                    "#8040: OS keychain unavailable ({e}); using the plaintext key-file \
+                     scheme (expected on headless Linux/CI without a keyring backend)"
+                );
+                Self::load_or_create(app_data_dir)
+            }
+        }
+    }
+
+    /// Writes this key's hex encoding into the keychain and reads it straight
+    /// back to confirm a successful round trip (#8040) BEFORE the caller is
+    /// allowed to treat the keychain copy as authoritative — and, on the
+    /// migration path, before the legacy plaintext file is deleted. On a
+    /// write success but readback mismatch/failure, the just-written entry is
+    /// deleted (best-effort) so no partially-verified state is left behind.
+    fn seal(&self, keychain: &dyn MasterKeyVault, entry: &str) -> Result<(), StorageError> {
+        let hex = self.as_hex();
+        keychain.store(MASTER_KEY_KEYCHAIN_NAMESPACE, entry, hex.as_str())?;
+        match keychain.retrieve(MASTER_KEY_KEYCHAIN_NAMESPACE, entry) {
+            Ok(Some(verify)) if verify.as_str() == hex.as_str() => Ok(()),
+            Ok(_) => {
+                let _ = keychain.delete(MASTER_KEY_KEYCHAIN_NAMESPACE, entry);
+                Err(StorageError::SecretStore(
+                    "keychain readback did not match the key just sealed".into(),
+                ))
+            }
+            Err(e) => {
+                let _ = keychain.delete(MASTER_KEY_KEYCHAIN_NAMESPACE, entry);
+                Err(e)
+            }
+        }
+    }
+
+    /// Parses a hex-encoded 32-byte key (the wire format `seal`/`as_hex` use
+    /// to round-trip through the keychain's string-only storage).
+    fn from_hex_string(hex_str: &str) -> Result<Self, StorageError> {
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| StorageError::Encryption(format!("keychain key hex decode: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(StorageError::Encryption(format!(
+                "keychain key size error: expected 32 bytes, got {} bytes",
+                bytes.len()
+            )));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        Ok(Self(key))
     }
 
     /// Build a key from raw bytes.
@@ -281,238 +478,10 @@ impl std::fmt::Debug for EncryptionKey {
     }
 }
 
+// #8040 (ADR-013 LOC gate, crates/maekon-lint/adr013_loc_baseline.json): tests
+// live in `tests.rs` (mirrors `crates/maekon-analysis/src/adaptive_search`'s
+// mod.rs+tests.rs split) so this production file stays under the 900-line
+// unbaselined-giant threshold.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn fixture_key(fill: u8) -> EncryptionKey {
-        EncryptionKey::from_bytes(std::array::from_fn(|_| fill))
-    }
-
-    /// Regression for #6242: the master key must wipe its bytes on drop. This is
-    /// a compile-time guarantee — if the `ZeroizeOnDrop` derive is ever removed
-    /// from `EncryptionKey`, this bound fails to compile.
-    #[test]
-    fn master_key_is_zeroize_on_drop() {
-        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
-        assert_zeroize_on_drop::<EncryptionKey>();
-    }
-
-    /// Regression for #6242: transient plaintext / hex copies of secret material
-    /// are returned inside `Zeroizing` so they wipe on drop. The explicit type
-    /// annotations pin the wrapper — dropping it back to a bare `String`/`Vec<u8>`
-    /// breaks this test.
-    #[test]
-    fn secret_outputs_are_zeroizing_wrapped() {
-        let key = fixture_key(0x42);
-
-        let hex: zeroize::Zeroizing<String> = key.as_hex();
-        assert_eq!(hex.len(), 64);
-
-        let encrypted = key.encrypt(b"top secret").unwrap();
-        let plaintext: zeroize::Zeroizing<Vec<u8>> = key.decrypt(&encrypted).unwrap();
-        assert_eq!(&plaintext[..], b"top secret");
-    }
-
-    #[test]
-    fn generates_32_byte_key() {
-        let dir = TempDir::new().unwrap();
-        let key = EncryptionKey::load_or_create(dir.path()).unwrap();
-        assert_eq!(key.as_bytes().len(), 32);
-    }
-
-    #[test]
-    fn hex_is_64_chars() {
-        let dir = TempDir::new().unwrap();
-        let key = EncryptionKey::load_or_create(dir.path()).unwrap();
-        assert_eq!(key.as_hex().len(), 64);
-        assert!(key.as_hex().chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn load_returns_same_key_as_generated() {
-        let dir = TempDir::new().unwrap();
-        let key1 = EncryptionKey::load_or_create(dir.path()).unwrap();
-        let key2 = EncryptionKey::load_or_create(dir.path()).unwrap();
-        // `as_hex` returns `Zeroizing<String>`; compare the inner strings.
-        assert_eq!(key1.as_hex().as_str(), key2.as_hex().as_str());
-    }
-
-    #[test]
-    fn key_file_created_with_correct_size() {
-        let dir = TempDir::new().unwrap();
-        EncryptionKey::load_or_create(dir.path()).unwrap();
-        let content = fs::read(dir.path().join(".db_key")).unwrap();
-        assert_eq!(content.len(), 32);
-    }
-
-    #[test]
-    fn debug_does_not_leak_key_bytes() {
-        let key = fixture_key(0xAB);
-        let debug_str = format!("{key:?}");
-        assert!(!debug_str.contains("AB"));
-        assert!(debug_str.contains("redacted"));
-    }
-
-    #[test]
-    fn encrypt_decrypt_round_trip() {
-        let key = fixture_key(0x42);
-        let plaintext = b"Hello, MAEKON frame data!";
-
-        let encrypted = key.encrypt(plaintext).unwrap();
-        // encrypted = 12-byte nonce + ciphertext + 16-byte auth tag
-        assert!(encrypted.len() > plaintext.len());
-        assert_ne!(&encrypted[12..], plaintext);
-
-        let decrypted = key.decrypt(&encrypted).unwrap();
-        // `decrypted` is `Zeroizing<Vec<u8>>`; compare as slices.
-        assert_eq!(&decrypted[..], &plaintext[..]);
-    }
-
-    #[test]
-    fn encrypt_produces_different_ciphertexts() {
-        let key = fixture_key(0x42);
-        let plaintext = b"same input";
-
-        let enc1 = key.encrypt(plaintext).unwrap();
-        let enc2 = key.encrypt(plaintext).unwrap();
-        // Different random nonces produce different ciphertexts
-        assert_ne!(enc1, enc2);
-
-        // Both decrypt to the same plaintext (decrypt yields Zeroizing<Vec<u8>>).
-        assert_eq!(&key.decrypt(&enc1).unwrap()[..], &plaintext[..]);
-        assert_eq!(&key.decrypt(&enc2).unwrap()[..], &plaintext[..]);
-    }
-
-    #[test]
-    fn decrypt_with_wrong_key_fails() {
-        let key1 = fixture_key(0x42);
-        let key2 = fixture_key(0x43);
-        let plaintext = b"secret data";
-
-        let encrypted = key1.encrypt(plaintext).unwrap();
-        assert!(
-            matches!(
-                key2.decrypt(&encrypted).unwrap_err(),
-                StorageError::Encryption(_)
-            ),
-            "wrong key must yield StorageError::Encryption (AES-GCM auth failure)"
-        );
-    }
-
-    #[test]
-    fn decrypt_too_short_data_fails() {
-        let key = fixture_key(0x42);
-        assert!(
-            matches!(
-                key.decrypt(&[0u8; 5]).unwrap_err(),
-                StorageError::Encryption(_)
-            ),
-            "ciphertext shorter than nonce must yield StorageError::Encryption"
-        );
-    }
-
-    #[test]
-    fn decrypt_corrupted_data_fails() {
-        let key = fixture_key(0x42);
-        let mut encrypted = key.encrypt(b"test data").unwrap();
-        // Corrupt a byte in the ciphertext region
-        if encrypted.len() > 15 {
-            encrypted[15] ^= 0xFF;
-        }
-        assert!(
-            matches!(
-                key.decrypt(&encrypted).unwrap_err(),
-                StorageError::Encryption(_)
-            ),
-            "corrupted ciphertext must yield StorageError::Encryption (auth tag mismatch)"
-        );
-    }
-
-    #[test]
-    fn encrypt_empty_data() {
-        let key = fixture_key(0x42);
-        let encrypted = key.encrypt(b"").unwrap();
-        // 12 nonce + 16 auth tag = 28 bytes minimum
-        assert_eq!(encrypted.len(), 28);
-        let decrypted = key.decrypt(&encrypted).unwrap();
-        assert!(decrypted.is_empty());
-    }
-
-    #[test]
-    fn encrypt_large_data() {
-        let key = fixture_key(0x42);
-        let plaintext = vec![0xAB_u8; 1024 * 1024]; // 1 MB
-
-        let encrypted = key.encrypt(&plaintext).unwrap();
-        let decrypted = key.decrypt(&encrypted).unwrap();
-        // `decrypted` is `Zeroizing<Vec<u8>>`; compare as slices.
-        assert_eq!(&decrypted[..], &plaintext[..]);
-    }
-
-    /// Verify that the key file is created with mode 0o600 (owner read/write only),
-    /// with no world-readable window at any point (TOCTOU fix, issue #5991).
-    #[cfg(unix)]
-    #[test]
-    fn key_file_created_with_mode_0o600() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = TempDir::new().unwrap();
-        EncryptionKey::load_or_create(dir.path()).unwrap();
-
-        let key_path = dir.path().join(".db_key");
-        let metadata = fs::metadata(&key_path).unwrap();
-        // Mask to the permission bits only (drop file type bits).
-        let mode = metadata.permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "key file must be created with mode 0o600, got 0o{mode:o}"
-        );
-    }
-
-    /// Verify that `save_to_file` recovers when the target file already exists
-    /// (the `AlreadyExists` branch of the atomic `create_new` path) and the
-    /// recreated file still has mode 0o600 — exercised by calling `save_to_file`
-    /// directly twice on the same path (`load_or_create` cannot reach this branch
-    /// because it short-circuits on `key_path.exists()`).
-    #[cfg(unix)]
-    #[test]
-    fn key_file_save_over_existing_keeps_mode_0o600() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".db_key");
-
-        // First write creates the file via create_new(true).
-        EncryptionKey::from_bytes([1u8; 32])
-            .save_to_file(&path)
-            .unwrap();
-
-        // Second write finds the file present -> hits the AlreadyExists branch
-        // (remove + recreate). It must still land mode 0o600.
-        EncryptionKey::from_bytes([2u8; 32])
-            .save_to_file(&path)
-            .unwrap();
-
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "key file must keep mode 0o600 after the AlreadyExists recreate branch, got 0o{mode:o}"
-        );
-    }
-
-    /// #7101: the storage `set_owner_only_dacl` shim must succeed by delegating to
-    /// the single canonical primitive in `maekon-core` (no duplicate copy here).
-    /// CI-verified on the Windows runner; it does not compile on Unix.
-    #[cfg(windows)]
-    #[test]
-    fn set_owner_only_dacl_delegates_to_core() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("dacl_target.tmp");
-        std::fs::File::create(&path).unwrap();
-        set_owner_only_dacl(&path)
-            .expect("storage shim must delegate to core and apply the owner-only DACL");
-    }
-}
+#[path = "tests.rs"]
+mod tests;

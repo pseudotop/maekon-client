@@ -21,6 +21,9 @@
 
 Maekon은 ONESHIM 없이도 독립 사용 가능한 Apache-2.0 local-first 데스크톱 에이전트입니다. 로컬 컨텍스트 수집, 사용자가 검토하는 다음 행동 후보, 정책 기반 자동화, 내장 대시보드를 제공합니다. Rust로 구축되어 macOS, Windows, Linux에서 네이티브 성능을 발휘합니다.
 
+공개 채널은 초대 기반 Global Alpha를 위한 초기 prerelease입니다. Stable
+릴리스나 운영 준비 완료의 증거가 아닙니다.
+
 ## Source Build 빠른 시작
 
 공개 저장소는 준비되었고, `v0.0.1-rc.6`가 현재 공개 prerelease로 게시되어
@@ -54,14 +57,14 @@ cp target/debug/maekon-sandbox-worker \
 
 - **활동을 통제 가능한 업무 인사이트로 정리**: 컨텍스트, 타임라인, 집중 패턴, 방해 요소, 승인된 자동화 경로를 한 곳에서 추적합니다.
 - **가벼운 온디바이스 처리**: Edge 처리(델타 인코딩, 썸네일, OCR)로 전송량을 줄이고 빠른 응답 속도를 유지합니다.
-- **프로덕션 수준의 데스크톱 스택**: 크로스 플랫폼 바이너리, 자동 업데이트, 시스템 트레이 통합, 로컬 웹 대시보드를 지원합니다.
+- **Global Alpha에서 데스크톱 스택 평가**: Prerelease에는 크로스 플랫폼 소스, 업데이트 기반, 시스템 트레이 통합, 로컬 웹 대시보드가 포함됩니다. 사용 전 exact build와 플랫폼을 검증하세요.
 
 ### 시장 포지셔닝 (2026)
 
 Google DeepMind (AI Pointer, 2026-05) 와 OpenAI (Codex Chronicle, 2026-04) 가 동일 문제 공간에 진입했습니다 — **화면 맥락을 이해하고 자연 지시·포인팅으로 행동하는 AI**. Maekon은 다음 4축으로 차별화합니다:
 
 1. **기본 local-first** — 픽셀, OCR, 신호가 on-device 유지. 클라우드 round-trip은 opt-in
-2. **Source-first 감사** — 모든 신호에 origin, retention, PII filter step trace
+2. **Source-first 감사** — 선언된 신호 경로에 origin, retention, PII filter step을 문서화
 3. **Policy-gated 자동화** — 자연 지시("이것 요약해", "저것 정리")를 명시적 검토·승인 경계가 있는 **next-action candidates** 로 처리 (직접 실행 X)
 4. **앱·OS 횡단** — Chrome, native 앱, terminal, OS 워크플로우 가로지름 (3 OS: macOS, Windows, Linux). 단일 벤더 생태계에 묶이지 않음
 
@@ -110,11 +113,11 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 | 주장 | 검증 위치 |
 |---|---|
 | 제외/민감 앱은 업로드 시점이 아니라 **캡처 시점에** 제외됩니다 | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), 캡처 게이트 배선: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
-| 기기를 떠나는 모든 전송은 로컬 egress 원장에 기록되며 앱에서 열람 가능합니다 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 리더 라우트: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Egress 정책이 적용되는 선언된 runtime 경로는 로컬 원장에 기록되며 앱에서 열람 가능합니다 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 리더 라우트: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 메모리 그래프가 축적한 사용자에 대한 믿음(claims)은 열람 및 원클릭 철회가 가능합니다 (Privacy → Claims) | claims 라우트: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 동의는 fail-closed입니다: 유효한 동의가 없으면 캡처하지 않습니다 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
-| PII 필터링은 저장 전과 모든 egress 전에 실행됩니다 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| 자동화는 정책·샌드박스·감사 로깅을 우회할 수 없습니다 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| 비전 파이프라인의 적용 대상 경로는 문서화된 저장 또는 egress 단계 전에 설정된 PII 필터를 적용합니다 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| 지원되는 자동화 실행 경로는 정책·샌드박스·감사 구성 요소를 거치도록 설계됩니다 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### 소스 동기화 정책
 
@@ -126,7 +129,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 - **실시간 컨텍스트 모니터링**: 활성 창, 시스템 리소스, 사용자 활동을 추적합니다
 - **Edge 이미지 처리**: 스크린샷 캡처, 델타 인코딩, 썸네일, OCR 지원
 - **정책 기반 자동화**: 승인된 액션을 정책 검사, 샌드박스 격리, 감사 로그 경로로 실행합니다
-- **서버 연동 기능 (프리뷰 / Opt-in)**: 검토 가능한 다음 행동 후보와 피드백 동기화는 단계적 검증용으로 제공되며 기본 프로덕션 경로는 아닙니다
+- **서버 연동 기능 (프리뷰 / Opt-in)**: 검토 가능한 다음 행동 후보와 피드백 동기화는 단계적 검증용으로 제공되며 기본 Standalone 경로는 아닙니다
 - **시스템 트레이**: 백그라운드에서 실행되며 빠른 접근이 가능합니다
 - **자동 업데이트**: GitHub Releases 기반 자동 업데이트
 - **크로스 플랫폼**: macOS, Windows, Linux를 지원합니다

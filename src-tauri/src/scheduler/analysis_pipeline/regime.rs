@@ -123,7 +123,22 @@ pub(in crate::scheduler) async fn run_periodic_regime_detection(
                 }
             }
 
-            ts.regime_manager.lock().run_maintenance(now);
+            // #8045 C1: the maintenance sweep hard-deletes Archived regimes past
+            // the retention horizon and returns their ids. Forward them to the
+            // classifier so its per-regime reaction stats cannot accumulate dead
+            // keys on a 24/7 agent. (Locks are taken strictly one at a time —
+            // manager released before the classifier lock is acquired — matching
+            // the existing lock discipline below.) The CoachingEngine is not
+            // reachable from AdaptiveTriggerState; its per-regime EMA map is a
+            // bounded LruCache, so LRU aging already covers it there.
+            let removed = ts.regime_manager.lock().run_maintenance(now);
+            if !removed.is_empty() {
+                info!(
+                    count = removed.len(),
+                    "regime retention purge: evicting per-regime classifier stats"
+                );
+                ts.regime_classifier.lock().remove_regimes(&removed);
+            }
 
             // Update classifier with active regimes (clone out of the lock
             // scope so the RegimeClassifier lock is acquired separately).

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-current-context-suggestions"
+description = "Enables the request_current_context_suggestions command without any pre-configured scope."
+commands.allow = ["request_current_context_suggestions"]
+
+[[permission]]
+identifier = "deny-request-current-context-suggestions"
+description = "Denies the request_current_context_suggestions command without any pre-configured scope."
+commands.deny = ["request_current_context_suggestions"]

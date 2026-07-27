@@ -40,7 +40,7 @@ impl SettingsQueryService {
             .map_err(|error| ApiError::Internal(error.to_string()))?;
 
         let frames_size_bytes = match frames_dir {
-            Some(dir) => tokio::task::spawn_blocking(move || calculate_dir_size(&dir))
+            Some(data_dir) => tokio::task::spawn_blocking(move || calculate_frames_size(&data_dir))
                 .await
                 .map_err(|e| ApiError::Internal(format!("spawn_blocking join error: {e}")))?,
             None => 0,
@@ -61,6 +61,14 @@ impl SettingsQueryService {
     }
 }
 
+/// `CoreState::frames_dir` is the frame storage base directory, not the
+/// `<base>/frames` leaf. Stored frame paths intentionally include the `frames/`
+/// prefix, so deletion resolves them against the base directory. Storage stats,
+/// however, must exclude sibling database, log, and configuration files.
+fn calculate_frames_size(data_dir: &std::path::Path) -> u64 {
+    calculate_dir_size(&data_dir.join("frames"))
+}
+
 fn calculate_dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0;
 
@@ -78,4 +86,31 @@ fn calculate_dir_size(path: &std::path::Path) -> u64 {
     }
 
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_frames_size;
+
+    #[test]
+    fn frame_size_excludes_unrelated_files_under_data_root() {
+        let data_dir = tempfile::tempdir().expect("temporary data directory");
+        let frames_dir = data_dir.path().join("frames").join("2026-07-13");
+        std::fs::create_dir_all(&frames_dir).expect("frames directory");
+        std::fs::write(frames_dir.join("first.webp"), [1_u8; 3]).expect("first frame");
+        std::fs::write(frames_dir.join("second.webp"), [2_u8; 5]).expect("second frame");
+        std::fs::write(data_dir.path().join("maekon.db"), [0_u8; 13]).expect("database file");
+        std::fs::create_dir_all(data_dir.path().join("logs")).expect("logs directory");
+        std::fs::write(data_dir.path().join("logs/runtime.log"), [0_u8; 21]).expect("runtime log");
+
+        assert_eq!(calculate_frames_size(data_dir.path()), 8);
+    }
+
+    #[test]
+    fn frame_size_is_zero_when_frames_subtree_is_missing() {
+        let data_dir = tempfile::tempdir().expect("temporary data directory");
+        std::fs::write(data_dir.path().join("maekon.db"), [0_u8; 13]).expect("database file");
+
+        assert_eq!(calculate_frames_size(data_dir.path()), 0);
+    }
 }

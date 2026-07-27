@@ -42,6 +42,26 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
     // was actually in when they acted, not just an aggregate counter.
     let regime_id = state.current_regime_id();
 
+    // Write the local lifecycle transition before updating the in-memory queue.
+    // The live manager is rebuilt from SQLite on restart, so removing an item
+    // from RAM alone would resurrect accepted/rejected suggestions. A missing
+    // row is allowed for ephemeral manager-only suggestions, while an actual
+    // storage error fails closed and leaves the queue untouched.
+    match action {
+        "accept" => {
+            storage
+                .mark_unified_suggestion_acted(suggestion_id)
+                .map_err(IpcError::from)?;
+        }
+        "reject" => {
+            storage
+                .dismiss_unified_suggestion(suggestion_id)
+                .map_err(IpcError::from)?;
+        }
+        "defer" => {}
+        _ => unreachable!("action was validated by feedback_type_for_action"),
+    }
+
     // Send feedback to server (best-effort — enqueue for retry on failure)
     match action {
         "accept" => {

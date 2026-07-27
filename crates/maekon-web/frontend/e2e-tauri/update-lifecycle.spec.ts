@@ -1,5 +1,5 @@
 // e2e-tauri/update-lifecycle.spec.ts
-import { fetchApiJson, type UpdateStatusResponse } from './helpers.js'
+import { fetchApiJson, navigateMain, type UpdateStatusResponse } from './helpers.js'
 
 describe('J5: Update Lifecycle', () => {
   /**
@@ -49,7 +49,7 @@ describe('J5: Update Lifecycle', () => {
    * @tauri_only_reason Version comes from real Cargo.toml, not mocked
    */
   it('T143: Update page shows version matching tauri.conf.json', async () => {
-    await browser.url('tauri://localhost/updates')
+    await navigateMain('/updates')
     await browser.pause(2000)
 
     const pageText = await $('body').getText()

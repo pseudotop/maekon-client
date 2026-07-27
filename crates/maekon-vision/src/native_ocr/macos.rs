@@ -16,7 +16,26 @@ use maekon_core::ports::ocr_provider::{OcrProvider, OcrResult};
 use tracing::debug;
 
 /// macOS Vision.framework native OCR provider.
-pub(crate) struct MacOsNativeOcr;
+///
+/// `recognition_languages` holds BCP-47 language identifiers (e.g. `ko-KR`,
+/// `en-US`) forwarded to `VNRecognizeTextRequest.setRecognitionLanguages:`. An
+/// empty list falls back to Vision's default (`en-US`). Before #8054 this
+/// setter was never called, so the request silently recognized English only —
+/// Korean screen text produced empty/garbled OCR on the primary target
+/// platform.
+pub(crate) struct MacOsNativeOcr {
+    recognition_languages: Vec<String>,
+}
+
+impl MacOsNativeOcr {
+    /// Construct a Vision OCR provider that recognizes `recognition_languages`
+    /// (BCP-47 identifiers). Pass an empty vector to keep Vision's default.
+    pub(crate) fn new(recognition_languages: Vec<String>) -> Self {
+        Self {
+            recognition_languages,
+        }
+    }
+}
 
 #[async_trait]
 impl OcrProvider for MacOsNativeOcr {
@@ -26,7 +45,8 @@ impl OcrProvider for MacOsNativeOcr {
         _image_format: &str,
     ) -> Result<Vec<OcrResult>, CoreError> {
         let data = image.to_vec();
-        tokio::task::spawn_blocking(move || recognize_text_blocking(&data))
+        let languages = self.recognition_languages.clone();
+        tokio::task::spawn_blocking(move || recognize_text_blocking(&data, &languages))
             .await
             .map_err(|e| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
@@ -44,15 +64,21 @@ impl OcrProvider for MacOsNativeOcr {
 }
 
 /// Perform synchronous text recognition using Vision.framework.
-fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
+///
+/// `recognition_languages` (BCP-47 identifiers) is forwarded to
+/// `setRecognitionLanguages:`; an empty slice leaves Vision's default (en-US).
+fn recognize_text_blocking(
+    data: &[u8],
+    recognition_languages: &[String],
+) -> Result<Vec<OcrResult>, CoreError> {
     use std::ffi::CStr;
     use std::ptr;
 
-    use objc2::msg_send;
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{msg_send, sel};
     use objc2_core_foundation::CGRect;
-    use objc2_foundation::{NSData, NSDictionary, NSString};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSString};
 
     // --- Get image dimensions for coordinate conversion ---
     let (img_width, img_height) = image::load_from_memory(data)
@@ -122,6 +148,34 @@ fn recognize_text_blocking(data: &[u8]) -> Result<Vec<OcrResult>, CoreError> {
     // `setUsesLanguageCorrection:` is a valid setter taking a single BOOL
     // (`yes`) and returning void.
     let _: () = unsafe { msg_send![&request, setUsesLanguageCorrection: yes] };
+
+    // setRecognitionLanguages: — the #8054 fix. Without this the request
+    // recognizes en-US only, so Korean (and every non-English) screen text
+    // yields empty/garbled OCR. An empty list keeps Vision's default.
+    if !recognition_languages.is_empty() {
+        let lang_objs: Vec<Retained<NSString>> = recognition_languages
+            .iter()
+            .map(|lang| NSString::from_str(lang))
+            .collect();
+        let ns_langs: Retained<NSArray<NSString>> = NSArray::from_retained_slice(&lang_objs);
+        // SAFETY: `request` is the live VNRecognizeTextRequest; the selector
+        // takes an `NSArray<NSString>*` (`ns_langs`, alive for this scope) and
+        // returns void.
+        let _: () = unsafe { msg_send![&request, setRecognitionLanguages: &*ns_langs] };
+    }
+
+    // setAutomaticallyDetectsLanguage: YES — macOS 13+ only, so gate on
+    // `respondsToSelector:` to stay safe on older systems. With an explicit
+    // recognitionLanguages hint list above, Vision treats the list as a
+    // prioritized set while still auto-detecting per-observation script.
+    // SAFETY: `request` is live; `respondsToSelector:` takes a `SEL` and
+    // returns BOOL; the guarded setter takes a single BOOL and returns void.
+    let responds_auto_detect: bool =
+        unsafe { msg_send![&request, respondsToSelector: sel!(setAutomaticallyDetectsLanguage:)] };
+    if responds_auto_detect {
+        let auto_detect: bool = true;
+        let _: () = unsafe { msg_send![&request, setAutomaticallyDetectsLanguage: auto_detect] };
+    }
 
     // --- Create NSArray with single request ---
     let nsarray_cls = AnyClass::get(c"NSArray").ok_or_else(|| CoreError::Internal {
@@ -265,8 +319,14 @@ mod tests {
 
     #[test]
     fn provider_metadata() {
-        let provider = MacOsNativeOcr;
+        let provider = MacOsNativeOcr::new(vec!["ko-KR".to_string(), "en-US".to_string()]);
         assert_eq!(provider.provider_name(), "macos-vision");
         assert!(!provider.is_external());
+    }
+
+    #[test]
+    fn provider_retains_recognition_languages() {
+        let provider = MacOsNativeOcr::new(vec!["ko-KR".to_string(), "en-US".to_string()]);
+        assert_eq!(provider.recognition_languages, vec!["ko-KR", "en-US"]);
     }
 }

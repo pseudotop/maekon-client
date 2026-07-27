@@ -77,6 +77,10 @@ pub struct SessionManagerImpl {
     /// sessions are wrapped so user content is sanitized before transmission
     /// (E21 #4882/#4883 — closes the chat-path PII gap, review B1).
     privacy_guard: Option<Arc<dyn ConversationContentGuard>>,
+    /// Durable transparency ledger for external conversation attempts (#9077).
+    /// The privacy decorator records both blocked and accepted sends without
+    /// persisting user content.
+    egress_ledger: Option<Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>>,
     /// Rollout stage for the Codex `app-server` transport (E21 #4871). `Off`
     /// (default) keeps the `codex exec` path; opt-in/default attempt app-server
     /// with graceful fallback to exec on failure.
@@ -101,6 +105,11 @@ pub struct SessionManagerImpl {
     /// (the live-session sum used previously reset every time an idle session was
     /// reaped). Used by `check_token_budget` / `get_global_token_usage`.
     daily_token_ledger: parking_lot::Mutex<DailyTokenLedger>,
+    /// #8050: shared LLM-connectivity flag threaded into the `AuditingSession`
+    /// decorator of every session this manager creates, so a send success/failure
+    /// on ANY provider updates the tray's "Local LLM" connection status. `None`
+    /// for standalone/test use; the composition root injects the shared Arc.
+    llm_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl SessionManagerImpl {
@@ -117,6 +126,7 @@ impl SessionManagerImpl {
             secret_store: None,
             app_handle: None,
             privacy_guard: None,
+            egress_ledger: None,
             codex_app_server_rollout: maekon_core::config::CodexAppServerRollout::default(),
             codex_approval_decider: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
@@ -126,7 +136,17 @@ impl SessionManagerImpl {
                 input_tokens: 0,
                 output_tokens: 0,
             }),
+            llm_health_flag: None,
         }
+    }
+
+    /// Inject the shared LLM-connectivity flag (#8050). Every session this
+    /// manager creates threads it into its `AuditingSession` decorator, so a
+    /// send success/failure on any provider drives the tray's "Local LLM"
+    /// connection status.
+    pub(crate) fn with_llm_health_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.llm_health_flag = Some(flag);
+        self
     }
 
     /// Inject the single shared workspace-wide circuit-breaker registry from the
@@ -175,6 +195,14 @@ impl SessionManagerImpl {
     // `[lib]` target enabler; behavior-neutral).
     pub(crate) fn with_privacy_guard(mut self, guard: Arc<dyn ConversationContentGuard>) -> Self {
         self.privacy_guard = Some(guard);
+        self
+    }
+
+    pub(crate) fn with_egress_ledger(
+        mut self,
+        ledger: Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>,
+    ) -> Self {
+        self.egress_ledger = Some(ledger);
         self
     }
 

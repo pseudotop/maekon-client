@@ -30,16 +30,61 @@
 
 use reqwest::redirect::Policy;
 
-/// Returns a hardened reqwest [`ClientBuilder`] with redirect following disabled.
+/// Transport-layer cleartext policy for [`hardened_client_builder`] (#8045 C3).
+///
+/// The config layer already blocks cleartext egress to remote hosts (e.g.
+/// `endpoint_is_loopback` gates in the sync/analysis transports), but sibling
+/// first-party transports (`http_client::build_reqwest_client_for_url`) ALSO
+/// enforce it at the transport layer via reqwest's `https_only`. This adds the
+/// same by-construction backstop to the shared BYOK/provider client builder so a
+/// misconfigured or drifted call site cannot ship provider credentials + captured
+/// screen/prompt bodies over plaintext `http://` to a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPolicy {
+    /// Enforce HTTPS at the transport layer: reqwest rejects any `http://` URL
+    /// at request time. Use for every remote/provider endpoint.
+    HttpsOnly,
+    /// Permit cleartext `http://` (no `https_only`). Use ONLY when the client
+    /// genuinely targets a loopback endpoint (local LLM/OCR/embedding servers
+    /// such as Ollama, or loopback dev/test servers), where cleartext never
+    /// leaves the machine.
+    AllowLoopbackCleartext,
+}
+
+impl TransportPolicy {
+    /// Derive the policy from the endpoint the client will target: loopback
+    /// hosts keep cleartext (`AllowLoopbackCleartext`); everything else is
+    /// `HttpsOnly`. Reuses the strict [`crate::http_client::host_is_loopback`]
+    /// helper so the loopback definition stays consistent with the sibling
+    /// transports (full `127.0.0.0/8` + `::1` + literal `localhost`; fail-closed
+    /// on an unparseable URL → `HttpsOnly`).
+    pub fn for_endpoint(endpoint: &str) -> Self {
+        if crate::http_client::host_is_loopback(endpoint) {
+            Self::AllowLoopbackCleartext
+        } else {
+            Self::HttpsOnly
+        }
+    }
+}
+
+/// Returns a hardened reqwest [`ClientBuilder`] with redirect following disabled
+/// and a transport-layer cleartext policy applied (#6892, #8045 C3).
 ///
 /// Callers chain their own options such as `.timeout(...)` onto it and call
-/// `.build()`, mapping build errors to their own error types. Only the redirect
-/// policy is enforced in common, so each caller's existing behavior (timeouts,
-/// DNS pinning, etc.) is preserved as-is.
+/// `.build()`, mapping build errors to their own error types. Redirect following
+/// is always disabled; `policy` additionally sets `https_only(true)` for
+/// [`TransportPolicy::HttpsOnly`] so a remote endpoint cannot be reached over
+/// cleartext `http://`. Loopback/dev callers pass
+/// [`TransportPolicy::AllowLoopbackCleartext`] (or derive via
+/// [`TransportPolicy::for_endpoint`]) to keep local `http://` working.
 ///
 /// [`ClientBuilder`]: reqwest::ClientBuilder
-pub fn hardened_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().redirect(Policy::none())
+pub fn hardened_client_builder(policy: TransportPolicy) -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder().redirect(Policy::none());
+    match policy {
+        TransportPolicy::HttpsOnly => builder.https_only(true),
+        TransportPolicy::AllowLoopbackCleartext => builder,
+    }
 }
 
 /// #6939: response body cap for BYOK external-AI providers. Generous enough
@@ -127,8 +172,75 @@ mod tests {
     /// the redirect=none setting does not break the reqwest build — regression guard).
     #[test]
     fn hardened_client_builder_builds_successfully() {
-        hardened_client_builder().build().expect(
-            "하드닝 클라이언트 빌드는 성공해야 한다 (redirect=none 이 reqwest 빌드를 깨지 않음)",
+        hardened_client_builder(TransportPolicy::AllowLoopbackCleartext)
+            .build()
+            .expect("hardened client build must succeed (redirect=none does not break reqwest)");
+        hardened_client_builder(TransportPolicy::HttpsOnly)
+            .build()
+            .expect("hardened client build must succeed with https_only enabled");
+    }
+
+    /// #8045 C3: a `HttpsOnly` client rejects a cleartext `http://` request at
+    /// dispatch time (the by-construction backstop), while an
+    /// `AllowLoopbackCleartext` client permits it. Uses an unroutable loopback
+    /// port and asserts the error kind (builder rejects before any real network
+    /// I/O) so the test never touches the network.
+    #[tokio::test]
+    async fn https_only_policy_rejects_cleartext_http() {
+        let https_only = hardened_client_builder(TransportPolicy::HttpsOnly)
+            .build()
+            .expect("build https-only client");
+        let err = https_only
+            .get("http://127.0.0.1:9/should-be-refused")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            err.is_builder(),
+            "https_only must refuse an http:// URL as a builder error, got: {err:?}"
+        );
+
+        // The loopback-cleartext policy must NOT reject the scheme; a failure here
+        // (if any) is a connection error to the dead port, never a builder error.
+        let cleartext = hardened_client_builder(TransportPolicy::AllowLoopbackCleartext)
+            .build()
+            .expect("build cleartext client");
+        if let Err(e) = cleartext
+            .get("http://127.0.0.1:9/allowed-scheme")
+            .send()
+            .await
+        {
+            assert!(
+                !e.is_builder(),
+                "AllowLoopbackCleartext must not reject the http:// scheme, got: {e:?}"
+            );
+        }
+    }
+
+    /// #8045 C3: `for_endpoint` maps loopback hosts to cleartext-allowed and
+    /// everything else (including unparseable, fail-closed) to https-only.
+    #[test]
+    fn for_endpoint_derives_policy_from_loopback() {
+        assert_eq!(
+            TransportPolicy::for_endpoint("http://127.0.0.1:11434/api"),
+            TransportPolicy::AllowLoopbackCleartext
+        );
+        assert_eq!(
+            TransportPolicy::for_endpoint("http://localhost:8000"),
+            TransportPolicy::AllowLoopbackCleartext
+        );
+        assert_eq!(
+            TransportPolicy::for_endpoint("https://api.anthropic.com/v1/messages"),
+            TransportPolicy::HttpsOnly
+        );
+        assert_eq!(
+            TransportPolicy::for_endpoint("http://api.example.com"),
+            TransportPolicy::HttpsOnly
+        );
+        assert_eq!(
+            TransportPolicy::for_endpoint("not a url"),
+            TransportPolicy::HttpsOnly,
+            "unparseable endpoint must fail closed to HttpsOnly"
         );
     }
 
@@ -154,9 +266,10 @@ mod tests {
             .create_async()
             .await;
 
-        let client = hardened_client_builder()
+        // Loopback mockito server → cleartext policy (mirrors a loopback caller).
+        let client = hardened_client_builder(TransportPolicy::AllowLoopbackCleartext)
             .build()
-            .expect("하드닝 클라이언트 빌드");
+            .expect("build hardened client");
         let resp = client
             .get(format!("{}/start", server.url()))
             .send()

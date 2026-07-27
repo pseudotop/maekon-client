@@ -21,13 +21,20 @@ function borderClassForWindow(windowLabel?: string) {
 }
 
 export function TrackingBorder({ captureState, windowLabel }: TrackingBorderProps) {
-  if (captureState.paused || !captureState.indicator_visible) return null
+  if (
+    captureState.paused ||
+    !captureState.indicator_visible ||
+    !captureState.consent_granted ||
+    !captureState.permitted
+  ) {
+    return null
+  }
 
   return (
     <div
       aria-hidden="true"
       data-testid="tracking-border"
-      className={`pointer-events-none fixed z-detection animate-tracking-blink ${borderClassForWindow(windowLabel)}`}
+      className={`pointer-events-none fixed z-detection motion-safe:animate-tracking-blink ${borderClassForWindow(windowLabel)}`}
       style={{
         boxShadow: 'inset 0 0 20px rgb(var(--brand-signal) / 0.45)',
       }}

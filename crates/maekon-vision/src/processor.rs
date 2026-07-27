@@ -1,3 +1,7 @@
+// OOS-TBD: ADR-013 file split (cycle 45+) — LOC: 928 (crossed the 900 gate when
+// #8042 added the pixel-PII-redaction wiring to the high-importance branch;
+// splitting the importance-branched encode/OCR pipeline into a submodule is
+// tracked separately, not part of the security fix).
 use async_trait::async_trait;
 use chrono::Utc;
 use image::DynamicImage;
@@ -208,6 +212,36 @@ impl EdgeFrameProcessor {
         self.ocr_provider = provider;
         self
     }
+
+    /// Reconfigure the OCR source(s) for the given recognition `languages`
+    /// (BCP-47 tags, e.g. `ko-KR`, `en-US`) so the frame processor recognizes
+    /// non-English screen text (#8054). The leptess path is rebuilt for the
+    /// mapped Tesseract language string (reusing the existing tessdata dir); the
+    /// native path is rebuilt via `create_native_ocr_with_languages`. An empty
+    /// list restores each engine's built-in default.
+    #[allow(unused_variables, unused_mut)]
+    pub fn with_ocr_languages(mut self, languages: Vec<String>) -> Self {
+        #[cfg(feature = "ocr")]
+        {
+            let tessdata = self
+                .ocr_extractor
+                .as_ref()
+                .and_then(|extractor| extractor.tessdata_path().cloned());
+            let lang = if languages.is_empty() {
+                crate::ocr::DEFAULT_TESSERACT_LANG.to_string()
+            } else {
+                crate::ocr::tesseract_lang_from_bcp47(&languages)
+            };
+            self.ocr_extractor = Some(Arc::new(crate::ocr::OcrExtractor::new_with_lang(
+                tessdata, &lang,
+            )));
+        }
+        #[cfg(all(feature = "native-vision", not(feature = "ocr")))]
+        {
+            self.ocr_provider = crate::native_ocr::create_native_ocr_with_languages(&languages);
+        }
+        self
+    }
 }
 
 #[async_trait]
@@ -236,12 +270,19 @@ impl FrameProcessor for EdgeFrameProcessor {
             .await
     }
 
-    async fn capture_thumbnail(&self) -> Result<Vec<u8>, CoreError> {
+    async fn capture_thumbnail(
+        &self,
+        window_bounds: Option<&maekon_core::models::context::WindowBounds>,
+    ) -> Result<Vec<u8>, CoreError> {
         let capture = self.capture.clone();
         let tw = self.thumbnail_width;
         let th = self.thumbnail_height;
+        // #8054 P2-3: target the monitor containing the active window (falls
+        // back to primary when bounds are absent or resolve to no monitor) so
+        // dashcam ring/post-event frames follow the user across displays.
+        let window_bounds = window_bounds.copied();
         tokio::task::spawn_blocking(move || {
-            let frame = capture.capture_primary()?;
+            let frame = capture.capture_for_window(window_bounds.as_ref())?;
             let thumb = thumbnail::resize_to_fit(&frame, tw, th)?;
             let encoded = encoder::encode_webp_base64(&thumb, WebPQuality::Low)?;
             use base64::Engine;
@@ -348,80 +389,89 @@ impl EdgeFrameProcessor {
             // storage (base64) and, under the native path, as the OCR input (raw
             // bytes) — avoiding a second full-frame encode.
             #[allow(unused_variables)]
-            let (encoded, ocr_input, blocking_text, blocking_regions, raw_rgba_val) =
-                tokio::task::spawn_blocking(move || {
-                    let webp_bytes = encoder::encode_webp(&frame_ref, WebPQuality::High)?;
-                    let enc = {
-                        use base64::Engine as _;
-                        base64::engine::general_purpose::STANDARD.encode(&webp_bytes)
-                    };
+            let (
+                encoded,
+                ocr_input,
+                blocking_text,
+                blocking_regions,
+                raw_rgba_val,
+                blocking_raw_regions,
+            ) = tokio::task::spawn_blocking(move || {
+                let webp_bytes = encoder::encode_webp(&frame_ref, WebPQuality::High)?;
+                let enc = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(&webp_bytes)
+                };
 
-                    #[cfg(feature = "ocr")]
-                    let (text_val, raw_regions) = match ocr_extractor.as_ref() {
-                        Some(extractor) => {
-                            let text = match extractor.extract(&frame_ref) {
-                                Ok(t) if !t.is_empty() => {
-                                    Some(crate::privacy::sanitize_title_with_level(&t, pii_level))
-                                }
-                                _ => None,
-                            };
-                            let regions = match extractor.extract_regions(&frame_ref) {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    tracing::warn!("OCR region extraction failure: {e}");
-                                    Vec::new()
-                                }
-                            };
-                            (text, regions)
-                        }
-                        None => (None, Vec::new()),
-                    };
-                    #[cfg(not(feature = "ocr"))]
-                    let (text_val, raw_regions): (
-                        Option<String>,
-                        Vec<maekon_core::models::frame::OcrRegion>,
-                    ) = (None, Vec::new());
+                #[cfg(feature = "ocr")]
+                let (text_val, raw_regions) = match ocr_extractor.as_ref() {
+                    Some(extractor) => {
+                        let text = match extractor.extract(&frame_ref) {
+                            Ok(t) if !t.is_empty() => {
+                                Some(crate::privacy::sanitize_title_with_level(&t, pii_level))
+                            }
+                            _ => None,
+                        };
+                        let regions = match extractor.extract_regions(&frame_ref) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!("OCR region extraction failure: {e}");
+                                Vec::new()
+                            }
+                        };
+                        (text, regions)
+                    }
+                    None => (None, Vec::new()),
+                };
+                #[cfg(not(feature = "ocr"))]
+                let (text_val, raw_regions): (
+                    Option<String>,
+                    Vec<maekon_core::models::frame::OcrRegion>,
+                ) = (None, Vec::new());
 
-                    // Leptess regions: scale + PII-sanitize here so this
-                    // per-pixel/masking CPU stays off the async reactor (#6315,
-                    // #6088). No-op empty under the native path (regions are filled
-                    // on the async side below).
-                    let scaled = crate::ocr_geometry::scale_ocr_regions_to_logical(
-                        &raw_regions,
-                        scale_factor,
-                    );
-                    let sanitized = sanitize_ocr_regions(scaled, pii_level);
+                // Leptess regions: scale + PII-sanitize here so this
+                // per-pixel/masking CPU stays off the async reactor (#6315,
+                // #6088). No-op empty under the native path (regions are filled
+                // on the async side below).
+                let scaled =
+                    crate::ocr_geometry::scale_ocr_regions_to_logical(&raw_regions, scale_factor);
+                let sanitized = sanitize_ocr_regions(scaled, pii_level);
 
-                    // Reuse the WebP bytes as the native-OCR input only when a
-                    // native provider is wired (otherwise drop them so the buffer
-                    // is not retained).
-                    #[cfg(all(feature = "native-vision", not(feature = "ocr")))]
-                    let ocr_input: Option<Vec<u8>> =
-                        if ocr_active { Some(webp_bytes) } else { None };
-                    #[cfg(any(feature = "ocr", not(feature = "native-vision")))]
-                    let ocr_input: Option<Vec<u8>> = None;
+                // Reuse the WebP bytes as the native-OCR input only when a
+                // native provider is wired (otherwise drop them so the buffer
+                // is not retained).
+                #[cfg(all(feature = "native-vision", not(feature = "ocr")))]
+                let ocr_input: Option<Vec<u8>> = if ocr_active { Some(webp_bytes) } else { None };
+                #[cfg(any(feature = "ocr", not(feature = "native-vision")))]
+                let ocr_input: Option<Vec<u8>> = None;
 
-                    // ML crop pixels: populated whenever an OCR attempt is active,
-                    // decoupled from whether that attempt produced regions (#7477).
-                    let raw_rgba_opt = if ocr_active {
-                        Some(frame_ref.to_rgba8().into_vec())
-                    } else {
-                        None
-                    };
+                // ML crop pixels: populated whenever an OCR attempt is active,
+                // decoupled from whether that attempt produced regions (#7477).
+                let raw_rgba_opt = if ocr_active {
+                    Some(frame_ref.to_rgba8().into_vec())
+                } else {
+                    None
+                };
 
-                    Ok::<_, crate::error::VisionError>((
-                        enc,
-                        ocr_input,
-                        text_val,
-                        sanitized,
-                        raw_rgba_opt,
-                    ))
-                })
-                .await
-                .map_err(|e| CoreError::Internal {
-                    code: maekon_core::error_codes::InternalCode::Generic,
-                    message: format!("encode task panicked: {e}"),
-                })??;
+                Ok::<_, crate::error::VisionError>((
+                    enc,
+                    ocr_input,
+                    text_val,
+                    sanitized,
+                    raw_rgba_opt,
+                    // #8042: raw, pre-logical-scale OCR regions (physical
+                    // source pixels, unsanitized text) so the caller can
+                    // detect + mask PII pixels aligned with the stored
+                    // physical-resolution frame. Empty under the native path
+                    // (its OCR runs in the async stage below).
+                    raw_regions,
+                ))
+            })
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("encode task panicked: {e}"),
+            })??;
 
             // Async stage: native OS OCR (macOS Vision / Windows Media.Ocr). The
             // provider is an async port whose native impls offload their own
@@ -430,7 +480,10 @@ impl EdgeFrameProcessor {
             // `sanitize_ocr_regions` as the leptess path — PII masking is applied
             // identically and never weakened (#7477).
             #[cfg(all(feature = "native-vision", not(feature = "ocr")))]
-            let (ocr_text, ocr_regions_final) = match (ocr_provider.as_ref(), ocr_input.as_ref()) {
+            let (ocr_text, ocr_regions_final, physical_regions) = match (
+                ocr_provider.as_ref(),
+                ocr_input.as_ref(),
+            ) {
                 (Some(provider), Some(webp)) => match provider.extract_elements(webp, "webp").await
                 {
                     Ok(results) => {
@@ -454,20 +507,65 @@ impl EdgeFrameProcessor {
                                     .join(" "),
                             )
                         };
-                        (text, sanitized)
+                        // `raw_regions` (physical, unsanitized) drives pixel
+                        // redaction below; `sanitized` (logical, masked text)
+                        // is what the frame exposes downstream.
+                        (text, sanitized, raw_regions)
                     }
                     Err(e) => {
                         tracing::warn!(err.code = %e.code(), "native OCR extraction failed: {e}");
-                        (None, Vec::new())
+                        (None, Vec::new(), Vec::new())
                     }
                 },
-                _ => (None, Vec::new()),
+                _ => (None, Vec::new(), Vec::new()),
             };
             #[cfg(any(feature = "ocr", not(feature = "native-vision")))]
-            let (ocr_text, ocr_regions_final) = (blocking_text, blocking_regions);
+            let (ocr_text, ocr_regions_final, physical_regions) =
+                (blocking_text, blocking_regions, blocking_raw_regions);
 
             ocr_regions = ocr_regions_final;
             raw_rgba = raw_rgba_val;
+
+            // #8042: pixel-level PII redaction of the STORED frame. `encoded`
+            // (base64 WebP) and `raw_rgba` currently hold the *original* pixels; if
+            // OCR located PII, destructively mask those pixel regions and re-encode
+            // before the frame is persisted. `physical_regions` carry raw OCR text
+            // in the frame's PHYSICAL source-pixel space (pre
+            // `scale_ocr_regions_to_logical`), matching the physical-resolution
+            // frame exactly — no HiDPI scale round-trip. Gated by the configured
+            // PiiFilterLevel (Off = operator opt-out — consistent with the OCR-text
+            // path); consuming OCR regions implicitly gates it on ocr_processing
+            // consent (no regions ⇒ no masking). Detection + re-encode both run in
+            // spawn_blocking (off the async reactor) and only when regions exist.
+            let mut encoded = encoded;
+            if pii_level != PiiFilterLevel::Off && !physical_regions.is_empty() {
+                let frame_for_redact = Arc::clone(&current_frame);
+                // Fail CLOSED: if PII was detected but the redacted frame cannot be
+                // produced, propagate the error so the caller drops the frame rather
+                // than persisting unmasked PII pixels.
+                let redacted = tokio::task::spawn_blocking(move || {
+                    crate::frame_pii::redact_frame_if_pii(
+                        &frame_for_redact,
+                        &physical_regions,
+                        pii_level,
+                        WebPQuality::High,
+                    )
+                })
+                .await
+                .map_err(|e| CoreError::Internal {
+                    code: maekon_core::error_codes::InternalCode::Generic,
+                    message: format!("pii redaction task panicked: {e}"),
+                })??;
+                if let Some((redacted_webp, redacted_rgba)) = redacted {
+                    encoded = {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD.encode(&redacted_webp)
+                    };
+                    // ML crop input must mirror the stored frame (no PII pixels).
+                    raw_rgba = Some(redacted_rgba);
+                }
+            }
+
             Some(ImagePayload::Full {
                 data: encoded,
                 format: "webp".to_string(),

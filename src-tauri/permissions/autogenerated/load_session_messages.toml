@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-session-messages"
+description = "Enables the load_session_messages command without any pre-configured scope."
+commands.allow = ["load_session_messages"]
+
+[[permission]]
+identifier = "deny-load-session-messages"
+description = "Denies the load_session_messages command without any pre-configured scope."
+commands.deny = ["load_session_messages"]

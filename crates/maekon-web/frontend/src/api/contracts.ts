@@ -65,6 +65,32 @@ export interface Frame {
   tag_ids: number[]
 }
 
+/** User-created annotation attached to a captured frame (Rust `AnnotationType`). */
+export type AnnotationType = 'Highlight' | 'Memo' | 'Arrow'
+
+export interface FrameAnnotation {
+  annotation_id: string
+  frame_id: number
+  annotation_type: AnnotationType
+  x: number
+  y: number
+  width: number
+  height: number
+  color: string | null
+  text: string | null
+  created_at: string
+}
+
+export interface CreateFrameAnnotationRequest {
+  annotation_type: AnnotationType
+  x: number
+  y: number
+  width?: number
+  height?: number
+  color?: string | null
+  text?: string | null
+}
+
 export interface IdlePeriod {
   start_time: string
   end_time: string | null
@@ -233,6 +259,13 @@ export interface AnalysisSettings {
   min_confidence: number
   max_suggestions: number
   embedding_enabled: boolean
+  /**
+   * Whether the local LLM generates a natural-language daily-digest narrative
+   * before embedding (maps to nested Rust `analysis.embedding.llm_summary_enabled`).
+   * The narrative pipeline only runs when `enabled`, `embedding_enabled`, and this
+   * flag are all true; the rule-based digest always runs regardless.
+   */
+  llm_summary_enabled: boolean
   gui_intelligence_enabled: boolean
   text_intelligence_enabled: boolean
   auto_tuner_enabled: boolean
@@ -1201,10 +1234,21 @@ export interface FeatureCapabilitySnapshot {
    * PLATFORM-capability flag (#7678): true when active-window detection is expected to work
    * reliably (always on macOS/Windows; false on Linux under a Wayland session with no
    * dependable native path). Optional on the TS side — treat a missing value as `false`
-   * (fail-closed). No dedicated settings UI reads this today; present for
-   * telemetry/consumers.
+   * (fail-closed). Read by the Monitoring tab's platform-capability matrix (#8686 AC3).
    */
   active_window_available?: boolean
+  /**
+   * PLATFORM/BUILD-capability flag (#8686 AC3): true when the out-of-process automation
+   * sandbox can actually enforce isolation on this host + build. Optional on the TS side —
+   * treat a missing value as `false` (fail-closed).
+   */
+  automation_sandbox_available?: boolean
+  /**
+   * Linux graphical session type (#8686 AC3): 'wayland' | 'x11' | 'unknown' on Linux,
+   * null/absent elsewhere. Lets the permission matrix name the Wayland degradation
+   * explicitly instead of a generic "manual check".
+   */
+  linux_session_type?: string | null
 }
 
 export type DesktopPermissionState = 'granted' | 'needs_attention' | 'not_required' | 'unavailable'
@@ -1258,6 +1302,16 @@ export interface AuditEntry {
   status: string
   details: string | null
   elapsed_ms: number | null
+}
+
+/** Privacy-bounded row returned by `GET /api/audit/export`. */
+export interface AuditExportEntry {
+  entry_id: string
+  timestamp: string
+  command_id: string
+  action_type: string
+  status: string
+  execution_time_ms?: number | null
 }
 
 /** A single hash-chain integrity break (#4834/ADR-072/#7600). */

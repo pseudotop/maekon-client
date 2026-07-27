@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrackingScheduleStatus {
-    /// Whether tracking is currently muted by the schedule.
+    /// Whether the current time is inside a configured allowed window.
     pub active_now: bool,
-    /// RFC 3339 timestamp when the current mute window ends, if active.
+    /// RFC 3339 timestamp when the current allowed window ends, if active.
     pub ends_at: Option<String>,
-    /// RFC 3339 timestamp when the next mute window begins, within 7 days.
+    /// RFC 3339 timestamp when the next allowed window begins, within 7 days.
     pub next_starts_at: Option<String>,
     /// Human-readable label of the currently active window, or empty string.
     pub label: String,
